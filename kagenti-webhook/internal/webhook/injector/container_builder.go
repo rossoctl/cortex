@@ -138,6 +138,30 @@ func BuildClientRegistrationContainer(clientID, name, namespace string) corev1.C
 				},
 			},
 			{
+				Name: "KEYCLOAK_TOKEN_EXCHANGE_ENABLED",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "environments",
+						},
+						Key:      "KEYCLOAK_TOKEN_EXCHANGE_ENABLED",
+						Optional: ptr.To(true),
+					},
+				},
+			},
+			{
+				Name: "KEYCLOAK_CLIENT_REGISTRATION_ENABLED",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "environments",
+						},
+						Key:      "KEYCLOAK_CLIENT_REGISTRATION_ENABLED",
+						Optional: ptr.To(true),
+					},
+				},
+			},
+			{
 				Name:  "CLIENT_NAME",
 				Value: clientId,
 			},
