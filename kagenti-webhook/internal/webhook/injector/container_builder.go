@@ -44,6 +44,10 @@ const (
 func BuildSpiffeHelperContainer() corev1.Container {
 	builderLog.Info("building SpiffeHelper Container")
 
+	// SECURITY NOTE: The upstream spiffe-helper image runs as root.
+	// We explicitly set RunAsUser: 0 to satisfy pod-level runAsNonRoot
+	// validation. The spiffe-helper needs root to access the SPIRE
+	// agent socket and write SVID files.
 	return corev1.Container{
 		Name:            SpiffeHelperContainerName,
 		Image:           "ghcr.io/spiffe/spiffe-helper:nightly",
@@ -56,6 +60,14 @@ func BuildSpiffeHelperContainer() corev1.Container {
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("50m"),
 				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:    ptr.To(int64(0)),
+			RunAsNonRoot: ptr.To(false),
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
 			},
 		},
 		Command: []string{
@@ -239,6 +251,14 @@ tail -f /dev/null
 			Requests: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("50m"),
 				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:    ptr.To(int64(65534)),
+			RunAsNonRoot: ptr.To(true),
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
 			},
 		},
 		Command: []string{
