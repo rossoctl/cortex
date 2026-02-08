@@ -441,6 +441,7 @@ func BuildProxyInitContainer() corev1.Container {
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:    ptr.To(int64(0)),
 			RunAsNonRoot: ptr.To(false),
+			Privileged:   ptr.To(true),
 			Capabilities: &corev1.Capabilities{
 				Add: []corev1.Capability{
 					"NET_ADMIN",
