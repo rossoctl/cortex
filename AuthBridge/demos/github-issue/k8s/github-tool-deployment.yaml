@@ -41,6 +41,8 @@ spec:
     metadata:
       labels:
         app: github-tool
+        kagenti.io/type: tool
+        kagenti.io/inject: disabled
     spec:
       containers:
         - name: github-tool
