@@ -76,7 +76,7 @@ fi
 AUTHBRIDGE_DEMO=${AUTHBRIDGE_DEMO:-false}
 AUTHBRIDGE_NAMESPACE=${AUTHBRIDGE_NAMESPACE:-team1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUTHBRIDGE_K8S_DIR="${SCRIPT_DIR}/../../AuthBridge/k8s"
+AUTHBRIDGE_K8S_DIR="${SCRIPT_DIR}/../../AuthBridge/demos/single-target/k8s"
 
 # ==========================================
 # Input Validation
@@ -85,12 +85,11 @@ validate_k8s_name "$CLUSTER" "cluster name"
 validate_k8s_name "$NAMESPACE" "namespace"
 if [ "${AUTHBRIDGE_DEMO}" = "true" ]; then
     validate_k8s_name "$AUTHBRIDGE_NAMESPACE" "AuthBridge namespace"
-fi
-
-if [ ! -d "${AUTHBRIDGE_K8S_DIR}" ]; then
-    echo "Error: AuthBridge k8s directory not found at '${AUTHBRIDGE_K8S_DIR}'." >&2
-    echo "Please verify the repository structure or update the relative path in webhook-rollout.sh." >&2
-    exit 1
+    if [ ! -d "${AUTHBRIDGE_K8S_DIR}" ]; then
+        echo "Error: AuthBridge k8s directory not found at '${AUTHBRIDGE_K8S_DIR}'." >&2
+        echo "Please verify the repository structure or update the relative path in webhook-rollout.sh." >&2
+        exit 1
+    fi
 fi
 
 # ==========================================
