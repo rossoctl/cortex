@@ -23,7 +23,13 @@ spec:
         image: localhost/proxy-init:latest
         imagePullPolicy: IfNotPresent
         securityContext:
-          privileged: true
+          privileged: false
+          capabilities:
+            add:
+              - NET_ADMIN
+              - NET_RAW
+            drop:
+              - ALL
           runAsNonRoot: false
           runAsUser: 0
         env:
@@ -33,6 +39,10 @@ spec:
           value: "15124"
         - name: PROXY_UID
           value: "1337"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         resources:
           limits:
             cpu: 10m

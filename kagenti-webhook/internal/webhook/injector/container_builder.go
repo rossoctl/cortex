@@ -368,26 +368,23 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainer() corev1.Container {
 // BuildProxyInitContainer creates the init container that sets up iptables
 // to redirect outbound traffic to the Envoy proxy.
 //
-// SECURITY NOTE: This init container requires elevated privileges:
+// SECURITY NOTE: This init container requires elevated capabilities:
 //   - RunAsUser: 0 (root) - Required to modify network namespace iptables rules
 //   - RunAsNonRoot: false - Explicitly allows root execution
-//   - Privileged: true - Required for iptables manipulation and sysctl commands
-//     (e.g., sysctl -w net.ipv4.conf.all.route_localnet=1 for Istio Ambient Mesh coexistence)
+//   - NET_ADMIN capability - Required for iptables manipulation
+//   - NET_RAW capability - Required for raw socket operations used by iptables
 //
-// These privileges are necessary because iptables manipulation is a kernel-level
-// operation that requires root access. This is a common pattern used by service
-// meshes (Istio, Linkerd) for transparent traffic interception.
+// The init container does NOT require privileged mode. It uses DNAT to the pod's
+// own IP instead of REDIRECT for the ztunnel inbound interception rule, which
+// avoids the need for sysctl route_localnet=1 (which would require privileged
+// mode to write to read-only /proc/sys). All other capabilities are dropped.
 //
 // Risk mitigations:
 //   - This runs as an init container (not a long-running sidecar), limiting exposure window
 //   - The container exits immediately after configuring iptables rules
 //   - Minimal resource limits are applied (10m CPU, 10Mi memory)
+//   - Only NET_ADMIN and NET_RAW capabilities are granted (all others dropped)
 //   - The container image should be regularly updated and scanned for vulnerabilities
-//   - Consider using a distroless or minimal base image for the proxy-init container
-//
-// Alternative approaches (not currently implemented):
-//   - CNI plugin: Configure iptables at pod network setup time (requires cluster-level changes)
-//   - Istio CNI: Similar approach used by Istio to avoid privileged init containers
 func (b *ContainerBuilder) BuildProxyInitContainer() corev1.Container {
 	builderLog.Info("building ProxyInit Container")
 
@@ -413,11 +410,23 @@ func (b *ContainerBuilder) BuildProxyInitContainer() corev1.Container {
 				Name:  "OUTBOUND_PORTS_EXCLUDE",
 				Value: "8080", // Exclude Keycloak port from redirect
 			},
+			{
+				Name: "POD_IP",
+				ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{
+						FieldPath: "status.podIP",
+					},
+				},
+			},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:    ptr.To(int64(0)),
 			RunAsNonRoot: ptr.To(false),
-			Privileged:   ptr.To(true),
+			Privileged:   ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Add:  []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+				Drop: []corev1.Capability{"ALL"},
+			},
 		},
 	}
 }

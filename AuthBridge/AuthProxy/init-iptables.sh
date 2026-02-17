@@ -79,7 +79,7 @@
 #      - ztunnel preserves original client IP as source (IP_TRANSPARENT)
 #      - ztunnel's socket has fwmark 0x539; ztunnel runs as UID 0
 #   4. PROXY_OUTPUT mark-based rule matches:
-#        mark=0x539, UID!=1337, dst-type=LOCAL → REDIRECT to Envoy inbound (15124)
+#        mark=0x539, UID!=1337, dst-type=LOCAL → DNAT to Envoy inbound (POD_IP:15124)
 #   5. Envoy ext_proc validates JWT
 #   6. Envoy (UID 1337) connects to original destination (app port)
 #      - mangle OUTPUT sets mark 0x539 (UID 1337 + dst-type LOCAL)
@@ -93,18 +93,19 @@
 #     outbound HBONE connections (to remote pod IPs, also mark 0x539, also UID!=1337)
 #     would match and get redirected to the inbound listener, causing
 #     InvalidContentType errors (Envoy speaks HTTP, ztunnel expects mTLS).
-#   - route_localnet=1 is required because REDIRECT in OUTPUT changes dst to 127.0.0.1,
-#     but ztunnel's delivery has a non-local source IP (original client). Without
-#     route_localnet, the kernel treats 127.0.0.1 as martian during re-routing after
-#     NAT and silently drops the SYN (visible as OutNoRoutes in /proc/net/snmp).
+#   - We use DNAT to POD_IP instead of REDIRECT to avoid the route_localnet problem.
+#     REDIRECT in OUTPUT rewrites dst to 127.0.0.1, and when the source is a non-local
+#     IP (ztunnel's IP_TRANSPARENT), the kernel treats it as a martian packet and drops
+#     it unless route_localnet=1. DNAT to the pod's own IP avoids this because the pod
+#     IP is a routable non-loopback address. SO_ORIGINAL_DST still works because
+#     conntrack stores the pre-NAT destination identically for both REDIRECT and DNAT.
 #   - The mangle rule (step 6) prevents a loop: without mark 0x539, ISTIO_OUTPUT would
 #     redirect Envoy's local delivery back to ztunnel (15001). Mangle OUTPUT runs
 #     before nat OUTPUT in the netfilter hook ordering.
 #
 # ─── Debugging tips ──────────────────────────────────────────────────────────
 #
-#   conntrack -L               — shows actual REDIRECT targets and connection states
-#   /proc/net/snmp OutNoRoutes — reveals routing failures (route_localnet issue)
+#   conntrack -L               — shows actual DNAT/REDIRECT targets and connection states
 #   iptables-legacy-save       — both Istio and AuthProxy use iptables-legacy
 #   curl 127.0.0.1:9901/stats  — Envoy listener/cluster stats
 #   ztunnel logs               — connections logged only on completion, not start
@@ -125,13 +126,15 @@ ZTUNNEL_HBONE_PORT="${ZTUNNEL_HBONE_PORT:-15008}"
 ZTUNNEL_MARK="${ZTUNNEL_MARK:-0x539/0xfff}"  # 0x539 = 1337 decimal, ztunnel's socket fwmark
 ISTIO_HEALTH_PROBE_SRC="${ISTIO_HEALTH_PROBE_SRC:-169.254.7.127}"
 
-# Required for inbound ambient mesh flow. REDIRECT in OUTPUT changes dst to
-# 127.0.0.1, but ztunnel's transparent delivery preserves the original client IP
-# as the packet source. The kernel's ip_route_me_harder() re-routes the packet
-# after NAT, and with route_localnet=0 (default) it considers 127.0.0.1 a martian
-# address and drops the packet. Istio sidecar mode uses the same setting.
-# Requires privileged init container (/proc/sys is read-only otherwise).
-sysctl -w net.ipv4.conf.all.route_localnet=1
+# POD_IP is required for the ztunnel inbound interception rule (DNAT target).
+# It must be passed via the Kubernetes Downward API (status.podIP) or set manually.
+# We use DNAT to the pod IP instead of REDIRECT to avoid needing route_localnet=1,
+# which would require a privileged init container (to write to read-only /proc/sys).
+if [ -z "${POD_IP}" ]; then
+  echo "ERROR: POD_IP environment variable is not set." >&2
+  echo "Set it via the Kubernetes Downward API (status.podIP) or manually." >&2
+  exit 1
+fi
 
 # =============================================================================
 # OUTBOUND traffic interception (nat OUTPUT)
@@ -161,7 +164,18 @@ iptables -t nat -F PROXY_OUTPUT 2>/dev/null || true
 # (dst = remote pod IP on port 15008). Without --dst-type LOCAL, outbound HBONE
 # would be hijacked into the inbound listener, where Envoy speaks plain HTTP
 # back to ztunnel which expects mTLS — producing InvalidContentType errors.
-iptables -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j REDIRECT --to-ports "${INBOUND_PROXY_PORT}"
+#
+# We use DNAT to POD_IP instead of REDIRECT here. REDIRECT in the OUTPUT chain
+# always rewrites the destination to 127.0.0.1 (hardcoded in the kernel's
+# nf_nat_redirect_ipv4). When the source IP is non-local (ztunnel preserves the
+# original client IP via IP_TRANSPARENT), the kernel treats the resulting
+# src=external, dst=127.0.0.1 packet as martian and drops it — unless
+# route_localnet=1 is set, which requires a privileged container to write to
+# /proc/sys. DNAT to the pod's own IP avoids this entirely: the pod IP is a
+# routable non-loopback address, so no martian filtering occurs.
+# SO_ORIGINAL_DST (used by Envoy's original_dst cluster) works identically
+# with DNAT — conntrack stores the pre-NAT original tuple for both targets.
+iptables -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j DNAT --to-destination "${POD_IP}:${INBOUND_PROXY_PORT}"
 
 # --- Rule 2: Skip all remaining ztunnel traffic ---
 # After rule 1 captured ztunnel's inbound delivery, any other ztunnel traffic

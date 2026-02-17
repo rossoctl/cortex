@@ -238,10 +238,13 @@ spec:
           image: proxy-init:latest
           imagePullPolicy: IfNotPresent
           securityContext:
+            privileged: false
             capabilities:
               add:
                 - NET_ADMIN
                 - NET_RAW
+              drop:
+                - ALL
             runAsNonRoot: false
             runAsUser: 0
           env:
@@ -251,6 +254,10 @@ spec:
               value: "1337"
             - name: OUTBOUND_PORTS_EXCLUDE
               value: "8080"  # Exclude Keycloak port from iptables redirect
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           resources:
             limits:
               cpu: 10m
