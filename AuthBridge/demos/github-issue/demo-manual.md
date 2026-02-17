@@ -348,31 +348,6 @@ Expected output (with SPIFFE):
 git-issue-agent spiffe-helper kagenti-client-registration envoy-proxy
 ```
 
-### Enable service accounts for the registered client
-
-The dynamically registered client needs service accounts enabled for `client_credentials` grant:
-
-```bash
-kubectl exec deployment/git-issue-agent -n team1 -c git-issue-agent -- sh -c '
-CLIENT_ID=$(cat /shared/client-id.txt)
-
-ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/protocol/openid-connect/token \
-  -d "grant_type=password" \
-  -d "client_id=admin-cli" \
-  -d "username=admin" \
-  -d "password=admin" | jq -r ".access_token")
-
-INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
-
-curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients/$INTERNAL_ID" \
-  -d "{\"clientId\": \"$CLIENT_ID\", \"serviceAccountsEnabled\": true}"
-
-echo "Service accounts enabled for: $CLIENT_ID"
-'
-```
-
 ---
 
 ## Step 7: Validate the Deployment
