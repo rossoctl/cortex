@@ -499,8 +499,11 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/pr
   -d "password=admin" | jq -r ".access_token")
 
 # Look up the agent's client in the demo realm
+# With SPIRE enabled, the client ID is the SPIFFE ID.
+# With SPIRE disabled, it is <namespace>/<service-account>.
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients?clientId=team1/git-issue-agent")
+  --data-urlencode "clientId=spiffe://localtest.me/ns/team1/sa/git-issue-agent" \
+  --get "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients")
 INTERNAL_ID=$(echo "$CLIENTS" | jq -r ".[0].id")
 CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
 
@@ -524,7 +527,7 @@ echo "Token length:  ${#TOKEN}"
 You should see output like:
 
 ```
-Client ID:     team1/git-issue-agent
+Client ID:     spiffe://localtest.me/ns/team1/sa/git-issue-agent
 Secret length: 32
 Token length:  1165
 ```
@@ -650,9 +653,12 @@ kubectl exec deployment/git-issue-agent -n team1 -c kagenti-client-registration 
 kubectl exec test-client -n team1 -- sh -c '
 ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/protocol/openid-connect/token \
   -d "grant_type=password" -d "client_id=admin-cli" -d "username=admin" -d "password=admin" | jq -r ".access_token")
-CLIENT_ID="team1/git-issue-agent"
+# With SPIRE enabled (default), use the SPIFFE ID as client ID.
+# With SPIRE disabled, use: CLIENT_ID="team1/git-issue-agent"
+CLIENT_ID="spiffe://localtest.me/ns/team1/sa/git-issue-agent"
 INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/master/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
+  --data-urlencode "clientId=$CLIENT_ID" \
+  --get "http://keycloak-service.keycloak.svc:8080/admin/realms/master/clients" | jq -r ".[0].id")
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
   "http://keycloak-service.keycloak.svc:8080/admin/realms/master/clients/$INTERNAL_ID"
 echo "Deleted stale client from master realm"'
