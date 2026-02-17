@@ -154,12 +154,34 @@ Ensure you have completed the Kagenti platform setup as described in the
 
 You should also have:
 - The [kagenti-extensions](https://github.com/kagenti/kagenti-extensions) repo cloned
+- The [agent-examples](https://github.com/kagenti/agent-examples) repo cloned
 - Python 3.9+ with `venv` support
 - Two GitHub Personal Access Tokens (PATs):
   - `<PUBLIC_ACCESS_PAT>` — access to public repositories only
   - `<PRIVILEGED_ACCESS_PAT>` — access to all repositories
 
 See the [upstream demo](https://github.com/kagenti/kagenti/blob/main/docs/demos/demo-github-issue.md#required-github-pat-tokens) for instructions on creating GitHub PAT tokens.
+
+### Build and Load Container Images
+
+The agent and tool container images must be built locally and loaded into the kind
+cluster (they are not published to a public registry):
+
+```bash
+cd <path-to>/agent-examples
+
+# Build the GitHub tool image
+docker build -t ghcr.io/kagenti/agent-examples/github-tool:latest \
+  -f mcp/github_tool/Dockerfile mcp/github_tool/
+
+# Build the GitHub Issue Agent image
+docker build -t ghcr.io/kagenti/agent-examples/git-issue-agent:latest \
+  -f a2a/git_issue_agent/Dockerfile a2a/git_issue_agent/
+
+# Load both images into the kind cluster
+kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/github-tool:latest
+kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/git-issue-agent:latest
+```
 
 ---
 
