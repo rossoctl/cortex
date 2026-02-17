@@ -1,0 +1,111 @@
+# GitHub Issue Agent Deployment with AuthBridge
+#
+# This deployment uses the kagenti-webhook to automatically inject AuthBridge sidecars:
+# - proxy-init (init container for iptables setup)
+# - spiffe-helper (SPIFFE credential fetcher) - only with kagenti.io/spire: enabled
+# - kagenti-client-registration (registers agent with Keycloak using SPIFFE ID)
+# - envoy-proxy (intercepts inbound traffic for JWT validation,
+#                outbound HTTP traffic for token exchange,
+#                outbound HTTPS traffic passed through as-is)
+#
+# The git-issue-agent container:
+#   - Runs the A2A GitHub Issue Agent on port 8000
+#   - Calls the GitHub MCP tool via HTTP
+#   - Token exchange to the tool is handled transparently by the AuthBridge sidecar
+#
+# Labels (must be on Pod template):
+#   kagenti.io/type: agent      - Required: identifies this as an agent workload
+#   kagenti.io/inject: enabled  - Enables AuthBridge sidecar injection
+#   kagenti.io/spire: enabled   - Enables SPIRE-based identity (set to "disabled" if no SPIRE)
+#
+# Usage:
+#   kubectl apply -f git-issue-agent-deployment.yaml
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: git-issue-agent
+  namespace: team1
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-issue-agent
+  namespace: team1
+  labels:
+    app: git-issue-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-issue-agent
+  template:
+    metadata:
+      labels:
+        app: git-issue-agent
+        kagenti.io/type: agent
+        kagenti.io/inject: enabled
+        kagenti.io/spire: enabled
+    spec:
+      serviceAccountName: git-issue-agent
+      containers:
+        - name: git-issue-agent
+          image: ghcr.io/kagenti/agent-examples/git-issue-agent:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # LLM configuration - choose ollama or openai
+            # For Ollama (local LLM):
+            - name: MODEL_PROVIDER
+              value: "ollama"
+            - name: MODEL_NAME
+              value: "ibm/granite4:latest"
+            - name: OLLAMA_HOST
+              value: "http://ollama.ollama.svc:11434"
+            # For OpenAI (uncomment and set your key):
+            # - name: MODEL_PROVIDER
+            #   value: "openai"
+            # - name: MODEL_NAME
+            #   value: "gpt-4"
+            # - name: OPENAI_API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: openai-secret
+            #       key: api-key
+
+            # MCP Tool endpoint - the GitHub tool service
+            # AuthBridge will exchange the token when the agent calls this URL
+            - name: MCP_SERVER_URL
+              value: "http://github-tool-service:9090/mcp"
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-issue-agent-service
+  namespace: team1
+spec:
+  selector:
+    app: git-issue-agent
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP

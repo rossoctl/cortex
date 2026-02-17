@@ -1,0 +1,96 @@
+# GitHub Tool (MCP Server) Deployment
+#
+# This is the GitHub MCP tool that provides GitHub API access.
+# It does NOT have AuthBridge injection enabled (kagenti.io/inject: disabled)
+# because it is the target service, not the caller.
+#
+# The tool validates incoming tokens to determine authorization level:
+#   - Tokens with "github-full-access" scope → uses PRIVILEGED_ACCESS_PAT
+#   - All other valid tokens → uses PUBLIC_ACCESS_PAT
+#
+# The AuthBridge sidecar on the agent pod handles token exchange:
+#   Agent sends request → AuthBridge exchanges token (aud: github-tool) → Tool validates
+#
+# Prerequisites:
+#   Create the GitHub PAT secret before deploying:
+#
+#   kubectl create secret generic github-tool-secrets -n team1 \
+#     --from-literal=INIT_AUTH_HEADER="Bearer <PRIVILEGED_ACCESS_PAT>" \
+#     --from-literal=UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE="Bearer <PRIVILEGED_ACCESS_PAT>" \
+#     --from-literal=UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE="Bearer <PUBLIC_ACCESS_PAT>"
+#
+# Usage:
+#   kubectl apply -f github-tool-deployment.yaml
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-tool
+  namespace: team1
+  labels:
+    app: github-tool
+    kagenti.io/type: tool
+    kagenti.io/inject: disabled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-tool
+  template:
+    metadata:
+      labels:
+        app: github-tool
+    spec:
+      containers:
+        - name: github-tool
+          image: ghcr.io/kagenti/agent-examples/github-tool:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+          env:
+            # GitHub PAT tokens for different authorization levels
+            - name: INIT_AUTH_HEADER
+              valueFrom:
+                secretKeyRef:
+                  name: github-tool-secrets
+                  key: INIT_AUTH_HEADER
+            - name: UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: github-tool-secrets
+                  key: UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE
+            - name: UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: github-tool-secrets
+                  key: UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE
+            # Keycloak validation settings for incoming tokens
+            - name: ISSUER
+              value: "http://keycloak.localtest.me:8080/realms/demo"
+            - name: JWKS_URL
+              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+            - name: AUDIENCE
+              value: "github-tool"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-tool-service
+  namespace: team1
+spec:
+  selector:
+    app: github-tool
+  ports:
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+  type: ClusterIP
