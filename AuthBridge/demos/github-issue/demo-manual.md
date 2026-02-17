@@ -314,11 +314,7 @@ AuthBridge injection (it is the target, not the caller):
 
 ```bash
 kubectl apply -f demos/github-issue/k8s/github-tool-deployment.yaml
-```
-
-Wait for the tool to be ready:
-
-```bash
+# Wait for the tool to be ready:
 kubectl wait --for=condition=available --timeout=120s deployment/github-tool -n team1
 ```
 
@@ -331,11 +327,7 @@ the AuthBridge sidecars (proxy-init, spiffe-helper, client-registration, envoy-p
 
 ```bash
 kubectl apply -f demos/github-issue/k8s/git-issue-agent-deployment.yaml
-```
-
-Wait for the agent to be ready:
-
-```bash
+# Wait for the agent to be ready:
 kubectl wait --for=condition=available --timeout=180s deployment/git-issue-agent -n team1
 ```
 
