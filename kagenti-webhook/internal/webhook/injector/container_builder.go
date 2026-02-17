@@ -62,6 +62,14 @@ func (b *ContainerBuilder) BuildSpiffeHelperContainer() corev1.Container {
 			"-config=/etc/spiffe-helper/helper.conf",
 			"run",
 		},
+		// Run as the same UID/GID as client-registration so that SVID files
+		// written to the shared svid-output volume (/opt) are readable by
+		// the client-registration container. spiffe-helper writes files with
+		// restrictive permissions (0600), so matching the UID is required.
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:  ptr.To(int64(ClientRegistrationUID)),
+			RunAsGroup: ptr.To(int64(ClientRegistrationGID)),
+		},
 		VolumeMounts: []corev1.VolumeMount{
 			{
 				Name:      "spiffe-helper-config",
