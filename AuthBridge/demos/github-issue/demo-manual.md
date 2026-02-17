@@ -271,14 +271,17 @@ The GitHub tool needs PAT tokens to access the GitHub API. Create a Kubernetes s
 with your tokens:
 
 ```bash
-kubectl create secret generic github-tool-secrets -n team1 \
-  --from-literal=INIT_AUTH_HEADER="Bearer <PRIVILEGED_ACCESS_PAT>" \
-  --from-literal=UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE="Bearer <PRIVILEGED_ACCESS_PAT>" \
-  --from-literal=UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE="Bearer <PUBLIC_ACCESS_PAT>"
+export PRIVILEGED_ACCESS_PAT=   ;export PUBLIC_ACCESS_PAT=
 ```
 
-Replace `<PRIVILEGED_ACCESS_PAT>` and `<PUBLIC_ACCESS_PAT>` with your actual GitHub
-Personal Access Tokens.
+Provide your your actual GitHub Personal Access Tokens.
+
+```bash
+kubectl create secret generic github-tool-secrets -n team1 \
+  --from-literal=INIT_AUTH_HEADER="Bearer $PRIVILEGED_ACCESS_PAT" \
+  --from-literal=UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE="Bearer $PRIVILEGED_ACCESS_PAT" \
+  --from-literal=UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE="Bearer $PUBLIC_ACCESS_PAT"
+```
 
 ---
 
