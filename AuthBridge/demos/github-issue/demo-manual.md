@@ -28,22 +28,22 @@ providing end-to-end security:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────────────────────┐
 │                              KUBERNETES CLUSTER                                  │
 │                                                                                  │
 │  ┌───────────────────────────────────────────────────────────────────────────┐   │
 │  │                  GIT-ISSUE-AGENT POD (namespace: team1)                   │   │
 │  │                                                                           │   │
-│  │  ┌─────────────────┐  ┌─────────────┐  ┌──────────────────────────────┐  │   │
+│  │  ┌──────────────────┐  ┌─────────────┐  ┌──────────────────────────────┐  │   │
 │  │  │  git-issue-agent │  │   spiffe-   │  │      client-registration     │  │   │
 │  │  │  (A2A agent,     │  │   helper    │  │  (registers with Keycloak    │  │   │
 │  │  │   port 8000)     │  │             │  │   using SPIFFE ID)           │  │   │
-│  │  └─────────────────┘  └─────────────┘  └──────────────────────────────┘  │   │
+│  │  └──────────────────┘  └─────────────┘  └──────────────────────────────┘  │   │
 │  │                                                                           │   │
 │  │  ┌───────────────────────────────────────────────────────────────────┐    │   │
-│  │  │                    AuthBridge Sidecar (envoy-proxy)                │    │   │
+│  │  │                    AuthBridge Sidecar (envoy-proxy)               │    │   │
 │  │  │  Inbound (port 15124):                                            │    │   │
-│  │  │    - Validates JWT (signature + issuer + audience)                 │    │   │
+│  │  │    - Validates JWT (signature + issuer + audience)                │    │   │
 │  │  │  Outbound (port 15123):                                           │    │   │
 │  │  │    - HTTP: Exchanges token via Keycloak → aud: github-tool        │    │   │
 │  │  │    - HTTPS: TLS passthrough (no interception)                     │    │   │
@@ -84,8 +84,8 @@ providing end-to-end security:
     │  1. Get token       │                      │                 │
     │  (client_credentials│                      │                 │
     │   or user login)    │                      │                 │
-    │────────────────────────────────────────────►│                 │
-    │◄────────────────────────────────────────────│                 │
+    │───────────────────────────────────────────►│                 │
+    │◄───────────────────────────────────────────│                 │
     │  Token: aud=Agent's SPIFFE ID              │                 │
     │                     │                      │                 │
     │  2. Send prompt     │                      │                 │
@@ -101,8 +101,8 @@ providing end-to-end security:
     │              │  ✓ audience │               │                 │
     │              └──────┬──────┘               │                 │
     │                     │                      │                 │
-    │              Agent processes prompt,        │                 │
-    │              calls GitHub tool              │                 │
+    │              Agent processes prompt,       │                 │
+    │              calls GitHub tool             │                 │
     │                     │                      │                 │
     │              ┌──────┴──────┐               │                 │
     │              │  AuthBridge │               │                 │
@@ -110,26 +110,26 @@ providing end-to-end security:
     │              │  intercepts │               │                 │
     │              └──────┬──────┘               │                 │
     │                     │                      │                 │
-    │                     │  3. Token Exchange    │                 │
-    │                     │  (RFC 8693)           │                 │
+    │                     │  3. Token Exchange   │                 │
+    │                     │  (RFC 8693)          │                 │
     │                     │─────────────────────►│                 │
     │                     │◄─────────────────────│                 │
-    │                     │  New token:           │                 │
-    │                     │  aud=github-tool      │                 │
-    │                     │  sub=<original user>  │                 │
+    │                     │  New token:          │                 │
+    │                     │  aud=github-tool     │                 │
+    │                     │  sub=<original user> │                 │
     │                     │                      │                 │
-    │                     │  4. Forward request   │                 │
-    │                     │  with exchanged token │                 │
-    │                     │──────────────────────────────────────►│
+    │                     │  4. Forward request  │                 │
+    │                     │  with exchanged token│                 │
+    │                     │───────────────────────────────────────►│
     │                     │                      │                 │
-    │                     │                      │    Tool validates│
-    │                     │                      │    token, checks │
-    │                     │                      │    scopes, uses  │
-    │                     │                      │    appropriate   │
-    │                     │                      │    GitHub PAT    │
+    │                     │                      │   Tool validates│
+    │                     │                      │   token, checks │
+    │                     │                      │   scopes, uses  │
+    │                     │                      │   appropriate   │
+    │                     │                      │   GitHub PAT    │
     │                     │                      │                 │
-    │                     │◄──────────────────────────────────────│
-    │◄────────────────────│  5. Response          │                 │
+    │                     │◄───────────────────────────────────────│
+    │◄────────────────────│  5. Response         │                 │
     │  GitHub issues      │                      │                 │
 ```
 
