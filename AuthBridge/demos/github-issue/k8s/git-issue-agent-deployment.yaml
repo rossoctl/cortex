@@ -79,7 +79,8 @@ spec:
 
             # MCP Tool endpoint - the GitHub tool service
             # AuthBridge will exchange the token when the agent calls this URL
-            - name: MCP_SERVER_URL
+            # Note: the env var is MCP_URL (not MCP_SERVER_URL) per the agent's config.py
+            - name: MCP_URL
               value: "http://github-tool-service:9090/mcp"
 
             # JWKS URI for validating incoming tokens from Keycloak
