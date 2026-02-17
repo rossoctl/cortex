@@ -296,7 +296,7 @@ with your tokens:
 export PRIVILEGED_ACCESS_PAT=   ;export PUBLIC_ACCESS_PAT=
 ```
 
-Provide your your actual GitHub Personal Access Tokens.
+Provide your actual GitHub Personal Access Tokens.
 
 ```bash
 kubectl create secret generic github-tool-secrets -n team1 \
