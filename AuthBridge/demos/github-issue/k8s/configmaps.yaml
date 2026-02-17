@@ -5,10 +5,11 @@
 # tell those sidecars how to authenticate with Keycloak and perform token exchange.
 #
 # Usage:
-#   kubectl apply -f configmaps.yaml -n <your-namespace>
+#   kubectl apply -f configmaps.yaml
 #
-# Note: Update the namespace and EXPECTED_AUDIENCE if deploying to a different
-#       namespace or using a different service account.
+# Note: These manifests default to namespace "team1". If you deploy to a different
+#       namespace, update the metadata.namespace fields and EXPECTED_AUDIENCE (or
+#       use kustomize) accordingly, and adjust the service account if needed.
 
 ---
 # environments ConfigMap - Used by kagenti-client-registration container
