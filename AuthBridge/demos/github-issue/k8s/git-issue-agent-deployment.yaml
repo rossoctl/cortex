@@ -81,6 +81,10 @@ spec:
             # AuthBridge will exchange the token when the agent calls this URL
             - name: MCP_SERVER_URL
               value: "http://github-tool-service:9090/mcp"
+
+            # JWKS URI for validating incoming tokens from Keycloak
+            - name: JWKS_URI
+              value: "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/certs"
           resources:
             limits:
               cpu: 500m
