@@ -152,9 +152,13 @@ def add_audience_mapper(keycloak_admin, scope_id, mapper_name, audience):
 def get_or_create_user(keycloak_admin, user_config):
     username = user_config["username"]
     users = keycloak_admin.get_users({"username": username})
-    if users:
+    existing_user = next(
+        (user for user in users if user.get("username") == username),
+        None,
+    )
+    if existing_user:
         print(f"User '{username}' already exists.")
-        return users[0]["id"]
+        return existing_user["id"]
     try:
         user_id = keycloak_admin.create_user(
             {
