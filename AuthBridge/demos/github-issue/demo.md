@@ -231,9 +231,14 @@ This creates:
 
 ## Step 3: Apply ConfigMaps
 
-If you used `webhook-rollout.sh` with `AUTHBRIDGE_DEMO=true`, the base ConfigMaps are
-already applied. Now apply the demo-specific ConfigMaps that configure the token exchange
-to target the GitHub tool:
+Apply the demo-specific ConfigMaps that configure AuthBridge for this demo. These
+ConfigMaps tell the sidecars how to connect to Keycloak and where to exchange tokens.
+
+> **Important: Apply ConfigMaps BEFORE deploying the agent.** The agent pod reads
+> ConfigMap values at startup. If the agent starts before the ConfigMaps are correct,
+> the client will be registered in the wrong realm. If this happens, delete the stale
+> Keycloak client, fix the ConfigMaps, and restart the agent deployment with
+> `kubectl rollout restart deployment/git-issue-agent -n team1`.
 
 ```bash
 cd AuthBridge
@@ -242,8 +247,18 @@ cd AuthBridge
 kubectl apply -f demos/github-issue/k8s/configmaps.yaml
 ```
 
-> **Important:** If you're using a different namespace or service account, edit
+Verify the ConfigMap has the correct values:
+
+```bash
+kubectl get configmap environments -n team1 -o jsonpath='{.data.KEYCLOAK_REALM}'
+# Expected: demo
+```
+
+> **Note:** If you're using a different namespace or service account, edit
 > `configmaps.yaml` and update the `namespace` and `EXPECTED_AUDIENCE` fields.
+> If SPIRE is not available, set `SPIRE_ENABLED: "false"` in the `environments`
+> ConfigMap and update `EXPECTED_AUDIENCE` to match the static client ID format
+> (e.g., `team1/git-issue-agent` instead of `spiffe://...`).
 
 ---
 
@@ -413,10 +428,26 @@ TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
   -d "client_secret=$CLIENT_SECRET" | jq -r '.access_token')
 ```
 
+### Determine the agent service URL
+
+The service name and port depend on how the agent was deployed:
+- **Deployed via Kagenti UI**: service name is typically `git-issue-agent` on port `8080`
+- **Deployed via kubectl**: service name and port match the YAML (e.g., `git-issue-agent-service:8000`)
+
+```bash
+# Check the actual service name and port
+kubectl get svc -n team1 | grep git-issue-agent
+
+# Set the variable for subsequent commands
+AGENT_URL="http://git-issue-agent:8080"
+# Or if deployed via kubectl:
+# AGENT_URL="http://git-issue-agent-service:8000"
+```
+
 ### 8a. Inbound Rejection - No Token
 
 ```bash
-kubectl exec test-client -n team1 -- curl -s http://git-issue-agent-service:8000/.well-known/agent.json
+kubectl exec test-client -n team1 -- curl -s $AGENT_URL/.well-known/agent.json
 # Expected: {"error":"unauthorized","message":"missing Authorization header"}
 ```
 
@@ -425,7 +456,7 @@ kubectl exec test-client -n team1 -- curl -s http://git-issue-agent-service:8000
 ```bash
 kubectl exec test-client -n team1 -- curl -s \
   -H "Authorization: Bearer invalid-token" \
-  http://git-issue-agent-service:8000/.well-known/agent.json
+  $AGENT_URL/.well-known/agent.json
 # Expected: {"error":"unauthorized","message":"token validation failed: ..."}
 ```
 
@@ -434,33 +465,175 @@ kubectl exec test-client -n team1 -- curl -s \
 ```bash
 kubectl exec test-client -n team1 -- curl -s \
   -H "Authorization: Bearer $TOKEN" \
-  http://git-issue-agent-service:8000/.well-known/agent.json
+  $AGENT_URL/.well-known/agent.json | jq
+```
+
+```json
 # Expected: Agent card JSON response
+{
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text"
+  ],
+  "defaultOutputModes": [
+    "text"
+  ],
+  "description": "Answer queries about Github issues",
+  "name": "Github issue agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "securitySchemes": {
+    "Bearer": {
+      "bearerFormat": "JWT",
+      "description": "OAuth 2.0 JWT token",
+      "scheme": "bearer",
+      "type": "http"
+    }
+  },
+  "skills": [
+    {
+      "description": "Answer queries by searching through a given slack server",
+      "examples": [
+        "Find me the issues with the most comments in kubernetes/kubernetes",
+        "Show all issues assigned to me across any repository"
+      ],
+      "id": "github_issue_agent",
+      "name": "Github issue agent",
+      "tags": [
+        "git",
+        "github",
+        "issues"
+      ]
+    }
+  ],
+  "url": "http://0.0.0.0:8000/",
+  "version": "1.0.0"
+}
 ```
 
 ### 8d. End-to-End: Query GitHub Issues
 
 This is the full demo flow — the request goes through inbound validation, reaches
 the agent, the agent calls the GitHub tool (token exchange happens transparently),
-and returns the result:
+and returns the result.
+
+> **Note:** JWT tokens passed via `kubectl exec -– curl -H "Authorization: Bearer $TOKEN"`
+> can get mangled by double shell expansion. To avoid this, we exec into the test-client
+> pod and run all commands from inside it.
+
+#### Step 1: Open a shell inside the test-client pod
 
 ```bash
-# Send a prompt to the agent (A2A protocol)
-kubectl exec test-client -n team1 -- curl -s \
+kubectl exec -it test-client -n team1 -- sh
+```
+
+#### Step 2: Get credentials and a token
+
+Inside the test-client pod, run:
+
+```bash
+# Get a Keycloak admin token
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "client_id=admin-cli" \
+  -d "username=admin" \
+  -d "password=admin" | jq -r ".access_token")
+
+# Look up the agent's client in the demo realm
+CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients?clientId=team1/git-issue-agent")
+INTERNAL_ID=$(echo "$CLIENTS" | jq -r ".[0].id")
+CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
+
+# Get the client secret
+CLIENT_SECRET=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients/$INTERNAL_ID/client-secret" | jq -r ".value")
+
+echo "Client ID:     $CLIENT_ID"
+echo "Secret length: ${#CLIENT_SECRET}"
+
+# Get an OAuth token for the agent
+TOKEN=$(curl -s -X POST \
+  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials" \
+  --data-urlencode "client_id=$CLIENT_ID" \
+  --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
+
+echo "Token length:  ${#TOKEN}"
+```
+
+You should see output like:
+
+```
+Client ID:     team1/git-issue-agent
+Secret length: 32
+Token length:  1165
+```
+
+#### Step 3: Send a prompt to the agent
+
+Still inside the test-client pod, send the A2A v0.3.0 request:
+
+> **Note:** This request may take 30-60 seconds as the agent calls the LLM and the
+> GitHub tool. The Envoy route timeout is set to 300 seconds (5 minutes) to
+> accommodate slow LLM inference. If you still see `upstream request timeout`,
+> check **Retrieving async results** below.
+
+```bash
+curl -s --max-time 300 \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -X POST http://git-issue-agent-service:8000/ \
+  -X POST http://git-issue-agent:8080/ \
   -d '{
     "jsonrpc": "2.0",
-    "method": "tasks/send",
+    "id": "test-1",
+    "method": "message/send",
     "params": {
-      "id": "test-1",
       "message": {
         "role": "user",
+        "messageId": "msg-001",
         "parts": [{"type": "text", "text": "List issues in kagenti/kagenti repo"}]
       }
     }
-  }'
+  }' | jq
+```
+
+#### Step 4: Exit the test-client pod
+
+```bash
+exit
+```
+
+### Retrieving async results
+
+If the request timed out but the agent completed the task in the background,
+check the agent logs for the task ID:
+
+```bash
+kubectl logs deployment/git-issue-agent -n team1 -c agent --tail=5
+# Look for: Task <TASK_ID> saved successfully / TaskState.completed
+```
+
+Then exec back into the test-client pod and retrieve the result:
+
+```bash
+kubectl exec -it test-client -n team1 -- sh
+
+# (re-run the token setup from Step 2 above, then:)
+curl -s --max-time 10 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -X POST http://git-issue-agent:8080/ \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "get-1",
+    "method": "tasks/get",
+    "params": {
+      "id": "<TASK_ID>"
+    }
+  }' | jq '.result.artifacts[0].parts[0].text'
 ```
 
 ### 8e. Check Token Exchange Logs
@@ -521,6 +694,38 @@ dashboard:
 ---
 
 ## Troubleshooting
+
+### Invalid Client or Invalid Client Credentials
+
+**Symptom:** `{"error":"invalid_client","error_description":"Invalid client or Invalid client credentials"}`
+
+**Cause:** The client was registered in the wrong Keycloak realm (typically `master` instead
+of `demo`). This happens when the `environments` ConfigMap is updated **after** the agent
+pod has already started — the pod reads ConfigMap values at startup time.
+
+**Fix:**
+
+```bash
+# 1. Check which realm the client was registered in
+kubectl exec deployment/git-issue-agent -n team1 -c kagenti-client-registration -- \
+  sh -c 'echo "KEYCLOAK_REALM=$KEYCLOAK_REALM"'
+
+# 2. If it shows "master" instead of "demo", delete the stale client
+kubectl exec test-client -n team1 -- sh -c '
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/protocol/openid-connect/token \
+  -d "grant_type=password" -d "client_id=admin-cli" -d "username=admin" -d "password=admin" | jq -r ".access_token")
+CLIENT_ID="team1/git-issue-agent"
+INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/master/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
+curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/master/clients/$INTERNAL_ID"
+echo "Deleted stale client from master realm"'
+
+# 3. Verify ConfigMap is correct, then restart
+kubectl get configmap environments -n team1 -o jsonpath='{.data.KEYCLOAK_REALM}'
+# Should show: demo
+kubectl rollout restart deployment/git-issue-agent -n team1
+```
 
 ### Client Registration Can't Reach Keycloak
 

@@ -143,6 +143,7 @@ data:
                       prefix: "/"
                     route:
                       cluster: original_destination
+                      timeout: 300s
               http_filters:
               - name: envoy.filters.http.ext_proc
                 typed_config:
@@ -150,7 +151,7 @@ data:
                   grpc_service:
                     envoy_grpc:
                       cluster_name: ext_proc_cluster
-                    timeout: 30s
+                    timeout: 300s
                   processing_mode:
                     request_header_mode: SEND
                     response_header_mode: SKIP
@@ -192,6 +193,7 @@ data:
                       prefix: "/"
                     route:
                       cluster: original_destination
+                      timeout: 300s
               http_filters:
               - name: envoy.filters.http.ext_proc
                 typed_config:
@@ -199,7 +201,7 @@ data:
                   grpc_service:
                     envoy_grpc:
                       cluster_name: ext_proc_cluster
-                    timeout: 30s
+                    timeout: 300s
                   processing_mode:
                     request_header_mode: SEND
                     response_header_mode: SKIP
