@@ -352,7 +352,7 @@ kubectl get pod -n team1 -l app=git-issue-agent -o jsonpath='{.items[0].spec.con
 
 Expected output (with SPIFFE):
 
-```
+```txt
 git-issue-agent spiffe-helper kagenti-client-registration envoy-proxy
 ```
 
@@ -523,20 +523,26 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/pr
   -d "username=admin" \
   -d "password=admin" | jq -r ".access_token")
 
-# Look up the agent's client in the demo realm
-# With SPIRE enabled, the client ID is the SPIFFE ID.
-# With SPIRE disabled, it is <namespace>/<service-account>.
+echo "Admin token length: ${#ADMIN_TOKEN}"
+# If 0, Keycloak is not reachable or credentials are wrong — stop here.
+
+# Look up the agent's client in the demo realm.
+# The client ID is the SPIFFE ID (URL-encoded in the query parameter).
+SPIFFE_ID="spiffe://localtest.me/ns/team1/sa/git-issue-agent"
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  --data-urlencode "clientId=spiffe://localtest.me/ns/team1/sa/git-issue-agent" \
-  --get "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients")
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients" \
+  --data-urlencode "clientId=$SPIFFE_ID" --get)
 INTERNAL_ID=$(echo "$CLIENTS" | jq -r ".[0].id")
 CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
+
+echo "Internal ID:   $INTERNAL_ID"
+echo "Client ID:     $CLIENT_ID"
+# If you see "null", the client was not found — check setup_keycloak.py ran.
 
 # Get the client secret
 CLIENT_SECRET=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients/$INTERNAL_ID/client-secret" | jq -r ".value")
 
-echo "Client ID:     $CLIENT_ID"
 echo "Secret length: ${#CLIENT_SECRET}"
 
 # Get an OAuth token for the agent
@@ -552,10 +558,17 @@ echo "Token length:  ${#TOKEN}"
 You should see output like:
 
 ```
+Admin token length: 1543
+Internal ID:   8577145b-cb77-4bbc-abde-1f5eb7643344
 Client ID:     spiffe://localtest.me/ns/team1/sa/git-issue-agent
 Secret length: 32
 Token length:  1165
 ```
+
+> **Troubleshooting:** If `INTERNAL_ID` shows `null`, the Keycloak query didn't find
+> the client. Verify `$ADMIN_TOKEN` is not empty (Keycloak reachable?) and that
+> `setup_keycloak.py` was run. You can also list all clients with:
+> `curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients" | jq '.[].clientId'`
 
 #### Step 3: Send a prompt to the agent
 
