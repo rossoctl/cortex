@@ -748,6 +748,12 @@ func (p *processor) handleResponseBody(stream v3.ExternalProcessor_ProcessServer
 // child spans from result.history messages. This handles the non-streaming
 // response format where the A2A SDK returns a complete task with history
 // instead of SSE events.
+//
+// The A2A response has: history (status-update messages) + artifacts (final answer).
+// LangGraph flow: LLM(tool_call) → tool(result) → LLM(final_answer)
+// But the 3rd LLM step often isn't in history (gets merged into the artifact).
+// When we detect a tool span without a following LLM span, we infer the final
+// LLM call and create a "chat" span for it.
 func (p *processor) extractChildSpansFromHistory(state *streamSpanState, body []byte) {
 	if state == nil || state.span == nil || otelTracer == nil {
 		return
@@ -762,6 +768,14 @@ func (p *processor) extractChildSpansFromHistory(state *streamSpanState, body []
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"history"`
+			Artifacts []struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"artifacts"`
+			Status struct {
+				State string `json:"state"`
+			} `json:"status"`
 		} `json:"result"`
 	}
 
@@ -775,6 +789,9 @@ func (p *processor) extractChildSpansFromHistory(state *streamSpanState, body []
 			attribute.String("gen_ai.conversation.id", rpcResp.Result.ContextID),
 		)
 	}
+
+	// Track the last event type to detect missing final LLM span
+	lastEventType := ""
 
 	// Iterate over history messages from the agent (skip user messages)
 	for _, msg := range rpcResp.Result.History {
@@ -793,7 +810,46 @@ func (p *processor) extractChildSpansFromHistory(state *streamSpanState, body []
 
 		if eventType != "" {
 			p.createChildSpan(state, eventType, text)
+			lastEventType = eventType
 		}
+	}
+
+	// If the last history event was a tool call and the task completed with
+	// an artifact, infer the final LLM call that produced the answer.
+	// LangGraph flow: LLM → tool → LLM(final) → artifact
+	// The 3rd LLM step is often not in history (merged into completion).
+	if lastEventType == "tool" &&
+		rpcResp.Result.Status.State == "completed" &&
+		len(rpcResp.Result.Artifacts) > 0 {
+
+		// Create a "chat" span for the inferred final LLM call
+		state.childSpanIndex++
+		idx := state.childSpanIndex
+		spanName := "chat"
+
+		var attrs []attribute.KeyValue
+		attrs = append(attrs,
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.system", agentProvider),
+			attribute.Int("event.index", idx),
+		)
+
+		// Add the artifact output as completion text
+		if len(rpcResp.Result.Artifacts[0].Parts) > 0 {
+			output := rpcResp.Result.Artifacts[0].Parts[0].Text
+			if len(output) > 1000 {
+				output = output[:1000]
+			}
+			attrs = append(attrs, attribute.String("gen_ai.completion", output))
+		}
+
+		_, childSpan := otelTracer.Start(state.ctx, spanName,
+			trace.WithSpanKind(trace.SpanKindInternal),
+			trace.WithAttributes(attrs...),
+		)
+		childSpan.SetStatus(otelcodes.Ok, "")
+		childSpan.End()
+		log.Printf("[OTEL] Created inferred final LLM span: %s (step %d)", spanName, idx)
 	}
 
 	if state.childSpanIndex > 0 {
