@@ -484,11 +484,11 @@ kubectl exec test-client -n team1 -- curl -s \
 Verify that AuthProxy validated (and rejected) the inbound requests from steps 8a–8c.
 
 > **Tip:** The `envoy-proxy` container runs both Envoy and the go-processor (ext_proc).
-> Go-processor lines start with a `2026/` timestamp while Envoy debug lines use
-> `[2026-` format. Filter by `"^2026/"` to see only go-processor output.
+> Inbound validation messages from the go-processor include the `[Inbound]` marker.
+> Filter by `"[Inbound]"` to see only inbound validation output.
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "^2026/" | grep "\[Inbound\]"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "\[Inbound\]"
 ```
 
 Expected (one line per request in 8a–8c):
