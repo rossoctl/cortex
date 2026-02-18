@@ -98,7 +98,7 @@ def get_or_create_realm(keycloak_admin, realm_name):
         for realm in realms:
             if realm["realm"] == realm_name:
                 print(f"Realm '{realm_name}' already exists.")
-                return
+        raise
         keycloak_admin.create_realm(
             {"realm": realm_name, "enabled": True, "displayName": realm_name}
         )
