@@ -194,14 +194,17 @@ Deploy it with the AuthBridge demo flag:
 ```bash
 cd kagenti-webhook
 
-# Deploy webhook + create namespace + apply ConfigMaps
-AUTHBRIDGE_DEMO=true AUTHBRIDGE_NAMESPACE=team1 ./scripts/webhook-rollout.sh
+# Deploy webhook + create namespace
+# AUTHBRIDGE_K8S_DIR points at this demo's k8s manifests (default is single-target)
+AUTHBRIDGE_DEMO=true AUTHBRIDGE_NAMESPACE=team1 \
+  AUTHBRIDGE_K8S_DIR=AuthBridge/demos/github-issue/k8s \
+  ./scripts/webhook-rollout.sh
 ```
 
 This automatically:
 1. Builds and deploys the kagenti-webhook
 2. Creates the `team1` namespace with the `kagenti-enabled=true` label
-3. Applies the required ConfigMaps for AuthBridge (environments, authbridge-config, envoy-config, spiffe-helper-config)
+3. Applies any `configmaps-webhook.yaml` found in the specified k8s directory
 
 > **Note:** If you want to use a different namespace, set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.
 

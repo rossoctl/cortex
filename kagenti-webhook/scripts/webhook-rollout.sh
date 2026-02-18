@@ -76,7 +76,10 @@ fi
 AUTHBRIDGE_DEMO=${AUTHBRIDGE_DEMO:-false}
 AUTHBRIDGE_NAMESPACE=${AUTHBRIDGE_NAMESPACE:-team1}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUTHBRIDGE_K8S_DIR="${SCRIPT_DIR}/../../AuthBridge/demos/single-target/k8s"
+# Override AUTHBRIDGE_K8S_DIR to point at a different demo's k8s manifests.
+# Defaults to the single-target demo. For the github-issue demo, run:
+#   AUTHBRIDGE_K8S_DIR=AuthBridge/demos/github-issue/k8s ./scripts/webhook-rollout.sh
+AUTHBRIDGE_K8S_DIR="${AUTHBRIDGE_K8S_DIR:-${SCRIPT_DIR}/../../AuthBridge/demos/single-target/k8s}"
 
 # ==========================================
 # Input Validation
@@ -85,9 +88,14 @@ validate_k8s_name "$CLUSTER" "cluster name"
 validate_k8s_name "$NAMESPACE" "namespace"
 if [ "${AUTHBRIDGE_DEMO}" = "true" ]; then
     validate_k8s_name "$AUTHBRIDGE_NAMESPACE" "AuthBridge namespace"
+    # Resolve relative paths against the repo root (two levels up from scripts/)
+    if [[ ! "${AUTHBRIDGE_K8S_DIR}" = /* ]]; then
+        AUTHBRIDGE_K8S_DIR="${SCRIPT_DIR}/../../${AUTHBRIDGE_K8S_DIR}"
+    fi
     if [ ! -d "${AUTHBRIDGE_K8S_DIR}" ]; then
         echo "Error: AuthBridge k8s directory not found at '${AUTHBRIDGE_K8S_DIR}'." >&2
-        echo "Please verify the repository structure or update the relative path in webhook-rollout.sh." >&2
+        echo "Set AUTHBRIDGE_K8S_DIR to the correct path. Available demos:" >&2
+        ls -d "${SCRIPT_DIR}"/../../AuthBridge/demos/*/k8s 2>/dev/null | sed 's|.*/AuthBridge/|  AuthBridge/|' >&2 || true
         exit 1
     fi
 fi
@@ -105,6 +113,7 @@ echo "Image: ${IMAGE_NAME}"
 if [ "${AUTHBRIDGE_DEMO}" = "true" ]; then
     echo "AuthBridge Demo: ${AUTHBRIDGE_DEMO}"
     echo "AuthBridge Namespace: ${AUTHBRIDGE_NAMESPACE}"
+    echo "AuthBridge K8s Dir: ${AUTHBRIDGE_K8S_DIR}"
 fi
 echo ""
 
@@ -249,4 +258,5 @@ echo "  ./scripts/webhook-rollout.sh"
 echo "  DOCKER_IMPL=podman ./scripts/webhook-rollout.sh"
 echo "  AUTHBRIDGE_DEMO=true ./scripts/webhook-rollout.sh"
 echo "  AUTHBRIDGE_DEMO=true AUTHBRIDGE_NAMESPACE=myns ./scripts/webhook-rollout.sh"
+echo "  AUTHBRIDGE_DEMO=true AUTHBRIDGE_K8S_DIR=AuthBridge/demos/github-issue/k8s ./scripts/webhook-rollout.sh"
 echo ""
