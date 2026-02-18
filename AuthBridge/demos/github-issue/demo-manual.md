@@ -215,15 +215,17 @@ This automatically:
 Keycloak needs to be configured with the correct clients, scopes, and users for the
 token exchange flow between the agent and the GitHub tool.
 
-### Port-forward Keycloak
+### Port-forward Keycloak (if needed)
+
+The setup script connects to Keycloak at `http://keycloak.localtest.me:8080`.
+If Keycloak is not already reachable at that address (e.g., via an ingress),
+start a port-forward in a separate terminal:
 
 ```bash
 kubectl port-forward service/keycloak-service -n keycloak 8080:8080
 ```
 
 ### Run the setup script
-
-In a new terminal:
 
 ```bash
 cd AuthBridge
