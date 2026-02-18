@@ -58,7 +58,6 @@ data:
   TARGET_AUDIENCE: "github-tool"
   # TARGET_SCOPES: Scopes to request in the exchanged token.
   # github-tool-aud adds "github-tool" to the token's audience claim.
-  # github-full-access is an optional scope for privileged GitHub API access.
   TARGET_SCOPES: "openid github-tool-aud"
 
 ---
