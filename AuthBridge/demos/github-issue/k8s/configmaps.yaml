@@ -58,7 +58,7 @@ data:
   TARGET_AUDIENCE: "github-tool"
   # TARGET_SCOPES: Scopes to request in the exchanged token.
   # github-tool-aud adds "github-tool" to the token's audience claim.
-  TARGET_SCOPES: "openid github-tool-aud"
+  TARGET_SCOPES: "openid github-tool-aud github-full-access"
 
 ---
 # spiffe-helper-config ConfigMap - Used by spiffe-helper container (SPIRE mode only)
