@@ -297,8 +297,8 @@ The GitHub tool needs PAT tokens to access the GitHub API. Create a Kubernetes s
 with your tokens:
 
 ```bash
-export PRIVILEGED_ACCESS_PAT=<your-token-here>
-export PUBLIC_ACCESS_PAT=<your-token-here>
+export PRIVILEGED_ACCESS_PAT=<your-privileged-pat>
+export PUBLIC_ACCESS_PAT=<your-public-pat>
 ```
 
 Provide your actual GitHub Personal Access Tokens.
