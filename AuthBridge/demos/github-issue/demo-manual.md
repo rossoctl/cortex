@@ -464,10 +464,13 @@ kubectl exec test-client -n team1 -- curl -s \
 
 ### 8d. Check Inbound Validation Logs
 
-Verify that AuthProxy validated (and rejected) the inbound requests from steps 8a–8c:
+Verify that AuthProxy validated (and rejected) the inbound requests from steps 8a–8c.
+
+> **Tip:** Use `"\[Inbound\]"` (escaped brackets) to filter only the go-processor
+> lines and avoid the flood of Envoy debug output that also contains "INBOUND".
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "inbound"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "\[Inbound\]"
 ```
 
 Expected (one line per request in 8a–8c):
@@ -633,7 +636,7 @@ After the agent processes a request (Step 9c), confirm that AuthProxy performed 
 outbound token exchange when the agent called the GitHub tool:
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "token exchange"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "\[Token Exchange\]"
 ```
 
 Expected:
