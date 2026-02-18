@@ -26,8 +26,15 @@ Client Scopes created:
 - github-full-access: Optional scope for privileged GitHub API access (realm OPTIONAL)
 
 Demo Users created:
-- alice: Regular user with public GitHub access
-- bob: Privileged user with full GitHub access (has github-full-access scope)
+- alice: Regular user — tokens requested without github-full-access scope → public access
+- bob: Privileged user — tokens requested with scope=github-full-access → full access
+
+Note on scope model:
+  github-full-access is a realm OPTIONAL scope. Optional scopes are NOT automatically
+  included in tokens — the client must explicitly request them via the "scope" parameter
+  in the token request. In a production system you would enforce per-user scope access
+  via role-based policies. In this demo the calling client controls which scope to
+  request for each user (see demo-manual.md Step 9).
 
 Usage:
   python setup_keycloak.py
@@ -68,7 +75,7 @@ DEMO_USERS = [
         "firstName": "Alice",
         "lastName": "Demo",
         "password": "alice123",
-        "description": "Regular user - public GitHub access only",
+        "description": "Regular user - request token without github-full-access scope",
     },
     {
         "username": "bob",
@@ -76,7 +83,7 @@ DEMO_USERS = [
         "firstName": "Bob",
         "lastName": "Admin",
         "password": "bob123",
-        "description": "Privileged user - full GitHub access",
+        "description": "Privileged user - request token with scope=github-full-access",
     },
 ]
 
@@ -336,10 +343,12 @@ def main():
     except Exception as e:
         print(f"Note: Could not add 'github-tool-aud' as optional: {e}")
 
-    # github-full-access as realm optional (for privileged users)
+    # github-full-access as realm optional (must be requested explicitly in token request)
     try:
         keycloak_admin.add_default_optional_client_scope(github_full_access_scope_id)
         print("Added 'github-full-access' as realm OPTIONAL scope.")
+        print("  → Tokens will only include this scope when explicitly requested")
+        print("    via scope=github-full-access in the token request.")
     except Exception as e:
         print(f"Note: Could not add 'github-full-access' as optional: {e}")
 
@@ -367,7 +376,13 @@ Created:
   Scopes:   {scope_name} (realm DEFAULT - auto-adds Agent's SPIFFE ID to aud)
             github-tool-aud (realm OPTIONAL - for exchanged tokens)
             github-full-access (realm OPTIONAL - for privileged access)
-  Users:    alice (public access), bob (full access)
+  Users:    alice (public access), bob (privileged access)
+
+Scope model:
+  github-full-access is OPTIONAL — it must be explicitly requested in the
+  token request (scope=github-full-access). To test:
+    - alice: request token WITHOUT github-full-access → PUBLIC_ACCESS_PAT
+    - bob:   request token WITH scope=github-full-access → PRIVILEGED_ACCESS_PAT
 
 Token flow:
   1. UI gets token for user (aud includes Agent's SPIFFE ID via default scope)
