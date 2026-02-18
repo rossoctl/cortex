@@ -156,6 +156,7 @@ You should also have:
 - The [kagenti-extensions](https://github.com/kagenti/kagenti-extensions) repo cloned
 - The [agent-examples](https://github.com/kagenti/agent-examples) repo cloned
 - Python 3.9+ with `venv` support
+- **Ollama running** with the `ibm/granite4:latest` model (or another model of your choice)
 - Two GitHub Personal Access Tokens (PATs):
   - `<PUBLIC_ACCESS_PAT>` — access to public repositories only
   - `<PRIVILEGED_ACCESS_PAT>` — access to all repositories
@@ -396,6 +397,22 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```
 
+### Verify Ollama is running
+
+The agent uses Ollama for LLM inference. Verify it is reachable from the cluster:
+
+```bash
+kubectl get pods -n ollama
+kubectl exec test-client -n team1 -- curl -s http://ollama.ollama.svc:11434/api/tags | jq '.models[].name'
+```
+
+You should see `ibm/granite4:latest` (or whichever model you configured) in the output.
+If Ollama is not running, start it in a separate terminal (`ollama serve`) and ensure the
+model is pulled (`ollama pull ibm/granite4:latest`).
+
+> **Tip:** If using a different model, update `MODEL_NAME` in
+> `git-issue-agent-deployment.yaml` before deploying.
+
 ---
 
 ## Step 8: Test the AuthBridge Flow
@@ -575,6 +592,11 @@ Still inside the test-client pod, send the A2A v0.3.0 request:
 > GitHub tool. The Envoy route timeout is set to 300 seconds (5 minutes) to
 > accommodate slow LLM inference. If you still see `upstream request timeout`,
 > check **Retrieving async results** below.
+>
+> **Important:** Ollama must be running and the model must be loaded before sending
+> this request. If you see `OllamaException - upstream connect error`, ensure
+> `ollama serve` is running and the model is pulled (see
+> [Step 7: Verify Ollama](#verify-ollama-is-running)).
 
 ```bash
 curl -s --max-time 300 \
