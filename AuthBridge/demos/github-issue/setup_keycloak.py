@@ -97,9 +97,8 @@ def get_or_create_realm(keycloak_admin, realm_name):
         )
         print(f"Created realm '{realm_name}'.")
     except Exception as e:
-        print(f"Error checking/creating realm: {e}")
-
-
+        print(f"Error checking/creating realm: {e}", file=sys.stderr)
+        raise
 def get_or_create_client(keycloak_admin, client_payload):
     client_id = client_payload["clientId"]
     existing_client_id = keycloak_admin.get_client_id(client_id)
