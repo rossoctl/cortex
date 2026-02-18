@@ -715,6 +715,12 @@ func (p *processor) handleResponseBody(stream v3.ExternalProcessor_ProcessServer
 
 		fullBody := state.responseBody
 
+		// If no child spans were created from SSE events, try extracting
+		// from JSON-RPC result.history (non-streaming response format).
+		if state.childSpanIndex == 0 {
+			p.extractChildSpansFromHistory(state, fullBody)
+		}
+
 		// If output wasn't set from artifact events, try extracting from full body
 		if state.span.IsRecording() {
 			output := extractA2AOutput(fullBody)
@@ -735,6 +741,63 @@ func (p *processor) handleResponseBody(stream v3.ExternalProcessor_ProcessServer
 		Response: &v3.ProcessingResponse_ResponseBody{
 			ResponseBody: &v3.BodyResponse{},
 		},
+	}
+}
+
+// extractChildSpansFromHistory parses a JSON-RPC response body and creates
+// child spans from result.history messages. This handles the non-streaming
+// response format where the A2A SDK returns a complete task with history
+// instead of SSE events.
+func (p *processor) extractChildSpansFromHistory(state *streamSpanState, body []byte) {
+	if state == nil || state.span == nil || otelTracer == nil {
+		return
+	}
+
+	var rpcResp struct {
+		Result struct {
+			ContextID string `json:"contextId"`
+			History   []struct {
+				Role  string `json:"role"`
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"history"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return
+	}
+
+	// Set conversation ID from contextId
+	if rpcResp.Result.ContextID != "" {
+		state.span.SetAttributes(
+			attribute.String("gen_ai.conversation.id", rpcResp.Result.ContextID),
+		)
+	}
+
+	// Iterate over history messages from the agent (skip user messages)
+	for _, msg := range rpcResp.Result.History {
+		if msg.Role != "agent" || len(msg.Parts) == 0 {
+			continue
+		}
+		text := msg.Parts[0].Text
+
+		// Classify using the same text patterns as classifySSEEvent
+		var eventType string
+		if strings.Contains(text, "tools:") {
+			eventType = "tool"
+		} else if strings.Contains(text, "assistant:") {
+			eventType = "llm"
+		}
+
+		if eventType != "" {
+			p.createChildSpan(state, eventType, text)
+		}
+	}
+
+	if state.childSpanIndex > 0 {
+		log.Printf("[OTEL] Created %d child spans from JSON-RPC history", state.childSpanIndex)
 	}
 }
 
