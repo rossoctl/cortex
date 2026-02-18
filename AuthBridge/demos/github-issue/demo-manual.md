@@ -409,18 +409,6 @@ end-to-end.
 # Start a test client pod (sends requests from outside the agent pod)
 kubectl run test-client --image=nicolaka/netshoot -n team1 --restart=Never -- sleep 3600
 kubectl wait --for=condition=ready pod/test-client -n team1 --timeout=30s
-
-# Get the agent's client credentials
-CLIENT_ID=$(kubectl exec deployment/git-issue-agent -n team1 -c envoy-proxy -- cat /shared/client-id.txt)
-CLIENT_SECRET=$(kubectl exec deployment/git-issue-agent -n team1 -c envoy-proxy -- cat /shared/client-secret.txt)
-echo "Agent Client ID: $CLIENT_ID"
-
-# Get a service account token (simulating what the UI would obtain)
-TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
-  -d "grant_type=client_credentials" \
-  -d "client_id=$CLIENT_ID" \
-  -d "client_secret=$CLIENT_SECRET" | jq -r '.access_token')
 ```
 
 ### 8a. Inbound Rejection - No Token
@@ -443,6 +431,18 @@ kubectl exec test-client -n team1 -- curl -s \
 ### 8c. Valid Token - Agent Card
 
 ```bash
+# Get the agent's client credentials
+CLIENT_ID=$(kubectl exec deployment/git-issue-agent -n team1 -c envoy-proxy -- cat /shared/client-id.txt)
+CLIENT_SECRET=$(kubectl exec deployment/git-issue-agent -n team1 -c envoy-proxy -- cat /shared/client-secret.txt)
+echo "Agent Client ID: $CLIENT_ID"
+
+# Get a service account token (simulating what the UI would obtain)
+TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
+  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=$CLIENT_ID" \
+  -d "client_secret=$CLIENT_SECRET" | jq -r '.access_token')
+
 kubectl exec test-client -n team1 -- curl -s \
   -H "Authorization: Bearer $TOKEN" \
   http://git-issue-agent-service:8000/.well-known/agent.json | jq
@@ -462,23 +462,43 @@ kubectl exec test-client -n team1 -- curl -s \
 }
 ```
 
-### 8d. End-to-End: Query GitHub Issues
+### 8d. Check Token Exchange Logs
+
+Verify that AuthBridge performed the token exchange:
+
+```bash
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "token"
+```
+
+Expected:
+
+```
+[Token Exchange] Configuration loaded, attempting token exchange
+[Token Exchange] Successfully exchanged token, replacing Authorization header
+```
+
+---
+
+## Step 9: End-to-End — Query GitHub Issues
 
 This is the full demo flow — the request goes through inbound validation, reaches
 the agent, the agent calls the GitHub tool (token exchange happens transparently),
 and returns the result.
 
+> **Prerequisite:** This step uses the `test-client` pod created in
+> [Step 8 Setup](#setup). If you already deleted it, re-create it first.
+
 > **Note:** JWT tokens passed via `kubectl exec -- curl -H "Authorization: Bearer $TOKEN"`
 > can get mangled by double shell expansion. To avoid this, we exec into the test-client
 > pod and run all commands from inside it.
 
-#### Step 1: Open a shell inside the test-client pod
+### 9a. Open a shell inside the test-client pod
 
 ```bash
 kubectl exec -it test-client -n team1 -- sh
 ```
 
-#### Step 2: Get credentials and a token
+### 9b. Get credentials and a token
 
 Inside the test-client pod, run:
 
@@ -537,7 +557,7 @@ Token length:  1165
 > `setup_keycloak.py` was run. You can also list all clients with:
 > `curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients" | jq '.[].clientId'`
 
-#### Step 3: Send a prompt to the agent
+### 9c. Send a prompt to the agent
 
 Still inside the test-client pod, send the A2A v0.3.0 request:
 
@@ -565,7 +585,7 @@ curl -s --max-time 300 \
   }' | jq
 ```
 
-#### Step 4: Exit the test-client pod
+### 9d. Exit the test-client pod
 
 ```bash
 exit
@@ -586,7 +606,7 @@ Then exec back into the test-client pod and retrieve the result:
 ```bash
 kubectl exec -it test-client -n team1 -- sh
 
-# (re-run the token setup from Step 2 above, then:)
+# (re-run the token setup from Step 9b above, then:)
 curl -s --max-time 10 \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -599,21 +619,6 @@ curl -s --max-time 10 \
       "id": "<TASK_ID>"
     }
   }' | jq '.result.artifacts[0].parts[0].text'
-```
-
-### 8e. Check Token Exchange Logs
-
-Verify that AuthBridge performed the token exchange:
-
-```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "token"
-```
-
-Expected:
-
-```
-[Token Exchange] Configuration loaded, attempting token exchange
-[Token Exchange] Successfully exchanged token, replacing Authorization header
 ```
 
 ### Clean Up Test Client
