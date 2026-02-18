@@ -466,11 +466,12 @@ kubectl exec test-client -n team1 -- curl -s \
 
 Verify that AuthProxy validated (and rejected) the inbound requests from steps 8a–8c.
 
-> **Tip:** Use `"\[Inbound\]"` (escaped brackets) to filter only the go-processor
-> lines and avoid the flood of Envoy debug output that also contains "INBOUND".
+> **Tip:** The `envoy-proxy` container runs both Envoy and the go-processor (ext_proc).
+> Go-processor lines start with a `2026/` timestamp while Envoy debug lines use
+> `[2026-` format. Filter by `"^2026/"` to see only go-processor output.
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "\[Inbound\]"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "^2026/" | grep "\[Inbound\]"
 ```
 
 Expected (one line per request in 8a–8c):
@@ -636,13 +637,17 @@ After the agent processes a request (Step 9c), confirm that AuthProxy performed 
 outbound token exchange when the agent called the GitHub tool:
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "\[Token Exchange\]"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep "^2026/" | grep "\[Token Exchange\]"
 ```
 
 Expected:
 
 ```
-[Token Exchange] Configuration loaded, attempting token exchange
+[Token Exchange] Token URL: http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token
+[Token Exchange] Client ID: spiffe://localtest.me/ns/team1/sa/git-issue-agent
+[Token Exchange] Audience: github-tool
+[Token Exchange] Scopes: openid github-tool-aud
+[Token Exchange] Successfully exchanged token
 [Token Exchange] Successfully exchanged token, replacing Authorization header
 ```
 
