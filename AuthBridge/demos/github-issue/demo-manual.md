@@ -672,7 +672,7 @@ Expected:
 [Token Exchange] Token URL: http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token
 [Token Exchange] Client ID: spiffe://localtest.me/ns/team1/sa/git-issue-agent
 [Token Exchange] Audience: github-tool
-[Token Exchange] Scopes: openid github-tool-aud
+[Token Exchange] Scopes: openid github-tool-aud github-full-access
 [Token Exchange] Successfully exchanged token
 [Token Exchange] Successfully exchanged token, replacing Authorization header
 ```
