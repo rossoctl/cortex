@@ -462,20 +462,26 @@ kubectl exec test-client -n team1 -- curl -s \
 }
 ```
 
-### 8d. Check Token Exchange Logs
+### 8d. Check Inbound Validation Logs
 
-Verify that AuthBridge performed the token exchange:
+Verify that AuthProxy validated (and rejected) the inbound requests from steps 8a–8c:
 
 ```bash
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "token"
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "inbound"
 ```
 
-Expected:
+Expected (one line per request in 8a–8c):
 
 ```
-[Token Exchange] Configuration loaded, attempting token exchange
-[Token Exchange] Successfully exchanged token, replacing Authorization header
+[Inbound] Missing Authorization header
+[Inbound] JWT validation failed: failed to parse/validate token: ...
+[Inbound] Token validated - issuer: http://keycloak.localtest.me:8080/realms/demo, audience: [...]
+[Inbound] JWT validation succeeded, forwarding request
 ```
+
+> **Note:** Outbound token exchange logs (`[Token Exchange] ...`) will only appear
+> after [Step 9](#step-9-end-to-end--query-github-issues), when the agent calls the
+> GitHub tool.
 
 ---
 
@@ -619,6 +625,22 @@ curl -s --max-time 10 \
       "id": "<TASK_ID>"
     }
   }' | jq '.result.artifacts[0].parts[0].text'
+```
+
+### 9e. Verify Token Exchange Logs
+
+After the agent processes a request (Step 9c), confirm that AuthProxy performed the
+outbound token exchange when the agent called the GitHub tool:
+
+```bash
+kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy 2>&1 | grep -i "token exchange"
+```
+
+Expected:
+
+```
+[Token Exchange] Configuration loaded, attempting token exchange
+[Token Exchange] Successfully exchanged token, replacing Authorization header
 ```
 
 ### Clean Up Test Client
