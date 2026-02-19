@@ -405,16 +405,17 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 ### Verify Ollama is running
 
-The agent uses Ollama for LLM inference. Verify it is reachable from the cluster:
+The agent uses LLM for inference. You can use Ollama, OpenAI, or anything else you want.
 
-```bash
-kubectl get pods -n ollama
-kubectl exec test-client -n team1 -- curl -s http://ollama.ollama.svc:11434/api/tags | jq '.models[].name'
-```
-
-You should see `ibm/granite4:latest` (or whichever model you configured) in the output.
+For this demo we used Ollama. You should see `ibm/granite4:latest` (or whichever model you configured) on the list.
 If Ollama is not running, start it in a separate terminal (`ollama serve`) and ensure the
 model is pulled (`ollama pull ibm/granite4:latest`).
+
+```bash
+ollama pull ibm/granite4:latest
+ollama list
+ollama serve
+```
 
 > **Tip:** If using a different model, update `MODEL_NAME` in
 > `git-issue-agent-deployment.yaml` before deploying.
