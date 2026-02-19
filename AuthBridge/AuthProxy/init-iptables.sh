@@ -105,13 +105,45 @@
 #
 #   conntrack -L               — shows actual REDIRECT targets and connection states
 #   /proc/net/snmp OutNoRoutes — reveals routing failures (route_localnet issue)
-#   iptables-legacy-save       — both Istio and AuthProxy use iptables-legacy
+#   iptables-legacy-save       — dump legacy iptables rules
 #   curl 127.0.0.1:9901/stats  — Envoy listener/cluster stats
 #   ztunnel logs               — connections logged only on completion, not start
+#
+# ─── iptables backend selection ─────────────────────────────────────────────
+#
+# Alpine's default `iptables` command uses the nf_tables backend (iptables-nft).
+# Many Kubernetes distributions (Kind, kubeadm, EKS with kube-proxy) and Istio
+# use the legacy backend (iptables-legacy). If we set rules in the nft tables
+# but the cluster's networking stack uses legacy tables, our PREROUTING rules
+# have no effect — traffic bypasses Envoy's inbound listener entirely.
+#
+# This script auto-detects the correct backend by checking if iptables-legacy
+# is available and can manipulate the nat table in this network namespace.
+# Override with IPTABLES_CMD env var if needed.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -e
+
+# --- Auto-detect iptables backend ---
+# Prefer iptables-legacy for maximum compatibility with Kubernetes networking.
+# The nft backend sets rules in a different netfilter table that may not be
+# processed for PREROUTING when the cluster uses legacy iptables.
+detect_iptables_cmd() {
+  if [ -n "${IPTABLES_CMD:-}" ]; then
+    echo "${IPTABLES_CMD}"
+    return
+  fi
+  if command -v iptables-legacy >/dev/null 2>&1 && \
+     iptables-legacy -t nat -L -n >/dev/null 2>&1; then
+    echo "iptables-legacy"
+  else
+    echo "iptables"
+  fi
+}
+
+IPT=$(detect_iptables_cmd)
+echo "Using iptables command: ${IPT} ($(${IPT} --version 2>/dev/null || echo 'unknown version'))"
 
 PROXY_PORT="${PROXY_PORT:-15123}"
 INBOUND_PROXY_PORT="${INBOUND_PROXY_PORT:-15124}"
@@ -140,10 +172,10 @@ sysctl -w net.ipv4.conf.all.route_localnet=1
 echo "Setting up iptables rules for outbound traffic interception..."
 
 # Create custom chain (ignore error if it already exists)
-iptables -t nat -N PROXY_OUTPUT 2>/dev/null || true
+${IPT} -t nat -N PROXY_OUTPUT 2>/dev/null || true
 
 # Flush any existing rules in our chain to ensure idempotency
-iptables -t nat -F PROXY_OUTPUT 2>/dev/null || true
+${IPT} -t nat -F PROXY_OUTPUT 2>/dev/null || true
 
 # --- Rule 1: Intercept ztunnel's inbound delivery for JWT validation ---
 # When ambient mesh is active, ztunnel terminates inbound HBONE and delivers
@@ -161,14 +193,14 @@ iptables -t nat -F PROXY_OUTPUT 2>/dev/null || true
 # (dst = remote pod IP on port 15008). Without --dst-type LOCAL, outbound HBONE
 # would be hijacked into the inbound listener, where Envoy speaks plain HTTP
 # back to ztunnel which expects mTLS — producing InvalidContentType errors.
-iptables -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j REDIRECT --to-ports "${INBOUND_PROXY_PORT}"
+${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j REDIRECT --to-ports "${INBOUND_PROXY_PORT}"
 
 # --- Rule 2: Skip all remaining ztunnel traffic ---
 # After rule 1 captured ztunnel's inbound delivery, any other ztunnel traffic
 # (outbound HBONE, DNS proxy, etc.) must pass through unmodified. Matching on
 # fwmark 0x539 is more robust than excluding individual port numbers — it covers
 # all ztunnel sockets (15001, 15006, 15008, 15053, and any future ports).
-iptables -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -j RETURN
+${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -j RETURN
 
 # --- Rule 3: Skip Envoy's own outbound connections ---
 # Envoy (UID 1337) makes outbound connections after processing via ext_proc.
@@ -176,28 +208,28 @@ iptables -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -j RETURN
 # ISTIO_OUTPUT chain (position 2 in OUTPUT), which redirects them to ztunnel
 # (port 15001) for HBONE/mTLS wrapping. This is the desired behavior —
 # ztunnel provides the mTLS transport layer for outbound connections.
-iptables -t nat -A PROXY_OUTPUT -m owner --uid-owner "${PROXY_UID}" -j RETURN
+${IPT} -t nat -A PROXY_OUTPUT -m owner --uid-owner "${PROXY_UID}" -j RETURN
 
 # --- Rules 4-5: Exclusions ---
-iptables -t nat -A PROXY_OUTPUT -p tcp --dport "${SSH_PORT}" -j RETURN
-iptables -t nat -A PROXY_OUTPUT -p tcp -d 127.0.0.1/32 -j RETURN
+${IPT} -t nat -A PROXY_OUTPUT -p tcp --dport "${SSH_PORT}" -j RETURN
+${IPT} -t nat -A PROXY_OUTPUT -p tcp -d 127.0.0.1/32 -j RETURN
 
 if [ -n "${OUTBOUND_PORTS_EXCLUDE}" ]; then
   for port in $(echo "${OUTBOUND_PORTS_EXCLUDE}" | tr ',' ' '); do
     echo "Excluding outbound port ${port} from redirection"
-    iptables -t nat -A PROXY_OUTPUT -p tcp --dport "${port}" -j RETURN
+    ${IPT} -t nat -A PROXY_OUTPUT -p tcp --dport "${port}" -j RETURN
   done
 fi
 
 # --- Catch-all: redirect remaining outbound TCP to Envoy outbound listener ---
-iptables -t nat -A PROXY_OUTPUT -p tcp -j REDIRECT --to-port "${PROXY_PORT}"
+${IPT} -t nat -A PROXY_OUTPUT -p tcp -j REDIRECT --to-port "${PROXY_PORT}"
 
 # Insert PROXY_OUTPUT at position 1 in the OUTPUT chain. Istio's ISTIO_OUTPUT
 # (appended by CNI agent) will be at position 2. This ensures our rules evaluate
 # first: we handle app traffic and ztunnel delivery, then RETURN lets Envoy's
 # outbound connections fall through to ISTIO_OUTPUT for ztunnel wrapping.
-if ! iptables -t nat -C OUTPUT -p tcp -j PROXY_OUTPUT 2>/dev/null; then
-  iptables -t nat -I OUTPUT 1 -p tcp -j PROXY_OUTPUT
+if ! ${IPT} -t nat -C OUTPUT -p tcp -j PROXY_OUTPUT 2>/dev/null; then
+  ${IPT} -t nat -I OUTPUT 1 -p tcp -j PROXY_OUTPUT
 fi
 
 # --- Mangle rule: prevent Envoy→app loop through ISTIO_OUTPUT ---
@@ -217,7 +249,7 @@ fi
 # (to the app in this pod), not Envoy's outbound connections to external services.
 # Outbound connections must NOT have mark 0x539, otherwise ISTIO_OUTPUT would skip
 # them and they'd bypass ztunnel's mTLS wrapping.
-iptables -t mangle -I OUTPUT 1 -m owner --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j MARK --set-mark ${ZTUNNEL_MARK}
+${IPT} -t mangle -I OUTPUT 1 -m owner --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j MARK --set-mark ${ZTUNNEL_MARK}
 
 echo "Outbound iptables rules configured successfully"
 echo "Outbound traffic will be redirected to port ${PROXY_PORT}"
@@ -243,44 +275,44 @@ echo "Outbound traffic will be redirected to port ${PROXY_PORT}"
 
 echo "Setting up iptables rules for inbound traffic interception..."
 
-iptables -t nat -N PROXY_INBOUND 2>/dev/null || true
+${IPT} -t nat -N PROXY_INBOUND 2>/dev/null || true
 
-iptables -t nat -F PROXY_INBOUND 2>/dev/null || true
+${IPT} -t nat -F PROXY_INBOUND 2>/dev/null || true
 
 # Istio uses 169.254.7.127 as a synthetic source for health probes (kubelet
 # health checks are rewritten by ztunnel). These must bypass Envoy to avoid
 # false health check failures.
-iptables -t nat -A PROXY_INBOUND -s "${ISTIO_HEALTH_PROBE_SRC}/32" -p tcp -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -s "${ISTIO_HEALTH_PROBE_SRC}/32" -p tcp -j RETURN
 
 # Exclude sidecar/infrastructure ports — traffic to these ports is for Envoy
 # or ext_proc themselves, not for the app. Redirecting would create loops.
-iptables -t nat -A PROXY_INBOUND -p tcp --dport "${PROXY_PORT}" -j RETURN
-iptables -t nat -A PROXY_INBOUND -p tcp --dport "${INBOUND_PROXY_PORT}" -j RETURN
-iptables -t nat -A PROXY_INBOUND -p tcp --dport 9090 -j RETURN
-iptables -t nat -A PROXY_INBOUND -p tcp --dport 9901 -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport "${PROXY_PORT}" -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport "${INBOUND_PROXY_PORT}" -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport 9090 -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport 9901 -j RETURN
 
-iptables -t nat -A PROXY_INBOUND -p tcp --dport "${SSH_PORT}" -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport "${SSH_PORT}" -j RETURN
 
 # Exclude ztunnel's HBONE port. Remote ztunnel sends mTLS tunnels to this port
 # from the network — it must reach ztunnel's in-pod socket directly, not Envoy.
 # (Ports 15001 and 15006 are not excluded here because they only receive traffic
 # via iptables REDIRECT from OUTPUT/PREROUTING, never directly from the network.)
-iptables -t nat -A PROXY_INBOUND -p tcp --dport "${ZTUNNEL_HBONE_PORT}" -j RETURN
+${IPT} -t nat -A PROXY_INBOUND -p tcp --dport "${ZTUNNEL_HBONE_PORT}" -j RETURN
 
 if [ -n "${INBOUND_PORTS_EXCLUDE}" ]; then
   for port in $(echo "${INBOUND_PORTS_EXCLUDE}" | tr ',' ' '); do
     echo "Excluding inbound port ${port} from redirection"
-    iptables -t nat -A PROXY_INBOUND -p tcp --dport "${port}" -j RETURN
+    ${IPT} -t nat -A PROXY_INBOUND -p tcp --dport "${port}" -j RETURN
   done
 fi
 
 # Catch-all: redirect remaining inbound TCP to Envoy inbound listener
-iptables -t nat -A PROXY_INBOUND -p tcp -j REDIRECT --to-port "${INBOUND_PROXY_PORT}"
+${IPT} -t nat -A PROXY_INBOUND -p tcp -j REDIRECT --to-port "${INBOUND_PROXY_PORT}"
 
 # Insert PROXY_INBOUND at position 1 in PREROUTING. Istio's ISTIO_PRERT
 # (appended by CNI agent) will be at position 2.
-if ! iptables -t nat -C PREROUTING -p tcp -j PROXY_INBOUND 2>/dev/null; then
-  iptables -t nat -I PREROUTING 1 -p tcp -j PROXY_INBOUND
+if ! ${IPT} -t nat -C PREROUTING -p tcp -j PROXY_INBOUND 2>/dev/null; then
+  ${IPT} -t nat -I PREROUTING 1 -p tcp -j PROXY_INBOUND
 fi
 
 echo "Inbound iptables rules configured successfully"

@@ -162,17 +162,19 @@ data:
                 virtual_hosts:
                 - name: local_app
                   domains: ["*"]
-                  request_headers_to_add:
-                  - header:
-                      key: "x-authbridge-direction"
-                      value: "inbound"
-                    append: false
                   routes:
                   - match:
                       prefix: "/"
                     route:
                       cluster: original_destination
               http_filters:
+              - name: envoy.filters.http.lua
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                  inline_code: |
+                    function envoy_on_request(request_handle)
+                      request_handle:headers():add("x-authbridge-direction", "inbound")
+                    end
               - name: envoy.filters.http.ext_proc
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
