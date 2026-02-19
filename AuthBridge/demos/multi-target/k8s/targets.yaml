@@ -7,6 +7,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: authbridge
+  labels:
+    istio.io/dataplane-mode: ambient
 ---
 # Target Alpha
 apiVersion: apps/v1
