@@ -327,6 +327,51 @@ func exchangeToken(clientID, clientSecret, tokenURL, subjectToken, audience, sco
 	return tokenResp.AccessToken, nil
 }
 
+// clientCredentialsGrant obtains a token using the OAuth 2.0 Client Credentials
+// grant. Used as a fallback when no valid subject token is available for token
+// exchange (e.g., the outbound request has no Authorization header).
+func clientCredentialsGrant(clientID, clientSecret, tokenURL, audience, scopes string) (string, error) {
+	log.Printf("[Client Credentials] Starting client_credentials grant")
+	log.Printf("[Client Credentials] Token URL: %s", tokenURL)
+	log.Printf("[Client Credentials] Client ID: %s", clientID)
+	log.Printf("[Client Credentials] Audience: %s", audience)
+	log.Printf("[Client Credentials] Scopes: %s", scopes)
+
+	data := url.Values{}
+	data.Set("client_id", clientID)
+	data.Set("client_secret", clientSecret)
+	data.Set("grant_type", "client_credentials")
+	data.Set("audience", audience)
+	data.Set("scope", scopes)
+
+	resp, err := http.PostForm(tokenURL, data)
+	if err != nil {
+		log.Printf("[Client Credentials] Failed to make request: %v", err)
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[Client Credentials] Failed to read response: %v", err)
+		return "", err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[Client Credentials] Failed with status %d: %s", resp.StatusCode, string(body))
+		return "", status.Errorf(codes.Internal, "client_credentials grant failed: %s", string(body))
+	}
+
+	var tokenResp tokenExchangeResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		log.Printf("[Client Credentials] Failed to parse response: %v", err)
+		return "", err
+	}
+
+	log.Printf("[Client Credentials] Successfully obtained token")
+	return tokenResp.AccessToken, nil
+}
+
 func getHeaderValue(headers []*core.HeaderValue, key string) string {
 	for _, header := range headers {
 		if strings.EqualFold(header.Key, key) {
@@ -462,41 +507,55 @@ func (p *processor) handleOutbound(ctx context.Context, headers *core.HeaderMap)
 		log.Printf("[Token Exchange] Target Audience: %s", targetAudience)
 		log.Printf("[Token Exchange] Target Scopes: %s", targetScopes)
 
+		var newToken string
+		var tokenErr error
+
 		authHeader := getHeaderValue(headers.Headers, "authorization")
 		if authHeader != "" {
 			subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
 			subjectToken = strings.TrimPrefix(subjectToken, "bearer ")
 
 			if subjectToken != authHeader {
-				newToken, err := exchangeToken(clientID, clientSecret, tokenURL, subjectToken, targetAudience, targetScopes)
-				if err == nil {
-					log.Printf("[Token Exchange] Successfully exchanged token, replacing Authorization header")
-					return &v3.ProcessingResponse{
-						Response: &v3.ProcessingResponse_RequestHeaders{
-							RequestHeaders: &v3.HeadersResponse{
-								Response: &v3.CommonResponse{
-									HeaderMutation: &v3.HeaderMutation{
-										SetHeaders: []*core.HeaderValueOption{
-											{
-												Header: &core.HeaderValue{
-													Key:      "authorization",
-													RawValue: []byte("Bearer " + newToken),
-												},
-											},
+				newToken, tokenErr = exchangeToken(clientID, clientSecret, tokenURL, subjectToken, targetAudience, targetScopes)
+				if tokenErr != nil {
+					log.Printf("[Token Exchange] Failed to exchange token: %v, falling back to client_credentials", tokenErr)
+				}
+			} else {
+				log.Printf("[Token Exchange] Invalid Authorization header format, falling back to client_credentials")
+			}
+		} else {
+			log.Printf("[Token Exchange] No Authorization header found, using client_credentials")
+		}
+
+		if newToken == "" {
+			newToken, tokenErr = clientCredentialsGrant(clientID, clientSecret, tokenURL, targetAudience, targetScopes)
+			if tokenErr != nil {
+				log.Printf("[Client Credentials] Fallback also failed: %v", tokenErr)
+			}
+		}
+
+		if newToken != "" {
+			log.Printf("[Outbound] Successfully obtained token, setting Authorization header")
+			return &v3.ProcessingResponse{
+				Response: &v3.ProcessingResponse_RequestHeaders{
+					RequestHeaders: &v3.HeadersResponse{
+						Response: &v3.CommonResponse{
+							HeaderMutation: &v3.HeaderMutation{
+								SetHeaders: []*core.HeaderValueOption{
+									{
+										Header: &core.HeaderValue{
+											Key:      "authorization",
+											RawValue: []byte("Bearer " + newToken),
 										},
 									},
 								},
 							},
 						},
-					}
-				}
-				log.Printf("[Token Exchange] Failed to exchange token: %v", err)
-			} else {
-				log.Printf("[Token Exchange] Invalid Authorization header format")
+					},
+				},
 			}
-		} else {
-			log.Printf("[Token Exchange] No Authorization header found")
 		}
+		log.Printf("[Outbound] Could not obtain token, forwarding request without authorization")
 	} else {
 		log.Println("[Token Exchange] Missing configuration, skipping token exchange")
 		log.Printf("[Token Exchange] CLIENT_ID present: %v, CLIENT_SECRET present: %v, TOKEN_URL present: %v",
