@@ -51,6 +51,10 @@ const (
 	SpireEnableLabel   = "kagenti.io/spire"
 	SpireEnabledValue  = "enabled"
 	SpireDisabledValue = "disabled"
+	// Port exclusion annotations — per-pod overrides for proxy-init iptables rules
+	OutboundPortsExcludeAnnotation = "kagenti.io/outbound-ports-exclude"
+	InboundPortsExcludeAnnotation  = "kagenti.io/inbound-ports-exclude"
+
 	// Istio exclusion annotations
 	IstioSidecarInjectAnnotation = "sidecar.istio.io/inject"
 	AmbientRedirectionAnnotation = "ambient.istio.io/redirection"
@@ -127,7 +131,9 @@ func (m *PodMutator) MutatePodSpec(ctx context.Context, podSpec *corev1.PodSpec,
 }
 
 // InjectAuthBridge evaluates the multi-layer precedence chain and conditionally injects sidecars.
-func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSpec, namespace, crName string, labels map[string]string) (bool, error) {
+// annotations carries per-pod overrides such as kagenti.io/outbound-ports-exclude and
+// kagenti.io/inbound-ports-exclude which are forwarded to proxy-init for iptables configuration.
+func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSpec, namespace, crName string, labels, annotations map[string]string) (bool, error) {
 	mutatorLog.Info("InjectAuthBridge called", "namespace", namespace, "crName", crName, "labels", labels)
 
 	// Pre-filter: only agent/tool workloads are eligible
@@ -224,7 +230,9 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 	}
 
 	if decision.ProxyInit.Inject && !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
-		podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer())
+		outboundExclude := annotations[OutboundPortsExcludeAnnotation]
+		inboundExclude := annotations[InboundPortsExcludeAnnotation]
+		podSpec.InitContainers = append(podSpec.InitContainers, builder.BuildProxyInitContainer(outboundExclude, inboundExclude))
 	}
 
 	if decision.SpiffeHelper.Inject && !containerExists(podSpec.Containers, SpiffeHelperContainerName) {
@@ -378,7 +386,7 @@ func (m *PodMutator) InjectInitContainers(podSpec *corev1.PodSpec) error {
 	// Check and inject proxy-init init container
 	if !containerExists(podSpec.InitContainers, ProxyInitContainerName) {
 		mutatorLog.Info("Injecting proxy-init init container")
-		podSpec.InitContainers = append(podSpec.InitContainers, m.Builder.BuildProxyInitContainer())
+		podSpec.InitContainers = append(podSpec.InitContainers, m.Builder.BuildProxyInitContainer("", ""))
 	}
 
 	return nil

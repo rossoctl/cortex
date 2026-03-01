@@ -65,6 +65,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 	var resourceName string
 	var mutatedObj interface{}
 	var labels map[string]string
+	var annotations map[string]string
 
 	// Extract PodSpec based on resource type
 	switch req.Kind.Kind {
@@ -78,6 +79,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		resourceName = deployment.Name
 		mutatedObj = &deployment
 		labels = deployment.Spec.Template.Labels
+		annotations = deployment.Spec.Template.Annotations
 
 	case "StatefulSet":
 		var statefulset appsv1.StatefulSet
@@ -89,6 +91,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		resourceName = statefulset.Name
 		mutatedObj = &statefulset
 		labels = statefulset.Spec.Template.Labels
+		annotations = statefulset.Spec.Template.Annotations
 
 	case "DaemonSet":
 		var daemonset appsv1.DaemonSet
@@ -100,6 +103,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		resourceName = daemonset.Name
 		mutatedObj = &daemonset
 		labels = daemonset.Spec.Template.Labels
+		annotations = daemonset.Spec.Template.Annotations
 
 	case "Job":
 		var job batchv1.Job
@@ -111,6 +115,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		resourceName = job.Name
 		mutatedObj = &job
 		labels = job.Spec.Template.Labels
+		annotations = job.Spec.Template.Annotations
 
 	case "CronJob":
 		var cronjob batchv1.CronJob
@@ -122,6 +127,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		resourceName = cronjob.Name
 		mutatedObj = &cronjob
 		labels = cronjob.Spec.JobTemplate.Spec.Template.Labels
+		annotations = cronjob.Spec.JobTemplate.Spec.Template.Annotations
 
 	default:
 		authbridgelog.Info("Unsupported resource kind", "kind", req.Kind.Kind)
@@ -137,7 +143,7 @@ func (w *AuthBridgeWebhook) Handle(ctx context.Context, req admission.Request) a
 		return admission.Allowed("already injected")
 	}
 
-	if mutated, err := w.Mutator.InjectAuthBridge(ctx, podSpec, req.Namespace, resourceName, labels); err != nil {
+	if mutated, err := w.Mutator.InjectAuthBridge(ctx, podSpec, req.Namespace, resourceName, labels, annotations); err != nil {
 		authbridgelog.Error(err, "Failed to mutate pod spec",
 			"kind", req.Kind.Kind,
 			"namespace", req.Namespace,

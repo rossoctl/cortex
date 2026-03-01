@@ -413,32 +413,53 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 // Alternative approaches (not currently implemented):
 //   - CNI plugin: Configure iptables at pod network setup time (requires cluster-level changes)
 //   - Istio CNI: Similar approach used by Istio to avoid privileged init containers
-func (b *ContainerBuilder) BuildProxyInitContainer() corev1.Container {
-	builderLog.Info("building ProxyInit Container")
+//
+// BuildProxyInitContainer creates the proxy-init init container with optional
+// port exclusion overrides. outboundExclude and inboundExclude are
+// comma-separated port lists from pod annotations. The default outbound
+// exclusion ("8080" for Keycloak) is always included; annotation values are
+// appended. Inbound exclusions are only set when explicitly provided.
+func (b *ContainerBuilder) BuildProxyInitContainer(outboundExclude, inboundExclude string) corev1.Container {
+	builderLog.Info("building ProxyInit Container",
+		"outboundExclude", outboundExclude,
+		"inboundExclude", inboundExclude)
+
+	outbound := "8080"
+	if outboundExclude != "" {
+		outbound = outbound + "," + outboundExclude
+	}
+
+	env := []corev1.EnvVar{
+		{
+			Name:  "PROXY_PORT",
+			Value: fmt.Sprintf("%d", b.cfg.Proxy.Port),
+		},
+		{
+			Name:  "INBOUND_PROXY_PORT",
+			Value: fmt.Sprintf("%d", b.cfg.Proxy.InboundProxyPort),
+		},
+		{
+			Name:  "PROXY_UID",
+			Value: fmt.Sprintf("%d", b.cfg.Proxy.UID),
+		},
+		{
+			Name:  "OUTBOUND_PORTS_EXCLUDE",
+			Value: outbound,
+		},
+	}
+	if inboundExclude != "" {
+		env = append(env, corev1.EnvVar{
+			Name:  "INBOUND_PORTS_EXCLUDE",
+			Value: inboundExclude,
+		})
+	}
 
 	return corev1.Container{
 		Name:            ProxyInitContainerName,
 		Image:           b.cfg.Images.ProxyInit,
 		ImagePullPolicy: b.cfg.Images.PullPolicy,
 		Resources:       b.cfg.Resources.ProxyInit,
-		Env: []corev1.EnvVar{
-			{
-				Name:  "PROXY_PORT",
-				Value: fmt.Sprintf("%d", b.cfg.Proxy.Port),
-			},
-			{
-				Name:  "INBOUND_PROXY_PORT",
-				Value: fmt.Sprintf("%d", b.cfg.Proxy.InboundProxyPort),
-			},
-			{
-				Name:  "PROXY_UID",
-				Value: fmt.Sprintf("%d", b.cfg.Proxy.UID),
-			},
-			{
-				Name:  "OUTBOUND_PORTS_EXCLUDE",
-				Value: "8080", // Exclude Keycloak port from redirect
-			},
-		},
+		Env:             env,
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:    ptr.To(int64(0)),
 			RunAsNonRoot: ptr.To(false),
@@ -464,5 +485,5 @@ func BuildEnvoyProxyContainer() corev1.Container {
 }
 
 func BuildProxyInitContainer() corev1.Container {
-	return NewContainerBuilder(nil).BuildProxyInitContainer()
+	return NewContainerBuilder(nil).BuildProxyInitContainer("", "")
 }
