@@ -177,7 +177,20 @@ ${IPT} -t nat -N PROXY_OUTPUT 2>/dev/null || true
 # Flush any existing rules in our chain to ensure idempotency
 ${IPT} -t nat -F PROXY_OUTPUT 2>/dev/null || true
 
-# --- Rule 1: Intercept ztunnel's inbound delivery for JWT validation ---
+# --- Rule 1: Exclude inbound ports from ztunnel delivery redirection ---
+# When ambient mesh is active, ztunnel delivers inbound traffic via the OUTPUT
+# chain (not PREROUTING), so INBOUND_PORTS_EXCLUDE rules in PROXY_INBOUND have
+# no effect. We must also exclude those ports here, before the catch-all redirect
+# below. This is essential for services like OpenShift oauth-proxy (port 8443)
+# that need direct access without Envoy intercepting WebSocket upgrades.
+if [ -n "${INBOUND_PORTS_EXCLUDE}" ]; then
+  for port in $(echo "${INBOUND_PORTS_EXCLUDE}" | tr ',' ' '); do
+    echo "Excluding inbound port ${port} from ztunnel delivery redirection"
+    ${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp --dport "${port}" -j RETURN
+  done
+fi
+
+# --- Rule 2: Intercept ztunnel's inbound delivery for JWT validation ---
 # When ambient mesh is active, ztunnel terminates inbound HBONE and delivers
 # plaintext to the local app via its in-pod socket. This delivery goes through
 # the OUTPUT chain (not PREROUTING) because ztunnel creates a new local connection
@@ -195,14 +208,14 @@ ${IPT} -t nat -F PROXY_OUTPUT 2>/dev/null || true
 # back to ztunnel which expects mTLS — producing InvalidContentType errors.
 ${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -m owner ! --uid-owner "${PROXY_UID}" -m addrtype --dst-type LOCAL -p tcp -j REDIRECT --to-ports "${INBOUND_PROXY_PORT}"
 
-# --- Rule 2: Skip all remaining ztunnel traffic ---
+# --- Rule 3: Skip all remaining ztunnel traffic ---
 # After rule 1 captured ztunnel's inbound delivery, any other ztunnel traffic
 # (outbound HBONE, DNS proxy, etc.) must pass through unmodified. Matching on
 # fwmark 0x539 is more robust than excluding individual port numbers — it covers
 # all ztunnel sockets (15001, 15006, 15008, 15053, and any future ports).
 ${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -j RETURN
 
-# --- Rule 3: Skip Envoy's own outbound connections ---
+# --- Rule 4: Skip Envoy's own outbound connections ---
 # Envoy (UID 1337) makes outbound connections after processing via ext_proc.
 # These must RETURN from PROXY_OUTPUT so they fall through to Istio's
 # ISTIO_OUTPUT chain (position 2 in OUTPUT), which redirects them to ztunnel
@@ -210,7 +223,7 @@ ${IPT} -t nat -A PROXY_OUTPUT -m mark --mark ${ZTUNNEL_MARK} -j RETURN
 # ztunnel provides the mTLS transport layer for outbound connections.
 ${IPT} -t nat -A PROXY_OUTPUT -m owner --uid-owner "${PROXY_UID}" -j RETURN
 
-# --- Rules 4-5: Exclusions ---
+# --- Rules 5-6: Exclusions ---
 ${IPT} -t nat -A PROXY_OUTPUT -p tcp --dport "${SSH_PORT}" -j RETURN
 ${IPT} -t nat -A PROXY_OUTPUT -p tcp -d 127.0.0.1/32 -j RETURN
 
