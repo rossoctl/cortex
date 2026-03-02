@@ -128,8 +128,8 @@ func TestInjectAuthBridge_SetsServiceAccountName(t *testing.T) {
 
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
-		KagentiTypeLabel:  KagentiTypeAgent,
-		SpireEnableLabel:  SpireEnabledValue,
+		KagentiTypeLabel:      KagentiTypeAgent,
+		SpireEnableLabel:      SpireEnabledValue,
 		AuthBridgeInjectLabel: AuthBridgeInjectValue,
 	}
 
@@ -164,8 +164,8 @@ func TestInjectAuthBridge_RespectsExistingServiceAccountName(t *testing.T) {
 		ServiceAccountName: "custom-sa",
 	}
 	labels := map[string]string{
-		KagentiTypeLabel:  KagentiTypeAgent,
-		SpireEnableLabel:  SpireEnabledValue,
+		KagentiTypeLabel:      KagentiTypeAgent,
+		SpireEnableLabel:      SpireEnabledValue,
 		AuthBridgeInjectLabel: AuthBridgeInjectValue,
 	}
 

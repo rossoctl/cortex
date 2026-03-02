@@ -34,6 +34,8 @@ type Config struct {
 	TokenURL       string
 	TargetAudience string
 	TargetScopes   string
+	SpireEnabled   bool   // Whether to use SPIFFE federated auth
+	JWTSvid        string // JWT-SVID content (loaded at startup)
 	mu             sync.RWMutex
 }
 
@@ -95,7 +97,7 @@ func readFileContent(path string) (string, error) {
 
 // loadConfig loads configuration from environment variables or files.
 // For dynamic credentials from client-registration, it reads from /shared/ files.
-// Retries loading credentials from files if they're not immediately available.
+// All configuration is loaded regardless of SPIRE enablement for simplicity.
 func loadConfig() {
 	globalConfig.mu.Lock()
 	defer globalConfig.mu.Unlock()
@@ -105,8 +107,11 @@ func loadConfig() {
 	globalConfig.TargetAudience = os.Getenv("TARGET_AUDIENCE")
 	globalConfig.TargetScopes = os.Getenv("TARGET_SCOPES")
 
-	// For CLIENT_ID and CLIENT_SECRET, prefer files from /shared/ (dynamic credentials)
-	// This allows AuthProxy to use the same credentials as the auto-registered client
+	// SPIRE/SPIFFE configuration
+	spireEnabled := os.Getenv("SPIRE_ENABLED")
+	globalConfig.SpireEnabled = (spireEnabled == "true")
+
+	// File paths for dynamic credentials
 	clientIDFile := os.Getenv("CLIENT_ID_FILE")
 	if clientIDFile == "" {
 		clientIDFile = "/shared/client-id.txt"
@@ -115,29 +120,43 @@ func loadConfig() {
 	if clientSecretFile == "" {
 		clientSecretFile = "/shared/client-secret.txt"
 	}
+	jwtSvidPath := os.Getenv("JWT_SVID_PATH")
+	if jwtSvidPath == "" {
+		jwtSvidPath = "/opt/jwt_svid.token"
+	}
 
-	// Try to load from files first (preferred for SPIFFE-based dynamic credentials)
+	// Load CLIENT_ID from file or environment
 	if clientID, err := readFileContent(clientIDFile); err == nil && clientID != "" {
 		globalConfig.ClientID = clientID
 		log.Printf("[Config] Loaded CLIENT_ID from file: %s", clientIDFile)
 	} else if envClientID := os.Getenv("CLIENT_ID"); envClientID != "" {
-		// Fall back to environment variable
 		globalConfig.ClientID = envClientID
 		log.Printf("[Config] Using CLIENT_ID from environment variable")
 	}
 
+	// Load CLIENT_SECRET from file or environment (always load, regardless of SPIRE)
 	if clientSecret, err := readFileContent(clientSecretFile); err == nil && clientSecret != "" {
 		globalConfig.ClientSecret = clientSecret
 		log.Printf("[Config] Loaded CLIENT_SECRET from file: %s", clientSecretFile)
 	} else if envClientSecret := os.Getenv("CLIENT_SECRET"); envClientSecret != "" {
-		// Fall back to environment variable
 		globalConfig.ClientSecret = envClientSecret
 		log.Printf("[Config] Using CLIENT_SECRET from environment variable")
 	}
 
+	// Load JWT-SVID content (always attempt, regardless of SPIRE flag)
+	if jwtSvid, err := readFileContent(jwtSvidPath); err == nil && jwtSvid != "" {
+		globalConfig.JWTSvid = jwtSvid
+		log.Printf("[Config] Loaded JWT-SVID from file: %s (%d bytes)", jwtSvidPath, len(jwtSvid))
+	} else if err != nil {
+		log.Printf("[Config] JWT-SVID not available at %s: %v", jwtSvidPath, err)
+	}
+
+	// Log configuration summary
 	log.Printf("[Config] Configuration loaded:")
 	log.Printf("[Config]   CLIENT_ID: %s", globalConfig.ClientID)
 	log.Printf("[Config]   CLIENT_SECRET: [REDACTED, length=%d]", len(globalConfig.ClientSecret))
+	log.Printf("[Config]   SPIRE_ENABLED: %v", globalConfig.SpireEnabled)
+	log.Printf("[Config]   JWT_SVID: [REDACTED, length=%d]", len(globalConfig.JWTSvid))
 	log.Printf("[Config]   TOKEN_URL: %s", globalConfig.TokenURL)
 	log.Printf("[Config]   TARGET_AUDIENCE: %s", globalConfig.TargetAudience)
 	log.Printf("[Config]   TARGET_SCOPES: %s", globalConfig.TargetScopes)
@@ -177,10 +196,10 @@ func waitForCredentials(maxWait time.Duration) bool {
 }
 
 // getConfig returns the current configuration
-func getConfig() (clientID, clientSecret, tokenURL, targetAudience, targetScopes string) {
+func getConfig() (clientID, clientSecret, tokenURL, targetAudience, targetScopes string, spireEnabled bool, jwtSvid string) {
 	globalConfig.mu.RLock()
 	defer globalConfig.mu.RUnlock()
-	return globalConfig.ClientID, globalConfig.ClientSecret, globalConfig.TokenURL, globalConfig.TargetAudience, globalConfig.TargetScopes
+	return globalConfig.ClientID, globalConfig.ClientSecret, globalConfig.TokenURL, globalConfig.TargetAudience, globalConfig.TargetScopes, globalConfig.SpireEnabled, globalConfig.JWTSvid
 }
 
 var (
@@ -279,25 +298,57 @@ func getHostFromHeaders(headers []*core.HeaderValue) string {
 
 // exchangeToken performs OAuth 2.0 Token Exchange (RFC 8693).
 // Exchanges the subject token for a new token with the specified audience.
-// Requires the exchanging client to be in the subject token's audience.
-// When using dynamic credentials from /shared/, this works because the token's
-// audience matches the auto-registered client's SPIFFE ID.
-func exchangeToken(clientID, clientSecret, tokenURL, subjectToken, audience, scopes string) (string, error) {
+//
+// Two authentication modes are supported:
+// 1. Traditional: Uses client_secret for client authentication
+// 2. SPIFFE Federated: Uses JWT-SVID (pre-loaded from globalConfig) as client_assertion
+//
+// When spireEnabled=true:
+// - Uses JWT-SVID from the jwtSvid parameter (loaded at startup by loadConfig)
+// - Uses client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
+// - Uses client_assertion: <JWT-SVID> instead of client_secret
+// - Requires Keycloak with federated-jwt client authenticator and SPIFFE identity provider
+//
+// When spireEnabled=false:
+// - Uses traditional client_secret authentication
+// - Requires the exchanging client to be in the subject token's audience
+func exchangeToken(clientID, clientSecret, tokenURL, subjectToken, audience, scopes string, spireEnabled bool, jwtSvid string) (string, error) {
 	log.Printf("[Token Exchange] Starting token exchange")
 	log.Printf("[Token Exchange] Token URL: %s", tokenURL)
 	log.Printf("[Token Exchange] Client ID: %s", clientID)
 	log.Printf("[Token Exchange] Audience: %s", audience)
 	log.Printf("[Token Exchange] Scopes: %s", scopes)
+	log.Printf("[Token Exchange] SPIRE Enabled: %v", spireEnabled)
 
 	data := url.Values{}
 	data.Set("client_id", clientID)
-	data.Set("client_secret", clientSecret)
 	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
 	data.Set("requested_token_type", "urn:ietf:params:oauth:token-type:access_token")
 	data.Set("subject_token", subjectToken)
 	data.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
 	data.Set("audience", audience)
 	data.Set("scope", scopes)
+
+	// Choose authentication method based on SPIRE enablement
+	if spireEnabled {
+		// SPIFFE Federated Authentication
+		log.Printf("[Token Exchange] Using SPIFFE federated authentication")
+
+		if jwtSvid == "" {
+			log.Printf("[Token Exchange] JWT-SVID is empty")
+			return "", fmt.Errorf("JWT-SVID is empty (SPIRE enabled but no JWT-SVID loaded)")
+		}
+
+		log.Printf("[Token Exchange] Using JWT-SVID (%d bytes)", len(jwtSvid))
+
+		// Use jwt-spiffe assertion type (required by Keycloak's SPIFFE provider)
+		data.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe")
+		data.Set("client_assertion", jwtSvid)
+	} else {
+		// Traditional client_secret authentication
+		log.Printf("[Token Exchange] Using traditional client_secret authentication")
+		data.Set("client_secret", clientSecret)
+	}
 
 	resp, err := http.PostForm(tokenURL, data)
 	if err != nil {
@@ -437,7 +488,7 @@ func (p *processor) handleOutbound(ctx context.Context, headers *core.HeaderMap)
 	}
 
 	// Get global configuration (from files or env vars)
-	clientID, clientSecret, tokenURL, targetAudience, targetScopes := getConfig()
+	clientID, clientSecret, tokenURL, targetAudience, targetScopes, spireEnabled, jwtSvid := getConfig()
 
 	// Apply target-specific overrides if available
 	if targetConfig != nil {
@@ -456,7 +507,9 @@ func (p *processor) handleOutbound(ctx context.Context, headers *core.HeaderMap)
 		}
 	}
 
-	if clientID != "" && clientSecret != "" && tokenURL != "" && targetAudience != "" && targetScopes != "" {
+	// Check if we have required config (clientSecret not needed when SPIRE is enabled)
+	hasCredentials := (spireEnabled && jwtSvid != "") || clientSecret != ""
+	if clientID != "" && hasCredentials && tokenURL != "" && targetAudience != "" && targetScopes != "" {
 		log.Println("[Token Exchange] Configuration loaded, attempting token exchange")
 		log.Printf("[Token Exchange] Client ID: %s", clientID)
 		log.Printf("[Token Exchange] Target Audience: %s", targetAudience)
@@ -468,7 +521,7 @@ func (p *processor) handleOutbound(ctx context.Context, headers *core.HeaderMap)
 			subjectToken = strings.TrimPrefix(subjectToken, "bearer ")
 
 			if subjectToken != authHeader {
-				newToken, err := exchangeToken(clientID, clientSecret, tokenURL, subjectToken, targetAudience, targetScopes)
+				newToken, err := exchangeToken(clientID, clientSecret, tokenURL, subjectToken, targetAudience, targetScopes, spireEnabled, jwtSvid)
 				if err == nil {
 					log.Printf("[Token Exchange] Successfully exchanged token, replacing Authorization header")
 					return &v3.ProcessingResponse{
@@ -574,7 +627,7 @@ func main() {
 	loadConfig()
 
 	// Initialize inbound JWT validation
-	_, _, tokenURL, _, _ := getConfig()
+	_, _, tokenURL, _, _, _, _ := getConfig() // clientID, clientSecret, tokenURL, targetAudience, targetScopes, spireEnabled, jwtSvid
 	inboundIssuer = os.Getenv("ISSUER")
 	expectedAudience = os.Getenv("EXPECTED_AUDIENCE")
 	if tokenURL != "" && inboundIssuer != "" {

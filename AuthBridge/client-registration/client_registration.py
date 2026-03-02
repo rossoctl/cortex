@@ -117,6 +117,10 @@ try:
     KEYCLOAK_CLIENT_REGISTRATION_ENABLED = (
         get_env_var("KEYCLOAK_CLIENT_REGISTRATION_ENABLED", "true").lower() == "true"
     )
+    # CLIENT_AUTH_TYPE controls how the client authenticates to Keycloak:
+    # - "client-secret": Traditional client_secret authentication (default)
+    # - "federated-jwt": JWT-SVID authentication via SPIFFE identity provider
+    CLIENT_AUTH_TYPE = get_env_var("CLIENT_AUTH_TYPE", "client-secret")
 except ValueError as e:
     print(
         f"Expected environment variable missing. Skipping client registration of {client_id}."
@@ -138,28 +142,46 @@ keycloak_admin = KeycloakAdmin(
     user_realm_name="master",
 )
 
+# Build client payload based on authentication type
+client_payload = {
+    "name": client_name,
+    "clientId": client_id,
+    "standardFlowEnabled": True,
+    "directAccessGrantsEnabled": True,
+    "serviceAccountsEnabled": True,  # Required for client_credentials grant
+    "fullScopeAllowed": False,
+    "publicClient": False,  # Enable client authentication
+    # Enable token exchange for this client.
+    # Token exchange allows this client to exchange tokens for other tokens, potentially across different clients.
+    # Use case: [EXPLAIN THE SPECIFIC USE CASE HERE, e.g., "Required for service-to-service authentication in microservices architecture."]
+    # Security considerations: Ensure only trusted clients have this capability, restrict scopes and permissions as needed,
+    # and audit usage to prevent privilege escalation or unauthorized access.
+    "attributes": {
+        "standard.token.exchange.enabled": str(
+            KEYCLOAK_TOKEN_EXCHANGE_ENABLED
+        ).lower(),  # Enable token exchange
+    },
+}
+
+# Configure client authentication type
+if CLIENT_AUTH_TYPE == "federated-jwt":
+    print(f"Configuring client for JWT-SVID authentication (federated-jwt)")
+    client_payload["clientAuthenticatorType"] = "federated-jwt"
+    # Add federated JWT attributes for SPIFFE authentication
+    # These tell Keycloak to validate JWT-SVIDs from the SPIFFE identity provider
+    spiffe_idp_alias = get_env_var("SPIFFE_IDP_ALIAS", "spire-spiffe")
+    client_payload["attributes"].update({
+        "jwt.credential.issuer": spiffe_idp_alias,
+        "jwt.credential.sub": client_id,  # Must match JWT sub claim (SPIFFE ID)
+    })
+else:
+    print(f"Configuring client for client-secret authentication")
+    client_payload["clientAuthenticatorType"] = "client-secret"
+
 internal_client_id = register_client(
     keycloak_admin,
     client_id,
-    {
-        "name": client_name,
-        "clientId": client_id,
-        "standardFlowEnabled": True,
-        "directAccessGrantsEnabled": True,
-        "serviceAccountsEnabled": True,  # Required for client_credentials grant
-        "fullScopeAllowed": False,
-        "publicClient": False,  # Enable client authentication
-        # Enable token exchange for this client.
-        # Token exchange allows this client to exchange tokens for other tokens, potentially across different clients.
-        # Use case: [EXPLAIN THE SPECIFIC USE CASE HERE, e.g., "Required for service-to-service authentication in microservices architecture."]
-        # Security considerations: Ensure only trusted clients have this capability, restrict scopes and permissions as needed,
-        # and audit usage to prevent privilege escalation or unauthorized access.
-        "attributes": {
-            "standard.token.exchange.enabled": str(
-                KEYCLOAK_TOKEN_EXCHANGE_ENABLED
-            ).lower(),  # Enable token exchange
-        },
-    },
+    client_payload,
 )
 
 try:

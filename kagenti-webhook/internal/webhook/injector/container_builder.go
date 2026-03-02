@@ -33,9 +33,10 @@ const (
 	ProxyInitContainerName  = "proxy-init"
 
 	// Client registration container configuration
+	// UID 1337 matches Envoy proxy for consistent file permissions across sidecars
 	// Keep in sync with AuthBridge/client-registration/Dockerfile
-	ClientRegistrationUID = 1000
-	ClientRegistrationGID = 1000
+	ClientRegistrationUID = 1337
+	ClientRegistrationGID = 1337
 )
 
 type ContainerBuilder struct {
@@ -104,6 +105,7 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 	clientName := namespace + "/" + name
 
 	// Base environment variables
+	// All webhook-specific configuration comes from kagenti-webhook-config ConfigMap
 	env := []corev1.EnvVar{
 		{
 			Name:  "SPIRE_ENABLED",
@@ -114,7 +116,7 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "kagenti-webhook-config",
 					},
 					Key:      "KEYCLOAK_URL",
 					Optional: ptr.To(true),
@@ -126,9 +128,10 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "kagenti-webhook-config",
 					},
-					Key: "KEYCLOAK_REALM",
+					Key:      "KEYCLOAK_REALM",
+					Optional: ptr.To(true),
 				},
 			},
 		},
@@ -137,9 +140,10 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "kagenti-webhook-config",
 					},
-					Key: "KEYCLOAK_ADMIN_USERNAME",
+					Key:      "KEYCLOAK_ADMIN_USERNAME",
+					Optional: ptr.To(true),
 				},
 			},
 		},
@@ -148,9 +152,10 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "kagenti-webhook-config",
 					},
-					Key: "KEYCLOAK_ADMIN_PASSWORD",
+					Key:      "KEYCLOAK_ADMIN_PASSWORD",
+					Optional: ptr.To(true),
 				},
 			},
 		},
@@ -161,6 +166,30 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 		{
 			Name:  "SECRET_FILE_PATH",
 			Value: "/shared/client-secret.txt",
+		},
+		{
+			Name: "CLIENT_AUTH_TYPE",
+			ValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "kagenti-webhook-config",
+					},
+					Key:      "CLIENT_AUTH_TYPE",
+					Optional: ptr.To(true),
+				},
+			},
+		},
+		{
+			Name: "SPIFFE_IDP_ALIAS",
+			ValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "kagenti-webhook-config",
+					},
+					Key:      "SPIFFE_IDP_ALIAS",
+					Optional: ptr.To(true),
+				},
+			},
 		},
 	}
 
@@ -353,6 +382,18 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainer() corev1.Container {
 				Name:  "CLIENT_SECRET_FILE",
 				Value: "/shared/client-secret.txt",
 			},
+			{
+				Name: "SPIRE_ENABLED",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "environments",
+						},
+						Key:      "SPIRE_ENABLED",
+						Optional: ptr.To(true),
+					},
+				},
+			},
 		},
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:  ptr.To(b.cfg.Proxy.UID),
@@ -367,6 +408,11 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainer() corev1.Container {
 			{
 				Name:      "shared-data",
 				MountPath: "/shared",
+				ReadOnly:  true,
+			},
+			{
+				Name:      "svid-output",
+				MountPath: "/opt",
 				ReadOnly:  true,
 			},
 		},
