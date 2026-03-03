@@ -37,6 +37,12 @@ const (
 	// Keep in sync with AuthBridge/client-registration/Dockerfile
 	ClientRegistrationUID = 1337
 	ClientRegistrationGID = 1337
+
+	// FSGroup for shared volume access in SPIRE mode.
+	// Sets group ownership of emptyDir volumes (like svid-output) to enable
+	// multiple containers with different UIDs to read/write shared files.
+	// All sidecar containers get this as a supplemental group ID.
+	SharedVolumesFSGroup = 1000
 )
 
 type ContainerBuilder struct {
@@ -381,6 +387,10 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainer() corev1.Container {
 			{
 				Name:  "CLIENT_SECRET_FILE",
 				Value: "/shared/client-secret.txt",
+			},
+			{
+				Name:  "JWT_SVID_PATH",
+				Value: "/opt/jwt_svid.token",
 			},
 			{
 				Name: "SPIRE_ENABLED",

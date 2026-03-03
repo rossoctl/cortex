@@ -30,10 +30,11 @@ data:
   KEYCLOAK_ADMIN_USERNAME: "admin"
   KEYCLOAK_ADMIN_PASSWORD: "admin"
   # CLIENT_AUTH_TYPE: Controls how the client authenticates to Keycloak
-  #   - "client-secret": Traditional client_secret authentication (default)
+  #   - "client-secret": Traditional client_secret authentication (default, simpler for testing)
   #   - "federated-jwt": JWT-SVID authentication via SPIFFE identity provider
   # For JWT-SVID authentication, you must also configure a SPIFFE identity provider
-  # in Keycloak (see spiffe-keycloak/keycloak_federated_client.py).
+  # in Keycloak (see spiffe-keycloak/keycloak_federated_client.py) and ensure
+  # SPIRE_ENABLED is "true" in the environments ConfigMap below.
   CLIENT_AUTH_TYPE: "client-secret"
   # SPIFFE_IDP_ALIAS: Keycloak SPIFFE identity provider alias (only used with federated-jwt)
   SPIFFE_IDP_ALIAS: "spire-spiffe"
@@ -45,15 +46,20 @@ data:
   JWT_AUDIENCE: "http://keycloak.localtest.me:8080/realms/demo"
 
 ---
-# environments ConfigMap - Used by agent application
-# This ConfigMap is for agent-specific configuration only.
+# environments ConfigMap - Used by agent application AND envoy-proxy (go-processor)
+# This ConfigMap is for agent-specific configuration.
+# IMPORTANT: The go-processor reads SPIRE_ENABLED from THIS ConfigMap (not authbridge-config)
 # Webhook/SPIRE/Keycloak configuration has been moved to kagenti-webhook-config above.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: environments
   namespace: team1
-data: {}
+data:
+  # SPIRE_ENABLED: Controls whether go-processor uses JWT-SVID for token exchange
+  # Set to "true" to use federated-jwt authentication with JWT-SVID as client_assertion
+  # Set to "false" to use traditional client_secret authentication
+  SPIRE_ENABLED: "true"
 
 ---
 # authbridge-config ConfigMap - Used by envoy-proxy for token exchange
@@ -101,14 +107,15 @@ data:
     agent_address = "/spiffe-workload-api/spire-agent.sock"
     cmd = ""
     cmd_args = ""
-    cert_dir = "/opt"
-    renew_signal = ""
-    svid_file_name = "svid.pem"
-    svid_key_file_name = "svid_key.pem"
-    svid_bundle_file_name = "svid_bundle.pem"
-    # jwt_audience value should match JWT_AUDIENCE in environments ConfigMap
-    # This demo uses the Keycloak issuer URL for JWT-SVID authentication
-    jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/demo", jwt_svid_file_name="jwt_svid.token"}]
+    svid_file_name = "/opt/svid.pem"
+    svid_key_file_name = "/opt/svid_key.pem"
+    svid_bundle_file_name = "/opt/svid_bundle.pem"
+    # jwt_audience value should match JWT_AUDIENCE in kagenti-webhook-config ConfigMap
+    # This MUST use Keycloak's PUBLIC issuer URL (not the internal service URL)
+    # The audience must exactly match the "iss" claim in tokens issued by Keycloak
+    jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/demo", jwt_svid_file_name="/opt/jwt_svid.token"}]
+    jwt_svid_file_mode = 0644
+    include_federated_domains = true
 
 ---
 # envoy-config ConfigMap - Envoy proxy configuration for traffic interception

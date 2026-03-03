@@ -118,6 +118,9 @@ func (m *PodMutator) MutatePodSpec(ctx context.Context, podSpec *corev1.PodSpec,
 		return fmt.Errorf("failed to inject volumes: %w", err)
 	}
 
+	// Set fsGroup for shared volume access (SPIRE mode always enabled for legacy CRs)
+	ensureFSGroup(podSpec)
+
 	mutatorLog.Info("Successfully mutated pod spec", "namespace", namespace, "crName", crName, "containers", len(podSpec.Containers), "volumes", len(podSpec.Volumes))
 	return nil
 }
@@ -239,6 +242,11 @@ func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSp
 		if !volumeExists(podSpec.Volumes, vol.Name) {
 			podSpec.Volumes = append(podSpec.Volumes, vol)
 		}
+	}
+
+	// Set fsGroup for shared volume access when SPIRE is enabled
+	if spireEnabled {
+		ensureFSGroup(podSpec)
 	}
 
 	mutatorLog.Info("Successfully mutated pod spec", "namespace", namespace, "crName", crName,
@@ -459,4 +467,20 @@ func volumeExists(volumes []corev1.Volume, name string) bool {
 		}
 	}
 	return false
+}
+
+// ensureFSGroup sets fsGroup in the pod security context to enable shared volume access.
+// This allows containers with different UIDs (spiffe-helper, client-registration, envoy-proxy)
+// to read/write files in shared volumes like svid-output.
+func ensureFSGroup(podSpec *corev1.PodSpec) {
+	fsGroupValue := int64(SharedVolumesFSGroup)
+
+	if podSpec.SecurityContext == nil {
+		podSpec.SecurityContext = &corev1.PodSecurityContext{}
+	}
+
+	if podSpec.SecurityContext.FSGroup == nil {
+		podSpec.SecurityContext.FSGroup = &fsGroupValue
+		mutatorLog.Info("Set fsGroup for shared volume access", "fsGroup", fsGroupValue)
+	}
 }
