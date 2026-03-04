@@ -10,13 +10,23 @@ metadata:
   namespace: my-agent
 data:
   SPIRE_ENABLED: "true"
-  # Replace these placeholder values with real endpoints/credentials
+  # Replace these placeholder values with real endpoints
   KEYCLOAK_URL: "http://keycloak.keycloak.svc:8080"
   KEYCLOAK_REALM: "master"
-  KEYCLOAK_ADMIN_USERNAME: "admin"
-  KEYCLOAK_ADMIN_PASSWORD: "admin"
   KEYCLOAK_TOKEN_EXCHANGE_ENABLED: "true"
   KEYCLOAK_CLIENT_REGISTRATION_ENABLED: "true"
+---
+# keycloak-admin-secret - Keycloak admin credentials for client registration
+# Replace the placeholder values with your actual admin credentials.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-secret
+  namespace: my-agent
+type: Opaque
+stringData:
+  KEYCLOAK_ADMIN_USERNAME: "admin"
+  KEYCLOAK_ADMIN_PASSWORD: "changeme"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -91,13 +101,13 @@ spec:
                   key: KEYCLOAK_REALM
             - name: KEYCLOAK_ADMIN_USERNAME
               valueFrom:
-                configMapKeyRef:
-                  name: environments
+                secretKeyRef:
+                  name: keycloak-admin-secret
                   key: KEYCLOAK_ADMIN_USERNAME
             - name: KEYCLOAK_ADMIN_PASSWORD
               valueFrom:
-                configMapKeyRef:
-                  name: environments
+                secretKeyRef:
+                  name: keycloak-admin-secret
                   key: KEYCLOAK_ADMIN_PASSWORD
             - name: CLIENT_NAME
               value: my-app

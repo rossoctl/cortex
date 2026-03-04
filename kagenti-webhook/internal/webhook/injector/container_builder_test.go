@@ -107,3 +107,48 @@ func TestBuildEnvoyProxyContainer_Name(t *testing.T) {
 		t.Errorf("container name = %q, want %q", container.Name, EnvoyProxyContainerName)
 	}
 }
+
+func TestBuildClientRegistrationContainer_AdminCredentialsFromSecret(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildClientRegistrationContainer("my-app", "my-ns")
+
+	sensitiveKeys := []string{"KEYCLOAK_ADMIN_USERNAME", "KEYCLOAK_ADMIN_PASSWORD"}
+	for _, key := range sensitiveKeys {
+		for _, env := range container.Env {
+			if env.Name != key {
+				continue
+			}
+			if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+				t.Errorf("env %q must use SecretKeyRef, got ConfigMapKeyRef or literal", key)
+				continue
+			}
+			if env.ValueFrom.SecretKeyRef.Name != "keycloak-admin-secret" {
+				t.Errorf("env %q SecretKeyRef.Name = %q, want %q", key, env.ValueFrom.SecretKeyRef.Name, "keycloak-admin-secret")
+			}
+			if env.ValueFrom.ConfigMapKeyRef != nil {
+				t.Errorf("env %q must NOT use ConfigMapKeyRef", key)
+			}
+		}
+	}
+}
+
+func TestBuildClientRegistrationContainer_NonSensitiveKeysFromConfigMap(t *testing.T) {
+	builder := NewContainerBuilder(config.CompiledDefaults())
+	container := builder.BuildClientRegistrationContainer("my-app", "my-ns")
+
+	nonSensitiveKeys := []string{"KEYCLOAK_URL", "KEYCLOAK_REALM"}
+	for _, key := range nonSensitiveKeys {
+		for _, env := range container.Env {
+			if env.Name != key {
+				continue
+			}
+			if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil {
+				t.Errorf("env %q must use ConfigMapKeyRef", key)
+				continue
+			}
+			if env.ValueFrom.ConfigMapKeyRef.Name != "environments" {
+				t.Errorf("env %q ConfigMapKeyRef.Name = %q, want %q", key, env.ValueFrom.ConfigMapKeyRef.Name, "environments")
+			}
+		}
+	}
+}

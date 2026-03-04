@@ -196,12 +196,13 @@ Hooks:
 
 When the webhook injects sidecars, the target namespace needs these ConfigMaps:
 
-| ConfigMap | Used by | Keys |
-|-----------|---------|------|
-| `environments` | client-registration | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
-| `authbridge-config` | envoy-proxy (ext-proc) | `TOKEN_URL`, `ISSUER`, `TARGET_AUDIENCE`, `TARGET_SCOPES` |
-| `spiffe-helper-config` | spiffe-helper | SPIFFE helper configuration file |
-| `envoy-config` | envoy-proxy | Envoy YAML configuration |
+| Resource | Kind | Used by | Keys |
+|----------|------|---------|------|
+| `environments` | ConfigMap | client-registration | `KEYCLOAK_URL`, `KEYCLOAK_REALM` |
+| `keycloak-admin-secret` | Secret | client-registration | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
+| `authbridge-config` | ConfigMap | envoy-proxy (ext-proc) | `TOKEN_URL`, `ISSUER`, `TARGET_AUDIENCE`, `TARGET_SCOPES` |
+| `spiffe-helper-config` | ConfigMap | spiffe-helper | SPIFFE helper configuration file |
+| `envoy-config` | ConfigMap | envoy-proxy | Envoy YAML configuration |
 
 ## Common Development Tasks
 

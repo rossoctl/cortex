@@ -149,12 +149,17 @@ make generate
 - **Container existence checks**: `containerExists()` and `volumeExists()` helpers prevent duplicate injection.
 - **Kubebuilder markers**: Webhook path markers (e.g., `+kubebuilder:webhook:path=...`) in Go comments generate the webhook manifests. Do not change these without running `make manifests`.
 
-### ConfigMap Dependencies at Runtime
-Injected sidecars expect these ConfigMaps to exist in the target namespace:
-- `environments` -- `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD`
+### Runtime Dependencies
+Injected sidecars expect these resources to exist in the target namespace:
+
+ConfigMaps:
+- `environments` -- `KEYCLOAK_URL`, `KEYCLOAK_REALM`
 - `authbridge-config` -- `TOKEN_URL`, `ISSUER`, `TARGET_AUDIENCE`, `TARGET_SCOPES`
 - `spiffe-helper-config` -- SPIFFE helper configuration (when SPIRE is enabled)
 - `envoy-config` -- Envoy proxy configuration
+
+Secrets:
+- `keycloak-admin-secret` -- `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD`
 
 ### Security Model
 - `proxy-init` runs as an init container with a short lifetime (iptables setup).

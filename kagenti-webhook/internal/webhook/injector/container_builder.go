@@ -135,9 +135,9 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 		{
 			Name: "KEYCLOAK_ADMIN_USERNAME",
 			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "keycloak-admin-secret",
 					},
 					Key: "KEYCLOAK_ADMIN_USERNAME",
 				},
@@ -146,9 +146,9 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 		{
 			Name: "KEYCLOAK_ADMIN_PASSWORD",
 			ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "environments",
+						Name: "keycloak-admin-secret",
 					},
 					Key: "KEYCLOAK_ADMIN_PASSWORD",
 				},
