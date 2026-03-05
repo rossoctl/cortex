@@ -144,7 +144,7 @@ kind: Secret
 metadata:
   name: auth-proxy-config
 stringData:
-  TOKEN_URL: "http://keycloak:8080/realms/demo/protocol/openid-connect/token"
+  TOKEN_URL: "http://keycloak:8080/realms/kagenti/protocol/openid-connect/token"
   ISSUER: "http://keycloak.example.com:8080/realms/demo"  # Required: must match Keycloak's frontend URL (iss claim in tokens)
   EXPECTED_AUDIENCE: "authproxy"  # Optional: expected audience for inbound requests
   CLIENT_ID: "authproxy"
@@ -158,7 +158,7 @@ stringData:
 The Ext Proc performs OAuth 2.0 Token Exchange as defined in [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693):
 
 ```
-POST /realms/demo/protocol/openid-connect/token
+POST /realms/kagenti/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange

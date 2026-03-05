@@ -16,7 +16,7 @@ metadata:
 data:
   SPIRE_ENABLED: "true"
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
-  KEYCLOAK_REALM: "demo"
+  KEYCLOAK_REALM: "kagenti"
   # Demo/development only: do NOT use hardcoded admin credentials in production.
   # For production deployments, supply these via a Kubernetes Secret and reference
   # them from your Pod/Deployment using env.valueFrom.secretKeyRef instead of this ConfigMap.
@@ -36,7 +36,7 @@ metadata:
   name: authbridge-config
   namespace: team1
 data:
-  TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token"
+  TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
   # ISSUER: Required. Keycloak frontend URL used as token issuer for inbound JWT validation.
   # Must match the "iss" claim in tokens (Keycloak's frontend URL).
   ISSUER: "http://keycloak.localtest.me:8080/realms/demo"

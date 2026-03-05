@@ -218,7 +218,7 @@ cd kagenti-webhook
 
 # Deploy webhook + create namespace
 # AUTHBRIDGE_K8S_DIR points at this demo's k8s manifests (default is single-target)
-AUTHBRIDGE_DEMO=true AUTHBRIDGE_NAMESPACE=team1 \
+CLUSTER=kagenti-dev AUTHBRIDGE_DEMO=true AUTHBRIDGE_NAMESPACE=team1 \
   AUTHBRIDGE_K8S_DIR=AuthBridge/demos/github-issue/k8s \
   ./scripts/webhook-rollout.sh
 ```
@@ -522,7 +522,7 @@ kubectl exec test-client -n team1 -- curl -s \
 ```
 
 > **Why this matters:** Even though the token is cryptographically valid (signed by
-> the same Keycloak instance), AuthProxy's issuer check ensures only tokens from the
+> the same Keycloak instance), AuthProxy's validation ensures only tokens from the
 > correct realm are accepted. This prevents cross-realm token reuse attacks.
 
 ### 8e. Valid Token - Agent Card
@@ -899,7 +899,7 @@ kubectl delete pod test-client -n team1 --ignore-not-found
 ### Delete ConfigMaps
 
 ```bash
-kubectl delete -f demos/github-issue/k8s/configmaps.yaml
+kubectl delete -f demos/github-issue/k8s/configmaps-webhook.yaml
 ```
 
 ### Delete Namespace (removes everything)

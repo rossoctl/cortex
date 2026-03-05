@@ -205,14 +205,14 @@ echo "Client ID: $CLIENT_ID"
 
 # Get a service account token (using test-client which has curl)
 TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
   -d "grant_type=client_credentials" \
   -d "client_id=$CLIENT_ID" \
   -d "client_secret=$CLIENT_SECRET" | jq -r '.access_token')
 
 # Get a user token for alice (for subject preservation test)
 USER_TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
   -d "grant_type=password" \
   -d "client_id=$CLIENT_ID" \
   -d "client_secret=$CLIENT_SECRET" \
@@ -270,11 +270,11 @@ CLIENT_ID=$(kubectl exec deployment/agent -n team1 -c envoy-proxy -- cat /shared
 CLIENT_SECRET=$(kubectl exec deployment/agent -n team1 -c envoy-proxy -- cat /shared/client-secret.txt)
 
 TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
   -d "grant_type=client_credentials" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" | jq -r '.access_token')
 
 USER_TOKEN=$(kubectl exec test-client -n team1 -- curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
   -d "grant_type=password" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
   -d "username=alice" -d "password=alice123" | jq -r '.access_token')
 
@@ -382,21 +382,21 @@ ADMIN_TOKEN=$(curl -s http://keycloak.localtest.me:8080/realms/master/protocol/o
 # Delete the dynamically registered agent client
 CLIENT_ID="spiffe://localtest.me/ns/team1/sa/agent"
 INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients/$INTERNAL_ID"
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients/$INTERNAL_ID"
 
 # Delete auth-target client
 AUTH_TARGET_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients?clientId=auth-target" | jq -r ".[0].id")
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients?clientId=auth-target" | jq -r ".[0].id")
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients/$AUTH_TARGET_ID"
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients/$AUTH_TARGET_ID"
 
 # Delete demo user alice
 ALICE_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/users?username=alice" | jq -r ".[0].id")
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/users?username=alice" | jq -r ".[0].id")
 curl -s -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/users/$ALICE_ID"
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/users/$ALICE_ID"
 
 echo "Keycloak resources cleaned up"
 ```

@@ -9,11 +9,11 @@ import (
 func CompiledDefaults() *PlatformConfig {
 	return &PlatformConfig{
 		Images: ImageConfig{
-			EnvoyProxy:         "ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest",
-			ProxyInit:          "ghcr.io/kagenti/kagenti-extensions/proxy-init:latest",
+			EnvoyProxy:         "ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:local",
+			ProxyInit:          "ghcr.io/kagenti/kagenti-extensions/proxy-init:local",
 			SpiffeHelper:       "ghcr.io/spiffe/spiffe-helper:nightly",
-			ClientRegistration: "ghcr.io/kagenti/kagenti-extensions/client-registration:latest",
-			PullPolicy:         corev1.PullIfNotPresent,
+			ClientRegistration: "ghcr.io/kagenti/kagenti-extensions/client-registration:local",
+			PullPolicy:         corev1.PullNever,
 		},
 		Proxy: ProxyConfig{
 			Port:             15123,

@@ -47,7 +47,7 @@ The demo deploys the following components:
 │  │   SPIRE (namespace:  │          │ KEYCLOAK (namespace: │                 │
 │  │       spire)         │          │     keycloak)        │                 │
 │  │                      │          │                      │                 │
-│  │  Provides SPIFFE     │          │  - demo realm        │                 │
+│  │  Provides SPIFFE     │          │  - kagenti realm        │                 │
 │  │  identities (SVIDs)  │          │  - token exchange    │                 │
 │  └──────────────────────┘          └──────────────────────┘                 │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -77,7 +77,7 @@ flowchart TB
     
     subgraph External["EXTERNAL SERVICES"]
         spire["SPIRE<br/>(namespace: spire)<br/>Provides SVIDs"]
-        keycloak["KEYCLOAK<br/>(namespace: keycloak)<br/>demo realm + token exchange"]
+        keycloak["KEYCLOAK<br/>(namespace: keycloak)<br/>kagenti realm + token exchange"]
     end
     
     spire --> spiffe
@@ -348,7 +348,7 @@ AGENT_POD_IP=$(kubectl get pod -l app=agent -n authbridge -o jsonpath='{.items[0
 TOKEN=$(kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
   CLIENT_ID=$(cat /shared/client-id.txt)
   CLIENT_SECRET=$(cat /shared/client-secret.txt)
-  curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+  curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
     -d "grant_type=client_credentials" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" | jq -r ".access_token"
 ')
 
@@ -356,7 +356,7 @@ TOKEN=$(kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
 USER_TOKEN=$(kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
   CLIENT_ID=$(cat /shared/client-id.txt)
   CLIENT_SECRET=$(cat /shared/client-secret.txt)
-  curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+  curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
     -d "grant_type=password" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
     -d "username=alice" -d "password=alice123" | jq -r ".access_token"
 ')
@@ -419,13 +419,13 @@ kubectl wait --for=condition=ready pod/test-client -n authbridge --timeout=30s
 
 TOKEN=$(kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
   CLIENT_ID=$(cat /shared/client-id.txt); CLIENT_SECRET=$(cat /shared/client-secret.txt)
-  curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+  curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
     -d "grant_type=client_credentials" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" | jq -r ".access_token"
 ')
 
 USER_TOKEN=$(kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
   CLIENT_ID=$(cat /shared/client-id.txt); CLIENT_SECRET=$(cat /shared/client-secret.txt)
-  curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+  curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
     -d "grant_type=password" -d "client_id=$CLIENT_ID" -d "client_secret=$CLIENT_SECRET" \
     -d "username=alice" -d "password=alice123" | jq -r ".access_token"
 ')
@@ -460,7 +460,7 @@ kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
 CLIENT_ID=$(cat /shared/client-id.txt)
 CLIENT_SECRET=$(cat /shared/client-secret.txt)
 
-TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
   -d "grant_type=client_credentials" \
   -d "client_id=$CLIENT_ID" \
   -d "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
@@ -489,7 +489,7 @@ kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
 CLIENT_ID=$(cat /shared/client-id.txt)
 CLIENT_SECRET=$(cat /shared/client-secret.txt)
 
-USER_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \
+USER_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "client_id=$CLIENT_ID" \
   -d "client_secret=$CLIENT_SECRET" \
@@ -634,15 +634,15 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/pr
   -d "grant_type=password" -d "client_id=admin-cli" -d "username=admin" -d "password=admin" | jq -r ".access_token")
 
 SCOPE_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/client-scopes" | \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/client-scopes" | \
   jq -r ".[] | select(.name==\"agent-spiffe-aud\") | .id")
 
 CLIENT_ID=$(cat /shared/client-id.txt)
 INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
 
 curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients/$INTERNAL_ID/default-client-scopes/$SCOPE_ID"
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients/$INTERNAL_ID/default-client-scopes/$SCOPE_ID"
 
 echo "Added agent-spiffe-aud scope to $CLIENT_ID"
 '
@@ -681,10 +681,10 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/master/pr
   -d "grant_type=password" -d "client_id=admin-cli" -d "username=admin" -d "password=admin" | jq -r ".access_token")
 
 INTERNAL_ID=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients?clientId=$CLIENT_ID" | jq -r ".[0].id")
 
 curl -s -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/demo/clients/$INTERNAL_ID" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients/$INTERNAL_ID" \
   -d "{\"clientId\": \"$CLIENT_ID\", \"serviceAccountsEnabled\": true}"
 
 echo "Done!"

@@ -119,13 +119,18 @@ echo ""
 
 # Step 1: Build and load image
 echo "[1/4] Building Docker image..."
-docker build -f Dockerfile . --tag "${IMAGE_NAME}" --load
+${DETECTED} build -f Dockerfile . --tag "${IMAGE_NAME}" --load
 
 echo ""
 echo "[2/4] Loading image into kind cluster..."
+# Set KIND_EXPERIMENTAL_PROVIDER for podman
+if [ "${DETECTED}" = "podman" ]; then
+    export KIND_EXPERIMENTAL_PROVIDER=podman
+fi
+
 if ! kind load docker-image --name "${CLUSTER}" "${IMAGE_NAME}" 2>/dev/null; then
-    echo "kind load failed, using docker save workaround..."
-    docker save "${IMAGE_NAME}" | docker exec -i "${CLUSTER}-control-plane" ctr --namespace k8s.io images import -
+    echo "kind load failed, using container save workaround..."
+    ${DETECTED} save "${IMAGE_NAME}" | ${DETECTED} exec -i "${CLUSTER}-control-plane" ctr --namespace k8s.io images import -
 fi
 
 # Step 2: Update deployment

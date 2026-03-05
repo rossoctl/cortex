@@ -92,11 +92,11 @@ ADMIN_TOKEN=$(curl -s -X POST "http://keycloak.localtest.me:8080/realms/master/p
 
 # Get authproxy client secret
 AUTHPROXY_SECRET=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients?clientId=authproxy" | jq -r '.[0].secret')
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients?clientId=authproxy" | jq -r '.[0].secret')
 
 # Create the secret
 kubectl create secret generic auth-proxy-config \
-  --from-literal=TOKEN_URL="http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/token" \
+  --from-literal=TOKEN_URL="http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/token" \
   --from-literal=ISSUER="http://keycloak.localtest.me:8080/realms/demo" \
   --from-literal=EXPECTED_AUDIENCE="authproxy" \
   --from-literal=CLIENT_ID="authproxy" \
@@ -128,11 +128,11 @@ ADMIN_TOKEN=$(curl -s -X POST "http://keycloak.localtest.me:8080/realms/master/p
   -d "client_id=admin-cli" -d "grant_type=password" -d "username=admin" -d "password=admin" | jq -r '.access_token')
 
 APP_SECRET=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak.localtest.me:8080/admin/realms/demo/clients?clientId=application-caller" | jq -r '.[0].secret')
+  "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients?clientId=application-caller" | jq -r '.[0].secret')
 
 # Get an access token (password grant with test-user)
 export ACCESS_TOKEN=$(curl -s -X POST \
-  "http://keycloak.localtest.me:8080/realms/demo/protocol/openid-connect/token" \
+  "http://keycloak.localtest.me:8080/realms/kagenti/protocol/openid-connect/token" \
   -d "grant_type=password" \
   -d "client_id=application-caller" \
   -d "client_secret=$APP_SECRET" \

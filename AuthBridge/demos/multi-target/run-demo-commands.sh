@@ -12,7 +12,7 @@ set -eu
 kubectl exec deployment/agent -n authbridge -c agent -- sh -c '
 CLIENT_ID=$(cat /shared/client-id.txt)
 CLIENT_SECRET=$(cat /shared/client-secret.txt)
-TOKEN_URL="http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token"
+TOKEN_URL="http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
 
 # Get original token response (includes scope in response)
 ORIG_RESP=$(curl -s $TOKEN_URL \

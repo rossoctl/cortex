@@ -51,7 +51,7 @@ from keycloak import KeycloakAdmin, KeycloakPostError
 # development purposes only and must not be used in production. Override them with
 # environment variables when running in any non-demo environment.
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "demo")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
 KEYCLOAK_ADMIN_USERNAME = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 

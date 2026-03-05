@@ -155,7 +155,7 @@ kubectl logs deployment/<agent> -n <ns> -c kagenti-client-registration
 # Query Keycloak (use --data-urlencode for SPIFFE IDs)
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   --data-urlencode "clientId=spiffe://localtest.me/ns/<ns>/sa/<sa>" \
-  --get "http://keycloak.localtest.me:8080/admin/realms/demo/clients" | jq '.[0].clientId'
+  --get "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients" | jq '.[0].clientId'
 ```
 
 ## Demo Deployment Checklist

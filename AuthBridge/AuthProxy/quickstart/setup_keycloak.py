@@ -1,7 +1,7 @@
 from keycloak import KeycloakAdmin, KeycloakGetError, KeycloakPostError
 
 KEYCLOAK_URL = "http://keycloak.localtest.me:8080"
-KEYCLOAK_REALM = "demo"
+KEYCLOAK_REALM = "kagenti"
 KEYCLOAK_ADMIN_USERNAME = "admin"
 KEYCLOAK_ADMIN_PASSWORD = "admin"
 

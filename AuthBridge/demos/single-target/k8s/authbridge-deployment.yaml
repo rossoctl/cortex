@@ -60,7 +60,7 @@ metadata:
   namespace: authbridge
 type: Opaque
 stringData:
-  TOKEN_URL: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/token"
+  TOKEN_URL: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/token"
   ISSUER: "http://keycloak.localtest.me:8080/realms/demo"
   TARGET_AUDIENCE: "auth-target"
   TARGET_SCOPES: "openid auth-target-aud"
@@ -78,7 +78,7 @@ metadata:
 data:
   SPIRE_ENABLED: "true"
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
-  KEYCLOAK_REALM: "demo"
+  KEYCLOAK_REALM: "kagenti"
   KEYCLOAK_ADMIN_USERNAME: "admin"
   KEYCLOAK_ADMIN_PASSWORD: "admin"
   KEYCLOAK_TOKEN_EXCHANGE_ENABLED: "true"
@@ -431,7 +431,7 @@ spec:
               echo "  # Get a token (as if Caller obtained it)"
               echo "  CLIENT_ID=\$(cat /shared/client-id.txt)"
               echo "  CLIENT_SECRET=\$(cat /shared/client-secret.txt)"
-              echo "  TOKEN=\$(curl -sX POST http://keycloak-service.keycloak.svc:8080/realms/demo/protocol/openid-connect/token \\"
+              echo "  TOKEN=\$(curl -sX POST http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \\"
               echo "    -d 'grant_type=client_credentials' \\"
               echo "    -d \"client_id=\$CLIENT_ID\" \\"
               echo "    -d \"client_secret=\$CLIENT_SECRET\" | jq -r '.access_token')"
@@ -472,7 +472,7 @@ spec:
             - name: TARGET_SERVICE_URL
               value: "http://auth-target-service:8081"
             - name: JWKS_URL
-              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
             - name: ISSUER
               valueFrom:
                 secretKeyRef:
@@ -601,7 +601,7 @@ spec:
             - name: ISSUER
               value: "http://keycloak.localtest.me:8080/realms/demo"
             - name: JWKS_URL
-              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
             # Auth Target expects tokens with "auth-target" audience
             - name: AUDIENCE
               value: "auth-target"

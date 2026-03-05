@@ -38,7 +38,7 @@ spec:
         - name: ISSUER
           value: "http://keycloak.localtest.me:8080/realms/demo"
         - name: JWKS_URL
-          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
         - name: AUDIENCE
           value: "target-alpha"
         resources:
@@ -91,7 +91,7 @@ spec:
         - name: ISSUER
           value: "http://keycloak.localtest.me:8080/realms/demo"
         - name: JWKS_URL
-          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
         - name: AUDIENCE
           value: "target-beta"
         resources:
@@ -144,7 +144,7 @@ spec:
         - name: ISSUER
           value: "http://keycloak.localtest.me:8080/realms/demo"
         - name: JWKS_URL
-          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/demo/protocol/openid-connect/certs"
+          value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
         - name: AUDIENCE
           value: "target-gamma"
         resources:

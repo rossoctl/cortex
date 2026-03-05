@@ -12,7 +12,7 @@ K8S_DIR="${SCRIPT_DIR}/k8s"
 KEYCLOAK_URL="${KEYCLOAK_URL:-http://keycloak.localtest.me:8080}"
 KEYCLOAK_ADMIN_USER="${KEYCLOAK_ADMIN_USER:-admin}"
 KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
-REALM="${REALM:-demo}"
+REALM="${REALM:-kagenti}"
 
 echo "=== Multi-Target Demo Teardown ==="
 echo ""
