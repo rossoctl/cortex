@@ -1,11 +1,8 @@
-# Demo-specific ConfigMap overrides for GitHub Issue Agent + AuthBridge
+# ConfigMaps for GitHub Issue Agent + AuthBridge Demo
 #
-# The Kagenti installer already creates correct defaults for environments,
-# spiffe-helper-config, envoy-config, and authbridge-config (with the kagenti
-# realm). This file only overrides authbridge-config with demo-specific values:
-# - TARGET_AUDIENCE: github-tool (the MCP GitHub tool)
-# - TARGET_SCOPES: scopes for token exchange to the tool
-# - EXPECTED_AUDIENCE: the agent's SPIFFE ID for inbound validation
+# These ConfigMaps configure AuthBridge sidecar injection for the GitHub Issue Agent.
+# The agent gets sidecars injected by the kagenti-webhook, and these ConfigMaps
+# tell those sidecars how to authenticate with Keycloak and perform token exchange.
 #
 # Usage:
 #   kubectl apply -f configmaps.yaml
@@ -27,7 +24,7 @@ metadata:
 data:
   SPIRE_ENABLED: "true"
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
-  KEYCLOAK_REALM: "demo"
+  KEYCLOAK_REALM: "kagenti"
   # Demo/development only: do NOT use hardcoded admin credentials in production.
   # For production deployments, these values come from values.yaml in the Helm chart.
   KEYCLOAK_ADMIN_USERNAME: "admin"
@@ -38,7 +35,7 @@ data:
   # For JWT-SVID authentication, you must also configure a SPIFFE identity provider
   # in Keycloak (see spiffe-keycloak/keycloak_federated_client.py) and ensure
   # SPIRE_ENABLED is "true" in the environments ConfigMap below.
-  CLIENT_AUTH_TYPE: "client-secret"
+  CLIENT_AUTH_TYPE: "federated-jwt"
   # SPIFFE_IDP_ALIAS: Keycloak SPIFFE identity provider alias (only used with federated-jwt)
   SPIFFE_IDP_ALIAS: "spire-spiffe"
   # JWT_AUDIENCE: Documents the expected JWT audience for this installation
@@ -46,7 +43,7 @@ data:
   # For JWT-SVID authentication (federated-jwt), this MUST match Keycloak's issuer URL
   # For client-secret auth, this can be any value (e.g., "kagenti")
   # NOTE: In production, the Kagenti Helm chart should generate both ConfigMaps with consistent values
-  JWT_AUDIENCE: "http://keycloak.localtest.me:8080/realms/demo"
+  JWT_AUDIENCE: "http://keycloak.localtest.me:8080/realms/kagenti"
 
 ---
 # environments ConfigMap - Used by agent application AND envoy-proxy (go-processor)
@@ -71,8 +68,9 @@ data:
 #   1. INBOUND validation: Validates JWT tokens on incoming requests to the agent
 #   2. OUTBOUND exchange:  Exchanges tokens when the agent calls the GitHub tool
 #
-# TOKEN_URL and ISSUER match the installer defaults (kagenti realm) and are
-# included because kubectl apply replaces the entire ConfigMap.
+# The TARGET_AUDIENCE is the Keycloak client representing the GitHub tool.
+# When the agent calls the tool, AuthBridge exchanges the incoming token for
+# a new one with aud=github-tool, which the tool validates.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -80,6 +78,7 @@ metadata:
   namespace: team1
 data:
   TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
+  # ISSUER: Required. Must match the "iss" claim in tokens (Keycloak frontend URL).
   ISSUER: "http://keycloak.localtest.me:8080/realms/kagenti"
   # EXPECTED_AUDIENCE: The agent's SPIFFE ID. Validates inbound tokens are intended for this agent.
   # Format: spiffe://localtest.me/ns/<namespace>/sa/<service-account>
@@ -114,7 +113,7 @@ data:
     # jwt_audience value should match JWT_AUDIENCE in kagenti-webhook-config ConfigMap
     # This MUST use Keycloak's PUBLIC issuer URL (not the internal service URL)
     # The audience must exactly match the "iss" claim in tokens issued by Keycloak
-    jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/demo", jwt_svid_file_name="/opt/jwt_svid.token"}]
+    jwt_svids = [{jwt_audience="http://keycloak.localtest.me:8080/realms/kagenti", jwt_svid_file_name="/opt/jwt_svid.token"}]
     jwt_svid_file_mode = 0644
     include_federated_domains = true
 
