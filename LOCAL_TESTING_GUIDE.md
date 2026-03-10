@@ -104,7 +104,7 @@ cd kagenti
 # --env-file ../kagenti-extensions/...    → Federated-jwt + local images for kagenti-extensions
 deployments/ansible/run-install.sh --env dev \
   --env-file deployments/envs/dev_values_local_images.yaml \
-  --env-file ../kagenti-extensions/federated-jwt-values.yaml
+  --env-file deployments/envs/dev_values_federated-jwt.yaml
 ```
 
 **About the values files:**
