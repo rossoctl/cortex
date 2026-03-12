@@ -7,7 +7,28 @@
 # Note: Update the namespace in metadata if applying to a different namespace
 
 ---
-# environments ConfigMap - Used by kagenti-client-registration container
+# kagenti-webhook-config ConfigMap - Used by kagenti-client-registration sidecar
+# This configures webhook-specific settings for client registration.
+# Keycloak connection info (KEYCLOAK_URL, KEYCLOAK_REALM) is in the environments ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kagenti-webhook-config
+  namespace: team1
+data:
+  # CLIENT_AUTH_TYPE: Controls how the client authenticates to Keycloak
+  #   - "client-secret": Traditional client_secret authentication (default, simpler for testing)
+  #   - "federated-jwt": JWT-SVID authentication via SPIFFE identity provider
+  CLIENT_AUTH_TYPE: "federated-jwt"
+  # SPIFFE_IDP_ALIAS: Keycloak SPIFFE identity provider alias (only used with federated-jwt)
+  SPIFFE_IDP_ALIAS: "spire-spiffe"
+  # JWT_AUDIENCE: Expected JWT audience for this installation
+  # For JWT-SVID authentication (federated-jwt), this MUST match Keycloak's issuer URL
+  JWT_AUDIENCE: "http://keycloak.localtest.me:8080/realms/demo"
+
+---
+# environments ConfigMap - Used by kagenti-client-registration and envoy-proxy sidecars
+# This is the shared ConfigMap for Keycloak connection info and SPIRE enablement.
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -91,7 +91,14 @@ EXPECTED_AUDIENCE: "spiffe://localtest.me/ns/<your-namespace>/sa/<your-service-a
 
 The ConfigMaps include:
 
-- `environments` - Keycloak connection settings for client-registration
+- `kagenti-webhook-config` - Webhook-specific settings for client-registration:
+  - `CLIENT_AUTH_TYPE` - Authentication type (`client-secret` or `federated-jwt`)
+  - `SPIFFE_IDP_ALIAS` - Keycloak SPIFFE IdP alias (for `federated-jwt` mode)
+  - `JWT_AUDIENCE` - Expected JWT audience
+- `environments` - Shared Keycloak connection settings:
+  - `SPIRE_ENABLED` - Whether SPIRE is enabled
+  - `KEYCLOAK_URL` - Keycloak API endpoint
+  - `KEYCLOAK_REALM` - Keycloak realm name
 - `authbridge-config` - Token exchange and inbound validation configuration for envoy-proxy:
   - `TOKEN_URL` - Keycloak token endpoint for token exchange
   - `ISSUER` - Expected JWT issuer for inbound validation (required)

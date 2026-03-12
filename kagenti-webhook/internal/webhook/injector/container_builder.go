@@ -111,7 +111,8 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 	clientName := namespace + "/" + name
 
 	// Base environment variables
-	// All webhook-specific configuration comes from kagenti-webhook-config ConfigMap
+	// Keycloak connection info comes from environments ConfigMap (shared with agents)
+	// Webhook-specific config (CLIENT_AUTH_TYPE, SPIFFE_IDP_ALIAS) comes from kagenti-webhook-config
 	env := []corev1.EnvVar{
 		{
 			Name:  "SPIRE_ENABLED",
@@ -122,7 +123,7 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "kagenti-webhook-config",
+						Name: "environments",
 					},
 					Key:      "KEYCLOAK_URL",
 					Optional: ptr.To(true),
@@ -134,7 +135,7 @@ func (b *ContainerBuilder) BuildClientRegistrationContainerWithSpireOption(name,
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "kagenti-webhook-config",
+						Name: "environments",
 					},
 					Key:      "KEYCLOAK_REALM",
 					Optional: ptr.To(true),
