@@ -17,11 +17,6 @@ data:
   SPIRE_ENABLED: "true"
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
   KEYCLOAK_REALM: "kagenti"
-  # Demo/development only: do NOT use hardcoded admin credentials in production.
-  # For production deployments, supply these via a Kubernetes Secret and reference
-  # them from your Pod/Deployment using env.valueFrom.secretKeyRef instead of this ConfigMap.
-  KEYCLOAK_ADMIN_USERNAME: "admin"
-  KEYCLOAK_ADMIN_PASSWORD: "admin"
   # Comma-separated list of Keycloak client IDs that should receive the agent's
   # audience scope. This allows existing clients (like the UI) to include the
   # agent's audience in their tokens without manual Keycloak configuration.

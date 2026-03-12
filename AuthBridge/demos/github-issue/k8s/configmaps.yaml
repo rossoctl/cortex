@@ -25,10 +25,6 @@ data:
   SPIRE_ENABLED: "true"
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
   KEYCLOAK_REALM: "kagenti"
-  # Demo/development only: do NOT use hardcoded admin credentials in production.
-  # For production deployments, these values come from values.yaml in the Helm chart.
-  KEYCLOAK_ADMIN_USERNAME: "admin"
-  KEYCLOAK_ADMIN_PASSWORD: "admin"
   # CLIENT_AUTH_TYPE: Controls how the client authenticates to Keycloak
   #   - "client-secret": Traditional client_secret authentication (default, simpler for testing)
   #   - "federated-jwt": JWT-SVID authentication via SPIFFE identity provider
