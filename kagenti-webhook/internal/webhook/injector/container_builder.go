@@ -433,23 +433,16 @@ func (b *ContainerBuilder) BuildEnvoyProxyContainerWithSpireOption(spireEnabled 
 // SECURITY NOTE: This init container requires elevated privileges:
 //   - RunAsUser: 0 (root) - Required to modify network namespace iptables rules
 //   - RunAsNonRoot: false - Explicitly allows root execution
-//   - Privileged: true - Required for iptables manipulation and sysctl commands
-//     (e.g., sysctl -w net.ipv4.conf.all.route_localnet=1 for Istio Ambient Mesh coexistence)
+//   - NET_ADMIN capability - Required for iptables manipulation
+//   - NET_RAW capability - Required for raw socket operations used by iptables
 //
 // These privileges are necessary because iptables manipulation is a kernel-level
 // operation that requires root access. This is a common pattern used by service
 // meshes (Istio, Linkerd) for transparent traffic interception.
 //
-// Risk mitigations:
-//   - This runs as an init container (not a long-running sidecar), limiting exposure window
-//   - The container exits immediately after configuring iptables rules
-//   - Minimal resource limits are applied (10m CPU, 10Mi memory)
-//   - The container image should be regularly updated and scanned for vulnerabilities
-//   - Consider using a distroless or minimal base image for the proxy-init container
-//
-// Alternative approaches (not currently implemented):
-//   - CNI plugin: Configure iptables at pod network setup time (requires cluster-level changes)
-//   - Istio CNI: Similar approach used by Istio to avoid privileged init containers
+// We use specific capabilities instead of privileged mode to follow the
+// principle of least privilege, matching the static AuthBridge deployment
+// manifest and Istio's istio-init container pattern.
 func (b *ContainerBuilder) BuildProxyInitContainer() corev1.Container {
 	builderLog.Info("building ProxyInit Container")
 
@@ -479,7 +472,10 @@ func (b *ContainerBuilder) BuildProxyInitContainer() corev1.Container {
 		SecurityContext: &corev1.SecurityContext{
 			RunAsUser:    ptr.To(int64(0)),
 			RunAsNonRoot: ptr.To(false),
-			Privileged:   ptr.To(true),
+			Capabilities: &corev1.Capabilities{
+				Add:  []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+				Drop: []corev1.Capability{"ALL"},
+			},
 		},
 	}
 }

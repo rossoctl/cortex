@@ -262,7 +262,7 @@ The AuthBridge webhook injects the following containers into Kubernetes workload
 - **Image**: `ghcr.io/kagenti/kagenti-extensions/proxy-init:latest` (configurable)
 - **Purpose**: Sets up iptables rules to redirect traffic through the Envoy proxy
 - **Resources**: 10m CPU / 64Mi memory (request/limit)
-- **Privileged**: Yes (required for iptables modification)
+- **Capabilities**: NET_ADMIN, NET_RAW (required for iptables modification)
 
 ##### 2. Envoy Proxy (`envoy-proxy`) - Sidecar Container
 
