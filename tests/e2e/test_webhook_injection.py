@@ -48,6 +48,7 @@ _ALL_INIT = {_PROXY_INIT}
 _TYPE_LABEL = "kagenti.io/type"
 _INJECT_LABEL = "kagenti.io/inject"
 _CLIENT_REGISTRATION_INJECT_LABEL = "kagenti.io/client-registration-inject"
+_AUTH_MODE_LABEL = "kagenti.io/auth-mode"
 
 # App container included in every test pod
 _APP_CONTAINER = "app"
@@ -92,7 +93,7 @@ class TestAgentSidecarInjection:
     def test_agent_pod_gets_envoy_proxy(self, k8s_client, test_namespace):
         """Agent pod must have envoy-proxy sidecar injected."""
         name = _make_pod_name("agent-envoy")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -117,7 +118,7 @@ class TestAgentSidecarInjection:
     def test_agent_pod_gets_proxy_init(self, k8s_client, test_namespace):
         """Agent pod must have proxy-init init container injected (mirrors envoy-proxy)."""
         name = _make_pod_name("agent-init")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -138,7 +139,7 @@ class TestAgentSidecarInjection:
     def test_agent_pod_gets_spiffe_helper(self, k8s_client, test_namespace):
         """Agent pod must have spiffe-helper sidecar injected."""
         name = _make_pod_name("agent-spiffe")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -161,7 +162,7 @@ class TestAgentSidecarInjection:
     ):
         """Default agent pods do not get the legacy kagenti-client-registration sidecar."""
         name = _make_pod_name("agent-noclientreg")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -186,6 +187,7 @@ class TestAgentSidecarInjection:
             name,
             {
                 _TYPE_LABEL: "agent",
+                _AUTH_MODE_LABEL: "sidecar",
                 _CLIENT_REGISTRATION_INJECT_LABEL: "true",
             },
         )
@@ -209,7 +211,7 @@ class TestAgentSidecarInjection:
     def test_agent_pod_gets_all_sidecars(self, k8s_client, test_namespace):
         """Agent pod must have default injected containers (envoy, spiffe, proxy-init)."""
         name = _make_pod_name("agent-all")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -237,7 +239,7 @@ class TestAgentSidecarInjection:
     def test_agent_pod_keeps_app_container(self, k8s_client, test_namespace):
         """Injection must not remove the original application container."""
         name = _make_pod_name("agent-app")
-        pod = _build_test_pod(name, {_TYPE_LABEL: "agent"})
+        pod = _build_test_pod(name, {_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"})
 
         try:
             created = k8s_client.create_namespaced_pod(namespace=test_namespace, body=pod)
@@ -359,7 +361,7 @@ class TestInjectionIdempotency:
         pod = client.V1Pod(
             metadata=client.V1ObjectMeta(
                 name=name,
-                labels={_TYPE_LABEL: "agent"},
+                labels={_TYPE_LABEL: "agent", _AUTH_MODE_LABEL: "sidecar"},
             ),
             spec=client.V1PodSpec(
                 containers=[

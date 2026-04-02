@@ -36,6 +36,11 @@ const (
 	SpiffeHelperContainerName       = "spiffe-helper"
 	ClientRegistrationContainerName = "kagenti-client-registration"
 
+	// Authentication mode labels
+	AuthModeLabel     = "kagenti.io/auth-mode"
+	AuthModeWaypoint  = "waypoint"
+	AuthModeSidecar   = "sidecar"
+
 	// Label selector for authbridge injection opt-out.
 	// Injection uses opt-out semantics for agents: sidecars are injected by
 	// default. Setting AuthBridgeInjectLabel=AuthBridgeDisabledValue on a
@@ -79,6 +84,8 @@ type PodMutator struct {
 	// Getter functions for hot-reloadable config (used by precedence evaluator)
 	GetPlatformConfig func() *config.PlatformConfig
 	GetFeatureGates   func() *config.FeatureGates
+	// DefaultAuthMode is the authentication mode to use when no explicit mode is set
+	DefaultAuthMode string
 }
 
 func NewPodMutator(
@@ -86,18 +93,124 @@ func NewPodMutator(
 	enableClientRegistration bool,
 	getPlatformConfig func() *config.PlatformConfig,
 	getFeatureGates func() *config.FeatureGates,
+	defaultAuthMode string,
 ) *PodMutator {
+	// Validate and normalize defaultAuthMode
+	if defaultAuthMode != AuthModeWaypoint && defaultAuthMode != AuthModeSidecar {
+		mutatorLog.Info("Invalid default auth mode, using waypoint", "provided", defaultAuthMode, "using", AuthModeWaypoint)
+		defaultAuthMode = AuthModeWaypoint
+	}
+
 	return &PodMutator{
 		Client:                   client,
 		EnableClientRegistration: enableClientRegistration,
 		GetPlatformConfig:        getPlatformConfig,
 		GetFeatureGates:          getFeatureGates,
+		DefaultAuthMode:          defaultAuthMode,
 	}
 }
 
-// InjectAuthBridge evaluates the multi-layer precedence chain and conditionally injects sidecars.
+// getAuthMode determines the authentication mode for a pod based on labels.
+// Priority:
+//  1. Explicit kagenti.io/auth-mode label (waypoint or sidecar)
+//  2. Legacy labels (kagenti.io/inject=enabled or kagenti.io/envoy-proxy-inject=true → sidecar)
+//  3. Default configured mode (waypoint)
+func (m *PodMutator) getAuthMode(labels map[string]string) string {
+	// Check explicit auth mode label
+	if mode, ok := labels[AuthModeLabel]; ok {
+		if mode == AuthModeWaypoint || mode == AuthModeSidecar {
+			return mode
+		}
+		mutatorLog.Info("Invalid auth-mode label value, falling back to default",
+			"value", mode, "default", m.DefaultAuthMode)
+	}
+
+	// Check legacy inject labels (backward compatibility)
+	if labels[AuthBridgeInjectLabel] == AuthBridgeInjectValue {
+		return AuthModeSidecar
+	}
+
+	// Check legacy per-sidecar labels
+	if labels["kagenti.io/envoy-proxy-inject"] == "true" {
+		return AuthModeSidecar
+	}
+
+	// Default to configured default mode
+	return m.DefaultAuthMode
+}
+
+// InjectAuthBridge determines the authentication mode and delegates to the appropriate injection method.
 func (m *PodMutator) InjectAuthBridge(ctx context.Context, podSpec *corev1.PodSpec, namespace, crName string, labels, annotations map[string]string) (bool, error) {
 	mutatorLog.Info("InjectAuthBridge called", "namespace", namespace, "crName", crName, "labels", labels)
+
+	// Determine authentication mode
+	authMode := m.getAuthMode(labels)
+	mutatorLog.Info("Authentication mode determined", "namespace", namespace, "crName", crName, "authMode", authMode)
+
+	// Branch based on authentication mode
+	switch authMode {
+	case AuthModeWaypoint:
+		return m.injectAuthBridgeWaypointMode(ctx, podSpec, namespace, crName, labels, annotations)
+	case AuthModeSidecar:
+		return m.injectAuthBridgeSidecarMode(ctx, podSpec, namespace, crName, labels, annotations)
+	default:
+		mutatorLog.Info("Unknown auth mode, defaulting to waypoint", "namespace", namespace, "crName", crName, "authMode", authMode)
+		return m.injectAuthBridgeWaypointMode(ctx, podSpec, namespace, crName, labels, annotations)
+	}
+}
+
+// injectAuthBridgeWaypointMode handles waypoint-based authentication.
+// In waypoint mode, no sidecars are injected. Authentication is handled by the namespace waypoint gateway.
+func (m *PodMutator) injectAuthBridgeWaypointMode(ctx context.Context, podSpec *corev1.PodSpec, namespace, crName string, labels, annotations map[string]string) (bool, error) {
+	mutatorLog.Info("Waypoint mode: no sidecar injection needed", "namespace", namespace, "crName", crName)
+
+	// Pre-filter: kagenti.io/type must be agent or tool
+	kagentiType, hasKagentiLabel := labels[KagentiTypeLabel]
+	if !hasKagentiLabel || (kagentiType != KagentiTypeAgent && kagentiType != KagentiTypeTool) {
+		mutatorLog.Info("Skipping mutation: workload is not an agent or a tool",
+			"hasLabel", hasKagentiLabel,
+			"labelValue", kagentiType)
+		return false, nil
+	}
+
+	// Get feature gates for global kill switch check
+	currentGates := m.GetFeatureGates()
+	if !currentGates.GlobalEnabled {
+		mutatorLog.Info("Skipping mutation: global feature gate disabled",
+			"namespace", namespace, "crName", crName)
+		return false, nil
+	}
+
+	// Tool workloads are only processed when the injectTools feature gate is on
+	if kagentiType == KagentiTypeTool && !currentGates.InjectTools {
+		mutatorLog.Info("Skipping mutation: tool injection disabled via injectTools feature gate",
+			"namespace", namespace, "crName", crName)
+		return false, nil
+	}
+
+	// Opt-out: skip even annotation when kagenti.io/inject=disabled is explicitly set
+	if labels[AuthBridgeInjectLabel] == AuthBridgeDisabledValue {
+		mutatorLog.Info("Skipping mutation: workload opted out via kagenti.io/inject=disabled",
+			"namespace", namespace, "crName", crName)
+		return false, nil
+	}
+
+	// In waypoint mode, we don't inject any sidecars
+	// The namespace waypoint gateway (managed by the operator) handles authentication
+	// We just add an annotation to indicate the pod is using waypoint mode
+	mutatorLog.Info("Waypoint mode enabled, no sidecars injected",
+		"namespace", namespace,
+		"crName", crName,
+		"kagentiType", kagentiType,
+		"message", "Authentication will be handled by namespace waypoint gateway")
+
+	return false, nil
+}
+
+// injectAuthBridgeSidecarMode evaluates the multi-layer precedence chain and conditionally injects sidecars.
+// This is the legacy sidecar-based authentication mode.
+func (m *PodMutator) injectAuthBridgeSidecarMode(ctx context.Context, podSpec *corev1.PodSpec, namespace, crName string, labels, annotations map[string]string) (bool, error) {
+	mutatorLog.Info("Sidecar mode: evaluating injection precedence", "namespace", namespace, "crName", crName)
 
 	// Pre-filter: kagenti.io/type must be agent or tool.
 	kagentiType, hasKagentiLabel := labels[KagentiTypeLabel]

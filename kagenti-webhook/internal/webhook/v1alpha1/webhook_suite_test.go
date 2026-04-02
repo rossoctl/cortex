@@ -117,11 +117,13 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	// Create pod mutator for tests
+	// Use sidecar mode for tests to maintain existing test behavior
 	podMutator := injector.NewPodMutator(
 		k8sClient,
 		true,
 		func() *config.PlatformConfig { return config.CompiledDefaults() },
 		func() *config.FeatureGates { return config.DefaultFeatureGates() },
+		"sidecar",
 	)
 
 	err = SetupAuthBridgeWebhookWithManager(mgr, podMutator)

@@ -43,6 +43,7 @@ spec:
         - --health-probe-bind-address=:8081
         - --webhook-cert-path={{ .Values.webhook.certPath }}
         - --enable-client-registration={{ .Values.webhook.enableClientRegistration }}
+        - --default-auth-mode={{ .Values.webhook.defaultAuthMode }}
         - --config-path=/etc/kagenti/config.yaml
         - --feature-gates-path=/etc/kagenti/feature-gates/feature-gates.yaml
         ports:

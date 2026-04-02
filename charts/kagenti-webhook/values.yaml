@@ -21,6 +21,11 @@ namespace:
 webhook:
   enabled: true
   enableClientRegistration: true
+  # defaultAuthMode is the authentication mode to use when no explicit mode is set on a workload.
+  # Options: "waypoint" (Istio ambient waypoint-based) or "sidecar" (legacy sidecar injection).
+  # Default: "waypoint" — minimal resource overhead, centralized policy.
+  # Set to "sidecar" for legacy behavior or when Istio ambient is not available.
+  defaultAuthMode: waypoint
   certPath: /tmp/k8s-webhook-server/serving-certs
   certName: tls.crt
   certKey: tls.key

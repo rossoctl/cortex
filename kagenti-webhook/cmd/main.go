@@ -67,6 +67,7 @@ func main() {
 	var enableClientRegistration bool
 	var configPath string
 	var featureGatesPath string
+	var defaultAuthMode string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -89,6 +90,7 @@ func main() {
 		"If set, Kagenti webhook will register tool clients in Keycloak")
 	flag.StringVar(&configPath, "config-path", "/etc/kagenti/config.yaml", "Path to platform config file")
 	flag.StringVar(&featureGatesPath, "feature-gates-path", "/etc/kagenti/feature-gates/feature-gates.yaml", "Path to feature gates config file")
+	flag.StringVar(&defaultAuthMode, "default-auth-mode", "waypoint", "Default authentication mode: waypoint or sidecar")
 
 	opts := zap.Options{
 		Development: true,
@@ -276,6 +278,7 @@ func main() {
 		enableClientRegistration,
 		configLoader.Get,
 		featureGateLoader.Get,
+		defaultAuthMode,
 	)
 
 	// nolint:goconst
