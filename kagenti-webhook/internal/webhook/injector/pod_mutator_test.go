@@ -121,6 +121,7 @@ func TestInjectAuthBridge_SetsServiceAccountName(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
@@ -149,6 +150,7 @@ func TestInjectAuthBridge_RespectsExistingServiceAccountName(t *testing.T) {
 	}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
@@ -172,6 +174,7 @@ func TestInjectAuthBridge_NoSACreationWhenSpiffeHelperDisabled(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel:        KagentiTypeAgent,
+		AuthModeLabel:           AuthModeSidecar,
 		LabelSpiffeHelperInject: "false", // explicitly opt out of spiffe-helper
 	}
 
@@ -275,6 +278,7 @@ func TestInjectAuthBridge_DefaultSAOverridden(t *testing.T) {
 	}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
@@ -296,6 +300,7 @@ func TestInjectAuthBridge_OutboundPortsExcludeAnnotation(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 	annotations := map[string]string{
 		OutboundPortsExcludeAnnotation: "11434",
@@ -333,6 +338,7 @@ func TestInjectAuthBridge_InboundPortsExcludeAnnotation(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 	annotations := map[string]string{
 		OutboundPortsExcludeAnnotation: "11434",
@@ -404,6 +410,7 @@ func TestInjectAuthBridge_CombinedMode_SingleContainer(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
@@ -475,6 +482,7 @@ func TestInjectAuthBridge_CombinedMode_SpiffeDisabled_FlagPassed(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel:        KagentiTypeAgent,
+		AuthModeLabel:           AuthModeSidecar,
 		LabelSpiffeHelperInject: "false",
 	}
 
@@ -518,6 +526,7 @@ func TestInjectAuthBridge_CombinedMode_Idempotency(t *testing.T) {
 	}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
@@ -547,6 +556,7 @@ func TestInjectAuthBridge_NilAnnotations(t *testing.T) {
 	podSpec := &corev1.PodSpec{}
 	labels := map[string]string{
 		KagentiTypeLabel: KagentiTypeAgent,
+		AuthModeLabel:    AuthModeSidecar,
 	}
 
 	injected, err := m.InjectAuthBridge(ctx, podSpec, "test-ns", "my-agent", labels, nil)
