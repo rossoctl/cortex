@@ -349,7 +349,7 @@ OPENAI_API_KEY=sk-...
 
 ## Step 5: Chat via Kagenti UI
 
-1. Navigate to the **Agent Catalog** in the Kagenti UI.
+1. Navigate to the **Agents** to open **Agents Catalog** in the Kagenti UI.
 2. Select the `team1` namespace.
 3. Under **Available Agents**, select `weather-service` and click **View Details**.
 4. Verify the **Agent Card** is visible (this confirms the agent is running and
