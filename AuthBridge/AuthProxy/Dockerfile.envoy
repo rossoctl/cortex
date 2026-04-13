@@ -6,7 +6,7 @@ COPY go-processor/ ./go-processor/
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -o /go-processor ./go-processor
 
-FROM docker.io/envoyproxy/envoy:v1.37.1 AS envoy-source
+FROM docker.io/envoyproxy/envoy:v1.37.2 AS envoy-source
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:83006d535923fcf1345067873524a3980316f51794f01d8655be55d6e9387183
 

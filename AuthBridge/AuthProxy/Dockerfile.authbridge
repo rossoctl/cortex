@@ -18,7 +18,7 @@ RUN cd AuthProxy && CGO_ENABLED=0 GOOS=linux go build -o /go-processor ./go-proc
 FROM ghcr.io/spiffe/spiffe-helper:0.11.0 AS spiffe
 
 # Stage 3: Combined runtime
-FROM docker.io/envoyproxy/envoy:v1.37.1
+FROM docker.io/envoyproxy/envoy:v1.37.2
 
 USER root
 RUN apt-get update && \
