@@ -26,7 +26,7 @@ RUN cd cmd/authbridge && CGO_ENABLED=0 GOOS=linux go build -o /authbridge .
 FROM ghcr.io/spiffe/spiffe-helper:0.11.0 AS spiffe
 
 # Stage 3: Combined runtime
-FROM docker.io/envoyproxy/envoy:v1.37.2
+FROM docker.io/envoyproxy/envoy:v1.38.0
 
 USER root
 RUN apt-get update && \
