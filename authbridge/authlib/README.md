@@ -14,6 +14,7 @@ A pure Go library providing reusable building blocks for JWT validation, OAuth 2
 | `routing/` | Host-to-audience router with glob pattern matching |
 | `auth/` | Composition layer: `HandleInbound` + `HandleOutbound` |
 | `config/` | YAML config, mode presets, startup validation, URL derivation |
+| `vault/` | Hashicorp Vault integration with JWT/OIDC auth (SPIFFE), KV v1/v2 support, lease-aware caching |
 
 ## Usage
 
@@ -39,4 +40,4 @@ outResult := handler.HandleOutbound(ctx, authHeader, host)
 module github.com/kagenti/kagenti-extensions/authbridge/authlib
 ```
 
-Direct dependencies: `lestrrat-go/jwx/v2`, `gobwas/glob`, `gopkg.in/yaml.v3`. No gRPC or Envoy deps.
+Direct dependencies: `lestrrat-go/jwx/v2`, `gobwas/glob`, `gopkg.in/yaml.v3`, `hashicorp/vault/api`. No gRPC or Envoy deps.
