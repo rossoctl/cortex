@@ -1,0 +1,63 @@
+# vault-fetcher configuration example
+
+# Vault connection and authentication
+vault:
+  # Vault server address
+  address: "https://vault.example.com"
+
+  # Authentication method: "jwt" (SPIFFE), "kubernetes", or "token"
+  auth_method: "jwt"
+
+  # Vault role name (required for jwt and kubernetes auth)
+  role: "github-agent-role"
+
+  # Path to JWT-SVID file (for jwt auth method)
+  # Default: /opt/jwt_svid.token
+  jwt_path: "/opt/jwt_svid.token"
+
+  # JWT audience (for jwt auth method)
+  # Default: vault
+  jwt_audience: "vault"
+
+  # Cache TTL for secrets
+  # Format: duration string (e.g., "5m", "1h")
+  cache_ttl: "5m"
+
+  # TLS configuration (optional)
+  # tls_skip_verify: false
+  # ca_cert: "/etc/ssl/certs/vault-ca.pem"
+
+  # Vault namespace (Vault Enterprise only)
+  # namespace: "my-namespace"
+
+# Secrets to fetch from Vault
+secrets:
+  # GitHub personal access token
+  - path: "secret/data/github/token"
+    field: "token"
+    output: "/shared/secrets/github-token"
+    mode: "0600"  # Optional: file permissions (default: 0600)
+
+  # Slack webhook URL
+  - path: "secret/data/slack/webhook"
+    field: "url"
+    output: "/shared/secrets/slack-webhook"
+    mode: "0600"
+
+  # Database password
+  - path: "secret/data/database/postgres"
+    field: "password"
+    output: "/shared/secrets/db-password"
+    mode: "0600"
+
+# Optional: Alternative output formats
+output_formats:
+  # Environment file (shell-compatible)
+  env_file:
+    enabled: false
+    path: "/shared/secrets/.env"
+
+  # JSON file
+  json_file:
+    enabled: false
+    path: "/shared/secrets/credentials.json"
