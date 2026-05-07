@@ -1,0 +1,48 @@
+# Example ConfigMap for vault-fetcher configuration
+# This should be created in the same namespace as the workload
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-fetcher-config
+  namespace: default  # Change to your namespace
+data:
+  config.yaml: |
+    vault:
+      # Vault server address
+      address: "https://vault.vault.svc.cluster.local:8200"
+
+      # Authentication method: jwt (SPIFFE), kubernetes, or token
+      auth_method: "jwt"
+
+      # Vault role name
+      role: "github-agent-role"
+
+      # JWT-SVID path (written by spiffe-helper)
+      jwt_path: "/opt/jwt_svid.token"
+
+      # JWT audience
+      jwt_audience: "vault"
+
+      # Cache TTL
+      cache_ttl: "5m"
+
+    # Secrets to fetch
+    secrets:
+      - path: "secret/data/github/token"
+        field: "token"
+        output: "/shared/secrets/github-token"
+        mode: "0600"
+
+      - path: "secret/data/slack/webhook"
+        field: "url"
+        output: "/shared/secrets/slack-webhook"
+        mode: "0600"
+
+    # Optional: Additional output formats
+    output_formats:
+      env_file:
+        enabled: false
+        path: "/shared/secrets/.env"
+      json_file:
+        enabled: false
+        path: "/shared/secrets/credentials.json"
