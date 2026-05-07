@@ -70,6 +70,11 @@ jobs:
             context: ./authbridge/authproxy/quickstart/demo-app
             dockerfile: Dockerfile
 
+          # Vault Fetcher - init container for fetching secrets from Vault
+          - name: vault-fetcher
+            context: ./authbridge
+            dockerfile: vault-fetcher/Dockerfile
+
     steps:
       # 1. Checkout code
       - name: Checkout repository
