@@ -157,6 +157,7 @@ All images are pushed to `ghcr.io/kagenti/kagenti-extensions/`:
 | `spiffe-helper` | `authbridge/spiffe-helper/Dockerfile` | Fetches SPIFFE credentials from SPIRE |
 | `auth-proxy` | `authbridge/authproxy/Dockerfile` | Example pass-through proxy (for demos) |
 | `demo-app` | `authbridge/authproxy/quickstart/demo-app/Dockerfile` | Demo target service |
+| **`vault-fetcher`** | **`authbridge/vault-fetcher/Dockerfile`** | **Init container for fetching secrets from Vault using SPIFFE identity** |
 
 ## Pre-commit Hooks
 
