@@ -1,0 +1,73 @@
+# Example deployment with vault-fetcher init container
+# This shows manual injection (before webhook integration)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: github-agent
+  namespace: default
+  labels:
+    app: github-agent
+spec:
+  serviceAccountName: github-agent
+
+  # Init containers run before application container
+  initContainers:
+  # 1. vault-fetcher: Fetch secrets from Vault
+  - name: vault-fetcher
+    image: ghcr.io/kagenti/kagenti-extensions/vault-fetcher:latest
+    args:
+    - --config=/etc/vault-fetcher/config.yaml
+    volumeMounts:
+    - name: spiffe-svid
+      mountPath: /opt
+      readOnly: true
+    - name: shared-secrets
+      mountPath: /shared/secrets
+    - name: vault-fetcher-config
+      mountPath: /etc/vault-fetcher
+      readOnly: true
+    securityContext:
+      runAsUser: 65532
+      runAsGroup: 65532
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+  # Application container
+  containers:
+  - name: agent
+    image: my-agent:latest
+    volumeMounts:
+    - name: shared-secrets
+      mountPath: /shared/secrets
+      readOnly: true
+    env:
+    # Application can read secrets from files
+    - name: GITHUB_TOKEN_FILE
+      value: "/shared/secrets/github-token"
+    - name: SLACK_WEBHOOK_FILE
+      value: "/shared/secrets/slack-webhook"
+    securityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+  # Volumes
+  volumes:
+  - name: spiffe-svid
+    emptyDir: {}
+  - name: shared-secrets
+    emptyDir: {}
+  - name: vault-fetcher-config
+    configMap:
+      name: vault-fetcher-config
