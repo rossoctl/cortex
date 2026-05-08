@@ -65,11 +65,12 @@ func (p *SessionPhase) UnmarshalJSON(data []byte) error {
 
 // SessionEvent represents a single pipeline event captured by the session store.
 // At most one of A2A, MCP, or Inference is non-nil on any given event, but
-// the event may also carry Auth (from auth-class plugins) and/or Plugins
-// (the escape-hatch map from Extensions.Plugins) regardless of which
-// protocol extension is present. An event with Phase=SessionDenied
-// typically carries only Auth (+ Identity, Host, Error) because the
-// request never reached a protocol parser before the pipeline rejected it.
+// the event may also carry Invocations (records from any plugin that ran on
+// the pass) and/or Plugins (the escape-hatch map from Extensions.Custom)
+// regardless of which protocol extension is present. An event with
+// Phase=SessionDenied typically carries only Invocations (+ Identity, Host,
+// Error) because the request never reached a protocol parser before the
+// pipeline rejected it.
 type SessionEvent struct {
 	// SessionID is the session bucket the event was appended to. Populated by
 	// Store.Append so downstream consumers (particularly the SSE stream
@@ -85,11 +86,12 @@ type SessionEvent struct {
 	MCP       *MCPExtension
 	Inference *InferenceExtension
 
-	// Auth carries auth-class plugin decisions (jwt-validation, token-
-	// exchange, future token-broker). Nil when no auth plugin populated
-	// the extension, non-nil with at least one Inbound or Outbound entry
-	// otherwise. See AuthExtension godoc for the per-plugin shape.
-	Auth *AuthExtension
+	// Invocations carries records of every plugin that ran on the
+	// pipeline pass — gate, parser, rate-limiter, etc. Nil when no
+	// plugin appended a record, non-nil with at least one Inbound or
+	// Outbound entry otherwise. See Invocations godoc for the per-
+	// plugin shape.
+	Invocations *Invocations
 
 	// Plugins carries plugin-public observability events in JSON form.
 	// Populated by the listener from Extensions.Custom entries whose keys
@@ -151,7 +153,7 @@ type sessionEventWire struct {
 	A2A            *A2AExtension              `json:"a2a,omitempty"`
 	MCP            *MCPExtension              `json:"mcp,omitempty"`
 	Inference      *InferenceExtension        `json:"inference,omitempty"`
-	Auth           *AuthExtension             `json:"auth,omitempty"`
+	Invocations    *Invocations               `json:"invocations,omitempty"`
 	Plugins        map[string]json.RawMessage `json:"plugins,omitempty"`
 	Identity       *EventIdentity             `json:"identity,omitempty"`
 	StatusCode     int                        `json:"statusCode,omitempty"`
@@ -170,7 +172,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		A2A:            e.A2A,
 		MCP:            e.MCP,
 		Inference:      e.Inference,
-		Auth:           e.Auth,
+		Invocations:    e.Invocations,
 		Plugins:        e.Plugins,
 		Identity:       e.Identity,
 		StatusCode:     e.StatusCode,
@@ -197,7 +199,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		A2A:            w.A2A,
 		MCP:            w.MCP,
 		Inference:      w.Inference,
-		Auth:           w.Auth,
+		Invocations:    w.Invocations,
 		Plugins:        w.Plugins,
 		Identity:       w.Identity,
 		StatusCode:     w.StatusCode,

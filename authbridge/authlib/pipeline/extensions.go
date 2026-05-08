@@ -32,13 +32,13 @@ import "time"
 // time: a plugin author has to deliberately type "/event" to opt into
 // serialization, so private state can never leak by accident.
 type Extensions struct {
-	MCP        *MCPExtension
-	A2A        *A2AExtension
-	Security   *SecurityExtension
-	Delegation *DelegationExtension
-	Inference  *InferenceExtension
-	Auth       *AuthExtension
-	Custom     map[string]any
+	MCP         *MCPExtension
+	A2A         *A2AExtension
+	Security    *SecurityExtension
+	Delegation  *DelegationExtension
+	Inference   *InferenceExtension
+	Invocations *Invocations
+	Custom      map[string]any
 }
 
 // PluginEventSuffix is the key suffix that marks a Custom entry as
@@ -178,65 +178,96 @@ type SecurityExtension struct {
 	BlockReason string   `json:"blockReason,omitempty"`
 }
 
-// AuthExtension carries per-request auth decisions made by auth-class
-// plugins (jwt-validation inbound, token-exchange outbound, and any future
-// plugins of the same category). Multiple plugins can contribute — each
-// appends an entry — so chained auth plugins cooperate without schema
-// churn. Directions are disjoint per request: a single listener pass
-// populates at most one of Inbound / Outbound.
-type AuthExtension struct {
-	Inbound  []InboundAuth  `json:"inbound,omitempty"`
-	Outbound []OutboundAuth `json:"outbound,omitempty"`
+// InvocationAction is the universal 5-value vocabulary every plugin uses
+// to describe what it did on a single pipeline pass. Every plugin —
+// gate, parser, rate-limiter, guardrail, whatever we add next —
+// MUST emit exactly one of these per Invocation so abctl and /v1/sessions
+// can render a consistent per-plugin timeline.
+//
+//	allow   — a gate plugin permitted the request. jwt-validation
+//	          returns this on successful signature + issuer + audience.
+//	deny    — a gate plugin rejected the request. Terminal for the
+//	          pipeline pass. jwt-validation on bad token,
+//	          token-exchange on upstream IdP failure.
+//	skip    — the plugin ran but didn't act. jwt-validation on a
+//	          bypass path, token-exchange on a host with no matching
+//	          route, a parser whose body didn't match its format.
+//	modify  — the plugin mutated the message. token-exchange replaced
+//	          the Authorization header with a freshly-issued token.
+//	observe — the plugin attached diagnostic data without altering
+//	          flow. All parsers use this when they successfully parse.
+//
+// Reason (the stable machine code alongside Action) can discriminate
+// within a value — e.g. skip/path_bypass vs skip/no_matching_route
+// tell different stories at the detail-pane level, but both read
+// "skip" in the at-a-glance timeline.
+//
+// Named InvocationAction rather than Action because pipeline.Action is
+// already the pipeline-directive struct (Continue / Reject); keeping
+// the names distinct avoids a shadowing foot-gun.
+type InvocationAction string
+
+const (
+	ActionAllow   InvocationAction = "allow"
+	ActionDeny    InvocationAction = "deny"
+	ActionSkip    InvocationAction = "skip"
+	ActionModify  InvocationAction = "modify"
+	ActionObserve InvocationAction = "observe"
+)
+
+// Invocations carries one record per plugin that ran on a pipeline pass,
+// split by direction so a single event's inbound and outbound plugin
+// activity stays distinguishable. Multiple plugins can contribute — each
+// appends an entry — so chained plugins cooperate without schema churn.
+// Directions are disjoint per request: a single listener pass populates
+// at most one of Inbound / Outbound.
+//
+// Replaces the earlier AuthExtension; parsers and any other plugin class
+// share the list now. abctl renders one row per Invocation, so operators
+// get a per-plugin timeline without guessing which plugins touched each
+// event.
+type Invocations struct {
+	Inbound  []Invocation `json:"inbound,omitempty"`
+	Outbound []Invocation `json:"outbound,omitempty"`
 }
 
-// InboundAuth is one auth-class plugin's inbound decision on the request.
-// Fields are populated selectively: Reason/ExpectedIssuer/ExpectedAudience
-// are diagnostic data for deny branches; TokenSubject/Audience/Scopes are
-// populated on allow so operators see what the plugin actually verified.
+// Invocation records one plugin's action on one pipeline pass. Plugin is
+// the plugin's Name() for traceability. Action is the universal 5-value
+// verb (see Action). Reason is a stable machine-readable label paired
+// with the counters plugins already feed into /stats — use Reason for
+// filtering / indexing rather than Action alone when you need to
+// distinguish skip/path_bypass from skip/no_matching_route.
 //
-// Plugin is the plugin's Name() for traceability when multiple entries
-// stack. Decision is the stable machine code: "allow" | "deny" | "bypass".
-// Reason is a stable machine-readable label, paired with the counters
-// plugins already feed into /stats (e.g. "jwt_failed", "path_bypass");
-// use this for filtering/indexing rather than human strings.
+// Diagnostic fields are populated selectively per plugin. Auth gates
+// populate ExpectedIssuer/Audience/Token*; outbound routers populate
+// Route* and CacheHit; parsers typically populate only Plugin/Action/
+// Reason because their semantic payload lives on the typed extension
+// slots (A2A / MCP / Inference).
 //
 // NEVER contains the raw bearer token, token signature, or client
 // credentials. The session API has no auth on it; only safe-to-log data
 // belongs here.
-type InboundAuth struct {
-	Plugin   string `json:"plugin"`
-	Decision string `json:"decision"`
-	Reason   string `json:"reason,omitempty"`
-	// Path is the request path the decision was made on. Populated so
-	// operators can disambiguate bypass events (e.g. is this a kubelet
-	// /healthz probe or a Kagenti UI /.well-known/agent.json poll?) and,
-	// for deny events, spot path-targeted scans. Left empty when the
-	// plugin didn't have a path context (rare — Run always carries one).
-	Path             string   `json:"path,omitempty"`
+type Invocation struct {
+	Plugin string           `json:"plugin"`
+	Action InvocationAction `json:"action"`
+	Reason string           `json:"reason,omitempty"`
+
+	// Path is the request path the invocation ran on. Populated so
+	// operators can disambiguate invocations on the same plugin (e.g.
+	// a jwt-validation skip on /healthz vs /.well-known/agent.json;
+	// a mcp-parser observe on tools/call vs tools/list). Left empty
+	// when the plugin has no path context.
+	Path string `json:"path,omitempty"`
+
+	// Auth-gate context, populated when applicable.
 	ExpectedIssuer   string   `json:"expectedIssuer,omitempty"`
 	ExpectedAudience string   `json:"expectedAudience,omitempty"`
 	TokenSubject     string   `json:"tokenSubject,omitempty"`
 	TokenAudience    []string `json:"tokenAudience,omitempty"`
 	TokenScopes      []string `json:"tokenScopes,omitempty"`
-}
 
-// OutboundAuth is one auth-class plugin's outbound action on the request.
-// Action enumerates what the plugin did: "exchange" (RFC 8693 swap),
-// "broker" (external broker fetch, for future token-broker), "passthrough"
-// (no route match, no op — populated so operators can see every outbound
-// host the pod talks to; symmetric with jwt-validation's bypass events),
-// "no_token_applied" (NoTokenPolicy kicked in), or "denied" (exchange or
-// broker failed).
-//
-// Route context (RouteMatched / RouteHost / TargetAudience /
-// RequestedScopes) is populated when the plugin resolved a route; absent
-// for plugins that don't use routing. CacheHit is populated by plugins
-// that cache issued tokens (token-exchange) so perf diagnostics surface
-// without reading /stats.
-type OutboundAuth struct {
-	Plugin          string   `json:"plugin"`
-	Action          string   `json:"action"`
-	Reason          string   `json:"reason,omitempty"`
+	// Outbound routing context. RouteMatched=true means a route rule
+	// explicitly applied; false means the default policy caught it.
 	RouteMatched    bool     `json:"routeMatched,omitempty"`
 	RouteHost       string   `json:"routeHost,omitempty"`
 	TargetAudience  string   `json:"targetAudience,omitempty"`

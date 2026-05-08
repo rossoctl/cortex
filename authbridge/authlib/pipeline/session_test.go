@@ -137,28 +137,29 @@ func TestSessionPhase_Denied_SerializesAsString(t *testing.T) {
 	}
 }
 
-// Round-trip the Auth extension through JSON including both directions,
+// Round-trip Invocations through JSON including both directions,
 // multiple entries per direction, and the optional diagnostic fields.
-// Locks in the wire shape so a future field addition that's missed in
-// sessionEventWire fails this test (see top-level TestSessionEvent_
-// JSONRoundTrip for the same-guarantee pattern applied to the rest of
-// SessionEvent).
-func TestSessionEvent_AuthExtension_JSONRoundTrip(t *testing.T) {
+// Also verifies the Action field serializes as the 5-value string
+// vocabulary (not the old "decision"/"action"-per-direction shape).
+// Locks the wire schema so a future field addition that's missed in
+// sessionEventWire fails this test.
+func TestSessionEvent_Invocations_JSONRoundTrip(t *testing.T) {
 	orig := SessionEvent{
 		At:        time.Unix(1700000000, 0).UTC(),
 		Direction: Inbound,
 		Phase:     SessionDenied,
-		Auth: &AuthExtension{
-			Inbound: []InboundAuth{{
+		Invocations: &Invocations{
+			Inbound: []Invocation{{
 				Plugin:           "jwt-validation",
-				Decision:         "deny",
+				Action:           ActionDeny,
 				Reason:           "jwt_failed",
 				ExpectedIssuer:   "http://keycloak.localtest.me:8080/realms/kagenti",
 				ExpectedAudience: "spiffe://localtest.me/ns/team1/sa/weather-tool",
 			}},
-			Outbound: []OutboundAuth{{
+			Outbound: []Invocation{{
 				Plugin:          "token-exchange",
-				Action:          "exchange",
+				Action:          ActionModify,
+				Reason:          "cache_hit",
 				RouteMatched:    true,
 				RouteHost:       "weather-tool-mcp",
 				TargetAudience:  "spiffe://localtest.me/ns/team1/sa/weather-tool",
@@ -174,6 +175,12 @@ func TestSessionEvent_AuthExtension_JSONRoundTrip(t *testing.T) {
 	if !strings.Contains(string(first), `"phase":"denied"`) {
 		t.Errorf("expected phase=denied in JSON: %s", first)
 	}
+	if !strings.Contains(string(first), `"action":"deny"`) {
+		t.Errorf("expected action=deny (5-value vocab) in JSON: %s", first)
+	}
+	if !strings.Contains(string(first), `"action":"modify"`) {
+		t.Errorf("expected action=modify in JSON: %s", first)
+	}
 	var decoded SessionEvent
 	if err := json.Unmarshal(first, &decoded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
@@ -183,7 +190,7 @@ func TestSessionEvent_AuthExtension_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("second Marshal: %v", err)
 	}
 	if string(first) != string(second) {
-		t.Errorf("Auth extension round-trip drifted:\n  first:  %s\n  second: %s", first, second)
+		t.Errorf("Invocations round-trip drifted:\n  first:  %s\n  second: %s", first, second)
 	}
 }
 
