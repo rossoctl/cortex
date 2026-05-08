@@ -287,19 +287,43 @@ An `Invocation` says *which* plugin ran and *what* it did, in a
 per invocation — without an invocation record, a plugin's work is
 invisible to the operator.
 
+Recording is done through `Context` helpers. The framework fills in
+`Plugin`, `Phase`, and `Path` automatically from the currently-
+dispatching plugin + phase + request path; the plugin supplies only
+what's specific to this call.
+
+**For the common passive actions, use the one-liner wrappers:**
+
 ```go
-// Append one record per OnRequest/OnResponse call. Helper functions
-// exist in each plugin package; the listener snapshot will pick them up
-// from pctx.Extensions.Invocations.
-pctx.Extensions.Invocations = &pipeline.Invocations{
-    Inbound: []pipeline.Invocation{{
-        Plugin: "jwt-validation",
-        Action: pipeline.ActionAllow,    // 5-value verb
-        Reason: "authorized",             // machine-stable reason code
-        Path:   pctx.Path,
-    }},
-}
+pctx.Allow("authorized")                 // ActionAllow + reason
+pctx.Skip("path_bypass")                 // ActionSkip + reason
+pctx.Observe("matched_tools/call")       // ActionObserve + reason
+pctx.Modify("token_replaced")            // ActionModify + reason
 ```
+
+**For rejections (control-flow + record in one call):**
+
+```go
+return pctx.DenyAndRecord("jwt_failed", "auth.unauthorized", "token validation failed")
+```
+
+**For invocations that carry diagnostic context** (auth-gate fields,
+route context, cache-hit flag, etc.) use the full `Record`:
+
+```go
+pctx.Record(pipeline.Invocation{
+    Action:           pipeline.ActionDeny,
+    Reason:           result.DenyReasonCode.String(),
+    ExpectedIssuer:   p.cfg.Issuer,
+    ExpectedAudience: audience,
+})
+return pipeline.DenyStatus(result.DenyStatus, code, result.DenyReason)
+```
+
+`Plugin`, `Phase`, and `Path` are left zero — the framework fills
+them. A plugin CAN set them to non-zero values to override (useful
+for test harnesses synthesizing Invocations outside a pipeline run),
+but production plugins should not.
 
 The 5 actions and when to use them:
 
