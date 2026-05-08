@@ -116,3 +116,5 @@ func Build(entries []config.PluginEntry, opts ...pipeline.Option) (*pipeline.Pip
 	}
 	return pipeline.New(ps, opts...)
 }
+
+// Made with Bob
