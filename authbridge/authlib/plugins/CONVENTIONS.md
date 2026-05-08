@@ -272,6 +272,83 @@ list is empty. The error message names the likely cause so the
 operator is pointed at the migration, not left wondering why
 authentication isn't happening.
 
+## Emitting session events
+
+Plugins can surface per-request state into `/v1/sessions` two ways.
+Pick based on how many other plugins want to consume the same shape.
+
+### Named category (typed slot)
+
+`MCP`, `A2A`, `Inference`, `Auth` are named fields on
+`pipeline.Extensions`. Plugins write a typed struct into the relevant
+slot; the listener snapshots it onto `SessionEvent` on the wire.
+Consumers (abctl, dashboards, stats) know the exact schema at compile
+time.
+
+Use a named category when:
+
+- **Multiple plugins produce the same shape.** Auth is shared by
+  `jwt-validation` (inbound) and `token-exchange` (outbound); a future
+  `token-broker` drops into the same slot without schema churn.
+- **abctl or dashboards need to render a dedicated column / panel.**
+- **Stats counters partition on the data** — category fields are
+  compile-checked, so a typo in a reason code fails the build.
+
+Adding a new named category is a **core-library change**: edit
+`pipeline/extensions.go` (new field), `pipeline/session.go` (wire + JSON
+round-trip), the listener (snapshot helper + recorder inclusion), and
+abctl if you want bespoke rendering.
+
+### Escape-hatch map (`Custom` with `/event` suffix)
+
+For plugin-specific observability that doesn't warrant a category yet,
+write to `pctx.Extensions.Custom` with a key ending in
+`pipeline.PluginEventSuffix` (`"/event"`):
+
+```go
+// Plugin-PUBLIC event. Listener serializes this to SessionEvent.Plugins
+// under key "rate-limiter" (suffix stripped).
+pctx.Extensions.Custom["rate-limiter"+pipeline.PluginEventSuffix] = rateLimiterEvent{
+    Allowed:    true,
+    TokensLeft: 42,
+}
+
+// Plugin-PRIVATE cross-phase state. Never serialized. Used via the
+// typed SetState / GetState generics.
+pipeline.SetState(pctx, "rate-limiter", &rateLimiterState{Bucket: b})
+```
+
+The `/event` suffix is the opt-in marker: the listener only promotes
+matching keys into `SessionEvent.Plugins`. Private state stays out.
+
+Rules for plugin-public events:
+
+- **Value must be JSON-marshalable.** The listener calls `json.Marshal`;
+  failures downgrade to `slog.Debug` and skip the entry (a misbehaving
+  plugin can't break the session stream).
+- **NEVER put raw credentials or tokens in the value.** The session
+  store has no auth on it — only safe-to-log data belongs there.
+- **Key prefix MUST be the plugin's `Name()`.** Keeps namespaces clean
+  so unrelated plugins don't collide.
+- **Payload schema is plugin-owned.** No central registry; abctl
+  treats unknown keys as raw JSON in the detail pane.
+
+### Graduation: when to promote map → named category
+
+Graduate to a typed slot when ≥2 of these are true:
+
+1. **Two or more plugins share the shape.** That's the signal the
+   "category" concept is worth codifying — it prevents N plugins from
+   each shipping their own near-identical struct.
+2. **abctl or the session API grows conditional logic on the key.**
+   If consumers already parse the payload, making the schema compile-
+   checked is a net win.
+3. **The data is populated on nearly every deployment.** Core
+   semantics (auth, protocol) graduate; niche plugins stay in the map.
+
+Don't graduate speculatively — the map path has no cost if you stay
+in it.
+
 ## Cross-references
 
 - `authbridge/authlib/pipeline/configurable.go` — the interface.
@@ -280,3 +357,8 @@ authentication isn't happening.
 - `authbridge/authlib/config/config.go` — `PluginEntry` YAML shape and
   parsing.
 - `authbridge/authlib/plugins/registry.go` — how Build calls Configure.
+- `authbridge/authlib/pipeline/extensions.go` — named categories
+  (`MCP`, `A2A`, `Inference`, `Auth`) + `Custom` map + escape-hatch
+  convention.
+- `authbridge/authlib/pipeline/session.go` — `SessionEvent` wire shape
+  and the `SessionDenied` phase.

@@ -333,6 +333,20 @@ curl -N http://localhost:9094/v1/events
 curl -N "http://localhost:9094/v1/events?session=$SID"
 ```
 
+### Event schema
+
+Every event on `/v1/sessions/{id}` and `/v1/events` carries:
+
+- `at`, `direction`, `phase` — when, which side, what stage. `phase` is one of `"request"`, `"response"`, or `"denied"` (terminal denial from a pipeline plugin — typically a jwt-validation failure).
+- `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
+- `auth` — auth-class plugin decisions (`jwt-validation`, `token-exchange`, future plugins). Structured as `{inbound: [...], outbound: [...]}`; each entry carries the plugin name, decision/action (`allow` / `deny` / `bypass` / `exchange` / `denied`), a machine-stable reason code, and context (expected issuer, target audience, cache-hit flag).
+- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in abctl. See `authlib/plugins/CONVENTIONS.md` "Emitting session events" for the producer contract.
+- `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context.
+
+### Gotcha: denied requests
+
+Pre-Auth-extension, rejected requests (401 / 503) were invisible in `/v1/sessions` because the listener recorded on protocol-parser match. After: any pipeline plugin that populates `pctx.Extensions.Auth` before rejecting produces a `phase: "denied"` event. If you're debugging an unauthorized-access pattern, the default-session bucket (`GET /v1/sessions/default`) is where denial events aggregate.
+
 ### Disabling
 
 Set `session.enabled: false` in the runtime config to turn off the store (and implicitly the API). Setting `listener.session_api_addr: ""` alone is not currently supported as a selective disable — the preset refills it; if you need store-on-API-off, raise an issue.
