@@ -463,8 +463,22 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	host := pctx.Host
 
 	result := p.inner.HandleOutbound(ctx, authHeader, host)
+	// Record an Auth.Outbound entry only when we actually ACTED — exchange
+	// replaced a token or the IdP rejected a request. Passthrough hosts
+	// (ActionAllow with no route match) are skipped so the session stream
+	// isn't drowned by every outbound HTTP call that had no policy
+	// attached; operators still see those in /stats counters.
 	switch result.Action {
 	case auth.ActionDeny:
+		appendOutboundAuth(pctx, pipeline.OutboundAuth{
+			Plugin:          "token-exchange",
+			Action:          "denied",
+			Reason:          result.DenyReasonCode.String(),
+			RouteMatched:    result.RouteMatched,
+			RouteHost:       host,
+			TargetAudience:  result.TargetAudience,
+			RequestedScopes: splitScopes(result.RequestedScopes),
+		})
 		// Outbound denials almost always come from failed token exchange
 		// at the IdP (upstream unreachable, bad credentials, audience
 		// refused). The auth layer returns the HTTP status it wants to
@@ -476,8 +490,37 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		return pipeline.DenyStatus(result.DenyStatus, code, result.DenyReason)
 	case auth.ActionReplaceToken:
 		pctx.Headers.Set("Authorization", "Bearer "+result.Token)
+		appendOutboundAuth(pctx, pipeline.OutboundAuth{
+			Plugin:          "token-exchange",
+			Action:          "exchange",
+			RouteMatched:    true,
+			RouteHost:       host,
+			TargetAudience:  result.TargetAudience,
+			RequestedScopes: splitScopes(result.RequestedScopes),
+			CacheHit:        result.CacheHit,
+		})
 	}
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// appendOutboundAuth lazy-creates pctx.Extensions.Auth and appends one
+// entry under Outbound. Symmetric with appendInboundAuth in
+// jwtvalidation.go.
+func appendOutboundAuth(pctx *pipeline.Context, entry pipeline.OutboundAuth) {
+	if pctx.Extensions.Auth == nil {
+		pctx.Extensions.Auth = &pipeline.AuthExtension{}
+	}
+	pctx.Extensions.Auth.Outbound = append(pctx.Extensions.Auth.Outbound, entry)
+}
+
+// splitScopes turns a space-separated scope string into []string. Returns
+// nil for the empty string so the JSON omitempty tag drops the field
+// entirely rather than emitting "[]".
+func splitScopes(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Fields(s)
 }
 
 func (p *TokenExchange) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {

@@ -635,6 +635,14 @@ func TestTokenExchange_Passthrough(t *testing.T) {
 	if pctx.Headers.Get("Authorization") != "Bearer user-token" {
 		t.Error("headers should not be modified for passthrough")
 	}
+	// Passthrough MUST NOT populate Auth.Outbound — otherwise every
+	// outbound HTTP call without policy would appear in the session
+	// stream, drowning the interesting exchange events. Operators still
+	// see passthrough counts via /stats' OUTBOUND_NO_MATCHING_ROUTE
+	// counter.
+	if pctx.Extensions.Auth != nil {
+		t.Errorf("expected Auth unset on passthrough, got %+v", pctx.Extensions.Auth)
+	}
 }
 
 func TestTokenExchange_ExchangeSuccess(t *testing.T) {
@@ -669,6 +677,23 @@ func TestTokenExchange_ExchangeSuccess(t *testing.T) {
 	if pctx.Headers.Get("Authorization") != "Bearer new-token" {
 		t.Errorf("token = %q, want Bearer new-token", pctx.Headers.Get("Authorization"))
 	}
+	// Auth extension must surface the exchange action so it flows into
+	// SessionEvent.Auth.Outbound once the listener records. Empty route
+	// (TargetAudience, RequestedScopes) is OK here — this test doesn't
+	// configure routes, it uses default_policy=exchange.
+	if pctx.Extensions.Auth == nil || len(pctx.Extensions.Auth.Outbound) != 1 {
+		t.Fatalf("expected one Auth.Outbound entry, got %+v", pctx.Extensions.Auth)
+	}
+	got := pctx.Extensions.Auth.Outbound[0]
+	if got.Plugin != "token-exchange" || got.Action != "exchange" {
+		t.Errorf("got Plugin=%q Action=%q, want token-exchange/exchange", got.Plugin, got.Action)
+	}
+	if got.RouteHost != "target-svc" {
+		t.Errorf("RouteHost = %q, want target-svc", got.RouteHost)
+	}
+	if got.CacheHit {
+		t.Error("CacheHit = true on first exchange; should be false")
+	}
 }
 
 func TestTokenExchange_ExchangeFailure(t *testing.T) {
@@ -699,6 +724,19 @@ func TestTokenExchange_ExchangeFailure(t *testing.T) {
 	status, _, _ := action.Violation.Render()
 	if status != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", status)
+	}
+	// Deny branch must surface a "denied" Auth.Outbound entry with the
+	// machine-stable reason — matches what the listener needs to emit a
+	// SessionDenied event on outbound exchange failure.
+	if pctx.Extensions.Auth == nil || len(pctx.Extensions.Auth.Outbound) != 1 {
+		t.Fatalf("expected one Auth.Outbound entry, got %+v", pctx.Extensions.Auth)
+	}
+	got := pctx.Extensions.Auth.Outbound[0]
+	if got.Action != "denied" {
+		t.Errorf("Action = %q, want denied", got.Action)
+	}
+	if got.Reason != "token_exchange_failed" {
+		t.Errorf("Reason = %q, want token_exchange_failed (from OutboundDenialReason.String)", got.Reason)
 	}
 }
 

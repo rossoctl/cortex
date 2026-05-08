@@ -401,7 +401,14 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 		if cached, ok := a.cache.Get(subjectToken, audience); ok {
 			a.IncOutboundReplaceToken(OUTBOUND_ACTION_CACHE_HIT)
 			a.log.Debug("outbound cache hit", "host", host, "audience", audience)
-			return &OutboundResult{Action: ActionReplaceToken, Token: cached, CacheHit: true}
+			return &OutboundResult{
+				Action:          ActionReplaceToken,
+				Token:           cached,
+				CacheHit:        true,
+				RouteMatched:    true,
+				TargetAudience:  audience,
+				RequestedScopes: scopes,
+			}
 		}
 	}
 
@@ -442,10 +449,13 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 			"tokenEndpoint", resolved.TokenEndpoint,
 			"error", err)
 		return &OutboundResult{
-			Action:         ActionDeny,
-			DenyStatus:     http.StatusServiceUnavailable,
-			DenyReason:     "token exchange failed",
-			DenyReasonCode: OUTBOUND_TOKEN_EXCHANGE_FAILED,
+			Action:          ActionDeny,
+			DenyStatus:      http.StatusServiceUnavailable,
+			DenyReason:      "token exchange failed",
+			DenyReasonCode:  OUTBOUND_TOKEN_EXCHANGE_FAILED,
+			RouteMatched:    true,
+			TargetAudience:  audience,
+			RequestedScopes: scopes,
 		}
 	}
 
@@ -459,7 +469,13 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	a.log.Info("outbound token exchanged", "host", host, "audience", audience)
 	a.log.Debug("outbound exchange details",
 		"host", host, "audience", audience, "expiresIn", resp.ExpiresIn)
-	return &OutboundResult{Action: ActionReplaceToken, Token: resp.AccessToken}
+	return &OutboundResult{
+		Action:          ActionReplaceToken,
+		Token:           resp.AccessToken,
+		RouteMatched:    true,
+		TargetAudience:  audience,
+		RequestedScopes: scopes,
+	}
 }
 
 func (a *Auth) handleNoToken(ctx context.Context, audience, scopes string) *OutboundResult {

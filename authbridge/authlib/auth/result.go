@@ -36,10 +36,19 @@ type InboundResult struct {
 
 // OutboundResult is the outcome of outbound token exchange.
 type OutboundResult struct {
-	Action         string              // ActionAllow, ActionReplaceToken, or ActionDeny
-	Token          string              // replacement token (when Action == ActionReplaceToken)
-	DenyStatus     int                 // HTTP status code (e.g., 503)
-	DenyReason     string              // human-readable error
+	Action         string               // ActionAllow, ActionReplaceToken, or ActionDeny
+	Token          string               // replacement token (when Action == ActionReplaceToken)
+	DenyStatus     int                  // HTTP status code (e.g., 503)
+	DenyReason     string               // human-readable error
 	DenyReasonCode OutboundDenialReason // machine-stable enum paired with the /stats counter
-	CacheHit       bool                // true when Token was served from the exchange cache; safe to read on any Action
+	CacheHit       bool                 // true when Token was served from the exchange cache; safe to read on any Action
+
+	// Route context populated when the router matched the request. Gives
+	// observability callers (token-exchange plugin writing a SessionEvent)
+	// a way to surface which route was chosen without reaching into
+	// routing.ResolvedRoute directly. RouteMatched=false means the
+	// request passed through because no route fired.
+	RouteMatched    bool   // true when Router.Resolve returned a non-nil route (regardless of action)
+	TargetAudience  string // resolved route's audience (or deriver's output); empty on passthrough
+	RequestedScopes string // resolved route's scopes, raw space-separated; empty on passthrough
 }
