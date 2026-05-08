@@ -433,3 +433,111 @@ func scanUntilPrefix(t *testing.T, sc *bufio.Scanner, prefix string, d time.Dura
 	}
 	return ""
 }
+
+// TestHandleGet_SerializesAuthExtension verifies the wire shape of
+// SessionEvent.Auth on /v1/sessions/{id}. A downstream consumer (abctl,
+// curl pipes, scripts) must be able to decode the structured Inbound /
+// Outbound slices without a side channel — this locks the schema.
+func TestHandleGet_SerializesAuthExtension(t *testing.T) {
+	ts, store := newTestServer(t)
+	store.Append("s-auth", pipeline.SessionEvent{
+		Direction: pipeline.Inbound,
+		Phase:     pipeline.SessionDenied,
+		Auth: &pipeline.AuthExtension{
+			Inbound: []pipeline.InboundAuth{{
+				Plugin:           "jwt-validation",
+				Decision:         "deny",
+				Reason:           "jwt_failed",
+				ExpectedIssuer:   "http://issuer.example",
+				ExpectedAudience: "agent-aud",
+			}},
+		},
+	})
+
+	resp, err := http.Get(ts.URL + "/v1/sessions/s-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+
+	// Phase renders as string
+	if !strings.Contains(string(body), `"phase":"denied"`) {
+		t.Errorf("missing denied phase in wire: %s", body)
+	}
+	// Auth sub-object present
+	if !strings.Contains(string(body), `"auth":`) {
+		t.Errorf("missing auth field in wire: %s", body)
+	}
+
+	// Structural decode — consumer can unmarshal straight into the
+	// canonical types. This is the contract abctl relies on.
+	var view pipeline.SessionView
+	if err := json.Unmarshal(body, &view); err != nil {
+		t.Fatalf("SessionView unmarshal: %v", err)
+	}
+	if len(view.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(view.Events))
+	}
+	got := view.Events[0]
+	if got.Phase != pipeline.SessionDenied {
+		t.Errorf("Phase = %v, want SessionDenied", got.Phase)
+	}
+	if got.Auth == nil || len(got.Auth.Inbound) != 1 {
+		t.Fatalf("Auth not decoded: %+v", got.Auth)
+	}
+	if got.Auth.Inbound[0].Reason != "jwt_failed" {
+		t.Errorf("Reason = %q, want jwt_failed", got.Auth.Inbound[0].Reason)
+	}
+}
+
+// TestHandleGet_SerializesPluginsMap verifies the escape-hatch Plugins
+// field round-trips as keyed json.RawMessage — abctl consumes each
+// plugin's payload by key without needing to know the plugin's schema
+// at compile time.
+func TestHandleGet_SerializesPluginsMap(t *testing.T) {
+	ts, store := newTestServer(t)
+	store.Append("s-plug", pipeline.SessionEvent{
+		Direction: pipeline.Outbound,
+		Phase:     pipeline.SessionResponse,
+		Plugins: map[string]json.RawMessage{
+			"rate-limiter": json.RawMessage(`{"allowed":true,"tokensLeft":42}`),
+		},
+	})
+
+	resp, err := http.Get(ts.URL + "/v1/sessions/s-plug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if !strings.Contains(string(body), `"plugins":{"rate-limiter":`) {
+		t.Errorf("plugins field missing or reshaped: %s", body)
+	}
+
+	var view pipeline.SessionView
+	if err := json.Unmarshal(body, &view); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, ok := view.Events[0].Plugins["rate-limiter"]
+	if !ok {
+		t.Fatalf("rate-limiter key missing: %+v", view.Events[0].Plugins)
+	}
+	// Round-trip the per-plugin payload to a caller-defined type — the
+	// exact pattern abctl will use to render plugin events it knows
+	// about, while leaving unknown plugins as raw JSON.
+	var payload struct {
+		Allowed    bool `json:"allowed"`
+		TokensLeft int  `json:"tokensLeft"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("plugin payload decode: %v", err)
+	}
+	if !payload.Allowed || payload.TokensLeft != 42 {
+		t.Errorf("payload drift: %+v", payload)
+	}
+}
