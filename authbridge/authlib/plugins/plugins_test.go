@@ -17,6 +17,26 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/validation"
 )
 
+// invokeOnRequest mirrors what Pipeline.Run does around each plugin
+// dispatch: set the current-plugin / current-phase attribution fields
+// on pctx so pctx.Record / Allow / Skip / Observe / Modify fill in
+// Plugin and Phase correctly. Tests that call plugin.OnRequest directly
+// (bypassing Pipeline.Run) need this wrapper to exercise the same code
+// path as production. Without it, Invocations would land with empty
+// Plugin and Phase fields.
+func invokeOnRequest(p pipeline.Plugin, pctx *pipeline.Context) pipeline.Action {
+	pctx.SetCurrentPlugin(p.Name(), pipeline.InvocationPhaseRequest)
+	defer pctx.ClearCurrentPlugin()
+	return p.OnRequest(context.Background(), pctx)
+}
+
+// invokeOnResponse is the response-phase twin of invokeOnRequest.
+func invokeOnResponse(p pipeline.Plugin, pctx *pipeline.Context) pipeline.Action {
+	pctx.SetCurrentPlugin(p.Name(), pipeline.InvocationPhaseResponse)
+	defer pctx.ClearCurrentPlugin()
+	return p.OnResponse(context.Background(), pctx)
+}
+
 // TestAuthbridgeCombinedYAML_Loads asserts that the in-repo default
 // config consumed by the combined sidecar image
 // (authbridge/authproxy/authbridge-combined.yaml) parses, env-expands,
@@ -305,7 +325,7 @@ func TestJWTValidation_Ready_PerHostAlwaysReady(t *testing.T) {
 
 func TestJWTValidation_OnRequest_NotConfigured(t *testing.T) {
 	p := NewJWTValidation()
-	action := p.OnRequest(context.Background(), &pipeline.Context{Headers: http.Header{}})
+	action := invokeOnRequest(p, &pipeline.Context{Headers: http.Header{}})
 	if action.Type != pipeline.Reject {
 		t.Errorf("got %v, want Reject for unconfigured plugin", action.Type)
 	}
@@ -352,7 +372,7 @@ func TestJWTValidation_OnRequest_PopulatesAuth_Bypass(t *testing.T) {
 	p := newTestJWTValidation(t, "http://issuer", inner)
 
 	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/healthz"}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Continue {
 		t.Fatalf("bypass should Continue, got %v", action.Type)
 	}
@@ -376,7 +396,7 @@ func TestJWTValidation_OnRequest_PopulatesAuth_Deny_NoHeader(t *testing.T) {
 	p := newTestJWTValidation(t, "http://issuer.example", inner)
 
 	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Reject {
 		t.Fatalf("expected Reject on missing auth header, got %v", action.Type)
 	}
@@ -413,7 +433,7 @@ func TestJWTValidation_OnRequest_PopulatesAuth_Allow(t *testing.T) {
 
 	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
 	pctx.Headers.Set("Authorization", "Bearer tok")
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Continue {
 		t.Fatalf("expected Continue, got %v (violation=%+v)", action.Type, action.Violation)
 	}
@@ -628,7 +648,7 @@ func TestTokenExchange_Passthrough(t *testing.T) {
 		Host:      "some-host",
 		Headers:   http.Header{"Authorization": []string{"Bearer user-token"}},
 	}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Continue {
 		t.Fatalf("got %v, want Continue", action.Type)
 	}
@@ -680,7 +700,7 @@ func TestTokenExchange_ExchangeSuccess(t *testing.T) {
 		Host:      "target-svc",
 		Headers:   http.Header{"Authorization": []string{"Bearer user-token"}},
 	}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Continue {
 		t.Fatalf("got %v, want Continue", action.Type)
 	}
@@ -727,7 +747,7 @@ func TestTokenExchange_ExchangeFailure(t *testing.T) {
 		Host:      "target-svc",
 		Headers:   http.Header{"Authorization": []string{"Bearer user-token"}},
 	}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Reject {
 		t.Fatalf("got %v, want Reject", action.Type)
 	}
@@ -766,7 +786,7 @@ func TestTokenExchange_NoToken_Deny(t *testing.T) {
 		Host:      "target-svc",
 		Headers:   http.Header{},
 	}
-	action := p.OnRequest(context.Background(), pctx)
+	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Reject {
 		t.Fatalf("got %v, want Reject", action.Type)
 	}

@@ -476,9 +476,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	// either tighten routes or filter on action=passthrough in abctl.
 	switch result.Action {
 	case auth.ActionDeny:
-		appendInvocationOutbound(pctx, pipeline.Invocation{
-			Plugin:          "token-exchange",
-			Phase:           pipeline.InvocationPhaseRequest,
+		pctx.Record(pipeline.Invocation{
 			Action:          pipeline.ActionDeny,
 			Reason:          result.DenyReasonCode.String(),
 			RouteMatched:    result.RouteMatched,
@@ -501,9 +499,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		if result.CacheHit {
 			reason = "cache_hit"
 		}
-		appendInvocationOutbound(pctx, pipeline.Invocation{
-			Plugin:          "token-exchange",
-			Phase:           pipeline.InvocationPhaseRequest,
+		pctx.Record(pipeline.Invocation{
 			Action:          pipeline.ActionModify,
 			Reason:          reason,
 			RouteMatched:    true,
@@ -521,9 +517,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		if result.RouteMatched {
 			reason = "route_passthrough"
 		}
-		appendInvocationOutbound(pctx, pipeline.Invocation{
-			Plugin:       "token-exchange",
-			Phase:        pipeline.InvocationPhaseRequest,
+		pctx.Record(pipeline.Invocation{
 			Action:       pipeline.ActionSkip,
 			Reason:       reason,
 			RouteMatched: result.RouteMatched,
@@ -531,16 +525,6 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		})
 	}
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// appendInvocationOutbound lazy-creates pctx.Extensions.Invocations and
-// appends one entry under Outbound. Symmetric with appendInvocationInbound
-// in jwtvalidation.go.
-func appendInvocationOutbound(pctx *pipeline.Context, entry pipeline.Invocation) {
-	if pctx.Extensions.Invocations == nil {
-		pctx.Extensions.Invocations = &pipeline.Invocations{}
-	}
-	pctx.Extensions.Invocations.Outbound = append(pctx.Extensions.Invocations.Outbound, entry)
 }
 
 // splitScopes turns a space-separated scope string into []string. Returns

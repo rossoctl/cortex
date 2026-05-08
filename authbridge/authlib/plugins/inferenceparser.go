@@ -85,13 +85,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", truncate(m.Content, debugBodyMax))
 	}
 
-	appendInvocationOutbound(pctx, pipeline.Invocation{
-		Plugin: "inference-parser",
-		Phase:  pipeline.InvocationPhaseRequest,
-		Action: pipeline.ActionObserve,
-		Reason: "matched_" + ext.Model,
-		Path:   pctx.Path,
-	})
+	pctx.Observe("matched_" + ext.Model)
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -119,13 +113,7 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 		"completionTokens", ext.CompletionTokens,
 	)
 	slog.Debug("inference-parser: completion", "text", truncate(ext.Completion, debugBodyMax))
-	appendInvocationOutbound(pctx, pipeline.Invocation{
-		Plugin: "inference-parser",
-		Phase:  pipeline.InvocationPhaseResponse,
-		Action: pipeline.ActionObserve,
-		Reason: "matched_" + ext.Model + "_response",
-		Path:   pctx.Path,
-	})
+	pctx.Observe("matched_" + ext.Model + "_response")
 	return pipeline.Action{Type: pipeline.Continue}
 }
 

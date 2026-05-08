@@ -301,13 +301,13 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		// Surface the decision on pctx BEFORE returning so the listener's
 		// reject path can record a SessionDenied event with diagnostic
 		// context (why the token failed, what was expected). Never put
-		// the raw token here — session store has no auth.
-		appendInvocationInbound(pctx, pipeline.Invocation{
-			Plugin:           "jwt-validation",
-			Phase:            pipeline.InvocationPhaseRequest,
+		// the raw token here — session store has no auth. The two-step
+		// form (Record + Deny) is used here because we attach the
+		// ExpectedIssuer / ExpectedAudience diagnostic fields that the
+		// one-liner DenyAndRecord doesn't accept.
+		pctx.Record(pipeline.Invocation{
 			Action:           pipeline.ActionDeny,
 			Reason:           result.DenyReasonCode.String(),
-			Path:             path,
 			ExpectedIssuer:   p.cfg.Issuer,
 			ExpectedAudience: audience,
 		})
@@ -328,13 +328,7 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	// session stream — useful for debugging "why is this URL skipping
 	// JWT?" without hunting through slog lines.
 	if result.Claims == nil {
-		appendInvocationInbound(pctx, pipeline.Invocation{
-			Plugin: "jwt-validation",
-			Phase:  pipeline.InvocationPhaseRequest,
-			Action: pipeline.ActionSkip,
-			Reason: "path_bypass",
-			Path:   path,
-		})
+		pctx.Skip("path_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -342,27 +336,14 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	// VERIFIED in the token — diverges from the top-level Identity
 	// snapshot if later plugins re-annotate pctx.Claims.
 	pctx.Claims = result.Claims
-	appendInvocationInbound(pctx, pipeline.Invocation{
-		Plugin:        "jwt-validation",
-		Phase:         pipeline.InvocationPhaseRequest,
+	pctx.Record(pipeline.Invocation{
 		Action:        pipeline.ActionAllow,
 		Reason:        auth.APPROVE_AUTHORIZED.String(),
-		Path:          path,
 		TokenSubject:  result.Claims.Subject,
 		TokenAudience: result.Claims.Audience,
 		TokenScopes:   result.Claims.Scopes,
 	})
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// appendInvocationInbound lazy-creates pctx.Extensions.Invocations and
-// appends one entry under Inbound. Symmetric with how a2a-parser
-// initializes its extension slot in OnRequest.
-func appendInvocationInbound(pctx *pipeline.Context, entry pipeline.Invocation) {
-	if pctx.Extensions.Invocations == nil {
-		pctx.Extensions.Invocations = &pipeline.Invocations{}
-	}
-	pctx.Extensions.Invocations.Inbound = append(pctx.Extensions.Invocations.Inbound, entry)
 }
 
 func (p *JWTValidation) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {

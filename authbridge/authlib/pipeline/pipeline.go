@@ -59,13 +59,22 @@ func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 // Run executes the request phase of the pipeline sequentially.
 // If any plugin returns Reject, the pipeline stops and returns that action
 // with Violation.PluginName populated.
+//
+// Before dispatching into each plugin, Run stamps pctx with the plugin's
+// name and the current phase so the plugin's Record / Allow / Skip /
+// Observe / Modify / DenyAndRecord helpers can fill Invocation.Plugin
+// and Invocation.Phase automatically. The stamp is cleared after each
+// plugin returns so a plugin that spawns a goroutine capturing pctx
+// won't mis-attribute a late-arriving Record to itself.
 func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 	for _, plugin := range p.plugins {
 		if ctx.Err() != nil {
 			slog.Info("pipeline: request cancelled", "plugin", plugin.Name())
 			return Deny("pipeline.cancelled", "request cancelled")
 		}
+		pctx.SetCurrentPlugin(plugin.Name(), InvocationPhaseRequest)
 		action := plugin.OnRequest(ctx, pctx)
+		pctx.ClearCurrentPlugin()
 		if action.Type == Reject {
 			stampPluginName(&action, plugin.Name())
 			logReject(plugin.Name(), action, "pipeline: plugin rejected request")
@@ -78,13 +87,18 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 
 // RunResponse executes the response phase in reverse order.
 // The last plugin in the chain sees the response first.
+//
+// See Run for the pctx attribution stamping. Same pattern, phase set
+// to InvocationPhaseResponse.
 func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action {
 	for i := len(p.plugins) - 1; i >= 0; i-- {
 		if ctx.Err() != nil {
 			slog.Info("pipeline: response cancelled", "plugin", p.plugins[i].Name())
 			return Deny("pipeline.cancelled", "request cancelled")
 		}
+		pctx.SetCurrentPlugin(p.plugins[i].Name(), InvocationPhaseResponse)
 		action := p.plugins[i].OnResponse(ctx, pctx)
+		pctx.ClearCurrentPlugin()
 		if action.Type == Reject {
 			stampPluginName(&action, p.plugins[i].Name())
 			logReject(p.plugins[i].Name(), action, "pipeline: plugin rejected response")

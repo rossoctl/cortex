@@ -63,13 +63,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	slog.Info("mcp-parser: request", "method", rpc.Method)
 	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", truncate(string(pctx.Body), debugBodyMax))
 
-	appendInvocationOutbound(pctx, pipeline.Invocation{
-		Plugin: "mcp-parser",
-		Phase:  pipeline.InvocationPhaseRequest,
-		Action: pipeline.ActionObserve,
-		Reason: "matched_" + rpc.Method,
-		Path:   pctx.Path,
-	})
+	pctx.Observe("matched_" + rpc.Method)
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -86,13 +80,7 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 	rpc, ok := parseMCPResponse(pctx.ResponseBody)
 	if !ok {
 		slog.Debug("mcp-parser: response is not valid JSON-RPC or SSE", "bodyLen", len(pctx.ResponseBody))
-		appendInvocationOutbound(pctx, pipeline.Invocation{
-			Plugin: "mcp-parser",
-			Phase:  pipeline.InvocationPhaseResponse,
-			Action: pipeline.ActionSkip,
-			Reason: "unparseable_response",
-			Path:   pctx.Path,
-		})
+		pctx.Skip("unparseable_response")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -103,13 +91,7 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 			Data:    rpc.Error.Data,
 		}
 		slog.Info("mcp-parser: response error", "method", pctx.Extensions.MCP.Method, "code", rpc.Error.Code, "message", rpc.Error.Message)
-		appendInvocationOutbound(pctx, pipeline.Invocation{
-			Plugin: "mcp-parser",
-			Phase:  pipeline.InvocationPhaseResponse,
-			Action: pipeline.ActionObserve,
-			Reason: "response_error",
-			Path:   pctx.Path,
-		})
+		pctx.Observe("response_error")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -119,13 +101,7 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 		slog.Debug("mcp-parser: response detail", "method", pctx.Extensions.MCP.Method, "body", truncate(string(pctx.ResponseBody), debugBodyMax))
 	}
 
-	appendInvocationOutbound(pctx, pipeline.Invocation{
-		Plugin: "mcp-parser",
-		Phase:  pipeline.InvocationPhaseResponse,
-		Action: pipeline.ActionObserve,
-		Reason: "matched_" + pctx.Extensions.MCP.Method + "_response",
-		Path:   pctx.Path,
-	})
+	pctx.Observe("matched_" + pctx.Extensions.MCP.Method + "_response")
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
