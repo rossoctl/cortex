@@ -507,6 +507,100 @@ session store is unauthenticated. Plugin-private debug logs may
 include body bytes at DEBUG level, but never publish them to the
 session stream or Custom map.
 
+## Exposing content to guardrails
+
+Parser plugins whose extensions carry user-visible text (message bodies,
+tool arguments, LLM completions) can opt into a shared content-inspection
+contract by implementing [`contracts.ContentSource`](../authlib/contracts/content.go).
+Guardrail plugins (PII scrubbers, jailbreak detectors, content classifiers,
+prompt-injection filters, etc.) iterate the contract via
+`pctx.ContentSources()` and never import any specific parser package.
+
+This section is optional. A parser that doesn't implement `ContentSource`
+still works for session bucketing and abctl rendering; it just isn't visible
+to content-oriented guardrails.
+
+### The contract
+
+```go
+type ContentSource interface {
+    Fragments() []Fragment
+}
+
+type Fragment struct {
+    Role string // "user" | "assistant" | "system" | "tool" | "tool_args" | "tool_result" | ...
+    Text string // non-empty; producers filter empties
+}
+```
+
+Constants for the standard role values live in the `contracts` package
+(`RoleUser`, `RoleAssistant`, `RoleSystem`, `RoleTool`, `RoleToolArgs`,
+`RoleToolResult`). Parsers should use them when the semantic fit is clear.
+The vocabulary is open — a protocol that carries a role outside this list
+may emit its own string; guardrails that don't recognize it treat it per
+their own policy.
+
+### Role mapping across in-tree parsers
+
+| Role | MCP source | A2A source | Inference source |
+|---|---|---|---|
+| `user` | — | user text parts | user messages |
+| `assistant` | — | artifact | completion |
+| `system` | — | — | system messages |
+| `tool` | tools/call name | — | model's tool call name |
+| `tool_args` | tools/call argument values | — | model's tool call arguments |
+| `tool_result` | tools/call result text | — | conversation's prior tool messages |
+
+Empty cells are intentional. A2A has no system-prompt concept; MCP has no
+user-message concept. Guardrails ignore roles they don't care about; no
+fabricated content fills the gaps.
+
+### Implementing Fragments
+
+Keep each implementation to a pure function over the extension's fields.
+Skip fragments with empty text — consumers never want zero-length entries.
+Stringify non-string values with `json.Marshal` so nested maps/slices
+become flat inspectable text. Reference implementations live alongside
+the types in [`authlib/pipeline/content.go`](../authlib/pipeline/content.go).
+
+### Consuming content in a guardrail
+
+```go
+import "github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
+
+func (p *JailbreakDetector) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+    for _, src := range pctx.ContentSources() {
+        for _, f := range src.Fragments() {
+            // Jailbreak attempts come through user input and tool_args.
+            if f.Role != contracts.RoleUser && f.Role != contracts.RoleToolArgs {
+                continue
+            }
+            if hit := p.classify(f.Text); hit.IsJailbreak {
+                return pipeline.Deny("jailbreak.detected", hit.Category)
+            }
+        }
+    }
+    return pipeline.Action{Type: pipeline.Continue}
+}
+```
+
+One import (`contracts`), one iteration pattern, works across A2A +
+MCP + Inference. A fourth protocol that implements `Fragments` is
+picked up with no guardrail change.
+
+### When NOT to implement ContentSource
+
+`ContentSource` is for **content-oriented** checks: free-text scanning
+that's the same logic regardless of protocol. It doesn't help
+**structure-oriented** guardrails — e.g., "only the `url` parameter of
+`fetch_url` must match the allowlist." Those guardrails are inherently
+protocol-aware; they should import the parser's extension type and read
+fields directly. The two patterns coexist cleanly.
+
+Binary protocols, control-plane RPCs (MCP `initialize` / `ping`,
+tools/list), and identity-only auth messages have no inspectable text —
+simply don't implement the interface.
+
 ## Registering a plugin
 
 A plugin advertises itself to the pipeline builder through `RegisterPlugin`

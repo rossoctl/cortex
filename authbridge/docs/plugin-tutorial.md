@@ -298,6 +298,41 @@ func TestScenario(t *testing.T) {
 }
 ```
 
+## Step 8 — Expose content to guardrails (parser plugins)
+
+If your plugin is a **parser** whose extension carries user-visible
+text, implement [`contracts.ContentSource`](../authlib/contracts/content.go)
+so guardrails can inspect it without importing your package. See
+[`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails)
+for the role vocabulary and the mapping table across in-tree parsers.
+
+Minimal example for an Inference-like parser whose extension stores
+`Messages []struct{ Role, Content string }`:
+
+```go
+import "github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
+
+// Compile-time assertion — catches interface drift at build time.
+var _ contracts.ContentSource = (*MyExtension)(nil)
+
+func (e *MyExtension) Fragments() []contracts.Fragment {
+    out := make([]contracts.Fragment, 0, len(e.Messages))
+    for _, m := range e.Messages {
+        if m.Content == "" {
+            continue
+        }
+        out = append(out, contracts.Fragment{Role: m.Role, Text: m.Content})
+    }
+    return out
+}
+```
+
+That's the whole addition. Guardrails call `pctx.ContentSources()`,
+iterate, and see your messages alongside every other parser's output.
+
+Skip this step if your protocol is binary, control-plane only, or
+otherwise carries no text a guardrail would scan.
+
 ## Optional interfaces
 
 Beyond the four required methods, plugins may implement:

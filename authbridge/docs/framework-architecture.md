@@ -216,6 +216,8 @@ A parser populates its slot AND records an Invocation with `ActionObserve`. The 
 
 Adding a named slot is an authlib-core change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
 
+**Capability interfaces on the slot types.** Named-slot extensions may implement optional capability interfaces declared in [`authlib/contracts/`](../authlib/contracts/) so consumer plugins can interact with them without importing any specific parser package. The current capability is [`ContentSource`](../authlib/contracts/content.go) — implemented by `A2AExtension`, `MCPExtension`, and `InferenceExtension` — which lets guardrail plugins iterate inspectable text fragments via `pctx.ContentSources()`. Parser authors opt in by adding one method (`Fragments() []contracts.Fragment`); consumers see a uniform view across every protocol that implements the contract. See [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails) for the pattern.
+
 ### `Custom map[string]any` — plugin-private state + escape-hatch public events
 Two access patterns share the same map, disambiguated by key suffix.
 

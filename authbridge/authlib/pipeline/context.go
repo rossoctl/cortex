@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
 )
 
 // Identity carries the subject identity established by whichever auth
@@ -256,6 +258,35 @@ func (c *Context) BodyMutated() bool { return c.bodyMutated }
 
 // ResponseBodyMutated is the response-side analogue of BodyMutated.
 func (c *Context) ResponseBodyMutated() bool { return c.responseBodyMutated }
+
+// ContentSources returns every protocol extension on this Context that
+// implements contracts.ContentSource. Guardrail plugins call this to
+// iterate inspectable text across whatever protocol a request happens
+// to carry, without importing any specific parser package:
+//
+//	for _, src := range pctx.ContentSources() {
+//	    for _, f := range src.Fragments() {
+//	        if f.Role == contracts.RoleUser { scan(f.Text) }
+//	    }
+//	}
+//
+// Order is A2A, MCP, Inference — but guardrails shouldn't rely on it;
+// treat the result as an unordered set. Returns an empty slice when no
+// parser produced an extension or when none of the populated extensions
+// implement ContentSource.
+func (c *Context) ContentSources() []contracts.ContentSource {
+	out := make([]contracts.ContentSource, 0, 3)
+	if c.Extensions.A2A != nil {
+		out = append(out, c.Extensions.A2A)
+	}
+	if c.Extensions.MCP != nil {
+		out = append(out, c.Extensions.MCP)
+	}
+	if c.Extensions.Inference != nil {
+		out = append(out, c.Extensions.Inference)
+	}
+	return out
+}
 
 // emitBodyMutation records the Invocation and publishes the
 // plugin-public event carrying length delta + sha256 before/after.
