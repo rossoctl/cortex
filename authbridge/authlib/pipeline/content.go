@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
@@ -101,12 +102,21 @@ func normalizeA2ARole(r string) string {
 // carrying user-intent content. Control-plane calls (initialize, ping,
 // tools/list, resources/list, etc.) return nil. The tool name is
 // emitted as role=tool; each argument value is emitted as
-// role=tool_args, JSON-stringified if non-string.
+// role=tool_args, JSON-stringified if non-string. On JSON-RPC errors,
+// the error message is emitted as role=tool_result so guardrails see
+// content that could leak through the error channel (credentials,
+// stack traces, PII) the same as they see normal tool output.
 //
 // Response-phase: MCP tool results are conventionally shaped as
 // {"content": [{"type":"text","text":"..."}, {"type":"image",...}, ...]}.
 // Text items are emitted with role=tool_result; non-text items are
 // skipped as not inspectable.
+//
+// Type-assertion misses on Params["arguments"] / Result["content"] /
+// content-items get a DEBUG log. These shapes are what the MCP parser
+// produced from a JSON-validated body, so misses typically indicate
+// a malformed or protocol-non-conforming payload worth surfacing to
+// operators debugging an odd client — rather than a silent skip.
 func (e *MCPExtension) Fragments() []contracts.Fragment {
 	if e == nil {
 		return nil
@@ -117,32 +127,57 @@ func (e *MCPExtension) Fragments() []contracts.Fragment {
 		if name, _ := e.Params["name"].(string); name != "" {
 			out = append(out, contracts.Fragment{Role: contracts.RoleTool, Text: name})
 		}
-		if args, ok := e.Params["arguments"].(map[string]any); ok {
-			for _, v := range args {
-				text := stringifyAny(v)
-				if text != "" {
-					out = append(out, contracts.Fragment{Role: contracts.RoleToolArgs, Text: text})
+		if raw, present := e.Params["arguments"]; present {
+			args, ok := raw.(map[string]any)
+			if !ok {
+				slog.Debug("pipeline/content: MCP tools/call arguments not a map; skipping",
+					"type", fmt.Sprintf("%T", raw))
+			} else {
+				for _, v := range args {
+					text := stringifyAny(v)
+					if text != "" {
+						out = append(out, contracts.Fragment{Role: contracts.RoleToolArgs, Text: text})
+					}
 				}
 			}
 		}
 	}
 
+	// Tool result content, when present. Errors that arrive as the
+	// JSON-RPC-level Err field (not content[]) are handled below.
 	if e.Result != nil {
-		if items, ok := e.Result["content"].([]any); ok {
-			for _, it := range items {
-				m, ok := it.(map[string]any)
-				if !ok {
-					continue
-				}
-				if m["type"] != "text" {
-					continue
-				}
-				if t, _ := m["text"].(string); t != "" {
-					out = append(out, contracts.Fragment{Role: contracts.RoleToolResult, Text: t})
+		if raw, present := e.Result["content"]; present {
+			items, ok := raw.([]any)
+			if !ok {
+				slog.Debug("pipeline/content: MCP result.content not an array; skipping",
+					"type", fmt.Sprintf("%T", raw))
+			} else {
+				for i, it := range items {
+					m, ok := it.(map[string]any)
+					if !ok {
+						slog.Debug("pipeline/content: MCP result.content item not an object; skipping",
+							"index", i, "type", fmt.Sprintf("%T", it))
+						continue
+					}
+					if m["type"] != "text" {
+						continue
+					}
+					if t, _ := m["text"].(string); t != "" {
+						out = append(out, contracts.Fragment{Role: contracts.RoleToolResult, Text: t})
+					}
 				}
 			}
 		}
 	}
+
+	// JSON-RPC-level errors carry a Message that may contain
+	// inspectable text (leaked credentials, stack traces, PII from
+	// failed DB lookups, etc.). Emit as tool_result so a PII scrubber
+	// or credential detector covers the error channel uniformly.
+	if e.Err != nil && e.Err.Message != "" {
+		out = append(out, contracts.Fragment{Role: contracts.RoleToolResult, Text: e.Err.Message})
+	}
+
 	return out
 }
 

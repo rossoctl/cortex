@@ -206,6 +206,67 @@ func TestMCPExtension_Fragments(t *testing.T) {
 				{Role: contracts.RoleToolResult, Text: "caption"},
 			},
 		},
+		{
+			name: "error_message_emitted_as_tool_result",
+			ext: &MCPExtension{
+				Method: "tools/call",
+				Params: map[string]any{"name": "fetch_url"},
+				Err:    &MCPError{Code: -32602, Message: "invalid url: http://internal.example/secret"},
+			},
+			want: []contracts.Fragment{
+				{Role: contracts.RoleTool, Text: "fetch_url"},
+				{Role: contracts.RoleToolResult, Text: "invalid url: http://internal.example/secret"},
+			},
+		},
+		{
+			name: "error_and_result_content_both_emitted",
+			ext: &MCPExtension{
+				Method: "tools/call",
+				Result: map[string]any{
+					"content": []any{
+						map[string]any{"type": "text", "text": "partial output"},
+					},
+				},
+				Err: &MCPError{Code: 1, Message: "timeout"},
+			},
+			want: []contracts.Fragment{
+				{Role: contracts.RoleToolResult, Text: "partial output"},
+				{Role: contracts.RoleToolResult, Text: "timeout"},
+			},
+		},
+		{
+			name: "error_empty_message_not_emitted",
+			ext: &MCPExtension{
+				Method: "tools/call",
+				Err:    &MCPError{Code: 1, Message: ""},
+			},
+			want: nil,
+		},
+		{
+			name: "arguments_not_a_map_skipped",
+			ext: &MCPExtension{
+				Method: "tools/call",
+				Params: map[string]any{
+					"name":      "fetch_url",
+					"arguments": "malformed-string-not-object",
+				},
+			},
+			// tool name still emitted; arguments skipped with DEBUG log
+			want: []contracts.Fragment{
+				{Role: contracts.RoleTool, Text: "fetch_url"},
+			},
+		},
+		{
+			name: "result_content_not_an_array_skipped",
+			ext: &MCPExtension{
+				Method: "tools/call",
+				Result: map[string]any{
+					"content": "malformed-string-not-array",
+				},
+			},
+			// skipped with DEBUG log; no fragments emitted
+			want: nil,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

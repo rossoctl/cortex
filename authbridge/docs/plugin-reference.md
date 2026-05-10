@@ -549,7 +549,7 @@ their own policy.
 | `system` | — | — | system messages |
 | `tool` | tools/call name | — | model's tool call name |
 | `tool_args` | tools/call argument values | — | model's tool call arguments |
-| `tool_result` | tools/call result text | — | conversation's prior tool messages |
+| `tool_result` | tools/call result text **and** JSON-RPC error messages | — | conversation's prior tool messages |
 
 Empty cells are intentional. A2A has no system-prompt concept; MCP has no
 user-message concept. Guardrails ignore roles they don't care about; no
