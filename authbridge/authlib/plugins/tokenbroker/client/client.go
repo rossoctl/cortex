@@ -1,5 +1,5 @@
-// Package tokenbroker provides an HTTP client for the Token Broker service.
-package tokenbroker
+// Package client provides an HTTP client for the Token Broker service.
+package client
 
 import (
 	"context"
@@ -30,6 +30,10 @@ func NewClient() *Client {
 // If authorizationEndpoint is provided, it will be sent to the broker via X-Authorization-Endpoint header.
 // If tokenEndpoint is provided, it will be sent to the broker via X-Token-Endpoint header.
 func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, serverURL, authorizationEndpoint, tokenEndpoint string) (string, error) {
+	if tokenBrokerURL == "" {
+		return "", fmt.Errorf("token broker URL cannot be empty")
+	}
+
 	url := fmt.Sprintf("%s/sessions/token", tokenBrokerURL)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
@@ -52,7 +56,7 @@ func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, server
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
 	if err != nil {
 		return "", fmt.Errorf("reading response: %w", err)
 	}

@@ -1,4 +1,4 @@
-package plugins
+package tokenbroker
 
 import (
 	"bytes"
@@ -14,7 +14,8 @@ import (
 
 	"github.com/gobwas/glob"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker/client"
 	"gopkg.in/yaml.v3"
 )
 
@@ -139,13 +140,13 @@ func (r *brokerRouter) resolve(host string) (bool, string, string) {
 // It acquires tokens from a token broker service based on routing rules.
 type TokenBroker struct {
 	cfg    tokenBrokerConfig
-	client *tokenbroker.Client
+	client *client.Client
 	router *brokerRouter
 }
 
 // NewTokenBroker constructs an unconfigured plugin.
 func init() {
-	RegisterPlugin("token-broker", func() pipeline.Plugin { return NewTokenBroker() })
+	plugins.RegisterPlugin("token-broker", func() pipeline.Plugin { return NewTokenBroker() })
 }
 
 func NewTokenBroker() *TokenBroker { return &TokenBroker{} }
@@ -158,7 +159,6 @@ func (p *TokenBroker) Capabilities() pipeline.PluginCapabilities {
 
 func (p *TokenBroker) Configure(raw json.RawMessage) error {
 	var c tokenBrokerConfig
-	var explicitRoutesFile string
 
 	if len(raw) > 0 {
 		dec := json.NewDecoder(bytes.NewReader(raw))
@@ -166,8 +166,6 @@ func (p *TokenBroker) Configure(raw json.RawMessage) error {
 		if err := dec.Decode(&c); err != nil {
 			return fmt.Errorf("token-broker config: %w", err)
 		}
-		// Remember if routes file was explicitly specified
-		explicitRoutesFile = c.Routes.File
 	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
@@ -175,10 +173,10 @@ func (p *TokenBroker) Configure(raw json.RawMessage) error {
 	}
 
 	// Build HTTP client for broker
-	p.client = tokenbroker.NewClient()
+	p.client = client.NewClient()
 
 	// Build router from routes
-	router, err := buildBrokerRouterFrom(c.DefaultPolicy, c.Routes, c.BrokerURL, explicitRoutesFile)
+	router, err := buildBrokerRouterFrom(c.DefaultPolicy, c.Routes, c.BrokerURL)
 	if err != nil {
 		return fmt.Errorf("token-broker routes: %w", err)
 	}
@@ -190,6 +188,22 @@ func (p *TokenBroker) Configure(raw json.RawMessage) error {
 	return nil
 }
 
+// makeBrokerDetails creates a details map for invocation recording.
+// Includes broker_url, server_url, and optionally authorization_endpoint and token_endpoint.
+func makeBrokerDetails(brokerURL, serverURL, authorizationEndpoint, tokenEndpoint string) map[string]string {
+	details := map[string]string{
+		"broker_url": brokerURL,
+		"server_url": serverURL,
+	}
+	if authorizationEndpoint != "" {
+		details["authorization_endpoint"] = authorizationEndpoint
+	}
+	if tokenEndpoint != "" {
+		details["token_endpoint"] = tokenEndpoint
+	}
+	return details
+}
+
 func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
 	authHeader := pctx.Headers.Get("Authorization")
 	host := pctx.Host
@@ -198,18 +212,16 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	shouldBroker, authorizationEndpoint, tokenEndpoint := p.router.resolve(host)
 
 	if !shouldBroker {
-		// Not a broker route, continue
+		// Not a broker route, continue with Skip invocation
+		pctx.Skip("no_broker_route")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
 	// Extract bearer token
 	subjectToken := extractBearer(authHeader)
 	if subjectToken == "" {
-		return pipeline.DenyStatus(
-			http.StatusUnauthorized,
-			"auth.missing-token",
-			"broker route requires authorization token",
-		)
+		return pctx.DenyAndRecord("missing_subject_token", "auth.missing-token",
+			"broker route requires authorization token")
 	}
 
 	// Derive server URL from host
@@ -222,11 +234,22 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	token, err := p.client.AcquireToken(ctx, brokerURL, subjectToken, serverURL, authorizationEndpoint, tokenEndpoint)
 	if err != nil {
 		// Handle broker errors
-		if brokerErr, ok := err.(*tokenbroker.BrokerError); ok {
+		var brokerErr *client.BrokerError
+		if errors.As(err, &brokerErr) {
 			slog.Warn("token-broker: broker returned error",
 				"status", brokerErr.StatusCode,
 				"error", brokerErr.OAuthError,
 				"description", brokerErr.OAuthDescription)
+
+			details := makeBrokerDetails(brokerURL, serverURL, authorizationEndpoint, tokenEndpoint)
+			details["oauth_error"] = brokerErr.OAuthError
+			details["oauth_description"] = brokerErr.OAuthDescription
+
+			pctx.Record(pipeline.Invocation{
+				Action:  pipeline.ActionDeny,
+				Reason:  "broker_error",
+				Details: details,
+			})
 			return pipeline.DenyStatus(
 				brokerErr.StatusCode,
 				"upstream.broker-error",
@@ -234,6 +257,15 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 			)
 		}
 		slog.Error("token-broker: broker request failed", "error", err)
+
+		details := makeBrokerDetails(brokerURL, serverURL, authorizationEndpoint, tokenEndpoint)
+		details["error"] = err.Error()
+
+		pctx.Record(pipeline.Invocation{
+			Action:  pipeline.ActionDeny,
+			Reason:  "broker_unavailable",
+			Details: details,
+		})
 		return pipeline.DenyStatus(
 			http.StatusBadGateway,
 			"upstream.broker-unavailable",
@@ -243,6 +275,13 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 
 	// Replace token in authorization header
 	pctx.Headers.Set("Authorization", "Bearer "+token)
+
+	// Record successful token replacement
+	pctx.Record(pipeline.Invocation{
+		Action:  pipeline.ActionModify,
+		Reason:  "token_replaced",
+		Details: makeBrokerDetails(brokerURL, serverURL, authorizationEndpoint, tokenEndpoint),
+	})
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -277,19 +316,13 @@ func loadBrokerRoutesFromFile(path string) ([]tokenBrokerRoute, error) {
 }
 
 // buildBrokerRouterFrom constructs a router from the broker routes configuration.
-func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defaultBrokerURL string, explicitRoutesFile string) (*brokerRouter, error) {
+func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defaultBrokerURL string) (*brokerRouter, error) {
 	var allRoutes []tokenBrokerRoute
 
 	// Load routes from file if specified
 	if routes.File != "" {
-		// If routes file was explicitly specified, check it exists
-		if explicitRoutesFile != "" {
-			if _, err := os.Stat(routes.File); err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return nil, fmt.Errorf("routes file does not exist: %s", routes.File)
-				}
-				return nil, fmt.Errorf("checking routes file %s: %w", routes.File, err)
-			}
+		if _, err := os.Stat(routes.File); err != nil {
+			return nil, fmt.Errorf("routes file %q: %w", routes.File, err)
 		}
 
 		fileRoutes, err := loadBrokerRoutesFromFile(routes.File)

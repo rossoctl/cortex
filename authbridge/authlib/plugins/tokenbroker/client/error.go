@@ -1,4 +1,4 @@
-package tokenbroker
+package client
 
 import "fmt"
 

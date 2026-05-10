@@ -4,6 +4,9 @@ The `token-broker` plugin acquires tokens from an external Token Broker service
 on behalf of outbound requests. It replaces the caller's bearer token with one
 issued by the broker for the target service.
 
+Note: This plugin is an alternative to token-exchange, not a complement — a given outbound chain should use one or the other, since both replace the outbound Authorization header.
+
+
 ## Architecture
 
 ```
@@ -35,6 +38,12 @@ issued by the broker for the target service.
 Human-in-the-loop OAuth flows where the broker manages user consent and token
 caching. The plugin blocks until the broker returns a token (up to 300s to
 allow for interactive user login).
+
+AuthBridge does **not** cache brokered tokens locally. It sends a broker request
+for each outbound request that matches a `broker` route. The Token Broker service
+is therefore expected to cache and reuse tokens when appropriate (for example,
+using the same subject token, target server, and scope inputs to avoid repeated
+interactive flows and unnecessary upstream traffic).
 
 **Example**: Your application calls GitHub API on behalf of users, but GitHub
 OAuth requires a browser-based authorization flow. The Token Broker handles this
@@ -77,7 +86,7 @@ and optional `authorization_endpoint` and `token_endpoint` fields.
 Rules with no explicit action default to `"broker"`.
 
 Host matching strips the port before comparison (`api.example.com:8443` matches
-pattern `api.example.com`). First match wins.
+pattern `api.example.com`). First match wins. When both file routes and inline rules are configured, file routes are evaluated first and take priority.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -121,6 +130,10 @@ pipeline:
 
 ## Broker Protocol
 
+The plugin performs a fresh `POST {broker_url}/sessions/token` for each outbound
+request that is routed to the broker. Broker implementations are expected to own
+token reuse and TTL-based caching behavior.
+
 ### Endpoint
 
 ```
@@ -162,6 +175,20 @@ endpoints for the target service.
 - **Token Broker timeout**: 300 seconds (5 minutes) — allows for user login
 - **AuthBridge client timeout**: 310 seconds (broker times out first)
 - Broker blocks until token is available or timeout occurs
+
+### Caching Responsibility
+
+Caching is intentionally delegated to the Token Broker service rather than
+implemented in the plugin. This keeps AuthBridge stateless for brokered token
+acquisition while allowing the broker to apply the correct reuse policy for
+interactive OAuth tokens.
+
+Operationally, this means:
+
+- AuthBridge will call `POST /sessions/token` on every matching outbound request
+- The broker should cache and reuse valid tokens whenever safe to do so
+- The broker should avoid re-triggering user authorization flows when an
+  existing valid token can be returned
 
 ## Comparison with Token Exchange
 
