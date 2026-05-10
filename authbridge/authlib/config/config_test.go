@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
 // --- Preset Tests ---
@@ -318,6 +320,81 @@ pipeline:
 	}
 	if nested["enabled"] != true {
 		t.Errorf("nested.enabled = %v, want true", nested["enabled"])
+	}
+}
+
+// TestPluginEntry_OnError covers the three accepted policy values plus
+// the omitted case. An invalid policy must fail loud at YAML parse
+// time so operators catch typos before the pod boots.
+func TestPluginEntry_OnError(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		want     pipeline.ErrorPolicy
+		wantFail bool
+	}{
+		{"enforce explicit", "enforce", pipeline.ErrorPolicyEnforce, false},
+		{"observe", "observe", pipeline.ErrorPolicyObserve, false},
+		{"off", "off", pipeline.ErrorPolicyOff, false},
+		{"typo rejected", "observer", "", true},
+		{"upper rejected", "ENFORCE", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			content := "mode: envoy-sidecar\n" +
+				"pipeline:\n" +
+				"  inbound:\n" +
+				"    plugins:\n" +
+				"      - name: custom-guardrail\n" +
+				"        on_error: " + c.yaml + "\n"
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if c.wantFail {
+				if err == nil {
+					t.Fatalf("expected parse error for on_error=%q", c.yaml)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := cfg.Pipeline.Inbound.Plugins[0].OnError
+			if got != c.want {
+				t.Errorf("OnError = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestPluginEntry_OnError_Omitted verifies the empty-string default.
+// Resolved() should treat an absent on_error as enforce; the parsed
+// field itself stays empty so round-tripping YAML doesn't invent a
+// value the operator didn't write.
+func TestPluginEntry_OnError_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "mode: envoy-sidecar\n" +
+		"pipeline:\n" +
+		"  inbound:\n" +
+		"    plugins:\n" +
+		"      - name: custom-guardrail\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Pipeline.Inbound.Plugins[0].OnError
+	if got != "" {
+		t.Errorf("omitted OnError parsed as %q, want empty", got)
+	}
+	if got.Resolved() != pipeline.ErrorPolicyEnforce {
+		t.Errorf("Resolved() of empty = %q, want enforce", got.Resolved())
 	}
 }
 

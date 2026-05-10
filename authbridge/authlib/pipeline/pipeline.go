@@ -7,8 +7,14 @@ import (
 )
 
 // Pipeline holds an ordered list of plugins and runs them sequentially.
+//
+// policies is parallel to plugins: policies[i] is the on_error policy
+// for plugins[i]. An empty policy resolves to ErrorPolicyEnforce. The
+// slice is always the same length as plugins; New fills unspecified
+// entries with the zero value.
 type Pipeline struct {
-	plugins []Plugin
+	plugins  []Plugin
+	policies []ErrorPolicy
 }
 
 // defaultSlots lists the built-in extension slot names.
@@ -26,6 +32,7 @@ type Option func(*options)
 
 type options struct {
 	extraSlots []string
+	policies   []ErrorPolicy
 }
 
 // WithSlots registers additional valid extension slot names beyond the built-in set.
@@ -33,6 +40,18 @@ type options struct {
 func WithSlots(slots ...string) Option {
 	return func(o *options) {
 		o.extraSlots = append(o.extraSlots, slots...)
+	}
+}
+
+// WithPolicies attaches per-plugin on_error policies in parallel with
+// the plugin slice passed to New. policies[i] belongs to plugins[i];
+// an empty entry defaults to ErrorPolicyEnforce. If fewer policies are
+// supplied than plugins, the remaining plugins use the default
+// (enforce). Supplying more policies than plugins is a programmer
+// error and New returns an error.
+func WithPolicies(policies ...ErrorPolicy) Option {
+	return func(o *options) {
+		o.policies = append(o.policies, policies...)
 	}
 }
 
@@ -53,30 +72,53 @@ func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 	if err := validateCapabilities(plugins, validSlots); err != nil {
 		return nil, err
 	}
-	return &Pipeline{plugins: plugins}, nil
+	if len(o.policies) > len(plugins) {
+		return nil, fmt.Errorf("pipeline: WithPolicies has %d entries but only %d plugins", len(o.policies), len(plugins))
+	}
+	policies := make([]ErrorPolicy, len(plugins))
+	copy(policies, o.policies)
+	return &Pipeline{plugins: plugins, policies: policies}, nil
 }
 
 // Run executes the request phase of the pipeline sequentially.
 // If any plugin returns Reject, the pipeline stops and returns that action
 // with Violation.PluginName populated.
 //
+// Plugins configured with ErrorPolicyOff are skipped entirely — they
+// are not dispatched and contribute no Invocation. Plugins under
+// ErrorPolicyObserve are dispatched normally, but a Reject return is
+// converted into a pass-through: the Violation is recorded as a
+// shadow Invocation and the pipeline continues to the next plugin.
+// Body mutations under observe are also suppressed — see
+// Context.SetBody / SetResponseBody.
+//
 // Before dispatching into each plugin, Run stamps pctx with the plugin's
-// name and the current phase so the plugin's Record / Allow / Skip /
-// Observe / Modify / DenyAndRecord helpers can fill Invocation.Plugin
-// and Invocation.Phase automatically. The stamp is cleared after each
-// plugin returns so a plugin that spawns a goroutine capturing pctx
-// won't mis-attribute a late-arriving Record to itself.
+// name, the current phase, and the current policy so the plugin's
+// Record / Allow / Skip / Observe / Modify / DenyAndRecord helpers can
+// fill Invocation.Plugin and Invocation.Phase automatically. The stamp
+// is cleared after each plugin returns so a plugin that spawns a
+// goroutine capturing pctx won't mis-attribute a late-arriving Record
+// to itself.
 func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
-	for _, plugin := range p.plugins {
+	for i, plugin := range p.plugins {
+		policy := p.policyAt(i)
+		if policy == ErrorPolicyOff {
+			slog.Debug("pipeline: plugin disabled (on_error: off)", "plugin", plugin.Name())
+			continue
+		}
 		if ctx.Err() != nil {
 			slog.Info("pipeline: request cancelled", "plugin", plugin.Name())
 			return Deny("pipeline.cancelled", "request cancelled")
 		}
-		pctx.SetCurrentPlugin(plugin.Name(), InvocationPhaseRequest)
+		pctx.setCurrent(plugin.Name(), InvocationPhaseRequest, policy)
 		action := plugin.OnRequest(ctx, pctx)
-		pctx.ClearCurrentPlugin()
+		pctx.clearCurrent()
 		if action.Type == Reject {
 			stampPluginName(&action, plugin.Name())
+			if policy == ErrorPolicyObserve {
+				markShadowAndLog(pctx, plugin.Name(), InvocationPhaseRequest, action, "request")
+				continue
+			}
 			logReject(plugin.Name(), action, "pipeline: plugin rejected request")
 			return action
 		}
@@ -88,24 +130,80 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 // RunResponse executes the response phase in reverse order.
 // The last plugin in the chain sees the response first.
 //
-// See Run for the pctx attribution stamping. Same pattern, phase set
-// to InvocationPhaseResponse.
+// See Run for the pctx attribution stamping, the off-policy skip, and
+// the observe-policy shadow conversion. Same pattern, phase set to
+// InvocationPhaseResponse.
 func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action {
 	for i := len(p.plugins) - 1; i >= 0; i-- {
+		policy := p.policyAt(i)
+		if policy == ErrorPolicyOff {
+			continue
+		}
 		if ctx.Err() != nil {
 			slog.Info("pipeline: response cancelled", "plugin", p.plugins[i].Name())
 			return Deny("pipeline.cancelled", "request cancelled")
 		}
-		pctx.SetCurrentPlugin(p.plugins[i].Name(), InvocationPhaseResponse)
+		pctx.setCurrent(p.plugins[i].Name(), InvocationPhaseResponse, policy)
 		action := p.plugins[i].OnResponse(ctx, pctx)
-		pctx.ClearCurrentPlugin()
+		pctx.clearCurrent()
 		if action.Type == Reject {
 			stampPluginName(&action, p.plugins[i].Name())
+			if policy == ErrorPolicyObserve {
+				markShadowAndLog(pctx, p.plugins[i].Name(), InvocationPhaseResponse, action, "response")
+				continue
+			}
 			logReject(p.plugins[i].Name(), action, "pipeline: plugin rejected response")
 			return action
 		}
 	}
 	return Action{Type: Continue}
+}
+
+// policyAt returns the resolved policy for plugins[i]. The policies
+// slice is always the same length as plugins (New guarantees this),
+// but we check defensively so a zero-value Pipeline (constructed
+// outside New, e.g. in a test) doesn't panic.
+func (p *Pipeline) policyAt(i int) ErrorPolicy {
+	if i < len(p.policies) {
+		return p.policies[i].Resolved()
+	}
+	return ErrorPolicyEnforce
+}
+
+// markShadowAndLog records the would-have-denied Invocation as
+// Shadow=true and emits a WARN log. If the plugin already appended a
+// deny Invocation (typical for gate plugins that call
+// DenyAndRecord / Record before returning Reject), we mark that
+// record instead of appending a duplicate — otherwise dashboards
+// would double-count a single decision. Synthesize a record only
+// when the plugin returned Reject without having recorded its own
+// invocation (rare: plugin bug or non-recording denial helper).
+func markShadowAndLog(pctx *Context, pluginName string, phase InvocationPhase, action Action, phaseLabel string) {
+	status, _, _ := action.Violation.Render()
+	marked := pctx.markLastInvocationShadow(pluginName, phase)
+	if !marked {
+		inv := Invocation{
+			Plugin: pluginName,
+			Phase:  phase,
+			Action: ActionDeny,
+			Reason: "shadow_synthesized",
+			Path:   pctx.Path,
+			Shadow: true,
+		}
+		if action.Violation != nil {
+			inv.Details = map[string]string{
+				"would_deny_code":   action.Violation.Code,
+				"would_deny_reason": action.Violation.Reason,
+			}
+		}
+		pctx.Record(inv)
+	}
+	slog.Warn("pipeline: plugin would have denied (shadow)",
+		"plugin", pluginName,
+		"phase", phaseLabel,
+		"status", status,
+		"code", action.Violation.Code,
+		"reason", action.Violation.Reason)
 }
 
 // stampPluginName annotates a reject action with the plugin that produced

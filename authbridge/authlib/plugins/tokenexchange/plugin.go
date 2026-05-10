@@ -205,7 +205,7 @@ type TokenExchange struct {
 func NewTokenExchange() *TokenExchange { return &TokenExchange{} }
 
 func init() {
-	plugins.RegisterPlugin("token-exchange", func() pipeline.Plugin { return NewTokenExchange() })
+	plugins.RegisterBuiltin("token-exchange", func() pipeline.Plugin { return NewTokenExchange() })
 }
 
 func (p *TokenExchange) Name() string { return "token-exchange" }

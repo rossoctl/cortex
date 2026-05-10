@@ -295,6 +295,15 @@ type Invocation struct {
 	// The session API has no auth on it — only safe-to-log data
 	// belongs in Invocation.Details.
 	Details map[string]string `json:"details,omitempty"`
+
+	// Shadow reports that the plugin ran under on_error: observe and
+	// its decision (deny or modify) was NOT applied to the request.
+	// An operator reading a would-have-blocked timeline filters on
+	// Shadow=true to count rollout-candidate events; a dashboard that
+	// aggregates "effective denies" filters Shadow=false. The
+	// framework, not the plugin, sets this — plugin code looks
+	// identical under enforce and observe.
+	Shadow bool `json:"shadow,omitempty"`
 }
 
 // DelegationExtension tracks the token delegation chain across hops.

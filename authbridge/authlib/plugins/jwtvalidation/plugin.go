@@ -162,7 +162,7 @@ type JWTValidation struct {
 func NewJWTValidation() *JWTValidation { return &JWTValidation{} }
 
 func init() {
-	plugins.RegisterPlugin("jwt-validation", func() pipeline.Plugin { return NewJWTValidation() })
+	plugins.RegisterBuiltin("jwt-validation", func() pipeline.Plugin { return NewJWTValidation() })
 }
 
 func (p *JWTValidation) Name() string { return "jwt-validation" }

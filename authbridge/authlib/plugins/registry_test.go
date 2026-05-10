@@ -86,6 +86,106 @@ func TestUnregisterPlugin(t *testing.T) {
 	}
 }
 
+// TestRegisterPlugin_ReservedBuiltin_Panics locks the seal on built-in
+// gate names. A custom plugin registering "jwt-validation" or
+// "token-exchange" would silently replace the shipped auth gates — an
+// authentication bypass. RegisterPlugin must refuse reserved names so
+// a mistake at import time fails loud instead of at request time.
+func TestRegisterPlugin_ReservedBuiltin_Panics(t *testing.T) {
+	for _, name := range []string{"jwt-validation", "token-exchange"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Errorf("expected panic for reserved name %q", name)
+					return
+				}
+				msg, ok := r.(string)
+				if !ok {
+					t.Errorf("panic value not a string: %T", r)
+					return
+				}
+				if !containsSubstring(msg, "reserved built-in name") {
+					t.Errorf("panic message should explain the reservation: %q", msg)
+				}
+			}()
+			RegisterPlugin(name, func() pipeline.Plugin { return nil })
+		})
+	}
+}
+
+// TestIsReservedBuiltin verifies the exported predicate — higher-level
+// validators consume it to avoid duplicating the reserved-names list.
+func TestIsReservedBuiltin(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"jwt-validation", true},
+		{"token-exchange", true},
+		{"a2a-parser", false}, // parsers are intentionally not reserved
+		{"mcp-parser", false},
+		{"custom-guardrail", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsReservedBuiltin(c.name); got != c.want {
+			t.Errorf("IsReservedBuiltin(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestBuildChain_RejectsMisplacedBuiltin covers the placement seal:
+// jwt-validation must not appear in outbound, token-exchange must not
+// appear in inbound. Silent misplacement would disable auth.
+func TestBuildChain_RejectsMisplacedBuiltin(t *testing.T) {
+	cases := []struct {
+		name      string
+		direction ChainDirection
+		entry     string
+		wantChain string // chain keyword that should appear in the error
+	}{
+		{"jwt-validation-on-outbound", ChainOutbound, "jwt-validation", "inbound"},
+		{"token-exchange-on-inbound", ChainInbound, "token-exchange", "outbound"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := BuildChain(c.direction, []config.PluginEntry{{Name: c.entry}})
+			if err == nil {
+				t.Fatalf("expected error for %s on %v chain", c.entry, c.direction)
+			}
+			if !containsSubstring(err.Error(), c.entry) {
+				t.Errorf("error should name the misplaced plugin: %q", err)
+			}
+			if !containsSubstring(err.Error(), c.wantChain) {
+				t.Errorf("error should mention the expected chain %q: %q", c.wantChain, err)
+			}
+		})
+	}
+}
+
+// TestBuildChain_AcceptsCorrectPlacement is the positive counterpart —
+// built-ins on their expected chain must pass placement validation.
+// (The plugin's own Configure may still fail because no config is
+// provided; we only care that the placement check didn't trip.)
+func TestBuildChain_AcceptsCorrectPlacement(t *testing.T) {
+	cases := []struct {
+		direction ChainDirection
+		entry     string
+	}{
+		{ChainInbound, "jwt-validation"},
+		{ChainOutbound, "token-exchange"},
+	}
+	for _, c := range cases {
+		t.Run(c.entry, func(t *testing.T) {
+			_, err := BuildChain(c.direction, []config.PluginEntry{{Name: c.entry}})
+			if err != nil && containsSubstring(err.Error(), "reserved built-in") {
+				t.Errorf("placement check wrongly rejected %s on its own chain: %q", c.entry, err)
+			}
+		})
+	}
+}
+
 // TestBuild_UnknownPlugin_ListsRegistered verifies the "unknown plugin"
 // error includes the list of registered names so operators get a
 // typo-catching diagnostic instead of a generic not-found.

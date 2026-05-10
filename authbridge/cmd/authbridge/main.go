@@ -115,11 +115,11 @@ func main() {
 		if err := config.Validate(c); err != nil {
 			return nil, nil, nil, err
 		}
-		in, err := plugins.Build(c.Pipeline.Inbound.Plugins)
+		in, err := plugins.BuildChain(plugins.ChainInbound, c.Pipeline.Inbound.Plugins)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.Build(c.Pipeline.Outbound.Plugins)
+		out, err := plugins.BuildChain(plugins.ChainOutbound, c.Pipeline.Outbound.Plugins)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}

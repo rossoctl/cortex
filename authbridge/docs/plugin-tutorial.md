@@ -129,6 +129,26 @@ When you want to emit an invocation AND reject in one call, use
 return pctx.DenyAndRecord("caller_not_allowed", "policy.forbidden", "caller not permitted")
 ```
 
+### Ship in observe mode first
+
+For any guardrail or policy plugin that can false-positive — PII
+detection, prompt-injection scoring, jailbreak classifiers — roll it
+out under `on_error: observe` before flipping to `enforce`:
+
+```yaml
+- name: your-new-guardrail
+  on_error: observe          # log would-blocks, don't actually block
+  config: { ... }
+```
+
+In `observe`, the framework converts the plugin's `Deny` into a
+pass-through and marks the deny `Invocation` with `Shadow: true`. Your
+plugin code is unchanged — the rollout knob lives outside the plugin.
+After a soak period, compare the shadow-deny rate against your
+acceptable false-positive threshold, then flip to `enforce`. See
+[`plugin-reference.md`](./plugin-reference.md#on_error-policy) for
+full semantics.
+
 ## Step 4 — Add config
 
 If your plugin needs configurable knobs, implement

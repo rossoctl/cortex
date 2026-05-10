@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,19 +68,25 @@ type PipelineStageConfig struct {
 // PluginEntry names a plugin and optionally carries per-instance config.
 //
 // The YAML accepts both the bare-name form ("jwt-validation") and the
-// full form ({name, id, config}). The short form keeps existing pipeline
-// configs parsing unchanged; the long form is what plugins that
-// implement pipeline.Configurable actually need. See
+// full form ({name, id, on_error, config}). The short form keeps
+// existing pipeline configs parsing unchanged; the long form is what
+// plugins that implement pipeline.Configurable actually need. See
 // authbridge/docs/plugin-reference.md for the convention plugins
 // follow when decoding Config.
 //
 // Config is captured as a raw subtree via json.RawMessage so the plugin
 // can do its own DisallowUnknownFields decode against a typed struct —
 // the framework does not interpret it.
+//
+// OnError is the framework-owned wrapper policy (see ErrorPolicy).
+// Plugin authors do not consume it — it lives outside the plugin's
+// own config block so all plugins get the same rollout story without
+// each one re-implementing shadow mode.
 type PluginEntry struct {
-	Name   string          `yaml:"name" json:"name"`
-	ID     string          `yaml:"id,omitempty" json:"id,omitempty"`
-	Config json.RawMessage `yaml:"-" json:"config,omitempty"`
+	Name    string               `yaml:"name" json:"name"`
+	ID      string               `yaml:"id,omitempty" json:"id,omitempty"`
+	OnError pipeline.ErrorPolicy `yaml:"on_error,omitempty" json:"on_error,omitempty"`
+	Config  json.RawMessage      `yaml:"-" json:"config,omitempty"`
 }
 
 // UnmarshalYAML accepts either a bare string or a map. The string form
@@ -108,6 +115,16 @@ func (p *PluginEntry) UnmarshalYAML(node *yaml.Node) error {
 				if err := val.Decode(&p.ID); err != nil {
 					return fmt.Errorf("plugin entry id: %w", err)
 				}
+			case "on_error":
+				var raw string
+				if err := val.Decode(&raw); err != nil {
+					return fmt.Errorf("plugin entry on_error: %w", err)
+				}
+				policy := pipeline.ErrorPolicy(raw)
+				if !policy.Valid() {
+					return fmt.Errorf("plugin entry on_error: %q is not a valid policy (expected: enforce, observe, off)", raw)
+				}
+				p.OnError = policy
 			case "config":
 				// Explicit `config: null` (or `config:` with no value)
 				// decodes to a null-tagged scalar node. Normalize to

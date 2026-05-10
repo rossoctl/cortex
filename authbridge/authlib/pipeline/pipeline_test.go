@@ -674,3 +674,231 @@ func TestPipelineStop_NoShutdownersIsNoop(t *testing.T) {
 	}
 	p.Stop(context.Background()) // must not panic
 }
+
+// --- on_error policy tests ---
+
+// TestPipelineRun_ObservePolicyConvertsRejectToContinue is the
+// headline safety property of observe mode: a plugin that intends to
+// deny must not actually block the request. The downstream plugin
+// still runs, the caller sees Continue, and the plugin's deny record
+// lands in pctx with Shadow=true so operators can count would-have-
+// blocked events on a rollout dashboard.
+func TestPipelineRun_ObservePolicyConvertsRejectToContinue(t *testing.T) {
+	var downstreamCalled bool
+	shadow := &stubPlugin{
+		name: "would-deny",
+		onReq: func(_ context.Context, pctx *Context) Action {
+			return pctx.DenyAndRecord("guardrail_triggered", "policy.content-blocked", "blocked")
+		},
+	}
+	downstream := &stubPlugin{
+		name: "downstream",
+		onReq: func(_ context.Context, _ *Context) Action {
+			downstreamCalled = true
+			return Action{Type: Continue}
+		},
+	}
+	p, err := New([]Plugin{shadow, downstream}, WithPolicies(ErrorPolicyObserve, ErrorPolicyEnforce))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pctx := &Context{}
+	got := p.Run(context.Background(), pctx)
+	if got.Type != Continue {
+		t.Fatalf("action type = %v, want Continue (observe suppresses Reject)", got.Type)
+	}
+	if !downstreamCalled {
+		t.Error("downstream plugin not called; observe mode must not stop the pipeline")
+	}
+	if pctx.Extensions.Invocations == nil || len(pctx.Extensions.Invocations.Inbound) == 0 {
+		t.Fatal("no invocations recorded")
+	}
+	deny := pctx.Extensions.Invocations.Inbound[0]
+	if deny.Action != ActionDeny {
+		t.Errorf("shadow invocation action = %q, want deny (plugin's own record is preserved)", deny.Action)
+	}
+	if !deny.Shadow {
+		t.Error("shadow=false on the would-deny record; observe mode must mark it")
+	}
+}
+
+// TestPipelineRun_EnforceIsDefault confirms that a plugin without a
+// specified policy behaves exactly as before: Reject stops the
+// pipeline and returns a Reject action upstream. Regression guard —
+// the point of adding WithPolicies was to NOT change existing
+// deployments.
+func TestPipelineRun_EnforceIsDefault(t *testing.T) {
+	plugin := &stubPlugin{
+		name: "denier",
+		onReq: func(_ context.Context, _ *Context) Action {
+			return Deny("policy.forbidden", "no")
+		},
+	}
+	// No WithPolicies — entries default to enforce.
+	p, err := New([]Plugin{plugin})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got := p.Run(context.Background(), &Context{})
+	if got.Type != Reject {
+		t.Errorf("action type = %v, want Reject (default is enforce)", got.Type)
+	}
+}
+
+// TestPipelineRun_OffPolicySkipsDispatch verifies off-mode plugins
+// don't run at all — not even their OnRequest. A kill-switched
+// plugin must leave no trace in invocations, matching the "plugin
+// absent from config" behavior.
+func TestPipelineRun_OffPolicySkipsDispatch(t *testing.T) {
+	var called bool
+	disabled := &stubPlugin{
+		name: "disabled",
+		onReq: func(_ context.Context, _ *Context) Action {
+			called = true
+			return Action{Type: Continue}
+		},
+	}
+	p, err := New([]Plugin{disabled}, WithPolicies(ErrorPolicyOff))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pctx := &Context{}
+	got := p.Run(context.Background(), pctx)
+	if got.Type != Continue {
+		t.Errorf("action = %v, want Continue", got.Type)
+	}
+	if called {
+		t.Error("disabled plugin was dispatched; off must skip it")
+	}
+	if pctx.Extensions.Invocations != nil && len(pctx.Extensions.Invocations.Inbound) > 0 {
+		t.Errorf("off-policy plugin appended invocations: %+v", pctx.Extensions.Invocations.Inbound)
+	}
+}
+
+// TestPipelineRunResponse_ObservePolicySuppressesReject ensures the
+// observe semantics apply symmetrically to the response phase.
+// Response-side guardrails (DLP on tool output, jailbreak detection
+// on model replies) are exactly the class that most needs shadow
+// rollout — they inspect generated content the author can't preview.
+func TestPipelineRunResponse_ObservePolicySuppressesReject(t *testing.T) {
+	shadow := &stubPlugin{
+		name: "would-deny-response",
+		onResp: func(_ context.Context, pctx *Context) Action {
+			return pctx.DenyAndRecord("pii_leak", "policy.content-blocked", "leak")
+		},
+	}
+	p, err := New([]Plugin{shadow}, WithPolicies(ErrorPolicyObserve))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pctx := &Context{}
+	got := p.RunResponse(context.Background(), pctx)
+	if got.Type != Continue {
+		t.Errorf("action type = %v, want Continue (observe on response phase)", got.Type)
+	}
+	if pctx.Extensions.Invocations == nil || len(pctx.Extensions.Invocations.Inbound) == 0 {
+		t.Fatal("no response-phase invocation recorded")
+	}
+	inv := pctx.Extensions.Invocations.Inbound[0]
+	if inv.Phase != InvocationPhaseResponse {
+		t.Errorf("phase = %q, want response", inv.Phase)
+	}
+	if !inv.Shadow {
+		t.Error("response-phase shadow flag not set")
+	}
+}
+
+// TestPipelineRun_ObserveSynthesizesRecordWhenPluginSkipsIt covers
+// the defensive path: a plugin that returns Reject without first
+// recording its own Invocation (programmer error, or use of the
+// bare Deny helper instead of DenyAndRecord). The framework still
+// produces a Shadow=true record so the would-have-blocked event is
+// visible on the dashboard.
+func TestPipelineRun_ObserveSynthesizesRecordWhenPluginSkipsIt(t *testing.T) {
+	silent := &stubPlugin{
+		name: "silent-rejecter",
+		onReq: func(_ context.Context, _ *Context) Action {
+			// Note: no pctx.Record / DenyAndRecord.
+			return Deny("policy.forbidden", "no")
+		},
+	}
+	p, err := New([]Plugin{silent}, WithPolicies(ErrorPolicyObserve))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pctx := &Context{}
+	got := p.Run(context.Background(), pctx)
+	if got.Type != Continue {
+		t.Errorf("action = %v, want Continue", got.Type)
+	}
+	if pctx.Extensions.Invocations == nil || len(pctx.Extensions.Invocations.Inbound) != 1 {
+		t.Fatalf("want exactly one synthesized invocation, got: %+v", pctx.Extensions.Invocations)
+	}
+	inv := pctx.Extensions.Invocations.Inbound[0]
+	if inv.Reason != "shadow_synthesized" {
+		t.Errorf("reason = %q, want shadow_synthesized", inv.Reason)
+	}
+	if !inv.Shadow {
+		t.Error("Shadow flag not set on synthesized record")
+	}
+	if inv.Details["would_deny_code"] != "policy.forbidden" {
+		t.Errorf("would_deny_code = %q, want policy.forbidden", inv.Details["would_deny_code"])
+	}
+}
+
+// TestSetBody_ObserveModeIsNoop verifies the body-mutation side of
+// observe mode: SetBody records a shadow Invocation but does not
+// replace the in-memory body or flip bodyMutated. Downstream readers
+// and the wire both continue to see the original bytes, so a
+// redaction plugin running in shadow can be trusted to leave
+// production traffic unchanged.
+func TestSetBody_ObserveModeIsNoop(t *testing.T) {
+	mutator := &stubPlugin{
+		name: "redactor",
+		caps: PluginCapabilities{WritesBody: true},
+		onReq: func(_ context.Context, pctx *Context) Action {
+			pctx.SetBody([]byte("REDACTED"))
+			return Action{Type: Continue}
+		},
+	}
+	p, err := New([]Plugin{mutator}, WithPolicies(ErrorPolicyObserve))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pctx := &Context{Body: []byte("secret")}
+	got := p.Run(context.Background(), pctx)
+	if got.Type != Continue {
+		t.Fatalf("action = %v, want Continue", got.Type)
+	}
+	if string(pctx.Body) != "secret" {
+		t.Errorf("body = %q, want untouched (observe mode must not replace bytes)", pctx.Body)
+	}
+	if pctx.BodyMutated() {
+		t.Error("BodyMutated=true under observe; wire must see original body")
+	}
+	if pctx.Extensions.Invocations == nil || len(pctx.Extensions.Invocations.Inbound) != 1 {
+		t.Fatalf("want one invocation, got: %+v", pctx.Extensions.Invocations)
+	}
+	inv := pctx.Extensions.Invocations.Inbound[0]
+	if !inv.Shadow || inv.Reason != "body_rewritten" {
+		t.Errorf("expected shadow modify invocation, got action=%q reason=%q shadow=%v",
+			inv.Action, inv.Reason, inv.Shadow)
+	}
+}
+
+// TestNew_RejectsTooManyPolicies locks the defensive check in New:
+// a caller that supplies more policies than plugins is making a
+// parallel-slice mistake, not a well-formed pipeline. Fail loud at
+// construction rather than silently truncate.
+func TestNew_RejectsTooManyPolicies(t *testing.T) {
+	_, err := New(
+		[]Plugin{&stubPlugin{name: "a"}},
+		WithPolicies(ErrorPolicyEnforce, ErrorPolicyObserve),
+	)
+	if err == nil {
+		t.Fatal("expected error; 2 policies for 1 plugin is a parallel-slice bug")
+	}
+	if !strings.Contains(err.Error(), "WithPolicies") {
+		t.Errorf("error should name WithPolicies: %q", err)
+	}
+}
