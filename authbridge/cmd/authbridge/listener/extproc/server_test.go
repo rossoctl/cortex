@@ -62,6 +62,19 @@ func (v *mockVerifier) Verify(_ context.Context, _ string, _ string) (*validatio
 	return v.claims, v.err
 }
 
+// stubIdentity is a minimal pipeline.Identity for tests that construct
+// pctx directly (without running jwt-validation). A handful of session-
+// recording tests rely on "pctx has a known identity" to verify the
+// snapshot path.
+type stubIdentity struct {
+	subject, clientID string
+	scopes            []string
+}
+
+func (s stubIdentity) Subject() string  { return s.subject }
+func (s stubIdentity) ClientID() string { return s.clientID }
+func (s stubIdentity) Scopes() []string { return s.scopes }
+
 func serverFromAuth(t *testing.T, a *auth.Auth) *Server {
 	t.Helper()
 	// Plugins build their own auth.Auth from local config in
@@ -1019,17 +1032,17 @@ func TestRecordResponseSessions_NilStore(t *testing.T) {
 
 func TestSnapshotIdentity(t *testing.T) {
 	cases := []struct {
-		name   string
-		claims *validation.Claims
-		agent  *pipeline.AgentIdentity
-		want   *pipeline.EventIdentity
+		name     string
+		identity pipeline.Identity
+		agent    *pipeline.AgentIdentity
+		want     *pipeline.EventIdentity
 	}{
 		{
-			name: "claims and agent both set",
-			claims: &validation.Claims{
-				Subject:  "alice",
-				ClientID: "kagenti-ui",
-				Scopes:   []string{"openid", "weather-read"},
+			name: "identity and agent both set",
+			identity: stubIdentity{
+				subject:  "alice",
+				clientID: "kagenti-ui",
+				scopes:   []string{"openid", "weather-read"},
 			},
 			agent: &pipeline.AgentIdentity{WorkloadID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
 			want: &pipeline.EventIdentity{
@@ -1040,22 +1053,22 @@ func TestSnapshotIdentity(t *testing.T) {
 			},
 		},
 		{
-			name:   "only agent (outbound, no JWT validation)",
-			claims: nil,
-			agent:  &pipeline.AgentIdentity{WorkloadID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
-			want:   &pipeline.EventIdentity{AgentID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
+			name:     "only agent (outbound, no JWT validation)",
+			identity: nil,
+			agent:    &pipeline.AgentIdentity{WorkloadID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
+			want:     &pipeline.EventIdentity{AgentID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
 		},
 		{
-			name:   "neither set",
-			claims: nil,
-			agent:  nil,
-			want:   nil,
+			name:     "neither set",
+			identity: nil,
+			agent:    nil,
+			want:     nil,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := snapshotIdentity(&pipeline.Context{Claims: tc.claims, Agent: tc.agent})
+			got := snapshotIdentity(&pipeline.Context{Identity: tc.identity, Agent: tc.agent})
 			if tc.want == nil {
 				if got != nil {
 					t.Errorf("got %+v, want nil", got)
@@ -1076,10 +1089,10 @@ func TestSnapshotIdentity(t *testing.T) {
 }
 
 func TestSnapshotIdentity_ScopesDeepCopy(t *testing.T) {
-	// Mutating the claims slice after snapshot must not mutate the event.
-	claims := &validation.Claims{Subject: "alice", Scopes: []string{"a", "b"}}
-	id := snapshotIdentity(&pipeline.Context{Claims: claims})
-	claims.Scopes[0] = "x"
+	// Mutating the source slice after snapshot must not mutate the event.
+	scopes := []string{"a", "b"}
+	id := snapshotIdentity(&pipeline.Context{Identity: stubIdentity{subject: "alice", scopes: scopes}})
+	scopes[0] = "x"
 	if id.Scopes[0] != "a" {
 		t.Errorf("snapshot scopes aliased original: got %v", id.Scopes)
 	}
@@ -1139,7 +1152,7 @@ func TestRecordOutboundResponseSession_CapturesStatusAndError(t *testing.T) {
 
 	pctx := &pipeline.Context{
 		StatusCode: 503,
-		Claims:     &validation.Claims{Subject: "alice"},
+		Identity:   stubIdentity{subject: "alice"},
 		Extensions: pipeline.Extensions{
 			MCP: &pipeline.MCPExtension{Method: "tools/call"},
 		},

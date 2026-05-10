@@ -333,9 +333,10 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	}
 
 	// ActionAllow with Claims = authorized. Surface what the plugin
-	// VERIFIED in the token — diverges from the top-level Identity
-	// snapshot if later plugins re-annotate pctx.Claims.
-	pctx.Claims = result.Claims
+	// VERIFIED in the token via the pipeline.Identity interface.
+	// Plugins that don't run jwt-validation (SAML, mTLS, custom)
+	// publish their own adapter; listeners read through the interface.
+	pctx.Identity = claimsIdentity{c: result.Claims}
 	pctx.Record(pipeline.Invocation{
 		Action:        pipeline.ActionAllow,
 		Reason:        auth.APPROVE_AUTHORIZED.String(),

@@ -389,15 +389,19 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 // stays valid after pctx is discarded. Returns nil when no identity information
 // is available (e.g., jwt-validation didn't run on this path).
 func snapshotIdentity(pctx *pipeline.Context) *pipeline.EventIdentity {
-	if pctx.Claims == nil && pctx.Agent == nil {
+	// Read identity via the pipeline.Identity interface. Whichever auth
+	// plugin ran (jwt-validation today; SAML / mTLS / custom later)
+	// published an adapter onto pctx.Identity — we don't need to know
+	// its concrete type to snapshot the subject/client/scopes.
+	if pctx.Identity == nil && pctx.Agent == nil {
 		return nil
 	}
 	id := &pipeline.EventIdentity{}
-	if pctx.Claims != nil {
-		id.Subject = pctx.Claims.Subject
-		id.ClientID = pctx.Claims.ClientID
-		if len(pctx.Claims.Scopes) > 0 {
-			id.Scopes = append([]string(nil), pctx.Claims.Scopes...)
+	if pctx.Identity != nil {
+		id.Subject = pctx.Identity.Subject()
+		id.ClientID = pctx.Identity.ClientID()
+		if scopes := pctx.Identity.Scopes(); len(scopes) > 0 {
+			id.Scopes = append([]string(nil), scopes...)
 		}
 	}
 	if pctx.Agent != nil {

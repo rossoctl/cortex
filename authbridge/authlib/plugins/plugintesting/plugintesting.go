@@ -63,9 +63,28 @@ func (p *JWTValidationStub) OnRequest(ctx context.Context, pctx *pipeline.Contex
 		}
 		return pipeline.DenyStatus(result.DenyStatus, code, result.DenyReason)
 	}
-	pctx.Claims = result.Claims
+	if result.Claims != nil {
+		pctx.Identity = testIdentity{
+			subject:  result.Claims.Subject,
+			clientID: result.Claims.ClientID,
+			scopes:   result.Claims.Scopes,
+		}
+	}
 	return pipeline.Action{Type: pipeline.Continue}
 }
+
+// testIdentity is a minimal pipeline.Identity adapter scoped to this
+// test helper. Kept separate from the jwt-validation plugin's own
+// adapter so plugintesting stays self-contained and doesn't reach into
+// a package-internal implementation.
+type testIdentity struct {
+	subject, clientID string
+	scopes            []string
+}
+
+func (i testIdentity) Subject() string  { return i.subject }
+func (i testIdentity) ClientID() string { return i.clientID }
+func (i testIdentity) Scopes() []string { return i.scopes }
 
 func (p *JWTValidationStub) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}

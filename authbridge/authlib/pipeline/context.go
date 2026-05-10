@@ -7,9 +7,23 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/validation"
 )
+
+// Identity carries the subject identity established by whichever auth
+// plugin ran — jwt-validation, SAML, mTLS, custom. Populated by the
+// auth plugin via pctx.Identity = <adapter>. Listener reads via these
+// methods — not via concrete-type assertion — so plugins can contribute
+// any identity shape without the framework caring.
+//
+// Returning empty-string / nil from any method is valid (e.g., a
+// SPIFFE-SVID authenticator may have no "ClientID" concept). Consumers
+// that need plugin-specific fields type-assert to a richer interface
+// or to the plugin's known concrete type.
+type Identity interface {
+	Subject() string  // stable subject ID (sub claim / SPIFFE ID / email)
+	ClientID() string // registering-client ID, if applicable
+	Scopes() []string // granted scopes / roles
+}
 
 // Direction indicates whether a request is inbound (caller → this agent) or
 // outbound (this agent → target service).
@@ -76,9 +90,9 @@ type Context struct {
 	// compute SessionEvent.Duration without walking the event history.
 	StartedAt time.Time
 
-	Agent   *AgentIdentity
-	Claims  *validation.Claims // nil before jwt-validation runs
-	Session *SessionView       // nil unless session tracking is enabled
+	Agent    *AgentIdentity
+	Identity Identity     // nil before an auth plugin runs
+	Session  *SessionView // nil unless session tracking is enabled
 
 	// Response-phase fields (populated by listener before RunResponse).
 	// ResponseBody may be nil even during response phase if no plugin declared BodyAccess.
