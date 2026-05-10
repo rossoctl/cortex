@@ -76,10 +76,9 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 			ToolCalls: []InferenceToolCall{{ID: "c1", Name: "get_weather", Arguments: `{"city":"NYC"}`}},
 			Completion: "Hello, world!", FinishReason: "stop", TotalTokens: 17,
 		},
-		Identity:       &EventIdentity{Subject: "alice", ClientID: "agent-1"},
-		StatusCode:     200,
-		Error:          &EventError{Kind: "upstream", Message: "timeout"},
-		TargetAudience: "github-tool",
+		Identity:   &EventIdentity{Subject: "alice", ClientID: "agent-1"},
+		StatusCode: 200,
+		Error:      &EventError{Kind: "upstream", Message: "timeout"},
 	}
 
 	first, err := json.Marshal(orig)
@@ -107,7 +106,7 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 	}
 	s := string(data)
 
-	for _, field := range []string{"a2a", "mcp", "inference", "auth", "plugins", "identity", "statusCode", "error", "host", "targetAudience", "durationMs"} {
+	for _, field := range []string{"a2a", "mcp", "inference", "auth", "plugins", "identity", "statusCode", "error", "host", "durationMs"} {
 		if strings.Contains(s, `"`+field+`":`) {
 			t.Errorf("expected %q omitted when zero: %s", field, s)
 		}
@@ -150,21 +149,25 @@ func TestSessionEvent_Invocations_JSONRoundTrip(t *testing.T) {
 		Phase:     SessionDenied,
 		Invocations: &Invocations{
 			Inbound: []Invocation{{
-				Plugin:           "jwt-validation",
-				Action:           ActionDeny,
-				Reason:           "jwt_failed",
-				ExpectedIssuer:   "http://keycloak.localtest.me:8080/realms/kagenti",
-				ExpectedAudience: "spiffe://localtest.me/ns/team1/sa/weather-tool",
+				Plugin: "jwt-validation",
+				Action: ActionDeny,
+				Reason: "jwt_failed",
+				Details: map[string]string{
+					"expected_issuer":   "http://keycloak.localtest.me:8080/realms/kagenti",
+					"expected_audience": "spiffe://localtest.me/ns/team1/sa/weather-tool",
+				},
 			}},
 			Outbound: []Invocation{{
-				Plugin:          "token-exchange",
-				Action:          ActionModify,
-				Reason:          "cache_hit",
-				RouteMatched:    true,
-				RouteHost:       "weather-tool-mcp",
-				TargetAudience:  "spiffe://localtest.me/ns/team1/sa/weather-tool",
-				RequestedScopes: []string{"openid", "weather-aud"},
-				CacheHit:        true,
+				Plugin: "token-exchange",
+				Action: ActionModify,
+				Reason: "cache_hit",
+				Details: map[string]string{
+					"route_matched":    "true",
+					"route_host":       "weather-tool-mcp",
+					"target_audience":  "spiffe://localtest.me/ns/team1/sa/weather-tool",
+					"requested_scopes": "openid weather-aud",
+					"cache_hit":        "true",
+				},
 			}},
 		},
 	}

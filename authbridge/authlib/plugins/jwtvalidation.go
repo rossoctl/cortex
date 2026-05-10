@@ -306,10 +306,12 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		// ExpectedIssuer / ExpectedAudience diagnostic fields that the
 		// one-liner DenyAndRecord doesn't accept.
 		pctx.Record(pipeline.Invocation{
-			Action:           pipeline.ActionDeny,
-			Reason:           result.DenyReasonCode.String(),
-			ExpectedIssuer:   p.cfg.Issuer,
-			ExpectedAudience: audience,
+			Action: pipeline.ActionDeny,
+			Reason: result.DenyReasonCode.String(),
+			Details: map[string]string{
+				"expected_issuer":   p.cfg.Issuer,
+				"expected_audience": audience,
+			},
 		})
 		// result.DenyReason carries the specific failure (missing header,
 		// audience mismatch, expired, etc.). Pick a code whose default
@@ -338,11 +340,13 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	// publish their own adapter; listeners read through the interface.
 	pctx.Identity = claimsIdentity{c: result.Claims}
 	pctx.Record(pipeline.Invocation{
-		Action:        pipeline.ActionAllow,
-		Reason:        auth.APPROVE_AUTHORIZED.String(),
-		TokenSubject:  result.Claims.Subject,
-		TokenAudience: result.Claims.Audience,
-		TokenScopes:   result.Claims.Scopes,
+		Action: pipeline.ActionAllow,
+		Reason: auth.APPROVE_AUTHORIZED.String(),
+		Details: map[string]string{
+			"token_subject":  result.Claims.Subject,
+			"token_audience": strings.Join(result.Claims.Audience, ","),
+			"token_scopes":   strings.Join(result.Claims.Scopes, " "),
+		},
 	})
 	return pipeline.Action{Type: pipeline.Continue}
 }

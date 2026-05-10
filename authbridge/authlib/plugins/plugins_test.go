@@ -412,8 +412,8 @@ func TestJWTValidation_OnRequest_PopulatesAuth_Deny_NoHeader(t *testing.T) {
 	if got.Reason != "no_header" {
 		t.Errorf("Reason = %q, want no_header", got.Reason)
 	}
-	if got.ExpectedIssuer != "http://issuer.example" {
-		t.Errorf("ExpectedIssuer = %q, want http://issuer.example", got.ExpectedIssuer)
+	if got.Details["expected_issuer"] != "http://issuer.example" {
+		t.Errorf("expected_issuer = %q, want http://issuer.example", got.Details["expected_issuer"])
 	}
 }
 
@@ -444,14 +444,14 @@ func TestJWTValidation_OnRequest_PopulatesAuth_Allow(t *testing.T) {
 	if got.Action != pipeline.ActionAllow || got.Reason != "authorized" {
 		t.Errorf("got Action=%q Reason=%q, want allow/authorized", got.Action, got.Reason)
 	}
-	if got.TokenSubject != "alice" {
-		t.Errorf("TokenSubject = %q, want alice", got.TokenSubject)
+	if got.Details["token_subject"] != "alice" {
+		t.Errorf("token_subject = %q, want alice", got.Details["token_subject"])
 	}
-	if len(got.TokenScopes) != 2 || got.TokenScopes[0] != "openid" {
-		t.Errorf("TokenScopes = %v, want [openid write]", got.TokenScopes)
+	if got.Details["token_scopes"] != "openid write" {
+		t.Errorf("token_scopes = %q, want \"openid write\"", got.Details["token_scopes"])
 	}
-	if len(got.TokenAudience) != 1 || got.TokenAudience[0] != "agent-aud" {
-		t.Errorf("TokenAudience = %v, want [agent-aud]", got.TokenAudience)
+	if got.Details["token_audience"] != "agent-aud" {
+		t.Errorf("token_audience = %q, want agent-aud", got.Details["token_audience"])
 	}
 }
 
@@ -667,11 +667,11 @@ func TestTokenExchange_Passthrough(t *testing.T) {
 	if ob.Plugin != "token-exchange" || ob.Action != pipeline.ActionSkip {
 		t.Errorf("entry = (%q, %q), want (token-exchange, skip)", ob.Plugin, ob.Action)
 	}
-	if ob.RouteHost != "some-host" {
-		t.Errorf("RouteHost = %q, want some-host", ob.RouteHost)
+	if ob.Details["route_host"] != "some-host" {
+		t.Errorf("route_host = %q, want some-host", ob.Details["route_host"])
 	}
-	if ob.RouteMatched {
-		t.Error("RouteMatched should be false on default-policy passthrough")
+	if ob.Details["route_matched"] != "false" {
+		t.Errorf("route_matched = %q, want false on default-policy passthrough", ob.Details["route_matched"])
 	}
 }
 
@@ -718,11 +718,11 @@ func TestTokenExchange_ExchangeSuccess(t *testing.T) {
 	if got.Plugin != "token-exchange" || got.Action != pipeline.ActionModify {
 		t.Errorf("got Plugin=%q Action=%q, want token-exchange/modify", got.Plugin, got.Action)
 	}
-	if got.RouteHost != "target-svc" {
-		t.Errorf("RouteHost = %q, want target-svc", got.RouteHost)
+	if got.Details["route_host"] != "target-svc" {
+		t.Errorf("route_host = %q, want target-svc", got.Details["route_host"])
 	}
-	if got.CacheHit {
-		t.Error("CacheHit = true on first exchange; should be false")
+	if got.Details["cache_hit"] != "false" {
+		t.Errorf("cache_hit = %q, want false on first exchange", got.Details["cache_hit"])
 	}
 }
 

@@ -431,12 +431,17 @@ func matchInvocationRow(r invocationRow, q string) bool {
 	}
 
 	e := r.event
-	hay := []string{e.Host, e.TargetAudience, eventMethod(*e)}
+	hay := []string{e.Host, eventMethod(*e)}
 	if r.inv != nil {
 		hay = append(hay,
-			r.inv.Plugin, string(r.inv.Action), r.inv.Reason, r.inv.Path,
-			r.inv.ExpectedIssuer, r.inv.ExpectedAudience, r.inv.TokenSubject,
-			r.inv.RouteHost, r.inv.TargetAudience)
+			r.inv.Plugin, string(r.inv.Action), r.inv.Reason, r.inv.Path)
+		// Plugin-specific diagnostic context — iterate keys + values so
+		// filter text matches on e.g. "target_audience" / the target
+		// audience value without the UI having to know which keys
+		// each plugin writes.
+		for k, v := range r.inv.Details {
+			hay = append(hay, k, v)
+		}
 	}
 	if e.Identity != nil {
 		hay = append(hay, e.Identity.Subject, e.Identity.ClientID)

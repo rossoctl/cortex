@@ -446,11 +446,13 @@ func TestHandleGet_SerializesInvocations(t *testing.T) {
 		Phase:     pipeline.SessionDenied,
 		Invocations: &pipeline.Invocations{
 			Inbound: []pipeline.Invocation{{
-				Plugin:           "jwt-validation",
-				Action:           pipeline.ActionDeny,
-				Reason:           "jwt_failed",
-				ExpectedIssuer:   "http://issuer.example",
-				ExpectedAudience: "agent-aud",
+				Plugin: "jwt-validation",
+				Action: pipeline.ActionDeny,
+				Reason: "jwt_failed",
+				Details: map[string]string{
+					"expected_issuer":   "http://issuer.example",
+					"expected_audience": "agent-aud",
+				},
 			}},
 		},
 	})

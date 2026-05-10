@@ -1264,12 +1264,14 @@ func TestRecordInboundReject_EmitsDeniedPhase(t *testing.T) {
 		Extensions: pipeline.Extensions{
 			Invocations: &pipeline.Invocations{
 				Inbound: []pipeline.Invocation{{
-					Plugin:           "jwt-validation",
-					Phase:            pipeline.InvocationPhaseRequest,
-					Action:           pipeline.ActionDeny,
-					Reason:           "jwt_failed",
-					ExpectedIssuer:   "http://issuer.example",
-					ExpectedAudience: "agent-aud",
+					Plugin: "jwt-validation",
+					Phase:  pipeline.InvocationPhaseRequest,
+					Action: pipeline.ActionDeny,
+					Reason: "jwt_failed",
+					Details: map[string]string{
+						"expected_issuer":   "http://issuer.example",
+						"expected_audience": "agent-aud",
+					},
 				}},
 			},
 		},

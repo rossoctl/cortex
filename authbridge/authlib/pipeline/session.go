@@ -125,12 +125,6 @@ type SessionEvent struct {
 	// landed on. Empty when the listener didn't populate pctx.Host.
 	Host string
 
-	// TargetAudience is the OAuth audience the outbound request was routed
-	// to, or empty when no route matched (passthrough) or the event is
-	// inbound. Useful for policy plugins that care which target scope a
-	// call was made against, independent of host (which can be a glob).
-	TargetAudience string
-
 	// Duration is the wall-clock time from request entry into the listener
 	// to response recording. Zero on request-phase events. On response
 	// events it's computed as now - matching-request.At.
@@ -158,9 +152,8 @@ type sessionEventWire struct {
 	Identity       *EventIdentity             `json:"identity,omitempty"`
 	StatusCode     int                        `json:"statusCode,omitempty"`
 	Error          *EventError                `json:"error,omitempty"`
-	Host           string                     `json:"host,omitempty"`
-	TargetAudience string                     `json:"targetAudience,omitempty"`
-	DurationMs     int64                      `json:"durationMs,omitempty"`
+	Host       string `json:"host,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -177,9 +170,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Identity:       e.Identity,
 		StatusCode:     e.StatusCode,
 		Error:          e.Error,
-		Host:           e.Host,
-		TargetAudience: e.TargetAudience,
-		DurationMs:     e.Duration.Milliseconds(),
+		Host:       e.Host,
+		DurationMs: e.Duration.Milliseconds(),
 	})
 }
 
@@ -204,9 +196,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Identity:       w.Identity,
 		StatusCode:     w.StatusCode,
 		Error:          w.Error,
-		Host:           w.Host,
-		TargetAudience: w.TargetAudience,
-		Duration:       time.Duration(w.DurationMs) * time.Millisecond,
+		Host:     w.Host,
+		Duration: time.Duration(w.DurationMs) * time.Millisecond,
 	}
 	return nil
 }

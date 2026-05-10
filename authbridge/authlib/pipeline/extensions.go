@@ -279,20 +279,22 @@ type Invocation struct {
 	// when the plugin has no path context.
 	Path string `json:"path,omitempty"`
 
-	// Auth-gate context, populated when applicable.
-	ExpectedIssuer   string   `json:"expectedIssuer,omitempty"`
-	ExpectedAudience string   `json:"expectedAudience,omitempty"`
-	TokenSubject     string   `json:"tokenSubject,omitempty"`
-	TokenAudience    []string `json:"tokenAudience,omitempty"`
-	TokenScopes      []string `json:"tokenScopes,omitempty"`
-
-	// Outbound routing context. RouteMatched=true means a route rule
-	// explicitly applied; false means the default policy caught it.
-	RouteMatched    bool     `json:"routeMatched,omitempty"`
-	RouteHost       string   `json:"routeHost,omitempty"`
-	TargetAudience  string   `json:"targetAudience,omitempty"`
-	RequestedScopes []string `json:"requestedScopes,omitempty"`
-	CacheHit        bool     `json:"cacheHit,omitempty"`
+	// Details carries plugin-specific context as a flat string→string
+	// map. Opaque to the framework; abctl renders it as key=value rows
+	// in the invocation detail pane. Suggested convention: snake_case
+	// keys scoped to the plugin's semantic domain. Built-in plugins
+	// use keys like expected_issuer, token_subject, route_host,
+	// target_audience, cache_hit. Third-party plugins define their own.
+	//
+	// Stringify booleans as "true"/"false" and []string as space-
+	// joined (matching OAuth scope conventions). Keep values short
+	// enough for a detail pane — bulky diagnostics belong in the
+	// Extensions.Custom escape-hatch event.
+	//
+	// NEVER put raw tokens, signatures, or client credentials here.
+	// The session API has no auth on it — only safe-to-log data
+	// belongs in Invocation.Details.
+	Details map[string]string `json:"details,omitempty"`
 }
 
 // DelegationExtension tracks the token delegation chain across hops.

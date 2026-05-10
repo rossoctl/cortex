@@ -421,9 +421,6 @@ func logAppended(sessionID string, e *pipeline.SessionEvent) {
 	if e.Host != "" {
 		attrs = append(attrs, "host", e.Host)
 	}
-	if e.TargetAudience != "" {
-		attrs = append(attrs, "aud", e.TargetAudience)
-	}
 	if e.StatusCode != 0 {
 		attrs = append(attrs, "status", e.StatusCode)
 	}

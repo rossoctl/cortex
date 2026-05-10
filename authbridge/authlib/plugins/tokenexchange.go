@@ -477,12 +477,14 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	switch result.Action {
 	case auth.ActionDeny:
 		pctx.Record(pipeline.Invocation{
-			Action:          pipeline.ActionDeny,
-			Reason:          result.DenyReasonCode.String(),
-			RouteMatched:    result.RouteMatched,
-			RouteHost:       host,
-			TargetAudience:  result.TargetAudience,
-			RequestedScopes: splitScopes(result.RequestedScopes),
+			Action: pipeline.ActionDeny,
+			Reason: result.DenyReasonCode.String(),
+			Details: map[string]string{
+				"route_matched":    boolStr(result.RouteMatched),
+				"route_host":       host,
+				"target_audience":  result.TargetAudience,
+				"requested_scopes": result.RequestedScopes,
+			},
 		})
 		// Outbound denials almost always come from failed token exchange
 		// at the IdP (upstream unreachable, bad credentials, audience
@@ -500,13 +502,15 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			reason = "cache_hit"
 		}
 		pctx.Record(pipeline.Invocation{
-			Action:          pipeline.ActionModify,
-			Reason:          reason,
-			RouteMatched:    true,
-			RouteHost:       host,
-			TargetAudience:  result.TargetAudience,
-			RequestedScopes: splitScopes(result.RequestedScopes),
-			CacheHit:        result.CacheHit,
+			Action: pipeline.ActionModify,
+			Reason: reason,
+			Details: map[string]string{
+				"route_matched":    "true",
+				"route_host":       host,
+				"target_audience":  result.TargetAudience,
+				"requested_scopes": result.RequestedScopes,
+				"cache_hit":        boolStr(result.CacheHit),
+			},
 		})
 	default:
 		// ActionAllow / unroutable host / default-policy=passthrough all
@@ -518,23 +522,26 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			reason = "route_passthrough"
 		}
 		pctx.Record(pipeline.Invocation{
-			Action:       pipeline.ActionSkip,
-			Reason:       reason,
-			RouteMatched: result.RouteMatched,
-			RouteHost:    host,
+			Action: pipeline.ActionSkip,
+			Reason: reason,
+			Details: map[string]string{
+				"route_matched": boolStr(result.RouteMatched),
+				"route_host":    host,
+			},
 		})
 	}
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// splitScopes turns a space-separated scope string into []string. Returns
-// nil for the empty string so the JSON omitempty tag drops the field
-// entirely rather than emitting "[]".
-func splitScopes(s string) []string {
-	if s == "" {
-		return nil
+// boolStr renders a boolean as "true" / "false" for Invocation.Details.
+// Kept as a small helper rather than inlining so both the deny and
+// modify branches use the same string form and abctl's filter
+// matching is predictable.
+func boolStr(b bool) string {
+	if b {
+		return "true"
 	}
-	return strings.Fields(s)
+	return "false"
 }
 
 func (p *TokenExchange) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
