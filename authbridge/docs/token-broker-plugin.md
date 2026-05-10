@@ -53,6 +53,10 @@ pipeline:
           routes:
             file: "/etc/authproxy/routes.yaml"      # Optional
             rules:                                   # Optional inline rules
+              - host: "api.github.com"
+                action: "broker"
+                authorization_endpoint: "https://github.com/login/oauth/authorize"
+                token_endpoint: "https://github.com/login/oauth/access_token"
               - host: "mcp-server"
                 action: "broker"
               - host: "internal-*"
@@ -68,11 +72,19 @@ pipeline:
 
 ### Route Rules
 
-Each rule has a `host` (glob pattern) and an `action` (`"broker"` or `"passthrough"`).
+Each rule has a `host` (glob pattern), an `action` (`"broker"` or `"passthrough"`),
+and optional `authorization_endpoint` and `token_endpoint` fields.
 Rules with no explicit action default to `"broker"`.
 
 Host matching strips the port before comparison (`api.example.com:8443` matches
 pattern `api.example.com`). First match wins.
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `host` | Yes | — | Glob pattern to match target host |
+| `action` | No | `broker` | `"broker"` to acquire token, `"passthrough"` to skip |
+| `authorization_endpoint` | No | — | OAuth authorization endpoint URL to send to broker |
+| `token_endpoint` | No | — | OAuth token endpoint URL to send to broker |
 
 ### Routes File Format
 
@@ -80,11 +92,20 @@ pattern `api.example.com`). First match wins.
 # /etc/authproxy/routes.yaml
 - host: "api.github.com"
   action: "broker"
+  authorization_endpoint: "https://github.com/login/oauth/authorize"
+  token_endpoint: "https://github.com/login/oauth/access_token"
 - host: "*.github.com"
   action: "broker"
+  authorization_endpoint: "https://github.com/login/oauth/authorize"
+  token_endpoint: "https://github.com/login/oauth/access_token"
 - host: "internal-service"
   action: "passthrough"
 ```
+
+The `authorization_endpoint` and `token_endpoint` fields are optional. When provided,
+they will be sent to the Token Broker service via the `X-Authorization-Endpoint` and
+`X-Token-Endpoint` headers respectively, allowing the broker to use static,
+pre-configured OAuth endpoints.
 
 ### Pipeline Composition
 
@@ -112,6 +133,12 @@ POST {broker_url}/sessions/token
 |--------|-------|-------------|
 | `Authorization` | `Bearer <caller-token>` | The original request's JWT |
 | `X-Server-Url` | `{scheme}://{host}` | Target service URL (scheme derived from request) |
+| `X-Authorization-Endpoint` | `{authorization-url}` | Optional: OAuth authorization endpoint from route config |
+| `X-Token-Endpoint` | `{token-url}` | Optional: OAuth token endpoint from route config |
+
+The `X-Authorization-Endpoint` and `X-Token-Endpoint` headers are only sent when the
+matched route specifies these endpoints. This allows the broker to use the correct OAuth
+endpoints for the target service.
 
 ### Success Response (200 OK)
 
@@ -148,13 +175,14 @@ POST {broker_url}/sessions/token
 
 ## Route Action Semantics
 
-The `action` field in token-broker routes uses `"broker"` / `"passthrough"`,
-while the existing `token-exchange` plugin uses `"exchange"` / `"passthrough"`.
-Both plugins share the `routing.Router` infrastructure. The router's `Resolve`
-method maps action strings to `ResolvedRoute.Passthrough = true` when the action
-equals `"passthrough"`. The token-broker plugin only inspects the `Passthrough`
-boolean, so its `"broker"` action works identically to token-exchange's
-`"exchange"` at the router level — both are simply "not passthrough".
+The `action` field in token-broker routes uses `"broker"` / `"passthrough"`.
+The token-broker plugin has its own internal router implementation optimized
+for broker-specific routing needs. Routes with action `"broker"` (or no explicit
+action, which defaults to `"broker"`) will trigger token acquisition from the
+broker service. Routes with action `"passthrough"` will forward requests unchanged.
+
+The router uses glob pattern matching (via `gobwas/glob`) with first-match-wins
+semantics, and automatically strips ports from hosts before matching.
 
 ## Debugging
 

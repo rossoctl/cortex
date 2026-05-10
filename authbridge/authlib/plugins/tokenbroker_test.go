@@ -385,6 +385,177 @@ func TestTokenBroker_OnRequest_RouteMatching(t *testing.T) {
 		t.Errorf("Authorization header = %q, want %q (unchanged)", auth, originalToken)
 	}
 }
+func TestTokenBroker_OnRequest_WithAuthorizationEndpoint(t *testing.T) {
+	var capturedAuthEndpoint string
+
+	srv := createCapturingBroker(t, "test-token", func(r *http.Request) {
+		capturedAuthEndpoint = r.Header.Get("X-Authorization-Endpoint")
+	})
+	defer srv.Close()
+
+	p := NewTokenBroker()
+	config := `{
+		"broker_url": "` + srv.URL + `",
+		"routes": {
+			"rules": [
+				{
+					"host": "api.example.com",
+					"action": "broker",
+					"authorization_endpoint": "https://auth.example.com/oauth/authorize"
+				},
+				{
+					"host": "other.example.com",
+					"action": "broker"
+				}
+			]
+		}
+	}`
+
+	if err := p.Configure(json.RawMessage(config)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+
+	// Test with authorization endpoint
+	pctx1 := &pipeline.Context{
+		Host:    "api.example.com",
+		Headers: http.Header{"Authorization": []string{"Bearer user-token"}},
+	}
+
+	action1 := p.OnRequest(context.Background(), pctx1)
+	if action1.Type != pipeline.Continue {
+		t.Errorf("OnRequest() action.Type = %v, want %v", action1.Type, pipeline.Continue)
+	}
+
+	if capturedAuthEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("X-Authorization-Endpoint = %q, want %q", capturedAuthEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+
+	// Test without authorization endpoint
+	capturedAuthEndpoint = "should-be-empty"
+	pctx2 := &pipeline.Context{
+		Host:    "other.example.com",
+		Headers: http.Header{"Authorization": []string{"Bearer user-token"}},
+	}
+
+	action2 := p.OnRequest(context.Background(), pctx2)
+	if action2.Type != pipeline.Continue {
+		t.Errorf("OnRequest() action.Type = %v, want %v", action2.Type, pipeline.Continue)
+	}
+
+	if capturedAuthEndpoint != "" {
+		t.Errorf("X-Authorization-Endpoint = %q, want empty string", capturedAuthEndpoint)
+	}
+}
+
+func TestTokenBroker_OnRequest_WithTokenEndpoint(t *testing.T) {
+	var capturedTokenEndpoint string
+
+	srv := createCapturingBroker(t, "test-token", func(r *http.Request) {
+		capturedTokenEndpoint = r.Header.Get("X-Token-Endpoint")
+	})
+	defer srv.Close()
+
+	p := NewTokenBroker()
+	config := `{
+		"broker_url": "` + srv.URL + `",
+		"routes": {
+			"rules": [
+				{
+					"host": "api.example.com",
+					"action": "broker",
+					"token_endpoint": "https://auth.example.com/oauth/token"
+				},
+				{
+					"host": "other.example.com",
+					"action": "broker"
+				}
+			]
+		}
+	}`
+
+	if err := p.Configure(json.RawMessage(config)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+
+	// Test with token endpoint
+	pctx1 := &pipeline.Context{
+		Host:    "api.example.com",
+		Headers: http.Header{"Authorization": []string{"Bearer user-token"}},
+	}
+
+	action1 := p.OnRequest(context.Background(), pctx1)
+	if action1.Type != pipeline.Continue {
+		t.Errorf("OnRequest() action.Type = %v, want %v", action1.Type, pipeline.Continue)
+	}
+
+	if capturedTokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("X-Token-Endpoint = %q, want %q", capturedTokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+
+	// Test without token endpoint
+	capturedTokenEndpoint = "should-be-empty"
+	pctx2 := &pipeline.Context{
+		Host:    "other.example.com",
+		Headers: http.Header{"Authorization": []string{"Bearer user-token"}},
+	}
+
+	action2 := p.OnRequest(context.Background(), pctx2)
+	if action2.Type != pipeline.Continue {
+		t.Errorf("OnRequest() action.Type = %v, want %v", action2.Type, pipeline.Continue)
+	}
+
+	if capturedTokenEndpoint != "" {
+		t.Errorf("X-Token-Endpoint = %q, want empty string", capturedTokenEndpoint)
+	}
+}
+
+func TestTokenBroker_OnRequest_WithBothEndpoints(t *testing.T) {
+	var capturedAuthEndpoint, capturedTokenEndpoint string
+
+	srv := createCapturingBroker(t, "test-token", func(r *http.Request) {
+		capturedAuthEndpoint = r.Header.Get("X-Authorization-Endpoint")
+		capturedTokenEndpoint = r.Header.Get("X-Token-Endpoint")
+	})
+	defer srv.Close()
+
+	p := NewTokenBroker()
+	config := `{
+		"broker_url": "` + srv.URL + `",
+		"routes": {
+			"rules": [
+				{
+					"host": "api.example.com",
+					"action": "broker",
+					"authorization_endpoint": "https://auth.example.com/oauth/authorize",
+					"token_endpoint": "https://auth.example.com/oauth/token"
+				}
+			]
+		}
+	}`
+
+	if err := p.Configure(json.RawMessage(config)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+
+	// Test with both endpoints
+	pctx := &pipeline.Context{
+		Host:    "api.example.com",
+		Headers: http.Header{"Authorization": []string{"Bearer user-token"}},
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Errorf("OnRequest() action.Type = %v, want %v", action.Type, pipeline.Continue)
+	}
+
+	if capturedAuthEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("X-Authorization-Endpoint = %q, want %q", capturedAuthEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+
+	if capturedTokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("X-Token-Endpoint = %q, want %q", capturedTokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+}
 
 func TestTokenBroker_OnRequest_DefaultPolicyRouting(t *testing.T) {
 	t.Run("unmatched host with broker default uses broker", func(t *testing.T) {

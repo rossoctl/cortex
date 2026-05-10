@@ -27,7 +27,9 @@ func NewClient() *Client {
 // AcquireToken calls the Token Broker to get a token for the given target server.
 // The broker extracts user-id and session-key from the provided JWT token.
 // Blocks until a token is available or the context is cancelled.
-func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, serverURL string) (string, error) {
+// If authorizationEndpoint is provided, it will be sent to the broker via X-Authorization-Endpoint header.
+// If tokenEndpoint is provided, it will be sent to the broker via X-Token-Endpoint header.
+func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, serverURL, authorizationEndpoint, tokenEndpoint string) (string, error) {
 	url := fmt.Sprintf("%s/sessions/token", tokenBrokerURL)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
@@ -37,6 +39,12 @@ func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, server
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-Server-Url", serverURL)
+	if authorizationEndpoint != "" {
+		req.Header.Set("X-Authorization-Endpoint", authorizationEndpoint)
+	}
+	if tokenEndpoint != "" {
+		req.Header.Set("X-Token-Endpoint", tokenEndpoint)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

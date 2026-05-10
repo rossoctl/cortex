@@ -7,13 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/gobwas/glob"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tokenbroker"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
+	"gopkg.in/yaml.v3"
 )
 
 // tokenBrokerConfig is the plugin's local config schema.
@@ -40,8 +42,10 @@ type tokenBrokerRoutes struct {
 }
 
 type tokenBrokerRoute struct {
-	Host   string `json:"host"`
-	Action string `json:"action"` // "broker" or "passthrough"; defaults to "broker"
+	Host                  string `json:"host"`
+	Action                string `json:"action"` // "broker" or "passthrough"; defaults to "broker"
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string `json:"token_endpoint,omitempty"`
 }
 
 func (c *tokenBrokerConfig) applyDefaults() {
@@ -66,12 +70,77 @@ func (c *tokenBrokerConfig) validate() error {
 	return nil
 }
 
+// brokerRouter resolves destination hosts to broker actions.
+// Uses first-match-wins semantics with gobwas/glob patterns.
+type brokerRouter struct {
+	routes        []compiledBrokerRoute
+	defaultAction string // "broker" or "passthrough"
+}
+
+type compiledBrokerRoute struct {
+	pattern               string
+	glob                  glob.Glob
+	action                string // "broker" or "passthrough"
+	authorizationEndpoint string
+	tokenEndpoint         string
+}
+
+// newBrokerRouter creates a router from the given routes.
+// defaultAction is "broker" or "passthrough" (applied when no route matches).
+// Returns an error if any host pattern is invalid.
+func newBrokerRouter(defaultAction string, rules []tokenBrokerRoute) (*brokerRouter, error) {
+	if defaultAction == "" {
+		defaultAction = "passthrough"
+	}
+	compiled := make([]compiledBrokerRoute, 0, len(rules))
+	for _, r := range rules {
+		// Use '.' as separator so *.example.com doesn't match foo.bar.example.com
+		g, err := glob.Compile(r.Host, '.')
+		if err != nil {
+			return nil, fmt.Errorf("invalid route pattern %q: %w", r.Host, err)
+		}
+		action := r.Action
+		if action == "" {
+			action = "broker"
+		}
+		compiled = append(compiled, compiledBrokerRoute{
+			pattern:               r.Host,
+			glob:                  g,
+			action:                action,
+			authorizationEndpoint: r.AuthorizationEndpoint,
+			tokenEndpoint:         r.TokenEndpoint,
+		})
+	}
+	return &brokerRouter{routes: compiled, defaultAction: defaultAction}, nil
+}
+
+// resolve returns whether the given host should use the broker and the authorization/token endpoints if specified.
+// Port is stripped from the host before matching.
+// Returns (shouldBroker, authorizationEndpoint, tokenEndpoint) where shouldBroker is true if a route matches with action "broker"
+// or if no route matches and default is "broker".
+func (r *brokerRouter) resolve(host string) (bool, string, string) {
+	// Strip port if present
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	// Check for matching route
+	for _, entry := range r.routes {
+		if entry.glob.Match(host) {
+			return entry.action == "broker", entry.authorizationEndpoint, entry.tokenEndpoint
+		}
+	}
+
+	// No route matched, use default action
+	return r.defaultAction == "broker", "", ""
+}
+
 // TokenBroker performs token brokering for outbound requests.
 // It acquires tokens from a token broker service based on routing rules.
 type TokenBroker struct {
 	cfg    tokenBrokerConfig
 	client *tokenbroker.Client
-	router *routing.Router
+	router *brokerRouter
 }
 
 // NewTokenBroker constructs an unconfigured plugin.
@@ -125,18 +194,8 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	authHeader := pctx.Headers.Get("Authorization")
 	host := pctx.Host
 
-	// Resolve route
-	resolved := p.router.Resolve(host)
-
-	// Check if this should be a broker request
-	shouldBroker := false
-	if resolved != nil && !resolved.Passthrough {
-		// Matched a route with action != "passthrough"
-		shouldBroker = true
-	} else if resolved == nil && p.cfg.DefaultPolicy == "broker" {
-		// No route matched, but default policy is broker
-		shouldBroker = true
-	}
+	// Check if this should be a broker request and get authorization/token endpoints
+	shouldBroker, authorizationEndpoint, tokenEndpoint := p.router.resolve(host)
 
 	if !shouldBroker {
 		// Not a broker route, continue
@@ -159,8 +218,8 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// Use the plugin's configured broker URL
 	brokerURL := p.cfg.BrokerURL
 
-	// Call broker to acquire token
-	token, err := p.client.AcquireToken(ctx, brokerURL, subjectToken, serverURL)
+	// Call broker to acquire token, passing authorization and token endpoints if available
+	token, err := p.client.AcquireToken(ctx, brokerURL, subjectToken, serverURL, authorizationEndpoint, tokenEndpoint)
 	if err != nil {
 		// Handle broker errors
 		if brokerErr, ok := err.(*tokenbroker.BrokerError); ok {
@@ -200,9 +259,26 @@ func extractBearer(authHeader string) string {
 	return strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
 }
 
+// loadBrokerRoutesFromFile loads broker routes from a YAML file.
+// Returns an empty slice (not error) if the file doesn't exist.
+func loadBrokerRoutesFromFile(path string) ([]tokenBrokerRoute, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading routes config: %w", err)
+	}
+	var routes []tokenBrokerRoute
+	if err := yaml.Unmarshal(data, &routes); err != nil {
+		return nil, fmt.Errorf("parsing routes config: %w", err)
+	}
+	return routes, nil
+}
+
 // buildBrokerRouterFrom constructs a router from the broker routes configuration.
-func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defaultBrokerURL string, explicitRoutesFile string) (*routing.Router, error) {
-	var allRoutes []routing.Route
+func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defaultBrokerURL string, explicitRoutesFile string) (*brokerRouter, error) {
+	var allRoutes []tokenBrokerRoute
 
 	// Load routes from file if specified
 	if routes.File != "" {
@@ -216,7 +292,7 @@ func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defau
 			}
 		}
 
-		fileRoutes, err := routing.LoadRoutes(routes.File)
+		fileRoutes, err := loadBrokerRoutesFromFile(routes.File)
 		if err != nil {
 			return nil, fmt.Errorf("loading routes from %s: %w", routes.File, err)
 		}
@@ -226,16 +302,7 @@ func buildBrokerRouterFrom(defaultPolicy string, routes tokenBrokerRoutes, defau
 	}
 
 	// Add inline rules
-	for _, r := range routes.Rules {
-		action := r.Action
-		if action == "" {
-			action = "broker"
-		}
-		allRoutes = append(allRoutes, routing.Route{
-			Host:   r.Host,
-			Action: action,
-		})
-	}
+	allRoutes = append(allRoutes, routes.Rules...)
 
-	return routing.NewRouter(defaultPolicy, allRoutes)
+	return newBrokerRouter(defaultPolicy, allRoutes)
 }

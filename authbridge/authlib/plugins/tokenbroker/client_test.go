@@ -128,7 +128,7 @@ func TestClient_AcquireToken_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	token, err := client.AcquireToken(context.Background(), srv.URL, "user-jwt-token", "https://api.github.com")
+	token, err := client.AcquireToken(context.Background(), srv.URL, "user-jwt-token", "https://api.github.com", "", "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -153,7 +153,7 @@ func TestClient_AcquireToken_RequestFormat(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "", "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -172,6 +172,104 @@ func TestClient_AcquireToken_RequestFormat(t *testing.T) {
 		t.Errorf("X-Server-Url = %q, want https://target.example.com", capturedServerURL)
 	}
 }
+func TestClient_AcquireToken_WithAuthorizationEndpoint(t *testing.T) {
+	var capturedAuthEndpoint string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuthEndpoint = r.Header.Get("X-Authorization-Endpoint")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+	}))
+	defer srv.Close()
+
+	client := NewClient()
+
+	// Test with authorization endpoint
+	_, err := client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "https://auth.example.com/oauth/authorize", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuthEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("X-Authorization-Endpoint = %q, want %q", capturedAuthEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+
+	// Test without authorization endpoint (empty string)
+	capturedAuthEndpoint = "should-be-cleared"
+	_, err = client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuthEndpoint != "" {
+		t.Errorf("X-Authorization-Endpoint = %q, want empty string", capturedAuthEndpoint)
+	}
+}
+
+func TestClient_AcquireToken_WithTokenEndpoint(t *testing.T) {
+	var capturedTokenEndpoint string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedTokenEndpoint = r.Header.Get("X-Token-Endpoint")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+	}))
+	defer srv.Close()
+
+	client := NewClient()
+
+	// Test with token endpoint
+	_, err := client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "", "https://auth.example.com/oauth/token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedTokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("X-Token-Endpoint = %q, want %q", capturedTokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+
+	// Test without token endpoint (empty string)
+	capturedTokenEndpoint = "should-be-cleared"
+	_, err = client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedTokenEndpoint != "" {
+		t.Errorf("X-Token-Endpoint = %q, want empty string", capturedTokenEndpoint)
+	}
+}
+
+func TestClient_AcquireToken_WithBothEndpoints(t *testing.T) {
+	var capturedAuthEndpoint, capturedTokenEndpoint string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuthEndpoint = r.Header.Get("X-Authorization-Endpoint")
+		capturedTokenEndpoint = r.Header.Get("X-Token-Endpoint")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": "test-token"})
+	}))
+	defer srv.Close()
+
+	client := NewClient()
+
+	// Test with both endpoints
+	_, err := client.AcquireToken(context.Background(), srv.URL, "my-jwt-token", "https://target.example.com", "https://auth.example.com/oauth/authorize", "https://auth.example.com/oauth/token")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuthEndpoint != "https://auth.example.com/oauth/authorize" {
+		t.Errorf("X-Authorization-Endpoint = %q, want %q", capturedAuthEndpoint, "https://auth.example.com/oauth/authorize")
+	}
+
+	if capturedTokenEndpoint != "https://auth.example.com/oauth/token" {
+		t.Errorf("X-Token-Endpoint = %q, want %q", capturedTokenEndpoint, "https://auth.example.com/oauth/token")
+	}
+}
 
 // =============================================================================
 // Error Handling Tests
@@ -185,7 +283,7 @@ func TestClient_AcquireToken_Unauthorized(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "expired-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "expired-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -210,7 +308,7 @@ func TestClient_AcquireToken_Timeout(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -246,7 +344,7 @@ func TestClient_AcquireToken_AdditionalStatusCodes(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("AcquireToken() error = %v, wantErr %v", err, tt.wantErr)
@@ -266,7 +364,7 @@ func TestClient_AcquireToken_AdditionalStatusCodes(t *testing.T) {
 
 func TestClient_AcquireToken_NetworkError(t *testing.T) {
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), "http://invalid-host-that-does-not-exist:9999", "token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), "http://invalid-host-that-does-not-exist:9999", "token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected network error, got nil")
@@ -281,7 +379,9 @@ func TestClient_AcquireToken_DNSFailure(t *testing.T) {
 	_, err := client.AcquireToken(context.Background(),
 		"http://this-domain-definitely-does-not-exist-12345.invalid",
 		"token",
-		"https://api.example.com")
+		"https://api.example.com",
+		"",
+		"")
 
 	if err == nil {
 		t.Fatal("expected DNS error")
@@ -304,7 +404,7 @@ func TestClient_AcquireToken_InvalidJSON(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
@@ -323,7 +423,7 @@ func TestClient_AcquireToken_MissingTokenField(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected error for missing token field, got nil")
@@ -342,7 +442,7 @@ func TestClient_AcquireToken_EmptyToken(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected error for empty token, got nil")
@@ -366,7 +466,7 @@ func TestClient_AcquireToken_ExtraJSONFields(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -384,7 +484,7 @@ func TestClient_AcquireToken_NonJSONErrorResponse(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected broker error, got nil")
@@ -415,7 +515,7 @@ func TestClient_AcquireToken_PartialJSON(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Error("expected error for partial JSON, got nil")
@@ -439,7 +539,7 @@ func TestClient_AcquireToken_ContextCancelled(t *testing.T) {
 	defer cancel()
 
 	client := NewClient()
-	_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected context cancellation error, got nil")
@@ -461,7 +561,7 @@ func TestClient_AcquireToken_ClientTimeout(t *testing.T) {
 		httpClient: &http.Client{Timeout: 100 * time.Millisecond},
 	}
 
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
@@ -485,7 +585,7 @@ func TestClient_AcquireToken_ContextCancellationMidRequest(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com")
+		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com", "", "")
 		errCh <- err
 	}()
 
@@ -513,7 +613,7 @@ func TestClient_AcquireToken_LongPolling(t *testing.T) {
 
 	client := NewClient()
 	start := time.Now()
-	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 	duration := time.Since(start)
 
 	if err != nil {
@@ -544,7 +644,7 @@ func TestClient_AcquireToken_HTTPRedirects(t *testing.T) {
 	defer redirectSrv.Close()
 
 	client := NewClient()
-	token, err := client.AcquireToken(context.Background(), redirectSrv.URL, "user-token", "https://api.github.com")
+	token, err := client.AcquireToken(context.Background(), redirectSrv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -589,7 +689,7 @@ func TestClient_AcquireToken_ResponseHeaders(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com")
+			token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com", "", "")
 
 			if tt.expectError && err == nil {
 				t.Error("expected error, got nil")
@@ -617,7 +717,7 @@ func TestClient_AcquireToken_LargeResponse(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 
 	if err == nil {
 		t.Error("expected error for response larger than 1MB, got nil")
@@ -638,7 +738,7 @@ func TestClient_AcquireToken_TrailingSlashBrokerURL(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient()
-	token, err := client.AcquireToken(context.Background(), srv.URL+"/", "user-token", "https://api.github.com")
+	token, err := client.AcquireToken(context.Background(), srv.URL+"/", "user-token", "https://api.github.com", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -671,7 +771,7 @@ func TestClient_AcquireToken_ServerURLEncoding(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", tt.serverURL)
+			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", tt.serverURL, "", "")
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -688,7 +788,7 @@ func TestClient_AcquireToken_EmptyParameters(t *testing.T) {
 
 	t.Run("empty broker URL", func(t *testing.T) {
 		client := NewClient()
-		_, err := client.AcquireToken(context.Background(), "", "token", "https://api.example.com")
+		_, err := client.AcquireToken(context.Background(), "", "token", "https://api.example.com", "", "")
 		if err == nil {
 			t.Fatal("expected error for empty broker URL")
 		}
@@ -699,7 +799,7 @@ func TestClient_AcquireToken_EmptyParameters(t *testing.T) {
 		defer srv.Close()
 
 		client := NewClient()
-		token, err := client.AcquireToken(context.Background(), srv.URL, "", "https://api.example.com")
+		token, err := client.AcquireToken(context.Background(), srv.URL, "", "https://api.example.com", "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -716,7 +816,7 @@ func TestClient_AcquireToken_EmptyParameters(t *testing.T) {
 		defer srv.Close()
 
 		client := NewClient()
-		_, err := client.AcquireToken(context.Background(), srv.URL, "token", "")
+		_, err := client.AcquireToken(context.Background(), srv.URL, "token", "", "", "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -747,7 +847,7 @@ func TestClient_AcquireToken_ConcurrentRequests(t *testing.T) {
 
 	for i := 0; i < numRequests; i++ {
 		go func() {
-			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 			results <- err
 		}()
 	}
@@ -778,7 +878,7 @@ func TestClient_AcquireToken_ConcurrentDifferentServers(t *testing.T) {
 
 	for i, srv := range servers {
 		go func(serverURL string, index int) {
-			_, err := client.AcquireToken(context.Background(), serverURL, "user-token", "https://api.github.com")
+			_, err := client.AcquireToken(context.Background(), serverURL, "user-token", "https://api.github.com", "", "")
 			results <- err
 		}(srv.URL, i)
 	}
@@ -802,7 +902,7 @@ func TestClient_AcquireToken_RaceConditions(t *testing.T) {
 
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
-			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com")
+			_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
 			results <- err
 		}()
 	}
@@ -832,7 +932,7 @@ func TestClient_AcquireToken_ConnectionReuse(t *testing.T) {
 	client := NewClient()
 
 	for i := 0; i < 5; i++ {
-		_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com")
+		_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com", "", "")
 		if err != nil {
 			t.Fatalf("request %d failed: %v", i, err)
 		}
@@ -858,7 +958,9 @@ func TestClient_Security_NoTokenLeakageInErrors(t *testing.T) {
 	_, err := client.AcquireToken(context.Background(),
 		"http://invalid-host-12345.invalid",
 		sensitiveToken,
-		"https://api.example.com")
+		"https://api.example.com",
+		"",
+		"")
 
 	if err != nil {
 		errMsg := err.Error()
@@ -873,7 +975,7 @@ func TestClient_Security_NoTokenLeakageInErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err = client.AcquireToken(context.Background(), srv.URL, sensitiveToken, "https://api.example.com")
+	_, err = client.AcquireToken(context.Background(), srv.URL, sensitiveToken, "https://api.example.com", "", "")
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, sensitiveToken) {
@@ -906,7 +1008,7 @@ func TestClient_Security_HeaderInjection(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			_, _ = client.AcquireToken(context.Background(), srv.URL, tt.token, tt.serverURL)
+			_, _ = client.AcquireToken(context.Background(), srv.URL, tt.token, tt.serverURL, "", "")
 
 			if injectedHeader != "" {
 				t.Errorf("Header injection succeeded: X-Injected = %q", injectedHeader)
@@ -934,7 +1036,7 @@ func TestClient_Security_LargeTokenHandling(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			_, err := client.AcquireToken(context.Background(), srv.URL, largeToken, "https://api.example.com")
+			_, err := client.AcquireToken(context.Background(), srv.URL, largeToken, "https://api.example.com", "", "")
 
 			if err != nil {
 				t.Logf("Large token (%d bytes) failed: %v", tt.tokenSize, err)
@@ -978,7 +1080,7 @@ func TestClient_Security_MaliciousResponseHandling(t *testing.T) {
 			defer srv.Close()
 
 			client := NewClient()
-			_, err := client.AcquireToken(context.Background(), srv.URL, "token", "https://api.example.com")
+			_, err := client.AcquireToken(context.Background(), srv.URL, "token", "https://api.example.com", "", "")
 
 			if tt.wantErr && err == nil {
 				t.Error("expected error for malicious response")
@@ -1002,7 +1104,7 @@ func TestClient_AcquireToken_CustomHTTPClient(t *testing.T) {
 	}
 
 	client := &Client{httpClient: customClient}
-	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com")
+	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.example.com", "", "")
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1026,7 +1128,7 @@ func BenchmarkAcquireToken_Success(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com")
+		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com", "", "")
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -1043,7 +1145,7 @@ func BenchmarkAcquireToken_Error(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com")
+		_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com", "", "")
 	}
 }
 
@@ -1058,7 +1160,7 @@ func BenchmarkAcquireToken_LargeToken(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com")
+		_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com", "", "")
 		if err != nil {
 			b.Fatalf("unexpected error: %v", err)
 		}
@@ -1076,7 +1178,7 @@ func BenchmarkAcquireToken_Parallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com")
+			_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com", "", "")
 		}
 	})
 }
@@ -1092,7 +1194,7 @@ func BenchmarkAcquireToken_Allocations(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com")
+		_, _ = client.AcquireToken(ctx, srv.URL, "user-token", "https://api.example.com", "", "")
 	}
 }
 
