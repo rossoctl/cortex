@@ -54,22 +54,6 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 	var pctx *pipeline.Context
 	var requestDirection string
 
-	// Finisher dispatch runs once when Process returns — stream end is
-	// Envoy's signal that the request is finalized (response sent or
-	// abandoned). A stream that never reached Run (no RequestHeaders
-	// ever arrived) leaves pctx nil, in which case we have no chain
-	// to finish on; skip.
-	defer func() {
-		if pctx == nil {
-			return
-		}
-		p := s.OutboundPipeline
-		if requestDirection == "inbound" {
-			p = s.InboundPipeline
-		}
-		p.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():

@@ -7,7 +7,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
@@ -54,14 +53,7 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		Host:      host,
 		Path:      path,
 		Headers:   mapToHTTPHeader(headers),
-		StartedAt: time.Now(),
 	}
-	// Finisher dispatch for inbound. Deferred before Run so the hook
-	// fires whether the pipeline allows, denies, or Check returns
-	// early.
-	defer func() {
-		s.InboundPipeline.RunFinish(ctx, inPctx, authzOutcome(inPctx))
-	}()
 	inAction := s.InboundPipeline.Run(ctx, inPctx)
 	if inAction.Type == pipeline.Reject {
 		return deniedFromAction(codes.Unauthenticated, inAction), nil
@@ -74,15 +66,7 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		Host:      host,
 		Path:      path,
 		Headers:   mapToHTTPHeader(headers),
-		StartedAt: time.Now(),
 	}
-	// Finisher dispatch for outbound. Only created/deferred if inbound
-	// allowed — mirrors the two-pipeline control flow. Registered
-	// AFTER the inbound defer so under LIFO this outbound finish runs
-	// first, then inbound.
-	defer func() {
-		s.OutboundPipeline.RunFinish(ctx, outPctx, authzOutcome(outPctx))
-	}()
 	originalAuth := outPctx.Headers.Get("Authorization")
 	outAction := s.OutboundPipeline.Run(ctx, outPctx)
 	if outAction.Type == pipeline.Reject {
@@ -94,23 +78,6 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		return allowedWithToken(extractBearer(newAuth)), nil
 	}
 	return allowed(), nil
-}
-
-// authzOutcome builds a Finisher Outcome from pctx state. ext_authz is
-// a check-only protocol with no HTTP status concept, so
-// pipeline.OutcomeFromContext (which classifies StatusCode == 0 as
-// OutcomeError) doesn't fit — the absence of a status here means
-// "Check returned OK," not "error." We rely on
-// pctx.RejectingPlugin(), the framework-stamped deny source, to
-// distinguish allow from deny.
-func authzOutcome(pctx *pipeline.Context) pipeline.Outcome {
-	if denier := pctx.RejectingPlugin(); denier != "" {
-		return pipeline.Outcome{
-			FinalAction:   pipeline.OutcomeDeny,
-			DenyingPlugin: denier,
-		}
-	}
-	return pipeline.Outcome{FinalAction: pipeline.OutcomeAllow}
 }
 
 func mapToHTTPHeader(m map[string]string) http.Header {

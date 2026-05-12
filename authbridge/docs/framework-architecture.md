@@ -376,13 +376,12 @@ There is no "soft error" channel today — a plugin that wants to fail open logs
 
 ```go
 func New(plugins []Plugin, opts ...Option) (*Pipeline, error)
-func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action                  // request phase
-func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action          // response phase (reverse)
-func (p *Pipeline) RunFinish(ctx context.Context, pctx *Context, outcome Outcome)  // finish phase (reverse)
-func (p *Pipeline) Start(ctx context.Context) error                                // invoke Init on Initializer plugins
-func (p *Pipeline) Stop(ctx context.Context)                                       // invoke Shutdown on Shutdowner plugins
-func (p *Pipeline) Plugins() []Plugin                                              // defensive copy
-func (p *Pipeline) NeedsBody() bool                                                // OR over all plugins' BodyAccess
+func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action           // request phase
+func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action   // response phase (reverse)
+func (p *Pipeline) Start(ctx context.Context) error                          // invoke Init on Initializer plugins
+func (p *Pipeline) Stop(ctx context.Context)                                 // invoke Shutdown on Shutdowner plugins
+func (p *Pipeline) Plugins() []Plugin                                        // defensive copy
+func (p *Pipeline) NeedsBody() bool                                          // OR over all plugins' BodyAccess
 ```
 
 `New` validates capability wiring at startup: every `Read` must be satisfied by some earlier plugin's `Write`. `plugins.Build` additionally validates the cross-plugin relationship declarations — `Requires`, `RequiresAny`, `After`, `Claims` — before returning the pipeline to the listener. See [`plugin-reference.md` "Declaring plugin relationships"](./plugin-reference.md#declaring-plugin-relationships).
@@ -466,64 +465,6 @@ func (p *RateLimiter) OnResponse(context.Context, *pipeline.Context) pipeline.Ac
     return pipeline.Action{Type: pipeline.Continue}
 }
 ```
-
-### Per-request finish hook (`Finisher`)
-
-Plugins that reserve per-request state in `OnRequest` need a guaranteed release point — whether the request was allowed, denied by a later plugin, or errored at the upstream. Without such a hook, a rate-limiter that reserves a slot in `OnRequest` and releases it in `OnResponse` silently leaks the slot whenever a later plugin denies (because `OnResponse` is only walked when the pipeline returned `Continue`). The `Finisher` optional interface closes this:
-
-```go
-type Finisher interface {
-    OnFinish(ctx context.Context, pctx *Context)
-}
-```
-
-`OnFinish` fires **once per request**, after `OnResponse` if it ran, on every plugin whose `OnRequest` was actually invoked — including the plugin that denied (if any). Dispatch is LIFO, symmetric with `Shutdowner` and `RunResponse`, so a plugin's cleanup can still depend on earlier plugins' resources. The listener calls `Pipeline.RunFinish` in a `defer` wrapping the response-produce block:
-
-```go
-pctx := newContext(...)
-defer func() {
-    pipeline.RunFinish(ctx, pctx, pipeline.Outcome{
-        FinalAction:   finalAction, // OutcomeAllow | OutcomeDeny | OutcomeError
-        StatusCode:    statusCode,
-        DenyingPlugin: denyingPlugin, // "" unless FinalAction == OutcomeDeny
-    })
-}()
-// ... Run, write response, RunResponse ...
-```
-
-Key contract points, chosen to make the plugin-author surface small and hard to misuse:
-
-- **Fresh ctx with a framework-set deadline.** `OnFinish` does not receive the request `ctx` — that one may be cancelled (client disconnect) by the time the response is on the wire. The framework derives a fresh ctx from `context.Background()` with `DefaultFinishTimeout` (2s) applied, overridable via `WithFinishTimeout`. Plugins doing network I/O (flushing audits, releasing a distributed lease) see a live ctx by default.
-- **`pctx.Outcome()` returns non-nil only during OnFinish.** The `*Outcome` carries `FinalAction` (three values: `OutcomeAllow` / `OutcomeDeny` / `OutcomeError`), `StatusCode`, `DenyingPlugin`, and `Duration`. In `OnRequest` / `OnResponse` the getter returns nil, so the "only meaningful in OnFinish" contract is enforced at read time rather than via documented zero-value semantics.
-- **Full pctx is available**, including response body — the framework buffers through the finish window so audit / metrics plugins can read the final payload.
-- **Best-effort dispatch.** A panic is recovered and logged; later plugins in the LIFO chain still run. One misbehaving plugin does not leak state in every other plugin.
-- **OnFinish is silent.** The framework does NOT auto-emit `Invocation` records for this phase. `pctx.Record` called from within `OnFinish` is dropped with a WARN log (SessionEvent is frozen once the response is published). Plugins that want observability on cleanup publish through their own sink (Prometheus, external audit service) or the `pctx.Extensions.Custom` escape-hatch map.
-- **Body mutation is forbidden.** `pctx.SetBody` / `SetResponseBody` called from `OnFinish` are dropped with a WARN log — the response is already on the wire.
-- **`on_error: off` plugins are never dispatched in any phase**, so their `OnFinish` never runs either (consistent with the "only plugins whose OnRequest actually ran" participation rule).
-
-Canonical rate-limiter:
-
-```go
-type rlState struct{ tenant string }
-
-func (p *RateLimiter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-    tenant := pctx.Identity.ClientID()
-    p.slots.Reserve(tenant)
-    pipeline.SetState(pctx, "rate-limiter", &rlState{tenant: tenant})
-    return pipeline.Action{Type: pipeline.Continue}
-}
-
-func (p *RateLimiter) OnFinish(ctx context.Context, pctx *pipeline.Context) {
-    s, ok := pipeline.GetState[*rlState](pctx, "rate-limiter")
-    if !ok {
-        return
-    }
-    p.slots.Release(s.tenant)
-    p.metrics.RecordOutcome(pctx.Outcome().FinalAction) // allow / deny / error buckets
-}
-```
-
-Contrast with the pre-Finisher workaround: reserve in `OnRequest`, release in `OnResponse` — leaks on every denied request. Or: reserve in `OnRequest`, spawn a goroutine with a TTL-based release — leaks goroutines on process shutdown and runs on a timer, not on the actual response.
 
 ### Extension slots known to the validator
 
@@ -739,7 +680,6 @@ The plugin interface is **not** semver-stable yet (AuthBridge is pre-1.0). Chang
 - **Detyped framework**: `pipeline/` no longer imports plugin-specific packages. **Breaking**: `Context.Claims *validation.Claims` → `Context.Identity Identity` (interface with `Subject()`/`ClientID()`/`Scopes()`); plugins publish adapters. `Context.Route` removed (was dead code). `Invocation`'s nine jwt-validation + token-exchange specific fields (`ExpectedIssuer`, `TokenSubject`, `RouteHost`, `CacheHit`, etc.) collapsed into `Details map[string]string`; built-in plugins migrated to `Details["expected_issuer"]` etc. `SessionEvent.TargetAudience` removed (was only populated from dead `pctx.Route`). Third-party plugins get a clean diagnostic slot they can populate without framework edits.
 - **Single-owner packages relocated**: `authlib/validation` → `authlib/plugins/jwtvalidation/validation`. `authlib/exchange` / `authlib/cache` / `authlib/spiffe` → `authlib/plugins/tokenexchange/{exchange,cache,spiffe}`. Each plugin now lives in its own directory (`plugins/jwtvalidation/plugin.go`, `plugins/tokenexchange/plugin.go`) and self-registers via its own init(). `authlib/bypass`, `authlib/routing`, `authlib/auth` stay shared.
 - **Plugin relationship declarations**: `PluginCapabilities` extended with four chain-scoped fields — `Requires` (all-must-be-earlier), `RequiresAny` (at-least-one-earlier), `After` (soft ordering), `Claims` (mutex on a semantic resource). Validated at `plugins.Build` time (startup + hot-reload); all errors per chain are collected into one report. `authlib/contracts/claims.go` ships `ClaimAuthorizationHeader` as the initial canonical claim constant. `token-exchange` and `token-broker` migrated to declare it, so configuring both on the same outbound chain now fails startup instead of silently clobbering each other's Authorization header. See [`plugin-reference.md` "Declaring plugin relationships"](./plugin-reference.md#declaring-plugin-relationships).
-- **Per-request finish hook (`Finisher`)**: new optional interface `Finisher { OnFinish(ctx, pctx) }` gives stateful plugins a guaranteed release point that fires after every request end — regardless of whether the pipeline allowed, denied, or errored. Dispatch is LIFO across Finisher-implementing plugins whose OnRequest was invoked (including the denier). `pctx.Outcome()` returns a non-nil `*Outcome{FinalAction, StatusCode, DenyingPlugin, Duration}` during OnFinish and nil in all other phases. OnFinish runs under a fresh ctx derived from `context.Background()` with a framework-set deadline (default 2s, `WithFinishTimeout` overrides) so client disconnect during the request doesn't cancel cleanup I/O. Best-effort: panics are recovered; OnFinish is silent (no auto-emitted Invocations); `pctx.Record` / `SetBody` / `SetResponseBody` called during OnFinish are dropped with WARN logs since the SessionEvent is published and the response is on the wire. Closes the rate-limiter / audit / lease class of "cleanup leaks on denial" bugs. See §6 "Per-request finish hook".
 
 Breaking changes will be announced in `authbridge/CHANGELOG.md` (TBD) before a 1.0 tag.
 
@@ -756,8 +696,7 @@ Breaking changes will be announced in `authbridge/CHANGELOG.md` (TBD) before a 1
 
 - `pipeline.go` — `Pipeline` type, `New`, `Run`, `RunResponse`, `Start`, `Stop`, `Plugins`, `NeedsBody`, `WritesBody`.
 - `holder.go` — `Holder`, the atomic slot listeners hold in place of a raw `*Pipeline`.
-- `plugin.go` — `Plugin` interface, `PluginCapabilities` (with `ReadsBody` / `WritesBody` / deprecated `BodyAccess` + `Normalize()`; chain-scoped relationship fields `Requires` / `RequiresAny` / `After` / `Claims`), `Configurable`, `Initializer`, `Shutdowner`, `Readier`, `Finisher`.
-- `outcome.go` — `Outcome` struct + `OutcomeAction` (allow / deny / error) for `Finisher` consumers; `Context.Outcome()` getter.
+- `plugin.go` — `Plugin` interface, `PluginCapabilities` (with `ReadsBody` / `WritesBody` / deprecated `BodyAccess` + `Normalize()`; chain-scoped relationship fields `Requires` / `RequiresAny` / `After` / `Claims`), `Configurable`, `Initializer`, `Shutdowner`, `Readier`.
 - `action.go` — `Action`, `ActionType`, `Violation`, helper constructors (`Deny`, `DenyStatus`, `DenyWithDetails`, `Challenge`, `RateLimited`), `StatusFromCode`.
 - `context.go` — `Context`, `Direction`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
 - `extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions, `GetState` / `SetState`.

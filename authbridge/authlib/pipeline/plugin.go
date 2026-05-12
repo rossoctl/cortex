@@ -146,58 +146,6 @@ type Shutdowner interface {
 	Shutdown(ctx context.Context) error
 }
 
-// Finisher is an optional interface a plugin may implement when it
-// reserves per-request state in OnRequest and needs a guaranteed
-// release point — regardless of whether the request was allowed,
-// denied by a later plugin, or errored at the upstream. The canonical
-// shape is acquire-in-OnRequest / release-in-OnFinish:
-//
-//	func (p *RateLimiter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-//	    tenant := pctx.Identity.ClientID()
-//	    p.slots.Reserve(tenant)
-//	    pipeline.SetState(pctx, "rl", &rlState{tenant: tenant})
-//	    return pipeline.Action{Type: pipeline.Continue}
-//	}
-//
-//	func (p *RateLimiter) OnFinish(ctx context.Context, pctx *pipeline.Context) {
-//	    s, ok := pipeline.GetState[*rlState](pctx, "rl")
-//	    if !ok { return }
-//	    p.slots.Release(s.tenant)
-//	}
-//
-// OnFinish runs once per request, after OnResponse has completed (if
-// it ran), on every plugin whose OnRequest was dispatched — including
-// the plugin that denied, if any. The dispatcher walks in LIFO order,
-// symmetric with Shutdowner and OnResponse, so a plugin's cleanup can
-// still rely on resources set up by earlier plugins.
-//
-// The ctx passed to OnFinish is a FRESH context with a framework-set
-// deadline (default 2s). It is NOT derived from the original request
-// ctx, so a client disconnect during the request does not cancel
-// OnFinish's I/O. Plugins that perform network work (flushing audits,
-// releasing distributed leases) see a usable ctx by default.
-//
-// pctx carries the full request + response state observed by
-// OnResponse, plus pctx.Outcome() which returns a non-nil *Outcome
-// describing the request's terminal outcome (allow / deny / error,
-// status code, denying plugin, duration). pctx.Outcome() returns nil
-// during OnRequest and OnResponse — the field is populated by the
-// framework only before OnFinish dispatches.
-//
-// OnFinish runs best-effort: panics are recovered and logged, errors
-// in one plugin's OnFinish do not prevent later plugins in the LIFO
-// chain from running. OnFinish must not call pctx.SetBody /
-// SetResponseBody — the response is already on the wire; mutations
-// are dropped with a WARN log.
-//
-// OnFinish emits no automatic Invocation records. Plugins that want
-// observability on cleanup publish through their own sink
-// (Prometheus, external audit service) or via the pctx.Extensions.Custom
-// escape-hatch map documented in plugin-reference.md.
-type Finisher interface {
-	OnFinish(ctx context.Context, pctx *Context)
-}
-
 // Readier is an optional interface a plugin may implement when it has
 // deferred initialization that matters to a /readyz probe. The host
 // ANDs Ready() across all implementers to decide whether the pipeline

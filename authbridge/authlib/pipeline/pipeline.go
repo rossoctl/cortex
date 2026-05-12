@@ -4,18 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 )
-
-// DefaultFinishTimeout bounds how long each plugin's OnFinish may run.
-// OnFinish commonly does network I/O (flush audits, release
-// distributed leases) so the budget needs to be realistic, not
-// minimal. 2s matches the order of magnitude of typical side-effect
-// I/O without blocking the finish chain indefinitely when a plugin's
-// sink hangs. Configurable per-listener via WithFinishTimeout; the
-// per-plugin ctx is derived from context.Background() so client
-// disconnect during the request never cancels OnFinish.
-const DefaultFinishTimeout = 2 * time.Second
 
 // Pipeline holds an ordered list of plugins and runs them sequentially.
 // policies[i] holds the on_error ErrorPolicy that wraps plugins[i]; the
@@ -23,9 +12,8 @@ const DefaultFinishTimeout = 2 * time.Second
 // policyAt is a bounds-safe lookup. An empty ErrorPolicy resolves to
 // ErrorPolicyEnforce via the Resolved() method.
 type Pipeline struct {
-	plugins       []Plugin
-	policies      []ErrorPolicy
-	finishTimeout time.Duration
+	plugins  []Plugin
+	policies []ErrorPolicy
 }
 
 // defaultSlots lists the built-in extension slot names.
@@ -42,9 +30,8 @@ var defaultSlots = map[string]bool{
 type Option func(*options)
 
 type options struct {
-	extraSlots    []string
-	policies      []ErrorPolicy
-	finishTimeout time.Duration
+	extraSlots []string
+	policies   []ErrorPolicy
 }
 
 // WithSlots registers additional valid extension slot names beyond the built-in set.
@@ -52,18 +39,6 @@ type options struct {
 func WithSlots(slots ...string) Option {
 	return func(o *options) {
 		o.extraSlots = append(o.extraSlots, slots...)
-	}
-}
-
-// WithFinishTimeout overrides the per-plugin OnFinish timeout. Each
-// plugin's OnFinish runs under a fresh ctx derived from
-// context.Background() with this timeout applied; a zero or negative
-// value falls back to DefaultFinishTimeout. Listeners that know their
-// deployment's OnFinish I/O patterns can tighten (fast local sinks) or
-// relax (remote lease service) this knob.
-func WithFinishTimeout(d time.Duration) Option {
-	return func(o *options) {
-		o.finishTimeout = d
 	}
 }
 
@@ -101,11 +76,7 @@ func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 	}
 	policies := make([]ErrorPolicy, len(plugins))
 	copy(policies, o.policies)
-	finishTimeout := o.finishTimeout
-	if finishTimeout <= 0 {
-		finishTimeout = DefaultFinishTimeout
-	}
-	return &Pipeline{plugins: plugins, policies: policies, finishTimeout: finishTimeout}, nil
+	return &Pipeline{plugins: plugins, policies: policies}, nil
 }
 
 // Run executes the request phase of the pipeline sequentially.
@@ -139,7 +110,6 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 			return Deny("pipeline.cancelled", "request cancelled")
 		}
 		pctx.setCurrent(plugin.Name(), InvocationPhaseRequest, policy)
-		pctx.dispatched = append(pctx.dispatched, i)
 		action := plugin.OnRequest(ctx, pctx)
 		pctx.clearCurrent()
 		if action.Type == Reject {
@@ -148,7 +118,6 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 				markShadowAndLog(pctx, plugin.Name(), InvocationPhaseRequest, action, "request")
 				continue
 			}
-			pctx.setRejectingPlugin(plugin.Name())
 			logReject(plugin.Name(), action, "pipeline: plugin rejected request")
 			return action
 		}
@@ -182,7 +151,6 @@ func (p *Pipeline) RunResponse(ctx context.Context, pctx *Context) Action {
 				markShadowAndLog(pctx, p.plugins[i].Name(), InvocationPhaseResponse, action, "response")
 				continue
 			}
-			pctx.setRejectingPlugin(p.plugins[i].Name())
 			logReject(p.plugins[i].Name(), action, "pipeline: plugin rejected response")
 			return action
 		}
@@ -413,92 +381,6 @@ func (p *Pipeline) Stop(ctx context.Context) {
 				"plugin", p.plugins[i].Name(), "error", err)
 		}
 	}
-}
-
-// RunFinish dispatches the OnFinish hook on every Finisher-implementing
-// plugin whose OnRequest was invoked during this request (Pipeline.Run
-// tracks the dispatched set on pctx). Iteration is LIFO — reverse of
-// OnRequest order — symmetric with Shutdowner and RunResponse.
-//
-// Called by the listener after the response has been written to the
-// wire (or after the terminal error has been recorded, for denied or
-// errored requests). Before the first plugin's OnFinish runs, the
-// framework populates pctx.outcome from the supplied Outcome so
-// pctx.Outcome() returns non-nil for the duration of the finish chain
-// and nil everywhere else.
-//
-// Each plugin's OnFinish runs under a context derived from
-// context.WithoutCancel(ctx) with p.finishTimeout applied. That means:
-//   - Cancellation of the caller-supplied ctx (client disconnect,
-//     listener shutdown signal) does NOT abort OnFinish's I/O.
-//   - Values carried on the caller-supplied ctx (slog fields, request
-//     ID, tracing span) ARE propagated into OnFinish.
-//   - Deadlines from the caller-supplied ctx are NOT inherited; the
-//     per-plugin timeout is authoritative.
-//
-// OnFinish is best-effort: a panicking plugin is recovered and logged,
-// a returning plugin's errors (there is no error return on the
-// interface by design — see Finisher godoc) are not observed by the
-// framework. The LIFO chain continues regardless so one misbehaving
-// plugin does not leak state in earlier plugins.
-//
-// RunFinish is safe to call at most once per request. A second call
-// on the same pctx is rejected with a WARN log rather than double-
-// releasing Finisher state (defensive against a listener bug where
-// two defers end up registered, or a handler refactor routes the
-// finish call through two paths). Listeners MUST call it in a defer
-// wrapping the response-produce block so a panic in response-writing
-// still reaches cleanup.
-func (p *Pipeline) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) {
-	if pctx.finished {
-		slog.Warn("pipeline: RunFinish called twice on the same pctx — second call dropped")
-		return
-	}
-	pctx.finished = true
-	if len(pctx.dispatched) == 0 {
-		return
-	}
-	// Derive Duration from pctx.StartedAt if the caller didn't set it.
-	if outcome.Duration == 0 && !pctx.StartedAt.IsZero() {
-		outcome.Duration = time.Since(pctx.StartedAt)
-	}
-	pctx.outcome = &outcome
-	defer func() { pctx.outcome = nil }()
-
-	// LIFO over the dispatched indices. Skip the off-policy check:
-	// plugins configured on_error: off never have their OnRequest
-	// invoked so their index will not be in pctx.dispatched.
-	for i := len(pctx.dispatched) - 1; i >= 0; i-- {
-		idx := pctx.dispatched[i]
-		plugin := p.plugins[idx]
-		finisher, ok := plugin.(Finisher)
-		if !ok {
-			continue
-		}
-		p.dispatchFinish(ctx, plugin.Name(), finisher, pctx)
-	}
-}
-
-// dispatchFinish runs OnFinish on one plugin under a detached ctx
-// (context.WithoutCancel(parent) + finishTimeout) so the parent's
-// cancellation does not abort cleanup I/O but values and tracing
-// spans propagate. Panics are recovered into a WARN log so later
-// plugins in the LIFO chain still run. Isolated in its own method so
-// the recover block's scope is exactly one plugin's dispatch.
-func (p *Pipeline) dispatchFinish(parent context.Context, name string, f Finisher, pctx *Context) {
-	base := context.WithoutCancel(parent)
-	ctx, cancel := context.WithTimeout(base, p.finishTimeout)
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Warn("pipeline: plugin OnFinish panicked",
-				"plugin", name,
-				"panic", r)
-		}
-	}()
-	pctx.inFinish = true
-	defer func() { pctx.inFinish = false }()
-	f.OnFinish(ctx, pctx)
 }
 
 // validateCapabilities checks that every slot a plugin reads has been written

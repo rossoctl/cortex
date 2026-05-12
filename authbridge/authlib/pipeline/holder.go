@@ -56,15 +56,6 @@ func (h *Holder) RunResponse(ctx context.Context, pctx *Context) Action {
 	return h.p.Load().RunResponse(ctx, pctx)
 }
 
-// RunFinish is equivalent to h.Load().RunFinish(ctx, pctx, outcome).
-// Listeners call this in a defer at request entry to guarantee
-// Finisher dispatch on every exit path. See Pipeline.RunFinish for
-// the contract (LIFO over dispatched plugins, fresh ctx with timeout,
-// pctx.Outcome() populated, silent phase).
-func (h *Holder) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) {
-	h.p.Load().RunFinish(ctx, pctx, outcome)
-}
-
 // NeedsBody is equivalent to h.Load().NeedsBody(). Hot path on listeners
 // that decide whether to buffer the request/response body.
 func (h *Holder) NeedsBody() bool { return h.p.Load().NeedsBody() }
