@@ -15,6 +15,7 @@ import (
 	// main.go uses — ensures Build("jwt-validation") / Build("token-exchange")
 	// resolve during tests.
 	jwtvalidation "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	tokenexchange "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
 
@@ -149,5 +150,45 @@ func TestBuild_ConfigureError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "jwt-validation") {
 		t.Errorf("error %q does not name the offending plugin", err)
+	}
+}
+
+// TestBuild_TokenExchangeAndTokenBroker_ConflictingClaims exercises the
+// concrete case from issue #398: configuring both token-exchange and
+// token-broker on the same outbound chain is now rejected at Build
+// time because they both claim ClaimAuthorizationHeader.
+func TestBuild_TokenExchangeAndTokenBroker_ConflictingClaims(t *testing.T) {
+	// Configure both with valid per-plugin config so the
+	// relationship check is what fails (not some earlier Configure
+	// error). token-broker requires broker_url; token-exchange
+	// requires the keycloak_url / keycloak_realm pair.
+	_, err := plugins.Build([]config.PluginEntry{
+		{
+			Name: "token-exchange",
+			Config: []byte(`{
+				"keycloak_url": "http://keycloak.example",
+				"keycloak_realm": "test",
+				"default_policy": "passthrough",
+				"identity": {"type": "client-secret"}
+			}`),
+		},
+		{
+			Name:   "token-broker",
+			Config: []byte(`{"broker_url": "http://broker.example"}`),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected relationship conflict error for token-exchange + token-broker")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"token-exchange",
+		"token-broker",
+		"authorization_header",
+		"configure only one",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
