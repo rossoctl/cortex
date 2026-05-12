@@ -1,4 +1,4 @@
-package plugins
+package inferenceparser
 
 import (
 	"context"
@@ -442,7 +442,7 @@ func TestInferenceParser_OnResponse_SSE(t *testing.T) {
 		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13}}\n\n" +
 		"data: [DONE]\n\n"
 	pctx := &pipeline.Context{
-		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "gpt-4", Stream: true}},
+		Extensions:   pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "gpt-4", Stream: true}},
 		ResponseBody: []byte(body),
 	}
 	action := p.OnResponse(context.Background(), pctx)

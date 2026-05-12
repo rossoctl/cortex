@@ -12,12 +12,43 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
 	// Side-effect imports register the bundled plugins. Same pattern
-	// main.go uses — ensures Build("jwt-validation") / Build("token-exchange")
-	// resolve during tests.
+	// main.go uses — each plugin lives in its own subpackage and
+	// advertises itself via init(); importing here makes the name
+	// resolvable to plugins.Build in these tests.
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
 	jwtvalidation "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	tokenexchange "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
+
+// TestBuiltinsRegistered verifies every in-tree plugin is discoverable
+// through the registry after its side-effect import. Lives in the
+// external test package because importing the plugin subpackages from
+// inside the plugins package would cycle (plugin subpackages import
+// plugins for RegisterPlugin). The side-effect imports at the top of
+// this file drive what's present in the registry during the test run.
+func TestBuiltinsRegistered(t *testing.T) {
+	want := map[string]bool{
+		"jwt-validation":   true,
+		"token-exchange":   true,
+		"token-broker":     true,
+		"a2a-parser":       true,
+		"mcp-parser":       true,
+		"inference-parser": true,
+	}
+	got := plugins.RegisteredPlugins()
+	gotSet := make(map[string]bool, len(got))
+	for _, n := range got {
+		gotSet[n] = true
+	}
+	for name := range want {
+		if !gotSet[name] {
+			t.Errorf("built-in plugin %q missing from registry; got: %v", name, got)
+		}
+	}
+}
 
 // TestAuthbridgeCombinedYAML_Loads asserts that the in-repo default
 // config consumed by the combined sidecar image parses and produces

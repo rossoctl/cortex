@@ -1,4 +1,4 @@
-package plugins
+package mcpparser
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 // MCPParser parses MCP JSON-RPC 2.0 request bodies and populates
@@ -17,7 +19,7 @@ type MCPParser struct{}
 func NewMCPParser() *MCPParser { return &MCPParser{} }
 
 func init() {
-	RegisterPlugin("mcp-parser", func() pipeline.Plugin { return NewMCPParser() })
+	plugins.RegisterPlugin("mcp-parser", func() pipeline.Plugin { return NewMCPParser() })
 }
 
 func (p *MCPParser) Name() string { return "mcp-parser" }
@@ -39,14 +41,14 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	var rpc jsonRPCRequest
+	var rpc parsercommon.JSONRPCRequest
 	if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
 		slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(pctx.Body))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	// Empty method → body parses as JSON but isn't a JSON-RPC request
 	// (e.g. an OpenAI chat/completions body also unmarshals into
-	// jsonRPCRequest with zero-value fields). Don't attach a useless
+	// JSONRPCRequest with zero-value fields). Don't attach a useless
 	// MCPExtension to non-MCP traffic — downstream consumers shouldn't
 	// see a phantom "mcp: {}" on every inference event.
 	if rpc.Method == "" {
@@ -61,7 +63,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	}
 
 	slog.Info("mcp-parser: request", "method", rpc.Method)
-	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", truncate(string(pctx.Body), debugBodyMax))
+	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(pctx.Body), parsercommon.DebugBodyMax))
 
 	pctx.Observe("matched_" + rpc.Method)
 	return pipeline.Action{Type: pipeline.Continue}
@@ -98,7 +100,7 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 	if rpc.Result != nil {
 		pctx.Extensions.MCP.Result = rpc.Result
 		slog.Info("mcp-parser: response", "method", pctx.Extensions.MCP.Method, "resultKeys", resultKeys(rpc.Result))
-		slog.Debug("mcp-parser: response detail", "method", pctx.Extensions.MCP.Method, "body", truncate(string(pctx.ResponseBody), debugBodyMax))
+		slog.Debug("mcp-parser: response detail", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(pctx.ResponseBody), parsercommon.DebugBodyMax))
 	}
 
 	pctx.Observe("matched_" + pctx.Extensions.MCP.Method + "_response")
@@ -125,7 +127,7 @@ func parseMCPResponse(body []byte) (jsonRPCResponse, bool) {
 		}
 		var r jsonRPCResponse
 		if err := json.Unmarshal(data, &r); err != nil {
-			slog.Debug("mcp-parser: skipping malformed SSE data frame", "error", err, "data", truncate(string(data), 128))
+			slog.Debug("mcp-parser: skipping malformed SSE data frame", "error", err, "data", parsercommon.Truncate(string(data), 128))
 			continue
 		}
 		if r.Result != nil || r.Error != nil {
@@ -153,35 +155,4 @@ func resultKeys(m map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-type jsonRPCRequest struct {
-	Method string         `json:"method"`
-	ID     any            `json:"id"`
-	Params map[string]any `json:"params"`
-}
-
-// stringParam and mapParam are shared helpers used by both mcp-parser and a2a-parser.
-func (r *jsonRPCRequest) stringParam(key string) string {
-	v, _ := r.Params[key].(string)
-	return v
-}
-
-func (r *jsonRPCRequest) mapParam(key string) map[string]any {
-	v, _ := r.Params[key].(map[string]any)
-	return v
-}
-
-// debugBodyMax caps how many characters of a body/content string a parser
-// writes into debug logs. Large enough to capture a short user message or
-// a tool_call response verbatim, small enough to keep log lines tractable.
-const debugBodyMax = 512
-
-// truncate clips s to max characters, appending "..." when truncated.
-// Shared across parsers for consistent debug-log body formatting.
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }

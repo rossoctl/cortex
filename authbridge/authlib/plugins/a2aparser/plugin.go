@@ -1,4 +1,4 @@
-package plugins
+package a2aparser
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 // A2AParser parses A2A JSON-RPC 2.0 request bodies and populates
@@ -17,7 +19,7 @@ type A2AParser struct{}
 func NewA2AParser() *A2AParser { return &A2AParser{} }
 
 func init() {
-	RegisterPlugin("a2a-parser", func() pipeline.Plugin { return NewA2AParser() })
+	plugins.RegisterPlugin("a2a-parser", func() pipeline.Plugin { return NewA2AParser() })
 }
 
 func (p *A2AParser) Name() string { return "a2a-parser" }
@@ -40,7 +42,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	var rpc jsonRPCRequest
+	var rpc parsercommon.JSONRPCRequest
 	if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
 		slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(pctx.Body))
 		return pipeline.Action{Type: pipeline.Continue}
@@ -54,12 +56,12 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// Extract message fields generically — any method with params.message
 	// gets full extraction (forward-compatible with future A2A methods).
 	// A2A spec uses "contextId" (current) or "sessionId" (older drafts).
-	ext.SessionID = rpc.stringParam("contextId")
+	ext.SessionID = rpc.StringParam("contextId")
 	if ext.SessionID == "" {
-		ext.SessionID = rpc.stringParam("sessionId")
+		ext.SessionID = rpc.StringParam("sessionId")
 	}
-	ext.TaskID = rpc.stringParam("taskId")
-	if msg := rpc.mapParam("message"); msg != nil {
+	ext.TaskID = rpc.StringParam("taskId")
+	if msg := rpc.MapParam("message"); msg != nil {
 		if role, ok := msg["role"].(string); ok {
 			ext.Role = role
 		}
@@ -82,7 +84,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		"parts", len(ext.Parts),
 	)
 	for i, part := range ext.Parts {
-		slog.Debug("a2a-parser: part", "index", i, "kind", part.Kind, "content", truncate(part.Content, debugBodyMax))
+		slog.Debug("a2a-parser: part", "index", i, "kind", part.Kind, "content", parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax))
 	}
 	pctx.Observe("matched_" + rpc.Method)
 	return pipeline.Action{Type: pipeline.Continue}

@@ -1,4 +1,4 @@
-package plugins
+package a2aparser
 
 import (
 	"context"

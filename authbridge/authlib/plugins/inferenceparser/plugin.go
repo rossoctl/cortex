@@ -1,4 +1,4 @@
-package plugins
+package inferenceparser
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 // InferenceParser parses outbound OpenAI-compatible LLM inference requests
@@ -17,7 +19,7 @@ type InferenceParser struct{}
 func NewInferenceParser() *InferenceParser { return &InferenceParser{} }
 
 func init() {
-	RegisterPlugin("inference-parser", func() pipeline.Plugin { return NewInferenceParser() })
+	plugins.RegisterPlugin("inference-parser", func() pipeline.Plugin { return NewInferenceParser() })
 }
 
 func (p *InferenceParser) Name() string { return "inference-parser" }
@@ -82,7 +84,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	slog.Info("inference-parser", "model", ext.Model)
 	slog.Debug("inference-parser: extracted", "model", ext.Model, "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
 	for i, m := range ext.Messages {
-		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", truncate(m.Content, debugBodyMax))
+		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax))
 	}
 
 	pctx.Observe("matched_" + ext.Model)
@@ -112,7 +114,7 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 		"promptTokens", ext.PromptTokens,
 		"completionTokens", ext.CompletionTokens,
 	)
-	slog.Debug("inference-parser: completion", "text", truncate(ext.Completion, debugBodyMax))
+	slog.Debug("inference-parser: completion", "text", parsercommon.Truncate(ext.Completion, parsercommon.DebugBodyMax))
 	pctx.Observe("matched_" + ext.Model + "_response")
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -157,7 +159,7 @@ func parseInferenceSSE(body []byte, ext *pipeline.InferenceExtension) {
 		}
 		var chunk inferenceStreamChunk
 		if err := json.Unmarshal(data, &chunk); err != nil {
-			slog.Debug("inference-parser: skipping malformed SSE data frame", "error", err, "data", truncate(string(data), 128))
+			slog.Debug("inference-parser: skipping malformed SSE data frame", "error", err, "data", parsercommon.Truncate(string(data), 128))
 			continue
 		}
 		for _, c := range chunk.Choices {

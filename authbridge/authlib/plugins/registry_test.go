@@ -8,29 +8,6 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
-// TestBuiltinsRegistered verifies every in-tree plugin is discoverable
-// through the new registry — the list is the public contract that
-// operator YAML depends on, so a regression here breaks deployments.
-func TestBuiltinsRegistered(t *testing.T) {
-	want := map[string]bool{
-		"jwt-validation":   true,
-		"token-exchange":   true,
-		"a2a-parser":       true,
-		"mcp-parser":       true,
-		"inference-parser": true,
-	}
-	got := RegisteredPlugins()
-	gotSet := make(map[string]bool, len(got))
-	for _, n := range got {
-		gotSet[n] = true
-	}
-	for name := range want {
-		if !gotSet[name] {
-			t.Errorf("built-in plugin %q missing from registry; got: %v", name, got)
-		}
-	}
-}
-
 // TestRegisterPlugin_DoubleRegistration_Panics locks the strict-fail
 // policy. Silent last-write-wins would let a deployment with two
 // incompatible copies of the same plugin corrupt the pipeline
