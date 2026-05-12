@@ -79,7 +79,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		Host:      r.Host,
 		Path:      r.URL.Path,
 		Headers:   r.Header.Clone(),
+		StartedAt: time.Now(),
 	}
+
+	// Finisher dispatch runs after every exit path from this handler —
+	// allowed requests, plugin denials, upstream errors. RunFinish is
+	// a no-op when pctx.dispatched is empty (e.g. body-too-large
+	// rejected before Run), so this defer is safe on the pre-pipeline
+	// error paths too.
+	defer func() {
+		s.InboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+	}()
 
 	if s.InboundPipeline.NeedsBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
