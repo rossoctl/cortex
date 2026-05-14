@@ -38,26 +38,25 @@ authbridge/
 │   ├── auth/                         #   HandleInbound + HandleOutbound composition
 │   └── config/                       #   Mode presets, YAML config, validation
 │
-├── cmd/authbridge/                   # Unified binary -- 3 modes, 1 codebase
-│   ├── listener/                     #   Protocol adapters (ext_proc, ext_authz, forward/reverse proxy)
-│   ├── entrypoint.sh                 #   Envoy + authbridge process supervision
-│   └── Dockerfile                    #   Combined Envoy + authbridge image
+├── cmd/authbridge/                   # Unified binary — 3 listener modes, 1 codebase
+│   ├── listener/extauthz/            #   ext_authz adapter (waypoint mode)
+│   ├── listener/extproc/             #   ext_proc adapter (envoy-sidecar mode)
+│   ├── Dockerfile.envoy              #   envoy-sidecar combined image (Envoy + authbridge + spiffe-helper)
+│   ├── Dockerfile.proxy              #   proxy-sidecar combined image (authbridge-proxy + spiffe-helper)
+│   ├── entrypoint-envoy.sh           #   Process supervisor for Dockerfile.envoy
+│   └── entrypoint-proxy.sh           #   Process supervisor for Dockerfile.proxy
 │
-├── authproxy/                        # Legacy sidecar support (iptables, quickstart)
-│   ├── init-iptables.sh              #   iptables setup (outbound + inbound, Istio ambient compatible)
+├── cmd/authbridge-proxy/             # Lite binary — proxy-sidecar mode only, no gRPC
+│
+├── cmd/authbridge-envoy/             # Lite binary — envoy-sidecar mode only
+│
+├── authproxy/                        # iptables init container + standalone quickstart
+│   ├── init-iptables.sh              #   iptables setup for envoy-sidecar mode
 │   ├── Dockerfile.init               #   proxy-init container image
-│   ├── Dockerfile.authbridge         #   Combined sidecar image
 │   ├── k8s/                          #   Standalone K8s manifests
 │   └── quickstart/                   #   Standalone demo (no SPIFFE)
 │       ├── setup_keycloak.py
 │       └── demo-app/main.go          #   Test target: JWT validation (:8081), TLS echo (:8443)
-│
-├── client-registration/              # Keycloak auto-registration (Python)
-│   ├── client_registration.py        #   Main script: register client, write secret
-│   └── Dockerfile                    #   Python 3.12-slim, UID/GID 1000
-│
-├── spiffe-helper/                    # SPIFFE helper (Dockerfile only)
-│   └── Dockerfile                    #   Fetches JWT-SVIDs from SPIRE agent
 │
 ├── demos/                            # Demo scenarios with full setup
 │   ├── README.md                     #   Demo index (recommended starting order)
@@ -116,7 +115,7 @@ with protocol-specific listeners in `cmd/authbridge/listener/`:
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-combined.yaml` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
 - `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
-- Credential files: `client-registration` writes `/shared/client-id.txt` and `/shared/client-secret.txt`; `spiffe-helper` writes `/opt/jwt_svid.token`. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` / `jwt_svid_path`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable.
+- Credential files: the **kagenti-operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. `spiffe-helper` (bundled in both combined images, started conditionally on `SPIRE_ENABLED=true`) writes `/opt/jwt_svid.token`. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` / `jwt_svid_path`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed; workloads opting back into that path use `kagenti.io/client-registration-inject: "true"` and the operator's bundled client-registration image (separate repo).
 - Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
 - Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-combined.yaml`).
 
@@ -236,9 +235,9 @@ Sidecars communicate through files on shared volumes:
 
 | Path | Writer | Reader | Content |
 |------|--------|--------|---------|
-| `/opt/jwt_svid.token` | spiffe-helper | client-registration | JWT SVID from SPIRE |
-| `/shared/client-id.txt` | client-registration | authbridge | SPIFFE ID or CLIENT_NAME |
-| `/shared/client-secret.txt` | client-registration | authbridge | Keycloak client secret |
+| `/opt/jwt_svid.token` | spiffe-helper | authbridge (token-exchange) | JWT SVID from SPIRE |
+| `/shared/client-id.txt` | operator (Secret mount) | authbridge | SPIFFE ID or workload name |
+| `/shared/client-secret.txt` | operator (Secret mount) | authbridge | Keycloak client secret |
 
 ## Build and Deploy
 
@@ -253,9 +252,15 @@ make build-images
 # Load into Kind cluster
 make load-images                    # Uses KIND_CLUSTER_NAME env var (default: kagenti)
 
-# Build the authbridge-unified sidecar image separately (from authbridge/ context)
-cd .. && podman build -f cmd/authbridge/Dockerfile -t authbridge-unified:latest .
-kind load docker-image authbridge-unified:latest --name kagenti
+# Build the combined sidecar images (from authbridge/ context).
+# Pick the one matching your deployment mode:
+#
+#   authbridge-envoy = Envoy + authbridge (ext_proc) + spiffe-helper
+#   authbridge       = authbridge-proxy + spiffe-helper (default mode, no Envoy)
+cd .. && podman build -f cmd/authbridge/Dockerfile.envoy -t authbridge-envoy:latest .
+podman build -f cmd/authbridge/Dockerfile.proxy -t authbridge:latest .
+kind load docker-image authbridge-envoy:latest --name kagenti
+kind load docker-image authbridge:latest --name kagenti
 
 # Deploy auth-proxy + demo-app
 make deploy

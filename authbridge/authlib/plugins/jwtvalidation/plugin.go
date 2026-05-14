@@ -61,9 +61,10 @@ type jwtValidationConfig struct {
 	Audience string `json:"audience"`
 
 	// AudienceFile reads the expected audience from a file. Used
-	// together with client-registration's /shared/client-id.txt. The
-	// file may not exist at Configure time; a background poll started
-	// by Init waits for it and updates the plugin when it appears.
+	// together with /shared/client-id.txt (mounted by the operator
+	// from a Keycloak-credentials Secret). The file may not exist at
+	// Configure time; a background poll started by Init waits for it
+	// and updates the plugin when it appears.
 	//
 	// Note: an empty-string value is treated as "unset" — applyDefaults
 	// will fill in /shared/client-id.txt. To opt out of any file poll,
@@ -100,9 +101,9 @@ func (c *jwtValidationConfig) applyDefaults() {
 		c.AudienceMode = "static"
 	}
 	// When neither Audience nor AudienceFile is set, fall back to the
-	// Kagenti convention: client-registration writes the agent's client
-	// ID (which doubles as the inbound audience) to this path.
-	// Deployments that don't run client-registration should set
+	// Kagenti convention: the operator's webhook mounts a Secret
+	// containing the agent's client ID (which doubles as the inbound
+	// audience) at this path. Deployments outside Kagenti should set
 	// Audience explicitly — the Configure-time read is best-effort and
 	// Init's poll will give up silently if ctx is cancelled.
 	if c.AudienceMode == "static" && c.Audience == "" && c.AudienceFile == "" {
@@ -146,8 +147,8 @@ type JWTValidation struct {
 	// bgCancel stops the background audience-file poller started by
 	// Init. It's created with context.Background() (not Init's ctx) so
 	// the poller's lifetime is the plugin's lifetime, not Start's
-	// 60-second budget — otherwise a slow client-registration during
-	// pod boot would orphan the plugin after the initCtx deadline.
+	// 60-second budget — otherwise a slow Secret-mount propagation
+	// during pod boot would orphan the plugin after the initCtx deadline.
 	//
 	// Held in an atomic.Pointer so a future caller can invoke Shutdown
 	// from a goroutine other than the one that ran Init without racing
@@ -173,8 +174,8 @@ func (p *JWTValidation) Capabilities() pipeline.PluginCapabilities {
 
 // Configure decodes the plugin's config subtree, applies defaults,
 // validates, and constructs the internal auth handler. If AudienceFile
-// is set but the file isn't yet readable (client-registration still
-// provisioning during pod boot), the handler is created with an empty
+// is set but the file isn't yet readable (Secret mount still
+// propagating during pod boot), the handler is created with an empty
 // audience and Init's goroutine fills it in when the file appears.
 func (p *JWTValidation) Configure(raw json.RawMessage) error {
 	var c jwtValidationConfig

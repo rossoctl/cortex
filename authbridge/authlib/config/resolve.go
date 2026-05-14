@@ -18,9 +18,10 @@ import (
 
 // ReadCredentialFile performs a one-shot read of a credential file,
 // returning its whitespace-trimmed contents. Used by plugins from
-// Configure to opportunistically pick up values that client-registration
-// has already written; when it returns an error, the plugin should fall
-// back to WaitForCredentialFile from Init to wait for the file.
+// Configure to opportunistically pick up values the operator has
+// already mounted from a Secret; when it returns an error, the
+// plugin should fall back to WaitForCredentialFile from Init to wait
+// for the file.
 func ReadCredentialFile(path string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -45,8 +46,8 @@ var heartbeatInterval = 60 * time.Second
 
 // WaitForCredentialFile blocks until the file is readable with non-zero
 // length, or until ctx is cancelled. Plugins call this from Init (via a
-// goroutine) to wait out the race with client-registration's secret
-// provisioning.
+// goroutine) to wait out the race with the operator's Secret-mount
+// propagation.
 //
 // Polls at 2s intervals — fast enough for human-observable boot times,
 // slow enough that a pod full of plugins isn't hammering the kubelet.

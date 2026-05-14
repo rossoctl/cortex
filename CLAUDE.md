@@ -30,18 +30,20 @@ kagenti-extensions/
 │   │   ├── routing/          #     Host-to-audience router
 │   │   ├── auth/             #     HandleInbound + HandleOutbound composition
 │   │   └── config/           #     Mode presets, YAML config, validation
-│   ├── cmd/authbridge/       #   Unified binary — 3 modes, 1 codebase
-│   │   ├── listener/         #     Protocol adapters (ext_proc, ext_authz, forward/reverse proxy)
-│   │   ├── entrypoint.sh     #     Envoy + authbridge process supervision
-│   │   └── Dockerfile        #     Combined Envoy + authbridge image
-│   ├── authproxy/            #   Auth proxy support files and demos
+│   ├── cmd/authbridge/       #   Unified binary + combined Dockerfiles + entrypoints
+│   │   ├── listener/         #     Protocol adapters (ext_proc, ext_authz)
+│   │   ├── Dockerfile.envoy  #     envoy-sidecar combined image
+│   │   ├── Dockerfile.proxy  #     proxy-sidecar combined image (default)
+│   │   ├── entrypoint-envoy.sh
+│   │   └── entrypoint-proxy.sh
+│   ├── cmd/authbridge-proxy/ #   Lite binary — proxy-sidecar mode only
+│   ├── cmd/authbridge-envoy/ #   Lite binary — envoy-sidecar mode only
+│   ├── authproxy/            #   iptables init container + standalone quickstart
 │   │   ├── quickstart/       #     Standalone demo (no SPIFFE)
 │   │   └── k8s/              #     Standalone K8s manifests
-│   ├── client-registration/  #   Keycloak auto-registration (Python)
-│   ├── spiffe-helper/        #   SPIFFE helper Dockerfile (fetches JWT-SVIDs from SPIRE)
 │   ├── demos/                #   Demo scenarios (weather-agent, github-issue, webhook, single-target, multi-target)
 │   └── keycloak_sync.py      #   Declarative Keycloak sync tool
-├── tests/                    # Python tests (client-registration, keycloak_sync)
+├── tests/                    # Python tests (keycloak_sync)
 ├── .github/
 │   ├── workflows/            # CI/CD (ci.yaml, build.yaml, security-scans, scorecard, spellcheck)
 │   └── ISSUE_TEMPLATE/       # Bug report, feature request, epic templates
@@ -68,38 +70,42 @@ A **single binary** providing transparent traffic interception for both inbound 
 
 **Ports:** 15123 (outbound), 15124 (inbound), 9090 (ext-proc/ext-authz), 9901 (admin), 9093 (stats and config)
 
-### 2. Client Registration (Python)
+### 2. Client Registration
 
-A Python script that **automatically registers Kubernetes workloads as Keycloak OAuth2 clients** using their SPIFFE identity.
-
-**Location:** `authbridge/client-registration/`
-**Language:** Python 3.12
-**Detailed guide:** [`authbridge/CLAUDE.md`](authbridge/CLAUDE.md)
-
-**Flow:** Reads SPIFFE ID from JWT, registers client in Keycloak, writes secret to `/shared/client-secret.txt`
+Keycloak client registration for workloads is handled by the
+**kagenti-operator** (separate repo) — see `kagenti-operator/docs/operator-managed-client-registration.md`.
+The operator creates a Secret with `client-id.txt` + `client-secret.txt`
+and the webhook mounts it at `/shared/` in the workload pod. The
+in-pod `client-registration` sidecar that previously lived in this
+repo has been removed.
 
 ## How the Components Work Together
 
-The kagenti-operator (in a separate repo) injects AuthBridge sidecars into workload pods. Once injected, the sidecars work together:
+The kagenti-operator (in a separate repo) injects AuthBridge sidecars
+into workload pods. Default deployment shape (proxy-sidecar mode):
 
 ```
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  proxy-init (init) ─► iptables     │
-         │                                    │
-         │  spiffe-helper ──► SPIRE Agent     │
-         │       │ writes JWT SVID            │
-         │       ▼                            │
-         │  client-registration ──► Keycloak  │
-         │       │ writes client secret       │
-         │       ▼                            │
-         │  envoy-proxy (+ authbridge)        │
-         │    - Inbound: JWT validation       │
-         │    - Outbound: token exchange       │
+         │  spiffe-helper ──► SPIRE Agent     │  (in-container,
+         │       │ writes JWT SVID            │   conditional on
+         │       ▼                            │   SPIRE_ENABLED)
+         │  authbridge-proxy                  │
+         │    - Reverse proxy: inbound JWT    │
+         │    - Forward proxy: outbound       │
+         │      token exchange                │
          │       │                            │
          │  Your Application                  │
+         │    (HTTP_PROXY → forward proxy)    │
          └────────────────────────────────────┘
+
+         The operator also creates a Secret with client-id +
+         client-secret and mounts it at /shared/.
+
+         For envoy-sidecar mode, replace authbridge-proxy with
+         the authbridge-envoy image (Envoy + ext_proc + spiffe-helper)
+         and add a proxy-init container for iptables.
 ```
 
 ## Unified AuthBridge Binary
@@ -146,17 +152,24 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 
 ## Container Images
 
-All images are pushed to `ghcr.io/kagenti/kagenti-extensions/`:
+All images are pushed to `ghcr.io/kagenti/kagenti-extensions/` from
+`.github/workflows/build.yaml`:
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge-unified`** | **`authbridge/cmd/authbridge/Dockerfile`** | **Unified Envoy + authbridge binary (recommended)** |
-| `authbridge` | `authbridge/authproxy/Dockerfile.authbridge` | Combined sidecar (Envoy + authbridge + spiffe-helper + client-registration) |
-| `proxy-init` | `authbridge/authproxy/Dockerfile.init` | Alpine + iptables init container |
-| `client-registration` | `authbridge/client-registration/Dockerfile` | Python Keycloak client registrar |
-| `spiffe-helper` | `authbridge/spiffe-helper/Dockerfile` | Fetches SPIFFE credentials from SPIRE |
-| `auth-proxy` | `authbridge/authproxy/Dockerfile` | Example pass-through proxy (for demos) |
-| `demo-app` | `authbridge/authproxy/quickstart/demo-app/Dockerfile` | Demo target service |
+| **`authbridge`** | **`authbridge/cmd/authbridge/Dockerfile.proxy`** | **proxy-sidecar combined image (default mode): authbridge-proxy + spiffe-helper. No Envoy.** |
+| `authbridge-envoy` | `authbridge/cmd/authbridge/Dockerfile.envoy` | envoy-sidecar combined image: Envoy + authbridge (ext_proc) + spiffe-helper |
+| `proxy-init` | `authbridge/authproxy/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar mode only) |
+
+In both combined images, `spiffe-helper` is started conditionally based
+on the `SPIRE_ENABLED` env var (set by the operator when SPIRE
+identity is enabled for the workload).
+
+The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
+`spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
+been removed from CI (the auth-proxy / demo-app source is still in-tree
+for the standalone quickstart). Older release tags continue to publish
+the old images.
 
 ## Pre-commit Hooks
 
