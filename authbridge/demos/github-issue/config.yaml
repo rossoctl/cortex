@@ -1,0 +1,36 @@
+# Client configurations with roles
+# Each client can have multiple roles
+clients:
+  - client_id: "spiffe://localtest.me/ns/team1/sa/git-issue-agent"
+    secret: "github-agent-secret"
+    direct_access_grants: true
+    roles:
+      - name: "github-agent"
+        description: "Access role for the GitHub issue agent"
+  - client_id: "github-tool"
+    secret: "github-tool-secret"
+    roles:
+      - name: "github-tool-aud"
+        description: "Audience role for GitHub tool access"
+      - name: "github-full-access"
+        description: "Full access role for GitHub tool operations"
+
+# Realm roles
+realm_roles:
+  - regular
+  - privileged
+
+# Client audience targets
+client_audience_targets:
+  spiffe://localtest.me/ns/team1/sa/git-issue-agent:
+    - github-tool
+  github-tool: []
+
+# User configurations (only username and roles needed, rest uses defaults)
+users:
+  - username: alice
+    roles:
+      - regular
+  - username: bob
+    roles:
+      - privileged

@@ -1,0 +1,17 @@
+# Access Control Policy
+# Maps user roles (realm roles) to specific client roles
+# Format: user_role_name -> list of client role mappings
+
+policy:
+  privileged:
+  - client: spiffe://localtest.me/ns/team1/sa/git-issue-agent
+    role: github-agent
+  - client: github-tool
+    role: github-full-access
+  - client: github-tool
+    role: github-tool-aud
+  regular:
+  - client: spiffe://localtest.me/ns/team1/sa/git-issue-agent
+    role: github-agent
+  - client: github-tool
+    role: github-tool-aud

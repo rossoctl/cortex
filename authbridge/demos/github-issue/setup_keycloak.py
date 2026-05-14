@@ -17,28 +17,34 @@ Architecture:
        v
   GitHub Tool (validates token, uses appropriate GitHub PAT)
 
-Clients created:
-- github-tool: Target audience for token exchange (the MCP GitHub tool)
+Clients created (from config.yaml):
+- spiffe://localtest.me/ns/team1/sa/git-issue-agent: Agent client with github-agent role
+- github-tool: Target audience for token exchange with github-tool-aud and github-full-access roles
 
 Client Scopes created:
-- agent-<ns>-<sa>-aud: Adds Agent's SPIFFE ID to token audience (realm DEFAULT)
-- github-tool-aud: Adds "github-tool" to exchanged tokens (realm OPTIONAL)
-- github-full-access: Optional scope for privileged GitHub API access (realm OPTIONAL)
+- Per-role scopes for each client (e.g., github-full-access, github-tool-aud)
+- Scopes are assigned as DEFAULT (self) or OPTIONAL (targets)
+
+Realm Roles created:
+- regular: Standard user access level
+- privileged: Elevated user access level
 
 Demo Users created:
-- alice: Regular user — tokens requested without github-full-access scope → public access
-- bob: Privileged user — tokens requested with scope=github-full-access → full access
-
-Note on scope model:
-  github-full-access is a realm OPTIONAL scope. Optional scopes are NOT automatically
-  included in tokens — the client must explicitly request them via the "scope" parameter
-  in the token request. In a production system you would enforce per-user scope access
-  via role-based policies. In this demo the calling client controls which scope to
-  request for each user (see demo-manual.md Step 9).
+- alice: User with 'regular' realm role
+- bob: User with 'privileged' realm role
 
 Usage:
-  python setup_keycloak.py
-  python setup_keycloak.py --namespace myns --service-account mysa
+  python setup_keycloak.py <config_file.yaml> <access_control_policy.yaml>
+
+Arguments:
+  config.yaml    Path to main configuration YAML file
+  policy.yaml    Path to access control policy YAML file
+
+Environment variables (optional, defaults provided):
+  KEYCLOAK_URL                  Default: http://keycloak.localtest.me:8080
+  KEYCLOAK_ADMIN_USERNAME       Default: admin
+  KEYCLOAK_ADMIN_PASSWORD       Default: admin
+  REALM_NAME                    Default: kagenti
 
 Security Note:
 - This script uses default Keycloak admin credentials (username: "admin", password: "admin")
@@ -46,15 +52,18 @@ Security Note:
   in any production or internet-exposed environment.
 """
 
-import argparse
+import json
 import os
 import sys
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 
-from keycloak import KeycloakAdmin, KeycloakGetError, KeycloakPostError
+import yaml
+from keycloak import KeycloakAdmin, KeycloakPostError, KeycloakGetError
 
-# Default configuration
+# Default configuration - can be overridden by environment variables
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
+KEYCLOAK_REALM = os.environ.get("REALM_NAME", "kagenti")
 KEYCLOAK_ADMIN_USERNAME = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 
@@ -65,427 +74,589 @@ if KEYCLOAK_ADMIN_USERNAME == "admin" and KEYCLOAK_ADMIN_PASSWORD == "admin":
         file=sys.stderr,
     )
 
-DEFAULT_NAMESPACE = "team1"
-DEFAULT_SERVICE_ACCOUNT = "git-issue-agent"
-SPIFFE_TRUST_DOMAIN = "localtest.me"
-UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "kagenti")
-
-DEMO_USERS = [
-    {
-        "username": "alice",
-        "email": "alice@example.com",
-        "firstName": "Alice",
-        "lastName": "Demo",
-        "password": "alice123",
-        "description": "Regular user - request token without github-full-access scope",
-    },
-    {
-        "username": "bob",
-        "email": "bob@example.com",
-        "firstName": "Bob",
-        "lastName": "Admin",
-        "password": "bob123",
-        "description": "Privileged user - request token with scope=github-full-access",
-    },
-]
+def load_main_config(config_file: Path) -> Dict[str, Any]:
+    """Load main configuration from YAML file."""
+    if not config_file.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+    
+    with open(config_file, 'r') as f:
+        return yaml.safe_load(f)
 
 
-def get_spiffe_id(namespace: str, service_account: str) -> str:
-    return f"spiffe://{SPIFFE_TRUST_DOMAIN}/ns/{namespace}/sa/{service_account}"
+def load_access_control_policy(access_control_policy_file: Path) -> Dict[str, List[Dict[str, str]]]:
+    """Load access control policy (user role -> client roles).
+    
+    Returns a dictionary where each user role (realm role) maps to a list of client role mappings.
+    Each mapping contains 'client' (client name) and 'role' (role name).
+    """
+    if not access_control_policy_file.exists():
+        raise FileNotFoundError(f"Access control policy file not found: {access_control_policy_file}")
+    
+    with open(access_control_policy_file, 'r') as f:
+        policy_config = yaml.safe_load(f)
+    
+    policy = policy_config.get('policy', {})
+    
+    # Handle empty policy (when policy: is present but has no value)
+    if policy is None:
+        policy = {}
+    
+    # Validate policy structure
+    for user_role, client_roles in policy.items():
+        if not isinstance(client_roles, list):
+            raise ValueError(f"Invalid policy for user role '{user_role}': must be a list of client role mappings")
+        for client_role in client_roles:
+            if not isinstance(client_role, dict):
+                raise ValueError(f"Invalid client role mapping for user role '{user_role}': must be a dict with 'client' and 'role' keys")
+            if 'client' not in client_role or 'role' not in client_role:
+                raise ValueError(f"Invalid client role mapping for user role '{user_role}': must contain 'client' and 'role' keys")
+            if not isinstance(client_role['client'], str) or not isinstance(client_role['role'], str):
+                raise ValueError(f"Invalid client role mapping for user role '{user_role}': 'client' and 'role' must be strings")
+    
+    return policy
 
 
-def get_or_create_realm(keycloak_admin, realm_name):
-    try:
-        realms = keycloak_admin.get_realms()
-        for realm in realms:
-            if realm["realm"] == realm_name:
-                print(f"Realm '{realm_name}' already exists.")
-                return
-        keycloak_admin.create_realm({"realm": realm_name, "enabled": True, "displayName": realm_name})
-        print(f"Created realm '{realm_name}'.")
-    except Exception as e:
-        print(f"Error checking/creating realm: {e}", file=sys.stderr)
-        raise
-
-
-def get_or_create_client(keycloak_admin, client_payload):
-    client_id = client_payload["clientId"]
-    existing_client_id = keycloak_admin.get_client_id(client_id)
-    if existing_client_id:
-        print(f"Client '{client_id}' already exists.")
-        return existing_client_id
-    internal_id = keycloak_admin.create_client(client_payload)
-    print(f"Created client '{client_id}'.")
-    return internal_id
-
-
-def get_or_create_client_scope(keycloak_admin, scope_payload):
-    scope_name = scope_payload.get("name")
-    scopes = keycloak_admin.get_client_scopes()
-    for scope in scopes:
-        if scope["name"] == scope_name:
-            print(f"Client scope '{scope_name}' already exists with ID: {scope['id']}")
-            return scope["id"]
-    try:
-        scope_id = keycloak_admin.create_client_scope(scope_payload)
-        print(f"Created client scope '{scope_name}': {scope_id}")
-        return scope_id
-    except KeycloakPostError as e:
-        print(f"Could not create client scope '{scope_name}': {e}")
-        raise
-
-
-def add_audience_mapper(keycloak_admin, scope_id, mapper_name, audience):
-    mapper_payload = {
-        "name": mapper_name,
-        "protocol": "openid-connect",
-        "protocolMapper": "oidc-audience-mapper",
-        "consentRequired": False,
-        "config": {
-            "included.custom.audience": audience,
-            "id.token.claim": "false",
-            "access.token.claim": "true",
-            "userinfo.token.claim": "false",
-        },
-    }
-    try:
-        keycloak_admin.add_mapper_to_client_scope(scope_id, mapper_payload)
-        print(f"Added audience mapper '{mapper_name}' for audience '{audience}'")
-    except Exception as e:
-        print(f"Note: Could not add mapper '{mapper_name}' (might already exist): {e}")
-
-
-def get_or_create_user(keycloak_admin, user_config):
-    username = user_config["username"]
-    users = keycloak_admin.get_users({"username": username})
-    existing_user = next(
-        (user for user in users if user.get("username") == username),
-        None,
+def add_client_role_to_realm_role_composite(
+    admin: KeycloakAdmin, realm: str, realm_role_name: str, client_id: str, client_role_name: str
+):
+    """Add a client role to a realm role's composite roles."""
+    # Get the client role
+    client_role = admin.get_client_role(client_id, client_role_name)
+    
+    # Get the realm role
+    realm_role = admin.get_realm_role(realm_role_name)
+    
+    # Add client role to realm role's composites
+    url = (
+        f"{admin.connection.base_url}/admin/realms/{realm}"
+        f"/roles-by-id/{realm_role['id']}/composites"
     )
-    if existing_user:
-        print(f"User '{username}' already exists.")
-        return existing_user["id"]
+    admin.connection.raw_post(url, data=json.dumps([client_role]))
+
+
+def apply_access_control_policy(
+    admin: KeycloakAdmin,
+    realm: str,
+    access_control_policy_file: Path,
+    client_ids: Dict[str, str],
+    scope_ids: Optional[Dict[str, str]] = None
+) -> None:
+    """Load and apply access control policy to realm roles.
+    
+    Makes realm roles composites of client roles. This ensures users with a realm role
+    automatically get all the client roles mapped to that realm role in the policy.
+    This implements role-based access control by controlling which client roles users receive.
+    
+    Args:
+        admin: Keycloak admin instance
+        realm: Realm name
+        access_control_policy_file: Path to policy YAML file
+        client_ids: Mapping of client names to client IDs
+        scope_ids: Optional mapping of scope names to scope IDs (unused, kept for compatibility)
+    """
+    user_role_to_client_roles = load_access_control_policy(access_control_policy_file)
+    
+    # Make realm roles composites of client roles
+    # This ensures users with realm roles automatically get the mapped client roles
+    print("\n=== Making realm roles composites of client roles ===")
+    for user_role, client_role_mappings in user_role_to_client_roles.items():
+        print(f"\nProcessing realm role '{user_role}':")
+        for mapping in client_role_mappings:
+            client_name = mapping['client']
+            role_name = mapping['role']
+            
+            if client_name not in client_ids:
+                print(f"  Warning: Client '{client_name}' not found")
+                continue
+            
+            client_id = client_ids[client_name]
+            
+            try:
+                add_client_role_to_realm_role_composite(admin, realm, user_role, client_id, role_name)
+                print(f"  ✓ Added client role '{client_name}.{role_name}' to realm role '{user_role}'")
+            except Exception as e:
+                print(f"  ℹ Client role '{client_name}.{role_name}' already in composite or error: {e}")
+
+
+def create_client_role_safe(admin: KeycloakAdmin, client_id: str, role_name: str, client_name: str | None = None, description: str | None = None) -> bool:
+    """
+    Create a client role with proper error handling.
+    
+    Args:
+        admin: Keycloak admin instance
+        client_id: The client ID where the role should be created
+        role_name: Name of the role to create
+        client_name: Optional display name for logging purposes
+        description: Optional description for the role
+        
+    Returns:
+        bool: True if role was created or already exists, False on error
+    """
+    display_name = client_name or client_id
     try:
-        user_id = keycloak_admin.create_user(
+        role_payload = {"name": role_name, "clientRole": True}
+        if description:
+            role_payload["description"] = description
+        
+        admin.create_client_role(
+            client_id,
+            role_payload,
+            skip_exists=True
+        )
+        desc_info = f" ({description})" if description else ""
+        print(f"  ✓ Created client role: {role_name} for {display_name}{desc_info}")
+        return True
+    except Exception as e:
+        # Log the error but don't fail - role might already exist
+        print(f"  ℹ Client role {role_name} for {display_name} already exists or error: {e}")
+        return True  # Consider existing role as success
+
+
+def assign_client_role_to_client_scope(
+    admin: KeycloakAdmin, realm: str, scope_id: str, client_id: str, role_name: str
+):
+    """Assign a client role to a client scope's scope-mappings for role-gating."""
+    role = admin.get_client_role(client_id, role_name)
+    url = (
+        f"{admin.connection.base_url}/admin/realms/{realm}"
+        f"/client-scopes/{scope_id}/scope-mappings/clients/{client_id}"
+    )
+    admin.connection.raw_post(url, data=json.dumps([role]))
+
+
+def create_client_idempotent(admin: KeycloakAdmin, payload: dict) -> str:
+    """Create a client or return existing internal ID."""
+    client_id = payload["clientId"]
+    try:
+        internal_id = admin.create_client(payload)
+        print(f"  Created client: {client_id}")
+        return internal_id
+    except KeycloakPostError:
+        internal_id = admin.get_client_id(client_id)
+        if internal_id is None:
+            raise ValueError(f"Client '{client_id}' not found and could not be created")
+        print(f"  Using existing client: {client_id}")
+        return internal_id
+
+def create_single_client_scope(
+    admin: KeycloakAdmin,
+    realm: str,
+    scope_name: str,
+    target_client: str,
+    target_client_id: str,
+    role_name: str,
+    default_attributes: Dict[str, str],
+    default_mapper_config: Dict[str, str]
+) -> str:
+    """Create client scope with audience mapper for a specific role.
+    
+    The scope will be assigned as optional and conditionally included based on client role.
+    """
+    # Convert snake_case to dot.notation for Keycloak
+    keycloak_attributes = {
+        key.replace('_', '.'): value
+        for key, value in default_attributes.items()
+    }
+    
+    scope_id = admin.create_client_scope(
+        {
+            "name": scope_name,
+            "protocol": "openid-connect",
+            "attributes": keycloak_attributes,
+        },
+        skip_exists=True,
+    )
+    
+    # Disable Full Scope Allowed on the client scope to enable role-based filtering
+    # This ensures the scope is only included if the user has the mapped role
+    try:
+        scope_representation = admin.get_client_scope(scope_id)
+        if scope_representation.get('fullScopeAllowed', True):
+            scope_representation['fullScopeAllowed'] = False
+            admin.update_client_scope(scope_id, scope_representation)
+            print(f"  Created client scope: {scope_name} (Full Scope Allowed: OFF)")
+        else:
+            print(f"  Created client scope: {scope_name}")
+    except Exception as e:
+        print(f"  Created client scope: {scope_name} (could not disable Full Scope Allowed: {e})")
+
+    # Add audience mapper - will add the audience to tokens
+    try:
+        # Convert snake_case to dot.notation for Keycloak
+        keycloak_mapper_config = {
+            key.replace('_', '.'): value
+            for key, value in default_mapper_config.items()
+        }
+        keycloak_mapper_config["included.client.audience"] = target_client
+        
+        admin.add_mapper_to_client_scope(
+            scope_id,
+            {
+                "name": f"{target_client}-audience",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "consentRequired": False,
+                "config": keycloak_mapper_config,
+            },
+        )
+        print(f"    Added audience mapper -> {target_client}")
+    except Exception as e:
+        print(f"    Audience mapper already exists for {target_client}: {e}")
+    
+    return scope_id
+
+
+def main(config_file: str, access_control_policy_file: str):
+    """Main setup function."""
+    script_dir = Path(__file__).parent
+    
+    # Load main configuration
+    main_config_path = script_dir / config_file
+    print(f"Loading main configuration from {main_config_path} ...")
+    main_config = load_main_config(main_config_path)
+    
+    access_control_policy_path = script_dir / access_control_policy_file
+    
+    # Use global configuration variables (set from environment or defaults)
+    REALM = KEYCLOAK_REALM
+    
+    print("=" * 70)
+    print("GitHub Issue Agent + AuthBridge - Keycloak Setup")
+    print("=" * 70)
+    print(f"\nKeycloak URL: {KEYCLOAK_URL}")
+    print(f"Realm:        {REALM}")
+    
+    print(f"\nConnecting to Keycloak at {KEYCLOAK_URL} ...")
+    admin = KeycloakAdmin(
+        server_url=KEYCLOAK_URL,
+        username=KEYCLOAK_ADMIN_USERNAME,
+        password=KEYCLOAK_ADMIN_PASSWORD,
+        realm_name="master",
+        user_realm_name="master",
+    )
+
+    # Create realm
+    print(f"\n=== Creating realm: {REALM} ===")
+    try:
+        admin.create_realm(
+            {
+                "realm": REALM,
+                "enabled": True,
+                "accessTokenLifespan": 600,
+                "verifyEmail": False,
+                "registrationEmailAsUsername": False,
+            }
+        )
+        print(f"  Created realm: {REALM}")
+    except KeycloakPostError:
+        print(f"  Realm {REALM} already exists, continuing...")
+
+    # Switch to realm
+    admin = KeycloakAdmin(
+        server_url=KEYCLOAK_URL,
+        username=KEYCLOAK_ADMIN_USERNAME,
+        password=KEYCLOAK_ADMIN_PASSWORD,
+        realm_name=REALM,
+        user_realm_name="master",
+    )
+
+    # Create clients
+    print("\n=== Creating clients ===")
+    clients_config = main_config['clients']
+    
+    client_ids = {}
+    for client_config in clients_config:
+        client_id = client_config['client_id']
+        
+        # Get optional secret from config, or let Keycloak auto-generate
+        client_secret = client_config.get('secret')
+        
+        # Get direct access grants setting from config, default to False
+        direct_access_enabled = client_config.get('direct_access_grants', False)
+        
+        client_payload = {
+            "clientId": client_id,
+            "publicClient": False,
+            "serviceAccountsEnabled": True,
+            "directAccessGrantsEnabled": direct_access_enabled,
+            "standardFlowEnabled": False,
+            "fullScopeAllowed": False,
+            "attributes": {
+                "standard.token.exchange.enabled": "true"
+            }
+        }
+        
+        # Only set secret if provided in config
+        if client_secret:
+            client_payload["secret"] = client_secret
+        
+        internal_id = create_client_idempotent(admin, client_payload)
+        if client_secret:
+            print(f"    Secret: {client_secret}")
+        else:
+            print(f"    Secret: (auto-generated by Keycloak)")
+        if direct_access_enabled:
+            print(f"    Direct access grants: enabled")
+        
+        # Get roles from config - support both old format (list of strings) and new format (list of dicts)
+        roles_config = client_config.get('roles', ['access'])
+        client_roles = []
+        for role in roles_config:
+            if isinstance(role, dict):
+                # New format with name and description
+                client_roles.append({
+                    'name': role['name'],
+                    'description': role.get('description')
+                })
+            else:
+                # Old format - just role name as string
+                client_roles.append({
+                    'name': role,
+                    'description': None
+                })
+        
+        client_ids[client_id] = {
+            'id': internal_id,
+            'secret': client_secret,
+            'roles': client_roles
+        }
+
+    # Create client roles - create multiple roles per client based on config
+    print("\n=== Creating client roles ===")
+    for client_name, client_info in client_ids.items():
+        client_id = client_info['id']
+        client_roles = client_info['roles']
+        for role in client_roles:
+            role_name = role['name']
+            role_description = role.get('description')
+            create_client_role_safe(admin, client_id, role_name, client_name, role_description)
+    
+    # NOTE: We do NOT add target client roles to source client scope mappings
+    # This prevents target audiences from appearing in initial login tokens
+    # Token exchange will still work because:
+    # 1. Target client scopes are assigned as DEFAULT to source clients
+    # 2. Scope-to-role mappings filter which scopes are included based on user's roles
+    # 3. During token exchange, Keycloak uses the requested audience to determine which scopes to include
+    print("\n=== Skipping target client role scope mappings (prevents initial token pollution) ===")
+    print("  Target audiences will only appear during token exchange, not in initial login tokens")
+
+    # Create realm roles
+    print("\n=== Creating realm roles ===")
+    roles = main_config.get('realm_roles', [])
+    for role in roles:
+        # Support both old format (string) and new format (dict with name and description)
+        if isinstance(role, dict):
+            role_name = role['name']
+            role_description = role.get('description')
+        else:
+            role_name = role
+            role_description = None
+        
+        try:
+            role_payload = {"name": role_name}
+            if role_description:
+                role_payload["description"] = role_description
+            
+            admin.create_realm_role(role_payload, skip_exists=True)
+            desc_info = f" ({role_description})" if role_description else ""
+            print(f"  Created role: {role_name}{desc_info}")
+        except Exception:
+            print(f"  Role {role_name} already exists")
+
+    # Create client scopes with audience mappers - create one scope per role per client
+    print("\n=== Creating client scopes ===")
+    default_attributes = {
+        "include_in_token_scope": "true",
+        "display_on_consent_screen": "false",
+        "consent_screen_text": "",
+    }
+    default_mapper_config = {
+        "introspection_token_claim": "true",
+        "userinfo_token_claim": "false",
+        "id_token_claim": "false",
+        "lightweight_claim": "false",
+        "access_token_claim": "true",
+        "lightweight_access_token_claim": "false",
+    }
+
+    scope_ids = {}
+    for client_name, client_info in client_ids.items():
+        client_internal_id = client_info['id']
+        client_roles = client_info['roles']
+        
+        # Create one scope per role (scope name = role name)
+        for role in client_roles:
+            role_name = role['name']
+            scope_name = role_name  # No -audience suffix
+            scope_id = create_single_client_scope(
+                admin, REALM, scope_name, client_name, client_internal_id, role_name,
+                default_attributes, default_mapper_config
+            )
+            scope_ids[scope_name] = scope_id
+
+    # Ensure login-issued tokens also include the authenticating client as audience.
+    # This adds each client's own role scopes as defaults, so a token obtained for that
+    # client (for example via password grant) contains aud=<requesting client> in addition
+    # to any currently configured audience content. Scope-to-role filtering still applies.
+    print("\n=== Assigning self audience scopes to clients as DEFAULT ===")
+    for client_name, client_info in client_ids.items():
+        assigned_self_scopes = []
+        for role in client_info['roles']:
+            role_name = role['name']
+            scope_id = scope_ids.get(role_name)
+            if not scope_id:
+                continue
+            try:
+                admin.add_client_default_client_scope(client_info['id'], scope_id, {})
+                assigned_self_scopes.append(role_name)
+            except Exception:
+                pass  # Already added
+
+        if assigned_self_scopes:
+            print(f"  {client_name} <- {', '.join(assigned_self_scopes)} (self default)")
+        else:
+            print(f"  {client_name} <- (no self scopes)")
+    
+    # Build client_ids mapping for apply_access_control_policy (client_name -> internal_id)
+    client_id_mapping = {name: info['id'] for name, info in client_ids.items()}
+    apply_access_control_policy(admin, REALM, access_control_policy_path, client_id_mapping, scope_ids)
+
+    # Assign target scopes as OPTIONAL (not DEFAULT)
+    # This prevents target audiences from appearing in initial login tokens
+    # During token exchange, the requested audience will trigger inclusion of the appropriate scopes
+    print("\n=== Assigning target client scopes to clients as OPTIONAL ===")
+    client_audience_targets = main_config.get('client_audience_targets', {})
+    
+    for client_id, target_client_names in client_audience_targets.items():
+        if client_id in client_ids and target_client_names:
+            assigned_scopes = []
+            for target_client_name in target_client_names:
+                if target_client_name in client_ids:
+                    target_client_id = client_ids[target_client_name]['id']
+                    target_roles = client_ids[target_client_name]['roles']
+                    for role in target_roles:
+                        role_name = role['name']
+                        scope_name = role_name  # No -audience suffix
+                        if scope_name in scope_ids:
+                            scope_id = scope_ids[scope_name]
+                            try:
+                                admin.add_client_optional_client_scope(
+                                    client_ids[client_id]['id'], scope_id, {}
+                                )
+                                assigned_scopes.append(scope_name)
+                            except Exception:
+                                pass  # Already added
+            if assigned_scopes:
+                print(f"  {client_id} <- {', '.join(assigned_scopes)} (optional)")
+            else:
+                print(f"  {client_id} <- (no scopes)")
+        elif client_id in client_ids:
+            print(f"  {client_id} <- (no target clients)")
+    
+    # Map each client scope to its corresponding client role
+    # This filters DEFAULT scopes: only included if user has the specific client role
+    print("\n=== Mapping client scopes to client roles for filtering ===")
+    for client_name, client_info in client_ids.items():
+        client_id = client_info['id']
+        client_roles = client_info['roles']
+        print(f"  {client_name}:")
+        for role in client_roles:
+            role_name = role['name']
+            scope_name = role_name  # No -audience suffix
+            if scope_name in scope_ids:
+                scope_id = scope_ids[scope_name]
+                try:
+                    # Add the client role to the scope's scope mappings
+                    # This restricts the scope to users who have this client role
+                    client_role = admin.get_client_role(client_id, role_name)
+                    url = (
+                        f"{admin.connection.base_url}/admin/realms/{REALM}"
+                        f"/client-scopes/{scope_id}/scope-mappings/clients/{client_id}"
+                    )
+                    admin.connection.raw_post(url, data=json.dumps([client_role]))
+                    print(f"    ✓ Restricted {scope_name} to role {client_name}.{role_name}")
+                except Exception as e:
+                    print(f"    ℹ Scope {scope_name} already restricted or error: {e}")
+
+    # Create users
+    print("\n=== Creating users ===")
+    users_config = main_config['users']
+
+    for user_config in users_config:
+        username = user_config['username']
+        user_roles = user_config.get('roles', [])
+        password = f"{username}123"
+        user_id = admin.create_user(
             {
                 "username": username,
-                "email": user_config["email"],
-                "firstName": user_config["firstName"],
-                "lastName": user_config["lastName"],
+                "email": f"{username}@example.com",
+                "firstName": username.capitalize(),
+                "lastName": "Demo",
                 "enabled": True,
                 "emailVerified": True,
                 "credentials": [
                     {
                         "type": "password",
-                        "value": user_config["password"],
+                        "value": password,
                         "temporary": False,
                     }
                 ],
-            }
-        )
-        print(f"Created user '{username}' with ID: {user_id}")
-        return user_id
-    except KeycloakPostError as e:
-        print(f"Could not create user '{username}': {e}")
-        raise
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Setup Keycloak for GitHub Issue Agent + AuthBridge demo")
-    parser.add_argument(
-        "--namespace",
-        "-n",
-        default=DEFAULT_NAMESPACE,
-        help=f"Kubernetes namespace (default: {DEFAULT_NAMESPACE})",
-    )
-    parser.add_argument(
-        "--service-account",
-        "-s",
-        default=DEFAULT_SERVICE_ACCOUNT,
-        help=f"Service account name (default: {DEFAULT_SERVICE_ACCOUNT})",
-    )
-    args = parser.parse_args()
-
-    namespace = args.namespace
-    service_account = args.service_account
-    agent_spiffe_id = get_spiffe_id(namespace, service_account)
-
-    print("=" * 70)
-    print("GitHub Issue Agent + AuthBridge - Keycloak Setup")
-    print("=" * 70)
-    print(f"\nNamespace:       {namespace}")
-    print(f"Service Account: {service_account}")
-    print(f"SPIFFE ID:       {agent_spiffe_id}")
-
-    # Connect to Keycloak
-    print(f"\nConnecting to Keycloak at {KEYCLOAK_URL}...")
-    try:
-        master_admin = KeycloakAdmin(
-            server_url=KEYCLOAK_URL,
-            username=KEYCLOAK_ADMIN_USERNAME,
-            password=KEYCLOAK_ADMIN_PASSWORD,
-            realm_name="master",
-            user_realm_name="master",
-        )
-    except Exception as e:
-        print(f"Failed to connect to Keycloak: {e}")
-        print("\nMake sure Keycloak is running and accessible at:")
-        print(f"  {KEYCLOAK_URL}")
-        print("\nIf using port-forward, run:")
-        print("  kubectl port-forward service/keycloak-service -n keycloak 8080:8080")
-        sys.exit(1)
-
-    # Create realm
-    print(f"\n--- Setting up realm: {KEYCLOAK_REALM} ---")
-    get_or_create_realm(master_admin, KEYCLOAK_REALM)
-
-    # Switch to target realm
-    keycloak_admin = KeycloakAdmin(
-        server_url=KEYCLOAK_URL,
-        username=KEYCLOAK_ADMIN_USERNAME,
-        password=KEYCLOAK_ADMIN_PASSWORD,
-        realm_name=KEYCLOAK_REALM,
-        user_realm_name="master",
-    )
-
-    # ---------------------------------------------------------------
-    # Create github-tool client (target audience for token exchange)
-    # ---------------------------------------------------------------
-    print("\n--- Creating github-tool client ---")
-    print("This client represents the GitHub MCP tool as a token exchange target")
-    get_or_create_client(
-        keycloak_admin,
-        {
-            "clientId": "github-tool",
-            "name": "GitHub Tool",
-            "enabled": True,
-            "publicClient": False,
-            "standardFlowEnabled": False,
-            "serviceAccountsEnabled": True,
-            "attributes": {"standard.token.exchange.enabled": "true"},
-        },
-    )
-
-    # ---------------------------------------------------------------
-    # Create client scopes
-    # ---------------------------------------------------------------
-    print("\n--- Creating client scopes ---")
-
-    # 1. agent-spiffe-aud scope: adds Agent's SPIFFE ID to all tokens (realm default)
-    scope_name = f"agent-{namespace}-{service_account}-aud"
-    print(f"\nCreating scope for Agent's SPIFFE ID audience: {scope_name}")
-    agent_spiffe_scope_id = get_or_create_client_scope(
-        keycloak_admin,
-        {
-            "name": scope_name,
-            "protocol": "openid-connect",
-            "attributes": {
-                "include.in.token.scope": "true",
-                "display.on.consent.screen": "true",
             },
-        },
-    )
-    add_audience_mapper(keycloak_admin, agent_spiffe_scope_id, scope_name, agent_spiffe_id)
-
-    # 2. github-tool-aud scope: adds "github-tool" to exchanged tokens (optional)
-    print("\nCreating scope for github-tool audience...")
-    github_tool_scope_id = get_or_create_client_scope(
-        keycloak_admin,
-        {
-            "name": "github-tool-aud",
-            "protocol": "openid-connect",
-            "attributes": {
-                "include.in.token.scope": "true",
-                "display.on.consent.screen": "true",
-            },
-        },
-    )
-    add_audience_mapper(keycloak_admin, github_tool_scope_id, "github-tool-aud", "github-tool")
-
-    # 3. github-full-access scope: optional scope for privileged access
-    print("\nCreating scope for privileged GitHub access...")
-    github_full_access_scope_id = get_or_create_client_scope(
-        keycloak_admin,
-        {
-            "name": "github-full-access",
-            "protocol": "openid-connect",
-            "attributes": {
-                "include.in.token.scope": "true",
-                "display.on.consent.screen": "true",
-            },
-        },
-    )
-
-    # ---------------------------------------------------------------
-    # Assign scopes at realm level
-    # ---------------------------------------------------------------
-    print("\n--- Assigning scopes ---")
-
-    # agent-spiffe-aud as realm default (all tokens get Agent's SPIFFE ID in audience)
-    try:
-        keycloak_admin.add_default_default_client_scope(agent_spiffe_scope_id)
-        print(f"Added '{scope_name}' as realm default scope.")
-    except Exception as e:
-        print(f"Note: Could not add '{scope_name}' as realm default: {e}")
-
-    # github-tool-aud as realm optional (available for token exchange requests)
-    try:
-        keycloak_admin.add_default_optional_client_scope(github_tool_scope_id)
-        print("Added 'github-tool-aud' as realm OPTIONAL scope.")
-    except Exception as e:
-        print(f"Note: Could not add 'github-tool-aud' as optional: {e}")
-
-    # github-full-access as realm optional (must be requested explicitly in token request)
-    try:
-        keycloak_admin.add_default_optional_client_scope(github_full_access_scope_id)
-        print("Added 'github-full-access' as realm OPTIONAL scope.")
-        print("  → Tokens will only include this scope when explicitly requested")
-        print("    via scope=github-full-access in the token request.")
-    except Exception as e:
-        print(f"Note: Could not add 'github-full-access' as optional: {e}")
-
-    # ---------------------------------------------------------------
-    # Add agent audience scope to the Kagenti UI client
-    # ---------------------------------------------------------------
-    # Keycloak only auto-assigns realm default scopes to NEW clients.
-    # The UI client was created during install (before this scope existed),
-    # so we must add it explicitly. Without this, the UI's tokens won't
-    # include the agent's SPIFFE ID in the audience, and AuthBridge will
-    # reject UI chat requests with "invalid audience".
-    #
-    # TODO: Remove this workaround once the client-registration sidecar
-    # handles this automatically (kagenti/kagenti-extensions#169).
-    print(f"\n--- Adding agent audience scope to UI client '{UI_CLIENT_ID}' ---")
-    ui_client_internal_id = keycloak_admin.get_client_id(UI_CLIENT_ID)
-    if ui_client_internal_id:
-        try:
-            keycloak_admin.add_client_default_client_scope(ui_client_internal_id, agent_spiffe_scope_id, {})
-            print(f"Added '{scope_name}' as default scope on client '{UI_CLIENT_ID}'.")
-            print("  → UI tokens will now include the agent's SPIFFE ID in audience.")
-            print("  → Users must log out and back in for the new scope to take effect.")
-        except Exception as e:
-            print(f"Note: Could not add scope to '{UI_CLIENT_ID}' client: {e}")
-    else:
-        print(
-            f"Warning: UI client '{UI_CLIENT_ID}' not found in realm "
-            f"'{KEYCLOAK_REALM}'. UI chat with this agent will require "
-            f"manually adding the '{scope_name}' scope to the UI client."
+            exist_ok=True,
         )
+        print(f"  Created user: {username} (password: {password})")
 
-    # ---------------------------------------------------------------
-    # Add token exchange scopes to the agent's client (if it exists)
-    # ---------------------------------------------------------------
-    # The agent's Keycloak client is created dynamically by the
-    # client-registration sidecar when the agent pod starts. If the
-    # client already exists (from a prior deployment), realm-level
-    # optional scopes added after client creation won't be inherited.
-    # Explicitly add the scopes so client_credentials grants with
-    # scope=github-tool-aud+github-full-access succeed.
-    print("\n--- Adding scopes to agent client (if registered) ---")
-    agent_internal_id = keycloak_admin.get_client_id(agent_spiffe_id)
-    if agent_internal_id:
-        # Add the agent's own audience scope as a default so tokens issued
-        # via client_credentials include the agent's SPIFFE ID in `aud`.
-        try:
-            keycloak_admin.add_client_default_client_scope(agent_internal_id, agent_spiffe_scope_id, {})
-            print(f"Added '{scope_name}' as default scope on agent client.")
-            print("  → client_credentials tokens will include the agent's SPIFFE ID in aud.")
-        except Exception as e:
-            print(f"Note: Could not add '{scope_name}' to agent client: {e}")
-
-        # Add token exchange scopes as optional so client_credentials grants
-        # with scope=github-tool-aud+github-full-access succeed.
-        for exchange_scope_name, exchange_scope_id in [
-            ("github-tool-aud", github_tool_scope_id),
-            ("github-full-access", github_full_access_scope_id),
-        ]:
+        if user_roles:
+            print (f"  Assigning roles to {username}: {', '.join(user_roles)}")
+            role_representations = [
+                admin.get_realm_role(r) for r in user_roles
+            ]
             try:
-                keycloak_admin.add_client_optional_client_scope(agent_internal_id, exchange_scope_id, {})
-                print(f"Added '{exchange_scope_name}' as optional scope on agent client.")
+                admin.assign_realm_roles(user_id, role_representations)
+                print(f"    Assigned roles: {', '.join(user_roles)}")
             except Exception as e:
-                print(f"Note: Could not add '{exchange_scope_name}' to agent client: {e}")
-    else:
-        print(
-            f"Agent client '{agent_spiffe_id}' not yet registered.\n"
-            f"  The scopes are realm-level defaults/optionals and will be inherited\n"
-            f"  when client-registration creates the client. If the agent was deployed\n"
-            f"  before this script, re-run it after the agent is running."
-        )
+                print(f"    Roles may already be assigned: {e}")
+        else:
+            print(f"    No roles assigned")
 
-    # ---------------------------------------------------------------
-    # Create demo users and assign the admin realm role
-    # ---------------------------------------------------------------
-    print("\n--- Creating demo users ---")
-    for user in DEMO_USERS:
-        print(f"\n  {user['username']}: {user['description']}")
-        get_or_create_user(keycloak_admin, user)
-
-    # The Kagenti backend uses the "admin" realm role for RBAC. Without
-    # it, users can log in but see no agents or tools in the UI.
-    print("\n--- Assigning 'admin' realm role to demo users ---")
-    try:
-        admin_role = keycloak_admin.get_realm_role("admin")
-    except KeycloakGetError:
-        admin_role = None
-    if admin_role:
-        for user in DEMO_USERS:
-            user_id = keycloak_admin.get_user_id(user["username"])
-            try:
-                keycloak_admin.assign_realm_roles(user_id, [admin_role])
-                print(f"Assigned 'admin' role to '{user['username']}'.")
-            except Exception as e:
-                print(f"Note: Could not assign 'admin' role to '{user['username']}' (might already have it): {e}")
-    else:
-        print(
-            "Warning: 'admin' realm role not found. Demo users will not "
-            "be able to see agents/tools in the UI. Ensure the Kagenti "
-            "platform is installed before running this script."
-        )
-
-    # ---------------------------------------------------------------
     # Summary
-    # ---------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("SETUP COMPLETE")
-    print("=" * 70)
-    print(
-        f"""
-Keycloak is configured for the GitHub Issue Agent + AuthBridge demo.
+    print("\n" + "=" * 60)
+    print("Demo realm setup complete!")
+    print("=" * 60)
+    print(f"\nKeycloak URL:  {KEYCLOAK_URL}")
+    print(f"Realm:         {REALM}")
+    print(f"Admin console: {KEYCLOAK_URL}/admin/master/console/#/{REALM}")
+    print("\nUsers (password format: username123):")
+    
+    # Build a mapping of realm roles to their composite client roles for display
+    composite_mappings = main_config.get('composite_role_mappings', {})
+    for user_config in users_config:
+        username = user_config['username']
+        user_roles = user_config.get('roles', [])
+        if user_roles:
+            # Show realm roles and their composite client roles
+            role_details = []
+            for realm_role in user_roles:
+                if realm_role in composite_mappings:
+                    client_roles = [f"{s['client']}-{s['role'].replace(s['client']+'-', '')}"
+                                   for s in composite_mappings[realm_role]]
+                    role_details.append(f"{realm_role} ({', '.join(client_roles)})")
+                else:
+                    role_details.append(realm_role)
+            print(f"  {username:8} ({', '.join(user_roles):15}) - roles: {', '.join(role_details)}")
+        else:
+            print(f"  {username:8} - roles: (none)")
 
-Created:
-  Realm:    {KEYCLOAK_REALM}
-  Clients:  github-tool (target audience for token exchange)
-  Scopes:   {scope_name} (realm DEFAULT - auto-adds Agent's SPIFFE ID to aud)
-            github-tool-aud (realm OPTIONAL - for exchanged tokens)
-            github-full-access (realm OPTIONAL - for privileged access)
-  Users:    alice (public access), bob (privileged access) — both with admin role
-
-Scope model:
-  github-full-access is OPTIONAL — it must be explicitly requested in the
-  token request (scope=github-full-access). To test:
-    - alice: request token WITHOUT github-full-access → PUBLIC_ACCESS_PAT
-    - bob:   request token WITH scope=github-full-access → PRIVILEGED_ACCESS_PAT
-
-Token flow:
-  1. UI gets token for user (aud includes Agent's SPIFFE ID via default scope)
-  2. UI sends request to Agent with token
-  3. AuthBridge validates inbound token (aud = Agent's SPIFFE ID)
-  4. Agent calls GitHub tool
-  5. AuthBridge exchanges token: aud={agent_spiffe_id} → aud=github-tool
-  6. GitHub tool validates exchanged token and uses appropriate PAT
-
-Next steps:
-  1. Deploy operator:    See https://github.com/kagenti/kagenti-operator for webhook setup
-  2. Apply ConfigMaps:   kubectl apply -f demos/github-issue/k8s/configmaps.yaml
-  3. Create PAT secret:  kubectl create secret generic github-tool-secrets -n {namespace} \\
-                           --from-literal=INIT_AUTH_HEADER="Bearer <PRIVILEGED_PAT>" \\
-                           --from-literal=UPSTREAM_HEADER_TO_USE_IF_IN_AUDIENCE="Bearer <PRIVILEGED_PAT>" \\
-                           --from-literal=UPSTREAM_HEADER_TO_USE_IF_NOT_IN_AUDIENCE="Bearer <PUBLIC_PAT>"
-  4. Deploy tool:        kubectl apply -f demos/github-issue/k8s/github-tool-deployment.yaml
-  5. Deploy agent:       kubectl apply -f demos/github-issue/k8s/git-issue-agent-deployment.yaml
-"""
-    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        config_file = "config.yaml"
+        policy_file = "policy.yaml"
+        main(config_file, policy_file)
+    except Exception as e:
+        import traceback
+        print(f"\nERROR: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+

@@ -61,4 +61,4 @@ data:
   routes.yaml: |
     - host: "github-tool-mcp"
       target_audience: "github-tool"
-      token_scopes: "openid github-tool-aud github-full-access"
+      token_scopes: "openid"

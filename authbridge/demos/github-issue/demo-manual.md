@@ -224,64 +224,14 @@ Once the webhook is deployed, create the namespace and apply the ConfigMaps:
 
 ```bash
 kubectl create namespace team1
-kubectl apply -f authbridge/demos/github-issue/k8s/configmaps-webhook.yaml -n team1
+kubectl apply -f authbridge/demos/webhook/k8s/configmaps-webhook.yaml -n team1
 ```
 
 > **Note:** If you want to use a different namespace, set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.
 
 ---
 
-## Step 2: Configure Keycloak
-
-Keycloak needs to be configured with the correct clients, scopes, and users for the
-token exchange flow between the agent and the GitHub tool.
-
-### Port-forward Keycloak (if needed)
-
-The setup script connects to Keycloak at `http://keycloak.localtest.me:8080`.
-If Keycloak is not already reachable at that address (e.g., via an ingress),
-start a port-forward in a separate terminal:
-
-```bash
-kubectl port-forward service/keycloak-service -n keycloak 8080:8080
-```
-
-### Run the setup script
-
-```bash
-cd authbridge
-
-# Create virtual environment (if not already done)
-python -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Run the Keycloak setup for this demo
-python demos/github-issue/setup_keycloak.py
-```
-
-Or with a custom namespace/service account:
-
-```bash
-python demos/github-issue/setup_keycloak.py --namespace myns --service-account mysa
-```
-
-This creates:
-
-| Resource | Name | Purpose |
-|----------|------|---------|
-| **Realm** | `kagenti` | Keycloak realm for the demo |
-| **Client** | `github-tool` | Target audience for token exchange |
-| **Scope** | `agent-team1-git-issue-agent-aud` | Realm DEFAULT — auto-adds Agent's SPIFFE ID to all tokens |
-| **Scope** | `github-tool-aud` | Realm OPTIONAL — for exchanged tokens targeting the tool |
-| **Scope** | `github-full-access` | Realm OPTIONAL — for privileged GitHub API access |
-| **User** | `alice` (password: `alice123`) | Regular user — public access |
-| **User** | `bob` (password: `bob123`) | Demo user — request with `scope=github-full-access` for privileged access |
-
----
-
-## Step 3: Apply Demo ConfigMaps
+## Step 2: Apply Demo ConfigMaps
 
 The Kagenti installer creates default ConfigMaps (`authbridge-config`,
 `spiffe-helper-config`, `envoy-config`) and the `keycloak-admin-secret` Secret
@@ -314,7 +264,7 @@ kubectl apply -f demos/github-issue/k8s/configmaps.yaml
 
 ---
 
-## Step 4: Create GitHub PAT Secret
+## Step 3: Create GitHub PAT Secret
 
 The GitHub tool needs PAT tokens to access the GitHub API. Create a Kubernetes secret
 with your tokens:
@@ -335,7 +285,7 @@ kubectl create secret generic github-tool-secrets -n team1 \
 
 ---
 
-## Step 5: Deploy the GitHub Tool
+## Step 4: Deploy the GitHub Tool
 
 Deploy the GitHub MCP tool as a target service. This deployment does **not** get
 AuthBridge injection (it is the target, not the caller):
@@ -348,10 +298,10 @@ kubectl wait --for=condition=available --timeout=120s deployment/github-tool -n 
 
 ---
 
-## Step 6: Deploy the GitHub Issue Agent
+## Step 5: Deploy the GitHub Issue Agent
 
 Deploy the agent with AuthBridge labels. The webhook will automatically inject
-the AuthBridge sidecars (spiffe-helper, client-registration, envoy-proxy) and the
+the AuthBridge sidecars (spiffe-helper, envoy-proxy) and the
 proxy-init init container:
 
 ```bash
@@ -374,12 +324,12 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent -o jsonpath='
 Expected output (with SPIFFE):
 
 ```txt
-agent spiffe-helper kagenti-client-registration envoy-proxy
+agent spiffe-helper envoy-proxy
 ```
 
 ---
 
-## Step 7: Validate the Deployment
+## Step 6: Validate the Deployment
 
 ### Check pod status
 
@@ -391,23 +341,8 @@ Expected output:
 
 ```
 NAME                               READY   STATUS    RESTARTS   AGE
-git-issue-agent-58768bdb67-xxxxx   4/4     Running   0          2m
+git-issue-agent-58768bdb67-xxxxx   3/3     Running   0          2m
 github-tool-7f8c9d6b44-yyyyy      1/1     Running   0          3m
-```
-
-### Check client registration
-
-```bash
-kubectl logs deployment/git-issue-agent -n team1 -c kagenti-client-registration
-```
-
-Expected:
-
-```
-SPIFFE credentials ready!
-Client ID (SPIFFE ID): spiffe://localtest.me/ns/team1/sa/git-issue-agent
-Created Keycloak client "spiffe://localtest.me/ns/team1/sa/git-issue-agent"
-Client registration complete!
 ```
 
 ### Check agent logs
@@ -465,6 +400,56 @@ ollama serve
 >   LLM_API_BASE="http://ollama.ollama.svc:11434" \
 >   OLLAMA_API_BASE="http://ollama.ollama.svc:11434"
 > ```
+
+---
+
+## Step 7: Configure Keycloak
+
+Keycloak needs to be configured with the correct clients, scopes, and users for the
+token exchange flow between the agent and the GitHub tool.
+
+### Port-forward Keycloak (if needed)
+
+The setup script connects to Keycloak at `http://keycloak.localtest.me:8080`.
+If Keycloak is not already reachable at that address (e.g., via an ingress),
+start a port-forward in a separate terminal:
+
+```bash
+kubectl port-forward service/keycloak-service -n keycloak 8080:8080
+```
+
+### Run the setup script
+
+```bash
+cd authbridge
+
+# Create virtual environment (if not already done)
+python -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Run the Keycloak setup for this demo
+python demos/github-issue/setup_keycloak.py
+```
+
+This creates:
+
+| Resource | Name | Purpose |
+|----------|------|---------|
+| **Realm** | `kagenti` | Keycloak realm for the demo |
+| **Client** | `spiffe://localtest.me/ns/team1/sa/git-issue-agent` | Agent client with github-agent role |
+| **Client** | `github-tool` | Target audience for token exchange |
+| **Client Role** | `github-agent` | Access role for the GitHub issue agent |
+| **Client Role** | `github-tool-aud` | Audience role for GitHub tool access |
+| **Client Role** | `github-full-access` | Full access role for GitHub tool operations |
+| **Scope** | `github-agent` | Client scope for agent access (DEFAULT for agent client) |
+| **Scope** | `github-tool-aud` | Client scope for tool audience (OPTIONAL for agent) |
+| **Scope** | `github-full-access` | Client scope for privileged access (OPTIONAL for agent) |
+| **Realm Role** | `regular` | Standard user access level |
+| **Realm Role** | `privileged` | Elevated user access level |
+| **User** | `alice` (password: `alice123`) | User with 'regular' realm role |
+| **User** | `bob` (password: `bob123`) | User with 'privileged' realm role |
 
 ---
 
@@ -802,20 +787,6 @@ kubectl delete pod test-client -n team1 --ignore-not-found
 ---
 
 ## Step 10: Access Control — Alice vs Bob
-
-<!-- WORKAROUND: Remove this note once kagenti-extensions#139 is implemented.
-     The full scope-forwarding feature in authbridge is required for this step to work
-     end-to-end. Until that lands, the exchanged token always includes github-full-access
-     (from the static token_scopes in the authproxy-routes ConfigMap).
-     Track: https://github.com/kagenti/kagenti-extensions/issues/139 -->
-
-> **Known limitation:** This step requires the authbridge scope forwarding feature
-> ([kagenti-extensions#139](https://github.com/kagenti/kagenti-extensions/issues/139)).
-> Currently, `token_scopes` in the `authproxy-routes` ConfigMap is static per-route, so
-> all exchanged tokens include `github-full-access` regardless of the original user's
-> scopes. Once scope forwarding is implemented, Alice's exchanged token will omit
-> `github-full-access` while Bob's will include it.
-
 This step demonstrates **scope-based access control**: two users with different
 privilege levels get different GitHub API access through the same agent.
 
@@ -826,14 +797,11 @@ privilege levels get different GitHub API access through the same agent.
 
 The flow:
 1. User authenticates with Keycloak using `password` grant
-2. Alice requests a token **without** `github-full-access`; Bob explicitly requests **with** it
-   (`github-full-access` is a realm OPTIONAL scope — Keycloak only includes it when the
-   token request contains `scope=openid github-full-access`)
-3. AuthBridge exchanges the token — once scope forwarding is implemented
-   ([#139](https://github.com/kagenti/kagenti-extensions/issues/139)), the exchanged
-   token will preserve the scope difference
-4. The GitHub tool checks for `REQUIRED_SCOPE` (`github-full-access`) in the exchanged token
-5. Tokens with the scope get the privileged PAT; tokens without get the public-only PAT
+2. Request is sent to Agent (on behalf of User) 
+3. Agent invokes Tool to perform its github task
+4. AuthBridge exchanges the token 
+5. The GitHub tool checks for `REQUIRED_SCOPE` (`github-full-access`) in the exchanged token
+6. Tokens with the scope get the privileged PAT; tokens without get the public-only PAT
 
 > **Prerequisite:** You need a **private** GitHub repository that the `PRIVILEGED_ACCESS_PAT`
 > can access but the `PUBLIC_ACCESS_PAT` cannot. Replace `<your-org/your-private-repo>`
@@ -871,8 +839,7 @@ echo "Client ID: $CLIENT_ID  Secret length: ${#CLIENT_SECRET}"
 
 ### 10c. Test as Alice (public access only)
 
-Alice authenticates with Keycloak using `password` grant **without** requesting the
-`github-full-access` scope. Her token only has the default scopes.
+Alice authenticates with Keycloak using `password` grant.
 
 ```bash
 ALICE_TOKEN=$(curl -s -X POST \
@@ -934,8 +901,7 @@ curl -s --max-time 300 \
 
 ### 10d. Test as Bob (privileged access)
 
-Bob authenticates with `scope=openid github-full-access`, explicitly requesting
-the privileged scope:
+Bob authenticates with Keycloak using `password` grant.
 
 ```bash
 BOB_TOKEN=$(curl -s -X POST \
@@ -943,7 +909,6 @@ BOB_TOKEN=$(curl -s -X POST \
   -d "grant_type=password" \
   -d "username=bob" \
   -d "password=bob123" \
-  -d "scope=openid github-full-access" \
   --data-urlencode "client_id=$CLIENT_ID" \
   --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
 
