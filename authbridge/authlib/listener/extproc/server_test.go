@@ -1068,7 +1068,7 @@ func TestSnapshotIdentity(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := snapshotIdentity(&pipeline.Context{Identity: tc.identity, Agent: tc.agent})
+			got := pipeline.SnapshotIdentity(&pipeline.Context{Identity: tc.identity, Agent: tc.agent})
 			if tc.want == nil {
 				if got != nil {
 					t.Errorf("got %+v, want nil", got)
@@ -1091,7 +1091,7 @@ func TestSnapshotIdentity(t *testing.T) {
 func TestSnapshotIdentity_ScopesDeepCopy(t *testing.T) {
 	// Mutating the source slice after snapshot must not mutate the event.
 	scopes := []string{"a", "b"}
-	id := snapshotIdentity(&pipeline.Context{Identity: stubIdentity{subject: "alice", scopes: scopes}})
+	id := pipeline.SnapshotIdentity(&pipeline.Context{Identity: stubIdentity{subject: "alice", scopes: scopes}})
 	scopes[0] = "x"
 	if id.Scopes[0] != "a" {
 		t.Errorf("snapshot scopes aliased original: got %v", id.Scopes)
@@ -1124,7 +1124,7 @@ func TestDeriveError(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := deriveError(tc.pctx)
+			got := pipeline.DeriveError(tc.pctx)
 			if tc.wantNil {
 				if got != nil {
 					t.Errorf("got %+v, want nil", got)
@@ -1176,11 +1176,11 @@ func TestRecordOutboundResponseSession_CapturesStatusAndError(t *testing.T) {
 }
 
 func TestDurationSince(t *testing.T) {
-	if d := durationSince(time.Time{}); d != 0 {
+	if d := pipeline.DurationSince(time.Time{}); d != 0 {
 		t.Errorf("zero StartedAt should yield 0, got %v", d)
 	}
 	start := time.Now().Add(-50 * time.Millisecond)
-	if d := durationSince(start); d < 50*time.Millisecond {
+	if d := pipeline.DurationSince(start); d < 50*time.Millisecond {
 		t.Errorf("elapsed = %v, want >= 50ms", d)
 	}
 }
@@ -1456,7 +1456,7 @@ func TestSnapshotPlugins_FiltersByEventSuffix(t *testing.T) {
 			Allowed: true, TokensLeft: 42,
 		},
 	}
-	out := snapshotPlugins(custom)
+	out := pipeline.SnapshotPlugins(custom)
 	if _, private := out["rate-limiter"]; !private {
 		// Key exists in out because the /event entry WAS promoted.
 		// Clarifying: we want exactly one entry, keyed "rate-limiter".

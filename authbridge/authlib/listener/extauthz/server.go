@@ -6,7 +6,6 @@ package extauthz
 import (
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -16,6 +15,7 @@ import (
 
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
@@ -91,7 +91,7 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 
 	newAuth := outPctx.Headers.Get("Authorization")
 	if newAuth != originalAuth {
-		return allowedWithToken(extractBearer(newAuth)), nil
+		return allowedWithToken(auth.ExtractBearer(newAuth)), nil
 	}
 	return allowed(), nil
 }
@@ -121,12 +121,6 @@ func mapToHTTPHeader(m map[string]string) http.Header {
 	return h
 }
 
-func extractBearer(authHeader string) string {
-	if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "bearer ") {
-		return authHeader[7:]
-	}
-	return ""
-}
 
 // deniedFromAction renders a pipeline Reject as an ext_authz CheckResponse
 // preserving the plugin's status, headers, and body. The flat

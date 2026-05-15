@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
@@ -107,7 +108,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	action := s.InboundPipeline.Run(r.Context(), pctx)
 	if action.Type == pipeline.Reject {
 		s.recordInboundReject(pctx, action)
-		writeRejection(w, action)
+		httpx.WriteRejection(w, action)
 		return
 	}
 
@@ -129,11 +130,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		// Snapshot-copy the protocol extension and use the shared helpers
+		// for plugin invocations / observability / identity. Mirrors what
+		// extproc does so request events don't pick up response-phase
+		// mutations on the same pctx.Extensions.A2A struct.
 		s.Sessions.Append(sid, pipeline.SessionEvent{
-			At:        time.Now(),
-			Direction: pipeline.Inbound,
-			Phase:     pipeline.SessionRequest,
-			A2A:       pctx.Extensions.A2A,
+			At:          time.Now(),
+			Direction:   pipeline.Inbound,
+			Phase:       pipeline.SessionRequest,
+			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+			Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Host:        pctx.Host,
 		})
 	}
 
@@ -178,12 +187,54 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.ResponseBody)))
 		resp.Header.Del("Content-Encoding")
 	}
+
+	// Rekey the default bucket → A2A contextId when the response
+	// reveals one. The first turn of an A2A conversation arrives
+	// without a contextId (the agent assigns it on response), so the
+	// inbound request + any outbound MCP/inference calls during
+	// processing land in `default`. Without rekey those events stay
+	// orphaned while only the response goes to the contextId bucket.
+	// Mirrors extproc.rekeyInboundSession.
+	if s.Sessions != nil && pctx.Extensions.A2A != nil &&
+		pctx.Extensions.A2A.SessionID != "" &&
+		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
+		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
+	}
+
+	// Mirror forwardproxy's response-phase event so abctl pairs every
+	// inbound request with a response row. Without this, A2A
+	// `message/stream` requests show up as orphan request events.
+	// SSE responses still get recorded — the body is whatever the
+	// pipeline saw at this point (may be empty for streamed bodies),
+	// but the status code and plugin invocations are always meaningful.
+	if s.Sessions != nil && pctx.Extensions.A2A != nil {
+		sid := pctx.Extensions.A2A.SessionID
+		if sid == "" {
+			sid = s.Sessions.ActiveSession()
+		}
+		if sid == "" {
+			sid = session.DefaultSessionID
+		}
+		s.Sessions.Append(sid, pipeline.SessionEvent{
+			At:          time.Now(),
+			Direction:   pipeline.Inbound,
+			Phase:       pipeline.SessionResponse,
+			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+			Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Host:        pctx.Host,
+			StatusCode:  resp.StatusCode,
+			Error:       pipeline.DeriveError(pctx),
+			Duration:    pipeline.DurationSince(pctx.StartedAt),
+		})
+	}
 	return nil
 }
 
 func (s *Server) errorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	if rErr, ok := err.(*responseRejectedError); ok {
-		writeRejection(w, rErr.action)
+		httpx.WriteRejection(w, rErr.action)
 		return
 	}
 	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
@@ -229,7 +280,7 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionDenied,
-		Invocations: pctx.Extensions.Invocations.FilteredByPhase(pipeline.InvocationPhaseRequest),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Host:        pctx.Host,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
@@ -241,40 +292,14 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 	s.Sessions.Append(sid, ev)
 }
 
-// writeRejection renders a pipeline Reject to the http.ResponseWriter,
-// preserving the plugin's status, headers, and body.
 // requestScheme derives the URL scheme for an incoming server-side
 // request. On server requests Go does not populate r.URL.Scheme (it's
 // only set for client-side / proxy requests where the full URL is on
 // the request line), so we read it from r.TLS instead: TLS present =>
-// https, absent => http.
-//
-// Contract note: this listener intentionally diverges from the
-// Context.Scheme godoc's "empty when undetermined" convention — it
-// always returns "http" or "https" based on r.TLS. The fallback is
-// confidently wrong when reverseproxy sits behind a TLS-terminating
-// upstream (LB, ingress): r.TLS is nil on the inner hop even though
-// the caller's actual scheme was https. Consumers that need the
-// caller's scheme in that topology should plumb X-Forwarded-Proto
-// once a trusted-upstream policy exists (not in this PR).
-//
-// Does not consult X-Forwarded-Proto. Honoring that header is only
-// safe when the upstream proxy is trusted; wiring a trust policy is
-// deferred until we have a concrete multi-hop deployment story.
+// https, absent => http. Reverse-proxy-specific helper.
 func requestScheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
 	}
 	return "http"
-}
-
-func writeRejection(w http.ResponseWriter, action pipeline.Action) {
-	status, headers, body := action.Violation.Render()
-	for k, vs := range headers {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
 }

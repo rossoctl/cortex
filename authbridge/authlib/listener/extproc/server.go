@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
@@ -207,7 +208,7 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 	// Widened gate (was: A2A == nil). Any of A2A / Auth / plugin-public
 	// Custom entries qualify. Keeps traffic with no protocol parser but
 	// meaningful auth state visible in the session stream.
-	plugins := snapshotPlugins(pctx.Extensions.Custom)
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && plugins == nil {
 		return
 	}
@@ -216,10 +217,10 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionRequest,
-		A2A:         snapshotA2A(pctx.Extensions.A2A),
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Plugins:     plugins,
-		Identity:    snapshotIdentity(pctx),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 	}
 	s.Sessions.Append(sid, ev)
@@ -254,9 +255,9 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionDenied,
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:     snapshotPlugins(pctx.Extensions.Custom),
-		Identity:    snapshotIdentity(pctx),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
@@ -264,7 +265,7 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 			Code:    code,
 			Message: message,
 		},
-		Duration: durationSince(pctx.StartedAt),
+		Duration: pipeline.DurationSince(pctx.StartedAt),
 	}
 	s.Sessions.Append(inboundSessionID(pctx), ev)
 }
@@ -307,9 +308,9 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionDenied,
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:     snapshotPlugins(pctx.Extensions.Custom),
-		Identity:    snapshotIdentity(pctx),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
@@ -317,58 +318,12 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 			Code:    code,
 			Message: message,
 		},
-		Duration: durationSince(pctx.StartedAt),
+		Duration: pipeline.DurationSince(pctx.StartedAt),
 	}
 	s.Sessions.Append(sid, ev)
 }
 
-// snapshotInvocations returns a shallow copy of the Invocations extension
-// filtered by phase. Plugins append to pctx.Extensions.Invocations as
-// both OnRequest and OnResponse fire; the full list lives there for
-// cross-phase inspection. At record time each SessionEvent should carry
-// only the invocations from its own phase, so request events don't
-// double-report request-phase entries AFTER the response phase has
-// already added its own. Request events pass InvocationPhaseRequest,
-// response events pass InvocationPhaseResponse, denied events pass
-// InvocationPhaseRequest (denial terminates the pass before response
-// runs). Returns nil when no matching entry exists, so the recording
-// gate can check for "no invocations on this phase" cleanly.
-//
-// Thin wrapper over (*Invocations).FilteredByPhase — kept as a named
-// function so recordXxxSession call sites stay grep-friendly.
-func snapshotInvocations(ext *pipeline.Invocations, phase pipeline.InvocationPhase) *pipeline.Invocations {
-	return ext.FilteredByPhase(phase)
-}
 
-// snapshotPlugins collects plugin-public observability events from
-// pctx.Extensions.Custom entries whose keys end in PluginEventSuffix.
-// Each matching value is json.Marshaled into the wire-form map under
-// the plugin name (suffix stripped). Marshal errors downgrade to slog
-// Debug and skip the entry rather than aborting recording — that keeps
-// a misbehaving plugin from taking out the whole session stream.
-func snapshotPlugins(custom map[string]any) map[string]json.RawMessage {
-	if len(custom) == 0 {
-		return nil
-	}
-	var out map[string]json.RawMessage
-	for k, v := range custom {
-		if !strings.HasSuffix(k, pipeline.PluginEventSuffix) {
-			continue
-		}
-		raw, err := json.Marshal(v)
-		if err != nil {
-			slog.Debug("session: skipping non-marshalable plugin event",
-				"key", k, "error", err)
-			continue
-		}
-		if out == nil {
-			out = make(map[string]json.RawMessage)
-		}
-		pluginName := strings.TrimSuffix(k, pipeline.PluginEventSuffix)
-		out[pluginName] = raw
-	}
-	return out
-}
 
 // recordInboundResponseSession appends a Phase:SessionResponse event for the
 // inbound direction. Called after RunResponse completes so the event carries
@@ -385,7 +340,7 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 	if s.Sessions == nil {
 		return
 	}
-	plugins := snapshotPlugins(pctx.Extensions.Custom)
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && plugins == nil {
 		return
 	}
@@ -394,14 +349,14 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionResponse,
-		A2A:         snapshotA2A(pctx.Extensions.A2A),
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
 		Plugins:     plugins,
-		Identity:    snapshotIdentity(pctx),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		StatusCode:  pctx.StatusCode,
-		Error:       deriveError(pctx),
+		Error:       pipeline.DeriveError(pctx),
 		Host:        pctx.Host,
-		Duration:    durationSince(pctx.StartedAt),
+		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
 	s.Sessions.Append(sid, ev)
 }
@@ -417,20 +372,20 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	plugins := snapshotPlugins(pctx.Extensions.Custom)
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionResponse,
-		MCP:         snapshotMCP(pctx.Extensions.MCP),
-		Inference:   snapshotInference(pctx.Extensions.Inference),
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
 		Plugins:     plugins,
-		Identity:    snapshotIdentity(pctx),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		StatusCode:  pctx.StatusCode,
-		Error:       deriveError(pctx),
+		Error:       pipeline.DeriveError(pctx),
 		Host:        pctx.Host,
-		Duration:    durationSince(pctx.StartedAt),
+		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
 	// Auth / Plugins alone qualify for recording; matches the widened
 	// gate in recordInboundSession so outbound denials and plugin-public
@@ -441,57 +396,8 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 	}
 }
 
-// snapshotIdentity copies Claims + Agent identity off pctx so the session event
-// stays valid after pctx is discarded. Returns nil when no identity information
-// is available (e.g., jwt-validation didn't run on this path).
-func snapshotIdentity(pctx *pipeline.Context) *pipeline.EventIdentity {
-	// Read identity via the pipeline.Identity interface. Whichever auth
-	// plugin ran (jwt-validation today; SAML / mTLS / custom later)
-	// published an adapter onto pctx.Identity — we don't need to know
-	// its concrete type to snapshot the subject/client/scopes.
-	if pctx.Identity == nil && pctx.Agent == nil {
-		return nil
-	}
-	id := &pipeline.EventIdentity{}
-	if pctx.Identity != nil {
-		id.Subject = pctx.Identity.Subject()
-		id.ClientID = pctx.Identity.ClientID()
-		if scopes := pctx.Identity.Scopes(); len(scopes) > 0 {
-			id.Scopes = append([]string(nil), scopes...)
-		}
-	}
-	if pctx.Agent != nil {
-		id.AgentID = pctx.Agent.WorkloadID
-	}
-	return id
-}
 
-// durationSince returns the elapsed time since StartedAt, or 0 when StartedAt
-// is zero (pctx constructed without wall-clock stamping, e.g. in unit tests).
-func durationSince(start time.Time) time.Duration {
-	if start.IsZero() {
-		return 0
-	}
-	return time.Since(start)
-}
 
-// deriveError constructs an EventError from response-side signals. Returns nil
-// for 2xx / no guardrail block / no parser error.
-func deriveError(pctx *pipeline.Context) *pipeline.EventError {
-	if pctx.Extensions.Security != nil && pctx.Extensions.Security.Blocked {
-		return &pipeline.EventError{
-			Kind:    "blocked",
-			Message: pctx.Extensions.Security.BlockReason,
-		}
-	}
-	if pctx.StatusCode >= 400 {
-		return &pipeline.EventError{
-			Kind: "backend_error",
-			Code: strconv.Itoa(pctx.StatusCode),
-		}
-	}
-	return nil
-}
 
 // rekeyInboundSession renames the DefaultSessionID bucket to the
 // server-assigned A2A contextId when the response reveals one, so events
@@ -516,16 +422,16 @@ func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	plugins := snapshotPlugins(pctx.Extensions.Custom)
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionRequest,
-		MCP:         snapshotMCP(pctx.Extensions.MCP),
-		Inference:   snapshotInference(pctx.Extensions.Inference),
-		Invocations: snapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Plugins:     plugins,
-		Identity:    snapshotIdentity(pctx),
+		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 	}
 	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
@@ -533,45 +439,8 @@ func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 	}
 }
 
-// snapshotA2A returns a shallow copy of ext. The record helpers attach
-// the snapshot to the SessionEvent rather than the live pointer so
-// response-phase mutations on pctx.Extensions.A2A (e.g. the parser
-// stamping the server-assigned contextId onto SessionID during OnResponse)
-// don't retroactively rewrite request-phase events that were already
-// appended. Slice fields are reused intentionally — they are only
-// assigned, never mutated in place, after the parser completes.
-func snapshotA2A(ext *pipeline.A2AExtension) *pipeline.A2AExtension {
-	if ext == nil {
-		return nil
-	}
-	c := *ext
-	return &c
-}
 
-// snapshotMCP returns a shallow copy of ext. Important for outbound
-// request events: the same pctx.Extensions.MCP pointer receives Result
-// or Err on the response side, so without snapshotting, the
-// already-recorded request event would display the future response's
-// result map.
-func snapshotMCP(ext *pipeline.MCPExtension) *pipeline.MCPExtension {
-	if ext == nil {
-		return nil
-	}
-	c := *ext
-	return &c
-}
 
-// snapshotInference returns a shallow copy of ext. Scalar response
-// fields (Completion, FinishReason, *Tokens) get assigned on the live
-// extension during OnResponse; without snapshotting, the request event's
-// view would contain the eventual response's token counts and completion.
-func snapshotInference(ext *pipeline.InferenceExtension) *pipeline.InferenceExtension {
-	if ext == nil {
-		return nil
-	}
-	c := *ext
-	return &c
-}
 
 func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer, headers *corev3.HeaderMap, body []byte) (*extprocv3.ProcessingResponse, *pipeline.Context) {
 	ctx := stream.Context()
@@ -605,7 +474,7 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 
 	newAuth := pctx.Headers.Get("Authorization")
 	if newAuth != originalAuth {
-		return replaceTokenResponse(extractBearer(newAuth)), pctx
+		return replaceTokenResponse(auth.ExtractBearer(newAuth)), pctx
 	}
 	return passResponse(), pctx
 }
@@ -642,7 +511,7 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 
 	newAuth := pctx.Headers.Get("Authorization")
 	if newAuth != originalAuth {
-		return withBodyMutation(replaceTokenBodyResponse(extractBearer(newAuth)), pctx), pctx
+		return withBodyMutation(replaceTokenBodyResponse(auth.ExtractBearer(newAuth)), pctx), pctx
 	}
 	return withBodyMutation(passBodyResponse(), pctx), pctx
 }
@@ -772,12 +641,6 @@ func headerMapToHTTP(headers *corev3.HeaderMap) http.Header {
 	return h
 }
 
-func extractBearer(authHeader string) string {
-	if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "bearer ") {
-		return authHeader[7:]
-	}
-	return ""
-}
 
 func requestBodyResponse() *extprocv3.ProcessingResponse {
 	return &extprocv3.ProcessingResponse{
