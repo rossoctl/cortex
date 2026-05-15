@@ -351,8 +351,8 @@ data:
     jwt_svid_file_mode = 0644
 EOF
 
-# 4. envoy-config ConfigMap (for envoy-proxy)
-# Copy from authbridge/demos/single-target/k8s/authbridge-deployment.yaml or use:
+# 4. envoy-config ConfigMap (for envoy-proxy in envoy-sidecar mode)
+# Copy from the kagenti-system release namespace, or use:
 kubectl get configmap envoy-config -n authbridge -o yaml | \\
   sed 's/namespace: authbridge/namespace: {namespace}/' | \\
   kubectl apply -f -

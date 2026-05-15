@@ -1149,7 +1149,7 @@ kubectl delete mutatingwebhookconfiguration kagenti-webhook-authbridge-mutating-
 - **UI Deployment**: See [demo-ui.md](demo-ui.md) for deploying via the Kagenti dashboard
 - **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
   JWT validation and outbound token exchange internals
-- **Multi-Target Demo**: See the [multi-target demo](../multi-target/demo.md) for
+- **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
 - **Access Policies**: See the [access policies proposal](../../PROPOSAL-access-policies.md)
   for role-based delegation control

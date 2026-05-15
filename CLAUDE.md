@@ -47,7 +47,7 @@ kagenti-extensions/
 │   ├── authproxy/            #   iptables init container + standalone quickstart
 │   │   ├── quickstart/       #     Standalone demo (no SPIFFE)
 │   │   └── k8s/              #     Standalone K8s manifests
-│   ├── demos/                #   Demo scenarios (weather-agent, github-issue, webhook, single-target, multi-target)
+│   ├── demos/                #   Demo scenarios (weather-agent, github-issue, webhook, token-exchange-routes, mcp-parser)
 │   └── keycloak_sync.py      #   Declarative Keycloak sync tool
 ├── tests/                    # Python tests (keycloak_sync)
 ├── .github/
@@ -242,7 +242,7 @@ cd authbridge/authproxy && make build-images
    - **Getting started**: `authbridge/demos/weather-agent/demo-ui.md` (inbound validation, UI deployment)
    - **Full flow**: `authbridge/demos/github-issue/demo-ui.md` (token exchange + scope-based access)
    - **Webhook internals**: `authbridge/demos/webhook/README.md`
-   - **Manual deployment**: `authbridge/demos/single-target/demo.md`
+   - **Routes config reference**: `authbridge/demos/token-exchange-routes/README.md` (single + multi-target route patterns)
 
 ### Adding a New Component Image to CI
 

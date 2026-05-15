@@ -19,17 +19,9 @@ more AuthBridge capabilities.
 | **[Weather Agent (advanced)](weather-agent/demo-ui-advanced.md)** | Intermediate | Inbound on agent **and** tool, outbound token exchange, ingress JWT verification on the tool | [kubectl + script](weather-agent/demo-ui-advanced.md#automated-deploy-and-verify-ci-oriented) |
 | **[GitHub Issue Agent](github-issue/demo.md)** | Intermediate | Inbound validation + outbound token exchange + scope-based access control | [UI](github-issue/demo-ui.md) or [Manual](github-issue/demo-manual.md) |
 | **[Webhook](webhook/README.md)** | Intermediate | Webhook-based sidecar injection with auth-target demo app | Manual |
-| ~~**[Single Target](single-target/demo.md)**~~ ⚠️ **(broken — see below)** | Advanced | Manual AuthBridge deployment (no webhook) with SPIFFE identity | Manual |
-| ~~**[Multi-Target](multi-target/demo.md)**~~ ⚠️ **(broken — see below)** | Advanced | Route-based token exchange to multiple target services | Manual |
-
-> **⚠️ Single Target / Multi-Target demos are currently broken** after
-> kagenti-extensions#411. The YAMLs use the pre-#411 multi-sidecar pattern
-> (separate `envoy-proxy`, `authbridge-light`, `client-registration`, and
-> `spiffe-helper` containers) with images that no longer publish — applying
-> them yields ImagePullBackOff. They need migration to the combined sidecar
-> shape (one `authbridge` / `authbridge-envoy` container) before they're
-> usable again. Use the **Webhook** or **Weather Agent** demos in the
-> meantime.
+| **[Token-Exchange Routes](token-exchange-routes/README.md)** | Reference | How to write `authproxy-routes` for single- and multi-target token exchange | Configuration only |
+| **[MCP Parser Plugin](mcp-parser/README.md)** | Reference | Enable the `mcp-parser` plugin to surface tool calls / resource reads in session events | Configuration only |
+| **[abctl Walkthrough](weather-agent/demo-with-abctl.md)** | Reference | Watch the AuthBridge plugin pipeline live with the `abctl` TUI | Tooling only |
 
 ## Recommended Path
 
@@ -45,9 +37,11 @@ more AuthBridge capabilities.
    transparently exchanges tokens when the agent calls the GitHub tool, with
    scope-based access control (Alice vs Bob).
 
-3. **[Multi-Target](multi-target/demo.md)** — Advanced routing with per-host
-   token exchange configuration. Shows how a single agent can communicate with
-   multiple target services, each requiring different audience tokens.
+3. **[Token-Exchange Routes](token-exchange-routes/README.md)** — Reference
+   for the `authproxy-routes` ConfigMap. Covers both single-target (one
+   route) and multi-target (one agent → multiple tools, each with its own
+   audience) patterns. Configuration-only — pair with one of the deployment
+   demos above for a working stack.
 
 ## What Each Demo Covers
 
@@ -82,17 +76,25 @@ more AuthBridge capabilities.
 - Tests inbound validation and outbound token exchange end-to-end
 - Good for understanding the injection labels and ConfigMap requirements
 
-### Single Target
-- Manual deployment without the webhook (all sidecars in the YAML)
-- SPIFFE-based identity with SPIRE
-- Single agent → single target with token exchange
-- Good for understanding AuthBridge internals
+### Token-Exchange Routes (Configuration Reference)
+- How AuthBridge resolves the request `Host` header to a route entry
+- ConfigMap shape for `authproxy-routes` — fields, glob patterns, ordering
+- Single-target example (one route)
+- Multi-target example (multiple routes, one agent → multiple tools)
+- Mixing exchange and passthrough; tightening to `default_policy: exchange`
+- Troubleshooting: `Host` mismatches, missing scopes, audience errors
 
-### Multi-Target
-- Route-based token exchange using `authproxy-routes` ConfigMap
-- One agent communicating with multiple target services
-- Each target gets a token with the correct audience
-- Uses `keycloak_sync.py` for declarative scope management
+### MCP Parser Plugin (Configuration Reference)
+- How to enable the `mcp-parser` outbound plugin
+- Surfaces MCP tool calls / resource reads / prompt invocations in
+  session events for `abctl` and the `:9094` API
+- Required `allow_mode_override: true` on the outbound ext_proc filter
+  in envoy-sidecar mode
+
+### abctl Walkthrough (Tooling Reference)
+- Run the `abctl` TUI against the weather-agent's session API
+- See inbound JWT validation → protocol parsers → outbound exchange
+  → LLM inference → response, paired live
 
 ## Prerequisites
 

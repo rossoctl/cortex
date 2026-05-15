@@ -2,7 +2,7 @@
 
 AuthBridge provides **secure, transparent token management** for Kubernetes workloads. It combines automatic [client registration](./client-registration/) with [token exchange](./authproxy/) capabilities, enabling zero-trust authentication flows with [SPIFFE/SPIRE](https://spiffe.io) integration.
 
-> **📘 Looking to run the demo?** See the [Single-Target Demo](./demos/single-target/demo.md) or [Multi-Target Demo](./demos/multi-target/demo.md) for step-by-step instructions.
+> **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [Webhook](./demos/webhook/README.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
 
 ## Deployment Modes
 
@@ -349,8 +349,7 @@ The easiest way to get all prerequisites is to use the [Kagenti Ansible installe
 - **[GitHub Issue Agent Demo](./demos/github-issue/demo.md)** - End-to-end demo with the real GitHub Issue Agent and GitHub MCP Tool, showing transparent token exchange via AuthBridge
   - [Manual deployment](./demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
   - [UI deployment](./demos/github-issue/demo-ui.md) — import agent and tool via the Kagenti dashboard
-- **[Single-Target Demo](./demos/single-target/demo.md)** - Basic token exchange to one target service (manual deployment)
-- **[Multi-Target Demo](./demos/multi-target/demo.md)** - Route-based token exchange to multiple targets
+- **[Token-Exchange Routes](./demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
 
 All demos cover configuring Keycloak, deploying, and testing.
 

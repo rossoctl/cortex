@@ -1,4 +1,4 @@
-# Multi-Target Demo Routes Configuration
+# Token-Exchange Routes — Multi-Target Example
 #
 # Each route maps a destination host to token exchange parameters.
 # Order matters - first match wins.

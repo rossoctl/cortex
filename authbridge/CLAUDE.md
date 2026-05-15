@@ -73,13 +73,12 @@ authbridge/
 ├── demos/                            # Demo scenarios with full setup
 │   ├── README.md                     #   Demo index (recommended starting order)
 │   ├── weather-agent/                #   Getting-started demo (inbound validation only)
-│   │   └── demo-ui.md
-│   ├── single-target/                #   Single agent → target (SPIFFE-based)
-│   │   ├── demo.md
-│   │   ├── setup_keycloak.py
-│   │   └── k8s/
-│   ├── multi-target/                 #   Multi-target with keycloak_sync
-│   │   └── k8s/
+│   │   ├── demo-ui.md
+│   │   ├── demo-ui-advanced.md       #   With token exchange + tool-side AuthBridge
+│   │   └── demo-with-abctl.md        #   Plugin-pipeline TUI walkthrough
+│   ├── token-exchange-routes/        #   Routes config reference (single + multi-target)
+│   │   ├── README.md
+│   │   └── routes.yaml
 │   ├── github-issue/                 #   GitHub integration demo
 │   │   ├── demo.md, demo-ui.md, demo-manual.md
 │   │   ├── setup_keycloak.py
@@ -192,22 +191,21 @@ Envoy config lives in `demos/webhook/k8s/configmaps-webhook.yaml` (the `envoy-co
 
 ## Demo Scenarios
 
-The `demos/` directory contains five demonstration scenarios (see `demos/README.md` for a recommended learning path):
+The `demos/` directory contains the following scenarios (see `demos/README.md` for a recommended learning path):
 
-- **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment).
+- **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment). `demo-ui-advanced.md` extends this with outbound token exchange and tool-side AuthBridge; `demo-with-abctl.md` is a plugin-pipeline tooling walkthrough.
 - **webhook/** -- Shows how to use the webhook (now part of [kagenti-operator](https://github.com/kagenti/kagenti-operator)) to automatically inject AuthBridge sidecars. Recommended starting point for webhook-based deployments.
-- **single-target/** -- Manual deployment demo showing agent → target communication with SPIFFE identity and token exchange.
-- **multi-target/** -- Dynamic scope assignment using `keycloak_sync.py` for agents communicating with multiple targets.
 - **github-issue/** -- External API integration (GitHub) with inbound validation, outbound token exchange, and scope-based access control. Available as UI or manual deployment.
+- **token-exchange-routes/** -- Configuration reference for the `authproxy-routes` ConfigMap. Covers single-target (one route) and multi-target (one agent → many tools) patterns. Pairs with one of the deployment demos for a full stack.
+- **mcp-parser/** -- Configuration reference for enabling the outbound `mcp-parser` plugin.
 
 ## Keycloak Setup Scripts
 
-There are **four** setup scripts for different demo scenarios:
+There are **three** setup scripts for different demo scenarios:
 
 | Script | Location | Use Case |
 |--------|----------|----------|
 | `setup_keycloak.py` | `authbridge/demos/webhook/` | Webhook-injected deployments (parameterized namespace/SA, creates realm, auth-target client, agent-spiffe-aud + auth-target-aud scopes, alice user) |
-| `setup_keycloak.py` | `authbridge/demos/single-target/` | Single-target SPIFFE demo (creates realm, auth-target client, agent-spiffe-aud + auth-target-aud scopes, alice user) |
 | `setup_keycloak.py` | `authbridge/demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
 | `setup_keycloak.py` | `authbridge/authproxy/quickstart/` | Standalone AuthProxy quickstart without SPIFFE (creates application-caller, authproxy, demoapp clients with per-client scope assignment) |
 
@@ -478,19 +476,17 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 5. **Virtualenv directory**: For local development you may create `authproxy/quickstart/venv/`, but it should be gitignored and is not committed to the repo.
 
-6. **Demo SPIFFE ID is hardcoded**: `demos/single-target/setup_keycloak.py` hardcodes `AGENT_SPIFFE_ID = "spiffe://localtest.me/ns/authbridge/sa/agent"`. Change this if using a different namespace/SA.
+6. **Admin credentials in ConfigMap**: `demos/webhook/k8s/configmaps-webhook.yaml` stores Keycloak admin credentials in a ConfigMap (not a Secret). This is for demo only -- production should use Kubernetes Secrets.
 
-7. **Admin credentials in ConfigMap**: `demos/webhook/k8s/configmaps-webhook.yaml` stores Keycloak admin credentials in a ConfigMap (not a Secret). This is for demo only -- production should use Kubernetes Secrets.
+7. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
 
-8. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
+8. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
 
-9. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
+9. **Route host patterns must match HTTP Host header**: The `host` field in `authproxy-routes` is matched against the HTTP `Host` header, which is set by the HTTP client from the URL hostname. For in-cluster calls, this is the **short Kubernetes service name** from `MCP_URL` (e.g., `github-tool-mcp`), not the FQDN. Using the wrong pattern (e.g., `*.github-issue-tool*.svc.cluster.local`) will silently fall through to the default passthrough policy.
 
-10. **Route host patterns must match HTTP Host header**: The `host` field in `authproxy-routes` is matched against the HTTP `Host` header, which is set by the HTTP client from the URL hostname. For in-cluster calls, this is the **short Kubernetes service name** from `MCP_URL` (e.g., `github-tool-mcp`), not the FQDN. Using the wrong pattern (e.g., `*.github-issue-tool*.svc.cluster.local`) will silently fall through to the default passthrough policy.
+10. **Keycloak scope assignment for dynamically registered clients**: When `client-registration` auto-registers an agent as a Keycloak client, the client may not inherit all necessary scopes. The agent's own audience scope (e.g., `agent-team1-git-issue-agent-aud`) must be a **default** client scope for inbound JWT audience validation to work. Token exchange scopes (e.g., `github-tool-aud`, `github-full-access`) must be **optional** client scopes for `client_credentials` grants with explicit `scope=` to succeed. Re-run the demo's `setup_keycloak.py` after the agent is deployed to assign these scopes to the registered client.
 
-11. **Keycloak scope assignment for dynamically registered clients**: When `client-registration` auto-registers an agent as a Keycloak client, the client may not inherit all necessary scopes. The agent's own audience scope (e.g., `agent-team1-git-issue-agent-aud`) must be a **default** client scope for inbound JWT audience validation to work. Token exchange scopes (e.g., `github-tool-aud`, `github-full-access`) must be **optional** client scopes for `client_credentials` grants with explicit `scope=` to succeed. Re-run the demo's `setup_keycloak.py` after the agent is deployed to assign these scopes to the registered client.
-
-12. **Outbound passthrough is the safe default**: The `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, which means outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) passes through without token exchange. If this were set to `exchange`, all outbound HTTP calls would attempt token exchange and fail for non-Keycloak destinations.
+11. **Outbound passthrough is the safe default**: The `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, which means outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) passes through without token exchange. If this were set to `exchange`, all outbound HTTP calls would attempt token exchange and fail for non-Keycloak destinations.
 
 ## DCO Sign-Off (Mandatory)
 

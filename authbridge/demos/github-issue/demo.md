@@ -78,6 +78,6 @@ Common names used by both:
 
 - [All Demos](../README.md) — index of all AuthBridge demos
 - [Weather Agent Demo](../weather-agent/demo-ui.md) — simpler getting-started demo (no token exchange)
-- [Multi-Target Demo](../multi-target/demo.md) — route-based token exchange to multiple tools
+- [Token-Exchange Routes](../token-exchange-routes/README.md) — route-based token exchange to multiple tools
 - [Access Policies Proposal](../../PROPOSAL-access-policies.md) — role-based delegation control
 - [AuthBridge Overview](../../README.md) — architecture and design

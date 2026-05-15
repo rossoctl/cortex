@@ -787,6 +787,6 @@ kubectl delete namespace team1
   outbound token exchange, scope-based access control, and Alice vs Bob scenarios
 - **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
   JWT validation and outbound token exchange internals
-- **Multi-Target Demo**: See the [multi-target demo](../multi-target/demo.md) for
+- **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
 - **AuthBridge Overview**: See the [AuthBridge README](../../README.md) for architecture details
