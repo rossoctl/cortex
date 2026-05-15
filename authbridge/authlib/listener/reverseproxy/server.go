@@ -122,6 +122,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del("Content-Encoding")
 	}
 
+	// Inbound recording is gated on A2A by design: reverseproxy is the
+	// A2A-only listener (its session keying and rekey logic are A2A-specific
+	// — see modifyResponse). Forwardproxy widens the analogous gate to
+	// cover MCP/Inference/Invocations/plugins because outbound traffic is
+	// not A2A-only. A non-A2A inbound, or an A2A request that fails to
+	// parse, is intentionally not recorded here.
 	if s.Sessions != nil && pctx.Extensions.A2A != nil {
 		sid := pctx.Extensions.A2A.SessionID
 		if sid == "" {
@@ -300,7 +306,20 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 // request. On server requests Go does not populate r.URL.Scheme (it's
 // only set for client-side / proxy requests where the full URL is on
 // the request line), so we read it from r.TLS instead: TLS present =>
-// https, absent => http. Reverse-proxy-specific helper.
+// https, absent => http.
+//
+// Contract note: this listener intentionally diverges from the
+// Context.Scheme godoc's "empty when undetermined" convention — it
+// always returns "http" or "https" based on r.TLS. The fallback is
+// confidently wrong when reverseproxy sits behind a TLS-terminating
+// upstream (LB, ingress): r.TLS is nil on the inner hop even though
+// the caller's actual scheme was https. Consumers that need the
+// caller's scheme in that topology should plumb X-Forwarded-Proto
+// once a trusted-upstream policy exists (not in this PR).
+//
+// Does not consult X-Forwarded-Proto. Honoring that header is only
+// safe when the upstream proxy is trusted; wiring a trust policy is
+// deferred until we have a concrete multi-hop deployment story.
 func requestScheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
