@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
         with:
-          go-version-file: authbridge/authproxy/go.mod
+          go-version-file: authbridge/authlib/go.mod
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
@@ -39,32 +39,6 @@ jobs:
         continue-on-error: true
         env:
           SKIP: ai-assisted-by-trailer
-
-  go-ci:
-    name: Go CI
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: authbridge/authproxy
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
-        with:
-          go-version-file: authbridge/authproxy/go.mod
-          cache-dependency-path: authbridge/authproxy/go.sum
-
-      - name: Lint
-        run: |
-          go fmt ./...
-          go vet ./...
-
-      - name: Build
-        run: go build -v ./...
-
-      - name: Test
-        run: go test -v -race -cover ./...
 
   go-ci-authlib:
     name: Go CI (authlib)
@@ -93,24 +67,31 @@ jobs:
         run: go test -v -race -cover ./...
 
   go-ci-authbridge-cmd:
-    name: Go CI (authbridge cmd)
+    name: Go CI (authbridge ${{ matrix.binary }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        binary:
+          - authbridge-proxy
+          - authbridge-envoy
+          - authbridge-lite
     defaults:
       run:
-        working-directory: authbridge/cmd/authbridge
+        working-directory: authbridge/cmd/${{ matrix.binary }}
     env:
-      # Disable go.work — the workspace at authbridge/ includes ./authproxy
-      # which would pull in that module's dependencies. The replace directive
-      # in go.mod handles the authlib dependency for CI builds.
+      # Disable go.work so each cmd/* module resolves authlib via its own
+      # `replace` directive in go.mod (the workspace would otherwise pull
+      # all sibling modules in and slow down CI).
       GOWORK: "off"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
         with:
-          go-version-file: authbridge/cmd/authbridge/go.mod
-          cache-dependency-path: authbridge/cmd/authbridge/go.sum
+          go-version-file: authbridge/cmd/${{ matrix.binary }}/go.mod
+          cache-dependency-path: authbridge/cmd/${{ matrix.binary }}/go.sum
 
       - name: Lint
         run: |

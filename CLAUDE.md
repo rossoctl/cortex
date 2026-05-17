@@ -30,18 +30,28 @@ kagenti-extensions/
 │   │   ├── routing/          #     Host-to-audience router
 │   │   ├── auth/             #     HandleInbound + HandleOutbound composition
 │   │   └── config/           #     Mode presets, YAML config, validation
-│   ├── cmd/authbridge/       #   Unified binary — 3 modes, 1 codebase
-│   │   ├── listener/         #     Protocol adapters (ext_proc, ext_authz, forward/reverse proxy)
-│   │   ├── entrypoint.sh     #     Envoy + authbridge process supervision
-│   │   └── Dockerfile        #     Combined Envoy + authbridge image
-│   ├── authproxy/            #   Auth proxy support files and demos
-│   │   ├── quickstart/       #     Standalone demo (no SPIFFE)
-│   │   └── k8s/              #     Standalone K8s manifests
-│   ├── client-registration/  #   Keycloak auto-registration (Python)
-│   ├── spiffe-helper/        #   SPIFFE helper Dockerfile (fetches JWT-SVIDs from SPIRE)
-│   ├── demos/                #   Demo scenarios (weather-agent, github-issue, webhook, single-target, multi-target)
+│   ├── cmd/authbridge-proxy/ #   proxy-sidecar mode (default): HTTP forward + reverse
+│   │   │                     #   proxies, full plugin set including parsers
+│   │   ├── main.go
+│   │   ├── Dockerfile        #     proxy-sidecar combined image
+│   │   └── entrypoint.sh
+│   ├── cmd/authbridge-envoy/ #   envoy-sidecar mode: ext_proc gRPC server, full plugin set
+│   │   ├── main.go
+│   │   ├── Dockerfile        #     envoy-sidecar combined image
+│   │   └── entrypoint.sh
+│   ├── cmd/authbridge-lite/  #   proxy-sidecar mode, lite plugin set (no parsers)
+│   │   │                     #   for size-optimized deployments
+│   │   ├── main.go
+│   │   ├── Dockerfile        #     proxy-sidecar lite combined image
+│   │   └── entrypoint.sh
+│   ├── proxy-init/           #   iptables init container (envoy-sidecar mode only)
+│   │   ├── init-iptables.sh
+│   │   ├── Dockerfile.init
+│   │   ├── Makefile
+│   │   └── README.md
+│   ├── demos/                #   Demo scenarios (weather-agent, github-issue, token-exchange-routes, mcp-parser)
 │   └── keycloak_sync.py      #   Declarative Keycloak sync tool
-├── tests/                    # Python tests (client-registration, keycloak_sync)
+├── tests/                    # Python tests (keycloak_sync)
 ├── .github/
 │   ├── workflows/            # CI/CD (ci.yaml, build.yaml, security-scans, scorecard, spellcheck)
 │   └── ISSUE_TEMPLATE/       # Bug report, feature request, epic templates
@@ -51,85 +61,88 @@ kagenti-extensions/
 
 ## Major Components
 
-### 1. AuthBridge Unified Binary (Go)
+### 1. AuthBridge Binaries (Go)
 
-A **single binary** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693), supporting three deployment modes.
+**Three mode-specific binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). Each binary is hardcoded to its deployment shape; mode is no longer selected at runtime.
 
-**Location:** `authbridge/cmd/authbridge/`
-**Library:** `authbridge/authlib/`
+**Library:** `authbridge/authlib/` (shared)
 **Language:** Go 1.24
 **Detailed guide:** [`authbridge/CLAUDE.md`](authbridge/CLAUDE.md)
 
-**Core components:**
-- `cmd/authbridge/main.go` — Unified binary (ext_proc, ext_authz, forward/reverse proxy modes)
-- `authlib/` — Shared auth library (JWT validation, token exchange, caching, routing)
-- `authproxy/init-iptables.sh` — Traffic interception setup (Istio ambient mesh compatible)
-- `authproxy/Dockerfile.init` — Init container image
+**Binaries:**
+- `cmd/authbridge-proxy/` — proxy-sidecar mode (default): HTTP forward + reverse proxies, full plugin set (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser). No Envoy / no gRPC.
+- `cmd/authbridge-envoy/` — envoy-sidecar mode: ext_proc gRPC server hooked into Envoy, full plugin set.
+- `cmd/authbridge-lite/` — proxy-sidecar mode, lite plugin set (auth gates only, parsers dropped) for size-optimized deployments.
 
-**Ports:** 15123 (outbound), 15124 (inbound), 9090 (ext-proc/ext-authz), 9901 (admin), 9093 (stats and config)
+**Common:**
+- `authlib/` — shared auth library (JWT validation, token exchange, caching, routing, all listener implementations, all plugins).
+- `proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode only.
+- `proxy-init/Dockerfile.init` — proxy-init container image.
 
-### 2. Client Registration (Python)
+**Ports (envoy-sidecar):** 15123 (outbound), 15124 (inbound), 9090 (ext-proc), 9901 (admin)
+**Ports (proxy-sidecar / lite):** 8080 (reverse proxy), 8081 (forward proxy), 9091 (health), 9093 (stats), 9094 (session API)
 
-A Python script that **automatically registers Kubernetes workloads as Keycloak OAuth2 clients** using their SPIFFE identity.
+### 2. Client Registration
 
-**Location:** `authbridge/client-registration/`
-**Language:** Python 3.12
-**Detailed guide:** [`authbridge/CLAUDE.md`](authbridge/CLAUDE.md)
-
-**Flow:** Reads SPIFFE ID from JWT, registers client in Keycloak, writes secret to `/shared/client-secret.txt`
+Keycloak client registration for workloads is handled by the
+**kagenti-operator** (separate repo) — see `kagenti-operator/docs/operator-managed-client-registration.md`.
+The operator creates a Secret with `client-id.txt` + `client-secret.txt`
+and the webhook mounts it at `/shared/` in the workload pod. The
+in-pod `client-registration` sidecar that previously lived in this
+repo has been removed.
 
 ## How the Components Work Together
 
-The kagenti-operator (in a separate repo) injects AuthBridge sidecars into workload pods. Once injected, the sidecars work together:
+The kagenti-operator (in a separate repo) injects AuthBridge sidecars
+into workload pods. Default deployment shape (proxy-sidecar mode):
 
 ```
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  proxy-init (init) ─► iptables     │
-         │                                    │
-         │  spiffe-helper ──► SPIRE Agent     │
-         │       │ writes JWT SVID            │
-         │       ▼                            │
-         │  client-registration ──► Keycloak  │
-         │       │ writes client secret       │
-         │       ▼                            │
-         │  envoy-proxy (+ authbridge)        │
-         │    - Inbound: JWT validation       │
-         │    - Outbound: token exchange       │
+         │  spiffe-helper ──► SPIRE Agent     │  (in-container,
+         │       │ writes JWT SVID            │   conditional on
+         │       ▼                            │   SPIRE_ENABLED)
+         │  authbridge-proxy                  │
+         │    - Reverse proxy: inbound JWT    │
+         │    - Forward proxy: outbound       │
+         │      token exchange                │
          │       │                            │
          │  Your Application                  │
+         │    (HTTP_PROXY → forward proxy)    │
          └────────────────────────────────────┘
+
+         The operator also creates a Secret with client-id +
+         client-secret and mounts it at /shared/.
+
+         For envoy-sidecar mode, replace authbridge-proxy with
+         the authbridge-envoy image (Envoy + ext_proc + spiffe-helper)
+         and add a proxy-init container for iptables.
 ```
 
-## Unified AuthBridge Binary
+## AuthBridge Binaries
 
-The `cmd/authbridge/` directory contains a unified binary that replaces three separate
-codebases (go-processor, waypoint, klaviger) with a single binary supporting three modes:
+Three mode-specific binaries, one Dockerfile per binary:
 
-| Mode | Interception | Listeners | Use Case |
-|------|-------------|-----------|----------|
-| `envoy-sidecar` | Envoy iptables + ext_proc | gRPC ext_proc on :9090 | Sidecar per agent pod |
-| `waypoint` | Istio ambient + ext_authz | gRPC ext_authz + HTTP forward proxy | Shared service |
-| `proxy-sidecar` | Reverse proxy + forward proxy | HTTP reverse proxy + forward proxy | Sidecar without Envoy |
+| Binary | Mode | Listeners | Plugins |
+|--------|------|-----------|---------|
+| `cmd/authbridge-proxy/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
+| `cmd/authbridge-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/authbridge-lite/` | proxy-sidecar | HTTP forward + reverse proxies | auth-only (jwt-validation + token-exchange, no parsers) |
 
 **Go modules:**
-- `authbridge/authlib/` — pure library, no protocol deps (validation, exchange, cache, bypass, spiffe, routing, auth, config)
-- `authbridge/cmd/authbridge/` — binary + listeners, imports authlib + gRPC/Envoy deps
-- `authbridge/go.work` — workspace linking both modules for local development
+- `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins.
+- `authbridge/cmd/authbridge-{proxy,envoy,lite}/` — thin main packages that import authlib and start the listeners they need.
+- `authbridge/go.work` — workspace linking authlib + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation.
-Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility.
-
-**Image:** `ghcr.io/kagenti/kagenti-extensions/authbridge-unified` — Envoy + authbridge
-in one container (drop-in replacement for `envoy-with-processor`).
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility. The `mode` field in YAML must match the binary (each binary rejects mismatched modes at boot).
 
 ## CI/CD Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Go fmt, vet, build, test for authproxy, authlib, and cmd/authbridge; Python tests |
-| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for: client-registration, auth-proxy, proxy-init, authbridge, authbridge-unified, spiffe-helper, demo-app |
+| `ci.yaml` | PR to main/release-* | Pre-commit, Go fmt/vet/build/test for authlib and the cmd/authbridge-* binaries; Python tests |
+| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy-sidecar lite combined) |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files |
@@ -146,17 +159,25 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 
 ## Container Images
 
-All images are pushed to `ghcr.io/kagenti/kagenti-extensions/`:
+All images are pushed to `ghcr.io/kagenti/kagenti-extensions/` from
+`.github/workflows/build.yaml`:
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge-unified`** | **`authbridge/cmd/authbridge/Dockerfile`** | **Unified Envoy + authbridge binary (recommended)** |
-| `authbridge` | `authbridge/authproxy/Dockerfile.authbridge` | Combined sidecar (Envoy + authbridge + spiffe-helper + client-registration) |
-| `proxy-init` | `authbridge/authproxy/Dockerfile.init` | Alpine + iptables init container |
-| `client-registration` | `authbridge/client-registration/Dockerfile` | Python Keycloak client registrar |
-| `spiffe-helper` | `authbridge/spiffe-helper/Dockerfile` | Fetches SPIFFE credentials from SPIRE |
-| `auth-proxy` | `authbridge/authproxy/Dockerfile` | Example pass-through proxy (for demos) |
-| `demo-app` | `authbridge/authproxy/quickstart/demo-app/Dockerfile` | Demo target service |
+| **`authbridge`** | **`authbridge/cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar combined image (default mode): authbridge-proxy (full plugin set incl. parsers) + spiffe-helper. No Envoy.** |
+| `authbridge-envoy` | `authbridge/cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) + spiffe-helper |
+| `authbridge-lite` | `authbridge/cmd/authbridge-lite/Dockerfile` | proxy-sidecar lite combined image: authbridge-lite (auth gates only, parsers dropped) + spiffe-helper. Same listener layout as `authbridge`; not yet referenced by the operator's default config |
+| `proxy-init` | `authbridge/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar mode only) |
+
+In all three combined images, `spiffe-helper` is started conditionally
+based on the `SPIRE_ENABLED` env var (set by the operator when SPIRE
+identity is enabled for the workload).
+
+The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
+`spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
+been removed from CI (the auth-proxy / demo-app source is still in-tree
+for the standalone quickstart). Older release tags continue to publish
+the old images.
 
 ## Pre-commit Hooks
 
@@ -166,7 +187,7 @@ Hooks:
 - `trailing-whitespace`, `end-of-file-fixer`, `check-added-large-files` (max 1024KB), `check-yaml`, `check-json`, `check-merge-conflict`, `mixed-line-ending`
 - `ai-assisted-by-trailer` — Rewrites `Co-Authored-By` to `Assisted-By` (commit-msg stage)
 - `ruff`, `ruff-format` — Python linting/formatting on `authbridge/` files
-- `go-fmt`, `go-vet` — Runs on `authbridge/authproxy/` Go files
+- `go-fmt`, `go-vet` — Runs on `authbridge/proxy-init/` Go files
 
 ## Languages and Tech Stack
 
@@ -208,11 +229,25 @@ When the operator injects sidecars, the target namespace needs these resources:
 
 ### Building Everything Locally
 
-```bash
-# AuthProxy images
-cd authbridge/authproxy && make build-images
+The repo-root `local-build-and-test.sh` orchestrates every image
+the platform needs (`spiffe-idp-setup` from kagenti, plus
+`authbridge`, `authbridge-envoy`, `authbridge-lite`, `proxy-init`
+from this repo) and loads them into a Kind cluster:
 
-# Client registration (no separate build needed, uses Dockerfile directly)
+```bash
+KAGENTI_DIR=../kagenti ./local-build-and-test.sh
+```
+
+To build a single image directly:
+
+```bash
+# proxy-init (iptables init container, envoy-sidecar mode)
+cd authbridge/proxy-init && make docker-build-init
+
+# Combined sidecars (proxy-sidecar default / envoy-sidecar / lite)
+cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .
+cd authbridge && podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest .
+cd authbridge && podman build -f cmd/authbridge-lite/Dockerfile  -t authbridge-lite:latest  .
 ```
 
 ### Running the Full Demo
@@ -222,8 +257,7 @@ cd authbridge/authproxy && make build-images
 3. See the [AuthBridge demos index](authbridge/demos/README.md) for a recommended learning path:
    - **Getting started**: `authbridge/demos/weather-agent/demo-ui.md` (inbound validation, UI deployment)
    - **Full flow**: `authbridge/demos/github-issue/demo-ui.md` (token exchange + scope-based access)
-   - **Webhook internals**: `authbridge/demos/webhook/README.md`
-   - **Manual deployment**: `authbridge/demos/single-target/demo.md`
+   - **Routes config reference**: `authbridge/demos/token-exchange-routes/README.md` (single + multi-target route patterns)
 
 ### Adding a New Component Image to CI
 
@@ -263,9 +297,9 @@ cd authbridge/authproxy && make build-images
 
 ## Gotchas and Known Issues
 
-1. **One Go module:** The repo has a single Go module at `authbridge/authproxy/go.mod` (Go 1.24).
+1. **One Go module:** The repo has a single Go module at `authbridge/proxy-init/go.mod` (Go 1.24).
 
-2. **Avoid committing venvs:** Virtual environment directories (e.g. `authbridge/authproxy/quickstart/venv/`) should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
+2. **Avoid committing venvs:** Virtual environment directories (e.g. `authbridge/proxy-init/quickstart/venv/`) should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
 
 3. **Envoy config not embedded:** The envoy-proxy sidecar mounts `envoy-config` ConfigMap at `/etc/envoy`. This ConfigMap must exist in the target namespace before workloads are created.
 

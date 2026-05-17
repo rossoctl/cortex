@@ -465,3 +465,100 @@ func TestReverseProxy_SchemeFromTLS(t *testing.T) {
 		})
 	}
 }
+
+// a2aStampPlugin is a tiny inline plugin that simulates a2a-parser's
+// two-phase behavior:
+//   - OnRequest populates pctx.Extensions.A2A so the request-side
+//     session-event gate fires (no SessionID yet — first turn).
+//   - OnResponse stamps the server-assigned SessionID, mimicking
+//     extractSessionID(pctx.ResponseBody) in the real parser. This is
+//     what triggers the rekey path in modifyResponse.
+type a2aStampPlugin struct {
+	method      string
+	responseSID string // SessionID to stamp during OnResponse
+}
+
+func (p *a2aStampPlugin) Name() string { return "a2a-stamp" }
+func (p *a2aStampPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (p *a2aStampPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.Extensions.A2A = &pipeline.A2AExtension{Method: p.method}
+	pctx.Observe("matched_request")
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *a2aStampPlugin) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if pctx.Extensions.A2A != nil {
+		pctx.Extensions.A2A.SessionID = p.responseSID
+	}
+	pctx.Observe("matched_response")
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestReverseProxy_ModifyResponse_RekeyAndResponseEvent locks in the
+// behavior that an A2A first-turn (request without contextId, agent
+// assigns contextId in response) ends up with all the turn's events
+// merged into the contextId bucket, plus a SessionResponse event
+// recorded. Without rekey + the response-side append, abctl users see
+// orphan request rows in `default` and no inbound response row at all.
+func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	const ctxID = "ctx-1234"
+	stamp := &a2aStampPlugin{method: "message/stream", responseSID: ctxID}
+	p, err := plugintesting.BuildPipeline([]pipeline.Plugin{stamp})
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+
+	store := session.New(30*time.Minute, 100, 100)
+	srv, err := NewServer(pipeline.NewHolder(p), store, backend.URL)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	resp, err := http.DefaultClient.Get(proxy.URL + "/api")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	resp.Body.Close()
+
+	// After the response: the `default` bucket should be gone (rekeyed
+	// to ctxID) and the ctxID bucket should hold both events from this
+	// turn (request + response).
+	if v := store.View(session.DefaultSessionID); v != nil {
+		t.Errorf("default bucket still exists with %d events; expected rekey to %q", len(v.Events), ctxID)
+	}
+	view := store.View(ctxID)
+	if view == nil {
+		t.Fatalf("session %q not found; rekey did not run", ctxID)
+	}
+	if len(view.Events) != 2 {
+		t.Fatalf("session %q has %d events, want 2 (request + response)", ctxID, len(view.Events))
+	}
+
+	gotPhases := []pipeline.SessionPhase{view.Events[0].Phase, view.Events[1].Phase}
+	wantPhases := []pipeline.SessionPhase{pipeline.SessionRequest, pipeline.SessionResponse}
+	for i := range wantPhases {
+		if gotPhases[i] != wantPhases[i] {
+			t.Errorf("event %d phase = %v, want %v", i, gotPhases[i], wantPhases[i])
+		}
+	}
+
+	// Response event must carry the StatusCode + populated Invocations
+	// (the response-phase "observe" we appended in OnResponse) — those
+	// are the bits that previously dropped out.
+	respEvent := view.Events[1]
+	if respEvent.StatusCode != http.StatusOK {
+		t.Errorf("response StatusCode = %d, want 200", respEvent.StatusCode)
+	}
+	if respEvent.Invocations == nil || len(respEvent.Invocations.Inbound) == 0 {
+		t.Errorf("response event has no Invocations; expected one a2a-stamp observe entry")
+	}
+}

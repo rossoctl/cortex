@@ -22,53 +22,36 @@ jobs:
     strategy:
       matrix:
         image_config:
-          # Client Registration - registers workloads with Keycloak using SPIFFE ID
-          - name: client-registration
-            context: ./authbridge/client-registration
-            dockerfile: Dockerfile
-
-          # AuthProxy components - token exchange and traffic interception
-          - name: auth-proxy
-            context: ./authbridge/authproxy
-            dockerfile: Dockerfile
-
+          # iptables init container — used by envoy-sidecar mode to
+          # set up traffic redirection. Proxy-sidecar mode does not
+          # need this (HTTP_PROXY env var routing replaces iptables).
           - name: proxy-init
-            context: ./authbridge/authproxy
+            context: ./authbridge/proxy-init
             dockerfile: Dockerfile.init
 
-          # SPIFFE Helper - fetches SPIFFE credentials from SPIRE (UBI-based fork)
-          - name: spiffe-helper
-            context: ./authbridge/spiffe-helper
-            dockerfile: Dockerfile
-
-          # Combined AuthBridge sidecar (envoy + authbridge + spiffe-helper + client-registration)
-          - name: authbridge
-            context: ./authbridge
-            dockerfile: authproxy/Dockerfile.authbridge
-
-          # Unified AuthBridge binary (Envoy + authbridge in one container)
-          # Drop-in replacement for envoy-with-processor
-          # DEPRECATED: use authbridge-envoy instead
-          - name: authbridge-unified
-            context: ./authbridge
-            dockerfile: cmd/authbridge/Dockerfile
-
-          # AuthBridge with Envoy (envoy-sidecar mode)
-          # New canonical name for authbridge-unified
+          # AuthBridge envoy-sidecar combined image —
+          # Envoy + authbridge-envoy (ext_proc) + spiffe-helper.
+          # Spiffe-helper starts conditionally based on SPIRE_ENABLED.
           - name: authbridge-envoy
             context: ./authbridge
-            dockerfile: cmd/authbridge/Dockerfile
+            dockerfile: cmd/authbridge-envoy/Dockerfile
 
-          # Lightweight AuthBridge (Go binary only, no Envoy)
-          # Used for waypoint and proxy-sidecar modes
-          - name: authbridge-light
+          # AuthBridge proxy-sidecar combined image (default mode) —
+          # authbridge-proxy (full plugin set, includes parsers) +
+          # spiffe-helper. No Envoy, no gRPC. Spiffe-helper starts
+          # conditionally based on SPIRE_ENABLED.
+          - name: authbridge
             context: ./authbridge
-            dockerfile: cmd/authbridge/Dockerfile.light
+            dockerfile: cmd/authbridge-proxy/Dockerfile
 
-          # Demo application for testing
-          - name: demo-app
-            context: ./authbridge/authproxy/quickstart/demo-app
-            dockerfile: Dockerfile
+          # AuthBridge proxy-sidecar lite combined image —
+          # authbridge-lite (auth-only plugins, parsers dropped for
+          # binary size) + spiffe-helper. Same listener layout as the
+          # full proxy image; not yet referenced by the operator's
+          # default config.
+          - name: authbridge-lite
+            context: ./authbridge
+            dockerfile: cmd/authbridge-lite/Dockerfile
 
     steps:
       # 1. Checkout code

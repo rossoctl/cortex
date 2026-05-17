@@ -10,10 +10,10 @@
 # go-processor. If your install overrides `authBridge.clientAuthType`, `keycloak.publicUrl`,
 # or similar, merge those values into this manifest before applying.
 #
-# The advanced demo also adds explicit TOKEN_URL / JWKS_URL. Without TOKEN_URL, the ext_proc
-# build used with envoy-with-processor can log "inbound JWT validation disabled" and allow
-# unauthenticated requests to /mcp (HTTP 200). After applying, restart the weather
-# deployment so pods pick up the new environment variables.
+# The advanced demo also adds explicit TOKEN_URL / JWKS_URL. Without TOKEN_URL,
+# the AuthBridge ext_proc / forward-proxy can log "inbound JWT validation
+# disabled" and allow unauthenticated requests to /mcp (HTTP 200). After
+# applying, restart the weather deployment so pods pick up the new env vars.
 #
 # The host value must match the HTTP Host header the agent uses when calling
 # the MCP service — use the short Kubernetes Service name from MCP_URL.

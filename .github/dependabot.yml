@@ -6,9 +6,30 @@ updates:
     schedule:
       interval: weekly
 
-  # Go - AuthProxy
+  # Go - authlib (the shared library — pulled in by every cmd/* binary
+  # via replace directives, so updates here flow into everything).
   - package-ecosystem: gomod
-    directory: /authbridge/authproxy
+    directory: /authbridge/authlib
+    schedule:
+      interval: weekly
+
+  # Go - mode-specific binaries
+  - package-ecosystem: gomod
+    directory: /authbridge/cmd/authbridge-proxy
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /authbridge/cmd/authbridge-envoy
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /authbridge/cmd/authbridge-lite
+    schedule:
+      interval: weekly
+
+  # Go - abctl TUI
+  - package-ecosystem: gomod
+    directory: /authbridge/cmd/abctl
     schedule:
       interval: weekly
 
@@ -18,26 +39,8 @@ updates:
     schedule:
       interval: weekly
 
-  # Python - client-registration
-  - package-ecosystem: pip
-    directory: /authbridge/client-registration
-    schedule:
-      interval: weekly
-
-  # Docker - AuthProxy
+  # Docker - proxy-init (iptables init container, envoy-sidecar mode)
   - package-ecosystem: docker
-    directory: /authbridge/authproxy
-    schedule:
-      interval: weekly
-
-  # Docker - AuthProxy quickstart demo-app
-  - package-ecosystem: docker
-    directory: /authbridge/authproxy/quickstart/demo-app
-    schedule:
-      interval: weekly
-
-  # Docker - client-registration
-  - package-ecosystem: docker
-    directory: /authbridge/client-registration
+    directory: /authbridge/proxy-init
     schedule:
       interval: weekly

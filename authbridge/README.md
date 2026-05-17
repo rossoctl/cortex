@@ -1,39 +1,32 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. It combines automatic [client registration](./client-registration/) with [token exchange](./authproxy/) capabilities, enabling zero-trust authentication flows with [SPIFFE/SPIRE](https://spiffe.io) integration.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the mode-specific binaries (proxy-sidecar default, envoy-sidecar, lite) live under [`cmd/`](./cmd/). Keycloak client registration is handled by the [kagenti-operator](https://github.com/kagenti/kagenti-operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
-> **📘 Looking to run the demo?** See the [Single-Target Demo](./demos/single-target/demo.md) or [Multi-Target Demo](./demos/multi-target/demo.md) for step-by-step instructions.
+> **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](./demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
 
 ## Deployment Modes
 
 The [`cmd/authbridge/`](./cmd/authbridge/) directory contains a unified binary that supports three deployment modes in a single codebase. Two container images are published:
 
-| Image | Size | Contents |
-|-------|------|----------|
-| `authbridge-envoy` | 140 MB | Go binary + Envoy (UBI9-micro base) |
-| `authbridge-light` | 29 MB | Go binary only (distroless base) |
+| Image | Contents |
+|-------|----------|
+| `authbridge` | proxy-sidecar combined: authbridge-proxy binary + bundled spiffe-helper |
+| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper |
+| `authbridge-lite` | proxy-sidecar shape, auth-only plugins (no parsers) |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
-| `envoy-sidecar` (default) | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-| `proxy-sidecar` | `authbridge-light` | Lightweight proxy via HTTP_PROXY env | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
-| `waypoint` | `authbridge-light` | Shared proxy in Istio ambient mesh | Standalone deployment (not injected as sidecar) |
+| `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
+| `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
+| `lite` | `authbridge-lite` | Same shape as proxy-sidecar with auth-only plugins (no parsers) | For size-constrained deployments that don't need protocol-aware session events |
 
-The operator selects the mode via the `kagenti.io/authbridge-mode` annotation on the workload. Default is `envoy-sidecar`. See [kagenti-operator PR #295](https://github.com/kagenti/kagenti-operator/pull/295) for the implementation.
-
-### Image naming
-
-| Name | Status |
-|------|--------|
-| `authbridge-envoy` | Canonical name for the Envoy variant |
-| `authbridge-light` | Lightweight variant (no Envoy) |
-| `authbridge-unified` | Deprecated alias for `authbridge-envoy` |
+The kagenti-operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `kagenti.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See kagenti-operator#361.
 
 The shared auth library at [`authlib/`](./authlib/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`authlib/README.md`](./authlib/README.md) for package reference.
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. The `authbridge-envoy` image replaces the legacy `envoy-with-processor` in envoy-sidecar mode. The `authbridge-light` image is used for proxy-sidecar mode.
+The following describes the operator-injected sidecar deployment. After kagenti-extensions#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
 
 ### What AuthBridge Does
 
@@ -64,8 +57,10 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │                        │                                              │
 │                        ▼                                              │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │                   AuthProxy Sidecar                             │  │
-│  │                 (Envoy + Ext Proc)                              │  │
+│  │  AuthBridge Sidecar (combined image)                            │  │
+│  │  Container name = mode-dependent:                               │  │
+│  │    proxy-sidecar (default): authbridge-proxy                    │  │
+│  │    envoy-sidecar:           envoy-proxy                         │  │
 │  │                                                                 │  │
 │  │  INBOUND:  Validates JWT (signature + issuer via JWKS)          │  │
 │  │            Returns 401 Unauthorized if invalid                  │  │
@@ -75,15 +70,17 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │            ▲ outbound   │ inbound                                     │
 │            │ request    │ (validated)                                 │
 │            │            ▼                                             │
-│  ┌─────────┴────────────────────┐  ┌───────────────────────────────┐  │
-│  │         Your App             │  │  SPIFFE Helper                │  │
-│  │                              │  │  (provides SPIFFE creds)      │  │
-│  └──────────────────────────────┘  └───────────────────────────────┘  │
-│                                                                       │
-│  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │  client-registration (registers Workload with Keycloak)         │  │
+│  ┌─────────┴───────────────────────────────────────────────────────┐  │
+│  │  Your App                                                       │  │
+│  │  (spiffe-helper bundled inside the AuthBridge sidecar above,    │  │
+│  │   gated per-workload by SPIRE_ENABLED)                          │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────┘
+   ▲
+   │ Out-of-band: kagenti-operator's ClientRegistrationReconciler
+   │ creates the Keycloak client + a kagenti-keycloak-client-credentials
+   │ Secret. The webhook mounts that Secret into the AuthBridge sidecar
+   │ at /shared/client-{id,secret}.txt — no in-pod registration sidecar.
                         │
                         │ Exchanged token (aud: target-service)
                         ▼
@@ -101,20 +98,18 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 
 ```mermaid
 flowchart TB
-    subgraph WorkloadPod["WORKLOAD POD (with AuthBridge sidecars)"]
-        subgraph Init["Init Container"]
+    subgraph WorkloadPod["WORKLOAD POD (with AuthBridge sidecar)"]
+        subgraph Init["Init Container (envoy-sidecar mode only)"]
             ProxyInit["proxy-init<br/>(iptables setup)"]
         end
         subgraph Containers["Containers"]
             App["Your Application"]
-            SpiffeHelper["SPIFFE Helper<br/>(provides SVID)"]
-            ClientReg["client-registration<br/>(registers with Keycloak)"]
-            subgraph Sidecar["AuthProxy Sidecar"]
-                AuthProxy["auth-proxy"]
-                Envoy["envoy-proxy"]
-                ExtProc["ext-proc"]
-            end
+            Sidecar["AuthBridge sidecar (combined image)<br/>name = mode-dependent:<br/>proxy-sidecar: authbridge-proxy<br/>envoy-sidecar: envoy-proxy<br/><br/>(spiffe-helper bundled inside,<br/>gated by SPIRE_ENABLED)"]
         end
+    end
+
+    subgraph Operator["kagenti-operator (kagenti-system)"]
+        ClientReg["ClientRegistration<br/>Reconciler"]
     end
 
     subgraph TargetPod["TARGET SERVICE POD"]
@@ -128,21 +123,18 @@ flowchart TB
 
     Caller["Caller<br/>(external)"]
 
-    SPIRE --> SpiffeHelper
-    SpiffeHelper --> ClientReg
-    ClientReg --> Keycloak
+    SPIRE --> Sidecar
+    ClientReg -->|"creates client + Secret"| Keycloak
+    ClientReg -.->|"Secret mounted at /shared/"| Sidecar
     Caller -->|"1. Get token"| Keycloak
-    Caller -->|"2. Pass token"| Envoy
-    Envoy -->|"3. Validate JWT (JWKS)"| ExtProc
-    ExtProc -->|"3a. Validation result"| Envoy
-    Envoy -->|"4. 401 if invalid"| Caller
-    Envoy -->|"5. Forward if valid"| App
-    App -->|"6. Request + Token"| Envoy
-    Envoy -->|"7. Token Exchange"| ExtProc
-    ExtProc -->|"8. Exchange with Keycloak"| Keycloak
-    Envoy -->|"9. Request + Exchanged Token"| Target
-    Target -->|"10. Response"| App
-    App -->|"11. Response"| Caller
+    Caller -->|"2. Pass token"| Sidecar
+    Sidecar -->|"3. Validate JWT (JWKS, returns 401 if invalid)"| Caller
+    Sidecar -->|"4. Forward if valid"| App
+    App -->|"5. Request + Token"| Sidecar
+    Sidecar -->|"6. Exchange via Keycloak"| Keycloak
+    Sidecar -->|"7. Request + Exchanged Token"| Target
+    Target -->|"8. Response"| App
+    App -->|"9. Response"| Caller
 
     style WorkloadPod fill:#e1f5fe
     style TargetPod fill:#e8f5e9
@@ -157,13 +149,19 @@ flowchart TB
 
 ### Workload Pod
 
-| Component | Type | Purpose |
-|-----------|------|---------|
-| `proxy-init` | init | Sets up iptables to intercept inbound and outbound traffic (excludes Keycloak port) |
-| `client-registration` | container | Registers workload with Keycloak using SPIFFE ID, saves credentials to `/shared/` |
-| `spiffe-helper` | container | Provides SPIFFE credentials (SVID) |
-| `Your App` | container | Your application; the demo uses a pass-through proxy as an example |
-| `AuthProxy Sidecar` | container | Composed of Envoy + external processing (`Ext Proc`) components (shown as separate nodes in diagrams): validates inbound JWTs (signature + issuer via JWKS, returns 401 if invalid) and exchanges outbound tokens (HTTP: token exchange via Ext Proc; HTTPS: TLS passthrough) |
+After kagenti-extensions#411 a workload pod has the application
+container plus a single combined AuthBridge sidecar. In
+envoy-sidecar mode it also has a one-shot `proxy-init` init
+container; in proxy-sidecar mode (the cluster default) it does
+not. `spiffe-helper` is bundled inside the sidecar image; client
+registration runs in the operator, not the pod.
+
+| Component | Type | Mode | Purpose |
+|-----------|------|------|---------|
+| `proxy-init` | init | envoy-sidecar only | Sets up iptables to intercept inbound and outbound traffic (excludes Keycloak port to avoid token-exchange loops) |
+| `Your App` | container | both | Your application |
+| `authbridge-proxy` | container | proxy-sidecar (default) | Combined sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers), bundled spiffe-helper gated by `SPIRE_ENABLED`. |
+| `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc + bundled spiffe-helper. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
 
 ### Target Service Pod
 
@@ -352,12 +350,11 @@ The easiest way to get all prerequisites is to use the [Kagenti Ansible installe
 
 ### Demos
 
-- **[Webhook Demo](./demos/webhook/README.md)** - Shows how the [kagenti-operator](https://github.com/kagenti/kagenti-operator) webhook automatically injects AuthBridge sidecars into your deployments (recommended starting point)
+- **[Weather Agent Demo](./demos/weather-agent/demo-ui.md)** - Recommended starting demo: shows how the [kagenti-operator](https://github.com/kagenti/kagenti-operator) webhook automatically injects the combined AuthBridge sidecar, with inbound JWT validation and outbound passthrough
 - **[GitHub Issue Agent Demo](./demos/github-issue/demo.md)** - End-to-end demo with the real GitHub Issue Agent and GitHub MCP Tool, showing transparent token exchange via AuthBridge
   - [Manual deployment](./demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
   - [UI deployment](./demos/github-issue/demo-ui.md) — import agent and tool via the Kagenti dashboard
-- **[Single-Target Demo](./demos/single-target/demo.md)** - Basic token exchange to one target service (manual deployment)
-- **[Multi-Target Demo](./demos/multi-target/demo.md)** - Route-based token exchange to multiple targets
+- **[Token-Exchange Routes](./demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
 
 All demos cover configuring Keycloak, deploying, and testing.
 
@@ -388,10 +385,14 @@ This creates target clients, audience scopes, and assigns scopes to the agent.
 
 ## Component Documentation
 
-- [Unified AuthBridge Binary](cmd/authbridge/README.md) - Single binary, three modes (recommended)
-- [authlib](authlib/README.md) - Shared auth building blocks (Go library)
-- [AuthProxy](authproxy/README.md) - Proxy-init, combined sidecar, demo app, and quickstart
-- [Client Registration](client-registration/README.md) - Automatic Keycloak client registration with SPIFFE
+- [authlib](authlib/README.md) — Shared auth building blocks (Go library)
+- [cmd/authbridge-proxy](cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
+- [cmd/authbridge-envoy](cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
+- [cmd/authbridge-lite](cmd/authbridge-lite/) — auth-only proxy-sidecar binary (no parsers)
+- [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
+- [docs/](docs/) — framework architecture and plugin author references
+
+Keycloak client registration is handled by the [kagenti-operator](https://github.com/kagenti/kagenti-operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.
 
 ## References
 

@@ -1,14 +1,12 @@
-// Package main is the envoy-sidecar authbridge binary: an ext_proc
-// gRPC server intended to run alongside Envoy in a sidecar (or as a
-// shared service hooked into Envoy's external_processor filter), with
-// the full plugin set compiled in (jwt-validation, token-exchange,
-// a2a-parser, mcp-parser, inference-parser).
+// Package main is the "lite" authbridge binary: proxy-sidecar mode
+// only (no Envoy), with jwt-validation + token-exchange as the only
+// plugins compiled in. Optimizes for binary size by dropping the
+// gRPC / envoy go-control-plane dependency tree and the
+// a2a/mcp/inference parser plugins.
 //
-// Mode is hardcoded to envoy-sidecar; YAML configs that specify a
-// different mode are rejected at boot. For proxy-sidecar mode (HTTP
-// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy. For a
-// size-optimized proxy-sidecar build with parsers dropped, use
-// cmd/authbridge-lite.
+// For full-featured proxy-sidecar deployments (with the parsers, so
+// abctl can render protocol-aware session events), use
+// cmd/authbridge-proxy. For envoy-sidecar mode, use cmd/authbridge-envoy.
 package main
 
 import (
@@ -17,19 +15,12 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
-
-	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/reflection"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
@@ -40,16 +31,13 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/sessionapi"
 
-	// Only the ext_proc listener is compiled in (no ext_authz, no
-	// HTTP proxies).
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/extproc"
+	// Only HTTP listeners are compiled in: no extproc/extauthz
+	// (no gRPC, no envoy types).
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
 
-	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for abctl.
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
+	// Only two plugins: drop the parsers and token-broker.
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
 
@@ -96,17 +84,21 @@ func main() {
 		log.Fatal("--config is required")
 	}
 
+	// This binary is hardcoded to proxy-sidecar. Rejecting other modes
+	// early gives operators a clear boot-time error instead of silently
+	// misbehaving (e.g., YAML says envoy-sidecar but binary can't
+	// serve ext_proc).
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if c.Mode != "" && c.Mode != config.ModeEnvoySidecar {
+		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-envoy supports only mode=%q (got %q); use cmd/authbridge for other modes",
-				config.ModeEnvoySidecar, c.Mode)
+				"authbridge-lite supports only mode=%q (got %q); use cmd/authbridge-envoy for envoy-sidecar mode",
+				config.ModeProxySidecar, c.Mode)
 		}
-		c.Mode = config.ModeEnvoySidecar
+		c.Mode = config.ModeProxySidecar
 		config.ApplyPreset(c)
 		if err := config.Validate(c); err != nil {
 			return nil, nil, nil, err
@@ -170,8 +162,16 @@ func main() {
 		slog.Info("session tracking disabled")
 	}
 
-	var grpcServers []*grpc.Server
-	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, cfg.Listener.ExtProcAddr))
+	var httpServers []*http.Server
+
+	// Proxy-sidecar: reverse proxy on the inbound path + forward proxy
+	// on the outbound path.
+	rpSrv, err := reverseproxy.NewServer(inboundH, sessions, cfg.Listener.ReverseProxyBackend)
+	if err != nil {
+		log.Fatalf("creating reverse proxy: %v", err)
+	}
+	httpServers = append(httpServers, startHTTPServer("reverse-proxy", rpSrv.Handler(), cfg.Listener.ReverseProxyAddr))
+	httpServers = append(httpServers, startHTTPServer("forward-proxy", forwardproxy.NewServer(outboundH, sessions).Handler(), cfg.Listener.ForwardProxyAddr))
 
 	statsProvider := func() *auth.Stats {
 		sources := plugins.CollectStats(inboundH.Load())
@@ -196,7 +196,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-envoy starting", "mode", cfg.Mode, "logLevel", logLevel.Level().String())
+	slog.Info("authbridge-lite starting", "mode", cfg.Mode, "logLevel", logLevel.Level().String())
 
 	go func() {
 		mux := http.NewServeMux()
@@ -228,12 +228,8 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
-	for _, srv := range grpcServers {
-		go func(s *grpc.Server) {
-			<-shutdownCtx.Done()
-			s.Stop()
-		}(srv)
-		srv.GracefulStop()
+	for _, srv := range httpServers {
+		srv.Shutdown(shutdownCtx)
 	}
 	statSrv.Shutdown(shutdownCtx)
 	if sessionAPISrv != nil {
@@ -248,24 +244,16 @@ func main() {
 	}
 }
 
-func startGRPCExtProc(inbound, outbound *pipeline.Holder, sessions *session.Store, addr string) *grpc.Server {
-	srv := grpc.NewServer()
-	extprocv3.RegisterExternalProcessorServer(srv, &extproc.Server{
-		InboundPipeline:  inbound,
-		OutboundPipeline: outbound,
-		Sessions:         sessions,
-	})
-	registerHealth(srv)
-	reflection.Register(srv)
-
+func startHTTPServer(name string, handler http.Handler, addr string) *http.Server {
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
-		lis, err := net.Listen("tcp", addr)
-		if err != nil {
-			log.Fatalf("ext_proc listen %s: %v", addr, err)
-		}
-		slog.Info("ext_proc gRPC listening", "addr", addr)
-		if err := srv.Serve(lis); err != nil {
-			log.Fatalf("ext_proc serve: %v", err)
+		slog.Info("HTTP server listening", "name", name, "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("%s serve: %v", name, err)
 		}
 	}()
 	return srv
@@ -281,10 +269,4 @@ func startStatServer(cfg *config.Config, cfgProvider observe.ConfigProvider, sta
 		}
 	}()
 	return srv
-}
-
-func registerHealth(srv *grpc.Server) {
-	healthSrv := health.NewServer()
-	healthpb.RegisterHealthServer(srv, healthSrv)
-	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 }

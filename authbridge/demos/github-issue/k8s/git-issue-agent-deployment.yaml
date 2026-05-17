@@ -1,12 +1,20 @@
 # GitHub Issue Agent Deployment with AuthBridge
 #
-# This deployment uses the kagenti-operator webhook to automatically inject AuthBridge sidecars:
-# - proxy-init (init container for iptables setup)
-# - spiffe-helper (SPIFFE credential fetcher) - only with kagenti.io/spire: enabled
-# - kagenti-client-registration (registers agent with Keycloak using SPIFFE ID)
-# - envoy-proxy (intercepts inbound traffic for JWT validation,
-#                outbound HTTP traffic for token exchange,
-#                outbound HTTPS traffic passed through as-is)
+# This deployment uses the kagenti-operator webhook to automatically inject
+# a single combined AuthBridge sidecar (post-kagenti-extensions#411). The exact
+# container shape depends on the resolved AuthBridge mode:
+# - proxy-sidecar (default): one container "authbridge-proxy" from the
+#   "authbridge" image. spiffe-helper is bundled inside; gated per-workload
+#   by SPIRE_ENABLED.
+# - envoy-sidecar: a "proxy-init" init container (iptables) plus one
+#   container "envoy-proxy" from the "authbridge-envoy" image (Envoy +
+#   ext_proc + bundled spiffe-helper).
+# Either way the sidecar handles inbound JWT validation, outbound token
+# exchange (HTTP), and HTTPS passthrough.
+#
+# Keycloak client registration is operator-managed (no in-pod sidecar);
+# the operator creates a kagenti-keycloak-client-credentials-<hash> Secret
+# and the webhook mounts it at /shared/client-{id,secret}.txt.
 #
 # The agent container:
 #   - Runs the A2A GitHub Issue Agent on port 8000

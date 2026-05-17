@@ -3,8 +3,6 @@ package plugins_test
 import (
 	"context"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,45 +45,6 @@ func TestBuiltinsRegistered(t *testing.T) {
 		if !gotSet[name] {
 			t.Errorf("built-in plugin %q missing from registry; got: %v", name, got)
 		}
-	}
-}
-
-// TestAuthbridgeCombinedYAML_Loads asserts that the in-repo default
-// config consumed by the combined sidecar image parses and produces
-// working pipelines. A future rename of any plugin default constant
-// that silently breaks the shipped image fails this test first.
-func TestAuthbridgeCombinedYAML_Loads(t *testing.T) {
-	yamlPath := filepath.Join("..", "..", "authproxy", "authbridge-combined.yaml")
-	if _, err := os.Stat(yamlPath); err != nil {
-		t.Skipf("authbridge-combined.yaml not found (repo layout changed?): %v", err)
-	}
-
-	envs := map[string]string{
-		"ISSUER":                  "http://keycloak.localtest.me:8080/realms/kagenti",
-		"KEYCLOAK_URL":            "http://keycloak-service.keycloak.svc:8080",
-		"KEYCLOAK_REALM":          "kagenti",
-		"DEFAULT_OUTBOUND_POLICY": "passthrough",
-		"TOKEN_URL":               "",
-	}
-	for k, v := range envs {
-		t.Setenv(k, v)
-	}
-
-	cfg, err := config.Load(yamlPath)
-	if err != nil {
-		t.Fatalf("Load(%s): %v", yamlPath, err)
-	}
-	if cfg.Mode != config.ModeEnvoySidecar {
-		t.Errorf("mode = %q, want %q", cfg.Mode, config.ModeEnvoySidecar)
-	}
-	if err := config.Validate(cfg); err != nil {
-		t.Errorf("Validate: %v", err)
-	}
-	if _, err := plugins.Build(cfg.Pipeline.Inbound.Plugins); err != nil {
-		t.Errorf("Build inbound: %v", err)
-	}
-	if _, err := plugins.Build(cfg.Pipeline.Outbound.Plugins); err != nil {
-		t.Errorf("Build outbound: %v", err)
 	}
 }
 

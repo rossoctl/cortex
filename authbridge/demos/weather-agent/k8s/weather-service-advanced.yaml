@@ -37,7 +37,6 @@ spec:
         app.kubernetes.io/name: weather-service-advanced
         kagenti.io/inject: enabled
         kagenti.io/spire: enabled
-        kagenti.io/client-registration-inject: "true"
       annotations:
         kagenti.io/outbound-ports-exclude: "11434"
     spec:

@@ -30,17 +30,3 @@ repos:
       - id: ruff-format
         files: ^authbridge/
 
-  - repo: local
-    hooks:
-      - id: go-fmt-authproxy
-        name: go-fmt (AuthProxy)
-        entry: bash -c 'cd authbridge/authproxy && go fmt ./...'
-        language: system
-        files: ^authbridge/authproxy/.*\.go$
-        pass_filenames: false
-      - id: go-vet-authproxy
-        name: go-vet (AuthProxy)
-        entry: bash -c 'cd authbridge/authproxy && go vet ./...'
-        language: system
-        files: ^authbridge/authproxy/.*\.go$
-        pass_filenames: false

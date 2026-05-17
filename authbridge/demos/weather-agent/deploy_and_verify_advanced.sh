@@ -121,13 +121,24 @@ pick_log_container() {
   local pod=$1
   local names
   names=$(kubectl get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
-  if echo "$names" | grep -qx 'envoy-proxy'; then
-    echo envoy-proxy
-  elif echo "$names" | grep -qx 'authbridge'; then
-    echo authbridge
-  else
-    die "pod $pod has neither envoy-proxy nor authbridge container ($names)"
-  fi
+  # Container name depends on the resolved AuthBridge mode (per
+  # kagenti-operator/internal/webhook/injector/container_builder.go):
+  #   proxy-sidecar (cluster default after kagenti-operator#361):
+  #     AuthBridgeProxyContainerName = "authbridge-proxy"
+  #   envoy-sidecar:
+  #     EnvoyProxyContainerName = "envoy-proxy"
+  # The earlier `combinedSidecar` feature gate produced a bare
+  # "authbridge" container, but that gate (and the constant) were
+  # removed in #361 — and this script already requires the post-#361
+  # AgentRuntime CRD just above, so there's no pre-#361 path to
+  # support here.
+  for c in authbridge-proxy envoy-proxy; do
+    if echo "$names" | grep -qx "$c"; then
+      echo "$c"
+      return 0
+    fi
+  done
+  die "pod $pod has no AuthBridge sidecar (expected one of authbridge-proxy / envoy-proxy; got: $(echo $names))"
 }
 
 TOOL_LOG_C=$(pick_log_container "$ADV_TOOL_POD")

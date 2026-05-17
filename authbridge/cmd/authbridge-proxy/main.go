@@ -1,10 +1,12 @@
-// Package main is the "lite" authbridge binary: proxy-sidecar mode
-// only (no Envoy), with jwt-validation + token-exchange as the only
-// plugins compiled in. Optimizes for binary size by dropping the
-// gRPC / envoy go-control-plane dependency tree and the
-// a2a/mcp/inference parser plugins.
+// Package main is the proxy-sidecar authbridge binary: HTTP forward
+// proxy + reverse proxy, no Envoy / gRPC dependencies, full plugin set
+// (jwt-validation, token-exchange, a2a-parser, mcp-parser,
+// inference-parser).
 //
-// For the full-featured batteries-included binary, see cmd/authbridge.
+// Mode is hardcoded to proxy-sidecar; YAML configs that specify a
+// different mode are rejected at boot. For envoy-sidecar mode, use
+// cmd/authbridge-envoy. For a size-optimized build with parsers
+// dropped, use cmd/authbridge-lite.
 package main
 
 import (
@@ -34,8 +36,12 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
 
-	// Only two plugins: drop the parsers and token-broker.
+	// Plugins. Auth gates first, then the protocol parsers that
+	// supply session-event context for abctl.
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
 
@@ -93,7 +99,7 @@ func main() {
 		}
 		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-proxy supports only mode=%q (got %q); use cmd/authbridge for other modes",
+				"authbridge-proxy supports only mode=%q (got %q); use cmd/authbridge-envoy for envoy-sidecar mode",
 				config.ModeProxySidecar, c.Mode)
 		}
 		c.Mode = config.ModeProxySidecar

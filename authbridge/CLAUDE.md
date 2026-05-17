@@ -4,15 +4,24 @@ This file provides context for Claude (AI assistant) when working with the `Auth
 For repo-level context (CI/CD, cross-component relationships), see [`../CLAUDE.md`](../CLAUDE.md).
 The sidecar injection webhook lives in [kagenti-operator](https://github.com/kagenti/kagenti-operator).
 
-## Unified Binary
+## Binaries
 
-The `cmd/authbridge/` directory contains the unified authbridge binary that replaces the
-old `go-processor` ext_proc server. It supports three modes (`envoy-sidecar`, `waypoint`,
-`proxy-sidecar`) with shared auth logic in `authlib/`. See [`cmd/authbridge/README.md`](cmd/authbridge/README.md)
-for config format and [`authlib/README.md`](authlib/README.md) for the library reference.
+The unified `cmd/authbridge/` binary has been split into three mode-specific
+binaries with shared auth logic in `authlib/`:
 
-The old `authproxy/go-processor/` has been removed. All development targets
-`authlib/` and `cmd/authbridge/`.
+- `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
+  proxies. Full plugin set (jwt-validation, token-exchange, a2a-parser,
+  mcp-parser, inference-parser).
+- `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
+  into Envoy. Full plugin set.
+- `cmd/authbridge-lite/` — proxy-sidecar mode, lite plugin set (auth gates
+  only, parsers dropped). For size-optimized deployments that don't need
+  protocol-aware session events.
+
+Each binary is hardcoded to its deployment shape; mode is no longer selected
+at runtime. The YAML `mode:` field must match the binary or boot fails.
+
+See [`authlib/README.md`](authlib/README.md) for the library reference.
 
 ## What AuthBridge Does
 
@@ -38,37 +47,36 @@ authbridge/
 │   ├── auth/                         #   HandleInbound + HandleOutbound composition
 │   └── config/                       #   Mode presets, YAML config, validation
 │
-├── cmd/authbridge/                   # Unified binary -- 3 modes, 1 codebase
-│   ├── listener/                     #   Protocol adapters (ext_proc, ext_authz, forward/reverse proxy)
-│   ├── entrypoint.sh                 #   Envoy + authbridge process supervision
-│   └── Dockerfile                    #   Combined Envoy + authbridge image
+├── cmd/authbridge-proxy/             # proxy-sidecar mode (default). Full plugin set.
+│   ├── main.go
+│   ├── Dockerfile                    #   proxy-sidecar combined image (authbridge-proxy + spiffe-helper)
+│   └── entrypoint.sh
 │
-├── authproxy/                        # Legacy sidecar support (iptables, quickstart)
-│   ├── init-iptables.sh              #   iptables setup (outbound + inbound, Istio ambient compatible)
+├── cmd/authbridge-envoy/             # envoy-sidecar mode. Full plugin set.
+│   ├── main.go
+│   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy + spiffe-helper)
+│   └── entrypoint.sh
+│
+├── cmd/authbridge-lite/              # proxy-sidecar mode. Lite plugin set (no parsers).
+│   ├── main.go
+│   ├── Dockerfile                    #   proxy-sidecar lite combined image
+│   └── entrypoint.sh
+│
+├── proxy-init/                       # iptables init container (envoy-sidecar mode only)
+│   ├── init-iptables.sh              #   iptables setup script
 │   ├── Dockerfile.init               #   proxy-init container image
-│   ├── Dockerfile.authbridge         #   Combined sidecar image
-│   ├── k8s/                          #   Standalone K8s manifests
-│   └── quickstart/                   #   Standalone demo (no SPIFFE)
-│       ├── setup_keycloak.py
-│       └── demo-app/main.go          #   Test target: JWT validation (:8081), TLS echo (:8443)
-│
-├── client-registration/              # Keycloak auto-registration (Python)
-│   ├── client_registration.py        #   Main script: register client, write secret
-│   └── Dockerfile                    #   Python 3.12-slim, UID/GID 1000
-│
-├── spiffe-helper/                    # SPIFFE helper (Dockerfile only)
-│   └── Dockerfile                    #   Fetches JWT-SVIDs from SPIRE agent
+│   ├── Makefile                      #   docker-build-init + load-image targets
+│   └── README.md
 │
 ├── demos/                            # Demo scenarios with full setup
 │   ├── README.md                     #   Demo index (recommended starting order)
 │   ├── weather-agent/                #   Getting-started demo (inbound validation only)
-│   │   └── demo-ui.md
-│   ├── single-target/                #   Single agent → target (SPIFFE-based)
-│   │   ├── demo.md
-│   │   ├── setup_keycloak.py
-│   │   └── k8s/
-│   ├── multi-target/                 #   Multi-target with keycloak_sync
-│   │   └── k8s/
+│   │   ├── demo-ui.md
+│   │   ├── demo-ui-advanced.md       #   With token exchange + tool-side AuthBridge
+│   │   └── demo-with-abctl.md        #   Plugin-pipeline TUI walkthrough
+│   ├── token-exchange-routes/        #   Routes config reference (single + multi-target)
+│   │   ├── README.md
+│   │   └── routes.yaml
 │   ├── github-issue/                 #   GitHub integration demo
 │   │   ├── demo.md, demo-ui.md, demo-manual.md
 │   │   ├── setup_keycloak.py
@@ -83,10 +91,12 @@ authbridge/
 
 ## Component Details
 
-### AuthBridge Unified Binary (cmd/authbridge/)
+### AuthBridge Binaries (cmd/authbridge-{proxy,envoy,lite}/)
 
-The unified authbridge binary handles both traffic directions. Auth logic lives in `authlib/`,
-with protocol-specific listeners in `cmd/authbridge/listener/`:
+The mode-specific authbridge binaries handle both traffic directions. Auth logic
+and all listener implementations live in `authlib/` (under `authlib/listener/`);
+each binary's `main.go` just imports the listeners it needs and the plugins it
+wants to register.
 
 **Inbound path** (`x-authbridge-direction: inbound`):
 - Validates JWT signature via JWKS (auto-refreshing cache from `TOKEN_URL`-derived JWKS endpoint)
@@ -112,11 +122,11 @@ with protocol-specific listeners in `cmd/authbridge/listener/`:
 
 **Configuration loading:**
 - YAML config with `${ENV_VAR}` expansion, mode presets, and startup validation.
-- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`cmd/authbridge/README.md`](cmd/authbridge/README.md) for the per-mode YAML shape and [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
+- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-combined.yaml` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
 - `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
-- Credential files: `client-registration` writes `/shared/client-id.txt` and `/shared/client-secret.txt`; `spiffe-helper` writes `/opt/jwt_svid.token`. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` / `jwt_svid_path`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable.
+- Credential files: the **kagenti-operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. `spiffe-helper` (bundled in both combined images, started conditionally on `SPIRE_ENABLED=true`) writes `/opt/jwt_svid.token`. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` / `jwt_svid_path`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `kagenti.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `kagenti-operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
 - Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
 - Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-combined.yaml`).
 
@@ -175,28 +185,26 @@ Declarative Keycloak synchronization tool that maintains client scope mappings b
 
 ### Envoy Configuration
 
-Envoy config lives in `demos/webhook/k8s/configmaps-webhook.yaml` (the `envoy-config` ConfigMap). Key listeners: `outbound_listener` (15123), `inbound_listener` (15124). Inbound listener injects `x-authbridge-direction: inbound` header. Both use ext_proc cluster pointing to the authbridge binary on localhost:9090.
+Envoy config lives in the `envoy-config` ConfigMap rendered by the [kagenti Helm chart](https://github.com/kagenti/kagenti) at install time (template: `charts/kagenti/templates/agent-namespaces.yaml` / `authbridge-template-configmaps.yaml`). Key listeners: `outbound_listener` (15123), `inbound_listener` (15124). Inbound listener injects `x-authbridge-direction: inbound` header. Both use ext_proc cluster pointing to the authbridge binary on localhost:9090.
 
 ## Demo Scenarios
 
-The `demos/` directory contains five demonstration scenarios (see `demos/README.md` for a recommended learning path):
+The `demos/` directory contains the following scenarios (see `demos/README.md` for a recommended learning path):
 
-- **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment).
+- **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment). `demo-ui-advanced.md` extends this with outbound token exchange and tool-side AuthBridge; `demo-with-abctl.md` is a plugin-pipeline tooling walkthrough.
 - **webhook/** -- Shows how to use the webhook (now part of [kagenti-operator](https://github.com/kagenti/kagenti-operator)) to automatically inject AuthBridge sidecars. Recommended starting point for webhook-based deployments.
-- **single-target/** -- Manual deployment demo showing agent → target communication with SPIFFE identity and token exchange.
-- **multi-target/** -- Dynamic scope assignment using `keycloak_sync.py` for agents communicating with multiple targets.
 - **github-issue/** -- External API integration (GitHub) with inbound validation, outbound token exchange, and scope-based access control. Available as UI or manual deployment.
+- **token-exchange-routes/** -- Configuration reference for the `authproxy-routes` ConfigMap. Covers single-target (one route) and multi-target (one agent → many tools) patterns. Pairs with one of the deployment demos for a full stack.
+- **mcp-parser/** -- Configuration reference for enabling the outbound `mcp-parser` plugin.
 
 ## Keycloak Setup Scripts
 
-There are **four** setup scripts for different demo scenarios:
+There are **two** setup scripts for different demo scenarios:
 
 | Script | Location | Use Case |
 |--------|----------|----------|
-| `setup_keycloak.py` | `authbridge/demos/webhook/` | Webhook-injected deployments (parameterized namespace/SA, creates realm, auth-target client, agent-spiffe-aud + auth-target-aud scopes, alice user) |
-| `setup_keycloak.py` | `authbridge/demos/single-target/` | Single-target SPIFFE demo (creates realm, auth-target client, agent-spiffe-aud + auth-target-aud scopes, alice user) |
+| `setup_keycloak_weather_advanced.py` | `authbridge/demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Drives the CI verify script `deploy_and_verify_advanced.sh`. |
 | `setup_keycloak.py` | `authbridge/demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
-| `setup_keycloak.py` | `authbridge/authproxy/quickstart/` | Standalone AuthProxy quickstart without SPIFFE (creates application-caller, authproxy, demoapp clients with per-client scope assignment) |
 
 **Common Keycloak defaults across all scripts:**
 - URL: `http://keycloak.localtest.me:8080`
@@ -207,15 +215,15 @@ There are **four** setup scripts for different demo scenarios:
 
 ## Required ConfigMaps for Webhook Injection
 
-When the webhook injects sidecars (via [kagenti-operator](https://github.com/kagenti/kagenti-operator)), these ConfigMaps must exist in the target namespace. All required ones are defined in `demos/webhook/k8s/configmaps-webhook.yaml`:
+When the webhook injects sidecars (via [kagenti-operator](https://github.com/kagenti/kagenti-operator)), these ConfigMaps must exist in the target namespace. The kagenti Helm chart's `agent-namespaces.yaml` and `authbridge-template-configmaps.yaml` templates render them; the operator copies them into agent namespaces that don't already have them:
 
 | Resource | Kind | Consumer | Key Fields |
 |----------|------|----------|------------|
-| `authbridge-config` | ConfigMap | client-registration, authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived), `ISSUER` (optional, derived or explicit), `DEFAULT_OUTBOUND_POLICY` (optional). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
-| `keycloak-admin-secret` | Secret | client-registration | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
+| `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived), `ISSUER` (optional, derived or explicit), `DEFAULT_OUTBOUND_POLICY` (optional). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
+| `keycloak-admin-secret` | Secret | kagenti-operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` with per-host token exchange rules |
-| `spiffe-helper-config` | ConfigMap | spiffe-helper | `helper.conf` (SPIRE agent address, cert paths, JWT SVID config) |
-| `envoy-config` | ConfigMap | envoy (in authbridge-unified image) | `envoy.yaml` (full Envoy configuration) |
+| `spiffe-helper-config` | ConfigMap | spiffe-helper (bundled inside the combined sidecar images) | `helper.conf` (SPIRE agent address, cert paths, JWT SVID config) |
+| `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
 
 **`authproxy-routes` format** (`routes.yaml`):
 ```yaml
@@ -236,51 +244,48 @@ Sidecars communicate through files on shared volumes:
 
 | Path | Writer | Reader | Content |
 |------|--------|--------|---------|
-| `/opt/jwt_svid.token` | spiffe-helper | client-registration | JWT SVID from SPIRE |
-| `/shared/client-id.txt` | client-registration | authbridge | SPIFFE ID or CLIENT_NAME |
-| `/shared/client-secret.txt` | client-registration | authbridge | Keycloak client secret |
+| `/opt/jwt_svid.token` | spiffe-helper | authbridge (token-exchange) | JWT SVID from SPIRE |
+| `/shared/client-id.txt` | operator (Secret mount) | authbridge | SPIFFE ID or workload name |
+| `/shared/client-secret.txt` | operator (Secret mount) | authbridge | Keycloak client secret |
 
 ## Build and Deploy
 
-### AuthProxy (standalone quickstart, no webhook)
+### Build images locally
 
 ```bash
-cd authbridge/authproxy
+# Build the proxy-init iptables init container (envoy-sidecar mode only)
+cd authbridge/proxy-init
+make docker-build-init
+make load-image                     # Uses KIND_CLUSTER_NAME env var (default: kagenti)
 
-# Build demo images (auth-proxy, demo-app, proxy-init)
-make build-images
-
-# Load into Kind cluster
-make load-images                    # Uses KIND_CLUSTER_NAME env var (default: kagenti)
-
-# Build the authbridge-unified sidecar image separately (from authbridge/ context)
-cd .. && podman build -f cmd/authbridge/Dockerfile -t authbridge-unified:latest .
-kind load docker-image authbridge-unified:latest --name kagenti
-
-# Deploy auth-proxy + demo-app
-make deploy
-
-# Clean up
-make undeploy
+# Build the combined sidecar images from the authbridge/ context.
+# Pick whichever you need; the operator selects the image per workload
+# from the resolved AuthBridge mode (see kagenti-operator#361).
+cd ..
+podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
+podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
+podman build -f cmd/authbridge-lite/Dockerfile  -t authbridge-lite:latest .  # proxy-sidecar lite
+kind load docker-image authbridge:latest       --name kagenti
+kind load docker-image authbridge-envoy:latest --name kagenti
+kind load docker-image authbridge-lite:latest  --name kagenti
 ```
 
-### Full Demo with Webhook
+For the repo-level "build everything" path, the root `local-build-and-test.sh` orchestrates all four images plus the kagenti-side `spiffe-idp-setup`.
+
+### Full demo with webhook injection
+
+The recommended end-to-end flow uses the weather-agent advanced demo,
+which exercises the post-#411 combined sidecar shape with token
+exchange to a tool's audience:
 
 ```bash
-# 1. Setup Keycloak (requires port-forward to Keycloak)
-cd authbridge/demos/webhook
-pip install -r ../../requirements.txt
-python setup_keycloak.py            # Creates realm, auth-target client, scopes, alice user
-
-# 2. Apply ConfigMaps to target namespace
-kubectl apply -f k8s/configmaps-webhook.yaml -n <namespace>
-
-# 3. Deploy workloads (webhook auto-injects sidecars)
-kubectl apply -f k8s/agent-deployment-webhook.yaml           # With SPIFFE
-# or
-kubectl apply -f k8s/agent-deployment-webhook-no-spiffe.yaml # Without SPIFFE
-kubectl apply -f k8s/auth-target-deployment-webhook.yaml     # Target service
+# Apply manifests, run Keycloak setup, verify end-to-end
+authbridge/demos/weather-agent/deploy_and_verify_advanced.sh
 ```
+
+For an interactive walkthrough see
+`authbridge/demos/weather-agent/demo-ui-advanced.md`. For route
+configuration see `authbridge/demos/token-exchange-routes/README.md`.
 
 ## Important Port Mapping
 
@@ -292,9 +297,6 @@ kubectl apply -f k8s/auth-target-deployment-webhook.yaml     # Target service
 | 9093 | authbridge | HTTP | Stats + config inspection (`/stats`, `/config`, `/reload/status`) |
 | 9094 | authbridge | HTTP | Session events API (JSON snapshots + SSE stream) |
 | 9901 | Envoy | HTTP | Admin interface (bound to 127.0.0.1) |
-| 8080 | auth-proxy | HTTP | Example app (NOT part of sidecar) |
-| 8081 | demo-app | HTTP | Demo target (JWT validation) |
-| 8443 | demo-app | HTTPS | Demo target (TLS echo, no JWT) |
 
 ## Session Events API (`:9094`)
 
@@ -390,13 +392,13 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 ## Code Conventions
 
-### Go (authlib, cmd/authbridge, demo-app)
+### Go (authlib, cmd/authbridge-{proxy,envoy,lite}, demo-app)
 - Go 1.24
-- Two modules: `authbridge/authlib/` (pure library) and `authbridge/cmd/authbridge/` (binary + listeners)
-- `authbridge/go.work` workspace links both modules for local development
-- Logging with `log.Printf` (stdlib), prefixed by `[Config]`, `[Token Exchange]`, `[Inbound]`, `[JWT Debug]`
-- gRPC ext-proc using `envoyproxy/go-control-plane` types (in cmd/authbridge)
-- JWT validation with `lestrrat-go/jwx/v2` (in authlib/validation)
+- Modules: `authbridge/authlib/` (pure library — all listeners, all plugins) and `authbridge/cmd/authbridge-{proxy,envoy,lite}/` (mode-specific binaries that wire listeners + plugins together)
+- `authbridge/go.work` workspace links the modules for local development
+- Logging with `log/slog`; the binaries log under their own name (`authbridge-proxy`, `authbridge-envoy`, `authbridge-lite`)
+- gRPC ext-proc using `envoyproxy/go-control-plane` types (in `authlib/listener/extproc`)
+- JWT validation with `lestrrat-go/jwx/v2` (in `authlib/plugins/jwtvalidation/validation`)
 
 ### Python (client-registration, setup scripts)
 - Python 3.12 syntax (type hints: `str | None`)
@@ -415,7 +417,10 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 ### Modifying Token Exchange Logic
 - Edit `authlib/exchange/` -- the RFC 8693 token exchange client
 - The token exchange POST parameters follow RFC 8693 exactly
-- Test by rebuilding: `make build-images && make load-images`
+- Test by rebuilding the affected combined image (e.g.,
+  `cd authbridge && podman build -f cmd/authbridge-envoy/Dockerfile
+  -t authbridge-envoy:latest .` then `kind load docker-image
+  authbridge-envoy:latest --name kagenti`).
 
 ### Modifying Inbound JWT Validation
 - Edit `authlib/validation/` -- the JWKS-backed JWT verifier
@@ -440,9 +445,11 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - All scripts use `python-keycloak` library (KeycloakAdmin class)
 
 ### Changing Envoy Configuration
-- Edit the `envoy.yaml` section in `demos/webhook/k8s/configmaps-webhook.yaml` (or the appropriate demo's configmaps file)
+- Edit the `envoy.yaml` template in the [kagenti Helm chart](https://github.com/kagenti/kagenti)
+  (`charts/kagenti/templates/agent-namespaces.yaml` or
+  `authbridge-template-configmaps.yaml`) and `helm upgrade`
 - Key listener/cluster names: `outbound_listener`, `inbound_listener`, `original_destination`, `ext_proc_cluster`
-- After changes, re-apply the ConfigMap and restart pods
+- After changes, restart the affected pods so they pick up the new ConfigMap content
 
 ## Gotchas and Known Issues
 
@@ -454,21 +461,21 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 4. **TLS passthrough is one-way**: Outbound HTTPS traffic passes through Envoy without token exchange via the TLS passthrough filter chain. Only plaintext HTTP outbound traffic reaches authbridge. With the default outbound policy of `"passthrough"`, even plaintext HTTP traffic is forwarded unchanged unless it matches an explicit route in `authproxy-routes`.
 
-5. **Virtualenv directory**: For local development you may create `authproxy/quickstart/venv/`, but it should be gitignored and is not committed to the repo.
+5. **Admin credentials in ConfigMap**: the kagenti Helm chart's
+   `agent-namespaces.yaml` template stores Keycloak admin credentials
+   in `authbridge-config` (a ConfigMap, not a Secret). This is for
+   demo / dev clusters only — production should use a Kubernetes
+   Secret and mount via SecretKeyRef.
 
-6. **Demo SPIFFE ID is hardcoded**: `demos/single-target/setup_keycloak.py` hardcodes `AGENT_SPIFFE_ID = "spiffe://localtest.me/ns/authbridge/sa/agent"`. Change this if using a different namespace/SA.
+6. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
 
-7. **Admin credentials in ConfigMap**: `demos/webhook/k8s/configmaps-webhook.yaml` stores Keycloak admin credentials in a ConfigMap (not a Secret). This is for demo only -- production should use Kubernetes Secrets.
+7. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
 
-8. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
+8. **Route host patterns must match HTTP Host header**: The `host` field in `authproxy-routes` is matched against the HTTP `Host` header, which is set by the HTTP client from the URL hostname. For in-cluster calls, this is the **short Kubernetes service name** from `MCP_URL` (e.g., `github-tool-mcp`), not the FQDN. Using the wrong pattern (e.g., `*.github-issue-tool*.svc.cluster.local`) will silently fall through to the default passthrough policy.
 
-9. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
+9. **Keycloak scope assignment for dynamically registered clients**: When the operator's `ClientRegistrationReconciler` auto-registers an agent as a Keycloak client, the client may not inherit all necessary scopes. The agent's own audience scope (e.g., `agent-team1-git-issue-agent-aud`) must be a **default** client scope for inbound JWT audience validation to work. Token exchange scopes (e.g., `github-tool-aud`, `github-full-access`) must be **optional** client scopes for `client_credentials` grants with explicit `scope=` to succeed. Re-run the demo's `setup_keycloak.py` after the agent is deployed to assign these scopes to the registered client.
 
-10. **Route host patterns must match HTTP Host header**: The `host` field in `authproxy-routes` is matched against the HTTP `Host` header, which is set by the HTTP client from the URL hostname. For in-cluster calls, this is the **short Kubernetes service name** from `MCP_URL` (e.g., `github-tool-mcp`), not the FQDN. Using the wrong pattern (e.g., `*.github-issue-tool*.svc.cluster.local`) will silently fall through to the default passthrough policy.
-
-11. **Keycloak scope assignment for dynamically registered clients**: When `client-registration` auto-registers an agent as a Keycloak client, the client may not inherit all necessary scopes. The agent's own audience scope (e.g., `agent-team1-git-issue-agent-aud`) must be a **default** client scope for inbound JWT audience validation to work. Token exchange scopes (e.g., `github-tool-aud`, `github-full-access`) must be **optional** client scopes for `client_credentials` grants with explicit `scope=` to succeed. Re-run the demo's `setup_keycloak.py` after the agent is deployed to assign these scopes to the registered client.
-
-12. **Outbound passthrough is the safe default**: The `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, which means outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) passes through without token exchange. If this were set to `exchange`, all outbound HTTP calls would attempt token exchange and fail for non-Keycloak destinations.
+10. **Outbound passthrough is the safe default**: The `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, which means outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) passes through without token exchange. If this were set to `exchange`, all outbound HTTP calls would attempt token exchange and fail for non-Keycloak destinations.
 
 ## DCO Sign-Off (Mandatory)
 

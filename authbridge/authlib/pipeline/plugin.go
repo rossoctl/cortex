@@ -203,8 +203,8 @@ type Finisher interface {
 // ANDs Ready() across all implementers to decide whether the pipeline
 // is ready to serve traffic. A plugin whose Configure succeeded but
 // whose Init is still waiting (e.g. for a credential file to be
-// written by client-registration) returns false — the kubelet keeps
-// traffic off the pod until Init completes.
+// mounted by the operator from a Secret) returns false — the kubelet
+// keeps traffic off the pod until Init completes.
 //
 // Plugins without deferred state don't implement this interface and
 // are treated as always-ready. Pipeline.Ready() returns true when

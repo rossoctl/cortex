@@ -39,11 +39,20 @@ produce identical AuthBridge security behavior.
                   └──── Keycloak (token exchange) ─────────┘
 ```
 
-The agent pod includes four containers:
+The agent pod has two containers (after kagenti-extensions#411):
 - **agent** — the A2A agent (port 8000)
-- **spiffe-helper** — fetches SPIFFE credentials from SPIRE
-- **kagenti-client-registration** — registers the agent with Keycloak
-- **envoy-proxy** — intercepts traffic for JWT validation and token exchange
+- **AuthBridge sidecar** — combined image; container name depends on
+  the resolved AuthBridge mode:
+  - proxy-sidecar (default): `authbridge-proxy` (image: `authbridge`)
+  - envoy-sidecar: `envoy-proxy` (image: `authbridge-envoy`, plus a
+    `proxy-init` init container for iptables setup)
+
+`spiffe-helper` is bundled inside the combined image and gated
+per-workload by `SPIRE_ENABLED`. Keycloak client registration is
+operator-managed (no in-pod sidecar); the operator's
+`ClientRegistrationReconciler` creates a
+`kagenti-keycloak-client-credentials-<hash>` Secret that the
+webhook mounts at `/shared/client-{id,secret}.txt`.
 
 ## Key Differences Between Deployment Methods
 
@@ -78,6 +87,6 @@ Common names used by both:
 
 - [All Demos](../README.md) — index of all AuthBridge demos
 - [Weather Agent Demo](../weather-agent/demo-ui.md) — simpler getting-started demo (no token exchange)
-- [Multi-Target Demo](../multi-target/demo.md) — route-based token exchange to multiple tools
+- [Token-Exchange Routes](../token-exchange-routes/README.md) — route-based token exchange to multiple tools
 - [Access Policies Proposal](../../PROPOSAL-access-policies.md) — role-based delegation control
 - [AuthBridge Overview](../../README.md) — architecture and design

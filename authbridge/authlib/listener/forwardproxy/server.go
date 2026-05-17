@@ -9,9 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
@@ -95,7 +96,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	if action.Type == pipeline.Reject {
 		s.recordOutboundReject(pctx, action)
-		writeRejection(w, action)
+		httpx.WriteRejection(w, action)
 		return
 	}
 
@@ -104,21 +105,36 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		// Snapshot-copy the protocol extension so the request event
+		// doesn't see response-phase mutations on the same MCP/Inference
+		// struct (e.g. token counts assigned in OnResponse).
+		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 		ev := pipeline.SessionEvent{
-			At:        time.Now(),
-			Direction: pipeline.Outbound,
-			Phase:     pipeline.SessionRequest,
-			MCP:       pctx.Extensions.MCP,
-			Inference: pctx.Extensions.Inference,
+			At:          time.Now(),
+			Direction:   pipeline.Outbound,
+			Phase:       pipeline.SessionRequest,
+			MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+			Plugins:     plugins,
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Host:        pctx.Host,
 		}
-		if ev.MCP != nil || ev.Inference != nil {
+		// Record whenever ANY protocol-or-plugin context is present —
+		// MCP/Inference (parser-emitted), Invocations (gate plugins like
+		// jwt-validation/token-exchange), or plugin-public Plugins
+		// entries. Earlier the gate was just MCP||Inference; widening
+		// it ensures auth-only outbound traffic and pure observability
+		// events show up in abctl. Don't narrow this back without
+		// understanding why each clause is necessary.
+		if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
 			s.Sessions.Append(sid, ev)
 		}
 	}
 
 	newAuth := pctx.Headers.Get("Authorization")
 	if newAuth != originalAuth {
-		r.Header.Set("Authorization", "Bearer "+extractBearer(newAuth))
+		r.Header.Set("Authorization", "Bearer "+auth.ExtractBearer(newAuth))
 	}
 
 	// If a WritesBody plugin rewrote pctx.Body, ship the new bytes
@@ -174,7 +190,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx)
 	if respAction.Type == pipeline.Reject {
-		writeRejection(w, respAction)
+		httpx.WriteRejection(w, respAction)
 		return
 	}
 
@@ -195,14 +211,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 		ev := pipeline.SessionEvent{
-			At:        time.Now(),
-			Direction: pipeline.Outbound,
-			Phase:     pipeline.SessionResponse,
-			MCP:       pctx.Extensions.MCP,
-			Inference: pctx.Extensions.Inference,
+			At:          time.Now(),
+			Direction:   pipeline.Outbound,
+			Phase:       pipeline.SessionResponse,
+			MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+			Plugins:     plugins,
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Host:        pctx.Host,
+			StatusCode:  resp.StatusCode,
+			Error:       pipeline.DeriveError(pctx),
+			Duration:    pipeline.DurationSince(pctx.StartedAt),
 		}
-		if ev.MCP != nil || ev.Inference != nil {
+		// Same widened gate as the request side — see the request-phase
+		// comment for why each clause matters.
+		if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
 			s.Sessions.Append(sid, ev)
 		}
 	}
@@ -250,7 +276,7 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionDenied,
-		Invocations: pctx.Extensions.Invocations.FilteredByPhase(pipeline.InvocationPhaseRequest),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Host:        pctx.Host,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
@@ -262,24 +288,4 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 	s.Sessions.Append(sid, ev)
 }
 
-func extractBearer(authHeader string) string {
-	if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "bearer ") {
-		return authHeader[7:]
-	}
-	return ""
-}
 
-// writeRejection renders a pipeline Reject to the http.ResponseWriter.
-// Preserves the plugin's status, headers, and body — the old flat
-// {"error":reason} is gone; plugins now control the wire shape via
-// action.Violation.
-func writeRejection(w http.ResponseWriter, action pipeline.Action) {
-	status, headers, body := action.Violation.Render()
-	for k, vs := range headers {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
-}

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Local Build and Test Script for JWT-SVID Authentication
 # This script builds all necessary images locally and loads them into Kind
@@ -14,7 +14,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-kagenti-dev}"
 
 # Auto-detect container runtime (Podman or Docker)
 # If KIND_EXPERIMENTAL_PROVIDER is set to podman, use it regardless of what's installed
-if [ "${KIND_EXPERIMENTAL_PROVIDER}" = "podman" ]; then
+if [ "${KIND_EXPERIMENTAL_PROVIDER:-}" = "podman" ]; then
     CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 elif ! command -v docker &> /dev/null && command -v podman &> /dev/null; then
     # Docker not available but Podman is
@@ -31,7 +31,7 @@ load_image_to_kind() {
     if [ "${CONTAINER_RUNTIME}" = "podman" ]; then
         # Podman: save to tar and load
         # Replace colons and slashes to make valid filename
-        local tar_file="/tmp/$(echo ${image_name} | sed 's|[:/]|-|g').tar"
+        local tar_file="/tmp/$(echo "${image_name}" | sed 's|[:/]|-|g').tar"
         ${CONTAINER_RUNTIME} save "${image_name}" -o "${tar_file}"
         kind load image-archive "${tar_file}" --name "${CLUSTER_NAME}"
         rm -f "${tar_file}"
@@ -66,31 +66,44 @@ load_image_to_kind ghcr.io/kagenti/kagenti/spiffe-idp-setup:local
 echo "✅ Built and loaded: spiffe-idp-setup:local"
 echo ""
 
-# Build client-registration (CHANGED - UID 1000)
+# Build authbridge (proxy-sidecar combined: authbridge-proxy + spiffe-helper)
+# Default deployment shape — used when the workload's mode is proxy-sidecar.
+# After kagenti-extensions#411 the unified binary was split into three
+# mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
 echo "=========================================="
-echo "Building client-registration"
+echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge/client-registration"
-${CONTAINER_RUNTIME} build -t ghcr.io/kagenti/kagenti-extensions/client-registration:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/client-registration:local
-echo "✅ Built and loaded: client-registration:local"
+cd "${SCRIPT_DIR}/authbridge"
+${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile -t ghcr.io/kagenti/kagenti-extensions/authbridge:local .
+load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge:local
+echo "✅ Built and loaded: authbridge:local"
 echo ""
 
-# Build envoy-with-processor (Envoy runs as UID 1337)
+# Build authbridge-envoy (envoy-sidecar combined: Envoy + ext_proc + spiffe-helper)
 echo "=========================================="
-echo "Building envoy-with-processor"
+echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge/authproxy"
-${CONTAINER_RUNTIME} build -f Dockerfile.envoy -t ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:local
-echo "✅ Built and loaded: envoy-with-processor:local"
+cd "${SCRIPT_DIR}/authbridge"
+${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile -t ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local .
+load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local
+echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
-# Build proxy-init
+# Build authbridge-lite (proxy-sidecar shape, auth-only plugins, no parsers)
+echo "=========================================="
+echo "Building authbridge-lite (proxy-sidecar lite)"
+echo "=========================================="
+cd "${SCRIPT_DIR}/authbridge"
+${CONTAINER_RUNTIME} build -f cmd/authbridge-lite/Dockerfile -t ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local .
+load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local
+echo "✅ Built and loaded: authbridge-lite:local"
+echo ""
+
+# Build proxy-init (iptables init container, used by envoy-sidecar mode only)
 echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge/authproxy"
+cd "${SCRIPT_DIR}/authbridge/proxy-init"
 ${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/kagenti/kagenti-extensions/proxy-init:local .
 load_image_to_kind ghcr.io/kagenti/kagenti-extensions/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"
@@ -102,8 +115,9 @@ echo "=========================================="
 echo ""
 echo "Images loaded into cluster '${CLUSTER_NAME}':"
 echo "  - ghcr.io/kagenti/kagenti/spiffe-idp-setup:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/client-registration:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:local"
+echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge:local"
+echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local"
+echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local"
 echo "  - ghcr.io/kagenti/kagenti-extensions/proxy-init:local"
 echo ""
 echo "Next steps:"

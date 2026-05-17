@@ -6,8 +6,9 @@
 # The MCP server listens on port 8000. AuthBridge ext_proc listens on 9090
 # inside the pod, so there is no port collision (unlike the GitHub tool on 9090).
 #
-# The kagenti AuthBridge mutating webhook only injects sidecars for pod labels
-# kagenti.io/type: agent (see AuthBridge/demos/webhook/README.md). This workload is
+# The kagenti AuthBridge mutating webhook only injects sidecars for pod
+# labels kagenti.io/type: agent (see kagenti-operator/internal/webhook/
+# in the kagenti-operator repo for the matching rule). This workload is
 # still the weather MCP tool by image and name; the pod is labeled as agent so
 # client-registration runs and registers the tool SPIFFE in Keycloak.
 #
@@ -45,8 +46,6 @@ spec:
   template:
     metadata:
       labels:
-        # SPIFFE → Keycloak client sidecar (label, not annotation — see kagenti backend constants)
-        kagenti.io/client-registration-inject: "true"
         # Required for AuthBridge + SPIRE injection (webhook does not match type=tool)
         kagenti.io/type: agent
         app.kubernetes.io/name: weather-tool-advanced

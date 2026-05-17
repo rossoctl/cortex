@@ -333,7 +333,7 @@ func credentialsAreReady(id tokenExchangeIdentity) bool {
 		return id.ClientSecret != ""
 	case "spiffe":
 		// JWT-SVID source reads the file lazily; existence of ClientID
-		// is the signal that client-registration has completed.
+		// is the signal that the operator's Secret mount has completed.
 		return true
 	}
 	return false

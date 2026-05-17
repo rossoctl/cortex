@@ -36,22 +36,27 @@ plugin pipeline in real time while chatting with the agent, see
 │  ┌───────────────────────────────────────────────────────────────────────────┐   │
 │  │               WEATHER-SERVICE POD (namespace: team1)                      │   │
 │  │                                                                           │   │
-│  │  ┌──────────────────┐  ┌─────────────┐  ┌──────────────────────────────┐  │   │
-│  │  │ weather-service  │  │   spiffe-   │  │      client-registration     │  │   │
-│  │  │  (A2A agent,     │  │   helper    │  │  (registers with Keycloak    │  │   │
-│  │  │   port 8000)     │  │             │  │   using SPIFFE ID)           │  │   │
-│  │  └──────────────────┘  └─────────────┘  └──────────────────────────────┘  │   │
-│  │                                                                           │   │
-│  │  ┌───────────────────────────────────────────────────────────────────┐    │   │
-│  │  │                AuthProxy Sidecar (envoy-proxy container)          │    │   │
-│  │  │  Envoy + ext_proc (authbridge)                                    │    │   │
-│  │  │  Inbound (port 15124):                                            │    │   │
-│  │  │    - Validates JWT (signature + issuer + audience via JWKS)       │    │   │
-│  │  │    - Returns 401 Unauthorized for invalid/missing tokens          │    │   │
-│  │  │  Outbound (port 15123):                                           │    │   │
-│  │  │    - HTTP: Passthrough (default policy, no token exchange)        │    │   │
-│  │  │    - HTTPS: TLS passthrough (no interception)                     │    │   │
-│  │  └───────────────────────────────────────────────────────────────────┘    │   │
+│  │  ┌──────────────────┐  ┌────────────────────────────────────────────┐    │   │
+│  │  │ weather-service  │  │  AuthBridge sidecar (combined image)        │    │   │
+│  │  │  (A2A agent,     │  │  Container name depends on resolved mode:   │    │   │
+│  │  │   port 8000)     │  │    proxy-sidecar (default): authbridge-proxy│    │   │
+│  │  └──────────────────┘  │    envoy-sidecar:           envoy-proxy     │    │   │
+│  │                        │                                              │    │   │
+│  │                        │  Inbound:                                    │    │   │
+│  │                        │    - Validates JWT (signature + issuer +     │    │   │
+│  │                        │      audience via JWKS)                      │    │   │
+│  │                        │    - Returns 401 for invalid/missing tokens  │    │   │
+│  │                        │  Outbound:                                   │    │   │
+│  │                        │    - HTTP: Passthrough (default policy)      │    │   │
+│  │                        │    - HTTPS: TLS passthrough (no interception)│    │   │
+│  │                        │                                              │    │   │
+│  │                        │  spiffe-helper is bundled inside the image  │    │   │
+│  │                        │  and gated per-workload by SPIRE_ENABLED.   │    │   │
+│  │                        │  Keycloak client registration is             │    │   │
+│  │                        │  operator-managed (no in-pod sidecar);      │    │   │
+│  │                        │  the operator mounts the resulting Secret    │    │   │
+│  │                        │  at /shared/client-{id,secret}.txt.          │    │   │
+│  │                        └────────────────────────────────────────────┘    │   │
 │  └───────────────────────────────────────────────────────────────────────────┘   │
 │                                      │                                           │
 │                     Plain HTTP call  │(no token exchange)                        │
@@ -231,13 +236,15 @@ Expected output:
 
 ```
 NAME                               READY   STATUS    RESTARTS   AGE
-weather-service-58768bdb67-xxxxx   4/4     Running   0          2m
+weather-service-58768bdb67-xxxxx   2/2     Running   0          2m
 weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 ```
 
-> **Note:** The agent pod should show **4/4** containers — the agent itself plus
-> three AuthBridge sidecars (spiffe-helper, kagenti-client-registration, envoy-proxy)
-> injected by the webhook.
+> **Note:** The agent pod shows **2/2** containers — the agent itself plus
+> one combined AuthBridge sidecar (spiffe-helper is bundled inside; client
+> registration is handled by the operator outside the pod). In envoy-sidecar
+> mode you'll also see a `proxy-init` init container that exits after
+> setting up iptables.
 
 ### Verify injected containers
 
@@ -245,25 +252,52 @@ weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service -o jsonpath='{.items[0].spec.containers[*].name}'
 ```
 
-Expected:
+Expected (proxy-sidecar mode, the cluster default):
 
 ```
-agent kagenti-client-registration envoy-proxy spiffe-helper
+agent authbridge-proxy
 ```
 
-### Check client registration
+Or, in envoy-sidecar mode:
+
+```
+agent envoy-proxy
+```
+
+### Check operator-managed client registration
+
+After kagenti-extensions#411 / kagenti-operator#361, client registration runs
+in the kagenti-operator (outside the workload pod). Verify the resulting
+Secret is mounted into the agent's sidecar:
 
 ```bash
-kubectl logs deployment/weather-service -n team1 -c kagenti-client-registration
+kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service \
+  -o jsonpath='{.items[0].spec.volumes[?(@.secret)].secret.secretName}'
+# Expect a Secret name starting with: kagenti-keycloak-client-credentials-
 ```
 
-Expected:
+Inspect the actual SPIFFE-derived client ID written to /shared/client-id.txt:
+
+```bash
+SIDECAR=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service \
+  -o jsonpath='{.items[0].spec.containers[*].name}' | tr ' ' '\n' \
+  | grep -E '^(authbridge-proxy|envoy-proxy)$' | head -1)
+kubectl exec deploy/weather-service -n team1 -c "$SIDECAR" -- cat /shared/client-id.txt
+```
+
+Expected — just the SPIFFE ID (the `Created Keycloak client …` log line
+now lives in the kagenti-operator's `kagenti-controller-manager`
+deployment in `kagenti-system`, not the workload pod):
 
 ```
-SPIFFE credentials ready!
-Client ID (SPIFFE ID): spiffe://localtest.me/ns/team1/sa/weather-service
-Created Keycloak client "spiffe://localtest.me/ns/team1/sa/weather-service"
-Client registration complete!
+spiffe://localtest.me/ns/team1/sa/weather-service
+```
+
+To follow the operator-side registration:
+
+```bash
+kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+  | grep -i clientregistration | tail -20
 ```
 
 ### Check agent logs
@@ -589,70 +623,90 @@ agent card while the agent container responds on port 8000, Envoy’s ext_proc p
 likely broken—often due to **invalid `authproxy-routes` YAML** left over from another
 workflow or namespace reuse. Follow **Agent card not available** in the
 [GitHub Issue Agent UI demo](../github-issue/demo-ui.md#agent-card-not-available-in-the-ui)
-(check `envoy-proxy` logs and fix or remove `authproxy-routes` as described there).
+(check the AuthBridge sidecar logs — `authbridge-proxy` in proxy-sidecar mode,
+`envoy-proxy` in envoy-sidecar mode — and fix or remove `authproxy-routes`
+as described there).
 
-### Agent Pod Not Starting (4/4 containers)
+### Agent Pod Not Starting
 
-**Symptom:** Pod shows 3/4 or less containers ready
+**Symptom:** Pod shows 1/2 (or 0/2) containers ready
 
-**Fix:** Check each container's logs:
+**Fix:** Check the agent and the AuthBridge sidecar:
 
 ```bash
-kubectl logs deployment/weather-service -n team1 -c kagenti-client-registration
-kubectl logs deployment/weather-service -n team1 -c spiffe-helper
-kubectl logs deployment/weather-service -n team1 -c envoy-proxy
+# AuthBridge sidecar — name depends on resolved mode:
+#   proxy-sidecar (default): authbridge-proxy
+#   envoy-sidecar:           envoy-proxy
+kubectl logs deployment/weather-service -n team1 -c authbridge-proxy
 kubectl logs deployment/weather-service -n team1 -c agent
+
+# If the issue is operator-managed client registration not finishing,
+# the workload pod waits on /shared/client-{id,secret}.txt. Inspect:
+kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+  | grep -iE "clientregistration|weather-service" | tail -20
 ```
 
 ---
 
-## Proxy-Sidecar Mode
+## Switching modes
 
-By default, the weather agent deploys in **envoy-sidecar mode** (Envoy + iptables).
-You can switch to **proxy-sidecar mode** which uses a lightweight reverse/forward
-proxy (29 MB image, no Envoy, no iptables).
+After kagenti-operator#361 the cluster default is **proxy-sidecar**
+(forward + reverse HTTP proxies, no Envoy, no iptables, no init container).
+The operator resolves mode per workload from this chain:
 
-### Deploy in proxy-sidecar mode
+1. `AgentRuntime.Spec.AuthBridgeMode` on the workload's CR (canonical).
+2. `mode:` field on the namespace-level `authbridge-runtime-config` ConfigMap.
+3. Deprecated `kagenti.io/authbridge-mode` pod annotation (still honored).
+4. Cluster default — `proxy-sidecar`.
 
-Add the mode annotation to the deployment:
+### Switch to envoy-sidecar mode
+
+Set it on the AgentRuntime CR (canonical surface):
+
+```bash
+kubectl patch agentruntime weather-service -n team1 --type=merge \
+  -p '{"spec":{"authBridgeMode":"envoy-sidecar"}}'
+kubectl rollout restart deployment weather-service -n team1
+kubectl rollout status deployment weather-service -n team1 --timeout=120s
+```
+
+Or, on workloads without an AgentRuntime CR, the deprecated annotation:
 
 ```bash
 kubectl patch deployment weather-service -n team1 --type=merge \
-  -p '{"spec":{"template":{"metadata":{"annotations":{"kagenti.io/authbridge-mode":"proxy-sidecar"}}}}}'
+  -p '{"spec":{"template":{"metadata":{"annotations":{"kagenti.io/authbridge-mode":"envoy-sidecar"}}}}}'
 kubectl rollout status deployment weather-service -n team1 --timeout=120s
 ```
 
-### Verify proxy-sidecar mode
+### Verify the resolved mode
 
 ```bash
-# Containers: agent, authbridge-proxy, spiffe-helper, kagenti-client-registration
-# No envoy-proxy or proxy-init
 kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service \
   -o jsonpath='{range .spec.containers[*]}{.name}{"\n"}{end}'
-
-# AuthBridge should show mode=proxy-sidecar
-kubectl logs deployment/weather-service -n team1 -c authbridge-proxy --tail=5
+# Expect:
+#   proxy-sidecar (default): "agent" + "authbridge-proxy"
+#   envoy-sidecar:           "agent" + "envoy-proxy" (plus a "proxy-init" init container)
 ```
 
-### Switch back to envoy-sidecar mode
+### Switch back to proxy-sidecar (default)
 
-Remove the annotation (envoy-sidecar is the default):
+Drop the override:
 
 ```bash
-kubectl patch deployment weather-service -n team1 --type=json \
-  -p '[{"op":"remove","path":"/spec/template/metadata/annotations/kagenti.io~1authbridge-mode"}]'
-kubectl rollout status deployment weather-service -n team1 --timeout=120s
+kubectl patch agentruntime weather-service -n team1 --type=json \
+  -p '[{"op":"remove","path":"/spec/authBridgeMode"}]'
+kubectl rollout restart deployment weather-service -n team1
 ```
 
 ### Key differences
 
-| | envoy-sidecar (default) | proxy-sidecar |
+| | proxy-sidecar (default) | envoy-sidecar |
 |---|---|---|
-| Image | `authbridge-envoy` (140 MB) | `authbridge-light` (29 MB) |
-| Traffic interception | iptables + Envoy | HTTP_PROXY env vars |
-| Init container | proxy-init (NET_ADMIN) | None |
-| Container name | `envoy-proxy` | `authbridge-proxy` |
-| Ollama port exclusion | Required (annotation) | Not needed |
+| Image | `authbridge` (combined) | `authbridge-envoy` (combined) |
+| Traffic interception | HTTP_PROXY env vars | iptables + Envoy |
+| Init container | None | `proxy-init` (NET_ADMIN) |
+| Container name | `authbridge-proxy` | `envoy-proxy` |
+| Ollama port exclusion | Not needed | Required (annotation) |
 
 > **Note:** Proxy-sidecar mode requires the agent to read the `PORT` env var.
 > All agents in [kagenti/agent-examples](https://github.com/kagenti/agent-examples)
@@ -733,6 +787,6 @@ kubectl delete namespace team1
   outbound token exchange, scope-based access control, and Alice vs Bob scenarios
 - **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
   JWT validation and outbound token exchange internals
-- **Multi-Target Demo**: See the [multi-target demo](../multi-target/demo.md) for
+- **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
 - **AuthBridge Overview**: See the [AuthBridge README](../../README.md) for architecture details

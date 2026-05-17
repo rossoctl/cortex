@@ -31,8 +31,10 @@ cd kagenti-extensions
 # Install pre-commit hooks
 pre-commit install
 
-# Build AuthProxy images
-cd authbridge/authproxy && make build-images
+# Build the proxy-init image (one-target Makefile in proxy-init/).
+# For the four combined-sidecar images plus this one, use the
+# repo-root local-build-and-test.sh.
+cd authbridge/proxy-init && make docker-build-init
 ```
 
 ## Issues

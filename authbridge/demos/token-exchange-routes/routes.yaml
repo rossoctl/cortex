@@ -1,0 +1,23 @@
+# Token-Exchange Routes — Multi-Target Example
+#
+# Each route maps a destination host to token exchange parameters.
+# Order matters - first match wins.
+
+# Target Alpha - matches both short name and FQDN
+- host: "target-alpha-service**"
+  target_audience: "target-alpha"
+  token_scopes: "openid target-alpha-aud"
+
+# Target Beta - matches both short name and FQDN
+- host: "target-beta-service**"
+  target_audience: "target-beta"
+  token_scopes: "openid target-beta-aud"
+
+# Target Gamma - matches both short name and FQDN
+- host: "target-gamma-service**"
+  target_audience: "target-gamma"
+  token_scopes: "openid target-gamma-aud"
+
+# Wildcard example - any service in internal namespace skips exchange
+# - host: "*.internal.svc.cluster.local"
+#   passthrough: true
