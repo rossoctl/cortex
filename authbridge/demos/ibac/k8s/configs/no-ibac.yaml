@@ -1,0 +1,24 @@
+mode: proxy-sidecar
+
+listener:
+  reverse_proxy_addr: ":8080"
+  reverse_proxy_backend: "http://localhost:8000"
+  forward_proxy_addr: ":8081"
+  session_api_addr: ":9094"
+
+session:
+  enabled: true
+
+pipeline:
+  inbound:
+    plugins:
+      # a2a-parser populates Session.Intents from the user's A2A
+      # message. IBAC reads from this via pctx.Session.LastIntent.
+      - name: a2a-parser
+  outbound:
+    plugins:
+      # mcp-parser is optional enrichment for IBAC. Included here
+      # for completeness; for the email-poison demo specifically
+      # the agent's tools emit raw HTTP, not MCP, so mcp-parser's
+      # MCPExtension stays nil and IBAC judges the bare HTTP line.
+      - name: mcp-parser

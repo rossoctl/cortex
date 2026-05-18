@@ -65,6 +65,13 @@ deploy:
 	kubectl apply -f k8s/namespace.yaml
 	kubectl apply -f k8s/email-server.yaml
 	kubectl apply -f k8s/evil-server.yaml
+	# Bootstrap the authbridge ConfigMap with the no-ibac baseline.
+	# The agent.yaml below references this CM but doesn't define it;
+	# `make demo-{no-ibac,ibac}` rewrites it via the same pattern.
+	kubectl -n $(NAMESPACE) create configmap ibac-agent-config \
+	    --from-file=config.yaml=k8s/configs/no-ibac.yaml \
+	    --dry-run=client -o yaml \
+	  | kubectl apply -f -
 	kubectl apply -f k8s/agent.yaml
 	$(MAKE) wait-pods
 
@@ -77,15 +84,20 @@ undeploy:
 
 # ---------- Toggle IBAC on / off via ConfigMap swap ----------
 
-# The agent Pod always mounts ibac-agent-config. We rewrite that
-# ConfigMap's data to match either ibac-agent-config-no-ibac (baseline,
-# no IBAC) or ibac-agent-config-ibac (with IBAC). Authbridge's config
-# hot-reload watches the file and rebuilds the pipeline without a pod
-# restart.
+# The agent Pod always mounts ibac-agent-config. The toggle targets
+# regenerate that single ConfigMap from one of the two source files
+# under k8s/configs/. Authbridge's config hot-reload watches the
+# mounted file and rebuilds the pipeline without a pod restart.
+#
+# `kubectl create cm --from-file --dry-run=client | kubectl apply`
+# is the idiomatic "stamp this ConfigMap to exactly this content"
+# pattern — it sidesteps the resource-version conflicts you get when
+# trying to copy data between two existing ConfigMaps via apply.
 toggle-no-ibac:
 	@echo "[*] Switching authbridge config -> NO IBAC (baseline)"
-	kubectl -n $(NAMESPACE) get cm ibac-agent-config-no-ibac -o yaml \
-	  | sed 's/name: ibac-agent-config-no-ibac/name: ibac-agent-config/' \
+	kubectl -n $(NAMESPACE) create configmap ibac-agent-config \
+	    --from-file=config.yaml=k8s/configs/no-ibac.yaml \
+	    --dry-run=client -o yaml \
 	  | kubectl apply -f -
 	kubectl -n $(NAMESPACE) annotate cm ibac-agent-config \
 	  ibac-demo/active=no-ibac --overwrite
@@ -94,8 +106,9 @@ toggle-no-ibac:
 
 toggle-ibac:
 	@echo "[*] Switching authbridge config -> IBAC ENABLED"
-	kubectl -n $(NAMESPACE) get cm ibac-agent-config-ibac -o yaml \
-	  | sed 's/name: ibac-agent-config-ibac/name: ibac-agent-config/' \
+	kubectl -n $(NAMESPACE) create configmap ibac-agent-config \
+	    --from-file=config.yaml=k8s/configs/ibac.yaml \
+	    --dry-run=client -o yaml \
 	  | kubectl apply -f -
 	kubectl -n $(NAMESPACE) annotate cm ibac-agent-config \
 	  ibac-demo/active=ibac --overwrite
@@ -136,13 +149,20 @@ demo-ibac: toggle-ibac _attack
 	    sh -c 'wget -qO- http://localhost:9094/v1/sessions' 2>/dev/null \
 	  | head -200 || echo "(session API not reachable; try: kubectl port-forward and curl :9094/v1/sessions)"
 
-# Internal: send the attack request via kubectl exec.
+# Internal: send the attack request via a transient curl pod. We
+# can't `kubectl exec` into the agent container — its distroless
+# image has no shell. The transient pod starts in <2s and is GC'd
+# automatically.
 _attack:
 	@echo "=============================================="
 	@echo " Sending attack: \"Summarize my emails.\""
 	@echo "=============================================="
-	-kubectl -n $(NAMESPACE) exec deploy/ibac-agent -c agent -- \
-	    sh -c 'wget -qO- --header="Content-Type: application/json" --post-data=$(ATTACK_BODY) http://ibac-agent.$(NAMESPACE).svc.cluster.local:8080/'
+	-kubectl -n $(NAMESPACE) run ibac-attacker --rm -i --restart=Never \
+	    --image=curlimages/curl:latest --quiet \
+	    --command -- curl -s -m 120 \
+	    -H "Content-Type: application/json" \
+	    -d $(ATTACK_BODY) \
+	    http://ibac-agent.$(NAMESPACE).svc.cluster.local:8080/
 	@echo
 
 # ---------- Diagnostics ----------

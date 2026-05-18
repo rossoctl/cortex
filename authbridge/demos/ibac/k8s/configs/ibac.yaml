@@ -1,0 +1,36 @@
+mode: proxy-sidecar
+
+listener:
+  reverse_proxy_addr: ":8080"
+  reverse_proxy_backend: "http://localhost:8000"
+  forward_proxy_addr: ":8081"
+  session_api_addr: ":9094"
+
+session:
+  enabled: true
+
+pipeline:
+  inbound:
+    plugins:
+      - name: a2a-parser
+  outbound:
+    plugins:
+      - name: mcp-parser
+      - name: ibac
+        config:
+          # Judge LLM. host.docker.internal works for kind clusters
+          # with ollama running on the host, matching the original
+          # huang195/ibac demo. For in-cluster ollama, swap this for
+          # http://ollama.<ns>.svc.cluster.local:11434.
+          judge_endpoint: "http://host.docker.internal:11434"
+          judge_model: "llama3.2:3b"
+
+          # Reasonable default for a local ollama judge; bump if your
+          # judge model is larger / slower.
+          timeout_ms: 15000
+
+          # Don't judge the agent's own LLM-reasoning calls (default).
+          # The agent_llm_host hint adds ollama to the bypass list so
+          # those calls are skipped without judging at all.
+          judge_inference: false
+          agent_llm_host: "host.docker.internal"

@@ -1,19 +1,19 @@
 # IBAC demo email-assistant agent — fully self-contained.
 #
-# Two ConfigMaps are in this manifest:
+# The authbridge sidecar mounts ibac-agent-config (config.yaml). This
+# ConfigMap is created on demand by the Makefile from one of the two
+# files under k8s/configs/:
 #
-#   ibac-agent-config-no-ibac
-#       a2a-parser inbound, mcp-parser outbound. NO ibac plugin.
-#       The "without IBAC" baseline — exfiltration succeeds.
+#   k8s/configs/no-ibac.yaml — a2a-parser inbound, mcp-parser outbound.
+#                              NO ibac plugin. Baseline (exfil succeeds).
+#   k8s/configs/ibac.yaml    — same plus ibac in the outbound chain.
+#                              Judge denies misaligned outbound.
 #
-#   ibac-agent-config-ibac
-#       a2a-parser inbound, mcp-parser + ibac outbound.
-#       The "with IBAC" run — judge denies misaligned outbound.
-#
-# The agent Pod's volume mount points at ibac-agent-config (no
-# suffix) — the demo Makefile uses kubectl to copy whichever variant
-# we want into that name. Authbridge's hot-reload picks up the change
-# automatically; no pod restart needed.
+# `make deploy` creates the ConfigMap from no-ibac.yaml as the initial
+# state; `make demo-ibac` / `make demo-no-ibac` rewrite it via
+# `kubectl create configmap --from-file --dry-run | kubectl apply`.
+# Authbridge's filesystem-watch hot-reload picks up the change without
+# a pod restart.
 #
 # This manifest does NOT depend on the kagenti operator. The
 # authbridge sidecar is declared inline so the demo runs against any
@@ -22,120 +22,6 @@
 # does NOT pull a published authbridge image because it must include
 # the IBAC plugin from this branch.
 
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ibac-agent-config-no-ibac
-  namespace: ibac-demo
-data:
-  config.yaml: |
-    mode: proxy-sidecar
-
-    listener:
-      reverse_proxy_addr: ":8080"
-      reverse_proxy_backend: "http://localhost:8000"
-      forward_proxy_addr: ":8081"
-      session_api_addr: ":9094"
-
-    session:
-      enabled: true
-
-    pipeline:
-      inbound:
-        plugins:
-          # a2a-parser populates Session.Intents from the user's A2A
-          # message. IBAC reads from this via pctx.Session.LastIntent.
-          - name: a2a-parser
-      outbound:
-        plugins:
-          # mcp-parser is optional enrichment for IBAC. Included here
-          # for completeness; for the email-poison demo specifically
-          # the agent's tools emit raw HTTP, not MCP, so mcp-parser's
-          # MCPExtension stays nil and IBAC judges the bare HTTP line.
-          - name: mcp-parser
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ibac-agent-config-ibac
-  namespace: ibac-demo
-data:
-  config.yaml: |
-    mode: proxy-sidecar
-
-    listener:
-      reverse_proxy_addr: ":8080"
-      reverse_proxy_backend: "http://localhost:8000"
-      forward_proxy_addr: ":8081"
-      session_api_addr: ":9094"
-
-    session:
-      enabled: true
-
-    pipeline:
-      inbound:
-        plugins:
-          - name: a2a-parser
-      outbound:
-        plugins:
-          - name: mcp-parser
-          - name: ibac
-            config:
-              # Judge LLM. host.docker.internal works for kind clusters
-              # with ollama running on the host, matching the original
-              # huang195/ibac demo. For in-cluster ollama, swap this for
-              # http://ollama.<ns>.svc.cluster.local:11434.
-              judge_endpoint: "http://host.docker.internal:11434"
-              judge_model: "llama3.2:3b"
-
-              # Reasonable default for a local ollama judge; bump if your
-              # judge model is larger / slower.
-              timeout_ms: 15000
-
-              # Don't judge the agent's own LLM-reasoning calls (default).
-              # The agent_llm_host hint adds ollama to the bypass list so
-              # those calls are skipped without judging at all.
-              judge_inference: false
-              agent_llm_host: "host.docker.internal"
-
-              # Bypass infrastructure paths. The defaults already cover
-              # /healthz and friends; we add nothing extra here for the
-              # demo.
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ibac-agent-config
-  namespace: ibac-demo
-  annotations:
-    # The Makefile rewrites this annotation when toggling between
-    # variants — purely for human inspection (`kubectl get cm
-    # ibac-agent-config -o yaml`); authbridge does not consume it.
-    ibac-demo/active: "no-ibac"
-data:
-  config.yaml: |
-    mode: proxy-sidecar
-
-    listener:
-      reverse_proxy_addr: ":8080"
-      reverse_proxy_backend: "http://localhost:8000"
-      forward_proxy_addr: ":8081"
-      session_api_addr: ":9094"
-
-    session:
-      enabled: true
-
-    pipeline:
-      inbound:
-        plugins:
-          - name: a2a-parser
-      outbound:
-        plugins:
-          - name: mcp-parser
-
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -206,6 +92,12 @@ spec:
           #   kind load docker-image authbridge:demo --name kagenti
           image: authbridge:demo
           imagePullPolicy: IfNotPresent
+          # The entrypoint forwards args to the authbridge-proxy
+          # binary, which requires --config. The operator's injection
+          # path sets this automatically; we set it explicitly here.
+          args:
+            - "--config"
+            - "/etc/authbridge/config.yaml"
           ports:
             - containerPort: 8080
               name: reverse-proxy

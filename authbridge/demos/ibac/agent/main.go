@@ -29,6 +29,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -170,7 +171,15 @@ func execGetEmails(_ map[string]interface{}) string {
 	if emailURL == "" {
 		emailURL = "http://localhost:8888"
 	}
-	resp, err := http.Get(emailURL + "/emails")
+	// Same explicit-proxy client as execHTTPPost — get_emails is also
+	// untrusted outbound (the email body is the attack vector) so it
+	// must flow through authbridge for any future content-based
+	// guardrails to see it.
+	req, err := http.NewRequest(http.MethodGet, emailURL+"/emails", nil)
+	if err != nil {
+		return fmt.Sprintf("error creating request: %v", err)
+	}
+	resp, err := proxiedClient.Do(req)
 	if err != nil {
 		return fmt.Sprintf("error fetching emails: %v", err)
 	}
@@ -182,10 +191,34 @@ func execGetEmails(_ map[string]interface{}) string {
 	return string(body)
 }
 
-// execHTTPPost uses http.DefaultClient so HTTP_PROXY is honored
-// transparently when the authbridge proxy-sidecar exports it. Original
-// repo had a bespoke transport keyed off IBAC_PROXY; the kagenti shape
-// is "set HTTP_PROXY in the agent container, let Go pick it up."
+// proxiedClient is the HTTP client used for outbound requests that
+// MUST flow through the authbridge proxy-sidecar (so plugins like
+// ibac can see them). Built once in main() with an explicit
+// http.ProxyURL transport — http.DefaultClient honors HTTP_PROXY
+// in theory, but Go's ProxyFromEnvironment caches its decision per
+// process and has subtle no-proxy rules around in-cluster hostnames
+// that have caused silent bypasses in this exact deployment shape.
+// Hard-coding http.ProxyURL is unambiguous: every call goes through
+// the proxy unconditionally.
+var proxiedClient *http.Client
+
+func buildProxiedClient() *http.Client {
+	proxyEnv := os.Getenv("HTTP_PROXY")
+	if proxyEnv == "" {
+		log.Printf("[Agent] HTTP_PROXY unset — outbound HTTP will be direct (IBAC will not see it)")
+		return &http.Client{}
+	}
+	u, err := url.Parse(proxyEnv)
+	if err != nil {
+		log.Printf("[Agent] HTTP_PROXY=%q is not a valid URL (%v) — falling back to direct", proxyEnv, err)
+		return &http.Client{}
+	}
+	log.Printf("[Agent] All outbound HTTP via explicit proxy: %s", u)
+	return &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(u)},
+	}
+}
+
 func execHTTPPost(args map[string]interface{}, sessionID string) string {
 	targetURL, _ := args["url"].(string)
 	body, _ := args["body"].(string)
@@ -200,7 +233,7 @@ func execHTTPPost(args map[string]interface{}, sessionID string) string {
 	if sessionID != "" {
 		req.Header.Set("X-Session-Id", sessionID)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := proxiedClient.Do(req)
 	if err != nil {
 		return fmt.Sprintf("error making request: %v", err)
 	}
@@ -622,16 +655,21 @@ func handleLegacy(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	if v := os.Getenv("HTTP_PROXY"); v != "" {
-		log.Printf("[Agent] HTTP_PROXY=%s (outbound traffic flows through authbridge)", v)
-	} else {
-		log.Printf("[Agent] No HTTP_PROXY set — outbound traffic is direct (IBAC won't see it)")
-	}
+	proxiedClient = buildProxiedClient()
 
 	http.HandleFunc("/", handleA2A)
 	http.HandleFunc("/legacy", handleLegacy)
 
-	addr := ":8080"
+	// Honor PORT env so the demo's Pod manifest can land the agent on
+	// a port that doesn't collide with the authbridge sidecar's
+	// reverse proxy (default :8080). Falls back to 8080 for the
+	// standalone case (agent run on its own without authbridge in
+	// front, e.g. mirroring the original huang195/ibac demo).
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	addr := ":" + port
 	log.Printf("[Agent] Starting on %s (A2A at /, legacy at /legacy)", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("failed to start server: %v", err)
