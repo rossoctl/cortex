@@ -18,9 +18,9 @@
 #   - ollama on the host with llama3.2:3b pulled
 #   - kubectl, kind, podman/docker, python3 + PyYAML
 
-.PHONY: help build-images build-authbridge load-images deploy patch-config \
-        wait-reload demo-ibac show-result undeploy logs-agent logs-evil \
-        preflight wait-pods
+.PHONY: help build-images build-authbridge build-abctl load-images deploy \
+        patch-config wait-reload demo-ibac show-result show-result-text \
+        undeploy logs-agent logs-evil preflight wait-pods
 
 # `make` with no target prints help — easier discoverability than the
 # walls-of-comments at the top.
@@ -100,6 +100,14 @@ build-images:  ## Build agent + email-server + evil-server images
 	$(CONTAINER_RUNTIME) build -f agent/Dockerfile        -t $(AGENT_IMAGE) .
 	$(CONTAINER_RUNTIME) build -f email-server/Dockerfile -t $(EMAIL_IMAGE) .
 	$(CONTAINER_RUNTIME) build -f evil-server/Dockerfile  -t $(EVIL_IMAGE)  .
+
+build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
+	@if [ -x /tmp/abctl-ibac-demo ]; then \
+	  echo "[*] /tmp/abctl-ibac-demo already built; skipping. \`rm /tmp/abctl-ibac-demo\` to force rebuild."; \
+	else \
+	  echo "[*] Building abctl into /tmp/abctl-ibac-demo ..."; \
+	  cd ../../cmd/abctl && go build -o /tmp/abctl-ibac-demo . ; \
+	fi
 
 build-authbridge:  ## Rebuild authbridge from this branch under operator-pinned tag
 	@# Fail loudly if invoked from outside authbridge/demos/ibac/.
@@ -189,7 +197,10 @@ demo-ibac: preflight deploy patch-config wait-reload  ## Deploy the demo end-to-
 	@echo "║ to see the pipeline-level forensic.                      ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"
 
-show-result:  ## Render pipeline forensic for the most recent chat session
+show-result: build-abctl  ## Launch abctl against the agent's session API (interactive TUI)
+	bash scripts/launch-abctl.sh $(NAMESPACE) $(AGENT_NAME)
+
+show-result-text:  ## Print the pipeline forensic as plain text (non-interactive)
 	bash scripts/show-result.sh $(NAMESPACE) $(AGENT_NAME)
 
 # ---------- Cleanup ----------
