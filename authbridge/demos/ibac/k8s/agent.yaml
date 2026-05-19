@@ -33,6 +33,11 @@ metadata:
   labels:
     app.kubernetes.io/name: ibac-agent
     app.kubernetes.io/part-of: ibac-demo
+    # Operator's AgentCardReconciler reads these from the workload
+    # (not the Pod template) to know what protocol to fetch the card
+    # under and to confirm the workload is an agent.
+    kagenti.io/type: agent
+    protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -69,6 +74,12 @@ spec:
               value: "llama3.2:3b"
             - name: EMAIL_URL
               value: "http://ibac-email-server.team1.svc.cluster.local:8888"
+            # AGENT_PUBLIC_URL is what the agent advertises in its
+            # /.well-known/agent-card.json. The kagenti UI uses it
+            # for the agent card; default below works for the
+            # standard team1 install.
+            - name: AGENT_PUBLIC_URL
+              value: "http://ibac-agent.team1.svc.cluster.local:8080/"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -129,6 +140,26 @@ metadata:
   namespace: team1
 spec:
   type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ibac-agent
+
+---
+# AgentCard tells the operator's AgentCardReconciler to fetch
+# `/.well-known/agent-card.json` from the agent's Service. The kagenti
+# UI reads this CR's status to render the agent's metadata page —
+# without it the UI shows "Agent card not available."
+#
+# targetRef is duck-typed; a Deployment works (the operator just
+# needs the workload to have kagenti.io/type=agent).
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentCard
+metadata:
+  name: ibac-agent-card
+  namespace: team1
+spec:
+  syncPeriod: 30s
   targetRef:
     apiVersion: apps/v1
     kind: Deployment

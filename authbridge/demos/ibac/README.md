@@ -189,6 +189,23 @@ The script tails the authbridge container for `reloader: pipelines swapped`. Fai
 - **Slow kubelet sync**: the projected ConfigMap volume can take up to ~60s to propagate. Bump the timeout: `bash scripts/wait-for-reload.sh team1 ibac-agent 180`.
 - **Operator overwrote the patch**: rare — happens if the operator's reconciler kicks. Re-run `make patch-config && make wait-reload`.
 
+### Kagenti UI shows "Agent card not available"
+
+The kagenti operator's AgentCardReconciler fetches `/.well-known/agent-card.json` through the agent's Service and stuffs the result into an AgentCard CR. The UI reads that CR to display the agent's metadata. If the card endpoint isn't reachable or its URL is wrong, the UI shows "Agent card not available."
+
+Quick checks:
+
+```sh
+# Is the AgentCard CR Synced?
+kubectl -n team1 get agentcard ibac-agent-card
+
+# What does the agent actually serve?
+kubectl -n team1 port-forward svc/ibac-agent 18080:8080 &
+curl -s http://localhost:18080/.well-known/agent-card.json | jq .url
+```
+
+The card's `url` field is what the UI uses for the chat call. It defaults to `http://ibac-agent.team1.svc.cluster.local:8080/`. If your cluster uses a different namespace or service URL, override `AGENT_PUBLIC_URL` in `k8s/agent.yaml` and re-deploy.
+
 ### Chat says "I tried to POST but got HTTP 200" — exfiltration succeeded with IBAC enabled
 
 This shouldn't happen. Check the active config:

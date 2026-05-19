@@ -605,6 +605,55 @@ type jsonRPCError struct {
 	Message string `json:"message"`
 }
 
+// handleAgentCard serves the A2A agent card at
+// /.well-known/agent-card.json. The kagenti operator's
+// AgentCardReconciler fetches this URL through the agent's Service
+// and stuffs the result into an AgentCard CR; the kagenti UI's agent
+// detail page renders that. Without the endpoint the UI shows
+// "Agent card not available."
+//
+// jwt-validation's bypass list includes /.well-known/* by default
+// (bypass.DefaultPatterns at authlib/bypass), so the operator's
+// reconciler can hit this without a Bearer token.
+func handleAgentCard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// AGENT_PUBLIC_URL is what the UI displays as the agent's
+	// callable address. Defaults to the in-cluster Service URL,
+	// which is what kagenti UI actually uses for the chat call.
+	publicURL := envOr("AGENT_PUBLIC_URL", "http://ibac-agent.team1.svc.cluster.local:8080/")
+	card := map[string]any{
+		"name":               "IBAC Email Assistant",
+		"description":        "Email-poison demo agent for the IBAC plugin. Responds to \"Summarize my emails.\" by fetching from a poisoned email source — the IBAC plugin in the agent's authbridge sidecar blocks the embedded prompt-injection's exfiltration attempt.",
+		"protocolVersion":    "0.3.0",
+		"version":            "0.0.1",
+		"url":                publicURL,
+		"preferredTransport": "JSONRPC",
+		"defaultInputModes":  []string{"text"},
+		"defaultOutputModes": []string{"text"},
+		"capabilities": map[string]any{
+			"streaming": false,
+		},
+		"skills": []map[string]any{
+			{
+				"id":          "summarize_emails",
+				"name":        "Summarize emails",
+				"description": "Summarizes the user's emails. The demo's email source is intentionally poisoned with a prompt-injection payload that tries to coerce the agent into exfiltrating sensitive data; IBAC blocks the resulting outbound HTTP call before it leaves the pod.",
+				"tags":        []string{"demo", "email", "ibac"},
+				"examples": []string{
+					"Summarize my emails.",
+				},
+			},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(card); err != nil {
+		log.Printf("[Agent] failed to encode agent card: %v", err)
+	}
+}
+
 func handleA2A(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -730,6 +779,7 @@ func main() {
 
 	http.HandleFunc("/", handleA2A)
 	http.HandleFunc("/legacy", handleLegacy)
+	http.HandleFunc("/.well-known/agent-card.json", handleAgentCard)
 
 	// Honor PORT env so the demo's Pod manifest can land the agent on
 	// a port that doesn't collide with the authbridge sidecar's

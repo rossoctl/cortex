@@ -104,6 +104,12 @@ deploy:
 	kubectl apply -f k8s/email-server.yaml
 	kubectl apply -f k8s/evil-server.yaml
 	kubectl apply -f k8s/agent.yaml
+	@# Force a rollout so the deployments pick up newly-loaded images.
+	@# kubectl apply is a no-op when only the image content changed
+	@# but the manifest didn't (image tag is :latest). We rollout-
+	@# restart unconditionally; idempotent on the first run since
+	@# Available + Available == still Available.
+	kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/ibac-agent
 	$(MAKE) wait-pods
 
 wait-pods:
