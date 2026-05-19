@@ -78,6 +78,13 @@ type Options struct {
 
 	// Bearer, when non-empty, is sent as
 	// "Authorization: Bearer <Bearer>" on every request.
+	//
+	// llmclient itself never logs request headers — error messages
+	// surface only the status code and a truncated response body.
+	// Plugin authors who plumb in a custom HTTPClient with verbose
+	// HTTP-debug tracing (e.g. an httpdump RoundTripper) should
+	// confirm that tracing redacts Authorization in production
+	// builds; the bearer is sent on every call.
 	Bearer string
 
 	// Timeout bounds each call's whole request/response cycle.

@@ -263,10 +263,17 @@ func TestCallRaw_DoesNotMutateCallersRequest(t *testing.T) {
 // CallRaw uses the request's Model when set, even if the Client's
 // configured Model is different.
 func TestCallRaw_RequestModelOverridesClientModel(t *testing.T) {
-	var gotModel string
+	var (
+		gotModel  string
+		decodeErr error
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req llmclient.ChatRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			decodeErr = err
+			http.Error(w, "decode failed", http.StatusBadRequest)
+			return
+		}
 		gotModel = req.Model
 		_ = json.NewEncoder(w).Encode(llmclient.ChatResponse{
 			Choices: []llmclient.ChatChoice{{Message: llmclient.ChatMessage{Content: "ok"}}},
@@ -281,6 +288,9 @@ func TestCallRaw_RequestModelOverridesClientModel(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CallRaw: %v", err)
+	}
+	if decodeErr != nil {
+		t.Fatalf("server failed to decode request body: %v", decodeErr)
 	}
 	if gotModel != "request-override" {
 		t.Errorf("model = %q, want 'request-override'", gotModel)

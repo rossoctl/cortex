@@ -66,9 +66,14 @@ func CallStructured[T any](ctx context.Context, c *Client, systemPrompt, userPro
 	return ExtractJSON[T](content)
 }
 
+// truncate caps s at n runes (not bytes), appending an ellipsis when it
+// truncates. Rune-safe matters here because the helper is used on model
+// output that lands in slog / wrapped error messages — a byte-slice
+// could split a multi-byte UTF-8 sequence and produce U+FFFD in logs.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(r[:n]) + "…"
 }
