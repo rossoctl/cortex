@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
@@ -473,6 +474,29 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	}
 	authHeader := pctx.Headers.Get("Authorization")
 	host := pctx.Host
+
+	// Single-player fallback: if the outbound request arrived without an
+	// Authorization header, fetch the most recent validated inbound
+	// token from the process-level single-user store and inject it.
+	// The whole feature is gated on the top-level Config.SingleUserMode
+	// flag (auth.SetSingleUserModeEnabled, called once at startup):
+	// when disabled, GetSingleUserToken returns ok=false and this
+	// branch is a no-op. Explicit outbound headers always win — we
+	// never override an agent-supplied token. Cache miss is silent and
+	// falls through to the existing no-token policy in HandleOutbound.
+	if authHeader == "" {
+		if cached, _, ok := auth.GetSingleUserToken(time.Now()); ok {
+			authHeader = "Bearer " + cached
+			pctx.Headers.Set("Authorization", authHeader)
+			pctx.Record(pipeline.Invocation{
+				Action: pipeline.ActionModify,
+				Reason: "single_user_cache_hit",
+				Details: map[string]string{
+					"route_host": host,
+				},
+			})
+		}
+	}
 
 	result := p.inner.HandleOutbound(ctx, authHeader, host)
 	// Record an Auth.Outbound entry on every branch so operators have

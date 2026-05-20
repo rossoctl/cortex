@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
@@ -325,5 +327,206 @@ func TestTokenExchange_NoToken_Deny(t *testing.T) {
 	status, _, _ := action.Violation.Render()
 	if status != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", status)
+	}
+}
+
+// --- Single-player mode (cache-fallback for missing inbound header) ---
+
+// newSPExchangeServer returns an httptest token endpoint that responds
+// with "exchanged-{subject_token}" as the access token, so the test can
+// assert that the right subject_token reached the IdP.
+func newSPExchangeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		subj := r.PostFormValue("subject_token")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "exchanged-" + subj,
+			"token_type":   "Bearer",
+			"expires_in":   300,
+		})
+	}))
+}
+
+// configureSPPlugin configures a plugin against a stand-up exchange
+// server with a single route mapping any host to a target audience.
+// The single-player feature is now controlled top-level via
+// auth.SetSingleUserModeEnabled, not via plugin config.
+func configureSPPlugin(t *testing.T, exchangeURL string) *TokenExchange {
+	t.Helper()
+	p := NewTokenExchange()
+	cfg := map[string]any{
+		"token_url":      exchangeURL,
+		"default_policy": "exchange",
+		"identity": map[string]any{
+			"type":          "client-secret",
+			"client_id":     "agent",
+			"client_secret": "secret",
+		},
+		"routes": map[string]any{
+			"rules": []map[string]any{
+				{"host": "target-svc", "target_audience": "downstream-aud"},
+			},
+		},
+	}
+	raw, _ := json.Marshal(cfg)
+	if err := p.Configure(raw); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	return p
+}
+
+// withSingleUserMode flips the package-level enabled bit for the test
+// and restores it on cleanup.
+func withSingleUserMode(t *testing.T, enabled bool) {
+	t.Helper()
+	prev := auth.IsSingleUserModeEnabled()
+	auth.SetSingleUserModeEnabled(enabled)
+	t.Cleanup(func() { auth.SetSingleUserModeEnabled(prev) })
+}
+
+func TestTokenExchange_SingleUserMode_CacheHit_InjectsToken(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+	srv := newSPExchangeServer(t)
+	defer srv.Close()
+
+	auth.StoreSingleUserToken("inbound-tok", "alice", time.Now().Add(2*time.Minute))
+
+	p := configureSPPlugin(t, srv.URL)
+
+	// Outbound request with NO Authorization header.
+	pctx := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Host:      "target-svc",
+		Headers:   http.Header{},
+	}
+	if got := invokeOnRequest(p, pctx).Type; got != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", got)
+	}
+
+	// Authorization should be the exchanged token derived from the
+	// cached subject_token.
+	got := pctx.Headers.Get("Authorization")
+	want := "Bearer exchanged-inbound-tok"
+	if got != want {
+		t.Errorf("Authorization = %q, want %q (proves cached token used as subject_token)", got, want)
+	}
+
+	// Two outbound entries: cache_hit modify, plus the actual exchange's
+	// token_replaced modify.
+	if pctx.Extensions.Invocations == nil {
+		t.Fatal("expected invocations recorded")
+	}
+	var cacheHit, replaced bool
+	for _, inv := range pctx.Extensions.Invocations.Outbound {
+		if inv.Reason == "single_user_cache_hit" {
+			cacheHit = true
+		}
+		if inv.Reason == "token_replaced" {
+			replaced = true
+		}
+	}
+	if !cacheHit {
+		t.Error("expected single_user_cache_hit invocation")
+	}
+	if !replaced {
+		t.Error("expected token_replaced invocation (exchange should have run on the cached token)")
+	}
+}
+
+func TestTokenExchange_SingleUserMode_CacheMiss_NoTokenPolicy(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+	srv := newSPExchangeServer(t)
+	defer srv.Close()
+
+	// Cache empty — verify reset is in effect.
+	if _, _, ok := auth.GetSingleUserToken(time.Now()); ok {
+		t.Fatal("test prelude: cache should be empty after reset")
+	}
+
+	p := configureSPPlugin(t, srv.URL)
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Host:      "target-svc",
+		Headers:   http.Header{},
+	}
+	action := invokeOnRequest(p, pctx)
+
+	// Default no_token_policy is "deny".
+	if action.Type != pipeline.Reject {
+		t.Errorf("got %v, want Reject (cache miss should fall through to no_token_policy=deny)", action.Type)
+	}
+	if pctx.Headers.Get("Authorization") != "" {
+		t.Error("Authorization should remain empty on cache miss")
+	}
+}
+
+func TestTokenExchange_SingleUserMode_ExplicitHeaderWins(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+	srv := newSPExchangeServer(t)
+	defer srv.Close()
+
+	auth.StoreSingleUserToken("inbound-tok", "alice", time.Now().Add(2*time.Minute))
+
+	p := configureSPPlugin(t, srv.URL)
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Host:      "target-svc",
+		Headers:   http.Header{"Authorization": []string{"Bearer explicit-tok"}},
+	}
+	if got := invokeOnRequest(p, pctx).Type; got != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", got)
+	}
+
+	// Explicit header should be used as subject_token, not the cached one.
+	got := pctx.Headers.Get("Authorization")
+	want := "Bearer exchanged-explicit-tok"
+	if got != want {
+		t.Errorf("Authorization = %q, want %q (explicit header must win over cache)", got, want)
+	}
+
+	// No cache_hit invocation should be recorded — the cache lookup
+	// branch is gated on authHeader == "".
+	if pctx.Extensions.Invocations != nil {
+		for _, inv := range pctx.Extensions.Invocations.Outbound {
+			if inv.Reason == "single_user_cache_hit" {
+				t.Error("cache_hit invocation should not fire when explicit header is present")
+			}
+		}
+	}
+}
+
+func TestTokenExchange_SingleUserMode_DisabledIgnoresCache(t *testing.T) {
+	withSingleUserMode(t, false)
+	t.Cleanup(auth.ResetSingleUserToken)
+	srv := newSPExchangeServer(t)
+	defer srv.Close()
+
+	// Populate the cache while disabled — Store will no-op. Re-enable
+	// briefly to populate, then disable for the actual test.
+	auth.SetSingleUserModeEnabled(true)
+	auth.StoreSingleUserToken("inbound-tok", "alice", time.Now().Add(2*time.Minute))
+	auth.SetSingleUserModeEnabled(false)
+
+	p := configureSPPlugin(t, srv.URL)
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Host:      "target-svc",
+		Headers:   http.Header{},
+	}
+	action := invokeOnRequest(p, pctx)
+
+	// With the top-level flag disabled, GetSingleUserToken short-circuits
+	// to ok=false, so the cache lookup misses and we fall through to
+	// no_token_policy=deny.
+	if action.Type != pipeline.Reject {
+		t.Errorf("got %v, want Reject (cache should be ignored when single_user_mode is disabled at the top level)", action.Type)
 	}
 }

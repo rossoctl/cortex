@@ -439,6 +439,29 @@ func TestSessionConfig_SessionEnabled(t *testing.T) {
 	}
 }
 
+// --- Top-level Config.SingleUserMode tri-state ---
+
+func TestConfig_SingleUserModeEnabled(t *testing.T) {
+	boolP := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"unset defaults to true (default-on for inbound→outbound bridge)", Config{}, true},
+		{"explicit true", Config{SingleUserMode: boolP(true)}, true},
+		{"explicit false opts out of the bridge", Config{SingleUserMode: boolP(false)}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.SingleUserModeEnabled(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPluginEntry_OnError covers the three accepted policy values plus
 // the omitted case. An invalid policy must fail loud at YAML parse
 // time so operators catch typos before the pod boots.

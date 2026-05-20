@@ -121,6 +121,12 @@ func main() {
 		log.Fatalf("initial pipeline build: %v", err)
 	}
 
+	// Single-player mode is a process-wide feature gate consumed by the
+	// auth package's inbound→outbound token bridge. Read from top-level
+	// config once at startup; jwt-validation captures and token-exchange
+	// reads the cache only when this is true.
+	auth.SetSingleUserModeEnabled(cfg.SingleUserModeEnabled())
+
 	initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer initCancel()
 	if err := inboundPipeline.Start(initCtx); err != nil {

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
@@ -397,7 +398,45 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			"token_scopes":   strings.Join(result.Claims.Scopes, " "),
 		},
 	})
+
+	// Capture the validated token into the process-level single-user
+	// store so the outbound token-exchange plugin can use it as
+	// subject_token when the agent didn't propagate the Authorization
+	// header. The store itself is gated on the top-level
+	// Config.SingleUserMode flag (auth.SetSingleUserModeEnabled, called
+	// once at startup): when disabled, Store is a no-op and this branch
+	// is harmless. See authbridge/docs/plugin-reference.md for the
+	// single-player constraint.
+	p.captureSingleUserToken(authHeader, result.Claims)
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// captureSingleUserToken caches the freshly-validated bearer for the
+// outbound side to consume. Re-uses the jwt-validation-trusted exp from
+// claims rather than re-parsing the JWT, and applies the package-level
+// cap/floor policy in auth.CapSingleUserExpiry.
+//
+// Best-effort: any branch that returns early (empty token, near-expiry
+// floor) is silent because the operational outcome is identical to
+// "feature disabled" — the outbound side will fall through to its
+// no-token policy on cache miss. The tripwire WARN fires only when a
+// successful capture overwrites a different subject, which is the
+// situation the operator needs to know about.
+func (p *JWTValidation) captureSingleUserToken(authHeader string, claims *validation.Claims) {
+	token := auth.ExtractBearer(authHeader)
+	if token == "" {
+		return
+	}
+	cappedExp, ok := auth.CapSingleUserExpiry(time.Now(), claims.ExpiresAt)
+	if !ok {
+		return
+	}
+	prevSub := auth.StoreSingleUserToken(token, claims.Subject, cappedExp)
+	if prevSub != "" && prevSub != claims.Subject {
+		slog.Warn("jwt-validation: single-user cached subject changed — single-player assumption violated; last-write-wins",
+			"previous", prevSub,
+			"current", claims.Subject)
+	}
 }
 
 func (p *JWTValidation) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {

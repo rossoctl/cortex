@@ -1,12 +1,16 @@
 package jwtvalidation
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
@@ -389,5 +393,200 @@ func TestJWTValidation_Configure_AllowedAudiencesUnionsLiteral(t *testing.T) {
 	want := []string{"public-ui", "spi-like-id"}
 	if !slices.Equal(got, want) {
 		t.Errorf("InboundAudiences() = %#v, want %#v", got, want)
+	}
+}
+
+// --- Single-user capture (single-player mode) ---
+
+// allowClaimsForCapture builds a Claims that satisfies the inner Auth's
+// allow path with a future-dated ExpiresAt comfortably above MinTTL and
+// below MaxTTL — so capture happens via the happy-path code branch
+// rather than getting elided by the cap/floor policy.
+func allowClaimsForCapture(t *testing.T, subject string) *validation.Claims {
+	t.Helper()
+	return &validation.Claims{
+		Subject:   subject,
+		Issuer:    "http://issuer.example",
+		Audience:  []string{"agent-aud"},
+		ClientID:  "caller",
+		Scopes:    []string{"openid"},
+		ExpiresAt: time.Now().Add(2 * time.Minute),
+	}
+}
+
+func newCapturePlugin(t *testing.T, claims *validation.Claims) *JWTValidation {
+	t.Helper()
+	inner := auth.New(auth.Config{
+		Verifier: &mockJWTVerifier{claims: claims},
+		Identity: auth.IdentityConfig{Audiences: []string{"agent-aud"}},
+	})
+	return newTestJWTValidation(t, "http://issuer.example", inner)
+}
+
+// withSingleUserMode flips the package-level enabled bit for the test
+// and restores it on cleanup.
+func withSingleUserMode(t *testing.T, enabled bool) {
+	t.Helper()
+	prev := auth.IsSingleUserModeEnabled()
+	auth.SetSingleUserModeEnabled(enabled)
+	t.Cleanup(func() { auth.SetSingleUserModeEnabled(prev) })
+}
+
+func TestJWTValidation_Capture_Enabled_ValidToken(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	p := newCapturePlugin(t, allowClaimsForCapture(t, "alice"))
+
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx.Headers.Set("Authorization", "Bearer tok-1")
+
+	if got := invokeOnRequest(p, pctx).Type; got != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", got)
+	}
+
+	tok, sub, ok := auth.GetSingleUserToken(time.Now())
+	if !ok {
+		t.Fatal("expected cache hit after capture")
+	}
+	if tok != "tok-1" || sub != "alice" {
+		t.Errorf("cache = (%q, %q), want (tok-1, alice)", tok, sub)
+	}
+}
+
+func TestJWTValidation_Capture_Disabled_NoCacheWrite(t *testing.T) {
+	withSingleUserMode(t, false)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	p := newCapturePlugin(t, allowClaimsForCapture(t, "alice"))
+
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx.Headers.Set("Authorization", "Bearer tok-1")
+
+	invokeOnRequest(p, pctx)
+
+	// Re-enable for the read so we can confirm the cache really is
+	// empty (rather than just gated on Get).
+	auth.SetSingleUserModeEnabled(true)
+	if _, _, ok := auth.GetSingleUserToken(time.Now()); ok {
+		t.Error("cache should not be populated when single_user_mode is disabled at the top level")
+	}
+}
+
+func TestJWTValidation_Capture_NearExpiry_Skipped(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	// 10s from now < MinTTL (30s); CapSingleUserExpiry returns false
+	// and capture is skipped.
+	claims := allowClaimsForCapture(t, "alice")
+	claims.ExpiresAt = time.Now().Add(10 * time.Second)
+
+	p := newCapturePlugin(t, claims)
+
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx.Headers.Set("Authorization", "Bearer tok-1")
+
+	invokeOnRequest(p, pctx)
+
+	if _, _, ok := auth.GetSingleUserToken(time.Now()); ok {
+		t.Error("cache should not be populated when token is near expiry (below MinTTL floor)")
+	}
+}
+
+func TestJWTValidation_Capture_LongLived_Capped(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	// 1h from now > MaxTTL (5m); cached exp should be capped at
+	// approximately now+MaxTTL — verify by probing Get with a future "now".
+	claims := allowClaimsForCapture(t, "alice")
+	claims.ExpiresAt = time.Now().Add(1 * time.Hour)
+
+	p := newCapturePlugin(t, claims)
+
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx.Headers.Set("Authorization", "Bearer tok-1")
+
+	invokeOnRequest(p, pctx)
+
+	// Just past MaxTTL: cache should report miss, proving the exp was
+	// capped (otherwise the original 1h exp would still be valid).
+	pastMaxTTL := time.Now().Add(6 * time.Minute)
+	if _, _, ok := auth.GetSingleUserToken(pastMaxTTL); ok {
+		t.Error("cache should expire at MaxTTL even when token's natural exp is later")
+	}
+
+	// Sanity: still valid right now.
+	if _, _, ok := auth.GetSingleUserToken(time.Now()); !ok {
+		t.Error("cache should be populated immediately after capture")
+	}
+}
+
+func TestJWTValidation_Capture_SubjectChange_EmitsWarn(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	var logBuf bytes.Buffer
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+
+	// First capture: alice. No warn.
+	p := newCapturePlugin(t, allowClaimsForCapture(t, "alice"))
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx.Headers.Set("Authorization", "Bearer tok-alice")
+	invokeOnRequest(p, pctx)
+
+	if strings.Contains(logBuf.String(), "subject changed") {
+		t.Fatalf("first capture should not warn, got: %s", logBuf.String())
+	}
+
+	// Second capture: bob — single-player assumption violated.
+	p2 := newCapturePlugin(t, allowClaimsForCapture(t, "bob"))
+	pctx2 := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx2.Headers.Set("Authorization", "Bearer tok-bob")
+	invokeOnRequest(p2, pctx2)
+
+	out := logBuf.String()
+	if !strings.Contains(out, "single-user cached subject changed") {
+		t.Errorf("expected subject-change WARN, log was: %s", out)
+	}
+	if !strings.Contains(out, "previous=alice") || !strings.Contains(out, "current=bob") {
+		t.Errorf("expected previous=alice and current=bob in log, got: %s", out)
+	}
+
+	// Same subject re-captured: no warn.
+	logBuf.Reset()
+	p3 := newCapturePlugin(t, allowClaimsForCapture(t, "bob"))
+	pctx3 := &pipeline.Context{Headers: http.Header{}, Path: "/api/call"}
+	pctx3.Headers.Set("Authorization", "Bearer tok-bob-2")
+	invokeOnRequest(p3, pctx3)
+	if strings.Contains(logBuf.String(), "subject changed") {
+		t.Errorf("same-subject re-capture should not warn, got: %s", logBuf.String())
+	}
+}
+
+func TestJWTValidation_Capture_BypassPath_NoCacheWrite(t *testing.T) {
+	withSingleUserMode(t, true)
+	t.Cleanup(auth.ResetSingleUserToken)
+
+	matcher, _ := bypass.NewMatcher(bypass.DefaultPatterns)
+	inner := auth.New(auth.Config{
+		Bypass:   matcher,
+		Verifier: &mockJWTVerifier{claims: allowClaimsForCapture(t, "alice")},
+		Identity: auth.IdentityConfig{Audiences: []string{"agent-aud"}},
+	})
+	p := newTestJWTValidation(t, "http://issuer.example", inner)
+
+	// /healthz is in DefaultPatterns; bypass returns Continue with nil
+	// Claims, the capture branch is gated on the success path which
+	// runs only after pctx.Identity is set.
+	pctx := &pipeline.Context{Headers: http.Header{}, Path: "/healthz"}
+	pctx.Headers.Set("Authorization", "Bearer tok-1")
+	invokeOnRequest(p, pctx)
+
+	if _, _, ok := auth.GetSingleUserToken(time.Now()); ok {
+		t.Error("bypass path should not populate single-user cache")
 	}
 }

@@ -84,6 +84,56 @@ and `expected_audience_host` (waypoint per-request derived audience, may
 be empty). Update saved queries and dashboards that filtered on the old
 key.
 
+### Single-player mode (default-on)
+
+Most agent runtimes — LangChain, CrewAI, Claude Code — don't propagate
+the inbound `Authorization` header to the outbound HTTP requests they
+generate. AuthBridge bridges the two sides automatically:
+
+- `jwt-validation` caches each successfully-validated inbound user JWT
+  in a process-level store.
+- `token-exchange` consults that store on outbound when the request
+  arrived with no `Authorization` header, and injects the cached token
+  as the OBO subject.
+
+This is governed by a single top-level flag in the runtime YAML:
+
+```yaml
+single_user_mode: true   # default; omit to inherit
+pipeline:
+  inbound:
+    plugins: [...]
+  outbound:
+    plugins: [...]
+```
+
+Set `single_user_mode: false` to opt out. There are no per-plugin flags
+— the pairing is enforced at the framework level so inbound and
+outbound can't drift apart.
+
+An explicit outbound `Authorization` header always wins; the cache
+lookup only fires when the header is empty.
+
+**Cap / floor.** Cached entries respect `min(token.exp, now+5m)` and
+skip capture when the token has under 30 seconds of life. Not
+configurable; one less thing to tune.
+
+**The single-player constraint.** This bridge is only safe when a
+process serves one user at a time. With multi-user concurrent traffic
+the cache is last-write-wins, so a downstream tool call could be
+attributed to the wrong user. Whenever a successful capture overwrites
+a different subject, jwt-validation emits a WARN log
+(`single-user cached subject changed`) so operators have a tripwire.
+
+**Cluster scaling.** Each replica has its own in-memory cache. For
+horizontally-scaled agents, route a user's session to a sticky replica
+or use a future correlation-ID-based design. Default Kagenti deployments
+run a single replica per agent, so this is typically a non-issue.
+
+**When you don't want this.** Set `single_user_mode: false` at the top
+level for any deployment that genuinely handles concurrent users with
+mixed identities, until a correlation-ID-based bridge ships.
+
 ## `on_error` policy
 
 > **Naming caveat.** Despite the name, `on_error` controls how the

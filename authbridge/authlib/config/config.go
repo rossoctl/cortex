@@ -24,12 +24,43 @@ type Config struct {
 	Pipeline PipelineConfig `yaml:"pipeline" json:"pipeline"`
 	Session  SessionConfig  `yaml:"session" json:"session"`
 	Stats    StatsConfig    `yaml:"stats" json:"stats"`
+
 	// MTLS, when non-nil, enables transport-level mTLS using SPIRE
 	// X.509 SVIDs. Applies symmetrically to inbound (reverse-proxy)
 	// and outbound (forward-proxy) traffic in proxy-sidecar mode;
 	// envoy-sidecar mode is unaffected (Envoy handles its own TLS via
 	// SDS). Pointer so absent block = today's plaintext behavior.
 	MTLS *MTLSConfig `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+
+	// SingleUserMode is the single control for the inbound→outbound
+	// token-bridging feature. When enabled (the default), jwt-validation
+	// caches each successfully-validated user JWT in a process-level
+	// store, and token-exchange consults that store on outbound when no
+	// Authorization header is present — bridging frameworks that don't
+	// propagate the inbound header (LangChain, CrewAI, Claude Code).
+	//
+	// Pointer-bool with default-true semantics, mirroring SessionConfig.
+	// nil means "unset → on"; explicit `false` opts the deployment out.
+	//
+	// This flag is intentionally at top level rather than per-plugin:
+	// the feature requires the inbound and outbound sides to be
+	// consistent, and a single knob removes the per-pipeline
+	// inconsistency footgun.
+	//
+	// Constraint: only safe for processes handling one user at a time.
+	// See authbridge/docs/plugin-reference.md for the single-player
+	// caveat and multi-replica notes.
+	SingleUserMode *bool `yaml:"single_user_mode" json:"single_user_mode"`
+}
+
+// SingleUserModeEnabled returns true when the inbound→outbound token
+// bridge should run. Defaults to true when the field is unset, so
+// operators must explicitly opt out with `single_user_mode: false`.
+func (c Config) SingleUserModeEnabled() bool {
+	if c.SingleUserMode == nil {
+		return true
+	}
+	return *c.SingleUserMode
 }
 
 // MTLSMode names the inbound + outbound TLS posture. Vocabulary
