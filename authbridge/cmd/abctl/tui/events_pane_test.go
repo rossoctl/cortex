@@ -358,3 +358,76 @@ func TestFlattenPair_AuthOnlyEndToEnd(t *testing.T) {
 		t.Errorf("statusCell = %q, want 200", got)
 	}
 }
+
+// TestIsSkipRow checks the predicate the events table uses to decide
+// whether a row should be hidden under the default skip-hiding mode.
+// Only Action=skip rows return true; the pseudo-row with no
+// Invocation, and rows for any other action, are kept.
+func TestIsSkipRow(t *testing.T) {
+	cases := []struct {
+		name string
+		row  invocationRow
+		want bool
+	}{
+		{
+			name: "skip action",
+			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionSkip}},
+			want: true,
+		},
+		{
+			name: "allow action",
+			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionAllow}},
+			want: false,
+		},
+		{
+			name: "deny action",
+			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionDeny}},
+			want: false,
+		},
+		{
+			name: "observe action",
+			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionObserve}},
+			want: false,
+		},
+		{
+			name: "modify action",
+			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionModify}},
+			want: false,
+		},
+		{
+			name: "pseudo-row with no invocation",
+			// Parser-only events emit a pseudo-row so they remain
+			// reachable. These should never be classified as skips —
+			// hiding them would lose protocol-only events from the
+			// timeline.
+			row:  invocationRow{event: &pipeline.SessionEvent{}, inv: nil},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isSkipRow(tc.row); got != tc.want {
+				t.Errorf("isSkipRow = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlural matches the helper used by the events footer hint:
+// "1 skip hidden" vs "2 skips hidden".
+func TestPlural(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "s"},
+		{1, ""},
+		{2, "s"},
+		{17, "s"},
+	}
+	for _, tc := range cases {
+		if got := plural(tc.n); got != tc.want {
+			t.Errorf("plural(%d) = %q, want %q", tc.n, got, tc.want)
+		}
+	}
+}

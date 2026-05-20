@@ -67,6 +67,7 @@ The UI has three panes. `Enter` drills in; `Esc` backs out.
 | `Enter` / `→` / `l` | sessions, events | drill into selection |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
+| `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `/tmp` |
 | `g` / `G` | lists | jump to top / bottom |

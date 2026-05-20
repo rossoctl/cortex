@@ -44,3 +44,13 @@ func nonEmpty(s, fallback string) string {
 	}
 	return s
 }
+
+// plural returns "s" when n != 1, "" otherwise. Lets footer hints write
+// "1 skip hidden" / "2 skips hidden" without a separate format-string
+// branch per case.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}

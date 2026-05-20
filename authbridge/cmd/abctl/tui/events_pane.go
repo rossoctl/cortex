@@ -80,9 +80,17 @@ func (m *model) rebuildEventsTable() {
 
 	rows := make([]table.Row, 0, len(rowSpecs))
 	m.visibleRows = m.visibleRows[:0]
+	m.hiddenSkips = 0
 	var lastEvent *pipeline.SessionEvent // most-recent event already rendered (post-filter)
 	for i, rs := range rowSpecs {
 		if m.filter != "" && !matchInvocationRow(rs, m.filter) {
+			continue
+		}
+		// Hide plugin-didn't-act rows by default. The footer hint
+		// shows the count + the toggle key so an operator who
+		// expected more rows can press `s` to surface them.
+		if !m.showSkips && isSkipRow(rs) {
+			m.hiddenSkips++
 			continue
 		}
 		// A "continuation" row is one whose event is the same as the
@@ -193,6 +201,15 @@ func (r invocationRow) pluginCell() string {
 		return "—"
 	}
 	return r.inv.Plugin
+}
+
+// isSkipRow reports whether r represents a plugin that ran but didn't
+// act on the message (jwt-validation on a bypass path, IBAC on a bypass
+// host, token-exchange with no matching route). Operators usually want
+// these hidden so the timeline shows decisions, not non-events. The
+// `s` keybinding toggles visibility.
+func isSkipRow(r invocationRow) bool {
+	return r.inv != nil && r.inv.Action == pipeline.ActionSkip
 }
 
 // flattenInvocations walks the event slice in order and, for each event,

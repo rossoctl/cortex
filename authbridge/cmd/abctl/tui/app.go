@@ -101,11 +101,19 @@ type model struct {
 	connState connStateInfo
 
 	// UI state.
-	pane          paneID
-	selectedSess  string
-	filter        string
-	filtering     bool
-	paused        bool
+	pane         paneID
+	selectedSess string
+	filter       string
+	filtering    bool
+	paused       bool
+	// showSkips toggles whether Action=skip rows render in the events
+	// table. False (default) hides them — most operators care about
+	// allow/deny/modify/observe events. Toggle with `s`. hiddenSkips
+	// is the count from the most recent rebuildEventsTable, surfaced
+	// in the footer so a sparse-looking timeline doesn't read as
+	// data loss.
+	showSkips     bool
+	hiddenSkips   int
 	flash         string
 	flashUntil    time.Time
 	width, height int
