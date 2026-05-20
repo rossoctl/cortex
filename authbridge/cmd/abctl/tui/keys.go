@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -55,6 +56,16 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "p":
 		m.paused = !m.paused
+		return nil
+
+	case "s":
+		// Toggle skip-row visibility. Only meaningful while the events
+		// pane is active, but accepting the key on any pane keeps the
+		// keybinding simple and lets operators "set their preference"
+		// before drilling into a session. rebuildEventsTable is a no-op
+		// when no session is selected.
+		m.showSkips = !m.showSkips
+		m.rebuildEventsTable()
 		return nil
 
 	case "esc", "left", "h":
@@ -120,7 +131,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.goBottom()
 		return nil
 
-	// Dispatch j/k/up/down to the active component's Update.
+		// Dispatch j/k/up/down to the active component's Update.
 	}
 
 	// Fall through: let the active pane's component handle it.
@@ -214,7 +225,15 @@ func (m *model) helpView() string {
 	case paneSessions:
 		return "[↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [p] pause  [q] quit"
 	case paneEvents:
-		return "[↑↓] nav  [↵] detail  [esc] back  [/] filter  [p] pause  [q] quit"
+		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  [s] skips  [p] pause  [q] quit"
+		// Surface the hidden-skip count so a sparse timeline doesn't
+		// look like data loss. Only annotate when there's something
+		// to say (skips off AND at least one row was hidden).
+		if !m.showSkips && m.hiddenSkips > 0 {
+			base = fmt.Sprintf("%s  ·  %d skip%s hidden",
+				base, m.hiddenSkips, plural(m.hiddenSkips))
+		}
+		return base
 	case paneDetail:
 		return "[↑↓] scroll  [y] yank  [esc] back  [q] quit"
 	case panePipeline:

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -78,11 +79,24 @@ func (m *model) rebuildEventsTable() {
 	// └resp glyph, so the two visual cues stay consistent.
 	eventIDs := computeEventPairIDs(rowSpecs, pairs)
 
+	// Per-row tree glyph (┌ / │ / └) for the PHASE column. Lets
+	// operators trace a paired (req, resp) span visually even when
+	// other rows interleave between them.
+	spanGlyphs := computeSpanGlyphs(pairs, len(rowSpecs))
+
 	rows := make([]table.Row, 0, len(rowSpecs))
 	m.visibleRows = m.visibleRows[:0]
+	m.hiddenSkips = 0
 	var lastEvent *pipeline.SessionEvent // most-recent event already rendered (post-filter)
 	for i, rs := range rowSpecs {
 		if m.filter != "" && !matchInvocationRow(rs, m.filter) {
+			continue
+		}
+		// Hide plugin-didn't-act rows by default. The footer hint
+		// shows the count + the toggle key so an operator who
+		// expected more rows can press `s` to surface them.
+		if !m.showSkips && isSkipRow(rs) {
+			m.hiddenSkips++
 			continue
 		}
 		// A "continuation" row is one whose event is the same as the
@@ -96,24 +110,28 @@ func (m *model) rebuildEventsTable() {
 		continuation := lastEvent == rs.event
 
 		var idCell, timeCell, dirCell, phaseCell, statusC, durCell, tokC, hostC string
+		// Up to two levels of (req, resp) span nesting are surfaced as
+		// box-drawing prefixes in PHASE so operators can trace pairs
+		// even when other rows interleave. Width fits the 6-char PHASE
+		// budget: outer (1) + inner (1) + base phase ("resp"/"deny" =
+		// 4) → 6 max.
+		prefix := spanGlyphs[i].prefix()
 		if !continuation {
 			if id, ok := eventIDs[rs.event]; ok {
 				idCell = strconv.Itoa(id)
 			}
 			timeCell = rs.event.At.Format("15:04:05.00")
 			dirCell = shortDirection(rs.event.Direction)
-			phaseCell = shortPhase(rs.event.Phase)
-			if rs.event.Phase == pipeline.SessionResponse {
-				if _, paired := pairs[i]; paired {
-					// └ prefix visually connects the response row to its
-					// request row in the same (direction, plugin) pair.
-					phaseCell = "└" + phaseCell
-				}
-			}
+			phaseCell = prefix + shortPhase(rs.event.Phase)
 			statusC = statusCell(*rs.event)
 			durCell = durationCell(*rs.event)
 			tokC = tokensCell(*rs.event)
 			hostC = truncStr(rs.event.Host, 20)
+		} else if prefix != "" {
+			// Continuation row inside a pair span: render only the
+			// connectors (no base phase text) so the operator's eye
+			// can follow the pair across multi-invocation events.
+			phaseCell = prefix
 		}
 
 		rows = append(rows, table.Row{
@@ -195,6 +213,116 @@ func (r invocationRow) pluginCell() string {
 	return r.inv.Plugin
 }
 
+// isSkipRow reports whether r represents a plugin that ran but didn't
+// act on the message (jwt-validation on a bypass path, IBAC on a bypass
+// host, token-exchange with no matching route). Operators usually want
+// these hidden so the timeline shows decisions, not non-events. The
+// `s` keybinding toggles visibility.
+func isSkipRow(r invocationRow) bool {
+	return r.inv != nil && r.inv.Action == pipeline.ActionSkip
+}
+
+// spanGlyph names which corner / side of a (request, response) pair
+// span a row sits at, for tree-style rendering in the PHASE column.
+// rune (not byte) because the box-drawing characters are multi-byte
+// in UTF-8 and would overflow a byte.
+type spanGlyph rune
+
+const (
+	glyphNone   spanGlyph = 0
+	glyphStart  spanGlyph = '┌' // request row that pairs with a later response
+	glyphMiddle spanGlyph = '│' // row strictly between a paired request and its response
+	glyphEnd    spanGlyph = '└' // response row paired with an earlier request
+)
+
+// spanLevels holds the box-drawing glyphs for up to two levels of
+// nested (req, resp) spans on a single row. outer is the largest span
+// containing the row; inner is the next-largest. Deeper nesting is
+// not surfaced — operators only need the broad shape, not the full
+// nesting tree.
+type spanLevels struct {
+	outer spanGlyph
+	inner spanGlyph
+}
+
+// prefix returns the concatenated rune string for the PHASE-column
+// prefix: e.g. "│┌" when the row is inside an outer span and at the
+// start of an inner span; "└" alone when only an outer endpoint
+// applies; "" when the row is in no pair span.
+func (s spanLevels) prefix() string {
+	switch {
+	case s.outer == glyphNone:
+		return ""
+	case s.inner == glyphNone:
+		return string(rune(s.outer))
+	default:
+		return string([]rune{rune(s.outer), rune(s.inner)})
+	}
+}
+
+// computeSpanGlyphs assigns each row up to two tree glyphs (outer +
+// inner) drawn from its position relative to all (req, resp) spans in
+// the row list. The two largest spans containing the row are surfaced;
+// deeper nesting is dropped so the PHASE column doesn't blow its
+// 6-char width budget.
+//
+// pairs is the bidirectional map from pairInvocationRows: pairs[i]=j
+// AND pairs[j]=i for any matched pair (i, j). Unpaired rows are absent.
+// n is the total row count.
+func computeSpanGlyphs(pairs map[int]int, n int) []spanLevels {
+	out := make([]spanLevels, n)
+	if len(pairs) == 0 {
+		return out
+	}
+	// Collect each pair (a, b) with a < b once; the resp→req mirror
+	// entries are skipped.
+	type span struct{ a, b int }
+	spans := make([]span, 0, len(pairs)/2)
+	for a, b := range pairs {
+		if a < b {
+			spans = append(spans, span{a, b})
+		}
+	}
+
+	glyphAt := func(s span, i int) spanGlyph {
+		switch {
+		case i == s.a:
+			return glyphStart
+		case i == s.b:
+			return glyphEnd
+		case s.a < i && i < s.b:
+			return glyphMiddle
+		}
+		return glyphNone
+	}
+
+	for i := range n {
+		// Find every span this row participates in (endpoint or
+		// strictly inside).
+		var participating []span
+		for _, s := range spans {
+			if s.a <= i && i <= s.b {
+				participating = append(participating, s)
+			}
+		}
+		if len(participating) == 0 {
+			continue
+		}
+		// Sort by width descending — outer (widest) first, then inner.
+		// Stable so equal-width spans keep their declaration order
+		// (irrelevant in practice but keeps tests deterministic).
+		sort.SliceStable(participating, func(p, q int) bool {
+			return (participating[p].b - participating[p].a) >
+				(participating[q].b - participating[q].a)
+		})
+		out[i].outer = glyphAt(participating[0], i)
+		if len(participating) > 1 {
+			out[i].inner = glyphAt(participating[1], i)
+		}
+	}
+	return out
+}
+
 // flattenInvocations walks the event slice in order and, for each event,
 // emits one invocationRow per Invocation it carries (Inbound then
 // Outbound). Events with no Invocations fall back to a single pseudo-row
@@ -240,7 +368,12 @@ func shortPhase(p pipeline.SessionPhase) string {
 	case pipeline.SessionResponse:
 		return "resp"
 	case pipeline.SessionDenied:
-		return "deny"
+		// A denied event is a request that didn't reach the response
+		// phase. The terminal-deny semantics are already conveyed by
+		// the ACTION column ("deny") and STATUS column (4xx/5xx);
+		// rendering "deny" in PHASE too is duplicative. Show "req" so
+		// PHASE always communicates lifecycle position.
+		return "req"
 	}
 	return "?"
 }
