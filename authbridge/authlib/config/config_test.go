@@ -625,6 +625,62 @@ mtls:
 	}
 }
 
+// CheckPathsReadable returns the missing paths so cmd binaries can
+// emit an early WARN. Cold-start (no files yet) and typo
+// (wrong-path) look the same here; differentiation happens at the
+// log level (the cmd binaries downgrade to WARN to keep cold-start
+// working).
+func TestMTLSConfig_CheckPathsReadable(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "exists.pem")
+	if err := os.WriteFile(existing, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	t.Run("nil config", func(t *testing.T) {
+		var cfg *MTLSConfig
+		if got := cfg.CheckPathsReadable(); got != nil {
+			t.Errorf("CheckPathsReadable(nil) = %v, want nil", got)
+		}
+	})
+
+	t.Run("all missing", func(t *testing.T) {
+		cfg := &MTLSConfig{
+			CertFile:   "/nonexistent/svid.pem",
+			KeyFile:    "/nonexistent/svid_key.pem",
+			BundleFile: "/nonexistent/svid_bundle.pem",
+		}
+		got := cfg.CheckPathsReadable()
+		if len(got) != 3 {
+			t.Errorf("expected 3 missing paths, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("partial missing", func(t *testing.T) {
+		cfg := &MTLSConfig{
+			CertFile:   existing,
+			KeyFile:    "/nonexistent/svid_key.pem",
+			BundleFile: existing,
+		}
+		got := cfg.CheckPathsReadable()
+		if len(got) != 1 {
+			t.Errorf("expected 1 missing path, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("all present", func(t *testing.T) {
+		cfg := &MTLSConfig{
+			CertFile:   existing,
+			KeyFile:    existing,
+			BundleFile: existing,
+		}
+		got := cfg.CheckPathsReadable()
+		if len(got) != 0 {
+			t.Errorf("expected 0 missing paths, got %d: %v", len(got), got)
+		}
+	})
+}
+
 // Absent mtls block leaves cfg.MTLS nil — today's behavior, no TLS.
 func TestLoad_MTLS_AbsentBlock(t *testing.T) {
 	dir := t.TempDir()

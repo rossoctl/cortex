@@ -206,6 +206,53 @@ func TestServerConfig_RejectsUntrustedClient(t *testing.T) {
 	<-srvErr
 }
 
+// An expired client cert must be rejected at the handshake. We don't
+// rely solely on x509.Verify's transitive enforcement — locking the
+// behavior here means a future refactor of verifyPeerChain can't
+// accidentally drop expiry checking without the test catching it.
+func TestServerConfig_RejectsExpiredClient(t *testing.T) {
+	caKey, caCert, caPEM := generateCAForTest(t)
+	srvCertPEM, srvKeyPEM := signLeafForTest(t, caKey, caCert, "spiffe://test/server")
+	srvSrc := sourceFromSVID(t, srvCertPEM, srvKeyPEM, caPEM)
+
+	expiredCertPEM, expiredKeyPEM := signLeafExpiredForTest(t, caKey, caCert, "spiffe://test/expired-client")
+	cliSrc := sourceFromSVID(t, expiredCertPEM, expiredKeyPEM, caPEM)
+
+	srvCfg, err := authtls.ServerConfig(srvSrc)
+	if err != nil {
+		t.Fatalf("ServerConfig: %v", err)
+	}
+	cliCfg, err := authtls.ClientConfig(cliSrc)
+	if err != nil {
+		t.Fatalf("ClientConfig: %v", err)
+	}
+
+	listener, err := cryptotls.Listen("tcp", "127.0.0.1:0", srvCfg)
+	if err != nil {
+		t.Fatalf("tls.Listen: %v", err)
+	}
+	defer listener.Close()
+
+	srvErr := make(chan error, 1)
+	go func() {
+		srv := &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}),
+		}
+		srvErr <- srv.Serve(listener)
+	}()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: cliCfg}}
+	_, err = client.Get("https://" + listener.Addr().String() + "/")
+	if err == nil {
+		t.Fatal("expected handshake failure with expired client cert")
+	}
+
+	_ = listener.Close()
+	<-srvErr
+}
+
 // PeerSPIFFEID extracts the URI cleanly across the cases that matter:
 // a normal SPIFFE URI; nil cert; cert with no URI SAN.
 func TestPeerSPIFFEID(t *testing.T) {
@@ -226,6 +273,21 @@ func TestPeerSPIFFEID(t *testing.T) {
 	bareParsed := parseLeafForTest(t, bareCertPEM)
 	if got := authtls.PeerSPIFFEID(bareParsed); got != "" {
 		t.Errorf("PeerSPIFFEID(no-URI cert) = %q, want empty", got)
+	}
+}
+
+// A cert with two SPIFFE URIs is non-conformant. PeerSPIFFEID must
+// return "" rather than picking one arbitrarily — picking the first
+// would give an attacker who can attach a second SPIFFE URI to a
+// peer cert a way to spoof identity.
+func TestPeerSPIFFEID_RejectsMultiURI(t *testing.T) {
+	caKey, caCert, _ := generateCAForTest(t)
+	certPEM, _ := signLeafMultiURIForTest(t, caKey, caCert,
+		"spiffe://test/legit", "spiffe://test/spoofed")
+
+	parsed := parseLeafForTest(t, certPEM)
+	if got := authtls.PeerSPIFFEID(parsed); got != "" {
+		t.Errorf("PeerSPIFFEID(multi-URI cert) = %q, want empty (non-conformant cert)", got)
 	}
 }
 

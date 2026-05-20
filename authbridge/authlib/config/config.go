@@ -92,6 +92,34 @@ func (m *MTLSConfig) Validate() error {
 	}
 }
 
+// CheckPathsReadable stats the cert / key / bundle paths and returns
+// the list of paths that are NOT yet readable. Empty list means
+// everything is in place. Used by the cmd binaries at startup to
+// emit an early WARN when a path is misconfigured (typo, wrong
+// volume mount) — separates that case from the legitimate cold-start
+// "spiffe-helper hasn't written yet" pattern, which the X509Source's
+// per-handshake re-read already handles.
+//
+// The presence of unreadable paths is not a fatal error: returning
+// them as a list lets the caller decide. cmd binaries log a WARN and
+// continue; tests / verifiers can fail-fast if they want stricter
+// semantics.
+func (m *MTLSConfig) CheckPathsReadable() []string {
+	if m == nil {
+		return nil
+	}
+	var missing []string
+	for _, p := range []string{m.CertFile, m.KeyFile, m.BundleFile} {
+		if p == "" {
+			continue // shouldn't happen post-Load (defaults applied)
+		}
+		if _, err := os.Stat(p); err != nil {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
 // SessionConfig controls in-memory session tracking for cross-request correlation.
 // When enabled, the framework records inbound intents and outbound tool calls so
 // that guardrail plugins can evaluate sequences across request boundaries.

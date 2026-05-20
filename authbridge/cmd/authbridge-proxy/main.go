@@ -190,6 +190,15 @@ func main() {
 		fpMTLS = &forwardproxy.MTLSOptions{Source: src, Strict: strict, Metrics: mtlsMetrics}
 		slog.Info("mTLS enabled", "mode", cfg.MTLS.ResolvedMode(),
 			"cert", cfg.MTLS.CertFile, "key", cfg.MTLS.KeyFile, "bundle", cfg.MTLS.BundleFile)
+		// Early-warning for misconfigured paths. The X509Source's
+		// per-handshake re-read makes cold-start work even when
+		// spiffe-helper hasn't written yet, so we WARN (not error) —
+		// but operators who fat-fingered a path otherwise wouldn't
+		// learn until first traffic, when the listener returns 503s.
+		if missing := cfg.MTLS.CheckPathsReadable(); len(missing) > 0 {
+			slog.Warn("mtls cert paths not yet readable; will retry on first handshake (expected during pod startup before spiffe-helper writes)",
+				"missing", missing)
+		}
 	} else {
 		slog.Info("mTLS disabled (no mtls block in config)")
 	}

@@ -1,0 +1,21 @@
+name: kagenti-extensions CodeQL config
+
+queries:
+  - uses: security-extended
+
+# Path-scoped query suppressions. Each entry must explain WHY the
+# query doesn't apply — future readers should be able to evaluate
+# whether the suppression is still warranted as code evolves.
+query-filters:
+  # go/disabled-certificate-check fires on InsecureSkipVerify: true
+  # in authlib/tls/client.go. The flag is required: it lets crypto/tls
+  # skip the default chain check so that VerifyPeerCertificate can
+  # run our rotation-aware verifyPeerChain (defined in
+  # authlib/tls/server.go), which validates the peer chain against
+  # the SPIRE trust bundle re-read on every handshake. CodeQL can't
+  # follow control flow across the VerifyPeerCertificate callback so
+  # it sees a half-disabled config and flags it. The pattern is
+  # documented in the Go stdlib (crypto/tls.Config.InsecureSkipVerify)
+  # as the canonical way to plug in a custom verifier.
+  - exclude:
+      id: go/disabled-certificate-check

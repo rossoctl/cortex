@@ -110,7 +110,13 @@ func (l *Listener) dispatch(conn net.Conn) (net.Conn, bool) {
 	br := bufio.NewReader(conn)
 	first, err := br.Peek(1)
 	if err != nil {
-		// Slow / dead client. Drop and move on.
+		// Slow / dead client whose first byte never arrived (peek
+		// timeout) or whose connection was already closed. The
+		// bufio.Reader holds no buffered bytes (Peek failed), and
+		// even if it had buffered any they'd be GC'd along with br
+		// when this scope exits — no leak. The client gets a
+		// connection close; if they wanted to send data, they'll
+		// reconnect.
 		conn.Close()
 		return nil, false
 	}

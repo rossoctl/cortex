@@ -79,6 +79,81 @@ func signLeafForTest(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certifi
 	return
 }
 
+// signLeafExpiredForTest signs a leaf cert that has already expired
+// (NotAfter is in the past). Used to verify chain verification
+// rejects expired peers.
+func signLeafExpiredForTest(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certificate, spiffeID string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("leaf key: %v", err)
+	}
+	uri, err := url.Parse(spiffeID)
+	if err != nil {
+		t.Fatalf("spiffe id parse: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "expired-leaf"},
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		URIs:         []*url.URL{uri},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("leaf cert: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	keyDER, err := x509.MarshalECPrivateKey(leafKey)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return
+}
+
+// signLeafMultiURIForTest signs a leaf cert with TWO SPIFFE URI
+// SANs. SPIFFE conformance requires exactly one — this helper lets
+// us assert PeerSPIFFEID returns "" rather than picking one
+// arbitrarily.
+func signLeafMultiURIForTest(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certificate, id1, id2 string) (certPEM, keyPEM []byte) {
+	t.Helper()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("leaf key: %v", err)
+	}
+	u1, err := url.Parse(id1)
+	if err != nil {
+		t.Fatalf("id1 parse: %v", err)
+	}
+	u2, err := url.Parse(id2)
+	if err != nil {
+		t.Fatalf("id2 parse: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "multi-uri-leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		URIs:         []*url.URL{u1, u2},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("leaf cert: %v", err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	keyDER, err := x509.MarshalECPrivateKey(leafKey)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return
+}
+
 // signLeafForTestNoURI signs a leaf cert with no URI SAN at all —
 // used to verify PeerSPIFFEID returns "" on non-SPIFFE certs.
 func signLeafForTestNoURI(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certificate) (certPEM, keyPEM []byte) {

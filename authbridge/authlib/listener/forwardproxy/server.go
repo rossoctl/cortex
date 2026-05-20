@@ -144,11 +144,14 @@ func (d *mtlsDialFunc) DialContext(ctx context.Context, network, addr string) (n
 		// Permissive mode: redial plain TCP and return that. Surface
 		// the destination so operators can spot persistent fallbacks
 		// in their logs and either install authbridge on the target
-		// or accept the cost.
+		// or accept the cost. The mode attribute makes the log easy
+		// to grep across mixed-mode rollouts where some sidecars are
+		// permissive and others are strict.
 		if d.metrics != nil {
 			d.metrics.OutboundFellBack.Add(1)
 		}
-		slog.Warn("mtls fallback to plaintext", "addr", addr, "reason", err.Error())
+		slog.Warn("mtls fallback to plaintext",
+			"mode", "permissive", "addr", addr, "reason", err.Error())
 		return d.plain.DialContext(ctx, network, addr)
 	}
 

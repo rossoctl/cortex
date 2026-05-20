@@ -35,9 +35,16 @@ func ClientConfig(src spiffe.X509Source) (*tls.Config, error) {
 		// InsecureSkipVerify: true here lets crypto/tls skip its
 		// built-in chain check; VerifyPeerCertificate then runs ours.
 		// This pattern is documented in the stdlib — the name is a
-		// misnomer, since our callback still verifies, just against
-		// the rotation-aware pool.
-		InsecureSkipVerify: true, //nolint:gosec // verification done in VerifyPeerCertificate
+		// misnomer, since our callback still verifies the peer chain
+		// against the SPIRE trust bundle, just against the
+		// rotation-aware pool that re-reads on every handshake.
+		// CodeQL's go/disabled-certificate-check can't see across
+		// the callback into verifyPeerChain in server.go, so we
+		// suppress the alert inline.
+		//
+		//nolint:gosec // see VerifyPeerCertificate below
+		// lgtm[go/disabled-certificate-check]
+		InsecureSkipVerify: true,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			return verifyPeerChain(src, rawCerts)
 		},

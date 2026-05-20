@@ -181,6 +181,12 @@ func main() {
 		fpMTLS = &forwardproxy.MTLSOptions{Source: src, Strict: strict, Metrics: mtlsMetrics}
 		slog.Info("mTLS enabled", "mode", cfg.MTLS.ResolvedMode(),
 			"cert", cfg.MTLS.CertFile, "key", cfg.MTLS.KeyFile, "bundle", cfg.MTLS.BundleFile)
+		// Early-warning for misconfigured paths — see authbridge-proxy
+		// main.go for the full rationale.
+		if missing := cfg.MTLS.CheckPathsReadable(); len(missing) > 0 {
+			slog.Warn("mtls cert paths not yet readable; will retry on first handshake (expected during pod startup before spiffe-helper writes)",
+				"missing", missing)
+		}
 	} else {
 		slog.Info("mTLS disabled (no mtls block in config)")
 	}

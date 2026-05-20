@@ -275,7 +275,7 @@ mtls:
 | Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
 |---|---|---|
 | (no `mtls` block) | Plaintext only. | Plaintext only. |
-| `permissive` (default when block present) | Byte-peek listener: TLS handshakes verified against the SPIRE trust bundle; plaintext callers served on the same port. | Try TLS first; on handshake failure fall back to plain TCP (one-line WARN log). |
+| `permissive` (default when block present) | Byte-peek listener: TLS handshakes verified against the SPIRE trust bundle; plaintext callers served on the same port. ⚠️ Plaintext requests carry their full headers and bodies in the clear — including any `Authorization: Bearer ...` token already injected by `token-exchange`. Use only during rollout with cluster-network trust. | Try TLS first; on handshake failure fall back to plain TCP (one-line WARN log). |
 | `strict` | TLS only — non-TLS callers get the connection closed. | TLS or fail: handshake failure is a hard error, no fallback. |
 
 In both modes, a successful TLS handshake that fails certificate
