@@ -84,17 +84,30 @@ and `expected_audience_host` (waypoint per-request derived audience, may
 be empty). Update saved queries and dashboards that filtered on the old
 key.
 
-### Single-player mode (default-on)
+### Single-player mode (default-on, single-user agents only)
 
-Most agent runtimes — LangChain, CrewAI, Claude Code — don't propagate
-the inbound `Authorization` header to the outbound HTTP requests they
-generate. AuthBridge bridges the two sides automatically:
+#### The problem this solves
 
-- `jwt-validation` caches each successfully-validated inbound user JWT
-  in a process-level store.
-- `token-exchange` consults that store on outbound when the request
-  arrived with no `Authorization` header, and injects the cached token
-  as the OBO subject.
+OBO / RFC 8693 token exchange needs the user's inbound JWT to appear on
+the **outbound** request as `subject_token`. Most agent runtimes —
+LangChain, CrewAI, Claude Code, MCP-stdio — **do not propagate the
+inbound `Authorization` header** to the outbound HTTP calls they
+generate, because tool execution is decoupled from request handling.
+Without help, AuthBridge sees no inbound token on the outbound side and
+falls into the no-token policy (deny by default), breaking OBO entirely
+for those frameworks.
+
+#### What single-player mode does
+
+- `jwt-validation` (inbound) caches each successfully-validated user
+  JWT in a process-level store.
+- `token-exchange` (outbound) consults that store when the outbound
+  request arrived with no `Authorization` header, and uses the cached
+  token as `subject_token` for the exchange.
+
+The result: agents that don't propagate Authorization themselves still
+get correct OBO behavior — **as long as the process is serving one
+user at a time.**
 
 This is governed by a single top-level flag in the runtime YAML:
 
@@ -108,31 +121,97 @@ pipeline:
 ```
 
 Set `single_user_mode: false` to opt out. There are no per-plugin flags
-— the pairing is enforced at the framework level so inbound and
-outbound can't drift apart.
+— the inbound/outbound pairing is enforced at the framework level so
+the two sides can't drift apart.
 
 An explicit outbound `Authorization` header always wins; the cache
-lookup only fires when the header is empty.
+lookup only fires when the outbound header is empty.
 
 **Cap / floor.** Cached entries respect `min(token.exp, now+5m)` and
 skip capture when the token has under 30 seconds of life. Not
 configurable; one less thing to tune.
 
-**The single-player constraint.** This bridge is only safe when a
-process serves one user at a time. With multi-user concurrent traffic
-the cache is last-write-wins, so a downstream tool call could be
-attributed to the wrong user. Whenever a successful capture overwrites
-a different subject, jwt-validation emits a WARN log
-(`single-user cached subject changed`) so operators have a tripwire.
+#### Limitation: single user per process
 
-**Cluster scaling.** Each replica has its own in-memory cache. For
-horizontally-scaled agents, route a user's session to a sticky replica
-or use a future correlation-ID-based design. Default Kagenti deployments
-run a single replica per agent, so this is typically a non-issue.
+**This is a workaround, not a multi-user solution.** The bridge is only
+safe when the process serves one user at a time:
 
-**When you don't want this.** Set `single_user_mode: false` at the top
-level for any deployment that genuinely handles concurrent users with
-mixed identities, until a correlation-ID-based bridge ships.
+- The cache is process-global, so concurrent inbound requests from
+  different users overwrite each other (last-write-wins).
+- A tool call started by Alice may pick up Bob's cached token if Bob's
+  request arrived between Alice's inbound validation and her agent's
+  outbound exchange — attributing Alice's call to Bob downstream.
+- Each replica has its own in-memory cache; horizontally-scaled agents
+  need session stickiness for the bridge to behave consistently.
+
+When the assumption is violated, jwt-validation emits a WARN log so
+operators have a tripwire:
+
+```
+WARN jwt-validation: single-user cached subject changed —
+single-player assumption violated; last-write-wins
+previous=alice current=bob
+```
+
+#### Enabling multi-user / multi-session: agent must cooperate
+
+There is no transparent fix for multi-user concurrent traffic on the
+sidecar side alone — the sidecar cannot know which inbound request
+triggered a given outbound call without help from the agent code.
+
+To support multi-user / multi-session, **the agent itself must
+propagate the inbound `Authorization` header to outbound HTTP calls**
+made on behalf of that request. When the outbound `Authorization` is
+already populated, single-player mode's cache is not consulted (the
+explicit header wins), and OBO works correctly per-user without
+relying on the global cache.
+
+In practice this means:
+
+- **HTTP-based frameworks (FastAPI, Flask, etc.)**: read
+  `request.headers["authorization"]` in your tool handler and pass it
+  through to outbound clients (`httpx.AsyncClient(headers=...)`,
+  `requests.post(headers=...)`, etc.).
+- **LangChain / CrewAI tools**: tools are functions that don't see HTTP
+  context by default. Propagation requires adapting the framework to
+  thread the Authorization header through your tool's outbound calls
+  (e.g., a context-propagating HTTP client class, or framework-specific
+  middleware). This is agent-side engineering work; AuthBridge cannot
+  do it for you.
+- **MCP servers over HTTP**: MCP supports Authorization headers; agent
+  must forward the inbound Bearer to the outbound MCP request.
+- **Frameworks with no inbound HTTP at all** (Claude Code TUI,
+  MCP-stdio): no Authorization header to propagate. These cases need
+  a different design (workload-identity-only, or a gateway-mediated
+  user-context-injection scheme); single-player mode does not apply.
+
+A future `X-Kagenti-Request-Id` correlation-header design will let the
+sidecar bridge multi-user traffic without agent header propagation —
+not yet shipped.
+
+#### When to disable single-player mode
+
+Set `single_user_mode: false` at the top level when:
+
+- The process genuinely handles **concurrent users with mixed
+  identities**, AND
+- The agent code already propagates the `Authorization` header to its
+  outbound calls (so the cache is unnecessary).
+
+In that configuration, the cache is never populated and never read,
+and OBO works correctly per-user via the agent's own header
+forwarding. No data-attribution risk from the single-player
+last-write-wins behavior.
+
+#### Decision matrix
+
+| Your agent's behavior | Use this configuration |
+|---|---|
+| Single user per process; agent does NOT propagate Authorization | `single_user_mode: true` (default). Bridge handles it. |
+| Single user per process; agent DOES propagate Authorization | Either works. Cache is harmless under single-user load. |
+| Multi-user concurrent; agent DOES propagate Authorization | `single_user_mode: false` (recommended). Avoid cache-based last-write-wins. |
+| Multi-user concurrent; agent does NOT propagate Authorization | **Currently unsupported.** Either fix the agent to propagate, or wait for the correlation-ID-based bridge. |
+| No inbound HTTP at all (TUI, stdio) | Single-player mode does not apply; needs a different design. |
 
 ## `on_error` policy
 

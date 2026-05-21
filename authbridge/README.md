@@ -335,6 +335,36 @@ sequenceDiagram
 - **Transparent to Application** - Both inbound validation and outbound token exchange are handled by the sidecar; applications don't need to implement either
 - **Configurable Targets** - Route-based configuration maps destination hosts to target audiences
 
+## Token Propagation: What Agents Must Do
+
+OBO / RFC 8693 token exchange requires the inbound user JWT to reach
+the sidecar on the agent's outbound calls (as `subject_token`). Many
+agent runtimes — LangChain, CrewAI, Claude Code — do **not** propagate
+the inbound `Authorization` header to the outbound HTTP requests they
+generate, because tool execution is decoupled from request handling.
+
+AuthBridge handles this in two complementary ways:
+
+1. **Single-player mode (default-on)** — for processes that serve
+   **one user at a time**, the sidecar caches the validated inbound
+   token and injects it on outbound when the agent didn't propagate
+   the header. Transparent; no agent code changes. **Not safe for
+   concurrent multi-user agents** (last-write-wins; calls may be
+   attributed to the wrong user).
+
+2. **Multi-user / multi-session: the agent must propagate the
+   Authorization header itself.** When the outbound request already
+   carries `Authorization`, the sidecar uses that explicitly and the
+   single-player cache is bypassed. There is no transparent way for
+   the sidecar to disambiguate concurrent users without help from
+   the agent.
+
+Disable single-player mode (`single_user_mode: false` at the top of
+the runtime YAML) when running multi-user concurrent agents that DO
+propagate the Authorization header. See
+[plugin-reference.md → Single-player mode](docs/plugin-reference.md#single-player-mode-default-on-single-user-agents-only)
+for the full decision matrix and per-framework guidance.
+
 ## Prerequisites
 
 - Kubernetes cluster (Kind recommended for local development)
