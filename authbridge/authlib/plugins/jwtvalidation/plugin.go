@@ -433,7 +433,14 @@ func (p *JWTValidation) captureSingleUserToken(authHeader string, claims *valida
 	}
 	prevSub := auth.StoreSingleUserToken(token, claims.Subject, cappedExp)
 	if prevSub != "" && prevSub != claims.Subject {
-		slog.Warn("jwt-validation: single-user cached subject changed — single-player assumption violated; last-write-wins",
+		// The auth package atomically increments the subject-change
+		// counter inside Store; jwt-validation surfaces the same event
+		// as a human-readable WARN. Operators should alert on the
+		// counter delta (auth.SingleUserSubjectChangeCount) rather
+		// than log-grepping this line — at high concurrent multi-user
+		// volumes the WARN fires per-overwrite and becomes log noise
+		// rather than a precise signal.
+		slog.Warn("jwt-validation: single-user cached subject changed — single-player assumption violated; last-write-wins. See auth.SingleUserSubjectChangeCount for the alertable counter.",
 			"previous", prevSub,
 			"current", claims.Subject)
 	}

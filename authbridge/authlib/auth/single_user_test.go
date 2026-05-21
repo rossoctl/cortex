@@ -123,6 +123,81 @@ func TestStoreSingleUserToken_PrevSubjectOnOverwrite(t *testing.T) {
 	}
 }
 
+// TestSingleUserSubjectChangeCount_CountsOnlySubjectChanges pins the
+// counter semantics: it increments only when an existing entry is
+// overwritten by a DIFFERENT subject, not on first writes or
+// same-subject re-captures. Operators alert on the delta of this
+// counter; counting noop overwrites would produce false positives in
+// otherwise-safe single-user deployments.
+func TestSingleUserSubjectChangeCount_CountsOnlySubjectChanges(t *testing.T) {
+	t.Cleanup(ResetSingleUserToken)
+
+	// Snapshot the starting count — other tests in this package may
+	// have run before this one and bumped the lifetime counter.
+	start := SingleUserSubjectChangeCount()
+	exp := futureExp(t)
+
+	// First write: no prior entry → no change.
+	StoreSingleUserToken("tok-1", "alice", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(0); got != want {
+		t.Errorf("after first write: delta = %d, want 0", got)
+	}
+
+	// Same-subject re-capture: not a "change."
+	StoreSingleUserToken("tok-2", "alice", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(0); got != want {
+		t.Errorf("after same-subject re-capture: delta = %d, want 0", got)
+	}
+
+	// Different subject: counter increments.
+	StoreSingleUserToken("tok-3", "bob", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(1); got != want {
+		t.Errorf("after first cross-subject overwrite: delta = %d, want 1", got)
+	}
+
+	// Another different subject: counter increments again.
+	StoreSingleUserToken("tok-4", "carol", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(2); got != want {
+		t.Errorf("after second cross-subject overwrite: delta = %d, want 2", got)
+	}
+
+	// Back to bob: still counts as a change relative to carol.
+	StoreSingleUserToken("tok-5", "bob", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(3); got != want {
+		t.Errorf("after carol→bob: delta = %d, want 3", got)
+	}
+
+	// ResetSingleUserToken clears the cache but NOT the lifetime counter
+	// (documented behavior so cross-test alerting thresholds stay
+	// monotonic). After reset, a first write to charlie should NOT
+	// count as a change because the cache is empty (no prevSubject).
+	ResetSingleUserToken()
+	StoreSingleUserToken("tok-6", "charlie", exp)
+	if got, want := SingleUserSubjectChangeCount()-start, int64(3); got != want {
+		t.Errorf("after reset+first-write: delta = %d, want 3 (counter unchanged; cache was empty)", got)
+	}
+}
+
+// TestSingleUserSubjectChangeCount_NoCountWhenDisabled: when the
+// feature gate is off, Store no-ops entirely — including the counter.
+// A multi-user deployment that explicitly opted out shouldn't see
+// false-positive subject-change events from a Store path that's
+// supposed to be inert.
+func TestSingleUserSubjectChangeCount_NoCountWhenDisabled(t *testing.T) {
+	t.Cleanup(ResetSingleUserToken)
+	withEnabled(t, false)
+
+	start := SingleUserSubjectChangeCount()
+	exp := futureExp(t)
+
+	StoreSingleUserToken("tok-1", "alice", exp)
+	StoreSingleUserToken("tok-2", "bob", exp)
+
+	if got, want := SingleUserSubjectChangeCount()-start, int64(0); got != want {
+		t.Errorf("counter should not advance while disabled: delta = %d, want 0", got)
+	}
+}
+
 func TestCapSingleUserExpiry(t *testing.T) {
 	now := time.Now()
 

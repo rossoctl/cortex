@@ -42,6 +42,15 @@ var (
 	spToken   string
 	spSubject string
 	spExp     time.Time
+
+	// spSubjectChanges counts how many times Store observed a NEW
+	// subject overwriting an existing entry — the operator's
+	// programmatic tripwire for "single-player mode is being used in a
+	// multi-user context." Increments are atomic and lock-free; the
+	// WARN log emitted by jwt-validation is a human-readable
+	// counterpart but is unsuitable for alerting at high volume. Read
+	// via SingleUserSubjectChangeCount; alerts should track the delta.
+	spSubjectChanges atomic.Int64
 )
 
 func init() {
@@ -69,6 +78,18 @@ func IsSingleUserModeEnabled() bool {
 //
 // Caller is responsible for applying TTL caps before calling — see
 // CapSingleUserExpiry which encapsulates the floor/cap policy.
+//
+// Side-effect: increments the package-level subject-change counter
+// when prevSubject is non-empty AND differs from the new subject,
+// surfacing the single-player-violation signal to /stats consumers
+// and Prometheus exporters via SingleUserSubjectChangeCount.
+//
+// The spEnabled gate is checked outside the mutex deliberately. The
+// gate is set once at startup by the binary; SetSingleUserModeEnabled
+// is otherwise only called from tests. The microsecond window in
+// which a concurrent SetSingleUserModeEnabled(false) could race a
+// Store-in-flight is harmless — the worst case is one stale write
+// before the next Get returns a miss anyway.
 func StoreSingleUserToken(token, subject string, exp time.Time) (prevSubject string) {
 	if !spEnabled.Load() {
 		return ""
@@ -76,6 +97,9 @@ func StoreSingleUserToken(token, subject string, exp time.Time) (prevSubject str
 	spMu.Lock()
 	defer spMu.Unlock()
 	prevSubject = spSubject
+	if prevSubject != "" && prevSubject != subject {
+		spSubjectChanges.Add(1)
+	}
 	spToken = token
 	spSubject = subject
 	spExp = exp
@@ -85,6 +109,9 @@ func StoreSingleUserToken(token, subject string, exp time.Time) (prevSubject str
 // GetSingleUserToken returns the cached token if non-empty and not yet
 // expired at `now`. Cache miss returns ok=false with empty strings.
 // When the feature is disabled, always returns ok=false.
+//
+// See StoreSingleUserToken for the rationale on checking spEnabled
+// outside the mutex.
 func GetSingleUserToken(now time.Time) (token, subject string, ok bool) {
 	if !spEnabled.Load() {
 		return "", "", false
@@ -95,6 +122,20 @@ func GetSingleUserToken(now time.Time) (token, subject string, ok bool) {
 		return "", "", false
 	}
 	return spToken, spSubject, true
+}
+
+// SingleUserSubjectChangeCount returns the lifetime count of times
+// Store observed a new subject overwriting a different existing
+// subject — i.e., the number of times the single-player assumption
+// was violated by concurrent multi-user traffic. Operators should
+// alert on the DELTA of this counter (not the absolute value); a
+// nonzero rate indicates single-player mode is misapplied to a
+// multi-user workload.
+//
+// Lifetime counter: not reset by ResetSingleUserToken. Always returns
+// the live atomic value; safe to call concurrently.
+func SingleUserSubjectChangeCount() int64 {
+	return spSubjectChanges.Load()
 }
 
 // CapSingleUserExpiry applies the package's cap/floor policy to a
@@ -111,10 +152,22 @@ func CapSingleUserExpiry(now, exp time.Time) (time.Time, bool) {
 	return exp, true
 }
 
-// ResetSingleUserToken clears the cache. Exported for tests; pair with
-// t.Cleanup(auth.ResetSingleUserToken) to avoid cross-test leakage.
-// Does not change the enabled bit — tests that toggle that should
-// restore it explicitly.
+// ResetSingleUserToken clears the cache. TEST-ONLY entry point —
+// production code MUST NOT call this. Exported (rather than hidden in
+// an export_test.go) because external test packages such as
+// jwtvalidation_test, tokenexchange_test, and the plugins-level e2e
+// suite need to reset state across tests, and Go's _test.go visibility
+// scope wouldn't reach them.
+//
+// Pair with t.Cleanup(auth.ResetSingleUserToken) to avoid cross-test
+// leakage. Does NOT change the enabled bit and does NOT reset the
+// subject-change counter — tests that depend on either should restore
+// them explicitly.
+//
+// If a runtime "wipe the cache mid-flight" capability is ever needed,
+// add a separately-named function (e.g., InvalidateSingleUserToken)
+// rather than overloading this one — the test-only contract here is
+// load-bearing.
 func ResetSingleUserToken() {
 	spMu.Lock()
 	defer spMu.Unlock()

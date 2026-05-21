@@ -132,7 +132,19 @@ func main() {
 	// auth package's inbound→outbound token bridge. Read from top-level
 	// config once at startup; jwt-validation captures and token-exchange
 	// reads the cache only when this is true.
-	auth.SetSingleUserModeEnabled(cfg.SingleUserModeEnabled())
+	//
+	// The startup log line below makes the active posture discoverable
+	// on every restart — important because the default-on behavior
+	// changes the security profile on upgrade for deployments that were
+	// previously failing OBO-with-non-propagating-agents at the
+	// no-token-policy boundary.
+	spmEnabled := cfg.SingleUserModeEnabled()
+	auth.SetSingleUserModeEnabled(spmEnabled)
+	if spmEnabled {
+		slog.Info("authbridge: single-user mode is ACTIVE — sidecar will bridge inbound→outbound user tokens for non-propagating agent runtimes. Safe ONLY for single-user-per-process workloads; multi-user concurrent agents must propagate the inbound Authorization header themselves and should set single_user_mode: false. See docs/plugin-reference.md.")
+	} else {
+		slog.Info("authbridge: single-user mode is DISABLED — agent must propagate the inbound Authorization header to outbound calls for OBO to work. See docs/plugin-reference.md.")
+	}
 
 	initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer initCancel()

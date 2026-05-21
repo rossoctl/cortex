@@ -208,10 +208,65 @@ last-write-wins behavior.
 | Your agent's behavior | Use this configuration |
 |---|---|
 | Single user per process; agent does NOT propagate Authorization | `single_user_mode: true` (default). Bridge handles it. |
-| Single user per process; agent DOES propagate Authorization | Either works. Cache is harmless under single-user load. |
+| Single user per process; agent DOES propagate Authorization | Either works. Cache is harmless under single-user load, but **explicit `single_user_mode: false` is recommended** — it documents the deployment posture and removes the cache from the picture entirely. |
 | Multi-user concurrent; agent DOES propagate Authorization | `single_user_mode: false` (recommended). Avoid cache-based last-write-wins. |
 | Multi-user concurrent; agent does NOT propagate Authorization | **Currently unsupported.** Either fix the agent to propagate, or wait for the correlation-ID-based bridge. |
 | No inbound HTTP at all (TUI, stdio) | Single-player mode does not apply; needs a different design. |
+
+#### How to confirm single-player mode in production
+
+The active posture is logged at every binary startup, so a quick
+`kubectl logs -c authbridge ... | grep "single-user mode"` answers
+"is the bridge on for this pod?":
+
+```
+INFO authbridge: single-user mode is ACTIVE — sidecar will bridge inbound→outbound user tokens for non-propagating agent runtimes...
+```
+
+or, when opted out:
+
+```
+INFO authbridge: single-user mode is DISABLED — agent must propagate the inbound Authorization header to outbound calls for OBO to work...
+```
+
+For programmatic monitoring of the single-player-violation tripwire,
+the auth package exposes a lifetime counter that increments only when
+Store overwrites a *different* prior subject (concurrent multi-user
+traffic mis-routed through a bridge intended for single-user
+workloads):
+
+```go
+// authlib/auth
+auth.SingleUserSubjectChangeCount() int64
+```
+
+Operators should alert on the **delta** of this counter (e.g.,
+"non-zero rate over 5 minutes" indicates single-player mode is
+misapplied). The corresponding `WARN` log line
+(`single-user cached subject changed`) is intended for human
+investigation, not as the alert itself — at high concurrent volumes
+the WARN fires per-overwrite and floods the log.
+
+A subsequent change will surface this counter through the existing
+`/stats` endpoint so Prometheus and similar exporters can scrape it
+without bespoke wiring.
+
+#### What single-player mode does NOT capture
+
+Two cases where the cache stays empty by design — flagged here so
+operators don't chase support threads about them:
+
+- **Bypass paths (e.g., `/healthz`).** The jwt-validation plugin's
+  `BypassPaths` list short-circuits validation entirely; tokens
+  presented on those paths are never validated and therefore never
+  captured. A monitoring tool that probes liveness with a synthetic
+  Bearer header will not poison the bridge — its token is silently
+  ignored.
+- **Tokens with under 30 seconds of remaining life.** Caching a
+  near-expiry token leads to near-immediate exchange failures on the
+  next outbound. The `MinTTL` floor skips capture in that case; the
+  outbound side falls through to the no-token policy, exactly as if
+  no inbound token had been seen.
 
 ## `on_error` policy
 
