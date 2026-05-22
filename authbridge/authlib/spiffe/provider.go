@@ -18,8 +18,7 @@ const DefaultSocketPath = "unix:///spiffe-workload-api/spire-agent.sock"
 // DefaultMirrorDir is the directory the mirror writes svid.pem,
 // svid_key.pem, svid_bundle.pem, and (when JWTAudience is set)
 // jwt_svid.token into. /opt matches the historical spiffe-helper
-// layout that legacy file readers (FileX509Source, the
-// authbridge-lite Dockerfile, etc) still expect.
+// layout that any remaining file-reading consumers expect.
 const DefaultMirrorDir = "/opt"
 
 // ProviderConfig parameterizes Provider construction.
