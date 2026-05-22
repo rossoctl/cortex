@@ -1,9 +1,11 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,7 +98,42 @@ func TestForwardProxy_Exchange(t *testing.T) {
 	}
 }
 
-func TestForwardProxy_CONNECT_Rejected(t *testing.T) {
+// TestForwardProxy_CONNECT_TunnelsBytes asserts that CONNECT opens a raw
+// TCP tunnel to the upstream and shuttles bytes in both directions. This
+// is the basis for HTTPS passthrough — the agent's TLS client and the
+// upstream TLS server complete their handshake through the proxy with
+// the proxy never inspecting (or being able to inspect) the encrypted
+// bytes. Mirrors envoy-sidecar's TLS-passthrough filter chain.
+func TestForwardProxy_CONNECT_TunnelsBytes(t *testing.T) {
+	// Bare TCP echo — stand-in for any TLS server. We only need to
+	// prove that bytes the agent writes reach the upstream and bytes
+	// the upstream writes reach the agent. Loop until the client
+	// closes so we can exercise multiple round-trips, which is closer
+	// to what a real TLS handshake (multi-roundtrip, interleaved
+	// reads and writes) does over the tunnel.
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstream.Close()
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(append([]byte("echo:"), buf[:n]...)); err != nil {
+				return
+			}
+		}
+	}()
+
 	a := auth.New(auth.Config{})
 	srv, err := NewServer(outboundPipelineFromAuth(t, a), nil, nil)
 	if err != nil {
@@ -105,13 +142,132 @@ func TestForwardProxy_CONNECT_Rejected(t *testing.T) {
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
-	req, _ := http.NewRequest("CONNECT", proxy.URL, nil)
-	resp, err := http.DefaultClient.Do(req)
+	// Open raw TCP to the proxy and speak HTTP CONNECT directly so we
+	// can drive the bytes manually (net/http's client wraps everything
+	// up too tightly for this kind of test).
+	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
+	tunnel, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("dial proxy: %v", err)
 	}
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405", resp.StatusCode)
+	defer tunnel.Close()
+
+	target := upstream.Addr().String()
+	if _, err := tunnel.Write([]byte("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n")); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+
+	// Read the proxy's "200 Connection Established" status line + empty headers.
+	br := bufio.NewReader(tunnel)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT response = %q, want 200", line)
+	}
+	// Drain the remaining response headers up to the empty line.
+	for {
+		hdr, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read headers: %v", err)
+		}
+		if hdr == "\r\n" || hdr == "\n" {
+			break
+		}
+	}
+
+	// Tunnel is up. Drive multiple round-trips to model the multi-RTT
+	// nature of a real TLS handshake. A single write/read would catch
+	// basic plumbing but miss half-duplex regressions in the
+	// bidirectional copy.
+	for _, payload := range []string{"hello", "world", "third"} {
+		if _, err := tunnel.Write([]byte(payload)); err != nil {
+			t.Fatalf("write %q through tunnel: %v", payload, err)
+		}
+		got := make([]byte, 32)
+		_ = tunnel.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := br.Read(got)
+		if err != nil && err != io.EOF {
+			t.Fatalf("read %q response: %v", payload, err)
+		}
+		want := "echo:" + payload
+		if string(got[:n]) != want {
+			t.Errorf("tunnel response for %q = %q, want %q", payload, got[:n], want)
+		}
+	}
+}
+
+// TestForwardProxy_CONNECT_PipelineDeny asserts that a pipeline reject
+// fires BEFORE the upstream is dialed and produces an HTTP error to the
+// CONNECT-issuing client. Plugins like ibac depend on this — they must
+// be able to deny based on destination host before bytes start flowing.
+func TestForwardProxy_CONNECT_PipelineDeny(t *testing.T) {
+	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	a := auth.New(auth.Config{
+		Router:        router,
+		NoTokenPolicy: auth.NoTokenPolicyDeny, // any outbound w/o token denies
+	})
+	srv, err := NewServer(outboundPipelineFromAuth(t, a), nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	// CONNECT request without an Authorization header — token-exchange's
+	// no-token-policy denies it. Use raw TCP since net/http's client may
+	// retry or buffer in ways that obscure the response.
+	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
+	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if strings.Contains(line, "200") {
+		t.Errorf("CONNECT got 200 status line %q, expected pipeline-driven rejection", line)
+	}
+}
+
+// TestForwardProxy_CONNECT_BadGatewayOnDialFailure asserts that a CONNECT
+// to an unreachable upstream produces 502, not a half-opened tunnel.
+// The handler must respond before hijacking — once hijacked, http.Error
+// is no-op-ish and the agent gets a confusing connection reset.
+func TestForwardProxy_CONNECT_BadGatewayOnDialFailure(t *testing.T) {
+	a := auth.New(auth.Config{})
+	srv, err := NewServer(outboundPipelineFromAuth(t, a), nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	// 127.0.0.1:1 is virtually guaranteed to refuse on a normal host.
+	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
+	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n")); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(connectDialTimeout + 5*time.Second))
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if !strings.Contains(line, "502") {
+		t.Errorf("CONNECT response = %q, want 502 on upstream dial failure", line)
 	}
 }
 
