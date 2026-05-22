@@ -1,14 +1,13 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 )
 
 // Validate checks the top-level runtime config: mode, listener combo,
 // and that the pipeline composition is populated. Plugin-specific
-// validation (issuer, token URL, identity type) lives inside each
-// plugin's Configure and runs at pipeline build time.
+// validation (issuer, token URL, identity type, jwt_audience) lives
+// inside each plugin's Configure and runs at pipeline build time.
 //
 // Empty pipelines are rejected. Under the per-plugin config shape,
 // a valid runtime config always names at least one inbound plugin
@@ -32,75 +31,7 @@ func Validate(cfg *Config) error {
 	if err := validateListeners(cfg); err != nil {
 		return err
 	}
-	if err := validatePipeline(cfg); err != nil {
-		return err
-	}
-	return validateCrossBlock(cfg)
-}
-
-// validateCrossBlock enforces invariants that span more than one
-// top-level config block. These can't live inside a single plugin's
-// Configure (which only sees its own subtree) or inside SPIFFEConfig.Validate
-// (which doesn't know which plugins are configured).
-//
-// Currently the only invariant is: token-exchange identity.type=spiffe
-// requires spiffe.jwt_audience. The audience is consumed by the
-// framework SPIFFE Provider when fetching a JWT-SVID for the client
-// assertion; without it the Provider has nothing to ask SPIRE for.
-// Catching this at startup avoids a confusing runtime failure on the
-// first outbound exchange.
-func validateCrossBlock(cfg *Config) error {
-	if !anyTokenExchangeUsesSPIFFE(cfg) {
-		return nil
-	}
-	if cfg.SPIFFE == nil || cfg.SPIFFE.JWTAudience == "" {
-		return fmt.Errorf("token-exchange identity.type=spiffe requires top-level spiffe.jwt_audience to be set")
-	}
-	return nil
-}
-
-// anyTokenExchangeUsesSPIFFE walks both pipeline stages looking for a
-// token-exchange entry whose identity.type is "spiffe". Loose-decode
-// against an inline struct so this validator stays in the config layer
-// without importing the plugin package.
-//
-// NOTE: this walker does NOT filter on e.OnError == ErrorPolicyOff. An
-// entry that is gated off via on_error still triggers the cross-block
-// check that requires top-level spiffe.jwt_audience. Rationale:
-// dead-config validation catches typos and forgotten flag-flips at
-// startup. If an operator wants to leave a token-exchange entry in
-// YAML with identity.type: spiffe but no audience, they must remove
-// the entry rather than just disabling it. This is the strict-but-
-// simple choice; loosen if it bites.
-func anyTokenExchangeUsesSPIFFE(cfg *Config) bool {
-	stages := [][]PluginEntry{
-		cfg.Pipeline.Inbound.Plugins,
-		cfg.Pipeline.Outbound.Plugins,
-	}
-	for _, stage := range stages {
-		for _, e := range stage {
-			if e.Name != "token-exchange" {
-				continue
-			}
-			if len(e.Config) == 0 {
-				continue
-			}
-			var probe struct {
-				Identity struct {
-					Type string `json:"type"`
-				} `json:"identity"`
-			}
-			if err := json.Unmarshal(e.Config, &probe); err != nil {
-				// Malformed config is the plugin's problem to report
-				// at Configure time; cross-block validation just skips it.
-				continue
-			}
-			if probe.Identity.Type == "spiffe" {
-				return true
-			}
-		}
-	}
-	return false
+	return validatePipeline(cfg)
 }
 
 func validatePipeline(cfg *Config) error {

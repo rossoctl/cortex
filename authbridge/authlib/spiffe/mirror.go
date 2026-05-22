@@ -61,31 +61,30 @@ type mirrorX509Source interface {
 }
 
 // mirrorJWTSource is the minimal surface of *workloadapi.JWTSource that
-// the mirror needs. *workloadapi.JWTSource satisfies this implicitly.
+// the JWT-mirror path needs. *workloadapi.JWTSource satisfies this
+// implicitly. The X.509 mirror struct does NOT embed a JWT source —
+// JWT mirroring is plugin-driven via Provider.MirrorJWT.
 type mirrorJWTSource interface {
 	FetchJWTSVID(ctx context.Context, params jwtsvid.Params) (*jwtsvid.SVID, error)
 }
 
-// mirrorConfig is the immutable configuration for a mirror. JWT may be
-// nil; if so, or if JWTAudience is empty, the JWT mirror loop is skipped.
+// mirrorConfig is the immutable configuration for the X.509 file mirror.
 type mirrorConfig struct {
-	Dir         string
-	X509        mirrorX509Source
-	JWT         mirrorJWTSource // nil = no JWT mirror
-	JWTAudience string          // ignored if JWT is nil or audience empty
+	Dir  string
+	X509 mirrorX509Source
 }
 
-// mirror copies SPIFFE credentials from in-memory sources to disk for
-// readers that still consume files (e.g. legacy spiffe-helper layouts).
-// All filesystem failures are best-effort: errors are logged at WARN and
-// never propagate, since the in-memory hot path is the source of truth.
+// mirror copies SPIFFE X.509 credentials from in-memory sources to disk
+// for readers that still consume files (e.g. legacy spiffe-helper
+// layouts). All filesystem failures are best-effort: errors are logged
+// at WARN and never propagate, since the in-memory hot path is the
+// source of truth.
+//
+// JWT-SVID mirroring is plugin-driven (see Provider.MirrorJWT) — only
+// the tokenexchange plugin's spiffe identity path knows the audience to
+// mint, so the framework no longer mirrors JWTs unconditionally.
 type mirror struct {
 	cfg mirrorConfig
-
-	// nextJWTSleep is set by writeJWT and read by runJWT, both on the
-	// runJWT goroutine. No mutex needed because only one goroutine
-	// touches it (runX509 and the initial-write path don't).
-	nextJWTSleep time.Duration
 }
 
 // newMirror constructs a mirror from cfg. The mirror does no I/O until
@@ -94,27 +93,13 @@ func newMirror(cfg mirrorConfig) *mirror {
 	return &mirror{cfg: cfg}
 }
 
-// run blocks until ctx is cancelled AND all spawned goroutines (JWT
-// refresh, if configured) have returned. It performs an initial X.509
-// write, optionally spawns a JWT refresh goroutine, then blocks on the
-// X.509 rotation loop until cancellation. Waiting for the JWT goroutine
-// before returning is important so callers can rely on "run returned →
-// no more file I/O" — useful for test cleanup and graceful shutdown.
+// run blocks until ctx is cancelled. It performs an initial X.509 write
+// then enters the X.509 rotation loop.
 func (m *mirror) run(ctx context.Context) {
 	if err := m.writeX509(); err != nil {
 		slog.Warn("spiffe.mirror: initial x509 write", "err", err)
 	}
-	jwtDone := make(chan struct{})
-	if m.cfg.JWT != nil && m.cfg.JWTAudience != "" {
-		go func() {
-			defer close(jwtDone)
-			m.runJWT(ctx)
-		}()
-	} else {
-		close(jwtDone)
-	}
 	m.runX509(ctx)
-	<-jwtDone
 }
 
 // runX509 subscribes to the X.509 source's Updated channel and writes
@@ -129,26 +114,6 @@ func (m *mirror) runX509(ctx context.Context) {
 			if err := m.writeX509(); err != nil {
 				slog.Warn("spiffe.mirror: x509 rotation write", "err", err)
 			}
-		}
-	}
-}
-
-// runJWT loops calling writeJWT and sleeping until the next refresh time
-// (90% of token lifetime) or ctx cancellation. On error, retries every
-// 30s.
-func (m *mirror) runJWT(ctx context.Context) {
-	const errRetry = 30 * time.Second
-	for {
-		sleep := errRetry
-		if err := m.writeJWT(ctx); err == nil {
-			sleep = m.nextJWTSleep
-		} else {
-			slog.Warn("spiffe.mirror: jwt write", "err", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(sleep):
 		}
 	}
 }
@@ -207,24 +172,47 @@ func (m *mirror) writeX509() error {
 	return nil
 }
 
-// writeJWT fetches a fresh JWT SVID for the configured audience, writes
-// it to jwt_svid.token, and updates m.nextJWTSleep to 90% of the token's
-// remaining lifetime (clamped to a 100ms minimum so a near-expired token
-// can't drive a tight loop).
-func (m *mirror) writeJWT(ctx context.Context) error {
+// writeJWT fetches a fresh JWT-SVID for the supplied audience and writes
+// it to <dir>/jwt_svid.token, returning 90% of the token's remaining
+// lifetime as the recommended next-refresh delay (clamped to a 100ms
+// minimum so a near-expired token can't drive a tight loop).
+//
+// Used by Provider.MirrorJWT (and its background refresh goroutine).
+func writeJWT(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir string) (time.Duration, error) {
 	const minRefresh = 100 * time.Millisecond
-	svid, err := m.cfg.JWT.FetchJWTSVID(ctx, jwtsvid.Params{Audience: m.cfg.JWTAudience})
+	svid, err := jwtSrc.FetchJWTSVID(ctx, jwtsvid.Params{Audience: audience})
 	if err != nil {
-		return fmt.Errorf("FetchJWTSVID: %w", err)
+		return 0, fmt.Errorf("FetchJWTSVID: %w", err)
 	}
-	tokenPath := filepath.Join(m.cfg.Dir, "jwt_svid.token")
+	tokenPath := filepath.Join(dir, "jwt_svid.token")
 	if err := atomicWrite(tokenPath, []byte(svid.Marshal()), 0o644); err != nil {
-		return fmt.Errorf("write jwt_svid.token: %w", err)
+		return 0, fmt.Errorf("write jwt_svid.token: %w", err)
 	}
 	sleep := time.Until(svid.Expiry) * 9 / 10
 	if sleep < minRefresh {
 		sleep = minRefresh
 	}
-	m.nextJWTSleep = sleep
-	return nil
+	return sleep, nil
+}
+
+// runJWTMirror loops calling writeJWT and sleeping until the next refresh
+// time (90% of token lifetime) or ctx cancellation. On error, retries
+// every 30s. Used by Provider.MirrorJWT for the background refresh
+// goroutine.
+func runJWTMirror(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir string) {
+	const errRetry = 30 * time.Second
+	for {
+		var sleep time.Duration
+		if d, err := writeJWT(ctx, jwtSrc, audience, dir); err == nil {
+			sleep = d
+		} else {
+			sleep = errRetry
+			slog.Warn("spiffe.mirror: jwt write", "audience", audience, "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(sleep):
+		}
+	}
 }

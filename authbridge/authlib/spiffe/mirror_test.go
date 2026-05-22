@@ -213,12 +213,8 @@ func TestMirror_X509_WritesAllThreeFiles(t *testing.T) {
 	_ = td
 }
 
-func TestMirror_JWT_WritesAndRefreshes(t *testing.T) {
+func TestRunJWTMirror_WritesAndRefreshes(t *testing.T) {
 	const audience = "https://keycloak/realms/test"
-	td := spiffeid.RequireTrustDomainFromString("example.org")
-	id := spiffeid.RequireFromString("spiffe://example.org/workload")
-	svid, bundle := generateSVIDAndBundle(t, id)
-	_ = td
 
 	// Two JWT SVIDs: first expires soon (forces a fast refresh), second
 	// has a longer expiry so the refresh sleep is observable.
@@ -227,27 +223,15 @@ func TestMirror_JWT_WritesAndRefreshes(t *testing.T) {
 	jwt2 := makeJWTSVID(t, audience)
 	jwt2.Expiry = time.Now().Add(time.Hour)
 
-	x509Fake := &fakeMirrorX509{
-		svid:    svid,
-		bundle:  bundle,
-		updated: make(chan struct{}, 1),
-	}
 	jwtFake := &fakeMirrorJWT{svids: []*jwtsvid.SVID{jwt1, jwt2}}
 
 	dir := t.TempDir()
-	m := newMirror(mirrorConfig{
-		Dir:         dir,
-		X509:        x509Fake,
-		JWT:         jwtFake,
-		JWTAudience: audience,
-	})
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan struct{})
 	go func() {
-		m.run(ctx)
+		runJWTMirror(ctx, jwtFake, audience, dir)
 		close(done)
 	}()
 
@@ -278,60 +262,7 @@ func TestMirror_JWT_WritesAndRefreshes(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("mirror.run did not exit after ctx cancel")
-	}
-}
-
-func TestMirror_NoJWTWhenAudienceEmpty(t *testing.T) {
-	td := spiffeid.RequireTrustDomainFromString("example.org")
-	id := spiffeid.RequireFromString("spiffe://example.org/workload")
-	svid, bundle := generateSVIDAndBundle(t, id)
-	_ = td
-
-	x509Fake := &fakeMirrorX509{
-		svid:    svid,
-		bundle:  bundle,
-		updated: make(chan struct{}, 1),
-	}
-	// JWT source provided but audience empty → JWT loop must be skipped.
-	jwtFake := &fakeMirrorJWT{svids: []*jwtsvid.SVID{makeJWTSVID(t, "x")}}
-
-	dir := t.TempDir()
-	m := newMirror(mirrorConfig{
-		Dir:         dir,
-		X509:        x509Fake,
-		JWT:         jwtFake,
-		JWTAudience: "",
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		m.run(ctx)
-		close(done)
-	}()
-
-	waitFile(t, filepath.Join(dir, "svid.pem"), 2*time.Second)
-
-	// Give the JWT loop a chance to run if it were ever going to.
-	time.Sleep(150 * time.Millisecond)
-
-	if _, err := os.Stat(filepath.Join(dir, "jwt_svid.token")); !os.IsNotExist(err) {
-		t.Errorf("expected jwt_svid.token absent, err=%v", err)
-	}
-	jwtFake.mu.Lock()
-	if jwtFake.calls != 0 {
-		t.Errorf("expected no FetchJWTSVID calls, got %d", jwtFake.calls)
-	}
-	jwtFake.mu.Unlock()
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("mirror.run did not exit after ctx cancel")
+		t.Fatal("runJWTMirror did not exit after ctx cancel")
 	}
 }
 
@@ -346,14 +277,11 @@ func TestMirror_GoroutineExitsOnCancel(t *testing.T) {
 		bundle:  bundle,
 		updated: make(chan struct{}, 1),
 	}
-	jwtFake := &fakeMirrorJWT{svids: []*jwtsvid.SVID{makeJWTSVID(t, "aud")}}
 
 	dir := t.TempDir()
 	m := newMirror(mirrorConfig{
-		Dir:         dir,
-		X509:        x509Fake,
-		JWT:         jwtFake,
-		JWTAudience: "aud",
+		Dir:  dir,
+		X509: x509Fake,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -102,17 +102,16 @@ func (m *MTLSConfig) Validate() error {
 //
 // Defaults match today's spiffe-helper-driven setup so existing
 // deployments boot without changes once chart/operator follow-ups land.
+//
+// The audience for the JWT-SVID used by token-exchange as a client
+// assertion is per-plugin (tokenexchange.identity.jwt_audience) and is
+// no longer carried here — only the tokenexchange plugin's spiffe
+// identity path consumes it, so it lives in that plugin's config.
 type SPIFFEConfig struct {
 	// Socket is the SPIRE agent socket URL. Defaults to
 	// "unix:///spiffe-workload-api/spire-agent.sock" — the same path
 	// spiffe-helper used to talk to.
 	Socket string `yaml:"socket" json:"socket"`
-
-	// JWTAudience is the audience for the JWT-SVID used by token-exchange
-	// as a client assertion. Required when any plugin sets
-	// tokenexchange.identity.type=spiffe (cross-block validation enforces
-	// this in Task 8); otherwise empty disables JWT-SVID fetch entirely.
-	JWTAudience string `yaml:"jwt_audience" json:"jwt_audience"`
 
 	// MirrorFiles, when true, runs an in-process goroutine that writes
 	// /opt/svid.pem, /opt/svid_key.pem, /opt/svid_bundle.pem, and
@@ -130,9 +129,7 @@ type SPIFFEConfig struct {
 // Validate rejects sockets that aren't unix:// URLs. The Workload API
 // only speaks over a unix domain socket in our deployment model; a
 // tcp:// or http:// scheme is almost certainly an operator typo and
-// should fail at startup rather than at first dial. Other fields are
-// validated lazily — JWTAudience requirements are cross-block (against
-// tokenexchange.identity.type) and live in a later wiring task.
+// should fail at startup rather than at first dial.
 func (s *SPIFFEConfig) Validate() error {
 	if s == nil {
 		return nil

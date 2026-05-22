@@ -69,7 +69,7 @@ func TestTokenExchange_Configure_DefaultIdentityPaths_SPIFFE(t *testing.T) {
 	p.setJWTSourceForTest(&fakeJWTSource{token: "test-jwt"})
 	raw := []byte(`{
 	  "token_url":"http://t",
-	  "identity":{"type":"spiffe"}
+	  "identity":{"type":"spiffe","jwt_audience":"http://kc/realms/test"}
 	}`)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -357,7 +357,7 @@ func TestTokenExchange_SPIFFE_Identity_UsesInjectedJWTSource(t *testing.T) {
 
 	raw := []byte(`{
 	  "token_url":"http://example/token",
-	  "identity":{"type":"spiffe","client_id":"agent-1"}
+	  "identity":{"type":"spiffe","client_id":"agent-1","jwt_audience":"http://kc/realms/test"}
 	}`)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -373,7 +373,7 @@ func TestTokenExchange_SPIFFE_Identity_ErrorsWhenNoJWTSource(t *testing.T) {
 	// fail rather than panic on the spiffe identity path.
 	raw := []byte(`{
 	  "token_url":"http://example/token",
-	  "identity":{"type":"spiffe","client_id":"agent-1"}
+	  "identity":{"type":"spiffe","client_id":"agent-1","jwt_audience":"http://kc/realms/test"}
 	}`)
 	if err := p.Configure(raw); err == nil {
 		t.Fatal("expected error when spiffe identity has no JWTSource, got nil")

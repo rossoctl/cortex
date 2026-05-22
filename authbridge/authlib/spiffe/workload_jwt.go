@@ -46,12 +46,8 @@ var _ JWTSource = (*workloadJWT)(nil)
 // the Keycloak token endpoint URL used for client-assertion JWTs in
 // RFC 8693 token exchange.
 //
-// Wired in by the upcoming Provider type (see plan task T5); not called
-// by any caller yet, hence the nolint:unused on the constructor (the
-// var _ JWTSource assertion above already verifies the interface
-// contract at build time).
-//
-//nolint:unused // wired in by Provider in plan task T5
+// Provider.JWTSource(audience) constructs a fresh adapter on each call
+// while reusing the underlying SDK client.
 func newWorkloadJWT(sdk *workloadapi.JWTSource, audience string) *workloadJWT {
 	return &workloadJWT{sdk: sdk, audience: audience}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
@@ -16,7 +17,7 @@ import (
 const DefaultSocketPath = "unix:///spiffe-workload-api/spire-agent.sock"
 
 // DefaultMirrorDir is the directory the mirror writes svid.pem,
-// svid_key.pem, svid_bundle.pem, and (when JWTAudience is set)
+// svid_key.pem, svid_bundle.pem, and (when MirrorJWT is invoked)
 // jwt_svid.token into. /opt matches the historical spiffe-helper
 // layout that any remaining file-reading consumers expect.
 const DefaultMirrorDir = "/opt"
@@ -24,29 +25,26 @@ const DefaultMirrorDir = "/opt"
 // ProviderConfig parameterizes Provider construction.
 //
 // Empty SocketPath / MirrorDir resolve to DefaultSocketPath /
-// DefaultMirrorDir at NewProvider time. JWTAudience is the audience
-// claim on the JWT-SVID minted for outbound RFC 8693 client-assertion
-// JWTs; empty disables the JWT source entirely.
+// DefaultMirrorDir at NewProvider time.
 //
-// MirrorFiles enables the file-mirror goroutine that copies SVID +
-// bundle to MirrorDir for legacy file-reading consumers. The wider
-// config layer (the spiffe ProviderConfig section in
-// authbridge-runtime) defaults this to true, so callers that omit
-// the field get on-by-default mirroring at the surface they actually
-// touch.
+// MirrorFiles enables the file-mirror goroutine that copies the X.509
+// SVID + bundle to MirrorDir for legacy file-reading consumers. The
+// wider config layer (the spiffe block in authbridge-runtime) defaults
+// this to true, so callers that omit the field get on-by-default
+// mirroring at the surface they actually touch.
+//
+// JWT-SVID mirroring is plugin-driven: a plugin that needs an audience-
+// specific token to be written to disk calls Provider.MirrorJWT. The
+// framework no longer carries an audience here — only the tokenexchange
+// plugin's spiffe identity path consumes the JWT-SVID.
 type ProviderConfig struct {
 	// SocketPath is the SPIRE Workload API endpoint URL. Empty
 	// resolves to DefaultSocketPath.
 	SocketPath string
 
-	// JWTAudience fixes the audience claim on JWT-SVIDs minted by
-	// the JWTSource. Empty disables the JWT source — JWTSource()
-	// returns nil and no JWT mirror file is written.
-	JWTAudience string
-
 	// MirrorFiles, when true, runs a background goroutine that
-	// mirrors the in-memory SVIDs to disk under MirrorDir. Defaults
-	// to true at the config layer above.
+	// mirrors the in-memory X.509 SVIDs to disk under MirrorDir.
+	// Defaults to true at the config layer above.
 	MirrorFiles bool
 
 	// MirrorDir is the directory the mirror writes to. Empty
@@ -56,13 +54,16 @@ type ProviderConfig struct {
 
 // Provider holds the SDK Workload API clients, exposes them through
 // the framework's X509Source / JWTSource interfaces, and runs the
-// file-mirror goroutine when MirrorFiles is set. NewProvider blocks
-// until the first X.509-SVID arrives, so a successful return
+// X.509 file-mirror goroutine when MirrorFiles is set. NewProvider
+// blocks until the first X.509-SVID arrives, so a successful return
 // guarantees the X509Source is immediately usable for TLS handshakes.
 //
-// One Provider per process is the intended deployment shape: the
-// SDK's X509Source / JWTSource each open their own gRPC stream to
-// the agent, and there's no benefit to multiplying them.
+// The JWT SDK client is opened lazily on the first JWTSource(audience)
+// or MirrorJWT(ctx, audience) call — a Provider that no plugin ever
+// asks for a JWT pays no SPIRE round-trip for it. Subsequent calls
+// reuse the cached SDK client; new audiences just rebind the adapter.
+//
+// One Provider per process is the intended deployment shape.
 type Provider struct {
 	// cfg captures the resolved configuration for diagnostics.
 	cfg ProviderConfig
@@ -71,28 +72,39 @@ type Provider struct {
 	// closed in Close().
 	x509SDK *workloadapi.X509Source
 
-	// jwtSDK is the SDK-owned JWT source. nil when JWTAudience is
-	// empty. Owned by Provider — closed in Close().
-	jwtSDK *workloadapi.JWTSource
-
 	// x509 is the framework-X509Source adapter wrapping x509SDK.
 	// Always non-nil after a successful NewProvider.
 	x509 *workloadX509
 
-	// jwt is the framework-JWTSource adapter wrapping jwtSDK. nil
-	// when JWTAudience is empty; the JWTSource() method returns an
-	// untyped nil interface in that case (typed-nil guard).
-	jwt *workloadJWT
+	// jwtMu guards lazy initialization of jwtSDK and the
+	// mirrorAudiences map. Held only briefly (no I/O on the hot
+	// path); workload_jwt's FetchToken takes its own SDK locks.
+	jwtMu sync.Mutex
 
-	// cancel cancels the mirror goroutine's context. nil when
-	// MirrorFiles is false.
-	cancel context.CancelFunc
+	// jwtSDK is the SDK-owned JWT source, opened lazily on the
+	// first JWTSource() / MirrorJWT() call. nil until then. Owned
+	// by Provider — closed in Close().
+	jwtSDK *workloadapi.JWTSource
+
+	// mirrorAudiences tracks the audiences for which a MirrorJWT
+	// goroutine has already been spawned. Reentrant calls with the
+	// same audience are a no-op.
+	mirrorAudiences map[string]struct{}
+
+	// mctx / mcancel scope every mirror goroutine (X.509 + per-
+	// audience JWT). Cancelled by Close() so all mirror loops exit
+	// before the SDK clients go away.
+	mctx    context.Context
+	mcancel context.CancelFunc
 }
 
 // NewProvider creates a Provider from cfg. It blocks until the first
 // X.509-SVID arrives (the cold-start gate is delegated to
 // workloadapi.NewX509Source's context). Pass a ctx with a deadline if
 // you want to bound the agent-unreachable wait.
+//
+// The JWT SDK client is NOT opened here — it's opened on the first
+// JWTSource(audience) / MirrorJWT(ctx, audience) call.
 //
 // On error every SDK client constructed up to that point is closed
 // before returning, so the caller doesn't have to chase partial
@@ -122,33 +134,22 @@ func NewProvider(ctx context.Context, cfg ProviderConfig) (*Provider, error) {
 		return nil, fmt.Errorf("spiffe.NewProvider: get initial SVID: %w", err)
 	}
 
+	// mirror lifecycle is decoupled from ctx — Provider owns it,
+	// must outlive construction. Close() cancels mcancel.
+	mctx, mcancel := context.WithCancel(context.Background())
 	p := &Provider{
-		cfg:     cfg,
-		x509SDK: x509SDK,
-		x509:    newWorkloadX509(x509SDK, svid.ID.TrustDomain()),
-	}
-
-	if cfg.JWTAudience != "" {
-		jwtSDK, err := workloadapi.NewJWTSource(ctx, clientOpts)
-		if err != nil {
-			_ = x509SDK.Close()
-			return nil, fmt.Errorf("spiffe.NewProvider: jwt source: %w", err)
-		}
-		p.jwtSDK = jwtSDK
-		p.jwt = newWorkloadJWT(jwtSDK, cfg.JWTAudience)
+		cfg:             cfg,
+		x509SDK:         x509SDK,
+		x509:            newWorkloadX509(x509SDK, svid.ID.TrustDomain()),
+		mirrorAudiences: make(map[string]struct{}),
+		mctx:            mctx,
+		mcancel:         mcancel,
 	}
 
 	if cfg.MirrorFiles {
-		// Use a fresh context decoupled from ctx — Provider owns the
-		// mirror lifecycle, so it must outlive the construction
-		// context. Close() invokes cancel to terminate the mirror.
-		mctx, cancel := context.WithCancel(context.Background())
-		p.cancel = cancel
 		m := newMirror(mirrorConfig{
-			Dir:         cfg.MirrorDir,
-			X509:        x509SDK,
-			JWT:         p.jwtSDK, // nil when JWTAudience is empty; mirror handles that
-			JWTAudience: cfg.JWTAudience,
+			Dir:  cfg.MirrorDir,
+			X509: x509SDK,
 		})
 		// Synchronous initial write so the cold-start guarantee is
 		// observable to anything that races with our return. Mirror
@@ -156,11 +157,6 @@ func NewProvider(ctx context.Context, cfg ProviderConfig) (*Provider, error) {
 		// Provider construction.
 		if err := m.writeX509(); err != nil {
 			slog.Warn("spiffe.NewProvider: initial x509 mirror write", "err", err)
-		}
-		if p.jwtSDK != nil {
-			if err := m.writeJWT(ctx); err != nil {
-				slog.Warn("spiffe.NewProvider: initial jwt mirror write", "err", err)
-			}
 		}
 		go m.run(mctx)
 	}
@@ -175,34 +171,110 @@ func (p *Provider) X509Source() X509Source {
 	return p.x509
 }
 
-// JWTSource returns the framework JWTSource adapter, or untyped nil
-// when JWTAudience was empty in the config. The explicit nil-return
-// avoids the Go interface gotcha where (JWTSource)(nil) (a typed nil
-// wrapping a nil *workloadJWT) compares != nil; callers checking
-// `if p.JWTSource() == nil` get the result they expect.
-func (p *Provider) JWTSource() JWTSource {
-	if p.jwt == nil {
-		return nil
+// JWTSource returns a framework JWTSource adapter bound to the given
+// audience. The first call also opens the underlying SDK
+// workloadapi.JWTSource (cached on the Provider); subsequent calls reuse
+// that single SDK client and just bind a fresh adapter to the
+// requested audience. Returns an error only if the SDK client cannot be
+// opened (Workload API unreachable).
+func (p *Provider) JWTSource(audience string) (JWTSource, error) {
+	sdk, err := p.ensureJWTSDK()
+	if err != nil {
+		return nil, err
 	}
-	return p.jwt
+	return newWorkloadJWT(sdk, audience), nil
 }
 
-// Close shuts down the mirror goroutine and both SDK sources. Order:
+// ensureJWTSDK lazily constructs the SDK JWT source on first use. Safe
+// to call concurrently — returns the cached client on subsequent calls.
+func (p *Provider) ensureJWTSDK() (*workloadapi.JWTSource, error) {
+	p.jwtMu.Lock()
+	defer p.jwtMu.Unlock()
+	if p.jwtSDK != nil {
+		return p.jwtSDK, nil
+	}
+	clientOpts := workloadapi.WithClientOptions(workloadapi.WithAddr(p.cfg.SocketPath))
+	// Use a background context for SDK construction — the first
+	// FetchJWTSVID call will retry if the agent isn't ready yet.
+	// Bounding this to NewProvider's ctx would surface as a one-shot
+	// failure on whichever request happens to be first.
+	jwtSDK, err := workloadapi.NewJWTSource(context.Background(), clientOpts)
+	if err != nil {
+		return nil, fmt.Errorf("spiffe.Provider: jwt source: %w", err)
+	}
+	p.jwtSDK = jwtSDK
+	return jwtSDK, nil
+}
+
+// MirrorJWT mirrors a JWT-SVID for the supplied audience to
+// <MirrorDir>/jwt_svid.token. No-op when MirrorFiles is false.
+//
+// Performs a synchronous initial write so the file is observable on
+// return, then spawns a goroutine that refreshes at 90% of the token's
+// lifetime (or every 30s on error). The goroutine respects the
+// Provider's mirror context and exits on Close().
+//
+// Reentrant: a second call with the same audience does NOT spawn a
+// duplicate goroutine. Different audiences each get their own goroutine
+// (and their own jwt_svid.token... but they all write to the same path,
+// so callers should treat MirrorJWT as a single-audience contract).
+func (p *Provider) MirrorJWT(ctx context.Context, audience string) error {
+	if !p.cfg.MirrorFiles {
+		return nil
+	}
+	if audience == "" {
+		return errors.New("spiffe.Provider.MirrorJWT: audience is required")
+	}
+
+	sdk, err := p.ensureJWTSDK()
+	if err != nil {
+		return err
+	}
+
+	// Reentrancy guard. Hold the lock long enough to atomically
+	// check-and-mark the audience as started.
+	p.jwtMu.Lock()
+	if _, already := p.mirrorAudiences[audience]; already {
+		p.jwtMu.Unlock()
+		return nil
+	}
+	p.mirrorAudiences[audience] = struct{}{}
+	p.jwtMu.Unlock()
+
+	// Synchronous initial write so the cold-start guarantee is
+	// observable to anything that races with our return. Use the
+	// caller's ctx for the initial write only; the refresh goroutine
+	// uses Provider's mctx so it survives plugin Init.
+	if _, err := writeJWT(ctx, sdk, audience, p.cfg.MirrorDir); err != nil {
+		// Non-fatal at the framework level — the in-memory FetchToken
+		// path is the source of truth for the plugin's hot path; the
+		// mirror is an external-reader convenience.
+		slog.Warn("spiffe.Provider.MirrorJWT: initial jwt mirror write", "audience", audience, "err", err)
+	}
+
+	go runJWTMirror(p.mctx, sdk, audience, p.cfg.MirrorDir)
+	return nil
+}
+
+// Close shuts down the mirror goroutines and both SDK sources. Order:
 // cancel mirror first (so the rotation loops exit before their SDK
 // sources go away), then close the SDK sources. Errors from the SDK
 // Close calls are joined; idempotent calls return nil because every
 // step is nil-guarded.
 func (p *Provider) Close() error {
 	var errs []error
-	if p.cancel != nil {
-		p.cancel()
-		p.cancel = nil
+	if p.mcancel != nil {
+		p.mcancel()
+		p.mcancel = nil
 	}
-	if p.jwtSDK != nil {
-		if err := p.jwtSDK.Close(); err != nil {
+	p.jwtMu.Lock()
+	jwtSDK := p.jwtSDK
+	p.jwtSDK = nil
+	p.jwtMu.Unlock()
+	if jwtSDK != nil {
+		if err := jwtSDK.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("jwt source close: %w", err))
 		}
-		p.jwtSDK = nil
 	}
 	if p.x509SDK != nil {
 		if err := p.x509SDK.Close(); err != nil {

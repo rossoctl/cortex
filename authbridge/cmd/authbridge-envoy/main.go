@@ -124,7 +124,6 @@ func main() {
 		}
 		provider, err = spiffe.NewProvider(context.Background(), spiffe.ProviderConfig{
 			SocketPath:  bootCfg.SPIFFE.Socket,
-			JWTAudience: bootCfg.SPIFFE.JWTAudience,
 			MirrorFiles: mirrorFiles,
 			MirrorDir:   bootCfg.SPIFFE.MirrorDir,
 		})

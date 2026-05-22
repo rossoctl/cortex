@@ -78,6 +78,12 @@ type tokenExchangeIdentity struct {
 	ClientSecret     string `json:"client_secret"`
 	ClientSecretFile string `json:"client_secret_file"`
 
+	// JWTAudience is the audience claim minted on the JWT-SVID used as
+	// the RFC 8693 client assertion. Required when Type=="spiffe";
+	// ignored otherwise. Lives on the plugin (not the framework spiffe
+	// block) because only the spiffe identity path consumes it.
+	JWTAudience string `json:"jwt_audience"`
+
 	// jwt_svid_path was historically a per-plugin path to the JWT-SVID
 	// file written by spiffe-helper. Removed in favor of injection via
 	// the framework spiffe.Provider (see the top-level spiffe block in
@@ -161,13 +167,24 @@ func (c *tokenExchangeConfig) validate() error {
 		return fmt.Errorf("no_token_policy must be allow, deny, or client-credentials, got %q", c.NoTokenPolicy)
 	}
 	switch c.Identity.Type {
-	case "spiffe", "client-secret":
+	case "spiffe":
 		// applyDefaults fills the identity file paths when the
 		// matching inline values are empty, so no per-field check
-		// here — the Configure path always ends up with a reachable
-		// credential source. Configure's best-effort read logs a
+		// for client_id here — Configure's best-effort read logs a
 		// WARN if the file isn't yet readable at boot, and Init's
 		// watcher retries in the background.
+		//
+		// jwt_audience is required for the spiffe identity path: the
+		// framework JWT-SVID source needs an audience to mint the
+		// client-assertion JWT for. Catching the missing value here
+		// gives operators a clear startup error rather than a runtime
+		// failure on the first outbound exchange.
+		if c.Identity.JWTAudience == "" {
+			return errors.New("tokenexchange: identity.type=spiffe requires identity.jwt_audience to be set")
+		}
+	case "client-secret":
+		// applyDefaults fills the identity file paths when the
+		// matching inline values are empty.
 	case "":
 		return errors.New("identity.type is required (spiffe or client-secret)")
 	default:
@@ -222,18 +239,28 @@ func (p *TokenExchange) SetSPIFFEProvider(prov *fwspiffe.Provider) {
 	p.provider = prov
 }
 
-// jwtSource returns the framework JWTSource to use for spiffe identity:
-// testJWTSource (test-only) overrides; otherwise provider.JWTSource()
-// (which itself may be nil if the provider was constructed without a
-// JWTAudience). Returns nil when neither is available.
-func (p *TokenExchange) jwtSource() fwspiffe.JWTSource {
+// jwtSource returns the framework JWTSource to use for spiffe identity,
+// bound to the supplied audience: testJWTSource (test-only) overrides;
+// otherwise provider.JWTSource(audience) opens (lazily) the SDK JWT
+// client and binds an adapter to the audience. Returns nil when neither
+// is available.
+//
+// Errors from the SDK are logged at WARN and surfaced as nil — the
+// caller treats nil as "no JWT source" and either fails Configure
+// (unconfigured spiffe identity) or stays not-ready (poll path).
+func (p *TokenExchange) jwtSource(audience string) fwspiffe.JWTSource {
 	if p.testJWTSource != nil {
 		return p.testJWTSource
 	}
-	if p.provider != nil {
-		return p.provider.JWTSource()
+	if p.provider == nil {
+		return nil
 	}
-	return nil
+	src, err := p.provider.JWTSource(audience)
+	if err != nil {
+		slog.Warn("token-exchange: provider.JWTSource failed", "audience", audience, "error", err)
+		return nil
+	}
+	return src
 }
 
 // NewTokenExchange constructs an unconfigured plugin.
@@ -307,7 +334,7 @@ func (p *TokenExchange) Configure(raw json.RawMessage) error {
 		}
 	}
 
-	jwtSrc := p.jwtSource()
+	jwtSrc := p.jwtSource(c.Identity.JWTAudience)
 	clientAuth, err := buildClientAuthFrom(c.Identity.Type,
 		c.Identity.ClientID, c.Identity.ClientSecret, jwtSrc)
 	if err != nil {
@@ -376,14 +403,13 @@ func credentialsAreReady(id tokenExchangeIdentity, jwtSrc fwspiffe.JWTSource) bo
 //
 // The "spiffe" identity path requires a non-nil JWTSource — supplied by
 // the framework spiffe.Provider via SetSPIFFEProvider (see
-// plugins.BuildWithSPIFFE). When the provider hasn't been wired in (or
-// was constructed without a JWTAudience), this returns an explicit
-// configuration error rather than panicking.
+// plugins.BuildWithSPIFFE). When the provider hasn't been wired in,
+// this returns an explicit configuration error rather than panicking.
 func buildClientAuthFrom(identityType, clientID, clientSecret string, jwtSrc fwspiffe.JWTSource) (exchange.ClientAuth, error) {
 	switch identityType {
 	case "spiffe":
 		if jwtSrc == nil {
-			return nil, errors.New("spiffe identity requires SPIFFE provider with non-empty jwt_audience to be injected")
+			return nil, errors.New("spiffe identity requires a SPIFFE provider to be injected")
 		}
 		return &exchange.JWTAssertionAuth{
 			ClientID:      clientID,
@@ -433,10 +459,27 @@ func buildRouterFrom(defaultPolicy string, routes tokenExchangeRoutes) (*routing
 // available, it builds a fresh client-auth and calls UpdateIdentity so
 // in-flight exchanges pick up the new credentials.
 //
+// For spiffe identity, Init also asks the framework Provider to mirror
+// the JWT-SVID for the configured audience to disk (no-op when the
+// provider has MirrorFiles=false). The mirror file is used by external
+// readers (debug shells, e2e probes, future Envoy filesystem SDS); the
+// in-memory FetchToken path is the source of truth for the hot path.
+//
 // Init's ctx bounds synchronous init only; the poller runs on a
 // process-lifetime context (see bgCancel) so Pipeline.Start's 60s
 // budget doesn't kill it. Shutdown cancels the poller.
-func (p *TokenExchange) Init(_ context.Context) error {
+func (p *TokenExchange) Init(ctx context.Context) error {
+	if p.cfg.Identity.Type == "spiffe" && p.provider != nil && p.cfg.Identity.JWTAudience != "" {
+		if err := p.provider.MirrorJWT(ctx, p.cfg.Identity.JWTAudience); err != nil {
+			// Mirror failures are non-fatal: the in-memory
+			// JWTSource keeps working even if the file mirror
+			// can't be set up. Log loud enough that operators
+			// notice.
+			slog.Warn("token-exchange: failed to start JWT-SVID mirror",
+				"audience", p.cfg.Identity.JWTAudience, "error", err)
+		}
+	}
+
 	needID := p.cfg.Identity.ClientID == "" && p.cfg.Identity.ClientIDFile != ""
 	needSecret := p.cfg.Identity.ClientSecret == "" && p.cfg.Identity.ClientSecretFile != ""
 	if !needID && !needSecret {
@@ -477,7 +520,7 @@ func (p *TokenExchange) pollCredentials(ctx context.Context, needID, needSecret 
 		}
 		clientSecret = v
 	}
-	clientAuth, err := buildClientAuthFrom(p.cfg.Identity.Type, clientID, clientSecret, p.jwtSource())
+	clientAuth, err := buildClientAuthFrom(p.cfg.Identity.Type, clientID, clientSecret, p.jwtSource(p.cfg.Identity.JWTAudience))
 	if err != nil {
 		slog.Warn("token-exchange: failed to rebuild client auth after credential load", "error", err)
 		return
