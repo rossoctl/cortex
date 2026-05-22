@@ -91,6 +91,38 @@ func main() {
 		log.Fatal("--config is required")
 	}
 
+	// Build the SPIFFE Provider when the spiffe block is configured. The
+	// Provider drives both mTLS (via X509Source) and token-exchange's
+	// spiffe identity (via JWTSource). Construction blocks until the first
+	// X.509-SVID arrives (cold-start gate); kubelet restarts on failure.
+	//
+	// We need cfg first to read the spiffe block, so do a one-shot Load
+	// before buildPipelines runs (buildPipelines re-Loads internally for
+	// hot-reload). The Provider is captured by buildPipelines via closure
+	// so reload-time pipeline rebuilds inject the same Provider into
+	// freshly constructed plugin instances.
+	bootCfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("initial config load: %v", err)
+	}
+	var provider *spiffe.Provider
+	if bootCfg.SPIFFE != nil {
+		mirrorFiles := true
+		if bootCfg.SPIFFE.MirrorFiles != nil {
+			mirrorFiles = *bootCfg.SPIFFE.MirrorFiles
+		}
+		provider, err = spiffe.NewProvider(context.Background(), spiffe.ProviderConfig{
+			SocketPath:  bootCfg.SPIFFE.Socket,
+			JWTAudience: bootCfg.SPIFFE.JWTAudience,
+			MirrorFiles: mirrorFiles,
+			MirrorDir:   bootCfg.SPIFFE.MirrorDir,
+		})
+		if err != nil {
+			log.Fatalf("spiffe provider: %v", err)
+		}
+		defer provider.Close()
+	}
+
 	// This binary is hardcoded to proxy-sidecar. Rejecting other modes
 	// early gives operators a clear boot-time error instead of silently
 	// misbehaving (e.g., YAML says envoy-sidecar but binary can't
@@ -110,11 +142,11 @@ func main() {
 		if err := config.Validate(c); err != nil {
 			return nil, nil, nil, err
 		}
-		in, err := plugins.Build(c.Pipeline.Inbound.Plugins)
+		in, err := plugins.BuildWithSPIFFE(c.Pipeline.Inbound.Plugins, provider)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.Build(c.Pipeline.Outbound.Plugins)
+		out, err := plugins.BuildWithSPIFFE(c.Pipeline.Outbound.Plugins, provider)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
@@ -183,35 +215,15 @@ func main() {
 		mtlsMetrics *authtls.Metrics
 	)
 	if cfg.MTLS != nil {
+		if provider == nil {
+			log.Fatal("mtls requires the spiffe block to be configured")
+		}
 		strict := cfg.MTLS.ResolvedMode() == config.MTLSModeStrict
-		src := spiffe.NewFileX509Source(cfg.MTLS.CertFile, cfg.MTLS.KeyFile, cfg.MTLS.BundleFile)
+		src := provider.X509Source()
 		mtlsMetrics = authtls.NewMetrics()
 		rpMTLS = &reverseproxy.MTLSOptions{Source: src, Strict: strict, Metrics: mtlsMetrics}
 		fpMTLS = &forwardproxy.MTLSOptions{Source: src, Strict: strict, Metrics: mtlsMetrics}
-		slog.Info("mTLS enabled", "mode", cfg.MTLS.ResolvedMode(),
-			"cert", cfg.MTLS.CertFile, "key", cfg.MTLS.KeyFile, "bundle", cfg.MTLS.BundleFile)
-		// Cold-start gate: tls.ServerConfig probes the source at
-		// construction and errors hard if files don't exist. spiffe-helper
-		// writes asynchronously after pod start; on a freshly
-		// bootstrapping cluster the SPIRE controller-manager + agent
-		// path can take more than a minute (entry rendering, agent
-		// attestation, SVID issuance). We wait indefinitely
-		// (heartbeats every 60s while the file is missing) and let the
-		// kubelet's readiness probe surface "not ready yet" — same
-		// pattern jwt-validation and token-exchange use for their
-		// credential files. Pod stays 1/2 Ready until SVIDs land.
-		//
-		// On SIGTERM during the wait the process is killed before
-		// listeners bind, which is the right behavior when startup
-		// hasn't completed. The Fatalf is unreachable with
-		// context.Background but kept for safety if someone later
-		// plumbs in a cancellable context.
-		for _, p := range []string{cfg.MTLS.CertFile, cfg.MTLS.KeyFile, cfg.MTLS.BundleFile} {
-			if _, err := config.WaitForCredentialFile(context.Background(), p); err != nil {
-				log.Fatalf("waiting for mtls cert file %s: %v", p, err)
-			}
-		}
-		slog.Info("mtls cert files ready")
+		slog.Info("mTLS enabled", "mode", cfg.MTLS.ResolvedMode())
 	} else {
 		slog.Info("mTLS disabled (no mtls block in config)")
 	}
