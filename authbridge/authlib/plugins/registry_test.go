@@ -6,6 +6,7 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
 )
 
 // TestRegisterPlugin_DoubleRegistration_Panics locks the strict-fail
@@ -417,5 +418,86 @@ func TestValidateRelationships_EmptyChain(t *testing.T) {
 	}
 	if err := validateRelationships([]pipeline.Plugin{}); err != nil {
 		t.Errorf("empty chain should not error, got: %v", err)
+	}
+}
+
+// --- BuildWithSPIFFE tests ---
+
+// consumerPlugin is a test double implementing pipeline.Plugin AND
+// spiffe.ProviderConsumer. It records the Provider it was injected with
+// for assertion.
+type consumerPlugin struct {
+	name        string
+	setProvider *spiffe.Provider
+}
+
+func (p *consumerPlugin) Name() string                              { return p.name }
+func (p *consumerPlugin) Capabilities() pipeline.PluginCapabilities { return pipeline.PluginCapabilities{} }
+func (p *consumerPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *consumerPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *consumerPlugin) SetSPIFFEProvider(prov *spiffe.Provider) { p.setProvider = prov }
+
+// nonConsumerPlugin is a plugin that does NOT implement ProviderConsumer.
+// Used to assert BuildWithSPIFFE leaves it untouched.
+type nonConsumerPlugin struct {
+	name string
+}
+
+func (p *nonConsumerPlugin) Name() string { return p.name }
+func (p *nonConsumerPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (p *nonConsumerPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *nonConsumerPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func TestBuildWithSPIFFE_InjectsProviderIntoConsumer(t *testing.T) {
+	fake := &consumerPlugin{name: "test-spiffe-consumer-1"}
+	RegisterPlugin("test-spiffe-consumer-1", func() pipeline.Plugin { return fake })
+	t.Cleanup(func() { UnregisterPlugin("test-spiffe-consumer-1") })
+
+	prov := &spiffe.Provider{} // OK to use zero-value here for identity test
+	_, err := BuildWithSPIFFE([]config.PluginEntry{{Name: "test-spiffe-consumer-1"}}, prov)
+	if err != nil {
+		t.Fatalf("BuildWithSPIFFE: %v", err)
+	}
+	if fake.setProvider != prov {
+		t.Errorf("provider not injected; got %v, want %v", fake.setProvider, prov)
+	}
+}
+
+func TestBuildWithSPIFFE_NilProvider_NoCallToSetSPIFFEProvider(t *testing.T) {
+	fake := &consumerPlugin{name: "test-spiffe-consumer-2"}
+	RegisterPlugin("test-spiffe-consumer-2", func() pipeline.Plugin { return fake })
+	t.Cleanup(func() { UnregisterPlugin("test-spiffe-consumer-2") })
+
+	_, err := BuildWithSPIFFE([]config.PluginEntry{{Name: "test-spiffe-consumer-2"}}, nil)
+	if err != nil {
+		t.Fatalf("BuildWithSPIFFE: %v", err)
+	}
+	if fake.setProvider != nil {
+		t.Errorf("provider should be nil for nil-provider call, got %v", fake.setProvider)
+	}
+}
+
+func TestBuildWithSPIFFE_NonConsumerPlugin_Unaffected(t *testing.T) {
+	// A plugin that does NOT implement ProviderConsumer should still
+	// build cleanly when BuildWithSPIFFE is called with a non-nil provider.
+	RegisterPlugin("test-non-consumer", func() pipeline.Plugin {
+		return &nonConsumerPlugin{name: "test-non-consumer"}
+	})
+	t.Cleanup(func() { UnregisterPlugin("test-non-consumer") })
+
+	prov := &spiffe.Provider{}
+	_, err := BuildWithSPIFFE([]config.PluginEntry{{Name: "test-non-consumer"}}, prov)
+	if err != nil {
+		t.Fatalf("BuildWithSPIFFE: %v", err)
 	}
 }

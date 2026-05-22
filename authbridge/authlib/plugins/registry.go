@@ -8,6 +8,7 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
 )
 
 // PluginFactory returns a fresh plugin instance. Plugins take no
@@ -122,6 +123,54 @@ func Build(entries []config.PluginEntry, opts ...pipeline.Option) (*pipeline.Pip
 			return nil, fmt.Errorf("plugin %q does not accept configuration", e.Name)
 		}
 		ps = append(ps, p)
+		policies = append(policies, e.OnError.Resolved())
+	}
+	if err := validateRelationships(ps); err != nil {
+		return nil, err
+	}
+	opts = append(opts, pipeline.WithPolicies(policies...))
+	return pipeline.New(ps, opts...)
+}
+
+// BuildWithSPIFFE is Build plus dependency injection of the framework
+// SPIFFE Provider. Every plugin satisfying spiffe.ProviderConsumer
+// receives p via SetSPIFFEProvider before its Configure is invoked, so
+// configuration code can use the provider's sources directly.
+//
+// Pass nil for p in builds that don't need SPIFFE; in that case the
+// behavior is equivalent to Build for non-consuming plugins, and
+// consumer plugins are NOT called (their SetSPIFFEProvider is skipped).
+//
+// Plugins that don't implement ProviderConsumer are unaffected.
+func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...pipeline.Option) (*pipeline.Pipeline, error) {
+	ps := make([]pipeline.Plugin, 0, len(entries))
+	policies := make([]pipeline.ErrorPolicy, 0, len(entries))
+	for _, e := range entries {
+		// ErrorPolicyOff removes the plugin from the running pipeline
+		// entirely — same kill-switch semantics as Build.
+		if e.OnError.Resolved() == pipeline.ErrorPolicyOff {
+			continue
+		}
+		factory, ok := factoryFor(e.Name)
+		if !ok {
+			return nil, fmt.Errorf("unknown plugin %q (registered: %v)", e.Name, RegisteredPlugins())
+		}
+		plugin := factory()
+		// Inject the framework SPIFFE Provider BEFORE Configure runs so
+		// the plugin's Configure logic can reach the provider's sources
+		// directly. Skip when no Provider was supplied (nil) — the
+		// caller has opted out of SPIFFE for this build.
+		if c, ok := plugin.(spiffe.ProviderConsumer); ok && p != nil {
+			c.SetSPIFFEProvider(p)
+		}
+		if c, ok := plugin.(pipeline.Configurable); ok {
+			if err := c.Configure(e.Config); err != nil {
+				return nil, fmt.Errorf("configure %q: %w", e.Name, err)
+			}
+		} else if len(e.Config) > 0 {
+			return nil, fmt.Errorf("plugin %q does not accept configuration", e.Name)
+		}
+		ps = append(ps, plugin)
 		policies = append(policies, e.OnError.Resolved())
 	}
 	if err := validateRelationships(ps); err != nil {
