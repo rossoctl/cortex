@@ -6,7 +6,7 @@ toolchain go1.24.5
 
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
-	github.com/fsnotify/fsnotify v1.8.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gobwas/glob v0.2.3
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/spiffe/go-spiffe/v2 v2.6.0
