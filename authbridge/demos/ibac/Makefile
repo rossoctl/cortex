@@ -2,14 +2,12 @@
 #
 # End-to-end:
 #
-#   make build-images          # 3 demo images (agent, email, evil)
-#   make build-authbridge      # rebuild authbridge from this branch
-#                              # under whatever tag the kagenti operator
-#                              # pulls (autodetected from a running pod)
-#   make load-images           # kind load all four
-#   make demo-ibac             # deploy + patch + ready-to-chat banner
-#   make show-result           # render pipeline forensic of last session
-#   make undeploy              # remove the demo's resources from team1
+#   make demo-ibac     # build + load demo images, deploy, patch, ready-to-chat banner
+#   make show-result   # render pipeline forensic of last session
+#   make undeploy      # remove the demo's resources from team1
+#
+# IBAC ships in the default authbridge image pulled by the kagenti chart,
+# so this demo only needs to enable the plugin in the rendered ConfigMap.
 #
 # Prerequisites:
 #   - kagenti installed on a kind cluster (this is the operator-flow
@@ -18,8 +16,8 @@
 #   - ollama on the host with llama3.2:3b pulled
 #   - kubectl, kind, podman/docker, python3 + PyYAML
 
-.PHONY: help build-images build-authbridge build-abctl load-images deploy \
-        patch-config wait-reload demo-ibac show-result undeploy \
+.PHONY: help build-images build-abctl load-images deploy \
+        patch-config demo-ibac show-result undeploy \
         logs-agent logs-evil preflight wait-pods
 
 # `make` with no target prints help — easier discoverability than the
@@ -29,7 +27,7 @@
 help:  ## Show this menu (default)
 	@printf "\nIBAC demo — operator-injected agent in kagenti's team1 namespace.\n\n"
 	@printf "Typical run:\n"
-	@printf "  \033[1mmake build-images build-authbridge load-images demo-ibac\033[0m\n"
+	@printf "  \033[1mmake demo-ibac\033[0m\n"
 	@printf "  ... chat with email-agent in the kagenti UI ...\n"
 	@printf "  \033[1mmake show-result\033[0m\n"
 	@printf "  \033[1mmake undeploy\033[0m\n\n"
@@ -41,8 +39,9 @@ help:  ## Show this menu (default)
 	@printf "  \033[36m%-18s\033[0m %s\n" "KIND_CLUSTER_NAME" "kind cluster to load images into (default: kagenti)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "NAMESPACE"         "agent namespace (default: team1)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "AGENT_NAME"        "deployment name (default: email-agent)"
-	@printf "  \033[36m%-18s\033[0m %s\n" "AUTHBRIDGE_TAG"    "image tag override; auto-detected from a running pod"
 	@printf "  \033[36m%-18s\033[0m %s\n" "CONTAINER_RUNTIME" "podman or docker (auto-detected)"
+	@printf "  \033[36m%-18s\033[0m %s\n" "REBUILD=1"         "force rebuild even when images are present locally"
+	@printf "  \033[36m%-18s\033[0m %s\n" "RELOAD=1"          "force kind-load all demo images (default: only rebuilt ones)"
 	@printf "\nPrerequisites: kagenti install on a kind cluster, ollama on the host\n"
 	@printf "with llama3.2:3b, kubectl/kind/podman, python3 + PyYAML.\n\n"
 
@@ -58,20 +57,6 @@ CONTAINER_RUNTIME ?= $(shell command -v podman >/dev/null 2>&1 && echo podman ||
 AGENT_IMAGE       := email-agent:latest
 EMAIL_IMAGE       := ibac-email-server:latest
 EVIL_IMAGE        := ibac-evil-server:latest
-
-# Auto-detect the authbridge image tag the operator is configured to
-# pull. Reads a running agent pod's authbridge-proxy container image.
-# Falls back to v0.6.0-alpha.3 (current chart pin at the time of
-# writing) when nothing is running yet — the user can override with
-# `make AUTHBRIDGE_TAG=v0.6.0-alpha.4 ...`.
-AUTHBRIDGE_TAG ?= $(shell kubectl get pod -A \
-    -o jsonpath='{range .items[*]}{.spec.containers[?(@.name=="authbridge-proxy")].image}{"\n"}{end}' 2>/dev/null \
-    | grep -E '^ghcr.io/kagenti/kagenti-extensions/authbridge:' \
-    | head -1 | awk -F: '{print $$NF}')
-ifeq ($(AUTHBRIDGE_TAG),)
-  AUTHBRIDGE_TAG := v0.6.0-alpha.3
-endif
-AUTHBRIDGE_IMAGE := ghcr.io/kagenti/kagenti-extensions/authbridge:$(AUTHBRIDGE_TAG)
 
 # ---------- Pre-flight ----------
 
@@ -96,10 +81,29 @@ preflight:  ## Verify kagenti is installed + tools are available
 
 # ---------- Build ----------
 
-build-images:  ## Build agent + email-server + evil-server images
-	$(CONTAINER_RUNTIME) build -f agent/Dockerfile        -t $(AGENT_IMAGE) .
-	$(CONTAINER_RUNTIME) build -f email-server/Dockerfile -t $(EMAIL_IMAGE) .
-	$(CONTAINER_RUNTIME) build -f evil-server/Dockerfile  -t $(EVIL_IMAGE)  .
+# Marker file: build-images truncates this at the start, appends an image
+# name when it actually builds. load-images and deploy read it to know
+# whether to (re)load and rollout-restart. Removed at end of deploy.
+# Demo runs are scoped per (cluster, namespace, agent) to keep parallel
+# runs from stomping each other.
+CHANGED_MARK := /tmp/.ibac-demo-changed-$(KIND_CLUSTER_NAME)-$(NAMESPACE)-$(AGENT_NAME)
+
+# Image-spec list reused by build-images. Format is `<service-dir>=<image-tag>`.
+# Uses `=` as separator because the image-tag itself contains `:`.
+DEMO_IMAGE_SPECS := agent=$(AGENT_IMAGE) email-server=$(EMAIL_IMAGE) evil-server=$(EVIL_IMAGE)
+
+build-images:  ## Build demo images (skip if present locally; REBUILD=1 forces)
+	@: > $(CHANGED_MARK)
+	@for spec in $(DEMO_IMAGE_SPECS); do \
+	  svc=$${spec%%=*}; img=$${spec#*=}; \
+	  if [ -z "$(REBUILD)" ] && $(CONTAINER_RUNTIME) image inspect "$$img" >/dev/null 2>&1; then \
+	    echo "[*] $$img already built — skip (REBUILD=1 to force)"; \
+	    continue; \
+	  fi; \
+	  echo "[*] Building $$img ..."; \
+	  $(CONTAINER_RUNTIME) build -f $$svc/Dockerfile -t "$$img" . || exit 1; \
+	  echo "$$img" >>$(CHANGED_MARK); \
+	done
 
 build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
 	@if [ -x /tmp/abctl-ibac-demo ]; then \
@@ -109,41 +113,60 @@ build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
 	  cd ../../cmd/abctl && go build -o /tmp/abctl-ibac-demo . ; \
 	fi
 
-build-authbridge:  ## Rebuild authbridge from this branch under operator-pinned tag
-	@# Fail loudly if invoked from outside authbridge/demos/ibac/.
-	@test -f ../../cmd/authbridge-proxy/Dockerfile || { \
-	  echo "build-authbridge must be run from authbridge/demos/ibac/"; \
-	  echo "(expected ../../cmd/authbridge-proxy/Dockerfile to exist)"; \
-	  exit 1; \
-	}
-	@echo "[*] Building authbridge:$(AUTHBRIDGE_TAG) (matches operator-pinned tag)"
-	cd ../.. && $(CONTAINER_RUNTIME) build \
-	  -f cmd/authbridge-proxy/Dockerfile -t $(AUTHBRIDGE_IMAGE) .
+# Resolve the list of images to (re)load:
+#   - If RELOAD=1 was set, force all three.
+#   - Else if the marker file from build-images exists, load only what
+#     it lists (empty list = nothing rebuilt = nothing to load).
+#   - Else (user invoked load-images directly, no preceding build), load
+#     all three to preserve the pre-refactor behavior.
+LOAD_IMAGES = $(shell \
+  if [ -n "$(RELOAD)" ]; then \
+    echo "$(AGENT_IMAGE) $(EMAIL_IMAGE) $(EVIL_IMAGE)"; \
+  elif [ -f $(CHANGED_MARK) ]; then \
+    cat $(CHANGED_MARK); \
+  else \
+    echo "$(AGENT_IMAGE) $(EMAIL_IMAGE) $(EVIL_IMAGE)"; \
+  fi)
 
-load-images:  ## Load all four images into the kind cluster
-
-	kind load docker-image $(AGENT_IMAGE)      --name $(KIND_CLUSTER_NAME)
-	kind load docker-image $(EMAIL_IMAGE)      --name $(KIND_CLUSTER_NAME)
-	kind load docker-image $(EVIL_IMAGE)       --name $(KIND_CLUSTER_NAME)
-	kind load docker-image $(AUTHBRIDGE_IMAGE) --name $(KIND_CLUSTER_NAME)
+load-images:  ## Load demo images into kind (skip when build was a no-op; RELOAD=1 forces all)
+	@imgs="$(LOAD_IMAGES)"; \
+	if [ -z "$$imgs" ]; then \
+	  echo "[*] No images need (re)loading — skipping kind load."; \
+	  exit 0; \
+	fi; \
+	for img in $$imgs; do \
+	  echo "[*] Loading $$img into kind"; \
+	  kind load docker-image "$$img" --name $(KIND_CLUSTER_NAME); \
+	  echo "$$img" >>$(CHANGED_MARK); \
+	done
 ifeq ($(CONTAINER_RUNTIME),podman)
-	$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr --namespace=k8s.io images tag localhost/$(AGENT_IMAGE)        docker.io/library/$(AGENT_IMAGE)        || true
-	$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr --namespace=k8s.io images tag localhost/$(EMAIL_IMAGE)        docker.io/library/$(EMAIL_IMAGE)        || true
-	$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr --namespace=k8s.io images tag localhost/$(EVIL_IMAGE)         docker.io/library/$(EVIL_IMAGE)         || true
+	@imgs="$(LOAD_IMAGES)"; \
+	for img in $$imgs; do \
+	  $(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr --namespace=k8s.io images tag localhost/$$img docker.io/library/$$img 2>/dev/null || true; \
+	done
 endif
 
 # ---------- Deploy + patch ----------
 
-deploy:  ## Apply manifests + force rollout (sub-step of demo-ibac)
+deploy:  ## Apply manifests; rollout-restart only if images changed this run
 	kubectl apply -f k8s/email-server.yaml
 	kubectl apply -f k8s/evil-server.yaml
 	kubectl apply -f k8s/agent.yaml
-	@# Force a rollout so the deployments pick up newly-loaded images.
-	@# kubectl apply is a no-op when only the image content changed
-	@# but the manifest didn't (image tag is :latest). We rollout-
-	@# restart unconditionally; idempotent on the first run since
-	@# Available + Available == still Available.
-	kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent
+	@# Restart only when build-images / load-images actually did work.
+	@# The marker file is truncated by build-images and appended-to when
+	@# images are rebuilt or reloaded. If it's missing entirely, we
+	@# assume a standalone `make deploy` invocation and play it safe by
+	@# restarting (preserves pre-idempotency-refactor behavior).
+	@if [ ! -f $(CHANGED_MARK) ]; then \
+	  echo "[*] Marker file absent — assuming standalone deploy; rolling restart"; \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent; \
+	elif [ -s $(CHANGED_MARK) ]; then \
+	  echo "[*] Images rebuilt/reloaded this run — rolling restart"; \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent; \
+	else \
+	  echo "[*] No image changes this run — skip rollout restart."; \
+	fi
+	@rm -f $(CHANGED_MARK)
 	$(MAKE) wait-pods
 
 wait-pods:  ## Wait for pods + operator-rendered authbridge ConfigMap
@@ -165,23 +188,20 @@ wait-pods:  ## Wait for pods + operator-rendered authbridge ConfigMap
 	  exit 1; \
 	}
 
-patch-config:  ## Add a2a-parser + ibac to the rendered authbridge ConfigMap
+patch-config:  ## Add a2a-parser + ibac to the rendered authbridge ConfigMap (and wait for hot-reload)
 	bash scripts/patch-ibac-config.sh $(NAMESPACE) $(AGENT_NAME)
-
-wait-reload:  ## Wait for the sidecar's hot-reload to pick up the patched config
-	bash scripts/wait-for-reload.sh $(NAMESPACE) $(AGENT_NAME) 120
 
 # ---------- Top-level demo + result rendering ----------
 
-demo-ibac: preflight deploy patch-config wait-reload  ## Deploy the demo end-to-end and print next-steps banner
+demo-ibac: preflight build-images load-images deploy patch-config  ## Build, load, deploy the demo end-to-end and print next-steps banner
 	@echo
 	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║ ✅ IBAC demo agent ready in $(NAMESPACE)                          ║"
+	@echo "║ ✅ IBAC demo agent ready                                 ║"
 	@echo "║                                                          ║"
 	@echo "║ Open the kagenti UI:                                     ║"
 	@echo "║   http://kagenti-ui.localtest.me:8080                    ║"
 	@echo "║                                                          ║"
-	@echo "║ Pick \`$(AGENT_NAME)\` from the Agents list, then chat:       ║"
+	@echo "║ Pick email-agent from the Agents list, then chat:        ║"
 	@echo "║                                                          ║"
 	@echo "║   \"Summarize my emails.\"                                 ║"
 	@echo "║                                                          ║"
@@ -208,6 +228,7 @@ undeploy:  ## Remove demo resources from team1 (kagenti install untouched)
 	-kubectl -n $(NAMESPACE) delete -f k8s/evil-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(AGENT_NAME) --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete secret -l kagenti.io/client-name=$(AGENT_NAME) --ignore-not-found
+	@rm -f $(CHANGED_MARK)
 	@echo "[*] Demo resources removed from $(NAMESPACE)."
 	@echo "    The kagenti install + the namespace itself are untouched."
 

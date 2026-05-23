@@ -17,7 +17,10 @@
 #
 # Authbridge's filesystem-watch hot-reload picks up the change without
 # a Pod restart (the operator-injected sidecar doesn't set
-# readOnlyRootFilesystem so fsnotify can see the symlink swap).
+# readOnlyRootFilesystem so fsnotify can see the symlink swap). On a
+# re-run where the CM is already patched (e.g. previous demo run +
+# fresh rollout-restart that booted with the patched content), the
+# script short-circuits — no apply, no reload-wait.
 
 set -euo pipefail
 
@@ -55,15 +58,37 @@ fi
 # because heredoc + piped stdin clash — python3 with `<<EOF` reads
 # its script from the heredoc, which silently drops the kubectl pipe.
 echo "[*] Merging IBAC additions into $CM_NAME ..."
-MERGED_YAML=$(
+CURRENT_YAML=$(
   kubectl -n "$NAMESPACE" get configmap "$CM_NAME" \
-      -o jsonpath='{.data.config\.yaml}' \
+      -o jsonpath='{.data.config\.yaml}'
+)
+MERGED_YAML=$(
+  printf '%s' "$CURRENT_YAML" \
     | python3 "$SCRIPT_DIR/ibac-merge.py" "$PATCH_FILE"
 )
 
 if [[ -z "$MERGED_YAML" ]]; then
   echo "ERROR: merge produced empty output" >&2
   exit 1
+fi
+
+# No-op short-circuit: if the patch wouldn't change anything (typical
+# on a re-run where a previous demo invocation already patched the CM
+# and the agent pod booted with that content baked in), skip the apply
+# AND skip the reload wait. Otherwise we block forever waiting for a
+# swap event that will never fire — kubectl apply is a no-op, kubelet
+# has nothing to sync, the reloader sees no fs event.
+if [[ "$CURRENT_YAML" == "$MERGED_YAML" ]]; then
+  echo "[*] $CM_NAME already contains IBAC config — nothing to patch."
+  echo "[*] Active plugins:"
+  printf '%s' "$CURRENT_YAML" | python3 -c '
+import yaml, sys
+c = yaml.safe_load(sys.stdin)
+for d in ("inbound", "outbound"):
+    names = [p["name"] for p in c.get("pipeline", {}).get(d, {}).get("plugins", [])]
+    print(f"      {d}: {names}")
+'
+  exit 0
 fi
 
 # Apply the patched ConfigMap. Using `kubectl create configmap
@@ -90,3 +115,54 @@ for d in ("inbound", "outbound"):
     names = [p["name"] for p in c.get("pipeline", {}).get(d, {}).get("plugins", [])]
     print(f"      {d}: {names}")
 '
+
+# Block until the running authbridge process is using a config whose
+# SHA-256 matches what we just applied. The sidecar exposes its
+# active config's SHA at :9093/reload/status (`active_config_sha256`);
+# we compare it to the SHA of the merged YAML. This handles both
+# convergence pathways uniformly:
+#
+#   - Hot-reload: same pod, the reloader detects the projected-volume
+#     symlink swap (kubelet syncs every ~60s) and rebuilds pipelines;
+#     active_config_sha256 advances on swap completion.
+#   - Pod-roll: a fresh pod (e.g. operator's reconciler restarted the
+#     deployment) boots with the patched ConfigMap mounted from the
+#     start, so its initial active_config_sha256 already matches.
+#
+# Tailing logs for "reloader: pipelines swapped" only catches the
+# hot-reload path and misses the pod-roll path entirely (the new
+# pod's startup never logs a "swap" — it loaded the right config at
+# boot). The SHA check is correct in both cases.
+WANT_SHA=$(printf '%s' "$MERGED_YAML" | sha256sum | awk '{print $1}')
+TIMEOUT=${RELOAD_TIMEOUT:-180}
+DEADLINE=$(( $(date +%s) + TIMEOUT ))
+echo "[*] Waiting for authbridge to load the patched config (timeout ${TIMEOUT}s)"
+echo "    target SHA: $WANT_SHA"
+
+ACTIVE_SHA=""
+while [[ $(date +%s) -lt $DEADLINE ]]; do
+  ACTIVE_SHA=$(kubectl -n "$NAMESPACE" exec deploy/"$AGENT_NAME" -c authbridge-proxy -- \
+      wget -q -O - http://localhost:9093/reload/status 2>/dev/null | \
+      python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("active_config_sha256", ""))
+except Exception:
+    pass' 2>/dev/null || true)
+  if [[ "$ACTIVE_SHA" == "$WANT_SHA" ]]; then
+    echo "[*] Active config SHA matches — patch is live."
+    exit 0
+  fi
+  sleep 3
+done
+
+echo "ERROR: authbridge active config did not match patched SHA within ${TIMEOUT}s." >&2
+echo "       want:        $WANT_SHA" >&2
+echo "       last active: ${ACTIVE_SHA:-<none>}" >&2
+echo "       Last 20 lines of the authbridge container:" >&2
+kubectl -n "$NAMESPACE" logs deploy/"$AGENT_NAME" -c authbridge-proxy --tail=20 >&2 || true
+echo >&2
+echo "       Likely causes:" >&2
+echo "         - ConfigMap parse error (look for 'reload failed' above)" >&2
+echo "         - kubelet sync slow (retry: RELOAD_TIMEOUT=300 make patch-config)" >&2
+echo "         - operator reconciler reverted the patch (re-run patch-config)" >&2
+exit 1
