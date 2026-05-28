@@ -121,8 +121,6 @@ type fakePortForward struct {
 }
 
 func (p *fakePortForward) Endpoint() string { return p.endpoint }
-func (p *fakePortForward) LocalPort() int   { return 0 }
-func (p *fakePortForward) Wait() error      { return nil }
 func (p *fakePortForward) Close() error     { p.parent.closeCount++; return nil }
 
 func TestPodEnterStartsPortForwardAndTransitions(t *testing.T) {

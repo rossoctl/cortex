@@ -57,18 +57,11 @@ type PortForwarder interface {
 }
 
 // PortForward is a live tunnel to a pod. The caller MUST Close it
-// exactly once. Wait and Close are mutually exclusive — call one,
-// not both.
+// exactly once.
 type PortForward interface {
 	// Endpoint is the URL abctl points its apiclient at.
 	Endpoint() string
-	// LocalPort is the ephemeral 127.0.0.1 port the tunnel listens on.
-	LocalPort() int
-	// Wait blocks until the underlying tunnel exits and returns the exit
-	// error (nil on graceful Close). Mutually exclusive with Close.
-	Wait() error
-	// Close terminates the tunnel and waits for it to exit. Safe to
-	// call once. Mutually exclusive with Wait.
+	// Close terminates the tunnel and waits for it to exit.
 	Close() error
 }
 
@@ -113,7 +106,7 @@ func (k *kubectlPortForwarder) Start(ctx context.Context, namespace, pod string)
 		_ = pf.Close()
 		stderrTail := pf.stderrTail()
 		if stderrTail != "" {
-			return nil, fmt.Errorf("port-forward not ready: %w: %s", err, stderrTail)
+			return nil, fmt.Errorf("port-forward not ready: %w (stderr: %s)", err, stderrTail)
 		}
 		return nil, fmt.Errorf("port-forward not ready: %w", err)
 	}
@@ -133,10 +126,6 @@ type kubectlPortForward struct {
 func (p *kubectlPortForward) Endpoint() string {
 	return "http://127.0.0.1:" + strconv.Itoa(p.port)
 }
-
-func (p *kubectlPortForward) LocalPort() int { return p.port }
-
-func (p *kubectlPortForward) Wait() error { return p.cmd.Wait() }
 
 func (p *kubectlPortForward) Close() error {
 	if p.cmd.Process == nil {
