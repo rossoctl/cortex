@@ -29,20 +29,33 @@ Produces a single static binary (~10 MB).
 
 ## Run
 
-`abctl` expects the sidecar's session API to be reachable. The common
-pattern is to port-forward a single pod:
+`abctl` discovers AuthBridge agents in your current `kubectl` context
+and lets you pick one:
 
 ```sh
-POD=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-agent \
-  -o jsonpath='{.items[0].metadata.name}')
-kubectl port-forward -n team1 $POD 9094:9094 &
-
-./abctl                                  # uses default http://localhost:9094
-./abctl --endpoint http://remote:9094    # or specify explicitly
+./abctl
 ```
 
-Quit with `q` or `Ctrl+C`. The binary reconnects automatically if the
-port-forward drops; the footer shows reconnect attempts with a countdown.
+You'll see a Namespaces pane listing each namespace that contains an
+AuthBridge agent. Enter drills into the Pods pane for that namespace;
+Enter on a pod starts a `kubectl port-forward` automatically and drops
+you into the session-events view. Esc backs out. `q` (or Ctrl+C) quits
+and tears the port-forward down.
+
+The picker shells out to `kubectl` — whatever context you're in is the
+context abctl uses. There's no separate auth.
+
+### Power-user / scripting bypass
+
+Pass `--endpoint` to skip the picker entirely:
+
+```sh
+kubectl port-forward -n team1 pod/weather-agent-xxxx 9094:9094 &
+./abctl --endpoint http://localhost:9094
+```
+
+This preserves the pre-picker behavior for scripts, CI, or remote
+session APIs that aren't in your kube context.
 
 ## Panes
 
@@ -63,9 +76,13 @@ The UI has three panes. `Enter` drills in; `Esc` backs out.
 
 | Key | Context | Action |
 |---|---|---|
-| `↑ ↓` / `k j` | any list | navigate rows |
+| `↑ ↓` / `k j` | picker, list | navigate rows |
+| `Enter` | namespaces | open the namespace |
+| `Enter` | pods | port-forward + connect |
+| `Esc` | pods | back to namespaces |
 | `Enter` / `→` / `l` | sessions, events | drill into selection |
 | `Esc` / `←` / `h` | detail, events | back out |
+| `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
 | `p` | any | pause/resume stream |

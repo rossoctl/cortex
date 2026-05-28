@@ -10,6 +10,57 @@ import (
 // handleKey processes every key press. The filter-input overlay takes
 // precedence; otherwise keys are dispatched based on the active pane.
 func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	// Picker panes handle their own keys before session-view logic.
+	if m.pane == paneNamespaces {
+		switch msg.String() {
+		case "enter":
+			if cur := m.namespacesTbl.Cursor(); cur < len(m.namespaces) {
+				m.selectedNamespace = m.namespaces[cur].Name
+				m.pane = panePods
+				m.rebuildPodsTable()
+			}
+			return nil
+		case "q", "esc", "ctrl+c":
+			m.cancel()
+			return tea.Quit
+		}
+		var cmd tea.Cmd
+		m.namespacesTbl, cmd = m.namespacesTbl.Update(msg)
+		return cmd
+	}
+
+	if m.pane == panePods {
+		switch msg.String() {
+		case "enter":
+			pods := m.currentPodsList()
+			if cur := m.podsTbl.Cursor(); cur < len(pods) {
+				if !pods[cur].Ready {
+					m.pickerErr = "pod not Ready"
+					return nil
+				}
+				m.selectedPod = pods[cur].Name
+				// Tear down the previous PF, if any, before starting a new one.
+				if m.activePF != nil {
+					_ = m.activePF.Close()
+					m.activePF = nil
+				}
+				m.pickerErr = ""
+				return startPortForwardCmd(m.ctx, m.portForwarder, m.selectedNamespace, m.selectedPod)
+			}
+			return nil
+		case "esc":
+			m.pane = paneNamespaces
+			m.pickerErr = ""
+			return nil
+		case "q", "ctrl+c":
+			m.cancel()
+			return tea.Quit
+		}
+		var cmd tea.Cmd
+		m.podsTbl, cmd = m.podsTbl.Update(msg)
+		return cmd
+	}
+
 	// Filter-mode: input box consumes most keys. Esc cancels, Enter commits.
 	if m.filtering {
 		switch msg.String() {
@@ -70,6 +121,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "esc", "left", "h":
 		// Back-out: plugin-detail → pipeline; detail → events; events → sessions.
+		// In picker mode, the top-level session tabs (paneSessions and
+		// panePipeline are siblings) back out further to the Pods picker,
+		// tearing down PF + SSE.
 		switch m.pane {
 		case panePluginDetail:
 			m.pane = panePipeline
@@ -77,6 +131,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.pane = paneEvents
 		case paneEvents:
 			m.pane = paneSessions
+		case paneSessions, panePipeline:
+			// Picker mode: back to Pods pane, tearing down the current
+			// port-forward + SSE stream. Bypass mode: no-op (parentCtx
+			// is nil; nowhere to go back to).
+			if m.parentCtx != nil {
+				m.backToPodsPane()
+			}
 		}
 		return nil
 
@@ -222,7 +283,14 @@ func (m *model) helpView() string {
 		return "type to filter · [enter] commit · [esc] cancel"
 	}
 	switch m.pane {
+	case paneNamespaces:
+		return "[↑↓/jk] nav  [↵] open  [q] quit"
+	case panePods:
+		return "[↑↓/jk] nav  [↵] connect  [Esc] back  [q] quit"
 	case paneSessions:
+		if m.parentCtx != nil {
+			return "[↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [esc] pods  [p] pause  [q] quit"
+		}
 		return "[↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [p] pause  [q] quit"
 	case paneEvents:
 		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  [s] skips  [p] pause  [q] quit"
@@ -237,6 +305,9 @@ func (m *model) helpView() string {
 	case paneDetail:
 		return "[↑↓] scroll  [y] yank  [esc] back  [q] quit"
 	case panePipeline:
+		if m.parentCtx != nil {
+			return "[↑↓] nav  [↵] plugin detail  [tab] sessions  [esc] pods  [q] quit"
+		}
 		return "[↑↓] nav  [↵] plugin detail  [tab] sessions  [q] quit"
 	case panePluginDetail:
 		return "[↑↓] scroll  [esc] back  [q] quit"
@@ -258,6 +329,10 @@ func (m *model) layout() {
 
 	m.sessionsTbl.SetHeight(bodyH)
 	m.bodyHeight = bodyH
+	// Picker tables share the same body area as the session tables so the
+	// terminal real estate stays constant as the user navigates panes.
+	m.namespacesTbl.SetHeight(bodyH)
+	m.podsTbl.SetHeight(bodyH)
 	// The events table's height depends on whether the IDENTITY banner
 	// is rendered for the selected session. rebuildEventsTable() applies
 	// the banner-aware adjustment; call it so the size is correct after

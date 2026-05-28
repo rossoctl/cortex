@@ -18,13 +18,16 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
+	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/cluster"
 )
 
 // Pane identifiers.
 type paneID int
 
 const (
-	paneSessions paneID = iota
+	paneNamespaces paneID = iota
+	panePods
+	paneSessions
 	paneEvents
 	paneDetail
 	panePipeline
@@ -80,6 +83,21 @@ type errMsg struct {
 	err   error
 }
 
+// agentsLoadedMsg carries the result of Lister.ListAgents from the picker
+// loader Cmd.
+type agentsLoadedMsg struct {
+	namespaces []cluster.AgentNamespace
+	err        error
+}
+
+// portForwardReadyMsg carries the result of PortForwarder.Start. On success,
+// pf and endpoint are set; on failure, err is set.
+type portForwardReadyMsg struct {
+	pf       cluster.PortForward
+	endpoint string
+	err      error
+}
+
 // Model is the top-level Bubble Tea model.
 type model struct {
 	endpoint string
@@ -87,6 +105,12 @@ type model struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// parentCtx is the un-cancelled root ctx the picker was constructed
+	// with. Used to derive a fresh m.ctx / m.cancel when the user backs
+	// out of a session view to switch pods. Nil in bypass mode (no picker)
+	// — Esc-from-Sessions is a no-op there.
+	parentCtx context.Context
 
 	// Data caches.
 	sessions []session.SessionSummary
@@ -145,6 +169,23 @@ type model struct {
 	// streamCh is the single SSE channel from the apiclient. Opened once
 	// in Init; re-pumped on every streamMsg until it closes.
 	streamCh <-chan apiclient.StreamEvent
+
+	// Picker dependencies and state. nil + empty when --endpoint bypasses
+	// the picker.
+	lister        cluster.Lister
+	portForwarder cluster.PortForwarder
+	namespaces    []cluster.AgentNamespace
+	namespacesTbl table.Model
+	podsTbl       table.Model
+
+	selectedNamespace string // set on Enter from Namespaces pane
+	selectedPod       string // set on Enter from Pods pane
+
+	pickerErr string // single-line picker error shown in footer
+
+	// activePF is the live port-forward tunnel, if any. Closed on pod-switch
+	// or quit.
+	activePF cluster.PortForward
 }
 
 // New returns a fresh model pointed at the given client. ctx governs both
@@ -173,8 +214,9 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 	}
 }
 
-// Init fires the initial fetch + starts the SSE pump and the tick.
-func (m *model) Init() tea.Cmd {
+// initSessionView fires the session-view bootstrap: SSE pump, first
+// fetch, ticks. Caller must have set m.client and m.ctx.
+func (m *model) initSessionView() tea.Cmd {
 	m.streamCh = m.client.Stream(m.ctx, "")
 	return tea.Batch(
 		m.loadSessionsCmd(),
@@ -183,6 +225,57 @@ func (m *model) Init() tea.Cmd {
 		tickCmd(),
 		refreshTickCmd(),
 	)
+}
+
+// backToPodsPane returns the picker to the Pods pane, tearing down the
+// current session view (SSE pump, ticks) and port-forward. The pod list
+// is preserved so the user picks a different pod immediately. A fresh
+// ctx / cancel is derived from m.parentCtx so the next session-view
+// entry has a usable context.
+func (m *model) backToPodsPane() {
+	// Cancel current ctx — stops the SSE goroutine and any in-flight
+	// session/pipeline fetches.
+	if m.cancel != nil {
+		m.cancel()
+	}
+	// Close the active PF (also waits for stderr-drain to flush).
+	if m.activePF != nil {
+		_ = m.activePF.Close()
+		m.activePF = nil
+	}
+
+	// Reset session-view state so the next pod starts fresh.
+	m.client = nil
+	m.streamCh = nil
+	m.sessions = nil
+	m.events = make(map[string][]pipeline.SessionEvent)
+	m.eventCt = 0
+	m.lastCt = 0
+	m.rate = 0
+	m.drops = 0
+	m.pipeline = nil
+	m.detailEvent = nil
+	m.detailPlugin = nil
+	m.selectedSess = ""
+	m.filter = ""
+	m.filtering = false
+	m.visibleRows = nil
+	m.connState = connStateInfo{phase: connConnecting}
+
+	// Re-derive ctx for the next session view.
+	m.ctx, m.cancel = context.WithCancel(m.parentCtx)
+
+	m.pane = panePods
+}
+
+// Init fires the initial fetch + starts the SSE pump and the tick.
+// In picker mode (paneNamespaces), it loads the agent list instead.
+func (m *model) Init() tea.Cmd {
+	if m.pane == paneNamespaces {
+		// Picker mode — load agents, then idle until user picks a pod.
+		return loadAgentsCmd(m.ctx, m.lister)
+	}
+	return m.initSessionView()
 }
 
 // loadPipelineCmd fetches /v1/pipeline once at startup. The pipeline is
@@ -256,6 +349,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		// In picker mode, skip the rate calculation — m.client may be nil
+		// after a back-out. Keep the ticker alive so it's ready when the
+		// user re-enters a session.
+		if m.pane == paneNamespaces || m.pane == panePods {
+			return m, tickCmd()
+		}
 		now := time.Time(msg)
 		// Rate over the last tick.
 		delta := now.Sub(m.lastTick).Seconds()
@@ -293,6 +392,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case refreshTickMsg:
+		// In picker mode, skip the fetch — m.client may be nil after a
+		// back-out. Keep the ticker alive so it's ready when the user
+		// re-enters a session.
+		if m.pane == paneNamespaces || m.pane == panePods {
+			return m, refreshTickCmd()
+		}
 		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd())
 
 	case pipelineLoadedMsg:
@@ -309,6 +414,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamMsg:
+		// In picker mode, m.streamCh is nil (cleared by backToPodsPane) and
+		// m.handleStreamEvent would mutate stale state. Drop late-arriving
+		// events from the previous session.
+		if m.pane == paneNamespaces || m.pane == panePods {
+			return m, nil
+		}
 		ev := apiclient.StreamEvent(msg)
 		m.handleStreamEvent(ev)
 		// Re-pump the same channel for the next message. A single apiclient
@@ -316,6 +427,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, streamPump(m.streamCh)
 
 	case streamClosedMsg:
+		// In picker mode, ignore the close from the previous session —
+		// there is no stream to reconnect and flipping connState would
+		// leave stale "reconnecting" state visible when the user picks a
+		// new pod.
+		if m.pane == paneNamespaces || m.pane == panePods {
+			return m, nil
+		}
 		m.connState.phase = connReconnecting
 		return m, nil
 
@@ -333,6 +451,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connState.phase = connFailed
 		m.connState.err = msg.err
 		return m, nil
+
+	case agentsLoadedMsg:
+		if msg.err != nil {
+			m.pickerErr = msg.err.Error()
+			return m, nil
+		}
+		m.namespaces = msg.namespaces
+		m.rebuildNamespacesTable()
+		return m, nil
+
+	case portForwardReadyMsg:
+		if msg.err != nil {
+			m.pickerErr = "port-forward: " + msg.err.Error()
+			return m, nil
+		}
+		m.activePF = msg.pf
+		m.endpoint = msg.endpoint
+		m.client = apiclient.New(m.endpoint)
+		m.pane = paneSessions
+		return m, m.initSessionView()
 
 	case tea.KeyMsg:
 		return m, m.handleKey(msg)
@@ -408,6 +546,32 @@ sortAndRebuild:
 
 // View composes the full screen.
 func (m *model) View() string {
+	if m.pane == paneNamespaces {
+		title := "abctl · pick namespace"
+		body := m.namespacesTbl.View()
+		footer := "[↑↓/jk] nav  [↵] open  [q] quit"
+		if m.pickerErr != "" {
+			footer = "error: " + m.pickerErr + "    " + footer
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			styleTitle.Render(title),
+			body,
+			styleHint.Render(footer),
+		)
+	}
+	if m.pane == panePods {
+		title := "abctl · " + m.selectedNamespace + " · pick pod"
+		body := m.podsTbl.View()
+		footer := "[↑↓/jk] nav  [↵] connect  [Esc] back  [q] quit"
+		if m.pickerErr != "" {
+			footer = "error: " + m.pickerErr + "    " + footer
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			styleTitle.Render(title),
+			body,
+			styleHint.Render(footer),
+		)
+	}
 	if m.width == 0 {
 		return "initializing…"
 	}
@@ -518,11 +682,38 @@ func trim[T any](s []T, n int) []T {
 	return out
 }
 
-// Run opens the TUI. Blocks until the user quits or ctx is cancelled.
-// Convenience wrapper around tea.Program.Run for main.go.
-func Run(ctx context.Context, endpoint string) error {
-	c := apiclient.New(endpoint)
-	p := tea.NewProgram(New(ctx, c), tea.WithAltScreen())
+// RunOptions selects the entry mode for abctl's TUI.
+//
+// If Endpoint is non-empty, abctl skips the picker and connects directly
+// to that URL — preserving the pre-picker behavior (and the documented
+// `--endpoint` flag).
+//
+// Otherwise, abctl uses Lister + PortForwarder to render the picker.
+// Both must be non-nil in picker mode.
+type RunOptions struct {
+	Endpoint      string
+	Lister        cluster.Lister
+	PortForwarder cluster.PortForwarder
+}
+
+// Run starts the bubbletea program. See RunOptions for mode selection.
+func Run(ctx context.Context, opts RunOptions) error {
+	var m *model
+	if opts.Endpoint != "" {
+		c := apiclient.New(opts.Endpoint)
+		m = New(ctx, c).(*model)
+	} else {
+		if opts.Lister == nil || opts.PortForwarder == nil {
+			return fmt.Errorf("picker mode requires both Lister and PortForwarder; pass --endpoint to bypass")
+		}
+		m = newPickerModel(ctx, opts.Lister, opts.PortForwarder)
+	}
+	defer func() {
+		if m.activePF != nil {
+			_ = m.activePF.Close()
+		}
+	}()
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

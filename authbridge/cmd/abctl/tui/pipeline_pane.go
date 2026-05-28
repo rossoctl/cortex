@@ -116,43 +116,24 @@ func (m *model) selectedPlugin() *apiclient.PipelinePlugin {
 	return nil
 }
 
-// countEventsPerPlugin attributes each cached event to the plugin that
-// wrote its extension. An event maps to a plugin when that plugin's
-// Capabilities.Writes contains the extension slot that the event's body
-// represents (a2a, mcp, inference). Events without a recognised extension
-// (e.g. request-phase events before parsing completes) are unattributed.
+// countEventsPerPlugin counts how many times each plugin actually ran
+// across all cached events, by walking every event's Invocations list.
+// This includes auth-gate plugins (jwt-validation, token-exchange, ibac)
+// that don't write extension slots — they all show up in Invocations
+// when they ran, so the pipeline view's per-plugin counts match what
+// the events pane shows row-by-row.
 func (m *model) countEventsPerPlugin() map[string]int {
 	counts := map[string]int{}
-	if m.pipeline == nil {
-		return counts
-	}
-	// Build slot → plugin name map for quick lookup.
-	slotToPlugin := map[string]string{}
-	for _, p := range m.pipeline.Inbound {
-		for _, w := range p.Writes {
-			slotToPlugin[w] = p.Name
-		}
-	}
-	for _, p := range m.pipeline.Outbound {
-		for _, w := range p.Writes {
-			slotToPlugin[w] = p.Name
-		}
-	}
 	for _, events := range m.events {
 		for _, e := range events {
-			switch {
-			case e.A2A != nil:
-				if name, ok := slotToPlugin["a2a"]; ok {
-					counts[name]++
-				}
-			case e.Inference != nil:
-				if name, ok := slotToPlugin["inference"]; ok {
-					counts[name]++
-				}
-			case e.MCP != nil:
-				if name, ok := slotToPlugin["mcp"]; ok {
-					counts[name]++
-				}
+			if e.Invocations == nil {
+				continue
+			}
+			for _, inv := range e.Invocations.Inbound {
+				counts[inv.Plugin]++
+			}
+			for _, inv := range e.Invocations.Outbound {
+				counts[inv.Plugin]++
 			}
 		}
 	}

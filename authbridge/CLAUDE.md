@@ -410,8 +410,11 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 
 ### Quick examples
 
+The `abctl` TUI handles port-forward + connection automatically — pick a
+pod from the Namespaces → Pods picker. For raw HTTP exploration, set up
+your own port-forward first:
+
 ```sh
-# Port-forward to an agent pod
 POD=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-agent \
   -o jsonpath='{.items[0].metadata.name}')
 kubectl port-forward -n team1 $POD 9094:9094 &

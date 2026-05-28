@@ -40,8 +40,6 @@ help:  ## Show this menu (default)
 	@printf "  \033[36m%-18s\033[0m %s\n" "NAMESPACE"         "agent namespace (default: team1)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "AGENT_NAME"        "deployment name (default: email-agent)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "CONTAINER_RUNTIME" "podman or docker (auto-detected)"
-	@printf "  \033[36m%-18s\033[0m %s\n" "REBUILD=1"         "force rebuild even when images are present locally"
-	@printf "  \033[36m%-18s\033[0m %s\n" "RELOAD=1"          "force kind-load all demo images (default: only rebuilt ones)"
 	@printf "\nPrerequisites: kagenti install on a kind cluster, ollama on the host\n"
 	@printf "with llama3.2:3b, kubectl/kind/podman, python3 + PyYAML.\n\n"
 
@@ -57,6 +55,14 @@ CONTAINER_RUNTIME ?= $(shell command -v podman >/dev/null 2>&1 && echo podman ||
 AGENT_IMAGE       := email-agent:latest
 EMAIL_IMAGE       := ibac-email-server:latest
 EVIL_IMAGE        := ibac-evil-server:latest
+
+# Per-checkout build/load bookkeeping. `.stamps/<svc>.built` is a make-tracked
+# stamp file: its mtime is compared against source files so build-images
+# rebuilds only when something actually changed. `.stamps/<svc>.loaded`
+# tracks the last successful kind-load — managed manually because make can't
+# stat images inside a kind node. Wiped by `undeploy`.
+STAMP_DIR   := .stamps
+LOAD_MARKER := $(STAMP_DIR)/.loaded-this-run
 
 # ---------- Pre-flight ----------
 
@@ -81,29 +87,31 @@ preflight:  ## Verify kagenti is installed + tools are available
 
 # ---------- Build ----------
 
-# Marker file: build-images truncates this at the start, appends an image
-# name when it actually builds. load-images and deploy read it to know
-# whether to (re)load and rollout-restart. Removed at end of deploy.
-# Demo runs are scoped per (cluster, namespace, agent) to keep parallel
-# runs from stomping each other.
-CHANGED_MARK := /tmp/.ibac-demo-changed-$(KIND_CLUSTER_NAME)-$(NAMESPACE)-$(AGENT_NAME)
+# Per-service stamp rules. Each `<svc>.built` stamp depends on every file
+# under that service's source directory plus go.mod (the shared module
+# definition every Dockerfile copies in). Make naturally rebuilds only the
+# services whose sources actually changed; an unchanged tree turns into
+# a millisecond-scale no-op.
 
-# Image-spec list reused by build-images. Format is `<service-dir>=<image-tag>`.
-# Uses `=` as separator because the image-tag itself contains `:`.
-DEMO_IMAGE_SPECS := agent=$(AGENT_IMAGE) email-server=$(EMAIL_IMAGE) evil-server=$(EVIL_IMAGE)
+$(STAMP_DIR):
+	@mkdir -p $@
 
-build-images:  ## Build demo images (skip if present locally; REBUILD=1 forces)
-	@: > $(CHANGED_MARK)
-	@for spec in $(DEMO_IMAGE_SPECS); do \
-	  svc=$${spec%%=*}; img=$${spec#*=}; \
-	  if [ -z "$(REBUILD)" ] && $(CONTAINER_RUNTIME) image inspect "$$img" >/dev/null 2>&1; then \
-	    echo "[*] $$img already built — skip (REBUILD=1 to force)"; \
-	    continue; \
-	  fi; \
-	  echo "[*] Building $$img ..."; \
-	  $(CONTAINER_RUNTIME) build -f $$svc/Dockerfile -t "$$img" . || exit 1; \
-	  echo "$$img" >>$(CHANGED_MARK); \
-	done
+$(STAMP_DIR)/agent.built: $(shell find agent -type f) go.mod | $(STAMP_DIR)
+	@echo "[*] Building $(AGENT_IMAGE) ..."
+	$(CONTAINER_RUNTIME) build -f agent/Dockerfile -t $(AGENT_IMAGE) .
+	@touch $@
+
+$(STAMP_DIR)/email-server.built: $(shell find email-server -type f) go.mod | $(STAMP_DIR)
+	@echo "[*] Building $(EMAIL_IMAGE) ..."
+	$(CONTAINER_RUNTIME) build -f email-server/Dockerfile -t $(EMAIL_IMAGE) .
+	@touch $@
+
+$(STAMP_DIR)/evil-server.built: $(shell find evil-server -type f) go.mod | $(STAMP_DIR)
+	@echo "[*] Building $(EVIL_IMAGE) ..."
+	$(CONTAINER_RUNTIME) build -f evil-server/Dockerfile -t $(EVIL_IMAGE) .
+	@touch $@
+
+build-images: $(STAMP_DIR)/agent.built $(STAMP_DIR)/email-server.built $(STAMP_DIR)/evil-server.built  ## Build demo images (rebuilds only when sources change)
 
 build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
 	@if [ -x /tmp/abctl-ibac-demo ]; then \
@@ -113,60 +121,46 @@ build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
 	  cd ../../cmd/abctl && go build -o /tmp/abctl-ibac-demo . ; \
 	fi
 
-# Resolve the list of images to (re)load:
-#   - If RELOAD=1 was set, force all three.
-#   - Else if the marker file from build-images exists, load only what
-#     it lists (empty list = nothing rebuilt = nothing to load).
-#   - Else (user invoked load-images directly, no preceding build), load
-#     all three to preserve the pre-refactor behavior.
-LOAD_IMAGES = $(shell \
-  if [ -n "$(RELOAD)" ]; then \
-    echo "$(AGENT_IMAGE) $(EMAIL_IMAGE) $(EVIL_IMAGE)"; \
-  elif [ -f $(CHANGED_MARK) ]; then \
-    cat $(CHANGED_MARK); \
-  else \
-    echo "$(AGENT_IMAGE) $(EMAIL_IMAGE) $(EVIL_IMAGE)"; \
-  fi)
-
-load-images:  ## Load demo images into kind (skip when build was a no-op; RELOAD=1 forces all)
-	@imgs="$(LOAD_IMAGES)"; \
-	if [ -z "$$imgs" ]; then \
-	  echo "[*] No images need (re)loading — skipping kind load."; \
-	  exit 0; \
-	fi; \
-	for img in $$imgs; do \
+# load-images reloads each image when EITHER:
+#   - the kind node doesn't have it under docker.io/library/<name>, OR
+#   - the .built stamp is newer than the .loaded stamp (rebuilt this run
+#     or in a prior session that didn't get to deploy).
+# Both conditions independently fire a reload, which keeps the target
+# self-healing across cluster recreation, manual `crictl rmi`, and
+# rebuilds — without any flag.
+load-images: build-images | $(STAMP_DIR)  ## Load demo images into kind (reloads when node is missing the image or sources were rebuilt)
+	@rm -f $(LOAD_MARKER)
+	@for spec in agent=$(AGENT_IMAGE) email-server=$(EMAIL_IMAGE) evil-server=$(EVIL_IMAGE); do \
+	  svc=$${spec%%=*}; img=$${spec#*=}; \
+	  built=$(STAMP_DIR)/$$svc.built; \
+	  loaded=$(STAMP_DIR)/$$svc.loaded; \
+	  in_node=no; \
+	  $(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images list -q 2>/dev/null \
+	    | grep -qx "docker.io/library/$$img" && in_node=yes; \
+	  if [ "$$in_node" = yes ] && [ -f "$$loaded" ] && [ ! "$$loaded" -ot "$$built" ]; then \
+	    echo "[*] $$img already in node and up-to-date — skip"; \
+	    continue; \
+	  fi; \
 	  echo "[*] Loading $$img into kind"; \
 	  kind load docker-image "$$img" --name $(KIND_CLUSTER_NAME); \
-	  echo "$$img" >>$(CHANGED_MARK); \
+	  $(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images tag \
+	    localhost/$$img docker.io/library/$$img >/dev/null 2>&1 || true; \
+	  touch "$$loaded" $(LOAD_MARKER); \
 	done
-ifeq ($(CONTAINER_RUNTIME),podman)
-	@imgs="$(LOAD_IMAGES)"; \
-	for img in $$imgs; do \
-	  $(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr --namespace=k8s.io images tag localhost/$$img docker.io/library/$$img 2>/dev/null || true; \
-	done
-endif
 
 # ---------- Deploy + patch ----------
 
-deploy:  ## Apply manifests; rollout-restart only if images changed this run
+deploy:  ## Apply manifests; rollout-restart only if load-images actually loaded something
 	kubectl apply -f k8s/email-server.yaml
 	kubectl apply -f k8s/evil-server.yaml
 	kubectl apply -f k8s/agent.yaml
-	@# Restart only when build-images / load-images actually did work.
-	@# The marker file is truncated by build-images and appended-to when
-	@# images are rebuilt or reloaded. If it's missing entirely, we
-	@# assume a standalone `make deploy` invocation and play it safe by
-	@# restarting (preserves pre-idempotency-refactor behavior).
-	@if [ ! -f $(CHANGED_MARK) ]; then \
-	  echo "[*] Marker file absent — assuming standalone deploy; rolling restart"; \
+	@if [ -f $(LOAD_MARKER) ]; then \
+	  echo "[*] Image content changed — rolling restart"; \
 	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent; \
-	elif [ -s $(CHANGED_MARK) ]; then \
-	  echo "[*] Images rebuilt/reloaded this run — rolling restart"; \
-	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent; \
+	  rm -f $(LOAD_MARKER); \
 	else \
 	  echo "[*] No image changes this run — skip rollout restart."; \
 	fi
-	@rm -f $(CHANGED_MARK)
 	$(MAKE) wait-pods
 
 wait-pods:  ## Wait for pods + operator-rendered authbridge ConfigMap
@@ -228,7 +222,7 @@ undeploy:  ## Remove demo resources from team1 (kagenti install untouched)
 	-kubectl -n $(NAMESPACE) delete -f k8s/evil-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(AGENT_NAME) --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete secret -l kagenti.io/client-name=$(AGENT_NAME) --ignore-not-found
-	@rm -f $(CHANGED_MARK)
+	@rm -rf $(STAMP_DIR)
 	@echo "[*] Demo resources removed from $(NAMESPACE)."
 	@echo "    The kagenti install + the namespace itself are untouched."
 
