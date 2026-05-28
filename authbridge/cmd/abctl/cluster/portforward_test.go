@@ -65,3 +65,10 @@ func TestWaitForAcceptRespectsContext(t *testing.T) {
 		t.Fatal("want context-deadline error, got nil")
 	}
 }
+
+func TestPortForwarderBuildOnly(t *testing.T) {
+	// This test exists only to ensure the production constructor compiles
+	// and the returned value satisfies the interface. It does NOT spawn
+	// kubectl.
+	var _ PortForwarder = NewPortForwarder()
+}
