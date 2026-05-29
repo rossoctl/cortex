@@ -92,8 +92,9 @@ The UI has three panes. `Enter` drills in; `Esc` backs out.
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
 | `N` | edit/diff | abort the edit |
-| `r` | edit/error | re-open the editor with the same tempfile |
-| `Esc` | edit/* | abort the edit, return to Pipeline pane |
+| `r` | edit/error | retry: re-open the editor (post-edit failure) or refetch (fetch failure) |
+| `Esc` | edit/{fetching,editing,applying} | abort the edit, return to Pipeline pane |
+| `Esc` | edit/{waiting,rollback} | background the watch; result lands as a footer flash |
 | `?` | any | (reserved for future help overlay) |
 | `q` / `Ctrl+C` | any | quit |
 
@@ -102,9 +103,11 @@ The UI has three panes. `Enter` drills in; `Esc` backs out.
 Press `e` on the Pipeline pane to edit the agent's runtime `pipeline:`
 subtree in `$EDITOR` (or `vi` if unset). On save, abctl shows a diff
 and asks `apply this change? (y/N)`. Confirming runs
-`kubectl apply --server-side` against the per-agent ConfigMap, then
-polls the framework's `/reload/status` until the reload completes
-(success or failure).
+`kubectl apply --server-side` against the per-agent ConfigMap with
+`--field-manager=abctl --force-conflicts=true` (taking ownership of
+`data.config.yaml` from the kagenti-operator's webhook on first
+edit), then polls the framework's `/reload/status` until the reload
+completes (success or failure).
 
 The single edit flow covers four operations:
 - **Edit a value** — change a config field of an existing plugin
@@ -114,6 +117,50 @@ The single edit flow covers four operations:
 
 All four work because they're all just lines you change inside the
 pipeline subtree.
+
+`e` is only available in picker mode. With `--endpoint`, the cluster
+fields needed to fetch and apply aren't populated; pressing `e`
+flashes a hint instead of opening a broken edit.
+
+### Agent-name resolution
+
+The per-agent ConfigMap is named `authbridge-config-<agent>`. abctl
+resolves `<agent>` from the selected pod's `app.kubernetes.io/name`
+label (kagenti-operator sets this). If the label is absent, abctl
+falls back to stripping the last two dash-separated segments of the
+pod name (the ReplicaSet hash + pod suffix).
+
+### Auto-rollback on reload failure
+
+If `kubectl apply` succeeds but the in-pod reload fails (unknown
+plugin name, malformed config, validation error), the framework
+keeps the previous in-memory pipeline serving requests. The on-disk
+ConfigMap, however, now holds the bad YAML. abctl detects this via
+`/reload/status` and re-applies the original ConfigMap content
+captured at Fetch time, reconciling the on-disk state back to what's
+actually running. The error overlay then reports
+`reload failed: <reason>; rolled back to previous ConfigMap`.
+
+The rollback is best-effort — with `--force-conflicts=true`, if a
+third party (controller, kubectl edit, kustomize) modified the
+ConfigMap between Fetch and the failed reload, the rollback
+overwrites their change. The running pipeline is unaffected.
+
+### Backgrounding the watch
+
+Pressing `Esc` while waiting for hot-reload (or during rollback)
+moves the watch to the background instead of aborting it. The
+overlay closes, the footer flashes
+`hot-reload watch moved to background; you'll be notified`, and you
+can resume navigating the TUI. When the watch terminates, the
+result lands as a one-line flash:
+
+- `hot-reload succeeded`
+- `hot-reload failed: <reason>; rolled back to previous ConfigMap`
+- `hot-reload failed: <reason>; rollback failed: <err>` (rare)
+
+Flashes auto-dismiss after a few seconds; if you miss one, query
+`/reload/status` directly via the port-forward.
 
 ### Permissions
 
@@ -126,17 +173,30 @@ surfaces verbatim in the overlay.
 
 abctl writes the editable pipeline subtree to `$TMPDIR/abctl-pipeline-*.yaml`
 on every edit. The tempfile is **left in place on every exit path**
-(success, error, abort) so an interrupted edit is recoverable. Clean
-up `/tmp/abctl-pipeline-*` periodically.
+(success, error, abort) so an interrupted edit is recoverable. On
+abctl launch, files older than 24h in this glob are swept
+automatically — no manual cleanup needed.
 
 ### Hot-reload window
 
 The framework reloads via a config-file watcher; kubelet syncs
 ConfigMap edits into the pod's mount within ~60s, then the framework
 debounces and reloads. Total wall-clock from `apply` to reload is
-typically under 90s. abctl shows a spinner during the wait. If
-`/reload/status` doesn't observe a successful reload within 120s,
-abctl gives up watching and tells you to check `kubectl logs deploy/<agent>`.
+typically under 90s. abctl shows a spinner during the wait.
+
+The poller terminates with one of:
+
+- **Success** — `/reload/status.last_success` advances past the apply
+  time.
+- **Failure** — `reloads_failed` increments past its baseline; the
+  framework's `last_error` is shown.
+- **Unreachable** — 5 consecutive transport errors against
+  `:9093/reload/status` (port-forward dropped, framework crashed,
+  etc.) surface as `reload status endpoint unreachable` after a few
+  seconds rather than waiting the full deadline.
+- **Timeout** — none of the above within 120s. Triggers an
+  auto-rollback so the on-disk ConfigMap doesn't drift from the
+  running pipeline.
 
 ## Trust model
 
