@@ -183,6 +183,11 @@ type model struct {
 
 	pickerErr string // single-line picker error shown in footer
 
+	// loading is true while a loadAgentsCmd is in flight. Prevents
+	// concurrent `r` keypresses (or `r` during initial load) from
+	// dispatching parallel ListAgents calls.
+	loading bool
+
 	// activePF is the live port-forward tunnel, if any. Closed on pod-switch
 	// or quit.
 	activePF cluster.PortForward
@@ -273,6 +278,7 @@ func (m *model) backToPodsPane() {
 func (m *model) Init() tea.Cmd {
 	if m.pane == paneNamespaces {
 		// Picker mode — load agents, then idle until user picks a pod.
+		m.loading = true
 		return loadAgentsCmd(m.ctx, m.lister)
 	}
 	return m.initSessionView()
@@ -453,6 +459,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case agentsLoadedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.pickerErr = msg.err.Error()
 			return m, nil
@@ -460,9 +467,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.namespaces = msg.namespaces
 		m.rebuildNamespacesTable()
 		// If the user is on the Pods pane (e.g., reloaded via `r`), refresh
-		// the pods table from the new data so it reflects the cluster state.
+		// the pods table from the new data. If the previously-selected
+		// namespace no longer exists, gracefully back out to the
+		// Namespaces pane so the user isn't stranded looking at an
+		// empty Pods table for a vanished namespace.
 		if m.pane == panePods {
-			m.rebuildPodsTable()
+			found := false
+			for _, ns := range m.namespaces {
+				if ns.Name == m.selectedNamespace {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.selectedNamespace = ""
+				m.pane = paneNamespaces
+			} else {
+				m.rebuildPodsTable()
+			}
 		}
 		return m, nil
 
@@ -556,12 +578,11 @@ func (m *model) View() string {
 		// m.namespaces == nil → still loading (don't flash the empty-state
 		// hint mid-load); non-nil empty slice → loaded, no agents found.
 		var body string
-		switch {
-		case m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "":
+		if m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "" {
 			body = styleHint.Render(
 				"No AuthBridge agents found in this cluster.\n" +
 					"Use `abctl --endpoint http://...` to connect to a session API directly.")
-		default:
+		} else {
 			body = m.namespacesTbl.View()
 		}
 		footer := "[↑↓/jk] nav  [↵] open  [r] reload  [q] quit"

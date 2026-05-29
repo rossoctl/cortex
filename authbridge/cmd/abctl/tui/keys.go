@@ -21,7 +21,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		case "r":
+			if m.loading {
+				return nil
+			}
 			m.pickerErr = ""
+			m.loading = true
 			return loadAgentsCmd(m.ctx, m.lister)
 		case "q", "esc", "ctrl+c":
 			m.cancel()
@@ -52,7 +56,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return nil
 		case "r":
+			if m.loading {
+				return nil
+			}
 			m.pickerErr = ""
+			m.loading = true
 			return loadAgentsCmd(m.ctx, m.lister)
 		case "esc":
 			m.pane = paneNamespaces
