@@ -183,6 +183,12 @@ func (s *Server) handlePipeline(w http.ResponseWriter, _ *http.Request) {
 // not just the ones in the active pipeline. abctl renders this in
 // the catalog browser pane so operators can see what's available
 // before adding one to the pipeline.
+//
+// Auth: none, consistent with the rest of /v1/* (the package-level
+// trust model gates this server to in-cluster networking only). The
+// catalog reveals plugin metadata — names, dependency declarations,
+// descriptions — never user content or secrets, so this is fine for
+// the current posture. Revisit if sessionapi ever gates auth.
 func (s *Server) handlePluginCatalog(w http.ResponseWriter, _ *http.Request) {
 	if s.catalog == nil {
 		http.NotFound(w, nil)

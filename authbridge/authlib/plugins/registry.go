@@ -157,6 +157,17 @@ func resetCatalogCache() {
 	catalogCacheMu.Unlock()
 }
 
+// WarmCatalog triggers Catalog() at boot so any plugin whose factory
+// violates the constructor contract (panics, allocates goroutines /
+// connections / file handles) surfaces during startup rather than
+// silently caching a faulty throwaway instance on the first /v1/plugins
+// request. Cheap insurance — the result is already memoized, so calling
+// this at boot moves "first call" out of the request hot path.
+//
+// Intended for the binary's main() to invoke once after all plugin
+// init() registrations have run (typically right before sessionapi.New).
+func WarmCatalog() { _ = Catalog() }
+
 // factoryFor looks up a factory by name. Internal to the package.
 // Callers under Build use this to resolve config entries into plugin
 // instances.

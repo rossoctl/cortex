@@ -247,6 +247,11 @@ func main() {
 	}
 	statSrv := startStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler())
 
+	// Warm the plugin catalog at boot so any factory that violates the
+	// constructor contract surfaces here rather than on the first
+	// /v1/plugins request.
+	plugins.WarmCatalog()
+
 	var sessionAPISrv *sessionapi.Server
 	if cfg.Listener.SessionAPIAddr != "" && sessions != nil {
 		sessionAPISrv = sessionapi.New(

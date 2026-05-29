@@ -95,12 +95,16 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 		pos := i + 1
 		entry, known := byName[p.Name]
 		if !known {
+			// abctl caches /v1/plugins for the session; a freshly-installed
+			// plugin in-cluster won't appear until refresh. Hint at the
+			// staleness path so operators don't get stuck in confusion when
+			// the framework would actually accept the edit.
 			errs = append(errs, ValidationError{
 				Direction:  direction,
 				PluginName: p.Name,
 				Position:   pos,
-				Message: fmt.Sprintf("Unknown plugin %q (not in /v1/plugins catalog)",
-					p.Name),
+				Message: fmt.Sprintf("Unknown plugin %q (not in cached /v1/plugins; "+
+					"catalog may be stale, press P then r to refresh)", p.Name),
 			})
 			continue
 		}
