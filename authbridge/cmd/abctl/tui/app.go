@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -543,15 +544,30 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editState.err = "read edited file: " + err.Error()
 			return m, nil
 		}
+		// Fix 2: reject empty input before it can silently wipe the pipeline.
+		if len(bytes.TrimSpace(edited)) == 0 {
+			m.editState.phase = editPhaseError
+			m.editState.err = "edited file is empty; press [Esc] to abort"
+			return m, nil
+		}
+		// Fix 1: normalize trailing newline so Splice doesn't concatenate the
+		// last edit line with the next top-level YAML key.
+		if len(edited) > 0 && edited[len(edited)-1] != '\n' {
+			edited = append(edited, '\n')
+		}
 		m.editState.editedRaw = edited
 		originalSubtree := m.editState.fetched.InnerYAML[m.editState.fetched.PipelineStart:m.editState.fetched.PipelineEnd]
+		// Fix 3: surface "no changes" rather than silently transitioning to done.
 		if string(edited) == string(originalSubtree) {
+			m.setFlash("no changes; nothing to apply")
 			m.editState = editState{phase: editPhaseDone}
 			return m, nil
 		}
-		if !validYAML(edited) {
+		// Fix 4: preserve YAML parse error line/col for the overlay.
+		var yamlVal any
+		if err := yaml.Unmarshal(edited, &yamlVal); err != nil {
 			m.editState.phase = editPhaseError
-			m.editState.err = "edited file is not valid YAML"
+			m.editState.err = "invalid YAML: " + err.Error()
 			return m, nil
 		}
 		m.editState.diff = edit.Diff(originalSubtree, edited)
@@ -857,8 +873,3 @@ func openEditorCmd(path string) tea.Cmd {
 	})
 }
 
-// validYAML returns true iff b parses as valid YAML.
-func validYAML(b []byte) bool {
-	var v any
-	return yaml.Unmarshal(b, &v) == nil
-}

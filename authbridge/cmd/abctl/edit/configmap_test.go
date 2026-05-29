@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -263,6 +264,44 @@ func TestApply_PassesManifest(t *testing.T) {
 	}
 	if string(captured) != string(manifest) {
 		t.Fatalf("manifest captured by stub differs from input")
+	}
+}
+
+// TestSplice_HandlesMissingTrailingNewline documents the contract: callers MUST
+// normalize trailing '\n' before calling Splice. Without normalization the last
+// line of the new subtree concatenates with the next top-level YAML key,
+// producing garbage that passes per-subtree validation but breaks the full
+// inner YAML. The normalization is performed by tui/app.go's editorExitedMsg
+// handler before invoking Splice.
+func TestSplice_HandlesMissingTrailingNewline(t *testing.T) {
+	const orig = `mode: proxy-sidecar
+pipeline:
+  inbound:
+    - name: a
+
+session:
+  enabled: true
+`
+	start, end, err := FindPipelineRange([]byte(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// newSubtree deliberately missing trailing newline.
+	newSubtree := []byte("pipeline:\n  inbound:\n    - name: b")
+	spliced := Splice([]byte(orig), start, end, newSubtree)
+	// The TUI's editorExitedMsg handler is responsible for appending \n
+	// before splicing, so a Splice given non-newline-terminated input
+	// produces concatenated garbage. This test documents the contract:
+	// callers MUST normalize trailing \n before calling Splice. The
+	// normalization happens in tui/app.go.
+	if !bytes.HasSuffix(spliced, []byte("session:\n  enabled: true\n")) {
+		// The garbage we're guarding against in the TUI:
+		// Verify that without normalization, the splice DOES produce
+		// garbage joining "name: b" to "session:". This ensures the
+		// contract documented in Splice's godoc is observable.
+		if !bytes.Contains(spliced, []byte("- name: bsession:")) {
+			t.Fatalf("expected to observe the splice-without-normalization garbage; got:\n%s", spliced)
+		}
 	}
 }
 

@@ -57,7 +57,7 @@ func FindPipelineRange(innerYAML []byte) (start, end int, err error) {
 	}
 
 	pipelineKeyLine := doc.Content[pipelineKeyIdx].Line // 1-indexed
-	var nextKeyLine int                                  // 1-indexed; 0 if pipeline is last
+	var nextKeyLine int                                 // 1-indexed; 0 if pipeline is last
 	if pipelineKeyIdx+2 < len(doc.Content) {
 		nextKeyLine = doc.Content[pipelineKeyIdx+2].Line
 	}

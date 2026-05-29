@@ -13,7 +13,8 @@ import (
 // Requires `make demo-ibac` to have run.
 //
 // Run:
-//   go test -tags=e2e ./edit/ -run TestE2E_FetchExistingAgent -v
+//
+//	go test -tags=e2e ./edit/ -run TestE2E_FetchExistingAgent -v
 func TestE2E_FetchExistingAgent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

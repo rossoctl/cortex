@@ -196,3 +196,42 @@ func TestEditFlow_NCancelsAtDiff(t *testing.T) {
 		}
 	}
 }
+
+// TestEditFlow_NormalizesTrailingNewline verifies that the
+// editorExitedMsg handler appends a trailing newline to the user's
+// edit if missing — preventing the last line of the new subtree
+// from concatenating with the next top-level YAML key.
+func TestEditFlow_NormalizesTrailingNewline(t *testing.T) {
+	runner := &editFakeRunner{getResponse: []byte(editFixtureCMYAML)}
+	m := newPickerModel(context.Background(), nil, nil)
+	m.editRunner = runner.run
+	m.selectedNamespace = "team1"
+	m.selectedPod = "email-agent"
+	m.pane = panePipeline
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	mm := updated.(*model)
+	fetchedMsg := cmd().(edit.FetchedMsg)
+	defer os.Remove(fetchedMsg.TempPath)
+
+	// Write an edit deliberately missing a trailing newline.
+	edited := []byte("pipeline:\n  inbound:\n    - name: jwt-validation\n      config:\n        x: 1")
+	if edited[len(edited)-1] == '\n' {
+		t.Fatal("test fixture should be missing trailing newline")
+	}
+	if err := os.WriteFile(fetchedMsg.TempPath, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ = mm.Update(fetchedMsg)
+	mm = updated.(*model)
+	updated, _ = mm.Update(editorExitedMsg{err: nil})
+	mm = updated.(*model)
+	if mm.editState.phase != editPhaseDiff {
+		t.Fatalf("phase = %v, want editPhaseDiff", mm.editState.phase)
+	}
+	if len(mm.editState.editedRaw) == 0 || mm.editState.editedRaw[len(mm.editState.editedRaw)-1] != '\n' {
+		t.Fatalf("editedRaw should be normalized to end with newline; got %q",
+			mm.editState.editedRaw)
+	}
+}
