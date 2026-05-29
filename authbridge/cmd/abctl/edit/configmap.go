@@ -254,7 +254,12 @@ func extractInnerYAML(cmYAML []byte) ([]byte, error) {
 	return nil, fmt.Errorf("ConfigMap data has no config.yaml key")
 }
 
-// Apply writes manifest to a tempfile and runs kubectl apply --server-side.
+// Apply writes manifest to a tempfile and runs kubectl apply --server-side
+// with --force-conflicts=true and a dedicated abctl field-manager. The
+// kagenti-operator's webhook owns data.config.yaml on initial creation;
+// the user has explicitly confirmed this edit by pressing "y" at the
+// diff prompt, so taking field-manager ownership is the intended outcome.
+//
 // Returns the wall-clock time at which the apply call started; the caller
 // uses this to compare against /reload/status's last_success_unix to know
 // whether the framework has picked up the change yet.
@@ -272,7 +277,10 @@ func Apply(ctx context.Context, run Runner, manifest []byte) (time.Time, error) 
 		return time.Time{}, fmt.Errorf("close temp manifest: %w", err)
 	}
 	applyTime := time.Now()
-	if _, err := run(ctx, "apply", "--server-side", "--force-conflicts=false", "-f", tmp.Name()); err != nil {
+	if _, err := run(ctx, "apply", "--server-side",
+		"--field-manager=abctl",
+		"--force-conflicts=true",
+		"-f", tmp.Name()); err != nil {
 		return time.Time{}, err
 	}
 	return applyTime, nil
