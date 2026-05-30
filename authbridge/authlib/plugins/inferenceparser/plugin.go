@@ -60,6 +60,12 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		TopP:        req.TopP,
 		Stream:      req.Stream,
 		ToolChoice:  req.ToolChoice,
+		// Every populated InferenceExtension is an outbound LLM call —
+		// the agent making a real action. The "don't judge inference
+		// by default" choice is operator policy, lives in IBAC's
+		// judge_inference config; the classification verdict here is
+		// independent of that policy.
+		IsAction: true,
 	}
 
 	for _, msg := range req.Messages {

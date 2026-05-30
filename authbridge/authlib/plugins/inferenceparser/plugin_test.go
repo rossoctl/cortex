@@ -559,3 +559,22 @@ func TestInferenceParser_NullContent(t *testing.T) {
 		t.Errorf("Content = %q, want empty for null", pctx.Extensions.Inference.Messages[0].Content)
 	}
 }
+
+// IsAction is unconditionally true on populated InferenceExtension.
+// Every outbound LLM call is, on the wire, an action — the operator
+// policy "don't judge inference by default" is encoded separately in
+// IBAC's judge_inference config, not in the classification.
+func TestInferenceParser_AlwaysClassifiesAsAction(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: "/v1/chat/completions",
+		Body: []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`),
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.Inference == nil {
+		t.Fatal("Inference extension is nil")
+	}
+	if !pctx.Extensions.Inference.IsAction {
+		t.Error("IsAction = false, want true (every populated inference call is an action)")
+	}
+}
