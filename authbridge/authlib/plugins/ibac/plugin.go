@@ -324,11 +324,11 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 		return pipeline.DenyStatus(403, "ibac.no_intent", "no recorded user intent")
 	}
 
-	// 6. Build action description and call judge.
+	// 7. Build action description and call judge.
 	action := describeAction(pctx, p.cfg.JudgeInference)
 	verdict, reason, err := p.judge.Evaluate(ctx, intentText, action)
 
-	// 7. Fail closed on judge errors. Two flavors, distinguished
+	// 8. Fail closed on judge errors. Two flavors, distinguished
 	//    via the ErrJudgeUncertain sentinel so operator dashboards
 	//    don't conflate model-output bugs with infra outages:
 	//      - uncertain: judge is up but emitted unparseable / unknown
@@ -368,7 +368,7 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 		return pipeline.DenyStatus(503, "ibac.judge_unavailable", errPreview)
 	}
 
-	// 8. Apply verdict.
+	// 9. Apply verdict.
 	if verdict == "deny" {
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
