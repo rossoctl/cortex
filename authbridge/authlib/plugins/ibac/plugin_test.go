@@ -55,8 +55,11 @@ func invokeOnRequest(p pipeline.Plugin, pctx *pipeline.Context) pipeline.Action 
 }
 
 // makePCtx builds a minimal outbound pctx with a Session containing a
-// single A2A user-intent message ("summarize my emails"). Callers that
-// want to override individual fields mutate the returned context.
+// single A2A user-intent message ("summarize my emails"). Defaults
+// model a typical side-effect request — POST with a non-empty body —
+// so the pctx reaches the judge unless the test opts into a transport-
+// shaped path (body-less GET, housekeeping method, etc). Tests
+// override fields by mutating the returned context.
 func makePCtx(t *testing.T) *pipeline.Context {
 	t.Helper()
 	view := &pipeline.SessionView{
@@ -76,11 +79,12 @@ func makePCtx(t *testing.T) *pipeline.Context {
 	}
 	return &pipeline.Context{
 		Direction: pipeline.Outbound,
-		Method:    "GET",
+		Method:    "POST",
 		Scheme:    "http",
 		Host:      "weather-tool.team1.svc",
 		Path:      "/api/weather",
 		Headers:   http.Header{},
+		Body:      []byte(`{"city":"sf"}`),
 		Session:   view,
 	}
 }
@@ -370,6 +374,80 @@ func TestOnRequest_MCPToolsCallIsNotHousekeeping(t *testing.T) {
 
 	if fj.calls != 1 {
 		t.Errorf("judge calls = %d, want 1 (tools/call must be judged)", fj.calls)
+	}
+}
+
+// Body-less GET requests (MCP Streamable HTTP SSE channel, agent-card
+// fetches, OAuth metadata probes) carry no action payload and must
+// bypass the judge with reason "transport_stream". Without this, the
+// MCP client's SSE channel-open keeps getting 403'd, the connection
+// dies, and the agent loops on reconnect.
+func TestOnRequest_TransportStreamBypass_BodylessGET(t *testing.T) {
+	fj := &fakeJudge{}
+	p := newConfiguredIBAC(t, fj)
+
+	pctx := makePCtx(t)
+	pctx.Session = nil // bypass must fire before the session check
+	pctx.Method = "GET"
+	pctx.Host = "exgentic-mcp-gsm8k-mcp:8000"
+	pctx.Path = "/mcp"
+	pctx.Body = nil
+	action := invokeOnRequest(p, pctx)
+
+	if action.Type != pipeline.Continue {
+		t.Errorf("got %v, want Continue for body-less GET", action.Type)
+	}
+	if fj.calls != 0 {
+		t.Errorf("judge calls = %d, want 0 (body-less GET must not reach judge)", fj.calls)
+	}
+	inv := lastInvocation(t, pctx)
+	if inv.Action != pipeline.ActionSkip {
+		t.Errorf("Invocation action = %v, want ActionSkip", inv.Action)
+	}
+	if inv.Reason != "transport_stream" {
+		t.Errorf("Invocation reason = %q, want 'transport_stream'", inv.Reason)
+	}
+}
+
+// Body-having GETs (rare, but legal — e.g. some search APIs) must
+// still reach the judge: the body is the action.
+func TestOnRequest_TransportStreamBypass_GETWithBodyIsJudged(t *testing.T) {
+	fj := &fakeJudge{verdict: "allow"}
+	p := newConfiguredIBAC(t, fj)
+
+	pctx := makePCtx(t)
+	pctx.Method = "GET"
+	pctx.Host = "search-api"
+	pctx.Path = "/q"
+	pctx.Body = []byte(`{"q":"acme financials"}`)
+	_ = invokeOnRequest(p, pctx)
+
+	if fj.calls != 1 {
+		t.Errorf("judge calls = %d, want 1 (GET with body is an action)", fj.calls)
+	}
+}
+
+// Body-less POST/PUT/DELETE/PATCH must NOT bypass — the absence of
+// body alone isn't enough; the method must signal "retrieval" too.
+// A body-less POST is unusual but legal (semantic "do action") and
+// IBAC should still judge it.
+func TestOnRequest_TransportStreamBypass_BodylessPOSTIsJudged(t *testing.T) {
+	for _, method := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+		t.Run(method, func(t *testing.T) {
+			fj := &fakeJudge{verdict: "allow"}
+			p := newConfiguredIBAC(t, fj)
+
+			pctx := makePCtx(t)
+			pctx.Method = method
+			pctx.Host = "api.example.com"
+			pctx.Path = "/refresh"
+			pctx.Body = nil
+			_ = invokeOnRequest(p, pctx)
+
+			if fj.calls != 1 {
+				t.Errorf("judge calls = %d, want 1 for body-less %s", fj.calls, method)
+			}
+		})
 	}
 }
 

@@ -261,6 +261,21 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
+	// 5b. Transport-stream bypass. Body-less GET requests carry no
+	//     action payload to evaluate — typical patterns: MCP Streamable
+	//     HTTP's server→client SSE channel, agent-card fetches, OAuth
+	//     metadata probes. Sending these to the judge is a category
+	//     error: there's nothing to judge, and the LLM either denies
+	//     for lack of context or returns a non-deterministic verdict
+	//     that depends on noise in the prompt. Side-effect requests
+	//     (POST/PUT/DELETE/PATCH) always have bodies and reach the
+	//     judge; an attacker can't smuggle an action through a body-
+	//     less GET without a request body to put it in.
+	if pctx.Method == "GET" && len(pctx.Body) == 0 {
+		pctx.Skip("transport_stream")
+		return pipeline.Action{Type: pipeline.Continue}
+	}
+
 	// 6. Pull the user's most recent declared intent. Two distinct
 	//    nil pathways, both fail closed but with different reasons so
 	//    operator dashboards can tell them apart:
