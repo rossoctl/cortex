@@ -79,7 +79,39 @@ type ibacConfig struct {
 	// BypassPaths are URL path globs skipped without judging.
 	// Defaults to bypass.DefaultPatterns (.well-known, healthz, etc).
 	BypassPaths []string `json:"bypass_paths"`
+
+	// NoIntentPolicy controls behavior when a request reaches step 6
+	// without a recorded user intent — either because Session is nil
+	// (no inbound A2A turn has populated the active bucket yet) or
+	// because the session contains no extractable user-role A2A
+	// fragment. Two values:
+	//
+	//   - "allow" (default): Skip with reason "no_user_context" and
+	//     pass through. Right for deployments where agents take
+	//     legitimate self-actions (initialization, machine-to-machine
+	//     calls, headless cron-driven flows) — IBAC should not be in
+	//     the middle of those decisions because there's no user
+	//     intent to align against.
+	//
+	//   - "deny": Reject with 403 and the existing "no_session" /
+	//     "no_intent" reasons. Right for deployments where every
+	//     outbound is supposed to be user-driven and a missing intent
+	//     is a real misconfiguration worth surfacing as a denial.
+	//
+	// The default is "allow" because IBAC's threat model targets
+	// prompt-injection attacks where the LLM emits user-misaligned
+	// actions — that requires there to be a user in the first place.
+	// Deployments that mix user-driven and self-driven traffic get
+	// the right behavior automatically; deployments that want hard
+	// fail-closed semantics opt in via "deny".
+	NoIntentPolicy string `json:"no_intent_policy"`
 }
+
+// no_intent_policy values.
+const (
+	NoIntentPolicyAllow = "allow"
+	NoIntentPolicyDeny  = "deny"
+)
 
 // defaultBypassHosts is the conservative starting set. Operators with
 // SPIRE / Keycloak / observability stacks deployed under different
@@ -120,6 +152,9 @@ func (c *ibacConfig) applyDefaults() {
 	if len(c.BypassPaths) == 0 {
 		c.BypassPaths = defaultBypassPaths
 	}
+	if c.NoIntentPolicy == "" {
+		c.NoIntentPolicy = NoIntentPolicyAllow
+	}
 }
 
 func (c *ibacConfig) validate() error {
@@ -154,6 +189,13 @@ func (c *ibacConfig) validate() error {
 			return fmt.Errorf("bypass_paths pattern %q matches everything; "+
 				"if you mean to disable IBAC, remove it from the pipeline instead", p)
 		}
+	}
+	switch c.NoIntentPolicy {
+	case NoIntentPolicyAllow, NoIntentPolicyDeny:
+		// ok
+	default:
+		return fmt.Errorf("no_intent_policy must be %q or %q, got %q",
+			NoIntentPolicyAllow, NoIntentPolicyDeny, c.NoIntentPolicy)
 	}
 	return nil
 }
@@ -289,16 +331,41 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 	}
 
 	// 6. Pull the user's most recent declared intent. Two distinct
-	//    nil pathways, both fail closed but with different reasons so
-	//    operator dashboards can tell them apart:
+	//    nil pathways, distinguished so operator dashboards can tell
+	//    them apart:
 	//      - no_session: no inbound A2A request has populated the
 	//        active session bucket yet (or session tracking is off
 	//        entirely). Common at agent startup before any user turn.
 	//      - no_intent: a session exists but contains no extractable
 	//        user message (a2a-parser missing from inbound chain, or
 	//        events present but none are user-role A2A requests).
+	//
+	//    Both states mean "IBAC has no user intent to align against"
+	//    — i.e., the request is either genuinely user-less (agent
+	//    self-action, machine-to-machine, headless cron) or there's
+	//    a misconfiguration upstream. NoIntentPolicy controls which
+	//    interpretation wins:
+	//      - allow (default): treat as self-action, Skip and Continue.
+	//        Right for deployments that mix user-driven and self-driven
+	//        traffic.
+	//      - deny: treat as misconfiguration, Reject 403. Right for
+	//        deployments where every outbound is user-driven and a
+	//        missing intent should surface as a hard failure.
 	if pctx.Session == nil {
 		action := describeAction(pctx, p.cfg.JudgeInference)
+		if p.cfg.NoIntentPolicy == NoIntentPolicyAllow {
+			pctx.Record(pipeline.Invocation{
+				Action: pipeline.ActionSkip,
+				Phase:  pipeline.InvocationPhaseRequest,
+				Reason: "no_user_context",
+				Details: map[string]string{
+					"action":      action,
+					"sub_reason":  "no_session",
+					"explanation": "no active session — treating as agent self-action per no_intent_policy=allow",
+				},
+			})
+			return pipeline.Action{Type: pipeline.Continue}
+		}
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Phase:  pipeline.InvocationPhaseRequest,
@@ -313,6 +380,19 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 	intentText := extractIntentText(intent)
 	if intentText == "" {
 		action := describeAction(pctx, p.cfg.JudgeInference)
+		if p.cfg.NoIntentPolicy == NoIntentPolicyAllow {
+			pctx.Record(pipeline.Invocation{
+				Action: pipeline.ActionSkip,
+				Phase:  pipeline.InvocationPhaseRequest,
+				Reason: "no_user_context",
+				Details: map[string]string{
+					"action":      action,
+					"sub_reason":  "no_intent",
+					"explanation": "session exists but no user intent — treating as agent self-action per no_intent_policy=allow",
+				},
+			})
+			return pipeline.Action{Type: pipeline.Continue}
+		}
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Phase:  pipeline.InvocationPhaseRequest,
