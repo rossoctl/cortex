@@ -4,17 +4,73 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/internal/parsercommon"
 )
 
+// Synthetic method names emitted on body-less MCP transport-layer
+// requests where there's no JSON-RPC method on the wire to report.
+// The "$" prefix is reserved (real MCP methods follow a category/
+// action naming convention with no "$"), so operators reading abctl
+// can tell at a glance these aren't methods that appeared in the
+// request body.
+const (
+	syntheticTransportStream    = "$transport/stream"
+	syntheticTransportTerminate = "$transport/terminate"
+)
+
+// mcpConfig is the plugin's local config schema. The MCP-endpoint
+// `paths` list scopes body-less transport-layer detection (SSE GET,
+// session-terminate DELETE) to known MCP endpoints — without it,
+// every body-less GET in the cluster would risk being mis-classified
+// as an MCP transport call.
+type mcpConfig struct {
+	// Paths is the set of URL path globs that should be treated as
+	// MCP endpoints for body-less-request detection. Defaults to
+	// ["/mcp"] which matches the standard MCP Streamable HTTP setup
+	// used by the MCP Python SDK and most server templates.
+	//
+	// Path-shape detection only fires on body-less requests; body-
+	// having JSON-RPC requests are parsed regardless of path (the
+	// JSON-RPC body itself is the protocol signal).
+	Paths []string `json:"paths"`
+}
+
+func (c *mcpConfig) applyDefaults() {
+	if len(c.Paths) == 0 {
+		c.Paths = []string{"/mcp"}
+	}
+}
+
 // MCPParser parses MCP JSON-RPC 2.0 request bodies and populates
-// pctx.Extensions.MCP with the method, RPC ID, and raw params for
-// downstream policy plugins.
-type MCPParser struct{}
+// pctx.Extensions.MCP with the method, RPC ID, raw params, and the
+// IsAction classification verdict for downstream guardrails.
+//
+// Recognizes three shapes:
+//
+//  1. JSON-RPC body (POST /mcp with a valid {jsonrpc, method, ...}
+//     payload): populates Method/RPCID/Params. IsAction=true for
+//     known action methods (tools/call, prompts/get, resources/read);
+//     all other methods leave IsAction at the zero-value false.
+//
+//  2. Body-less DELETE on a configured path with the Mcp-Session-Id
+//     header: MCP Streamable HTTP session termination per spec.
+//     Populates Method=$transport/terminate, IsAction=false.
+//
+//  3. Body-less GET on a configured path: MCP Streamable HTTP server-
+//     to-client SSE channel-open. Populates Method=$transport/stream,
+//     IsAction=false.
+//
+// Body-less requests on non-configured paths leave Extensions.MCP
+// nil — the parser can't reliably tell whether they're MCP traffic.
+type MCPParser struct {
+	paths *bypass.Matcher
+}
 
 func NewMCPParser() *MCPParser { return &MCPParser{} }
 
@@ -32,12 +88,85 @@ func (p *MCPParser) Capabilities() pipeline.PluginCapabilities {
 	}
 }
 
+// Configure decodes the optional `paths` list and compiles a path
+// matcher used by body-less transport-layer detection. Always
+// initializes the matcher (default paths are applied when omitted)
+// so OnRequest never has to nil-check.
+func (p *MCPParser) Configure(raw json.RawMessage) error {
+	var c mcpConfig
+	if len(raw) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
+			return fmt.Errorf("mcp-parser config: %w", err)
+		}
+	}
+	c.applyDefaults()
+	matcher, err := bypass.NewMatcher(c.Paths)
+	if err != nil {
+		return fmt.Errorf("mcp-parser paths: %w", err)
+	}
+	p.paths = matcher
+	return nil
+}
+
+// isMCPAction reports whether a JSON-RPC method name names a user-
+// meaningful side-effect operation that guardrails should judge.
+// The list is small and grows only when MCP introduces a new method
+// that carries user intent on the wire. Everything not in this list
+// — protocol setup, capability discovery, subscription management,
+// notifications, etc. — is treated as protocol mechanics with
+// IsAction=false (the zero value).
+func isMCPAction(method string) bool {
+	switch method {
+	case "tools/call", "prompts/get", "resources/read":
+		return true
+	}
+	return false
+}
+
 func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	// No Invocation recorded when the parser doesn't apply to this
-	// message — empty body, non-JSON body, or JSON-but-not-JSON-RPC
-	// (e.g. an OpenAI chat/completions body). Operators infer "mcp-
-	// parser exists in this pipeline" from config, not per-event rows.
+	// Body-less transport-layer detection. Scoped to the configured
+	// MCP-endpoint paths because there's no protocol payload to
+	// confirm; without the path narrow, every body-less GET in the
+	// cluster would risk being mis-classified as an MCP SSE channel.
 	if len(pctx.Body) == 0 {
+		if p.paths != nil && p.paths.Match(pctx.Path) {
+			switch {
+			case pctx.Method == "DELETE" && pctx.Headers.Get("Mcp-Session-Id") != "":
+				// MCP Streamable HTTP session termination per spec —
+				// the Mcp-Session-Id header is set by the MCP client
+				// SDK, not user input, so it's a precise distinguisher
+				// from a real "DELETE /api/users/42" action call.
+				pctx.Extensions.MCP = &pipeline.MCPExtension{
+					Method: syntheticTransportTerminate,
+					// IsAction defaults to false — protocol mechanics.
+				}
+				slog.Info("mcp-parser: session terminate", "path", pctx.Path)
+				pctx.Observe("matched_" + syntheticTransportTerminate)
+				return pipeline.Action{Type: pipeline.Continue}
+
+			case pctx.Method == "GET":
+				// MCP Streamable HTTP server-to-client SSE channel-open.
+				// Heuristic recognition: any body-less GET on a
+				// configured MCP path. If the request turns out not to
+				// be MCP, the worst-case effect is that guardrails
+				// downstream see a "transport/stream" extension and skip
+				// it — same effect as the pre-classification behavior
+				// of letting body-less GETs through.
+				pctx.Extensions.MCP = &pipeline.MCPExtension{
+					Method: syntheticTransportStream,
+					// IsAction defaults to false — protocol mechanics.
+				}
+				slog.Info("mcp-parser: transport stream", "path", pctx.Path)
+				pctx.Observe("matched_" + syntheticTransportStream)
+				return pipeline.Action{Type: pipeline.Continue}
+			}
+		}
+		// Empty body, no MCP-shaped transport pattern matched. Don't
+		// attach an extension — the parser doesn't claim this request.
+		// Operators infer "mcp-parser exists in this pipeline" from
+		// config, not per-event rows.
 		slog.Debug("mcp-parser: no body, skipping")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -58,12 +187,13 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	}
 
 	pctx.Extensions.MCP = &pipeline.MCPExtension{
-		Method: rpc.Method,
-		RPCID:  rpc.ID,
-		Params: rpc.Params,
+		Method:   rpc.Method,
+		RPCID:    rpc.ID,
+		Params:   rpc.Params,
+		IsAction: isMCPAction(rpc.Method),
 	}
 
-	slog.Info("mcp-parser: request", "method", rpc.Method)
+	slog.Info("mcp-parser: request", "method", rpc.Method, "isAction", pctx.Extensions.MCP.IsAction)
 	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(pctx.Body), parsercommon.DebugBodyMax))
 
 	pctx.Observe("matched_" + rpc.Method)

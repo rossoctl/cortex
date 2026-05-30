@@ -2,10 +2,33 @@ package mcpparser
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
+
+// configured returns an MCPParser with paths configured. Most existing
+// tests use NewMCPParser() unconfigured (paths matcher is nil), which
+// is fine because they only exercise body-having JSON-RPC parsing —
+// the path matcher is only consulted on body-less requests.
+func configured(t *testing.T, paths ...string) *MCPParser {
+	t.Helper()
+	p := NewMCPParser()
+	cfg := struct {
+		Paths []string `json:"paths"`
+	}{Paths: paths}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal cfg: %v", err)
+	}
+	if err := p.Configure(raw); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	return p
+}
 
 func TestMCPParser_Capabilities(t *testing.T) {
 	p := NewMCPParser()
@@ -392,5 +415,205 @@ func TestMCPParser_OnResponse_SSE_SkipsMalformedFramesUntilGoodOne(t *testing.T)
 	_ = p.OnResponse(context.Background(), pctx)
 	if pctx.Extensions.MCP.Result == nil || pctx.Extensions.MCP.Result["ok"] != true {
 		t.Errorf("expected result from second SSE frame, got %v", pctx.Extensions.MCP.Result)
+	}
+}
+
+// --- Configure ---
+
+// Default paths value: omitting the config gives ["/mcp"], which
+// matches the standard MCP Streamable HTTP setup. Most operators
+// won't override this.
+func TestConfigure_DefaultPaths(t *testing.T) {
+	p := NewMCPParser()
+	if err := p.Configure(nil); err != nil {
+		t.Fatalf("Configure(nil): %v", err)
+	}
+	// Probe the matcher with a body-less GET on /mcp; if the default
+	// is right, the synthetic transport extension fires.
+	pctx := &pipeline.Context{Method: "GET", Path: "/mcp", Headers: http.Header{}}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP == nil {
+		t.Fatal("default paths should match /mcp; MCP extension was nil")
+	}
+	if pctx.Extensions.MCP.Method != syntheticTransportStream {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportStream)
+	}
+}
+
+func TestConfigure_RejectsBadPattern(t *testing.T) {
+	p := NewMCPParser()
+	err := p.Configure(json.RawMessage(`{"paths":["[bad"]}`))
+	if err == nil {
+		t.Fatal("expected error for invalid path glob")
+	}
+	if !strings.Contains(err.Error(), "paths") {
+		t.Errorf("error should mention paths; got %q", err.Error())
+	}
+}
+
+func TestConfigure_RejectsUnknownFields(t *testing.T) {
+	p := NewMCPParser()
+	err := p.Configure(json.RawMessage(`{"paths":["/mcp"],"unknown":"x"}`))
+	if err == nil {
+		t.Error("expected error for unknown field")
+	}
+}
+
+// --- IsAction classification on body-having JSON-RPC requests ---
+
+// Action methods (tools/call, prompts/get, resources/read) get
+// IsAction=true so guardrails know to judge them. Everything else
+// stays at the default false (protocol mechanics).
+func TestOnRequest_Classification_ActionMethods(t *testing.T) {
+	cases := []struct {
+		method  string
+		body    string
+		isAction bool
+	}{
+		// Action methods — judge.
+		{"tools/call", `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`, true},
+		{"prompts/get", `{"jsonrpc":"2.0","method":"prompts/get","id":2,"params":{"name":"x"}}`, true},
+		{"resources/read", `{"jsonrpc":"2.0","method":"resources/read","id":3,"params":{"uri":"x"}}`, true},
+		// Protocol-mechanics methods — bypass.
+		{"initialize", `{"jsonrpc":"2.0","method":"initialize","id":4}`, false},
+		{"ping", `{"jsonrpc":"2.0","method":"ping","id":5}`, false},
+		{"tools/list", `{"jsonrpc":"2.0","method":"tools/list","id":6}`, false},
+		{"prompts/list", `{"jsonrpc":"2.0","method":"prompts/list","id":7}`, false},
+		{"resources/list", `{"jsonrpc":"2.0","method":"resources/list","id":8}`, false},
+		{"resources/templates/list", `{"jsonrpc":"2.0","method":"resources/templates/list","id":9}`, false},
+		{"resources/subscribe", `{"jsonrpc":"2.0","method":"resources/subscribe","id":10,"params":{"uri":"x"}}`, false},
+		{"resources/unsubscribe", `{"jsonrpc":"2.0","method":"resources/unsubscribe","id":11,"params":{"uri":"x"}}`, false},
+		{"completion/complete", `{"jsonrpc":"2.0","method":"completion/complete","id":12}`, false},
+		{"logging/setLevel", `{"jsonrpc":"2.0","method":"logging/setLevel","id":13}`, false},
+		{"notifications/initialized", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, false},
+		{"notifications/cancelled", `{"jsonrpc":"2.0","method":"notifications/cancelled"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			p := NewMCPParser()
+			pctx := &pipeline.Context{Body: []byte(tc.body)}
+			_ = p.OnRequest(context.Background(), pctx)
+			if pctx.Extensions.MCP == nil {
+				t.Fatalf("MCP extension nil for method %q", tc.method)
+			}
+			if pctx.Extensions.MCP.IsAction != tc.isAction {
+				t.Errorf("IsAction = %v, want %v for method %q",
+					pctx.Extensions.MCP.IsAction, tc.isAction, tc.method)
+			}
+		})
+	}
+}
+
+// --- Body-less transport-layer detection ---
+
+// MCP Streamable HTTP session termination: DELETE on the configured
+// path with the Mcp-Session-Id header. The header is set by the MCP
+// client SDK and is the precise distinguisher from a real "delete
+// resource" call.
+func TestOnRequest_TransportTerminate(t *testing.T) {
+	p := configured(t, "/mcp")
+	pctx := &pipeline.Context{
+		Method:  "DELETE",
+		Path:    "/mcp",
+		Headers: http.Header{"Mcp-Session-Id": []string{"abc-123"}},
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP == nil {
+		t.Fatal("expected synthetic MCP extension")
+	}
+	if pctx.Extensions.MCP.Method != syntheticTransportTerminate {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportTerminate)
+	}
+	if pctx.Extensions.MCP.IsAction {
+		t.Error("IsAction should be false for transport terminate")
+	}
+}
+
+// MCP Streamable HTTP SSE channel-open: body-less GET on the
+// configured path.
+func TestOnRequest_TransportStream(t *testing.T) {
+	p := configured(t, "/mcp")
+	pctx := &pipeline.Context{
+		Method:  "GET",
+		Path:    "/mcp",
+		Headers: http.Header{},
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP == nil {
+		t.Fatal("expected synthetic MCP extension")
+	}
+	if pctx.Extensions.MCP.Method != syntheticTransportStream {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportStream)
+	}
+	if pctx.Extensions.MCP.IsAction {
+		t.Error("IsAction should be false for transport stream")
+	}
+}
+
+// Body-less DELETE on configured path WITHOUT the Mcp-Session-Id
+// header doesn't look like MCP transport — could be a real resource
+// delete (DELETE /mcp/something) on an API that happens to share
+// the path. Don't claim it.
+func TestOnRequest_BodylessDELETEWithoutSessionHeader_NoExtension(t *testing.T) {
+	p := configured(t, "/mcp")
+	pctx := &pipeline.Context{
+		Method:  "DELETE",
+		Path:    "/mcp",
+		Headers: http.Header{},
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP != nil {
+		t.Errorf("expected no MCP extension, got %+v", pctx.Extensions.MCP)
+	}
+}
+
+// Body-less request on a non-configured path: parser doesn't claim
+// it. Defense in depth — without the path narrow, we'd be guessing
+// that any body-less GET is MCP-shaped, which is wrong for non-MCP
+// agent traffic.
+func TestOnRequest_BodylessOnUnconfiguredPath_NoExtension(t *testing.T) {
+	p := configured(t, "/mcp") // only /mcp is configured
+	pctx := &pipeline.Context{
+		Method:  "GET",
+		Path:    "/some/other/api",
+		Headers: http.Header{},
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP != nil {
+		t.Errorf("expected no MCP extension on unconfigured path, got %+v", pctx.Extensions.MCP)
+	}
+}
+
+// Body-less POST on configured path: not a recognized MCP transport
+// shape (MCP uses POST only with bodies). Don't claim it.
+func TestOnRequest_BodylessPOST_NoExtension(t *testing.T) {
+	p := configured(t, "/mcp")
+	pctx := &pipeline.Context{
+		Method:  "POST",
+		Path:    "/mcp",
+		Headers: http.Header{},
+	}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP != nil {
+		t.Errorf("expected no MCP extension for body-less POST, got %+v", pctx.Extensions.MCP)
+	}
+}
+
+// Custom paths config: operators can scope MCP detection to their
+// actual MCP endpoint paths.
+func TestConfigure_CustomPaths(t *testing.T) {
+	p := configured(t, "/api/v1/mcp", "/legacy-mcp")
+	for _, path := range []string{"/api/v1/mcp", "/legacy-mcp"} {
+		pctx := &pipeline.Context{Method: "GET", Path: path, Headers: http.Header{}}
+		_ = p.OnRequest(context.Background(), pctx)
+		if pctx.Extensions.MCP == nil {
+			t.Errorf("custom path %q should match", path)
+		}
+	}
+	// /mcp is NOT in the custom list.
+	pctx := &pipeline.Context{Method: "GET", Path: "/mcp", Headers: http.Header{}}
+	_ = p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP != nil {
+		t.Error("/mcp should NOT match when custom paths exclude it")
 	}
 }
