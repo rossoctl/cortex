@@ -624,6 +624,29 @@ func TestOnRequest_TransportStream_BodylessDELETEWithoutHeaderIsJudged(t *testin
 	}
 }
 
+// DELETE + Mcp-Session-Id header + non-empty body must still be
+// judged. The header alone isn't sufficient — the body-first guard
+// in isTransportShaped is what keeps an attacker (or a misbehaving
+// SDK) from smuggling action payload through what looks like
+// transport cleanup. Locks in the same "header + body → not
+// bypassed" invariant that body-having GETs already cover.
+func TestOnRequest_TransportStream_MCPSessionTerminate_WithBodyIsJudged(t *testing.T) {
+	fj := &fakeJudge{verdict: "allow"}
+	p := newConfiguredIBAC(t, fj)
+
+	pctx := makePCtx(t)
+	pctx.Method = "DELETE"
+	pctx.Host = "exgentic-mcp-gsm8k-mcp:8000"
+	pctx.Path = "/mcp"
+	pctx.Body = []byte(`{"unexpected":"payload"}`)
+	pctx.Headers.Set("Mcp-Session-Id", "abc-123")
+	_ = invokeOnRequest(p, pctx)
+
+	if fj.calls != 1 {
+		t.Errorf("judge calls = %d, want 1 (DELETE+Mcp-Session-Id with body must be judged, not bypassed)", fj.calls)
+	}
+}
+
 // describeAction's first non-empty token must be the HTTP method, with
 // no leading whitespace. This locks in the listener-side pctx.Method
 // wiring contract: if any listener regresses to leaving Method empty,
