@@ -546,3 +546,37 @@ func TestA2AParser_OnRequest_ContextIDPreferred(t *testing.T) {
 		t.Errorf("SessionID from contextId: got %+v, want ctx-resume", pctx.Extensions.A2A)
 	}
 }
+
+// IsAction classification: message/send and message/stream are user-
+// meaningful action methods (judge them); everything else is protocol
+// mechanics (skip).
+func TestA2AParser_Classification(t *testing.T) {
+	cases := []struct {
+		method   string
+		body     string
+		isAction bool
+	}{
+		{"message/send", `{"jsonrpc":"2.0","method":"message/send","id":1,"params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`, true},
+		{"message/stream", `{"jsonrpc":"2.0","method":"message/stream","id":2,"params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`, true},
+		// Hypothetical / future protocol-mechanics methods stay at the
+		// default false. We can't enumerate every A2A non-action method
+		// here (some don't exist yet) — the classification is "true for
+		// known actions, false for everything else" so the table only
+		// needs known-action coverage plus a representative non-action.
+		{"agent/discover", `{"jsonrpc":"2.0","method":"agent/discover","id":3}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			p := NewA2AParser()
+			pctx := &pipeline.Context{Body: []byte(tc.body)}
+			_ = p.OnRequest(context.Background(), pctx)
+			if pctx.Extensions.A2A == nil {
+				t.Fatalf("A2A extension nil for method %q", tc.method)
+			}
+			if pctx.Extensions.A2A.IsAction != tc.isAction {
+				t.Errorf("IsAction = %v, want %v for method %q",
+					pctx.Extensions.A2A.IsAction, tc.isAction, tc.method)
+			}
+		})
+	}
+}

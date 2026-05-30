@@ -50,8 +50,9 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	}
 
 	ext := &pipeline.A2AExtension{
-		Method: rpc.Method,
-		RPCID:  rpc.ID,
+		Method:   rpc.Method,
+		RPCID:    rpc.ID,
+		IsAction: isA2AAction(rpc.Method),
 	}
 
 	// Extract message fields generically — any method with params.message
@@ -354,4 +355,21 @@ func parseA2AParts(rawParts []any) []pipeline.A2APart {
 		parts = append(parts, pipeline.A2APart{Kind: kind, Content: content})
 	}
 	return parts
+}
+
+// isA2AAction reports whether an A2A JSON-RPC method name names a
+// user-meaningful agent-to-agent call that guardrails should judge.
+// Only methods that carry a user message into the agent (or out to
+// another agent) qualify; protocol/discovery methods are bypass.
+//
+// On the inbound side, action methods are how IBAC's session intent
+// gets seeded — a2a-parser's classification doesn't drive inbound
+// IBAC behavior (IBAC is outbound-only) but the field is set on
+// inbound for consistency and for any future inbound guardrail.
+func isA2AAction(method string) bool {
+	switch method {
+	case "message/send", "message/stream":
+		return true
+	}
+	return false
 }
