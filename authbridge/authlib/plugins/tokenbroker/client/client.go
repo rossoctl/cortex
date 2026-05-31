@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -55,6 +56,10 @@ func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, server
 		return "", fmt.Errorf("token broker request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	slog.Debug("token-broker-client: received response from broker",
+		"status_code", resp.StatusCode,
+		"server_url", serverURL)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
 	if err != nil {

@@ -225,18 +225,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	// Extract bearer token
-	subjectToken := extractBearer(authHeader)
-	if subjectToken == "" {
-		return pctx.DenyAndRecord("missing_subject_token", "auth.missing-token",
-			"broker route requires authorization token")
-	}
-
-	// Derive server URL from scheme + host. pctx.Scheme is populated
-	// by the listener from :scheme (ext_proc / ext_authz) or
-	// r.URL.Scheme / r.TLS (forward / reverse proxy). Defaults to
-	// "http" when the listener couldn't determine one — matches the
-	// previous hardcoded behavior.
+	// Derive server URL for logging
 	scheme := pctx.Scheme
 	if scheme == "" {
 		scheme = "http"
@@ -245,6 +234,23 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 
 	// Use the plugin's configured broker URL
 	brokerURL := p.cfg.BrokerURL
+
+	slog.Info("token-broker: processing outbound request",
+		"server_url", serverURL,
+		"broker_url", brokerURL)
+
+	// Extract bearer token
+	subjectToken := extractBearer(authHeader)
+	if subjectToken == "" {
+		return pctx.DenyAndRecord("missing_subject_token", "auth.missing-token",
+			"broker route requires authorization token")
+	}
+
+	slog.Debug("token-broker: requesting token from broker",
+		"server_url", serverURL,
+		"broker_url", brokerURL,
+		"authorization_endpoint", authorizationEndpoint,
+		"token_endpoint", tokenEndpoint)
 
 	// Call broker to acquire token, passing authorization and token endpoints if available
 	token, err := p.client.AcquireToken(ctx, brokerURL, subjectToken, serverURL, authorizationEndpoint, tokenEndpoint)
@@ -292,6 +298,10 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// Replace token in authorization header
 	pctx.Headers.Set("Authorization", "Bearer "+token)
 
+	slog.Info("token-broker: token acquired and added to request",
+		"server_url", serverURL,
+		"broker_url", brokerURL)
+
 	// Record successful token replacement
 	pctx.Record(pipeline.Invocation{
 		Action:  pipeline.ActionModify,
@@ -301,7 +311,18 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-func (p *TokenBroker) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+func (p *TokenBroker) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
+	// Derive server URL for logging
+	scheme := pctx.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	serverURL := scheme + "://" + pctx.Host
+
+	slog.Info("token-broker: received outbound response",
+		"server_url", serverURL,
+		"status_code", pctx.StatusCode,
+		"has_response_body", len(pctx.ResponseBody) > 0)
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
