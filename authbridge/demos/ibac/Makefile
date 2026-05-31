@@ -113,13 +113,19 @@ $(STAMP_DIR)/evil-server.built: $(shell find evil-server -type f) go.mod | $(STA
 
 build-images: $(STAMP_DIR)/agent.built $(STAMP_DIR)/email-server.built $(STAMP_DIR)/evil-server.built  ## Build demo images (rebuilds only when sources change)
 
-build-abctl:  ## Build abctl into /tmp (cached, used by show-result)
-	@if [ -x /tmp/abctl-ibac-demo ]; then \
-	  echo "[*] /tmp/abctl-ibac-demo already built; skipping. \`rm /tmp/abctl-ibac-demo\` to force rebuild."; \
+build-abctl:  ## Build abctl into /tmp (rebuilds when source is newer; used by show-result)
+	@ABCTL_SRC_DIR=../../cmd/abctl; \
+	if [ -x /tmp/abctl-ibac-demo ]; then \
+	  NEWER=$$(find $$ABCTL_SRC_DIR -name '*.go' -newer /tmp/abctl-ibac-demo -print -quit 2>/dev/null); \
+	  if [ -z "$$NEWER" ]; then \
+	    echo "[*] /tmp/abctl-ibac-demo is up to date with the abctl source; skipping. \`rm /tmp/abctl-ibac-demo\` to force rebuild."; \
+	    exit 0; \
+	  fi; \
+	  echo "[*] abctl source has been modified since /tmp/abctl-ibac-demo was built — rebuilding ..."; \
 	else \
 	  echo "[*] Building abctl into /tmp/abctl-ibac-demo ..."; \
-	  cd ../../cmd/abctl && go build -o /tmp/abctl-ibac-demo . ; \
-	fi
+	fi; \
+	cd $$ABCTL_SRC_DIR && go build -o /tmp/abctl-ibac-demo .
 
 # load-images reloads each image when EITHER:
 #   - the kind node doesn't have it under docker.io/library/<name>, OR
