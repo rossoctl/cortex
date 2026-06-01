@@ -20,33 +20,37 @@ import (
 )
 
 // tokenBrokerConfig is the plugin's local config schema.
+//
+// Field tags drive both runtime decoding (json) and operator-facing
+// schema introspection (description / required / default / enum).
+// See pipeline/schema.go for the consumer contract.
 type tokenBrokerConfig struct {
 	// BrokerURL is the base URL of the token broker service.
-	BrokerURL string `json:"broker_url"`
+	BrokerURL string `json:"broker_url" required:"true" description:"Base URL of the token broker service."`
 
 	// DefaultPolicy is applied when a request's host matches no route:
 	// "passthrough" (default) forwards the request unchanged;
 	// "broker" attempts to acquire a token from the broker.
-	DefaultPolicy string `json:"default_policy"`
+	DefaultPolicy string `json:"default_policy" description:"Behavior when host matches no route." default:"passthrough" enum:"passthrough,broker"`
 
 	// Routes drives host-to-broker matching. A host that matches no
 	// route falls through to DefaultPolicy.
-	Routes tokenBrokerRoutes `json:"routes"`
+	Routes tokenBrokerRoutes `json:"routes" description:"Host-to-broker routing rules; non-matching hosts fall through to default_policy."`
 }
 
 type tokenBrokerRoutes struct {
 	// File is an optional path to a routes.yaml file.
-	File string `json:"file"`
+	File string `json:"file" description:"Path to a routes.yaml file. Inline rules below are merged with file-loaded rules."`
 
 	// Rules are inline route entries; combined with routes loaded from File.
-	Rules []tokenBrokerRoute `json:"rules"`
+	Rules []tokenBrokerRoute `json:"rules" description:"Inline route entries. Combined with rules loaded from file."`
 }
 
 type tokenBrokerRoute struct {
-	Host                  string `json:"host"`
-	Action                string `json:"action"` // "broker" or "passthrough"; defaults to "broker"
-	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint         string `json:"token_endpoint,omitempty"`
+	Host                  string `json:"host" description:"Host glob pattern."`
+	Action                string `json:"action" description:"broker or passthrough." default:"broker" enum:"broker,passthrough"`
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty" description:"Per-route OAuth authorization endpoint override."`
+	TokenEndpoint         string `json:"token_endpoint,omitempty" description:"Per-route OAuth token endpoint override."`
 }
 
 func (c *tokenBrokerConfig) applyDefaults() {
@@ -157,6 +161,12 @@ func (p *TokenBroker) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
 		Description: "Token broker: exchanges incoming tokens against the configured IdP.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *TokenBroker) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(tokenBrokerConfig{})
 }
 
 func (p *TokenBroker) Configure(raw json.RawMessage) error {

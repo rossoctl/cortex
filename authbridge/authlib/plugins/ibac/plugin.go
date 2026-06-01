@@ -44,47 +44,29 @@ import (
 // ibacConfig is the plugin's local config schema. See
 // authbridge/docs/plugin-reference.md for the decode → applyDefaults →
 // validate convention shared with jwt-validation and token-exchange.
+//
+// Field tags drive both runtime decoding (json) and operator-facing
+// schema introspection (description / required / default / enum).
+// See pipeline/schema.go for the consumer contract; descriptions are
+// kept single-line — full prose lives in docs/ibac-plugin.md.
 type ibacConfig struct {
-	// JudgeEndpoint is the base URL of the LLM-judge service. The
-	// plugin POSTs OpenAI-compatible chat-completion requests to
-	// JudgeEndpoint+"/v1/chat/completions".
-	JudgeEndpoint string `json:"judge_endpoint"`
+	JudgeEndpoint string `json:"judge_endpoint" required:"true" description:"Base URL of the LLM-judge service. The plugin POSTs to {endpoint}/v1/chat/completions."`
 
-	// JudgeModel names the model to use for verdicts (e.g.
-	// "llama3.2:3b" for ollama, "gpt-4o-mini" for OpenAI).
-	JudgeModel string `json:"judge_model"`
+	JudgeModel string `json:"judge_model" required:"true" description:"Model name passed to the judge, e.g. \"llama3.2:3b\" or \"gpt-4o-mini\"."`
 
-	// JudgeBearer is an optional bearer token for the judge endpoint.
-	// Leave empty for unauthenticated local LLMs (ollama).
-	JudgeBearer string `json:"judge_bearer"`
+	JudgeBearer string `json:"judge_bearer" description:"Optional bearer token for the judge endpoint. Empty for unauthenticated local LLMs."`
 
-	// SystemPrompt overrides the default judge system prompt. Empty
-	// means "use the default" (see judge.go:defaultSystemPrompt).
-	SystemPrompt string `json:"system_prompt"`
+	SystemPrompt string `json:"system_prompt" description:"Override the default judge system prompt. Empty means use the built-in default."`
 
-	// TimeoutMs bounds each judge call. Defaults to 5000.
-	TimeoutMs int `json:"timeout_ms"`
+	TimeoutMs int `json:"timeout_ms" description:"Per-call judge timeout. Validation rejects values below 100." default:"5000"`
 
-	// JudgeInference, when true, also judges outbound traffic where
-	// pctx.Extensions.Inference is populated (the agent's own LLM
-	// reasoning loop). Default false — judging the agent's prompts
-	// is high-cost low-value for typical deployments.
-	JudgeInference bool `json:"judge_inference"`
+	JudgeInference bool `json:"judge_inference" description:"When true, also judge outbound LLM-reasoning traffic. High-cost / low-value default off." default:"false"`
 
-	// AgentLLMHost is a convenience: the host of the agent's own LLM
-	// endpoint. When set, it's added to the bypass-host list so the
-	// agent's reasoning traffic is never judged regardless of
-	// JudgeInference.
-	AgentLLMHost string `json:"agent_llm_host"`
+	AgentLLMHost string `json:"agent_llm_host" description:"Convenience: agent's own LLM host. Added to bypass_hosts so reasoning traffic is never judged."`
 
-	// BypassHosts are host globs (path.Match syntax) skipped without
-	// judging. Defaults include common infrastructure hostnames so
-	// the judge isn't called on Keycloak / OTel / agent-card hops.
-	BypassHosts []string `json:"bypass_hosts"`
+	BypassHosts []string `json:"bypass_hosts" description:"Host globs (path.Match) skipped without judging. Defaults include keycloak / spire / otel."`
 
-	// BypassPaths are URL path globs skipped without judging.
-	// Defaults to bypass.DefaultPatterns (.well-known, healthz, etc).
-	BypassPaths []string `json:"bypass_paths"`
+	BypassPaths []string `json:"bypass_paths" description:"URL path globs skipped without judging. Defaults: /.well-known/* /healthz /readyz /livez."`
 
 	// NoIntentPolicy controls behavior when a request reaches step 6
 	// without a recorded user intent — either because Session is nil
@@ -110,7 +92,7 @@ type ibacConfig struct {
 	// Deployments that mix user-driven and self-driven traffic get
 	// the right behavior automatically; deployments that want hard
 	// fail-closed semantics opt in via "deny".
-	NoIntentPolicy string `json:"no_intent_policy"`
+	NoIntentPolicy string `json:"no_intent_policy" description:"Behavior when an action lacks recorded user intent. allow=skip; deny=403." default:"allow" enum:"allow,deny"`
 
 	// UnclassifiedPolicy controls behavior at step 4 (the
 	// classification gate) when no protocol parser populated any
@@ -142,7 +124,15 @@ type ibacConfig struct {
 	// arbitrary HTTP traffic isn't paid for by most operators.
 	// The IBAC demo opts into "judge" to keep its plain-HTTP exfil
 	// scenario operational.
-	UnclassifiedPolicy string `json:"unclassified_policy"`
+	UnclassifiedPolicy string `json:"unclassified_policy" description:"Behavior when no parser claimed the request. passthrough=skip; judge=fall through to judge." default:"passthrough" enum:"passthrough,judge"`
+}
+
+// ConfigSchema exposes the ibacConfig fields for schema-aware tooling
+// (abctl edit templates, future kagenti-UI forms, etc.). Implements
+// pipeline.SchemaProvider; absence would simply make IBAC opaque to
+// such tooling without affecting runtime.
+func (p *IBAC) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(ibacConfig{})
 }
 
 // no_intent_policy values.

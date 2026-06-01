@@ -29,6 +29,24 @@ import (
 	"strings"
 )
 
+// SchemaProvider is implemented by plugins whose config field
+// metadata should appear in the catalog and downstream tooling
+// (abctl edit templates, future kagenti-UI forms, JSON Schema
+// generators). Plugins without configs (a2a-parser,
+// inference-parser today) can omit this interface.
+//
+// The convention is a one-line method that delegates to SchemaOf:
+//
+//	func (p *MyPlugin) ConfigSchema() []FieldSchema {
+//	    return SchemaOf(myPluginConfig{})
+//	}
+//
+// The framework's catalog adapter type-asserts against this
+// interface; absence is silently treated as "no field metadata."
+type SchemaProvider interface {
+	ConfigSchema() []FieldSchema
+}
+
 // FieldSchema describes one config field's metadata for tooling.
 type FieldSchema struct {
 	// Name is the JSON key (snake_case) — what operators type in YAML.

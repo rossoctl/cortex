@@ -22,12 +22,17 @@ import (
 // jwtValidationConfig is the plugin's local config schema. See
 // authbridge/docs/plugin-reference.md for the decode → applyDefaults →
 // validate pattern.
+// Field tags drive both runtime decoding (json) and operator-facing
+// schema introspection (description / required / default / enum).
+// Inline doc comments retain the long-form rationale; struct tags
+// carry single-line summaries for templating. See pipeline/schema.go
+// for the consumer contract.
 type jwtValidationConfig struct {
 	// Issuer is the JWT `iss` claim expected on inbound tokens.
 	// In split-horizon deployments this is the PUBLIC Keycloak URL
 	// (whatever Keycloak stamps into the `iss` claim) — it only needs
 	// to match bit-for-bit, not be reachable from inside the pod.
-	Issuer string `json:"issuer"`
+	Issuer string `json:"issuer" required:"true" description:"Expected JWT iss claim. Public Keycloak URL in split-horizon deployments."`
 
 	// JWKSURL points at the JWKS endpoint used to verify signatures.
 	// The sidecar actually GETs this URL from inside the cluster, so
@@ -40,7 +45,7 @@ type jwtValidationConfig struct {
 	//      internal URL, when the operator supplies it)
 	//   2. Issuer (fallback for single-horizon deployments where the
 	//      issuer hostname is reachable from inside the cluster)
-	JWKSURL string `json:"jwks_url"`
+	JWKSURL string `json:"jwks_url" description:"JWKS endpoint URL (internal). Derived from KeycloakURL+Realm or Issuer when empty."`
 
 	// KeycloakURL and KeycloakRealm are a convenience for deriving
 	// JWKSURL from the internal Keycloak service URL, symmetric with
@@ -52,13 +57,13 @@ type jwtValidationConfig struct {
 	// via a cross-plugin pass; per-plugin configs don't share state,
 	// so each plugin now carries its own copy of the "where is
 	// Keycloak internally" hint.
-	KeycloakURL   string `json:"keycloak_url"`
-	KeycloakRealm string `json:"keycloak_realm"`
+	KeycloakURL   string `json:"keycloak_url" description:"Internal Keycloak base URL. Used to derive jwks_url when omitted."`
+	KeycloakRealm string `json:"keycloak_realm" description:"Keycloak realm name. Pairs with keycloak_url for jwks_url derivation."`
 
 	// Audience is the literal audience value expected on inbound
 	// tokens. One of {Audience, AudienceFile, AudienceMode:"per-host"}
 	// is required.
-	Audience string `json:"audience"`
+	Audience string `json:"audience" description:"Expected aud claim value. One of audience / audience_file / audience_mode=per-host is required."`
 
 	// AudienceFile reads the expected audience from a file. Used
 	// together with client-registration's /shared/client-id.txt. The
@@ -69,12 +74,12 @@ type jwtValidationConfig struct {
 	// will fill in /shared/client-id.txt. To opt out of any file poll,
 	// supply an explicit Audience instead; the file default only kicks
 	// in when both Audience and AudienceFile are empty.
-	AudienceFile string `json:"audience_file"`
+	AudienceFile string `json:"audience_file" description:"Read expected audience from this file. Default: /shared/client-id.txt when both audience fields are empty."`
 
 	// AudienceMode chooses how the expected audience is resolved:
 	// "static" (default) uses Audience/AudienceFile; "per-host" derives
 	// it from pctx.Host via routing.ServiceNameFromHost (waypoint mode).
-	AudienceMode string `json:"audience_mode"`
+	AudienceMode string `json:"audience_mode" description:"How to resolve expected audience: static or per-host." default:"static" enum:"static,per-host"`
 
 	// AllowedAudiences lists extra audience strings the sidecar accepts
 	// for inbound JWT validation (OR semantics: the token's aud claim
@@ -89,11 +94,11 @@ type jwtValidationConfig struct {
 	// multiple audiences (RFC 7519 string or array) and the agent must
 	// accept more than the workload client ID alone — prefer aligning
 	// IdP audience policy long-term. See plugin-reference.md.
-	AllowedAudiences []string `json:"allowed_audiences"`
+	AllowedAudiences []string `json:"allowed_audiences" description:"Extra audience strings accepted (OR semantics)."`
 
 	// BypassPaths are URL path globs (see authlib/bypass) that skip
 	// validation entirely.
-	BypassPaths []string `json:"bypass_paths"`
+	BypassPaths []string `json:"bypass_paths" description:"Path globs (path.Match) skipped without JWT validation. Defaults: /healthz /readyz /livez /.well-known/*."`
 }
 
 func (c *jwtValidationConfig) applyDefaults() {
@@ -213,6 +218,12 @@ func (p *JWTValidation) Capabilities() pipeline.PluginCapabilities {
 		Writes:      []string{"security"},
 		Description: "Inbound JWT validation (signature, issuer, audience) against JWKS.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *JWTValidation) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(jwtValidationConfig{})
 }
 
 // Configure decodes the plugin's config subtree, applies defaults,
