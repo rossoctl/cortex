@@ -227,7 +227,7 @@ Wait for the Shipwright build to complete and the deployment to become ready.
 kubectl get pods -n team1
 ```
 
-Expected output:
+Expected output (cluster default — `proxy-sidecar` mode, no SPIRE):
 
 ```
 NAME                               READY   STATUS    RESTARTS   AGE
@@ -235,11 +235,14 @@ weather-service-58768bdb67-xxxxx   2/2     Running   0          2m
 weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 ```
 
-> **Note:** The agent pod shows **2/2** containers — the agent itself plus
-> one combined AuthBridge sidecar (spiffe-helper is bundled inside; client
-> registration is handled by the operator outside the pod). In envoy-sidecar
-> mode you'll also see a `proxy-init` init container that exits after
-> setting up iptables.
+> **Note:** The container count depends on the AuthBridge mode and whether
+> SPIRE identity is enabled — `2/2` is the cluster-default `proxy-sidecar`
+> mode (`agent` + `authbridge-proxy`). With `envoy-sidecar` mode you'll see
+> `agent` + `envoy-proxy` (plus a `proxy-init` init container), and with
+> `kagenti.io/spire: enabled` on the workload you'll also see a
+> `spiffe-helper` sidecar (so `3/3` is normal in that case). See the
+> [AuthBridge deployment guide](https://github.com/kagenti/kagenti/blob/main/docs/authbridge/deployment-guide.md)
+> for the full mode/label reference.
 
 ### Verify injected containers
 
