@@ -560,13 +560,14 @@ kubectl delete pod test-client -n team1 --ignore-not-found
 **Symptom:** `{"error":"invalid_client","error_description":"Invalid client or Invalid client credentials"}`
 
 **Cause:** The `keycloak-admin-secret` Secret or `authbridge-config` ConfigMap was missing
-or incorrect at startup, so the client-registration sidecar couldn't register the client.
+or incorrect at startup, so the operator's `ClientRegistrationReconciler` couldn't reach
+Keycloak to register the client.
 
 **Fix:**
 
 ```bash
-# 1. Verify the keycloak-admin-secret exists
-kubectl get secret keycloak-admin-secret -n team1
+# 1. Verify the keycloak-admin-secret exists (operator 0.2+ keeps it in kagenti-system)
+kubectl get secret keycloak-admin-secret -n kagenti-system
 
 # 2. Verify the authbridge-config ConfigMap has the correct realm
 kubectl get configmap authbridge-config -n team1 -o jsonpath='{.data.KEYCLOAK_REALM}'
