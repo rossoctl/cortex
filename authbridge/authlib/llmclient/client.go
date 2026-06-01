@@ -116,13 +116,30 @@ type ChatMessage struct {
 
 // ChatRequest is the OpenAI chat-completions request body. We model
 // only the fields plugins actually pass; callers wanting more knobs
-// (top_p, response_format, function calling) can use a custom http
-// client and write their own request.
+// (top_p, function calling) can use a custom http client and write
+// their own request.
 type ChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
 	MaxTokens   int           `json:"max_tokens,omitempty"`
+
+	// ResponseFormat is the OpenAI `response_format` field. The
+	// common value is `{"type": "json_object"}`, which most hosted
+	// models (and LiteLLM proxies) honor by suppressing the
+	// markdown-fence wrapper they otherwise emit around structured
+	// output. Leaving this nil preserves prior behavior — the field
+	// is omitempty so locally-hosted endpoints that reject unknown
+	// keys (some older Ollama builds) still see the same wire shape
+	// when a plugin doesn't opt in.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// ResponseFormat is the OpenAI `response_format` request field.
+// Construct with `&ResponseFormat{Type: "json_object"}` to ask the
+// model for raw JSON without a markdown fence.
+type ResponseFormat struct {
+	Type string `json:"type"`
 }
 
 // ChatChoice is a single completion choice in the response.
@@ -187,10 +204,15 @@ func New(opts Options) *Client {
 //
 // Hardcoded knobs: Temperature is 0 (deterministic, suits
 // structured-output use cases like policy verdicts) and MaxTokens
-// is 200 (enough for one-sentence-reason JSON, not enough for
-// long completions). Plugins that need different values — higher
-// temperature for free-form completions, larger MaxTokens for
-// summarization — should call CallRaw with their own ChatRequest.
+// is 1024 (room for one-sentence-reason JSON plus the markdown
+// fence wrapper many hosted models — Gemini via LiteLLM in
+// particular — emit reflexively around structured output). 200
+// was the prior default and proved too tight: Gemini's
+// "```json\n{...}\n```" preamble could exhaust the budget mid-key
+// and produce unparseable truncated content. Plugins that need
+// different values — higher temperature for free-form completions,
+// larger MaxTokens for summarization — should call CallRaw with
+// their own ChatRequest.
 //
 // Errors:
 //   - transport / timeout / non-2xx → not wrapped with ErrUncertain
@@ -199,7 +221,7 @@ func (c *Client) Call(ctx context.Context, systemPrompt, userPrompt string) (str
 	resp, err := c.CallRaw(ctx, &ChatRequest{
 		Model:       c.model,
 		Temperature: 0,
-		MaxTokens:   200,
+		MaxTokens:   1024,
 		Messages: []ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},

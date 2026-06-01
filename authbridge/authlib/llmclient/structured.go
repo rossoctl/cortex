@@ -66,6 +66,25 @@ func CallStructured[T any](ctx context.Context, c *Client, systemPrompt, userPro
 	return ExtractJSON[T](content)
 }
 
+// CallStructuredRaw is CallStructured with caller-controlled request
+// shape — use this when a plugin needs to override MaxTokens, set
+// ResponseFormat, or otherwise tune the wire request beyond what
+// Call hardcodes. The same error model applies as CallStructured.
+//
+// req.Model defaults to the Client's configured Model when empty.
+// CallStructuredRaw does not mutate req.
+func CallStructuredRaw[T any](ctx context.Context, c *Client, req *ChatRequest) (T, error) {
+	var zero T
+	resp, err := c.CallRaw(ctx, req)
+	if err != nil {
+		return zero, err
+	}
+	if len(resp.Choices) == 0 {
+		return zero, fmt.Errorf("%w: response had no choices", ErrUncertain)
+	}
+	return ExtractJSON[T](resp.Choices[0].Message.Content)
+}
+
 // truncate caps s at n runes (not bytes), appending an ellipsis when it
 // truncates. Rune-safe matters here because the helper is used on model
 // output that lands in slog / wrapped error messages — a byte-slice

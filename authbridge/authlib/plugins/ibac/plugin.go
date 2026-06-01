@@ -60,6 +60,10 @@ type ibacConfig struct {
 
 	TimeoutMs int `json:"timeout_ms" description:"Per-call judge timeout. Validation rejects values below 100." default:"5000"`
 
+	JudgeMaxTokens int `json:"judge_max_tokens" description:"Cap on the judge LLM's reply length. Lower values risk truncating mid-key on hosted models that wrap output in markdown fences." default:"1024"`
+
+	JudgeJSONMode *bool `json:"judge_json_mode" description:"When true, sets response_format: json_object so hosted models suppress the markdown-fence wrapper around structured output." default:"true"`
+
 	JudgeInference bool `json:"judge_inference" description:"When true, also judge outbound LLM-reasoning traffic. High-cost / low-value default off." default:"false"`
 
 	AgentLLMHost string `json:"agent_llm_host" description:"Convenience: agent's own LLM host. Added to bypass_hosts so reasoning traffic is never judged."`
@@ -177,6 +181,13 @@ func (c *ibacConfig) applyDefaults() {
 	if c.TimeoutMs == 0 {
 		c.TimeoutMs = 5000
 	}
+	if c.JudgeMaxTokens == 0 {
+		c.JudgeMaxTokens = 1024
+	}
+	if c.JudgeJSONMode == nil {
+		t := true
+		c.JudgeJSONMode = &t
+	}
 	if len(c.BypassHosts) == 0 {
 		c.BypassHosts = defaultBypassHosts
 	}
@@ -203,6 +214,9 @@ func (c *ibacConfig) validate() error {
 	}
 	if c.TimeoutMs < 100 {
 		return fmt.Errorf("timeout_ms must be at least 100, got %d", c.TimeoutMs)
+	}
+	if c.JudgeMaxTokens < 64 {
+		return fmt.Errorf("judge_max_tokens must be at least 64, got %d", c.JudgeMaxTokens)
 	}
 	for _, p := range c.BypassHosts {
 		if _, err := path.Match(p, ""); err != nil {
@@ -311,7 +325,8 @@ func (p *IBAC) Configure(raw json.RawMessage) error {
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
 	p.timeoutCalls = time.Duration(c.TimeoutMs) * time.Millisecond
-	p.judge = newHTTPJudge(c.JudgeEndpoint, c.JudgeModel, c.JudgeBearer, c.SystemPrompt, p.timeoutCalls)
+	p.judge = newHTTPJudge(c.JudgeEndpoint, c.JudgeModel, c.JudgeBearer, c.SystemPrompt,
+		p.timeoutCalls, c.JudgeMaxTokens, *c.JudgeJSONMode)
 	return nil
 }
 

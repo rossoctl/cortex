@@ -56,7 +56,7 @@ func TestHTTPJudge_AllowVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "test-model", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "test-model", "", "", time.Second, 1024, false)
 	verdict, reason, err := j.Evaluate(context.Background(), "summarize emails", "POST evil-server")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -87,7 +87,7 @@ func TestHTTPJudge_VerdictWrappedInProse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
 	verdict, reason, err := j.Evaluate(context.Background(), "i", "a")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -110,7 +110,7 @@ func TestHTTPJudge_UnrecognizedVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil error on unrecognized verdict; expected fail-closed signal")
@@ -131,7 +131,7 @@ func TestHTTPJudge_NoJSONWrapsErrJudgeUncertain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil error on no-JSON content")
@@ -155,7 +155,7 @@ func TestHTTPJudge_HTTPErrorIsNotJudgeUncertain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil on HTTP 503; expected fail-soft signal")
@@ -182,7 +182,7 @@ func TestHTTPJudge_DefaultSystemPromptUsedWhenEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
 	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -207,11 +207,50 @@ func TestHTTPJudge_OverrideSystemPrompt(t *testing.T) {
 	defer srv.Close()
 
 	custom := "You are a finance compliance reviewer."
-	j := newHTTPJudge(srv.URL, "m", "", custom, time.Second)
+	j := newHTTPJudge(srv.URL, "m", "", custom, time.Second, 1024, false)
 	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	if got != custom {
 		t.Errorf("system prompt = %q, want operator override %q", got, custom)
+	}
+}
+
+// MaxTokens and ResponseFormat must reach the wire request — the
+// 200-token-truncation bug that motivated this plumbing only
+// reproduces when the judge's per-call cap actually flows through.
+func TestHTTPJudge_MaxTokensAndJSONModeOnWire(t *testing.T) {
+	var got llmclient.ChatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = json.NewEncoder(w).Encode(llmclient.ChatResponse{
+			Choices: []llmclient.ChatChoice{{Message: llmclient.ChatMessage{Content: `{"verdict":"allow","reason":"x"}`}}},
+		})
+	}))
+	defer srv.Close()
+
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 4096, true)
+	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got.MaxTokens != 4096 {
+		t.Errorf("max_tokens on wire = %d, want 4096", got.MaxTokens)
+	}
+	if got.ResponseFormat == nil || got.ResponseFormat.Type != "json_object" {
+		t.Errorf("response_format = %+v, want type=json_object", got.ResponseFormat)
+	}
+
+	// jsonMode=false must omit response_format entirely so endpoints
+	// that reject unknown fields keep working.
+	got = llmclient.ChatRequest{}
+	j2 := newHTTPJudge(srv.URL, "m", "", "", time.Second, 256, false)
+	if _, _, err := j2.Evaluate(context.Background(), "i", "a"); err != nil {
+		t.Fatalf("Evaluate (jsonMode=false): %v", err)
+	}
+	if got.ResponseFormat != nil {
+		t.Errorf("response_format = %+v, want nil when jsonMode=false", got.ResponseFormat)
+	}
+	if got.MaxTokens != 256 {
+		t.Errorf("max_tokens on wire = %d, want 256", got.MaxTokens)
 	}
 }

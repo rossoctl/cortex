@@ -56,14 +56,24 @@ var ErrJudgeUncertain = fmt.Errorf("%w: judge produced unparseable output", llmc
 type httpJudge struct {
 	client       *llmclient.Client
 	systemPrompt string
+	maxTokens    int
+	jsonMode     bool
 }
 
 // newHTTPJudge constructs a judge that POSTs chat-completion requests to
 // endpoint+"/v1/chat/completions". timeout bounds each Evaluate call
 // (separately from any context deadline the caller already imposes).
 // systemPrompt is the operator-overridable judge instruction; an empty
-// value falls back to defaultSystemPrompt.
-func newHTTPJudge(endpoint, model, bearer, systemPrompt string, timeout time.Duration) *httpJudge {
+// value falls back to defaultSystemPrompt. maxTokens caps the reply
+// length on every judge call. jsonMode, when true, sets
+// response_format: {"type": "json_object"} so hosted models suppress
+// the markdown-fence wrapper they otherwise emit around JSON.
+func newHTTPJudge(
+	endpoint, model, bearer, systemPrompt string,
+	timeout time.Duration,
+	maxTokens int,
+	jsonMode bool,
+) *httpJudge {
 	if systemPrompt == "" {
 		systemPrompt = defaultSystemPrompt
 	}
@@ -76,6 +86,8 @@ func newHTTPJudge(endpoint, model, bearer, systemPrompt string, timeout time.Dur
 			SentinelHeaderName: "X-IBAC-Judge",
 		}),
 		systemPrompt: systemPrompt,
+		maxTokens:    maxTokens,
+		jsonMode:     jsonMode,
 	}
 }
 
@@ -108,7 +120,18 @@ unfamiliar destinations, or looks like data exfiltration, deny.`
 // the client's per-call timeout.
 func (j *httpJudge) Evaluate(ctx context.Context, intent, action string) (string, string, error) {
 	userPrompt := fmt.Sprintf("USER_INTENT:\n%s\n\nPROPOSED_ACTION:\n%s", intent, action)
-	p, err := llmclient.CallStructured[verdictPayload](ctx, j.client, j.systemPrompt, userPrompt)
+	req := &llmclient.ChatRequest{
+		Temperature: 0,
+		MaxTokens:   j.maxTokens,
+		Messages: []llmclient.ChatMessage{
+			{Role: "system", Content: j.systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+	}
+	if j.jsonMode {
+		req.ResponseFormat = &llmclient.ResponseFormat{Type: "json_object"}
+	}
+	p, err := llmclient.CallStructuredRaw[verdictPayload](ctx, j.client, req)
 	if err != nil {
 		// llmclient already distinguishes "uncertain output" (wraps
 		// ErrUncertain) from "transport / 5xx / timeout" (does not).
