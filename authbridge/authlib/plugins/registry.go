@@ -185,14 +185,9 @@ func cloneCatalog(in []CatalogEntry) []CatalogEntry {
 			Capabilities: pipeline.PluginCapabilities{
 				ReadsBody:   caps.ReadsBody,
 				WritesBody:  caps.WritesBody,
-				BodyAccess:  caps.BodyAccess,
 				Description: caps.Description,
-				Writes:      append([]string(nil), caps.Writes...),
-				Reads:       append([]string(nil), caps.Reads...),
 				Requires:    append([]string(nil), caps.Requires...),
 				RequiresAny: append([]string(nil), caps.RequiresAny...),
-				After:       append([]string(nil), caps.After...),
-				Claims:      append([]string(nil), caps.Claims...),
 			},
 			Fields: cloneFieldSchemas(in[i].Fields),
 		}
@@ -340,11 +335,11 @@ func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...p
 	return pipeline.New(ps, opts...)
 }
 
-// validateRelationships checks every plugin's Requires / RequiresAny /
-// After / Claims declarations against the chain it's about to run in.
-// Collects all errors across the chain into one joined error rather
-// than short-circuiting on the first — friendlier for operators
-// iterating on a freshly-edited YAML.
+// validateRelationships checks every plugin's Requires / RequiresAny
+// declarations against the chain it's about to run in. Collects all
+// errors across the chain into one joined error rather than
+// short-circuiting on the first — friendlier for operators iterating on
+// a freshly-edited YAML.
 //
 // Semantics:
 //
@@ -353,15 +348,11 @@ func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...p
 //   - RequiresAny: at least one named plugin must appear at a lower
 //     index. Any named plugin that IS present must also be at a
 //     lower index.
-//   - After: if a named plugin is present, it must appear at a lower
-//     index. Silent if the named plugin is absent.
-//   - Claims: at most one plugin per unique claim string across the
-//     entire chain.
 //
-// Each rule loop uses the per-plugin Name() as the identity key. Case-
-// sensitive (Go default). If a plugin name is duplicated in a chain
-// (rare — requires config.PluginEntry.ID differentiation), the
-// earliest-occurrence index is authoritative for position checks.
+// Each rule uses the per-plugin Name() as the identity key (case-sensitive).
+// If a plugin name is duplicated in a chain (rare — requires
+// config.PluginEntry.ID differentiation), the earliest-occurrence index
+// is authoritative for position checks.
 func validateRelationships(ps []pipeline.Plugin) error {
 	if len(ps) == 0 {
 		return nil
@@ -403,7 +394,6 @@ func validateRelationships(ps []pipeline.Plugin) error {
 					continue
 				}
 				if j >= i {
-					// Present but misordered — report per-offender.
 					errs = append(errs, fmt.Sprintf(
 						"plugin %q lists %q under RequiresAny; %q must appear earlier (found at position %d, this plugin is at %d)",
 						p.Name(), req, req, j, i))
@@ -416,34 +406,6 @@ func validateRelationships(ps []pipeline.Plugin) error {
 					"plugin %q requires at least one of %v earlier in the chain, but none are configured",
 					p.Name(), caps.RequiresAny))
 			}
-		}
-
-		// After — soft ordering.
-		for _, name := range caps.After {
-			j, present := positions[name]
-			if !present {
-				continue
-			}
-			if j >= i {
-				errs = append(errs, fmt.Sprintf(
-					"plugin %q declares After %q, but %q appears at position %d (this plugin is at %d); reorder so %q runs first",
-					p.Name(), name, name, j, i, name))
-			}
-		}
-	}
-
-	// Claims — chain-wide aggregation.
-	claimOwner := make(map[string]string, len(ps))
-	for _, p := range ps {
-		caps := p.Capabilities().Normalize()
-		for _, claim := range caps.Claims {
-			if existing, taken := claimOwner[claim]; taken && existing != p.Name() {
-				errs = append(errs, fmt.Sprintf(
-					"plugins %q and %q both claim %q; configure only one of them on this chain",
-					existing, p.Name(), claim))
-				continue
-			}
-			claimOwner[claim] = p.Name()
 		}
 	}
 

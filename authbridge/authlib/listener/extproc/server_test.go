@@ -388,7 +388,7 @@ type bodyRecorderPlugin struct {
 
 func (p *bodyRecorderPlugin) Name() string { return "body-recorder" }
 func (p *bodyRecorderPlugin) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{BodyAccess: true}
+	return pipeline.PluginCapabilities{ReadsBody: true}
 }
 func (p *bodyRecorderPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	p.receivedBody = pctx.Body

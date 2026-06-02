@@ -18,9 +18,6 @@ func TestInferenceParser_Capabilities(t *testing.T) {
 	if !caps.ReadsBody {
 		t.Error("ReadsBody should be true")
 	}
-	if len(caps.Writes) != 1 || caps.Writes[0] != "inference" {
-		t.Errorf("Writes = %v, want [inference]", caps.Writes)
-	}
 }
 
 func TestInferenceParser_ChatCompletions(t *testing.T) {

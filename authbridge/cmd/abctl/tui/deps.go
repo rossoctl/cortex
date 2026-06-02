@@ -99,54 +99,22 @@ func requiresAnyStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePl
 	return out
 }
 
-// afterStatus returns one depCheck per entry in p.After. Satisfied
-// when the named plugin is absent (After is a soft hint) or present
-// at a lower position. Misorder (present at higher position) is the
-// only failure case.
-func afterStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) []depCheck {
-	out := make([]depCheck, 0, len(p.After))
-	for _, name := range p.After {
-		c := depCheck{Name: name, Satisfied: true}
-		for _, q := range chain {
-			if q.Name == name {
-				if q.Position < p.Position {
-					c.UpstreamPosition = q.Position
-				} else if q.Position > p.Position {
-					c.Satisfied = false
-				}
-				break
-			}
-		}
-		out = append(out, c)
-	}
-	return out
-}
-
-// pluginDepsAllSatisfied returns true iff Requires, RequiresAny, and
-// After are all OK for p in chain. Drives the Pipeline pane's per-row
-// ✓/✗ indicator. Plugins with no declared deps are always ✓.
+// pluginDepsAllSatisfied returns true iff Requires and RequiresAny are
+// all OK for p in chain. Drives the Pipeline pane's per-row ✓/✗ indicator.
 func pluginDepsAllSatisfied(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) bool {
 	for _, c := range requiresStatus(p, chain) {
 		if !c.Satisfied {
 			return false
 		}
 	}
-	if !requiresAnyOK(p, chain) {
-		return false
-	}
-	for _, c := range afterStatus(p, chain) {
-		if !c.Satisfied {
-			return false
-		}
-	}
-	return true
+	return requiresAnyOK(p, chain)
 }
 
 // pluginHasAnyDeps reports whether p declares any dependency that the
 // indicator can render. Plugins without any declarations get a blank
 // indicator (no false-positive ✓).
 func pluginHasAnyDeps(p *apiclient.PipelinePlugin) bool {
-	return len(p.Requires) > 0 || len(p.RequiresAny) > 0 || len(p.After) > 0
+	return len(p.Requires) > 0 || len(p.RequiresAny) > 0
 }
 
 // formatDepCheck returns a one-line description of a dependency check.

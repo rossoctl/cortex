@@ -87,7 +87,6 @@ func (p *MCPParser) Name() string { return "mcp-parser" }
 
 func (p *MCPParser) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		Writes:      []string{"mcp"},
 		ReadsBody:   true,
 		Description: "Parses MCP tool calls/results into pctx.Extensions.MCP.",
 	}

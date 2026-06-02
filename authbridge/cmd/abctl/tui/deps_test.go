@@ -56,25 +56,6 @@ func TestPluginDepsAllSatisfied_RequiresAnyAllMissing(t *testing.T) {
 	}
 }
 
-func TestPluginDepsAllSatisfied_AfterAbsentIsOK(t *testing.T) {
-	chain := []apiclient.PipelinePlugin{
-		{Name: "ibac", Direction: "outbound", Position: 1, After: []string{"mcp-parser"}},
-	}
-	if !pluginDepsAllSatisfied(&chain[0], chain) {
-		t.Fatal("After=['mcp-parser'] should be satisfied when mcp-parser is absent (soft hint)")
-	}
-}
-
-func TestPluginDepsAllSatisfied_AfterMisordered(t *testing.T) {
-	chain := []apiclient.PipelinePlugin{
-		{Name: "ibac", Direction: "outbound", Position: 1, After: []string{"mcp-parser"}},
-		{Name: "mcp-parser", Direction: "outbound", Position: 2},
-	}
-	if pluginDepsAllSatisfied(&chain[0], chain) {
-		t.Fatal("After=['mcp-parser'] should NOT be satisfied when mcp-parser is downstream")
-	}
-}
-
 func TestPluginHasAnyDeps(t *testing.T) {
 	if pluginHasAnyDeps(&apiclient.PipelinePlugin{Name: "x"}) {
 		t.Fatal("plugin with no deps should report false")
@@ -82,8 +63,8 @@ func TestPluginHasAnyDeps(t *testing.T) {
 	if !pluginHasAnyDeps(&apiclient.PipelinePlugin{Name: "x", Requires: []string{"a"}}) {
 		t.Fatal("plugin with Requires should report true")
 	}
-	if !pluginHasAnyDeps(&apiclient.PipelinePlugin{Name: "x", After: []string{"a"}}) {
-		t.Fatal("plugin with After should report true")
+	if !pluginHasAnyDeps(&apiclient.PipelinePlugin{Name: "x", RequiresAny: []string{"a"}}) {
+		t.Fatal("plugin with RequiresAny should report true")
 	}
 }
 

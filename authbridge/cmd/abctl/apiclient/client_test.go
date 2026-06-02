@@ -85,8 +85,8 @@ func TestGetPipeline(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"inbound":  [{"name":"jwt-validation","direction":"inbound","position":1,"bodyAccess":false},
-			             {"name":"a2a-parser","direction":"inbound","position":2,"bodyAccess":true,"writes":["a2a"]}],
+			"inbound":  [{"name":"jwt-validation","direction":"inbound","position":1,"readsBody":false},
+			             {"name":"a2a-parser","direction":"inbound","position":2,"readsBody":true}],
 			"outbound": [{"name":"token-exchange","direction":"outbound","position":1}]
 		}`))
 	}))
@@ -100,11 +100,8 @@ func TestGetPipeline(t *testing.T) {
 	if len(got.Inbound) != 2 || len(got.Outbound) != 1 {
 		t.Fatalf("got %d inbound / %d outbound, want 2/1", len(got.Inbound), len(got.Outbound))
 	}
-	if got.Inbound[1].Name != "a2a-parser" || !got.Inbound[1].BodyAccess {
+	if got.Inbound[1].Name != "a2a-parser" || !got.Inbound[1].ReadsBody {
 		t.Errorf("inbound[1] = %+v", got.Inbound[1])
-	}
-	if len(got.Inbound[1].Writes) != 1 || got.Inbound[1].Writes[0] != "a2a" {
-		t.Errorf("inbound[1].Writes = %v, want [a2a]", got.Inbound[1].Writes)
 	}
 }
 
@@ -112,9 +109,9 @@ func TestGetPipeline(t *testing.T) {
 // /v1/pipeline survives JSON round-trip through PipelinePlugin.
 func TestPipelinePluginDecodesConfig(t *testing.T) {
 	body := `{"inbound":[
-	  {"name":"with-config","direction":"inbound","position":1,"bodyAccess":false,
+	  {"name":"with-config","direction":"inbound","position":1,"readsBody":false,
 	   "config":{"hello":"world"}},
-	  {"name":"without-config","direction":"inbound","position":2,"bodyAccess":false}
+	  {"name":"without-config","direction":"inbound","position":2,"readsBody":false}
 	],"outbound":[]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +251,7 @@ func TestGetPluginCatalog_DecodesFieldSchemas(t *testing.T) {
 	}
 }
 
-// TestPipelinePluginDecodesCapabilityMetadata verifies the new
+// TestPipelinePluginDecodesCapabilityMetadata verifies the capability
 // metadata fields decode correctly through the apiclient.
 func TestPipelinePluginDecodesCapabilityMetadata(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -271,8 +268,6 @@ func TestPipelinePluginDecodesCapabilityMetadata(t *testing.T) {
 					"position": 1,
 					"requires": ["a"],
 					"requiresAny": ["b","c"],
-					"after": ["d"],
-					"claims": ["sec"],
 					"description": "Rich plugin"
 				}
 			],
@@ -292,12 +287,6 @@ func TestPipelinePluginDecodesCapabilityMetadata(t *testing.T) {
 	}
 	if len(p.RequiresAny) != 2 {
 		t.Errorf("RequiresAny = %v", p.RequiresAny)
-	}
-	if len(p.After) != 1 || p.After[0] != "d" {
-		t.Errorf("After = %v", p.After)
-	}
-	if len(p.Claims) != 1 || p.Claims[0] != "sec" {
-		t.Errorf("Claims = %v", p.Claims)
 	}
 	if p.Description != "Rich plugin" {
 		t.Errorf("Description = %q", p.Description)

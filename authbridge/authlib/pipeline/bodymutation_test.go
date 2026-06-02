@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// TestCapabilities_Normalize covers the compatibility rules: deprecated
-// BodyAccess folds into ReadsBody, and WritesBody auto-promotes to
-// ReadsBody so a mutator always satisfies the "must have read" invariant.
+// TestCapabilities_Normalize: WritesBody auto-promotes to ReadsBody so a
+// mutator always satisfies the "must have read" invariant.
 func TestCapabilities_Normalize(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -17,11 +16,6 @@ func TestCapabilities_Normalize(t *testing.T) {
 		wantReads  bool
 		wantWrites bool
 	}{
-		{
-			name:      "BodyAccess alias folds into ReadsBody",
-			in:        PluginCapabilities{BodyAccess: true},
-			wantReads: true,
-		},
 		{
 			name:       "WritesBody implies ReadsBody",
 			in:         PluginCapabilities{WritesBody: true},

@@ -41,9 +41,6 @@ func TestMCPParser_Capabilities(t *testing.T) {
 	if !caps.ReadsBody {
 		t.Error("ReadsBody should be true")
 	}
-	if len(caps.Writes) != 1 || caps.Writes[0] != "mcp" {
-		t.Errorf("Writes = %v, want [mcp]", caps.Writes)
-	}
 }
 
 func TestMCPParser_ToolCall(t *testing.T) {

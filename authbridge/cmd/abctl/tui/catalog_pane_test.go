@@ -68,7 +68,6 @@ func TestSelectedCatalogEntry_AsPipelinePlugin(t *testing.T) {
 				Name:        "ibac",
 				Description: "Judge",
 				Requires:    []string{"mcp-parser"},
-				After:       []string{"a2a-parser"},
 			},
 		},
 	}
@@ -82,9 +81,6 @@ func TestSelectedCatalogEntry_AsPipelinePlugin(t *testing.T) {
 	}
 	if len(got.Requires) != 1 || got.Requires[0] != "mcp-parser" {
 		t.Errorf("Requires = %v", got.Requires)
-	}
-	if len(got.After) != 1 {
-		t.Errorf("After = %v", got.After)
 	}
 	// Direction and Position deliberately blank for catalog entries —
 	// showPluginDetail elides them.

@@ -55,12 +55,8 @@ type CatalogEntry struct {
 	Name        string             `json:"name"`
 	Direction   string             `json:"direction,omitempty"`
 	ReadsBody   bool               `json:"readsBody,omitempty"`
-	Writes      []string           `json:"writes,omitempty"`
-	Reads       []string           `json:"reads,omitempty"`
 	Requires    []string           `json:"requires,omitempty"`
 	RequiresAny []string           `json:"requiresAny,omitempty"`
-	After       []string           `json:"after,omitempty"`
-	Claims      []string           `json:"claims,omitempty"`
 	Description string             `json:"description,omitempty"`
 	Fields      []FieldSchemaEntry `json:"fields,omitempty"`
 }
@@ -158,22 +154,18 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 // pipelinePluginView is the wire shape for one plugin in /v1/pipeline.
 //
-// The capability fields below (Reads/Writes/Requires/RequiresAny/After/
-// Claims/Description) are static type-level metadata: same for every
-// instance produced by a given factory. abctl uses them to render the
-// plugin-detail pane and to compute the "deps satisfied" indicator on
-// the Pipeline pane without needing a separate /v1/plugins call.
+// Capability fields (Requires/RequiresAny/Description) are static
+// type-level metadata: same for every instance produced by a given
+// factory. abctl uses them to render the plugin-detail pane and to
+// compute the "deps satisfied" indicator on the Pipeline pane without
+// needing a separate /v1/plugins call.
 type pipelinePluginView struct {
 	Name        string          `json:"name"`
 	Direction   string          `json:"direction"`
 	Position    int             `json:"position"` // 1-based order within its direction
-	BodyAccess  bool            `json:"bodyAccess"`
-	Writes      []string        `json:"writes,omitempty"`
-	Reads       []string        `json:"reads,omitempty"`
+	ReadsBody   bool            `json:"readsBody"`
 	Requires    []string        `json:"requires,omitempty"`
 	RequiresAny []string        `json:"requiresAny,omitempty"`
-	After       []string        `json:"after,omitempty"`
-	Claims      []string        `json:"claims,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Config      json.RawMessage `json:"config,omitempty"`
 }
@@ -230,19 +222,12 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 	for i, pl := range plugins {
 		caps := pl.Capabilities().Normalize()
 		view := pipelinePluginView{
-			Name:      pl.Name(),
-			Direction: direction,
-			Position:  i + 1,
-			// Normalize folds BodyAccess (deprecated) into ReadsBody;
-			// emit ReadsBody as the wire's BodyAccess field for backward
-			// compatibility with abctl < the catalog PR.
-			BodyAccess:  caps.ReadsBody,
-			Writes:      caps.Writes,
-			Reads:       caps.Reads,
+			Name:        pl.Name(),
+			Direction:   direction,
+			Position:    i + 1,
+			ReadsBody:   caps.ReadsBody,
 			Requires:    caps.Requires,
 			RequiresAny: caps.RequiresAny,
-			After:       caps.After,
-			Claims:      caps.Claims,
 			Description: caps.Description,
 		}
 		// Surface raw config when the plugin was wrapped by the registry.

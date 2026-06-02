@@ -28,31 +28,12 @@ type Pipeline struct {
 	finishTimeout time.Duration
 }
 
-// defaultSlots lists the built-in extension slot names.
-var defaultSlots = map[string]bool{
-	"mcp":        true,
-	"a2a":        true,
-	"security":   true,
-	"delegation": true,
-	"inference":  true,
-	"custom":     true,
-}
-
 // Option configures pipeline construction.
 type Option func(*options)
 
 type options struct {
-	extraSlots    []string
 	policies      []ErrorPolicy
 	finishTimeout time.Duration
-}
-
-// WithSlots registers additional valid extension slot names beyond the built-in set.
-// Use this when a bridge plugin (e.g., CPEX) produces extensions not in the default set.
-func WithSlots(slots ...string) Option {
-	return func(o *options) {
-		o.extraSlots = append(o.extraSlots, slots...)
-	}
 }
 
 // WithFinishTimeout overrides the per-plugin OnFinish timeout. Each
@@ -79,21 +60,13 @@ func WithPolicies(policies ...ErrorPolicy) Option {
 	}
 }
 
-// New creates a Pipeline from the given plugins after validating capability wiring.
-// Returns an error if any plugin declares a read on a slot that no earlier plugin writes.
+// New creates a Pipeline from the given plugins after validating body-access rules.
 func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
-	validSlots := make(map[string]bool, len(defaultSlots)+len(o.extraSlots))
-	for k, v := range defaultSlots {
-		validSlots[k] = v
-	}
-	for _, s := range o.extraSlots {
-		validSlots[s] = true
-	}
-	if err := validateCapabilities(plugins, validSlots); err != nil {
+	if err := validateCapabilities(plugins); err != nil {
 		return nil, err
 	}
 	if len(o.policies) > len(plugins) {
@@ -318,8 +291,6 @@ func (p *Pipeline) NotReadyPlugin() string {
 
 // NeedsBody returns true if any plugin in the pipeline needs the body
 // buffered — either to read it (ReadsBody) or to mutate it (WritesBody).
-// Normalize() folds the deprecated BodyAccess alias into ReadsBody, so
-// both legacy and modern plugins are covered by the single check.
 func (p *Pipeline) NeedsBody() bool {
 	for _, plugin := range p.plugins {
 		caps := plugin.Capabilities().Normalize()
@@ -501,44 +472,23 @@ func (p *Pipeline) dispatchFinish(parent context.Context, name string, f Finishe
 	f.OnFinish(ctx, pctx)
 }
 
-// validateCapabilities checks that every slot a plugin reads has been written
-// by an earlier plugin in the chain, and applies the body-mutation rules:
-//   - At most one WritesBody plugin per pipeline (direction-scoped).
-//     Mutation ordering would otherwise be ambiguous; downstream readers
-//     can't tell which version they're seeing.
-//   - A body mutator must not run before a body reader. Readers that
-//     declared ReadsBody expect to see the original bytes; placing a
-//     mutator earlier would silently change what they observe.
-func validateCapabilities(plugins []Plugin, validSlots map[string]bool) error {
-	written := make(map[string]bool)
-	var mutatorName string        // set once the first WritesBody plugin is seen
-	var readerAfterMutator string // non-empty if a ReadsBody plugin follows the mutator
+// validateCapabilities enforces body-mutation ordering rules:
+//   - At most one WritesBody plugin per pipeline — mutation ordering would
+//     otherwise be ambiguous; downstream readers can't tell which version
+//     they're seeing.
+//   - A body reader (ReadsBody) must not follow a body mutator (WritesBody) —
+//     the reader would silently see mutated bytes instead of the originals.
+func validateCapabilities(plugins []Plugin) error {
+	var mutatorName string
+	var readerAfterMutator string
 	for _, plugin := range plugins {
 		caps := plugin.Capabilities().Normalize()
-		for _, slot := range caps.Reads {
-			if !validSlots[slot] {
-				return fmt.Errorf("plugin %q declares read on unknown slot %q", plugin.Name(), slot)
-			}
-			if !written[slot] {
-				return fmt.Errorf("plugin %q reads slot %q but no earlier plugin writes it", plugin.Name(), slot)
-			}
-		}
-		for _, slot := range caps.Writes {
-			if !validSlots[slot] {
-				return fmt.Errorf("plugin %q declares write on unknown slot %q", plugin.Name(), slot)
-			}
-			written[slot] = true
-		}
 		if caps.WritesBody {
 			if mutatorName != "" {
 				return fmt.Errorf("pipeline: two plugins declare WritesBody: %q and %q — mutation ordering would be ambiguous; at most one body mutator per pipeline is allowed", mutatorName, plugin.Name())
 			}
 			mutatorName = plugin.Name()
 		} else if caps.ReadsBody && mutatorName != "" && readerAfterMutator == "" {
-			// ReadsBody-only plugin running AFTER a WritesBody plugin
-			// would see the mutated bytes, which surprises the reader.
-			// Stash the first occurrence; validated below so the error
-			// names both plugins involved.
 			readerAfterMutator = plugin.Name()
 		}
 	}

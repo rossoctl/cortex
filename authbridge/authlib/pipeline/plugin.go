@@ -10,18 +10,14 @@ type Plugin interface {
 	OnResponse(ctx context.Context, pctx *Context) Action
 }
 
-// PluginCapabilities declares what extension slots a plugin reads and
-// writes, plus whether it accesses the request / response body.
+// PluginCapabilities declares whether a plugin accesses the request /
+// response body and which other plugins it depends on.
 //
-// The pipeline validates at startup that all Reads are satisfied by an
-// earlier plugin's Writes. Body-access fields drive the listener's
-// body-buffering handshake (ext_proc ProcessingMode, net/http read-body).
+// Body-access fields drive the listener's body-buffering handshake
+// (ext_proc ProcessingMode, net/http read-body). Dependency fields are
+// checked at startup by plugins.Build so misconfigured chains fail before
+// traffic arrives.
 type PluginCapabilities struct {
-	// Reads / Writes name extension slots (A2A, MCP, Inference, Custom
-	// map keys). Checked at pipeline.New.
-	Reads  []string
-	Writes []string
-
 	// ReadsBody: the plugin reads pctx.Body in OnRequest and/or
 	// pctx.ResponseBody in OnResponse. The listener buffers the body
 	// when any plugin declares this; without it, pctx.Body is nil and
@@ -41,14 +37,6 @@ type PluginCapabilities struct {
 	// process boot.
 	WritesBody bool
 
-	// BodyAccess is a deprecated alias for ReadsBody, kept so existing
-	// plugins compile unchanged through one release. Normalize() folds
-	// BodyAccess into ReadsBody before validation and listener
-	// negotiation read the normalized fields.
-	//
-	// Deprecated: use ReadsBody. Will be removed in a future release.
-	BodyAccess bool
-
 	// Requires names plugins that MUST be present in the same chain
 	// AND appear earlier (lower index). Matches are case-sensitive
 	// plugin Name() strings. A missing or misordered name causes
@@ -57,9 +45,7 @@ type PluginCapabilities struct {
 	// Use Requires when the plugin hardcodes access to a specific
 	// other plugin's extension fields — e.g., a tool-allowlist plugin
 	// that reads pctx.Extensions.MCP.Params["name"] declares
-	// Requires: []string{"mcp-parser"}. If the plugin instead reads
-	// through pctx.ContentSources() and works against any parser,
-	// see RequiresAny.
+	// Requires: []string{"mcp-parser"}.
 	Requires []string
 
 	// RequiresAny names plugins of which AT LEAST ONE must be present
@@ -68,59 +54,28 @@ type PluginCapabilities struct {
 	// causes plugins.Build to fail at startup.
 	//
 	// Use RequiresAny for protocol-agnostic plugins that read through
-	// pctx.ContentSources(). Example: a PII scrubber that consumes
-	// fragments from whatever parsers are wired in declares
-	// RequiresAny: []string{"a2a-parser", "mcp-parser", "inference-parser"}.
-	// That way a chain with no parsers fails loud instead of running
-	// the guardrail as silent dead code.
+	// pctx.ContentSources(). Example: a guardrail that works against any
+	// parser declares RequiresAny: []string{"a2a-parser", "mcp-parser",
+	// "inference-parser"} so a chain with no parsers fails loud instead
+	// of running the guardrail as silent dead code.
 	RequiresAny []string
-
-	// After names plugins that, IF present in the same chain, must
-	// appear earlier. Unlike Requires/RequiresAny, a missing name is
-	// not an error — After is a soft ordering hint. Useful for
-	// plugins that benefit from earlier state being populated but
-	// degrade gracefully without it.
-	After []string
-
-	// Claims declares semantic resources the plugin takes exclusive
-	// ownership of. Within a single chain, at most one plugin may
-	// declare any given claim string; two plugins with an overlapping
-	// claim cause plugins.Build to fail at startup.
-	//
-	// Claim strings are arbitrary but authors should prefer the
-	// constants in authlib/contracts/ (e.g. contracts.ClaimAuthorizationHeader)
-	// so typos are compile errors and the canonical set is greppable.
-	// Third-party plugins may declare their own strings; the framework
-	// enforces uniqueness of whatever it sees, not "must be from the
-	// list." See authlib/contracts/claims.go for the canonical
-	// vocabulary.
-	Claims []string
 
 	// Description is operator-facing prose, one line, ≤80 chars,
 	// describing what this plugin does. Surfaces in `abctl`'s
-	// plugin-detail and catalog panes, and in /v1/plugins. Empty for
-	// plugins that haven't opted in; new plugins should populate it.
+	// plugin-detail and catalog panes, and in /v1/plugins.
 	//
 	// Capabilities are static type-level metadata: Capabilities() must
 	// return the same value for any instance produced by a given
-	// factory. The catalog endpoint relies on this — varying capabilities
-	// by instance state silently produces wrong catalog entries. If a
-	// plugin's behavior varies enough that its capabilities differ,
-	// register it under multiple names.
+	// factory. If a plugin's behavior varies enough that its capabilities
+	// differ, register it under multiple names.
 	Description string
 }
 
-// Normalize applies compatibility rules to a PluginCapabilities:
-//   - BodyAccess (deprecated) is folded into ReadsBody.
-//   - WritesBody implies ReadsBody (you can't mutate what you didn't see).
-//
+// Normalize applies WritesBody-implies-ReadsBody promotion.
 // Called by Pipeline.New for every plugin's declared capabilities so the
 // rest of the framework reads a normalized form. Plugins never need to
 // call this themselves.
 func (c PluginCapabilities) Normalize() PluginCapabilities {
-	if c.BodyAccess {
-		c.ReadsBody = true
-	}
 	if c.WritesBody {
 		c.ReadsBody = true
 	}

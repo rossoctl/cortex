@@ -21,7 +21,7 @@ type holderTestPlugin struct {
 
 func (p *holderTestPlugin) Name() string { return p.name }
 func (p *holderTestPlugin) Capabilities() PluginCapabilities {
-	return PluginCapabilities{BodyAccess: p.needsBody}
+	return PluginCapabilities{ReadsBody: p.needsBody}
 }
 func (p *holderTestPlugin) OnRequest(_ context.Context, _ *Context) Action {
 	p.runCount.Add(1)

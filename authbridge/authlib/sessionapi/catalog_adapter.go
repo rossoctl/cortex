@@ -27,12 +27,8 @@ func PluginsCatalog() []CatalogEntry {
 		out[i] = CatalogEntry{
 			Name:        e.Name,
 			ReadsBody:   n.ReadsBody,
-			Writes:      n.Writes,
-			Reads:       n.Reads,
 			Requires:    n.Requires,
 			RequiresAny: n.RequiresAny,
-			After:       n.After,
-			Claims:      n.Claims,
 			Description: n.Description,
 			Fields:      convertFieldSchemas(e.Fields),
 		}

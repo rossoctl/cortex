@@ -12,7 +12,7 @@ import (
 // and human-readable.
 //
 // When m.pipeline is non-nil and the plugin's direction is "inbound" or
-// "outbound", the Requires/RequiresAny/After sections render with ✓/✗
+// "outbound", the Requires/RequiresAny sections render with ✓/✗
 // indicators against the active chain. For catalog-pane invocations
 // (no live pipeline / direction), those sections render as informational
 // lists without satisfaction status.
@@ -33,14 +33,8 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin) {
 	if p.Position > 0 {
 		fmt.Fprintf(&b, "%s %d\n", styleMuted.Render("Position: "), p.Position)
 	}
-	if len(p.Writes) > 0 {
-		fmt.Fprintf(&b, "%s %s\n", styleMuted.Render("Writes:   "), strings.Join(p.Writes, ", "))
-	}
-	if len(p.Reads) > 0 {
-		fmt.Fprintf(&b, "%s %s\n", styleMuted.Render("Reads:    "), strings.Join(p.Reads, ", "))
-	}
 	body := "no"
-	if p.BodyAccess {
+	if p.ReadsBody {
 		body = "yes"
 	}
 	fmt.Fprintf(&b, "%s %s\n", styleMuted.Render("Body:     "), body)
@@ -69,21 +63,6 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin) {
 			b.WriteString("\n")
 		}
 	}
-	if len(p.After) > 0 {
-		fmt.Fprintln(&b)
-		b.WriteString(styleMuted.Render("After (soft):"))
-		b.WriteString("\n")
-		for _, c := range afterStatus(p, chain) {
-			b.WriteString("  ")
-			b.WriteString(formatDepCheck(c, chain != nil))
-			b.WriteString("\n")
-		}
-	}
-	if len(p.Claims) > 0 {
-		fmt.Fprintln(&b)
-		fmt.Fprintf(&b, "%s %s\n", styleMuted.Render("Claims:   "), strings.Join(p.Claims, ", "))
-	}
-
 	fmt.Fprintln(&b)
 	// Always-newline format keeps the visual layout consistent whether
 	// the plugin is Configurable (JSON body, multi-line) or not ("(none)",

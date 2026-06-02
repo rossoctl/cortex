@@ -18,9 +18,6 @@ func TestA2AParser_Capabilities(t *testing.T) {
 	if !caps.ReadsBody {
 		t.Error("ReadsBody should be true")
 	}
-	if len(caps.Writes) != 1 || caps.Writes[0] != "a2a" {
-		t.Errorf("Writes = %v, want [a2a]", caps.Writes)
-	}
 }
 
 func TestA2AParser_MessageSend(t *testing.T) {

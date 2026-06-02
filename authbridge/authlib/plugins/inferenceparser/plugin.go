@@ -26,7 +26,6 @@ func (p *InferenceParser) Name() string { return "inference-parser" }
 
 func (p *InferenceParser) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		Writes:      []string{"inference"},
 		ReadsBody:   true,
 		Description: "Parses LLM completions into pctx.Extensions.Inference.",
 	}

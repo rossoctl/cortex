@@ -54,7 +54,6 @@ func TestPipelineRun_Sequential(t *testing.T) {
 	}
 	p2 := &stubPlugin{
 		name: "second",
-		caps: PluginCapabilities{Reads: []string{"custom"}},
 		onReq: func(_ context.Context, pctx *Context) Action {
 			order = append(order, "second")
 			if pctx.Extensions.Custom["key"] != "value" {
@@ -63,7 +62,6 @@ func TestPipelineRun_Sequential(t *testing.T) {
 			return Action{Type: Continue}
 		},
 	}
-	p1.caps = PluginCapabilities{Writes: []string{"custom"}}
 
 	pipe, err := New([]Plugin{p1, p2})
 	if err != nil {
@@ -183,74 +181,6 @@ func TestPipelineRunResponse_Reject(t *testing.T) {
 	}
 }
 
-func TestNew_ValidCapabilities(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "writer",
-			caps: PluginCapabilities{Writes: []string{"mcp"}},
-		},
-		&stubPlugin{
-			name: "reader",
-			caps: PluginCapabilities{Reads: []string{"mcp"}},
-		},
-	}
-	_, err := New(plugins)
-	if err != nil {
-		t.Errorf("expected no error, got: %v", err)
-	}
-}
-
-func TestNew_InvalidCapabilities_ReadBeforeWrite(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "reader",
-			caps: PluginCapabilities{Reads: []string{"mcp"}},
-		},
-		&stubPlugin{
-			name: "writer",
-			caps: PluginCapabilities{Writes: []string{"mcp"}},
-		},
-	}
-	_, err := New(plugins)
-	if err == nil {
-		t.Fatal("expected error for read-before-write, got nil")
-	}
-}
-
-func TestNew_InvalidCapabilities_UnknownSlot(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "bad-reader",
-			caps: PluginCapabilities{Reads: []string{"nonexistent"}},
-		},
-	}
-	_, err := New(plugins)
-	if err == nil {
-		t.Fatal("expected error for unknown slot, got nil")
-	}
-}
-
-func TestNew_MultipleWriters(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "writer-1",
-			caps: PluginCapabilities{Writes: []string{"security"}},
-		},
-		&stubPlugin{
-			name: "writer-2",
-			caps: PluginCapabilities{Writes: []string{"security"}},
-		},
-		&stubPlugin{
-			name: "reader",
-			caps: PluginCapabilities{Reads: []string{"security"}},
-		},
-	}
-	_, err := New(plugins)
-	if err != nil {
-		t.Errorf("multiple writers should be valid, got: %v", err)
-	}
-}
-
 func TestNew_NoCapabilities(t *testing.T) {
 	plugins := []Plugin{
 		&stubPlugin{name: "simple"},
@@ -258,47 +188,6 @@ func TestNew_NoCapabilities(t *testing.T) {
 	_, err := New(plugins)
 	if err != nil {
 		t.Errorf("plugin with no capabilities should be valid, got: %v", err)
-	}
-}
-
-func TestNew_CustomSlot(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "custom-writer",
-			caps: PluginCapabilities{Writes: []string{"custom"}},
-		},
-		&stubPlugin{
-			name: "custom-reader",
-			caps: PluginCapabilities{Reads: []string{"custom"}},
-		},
-	}
-	_, err := New(plugins)
-	if err != nil {
-		t.Errorf("custom slot should be valid, got: %v", err)
-	}
-}
-
-func TestNew_WithSlots(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{
-			name: "cpex-bridge",
-			caps: PluginCapabilities{Writes: []string{"cpex.completion"}},
-		},
-		&stubPlugin{
-			name: "consumer",
-			caps: PluginCapabilities{Reads: []string{"cpex.completion"}},
-		},
-	}
-	// Without WithSlots, this should fail
-	_, err := New(plugins)
-	if err == nil {
-		t.Fatal("expected error for unregistered slot without WithSlots")
-	}
-
-	// With WithSlots, this should succeed
-	_, err = New(plugins, WithSlots("cpex.completion"))
-	if err != nil {
-		t.Errorf("expected no error with WithSlots, got: %v", err)
 	}
 }
 
@@ -379,8 +268,8 @@ func TestPipelineRun_ContextCancellation(t *testing.T) {
 }
 
 func TestPipeline_Plugins_ReturnsCopy(t *testing.T) {
-	a := &stubPlugin{name: "a", caps: PluginCapabilities{Writes: []string{"custom"}}}
-	b := &stubPlugin{name: "b", caps: PluginCapabilities{Reads: []string{"custom"}}}
+	a := &stubPlugin{name: "a"}
+	b := &stubPlugin{name: "b"}
 	p, err := New([]Plugin{a, b})
 	if err != nil {
 		t.Fatalf("New: %v", err)

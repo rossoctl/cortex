@@ -45,14 +45,10 @@ type pipelineRoot struct {
 	Pipeline pipelineDoc `yaml:"pipeline"`
 }
 
-// ValidatePipeline parses subtree YAML and checks Requires /
-// RequiresAny / After / Claims against the catalog. Catalog comes
-// from /v1/plugins; passing nil disables validation (no errors
-// returned). Unknown plugin names produce errors so a typo gets
-// caught before apply.
-//
-// The Claims check enforces cross-plugin uniqueness within a single
-// chain — same as plugins.validateRelationships.
+// ValidatePipeline parses subtree YAML and checks Requires / RequiresAny
+// against the catalog. Catalog comes from /v1/plugins; passing nil disables
+// validation (no errors returned). Unknown plugin names produce errors so
+// a typo gets caught before apply.
 //
 // Returns nil when all checks pass.
 func ValidatePipeline(subtree []byte, catalog []apiclient.PluginCatalogEntry) []ValidationError {
@@ -76,8 +72,7 @@ func ValidatePipeline(subtree []byte, catalog []apiclient.PluginCatalogEntry) []
 	return errs
 }
 
-// validateChain runs the Requires/RequiresAny/After/Claims/unknown-name
-// checks for one direction.
+// validateChain runs the Requires/RequiresAny/unknown-name checks for one direction.
 func validateChain(direction string, chain pipelineChain, byName map[string]apiclient.PluginCatalogEntry) []ValidationError {
 	var errs []ValidationError
 	// Track positions of each name for ordering checks. Using lowest
@@ -88,8 +83,6 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 			positions[p.Name] = i + 1
 		}
 	}
-	// Track claims; first-declarer wins for the diagnostic.
-	claimedBy := map[string]string{}
 
 	for i, p := range chain.Plugins {
 		pos := i + 1
@@ -166,38 +159,6 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 			}
 		}
 
-		// After: present-at-or-after-this-position is a misorder. Matches
-		// the framework's validateRelationships rule (j >= i, not j > i)
-		// so a plugin listing itself in After or having a duplicate at
-		// the same index is flagged identically by abctl and the
-		// framework.
-		for _, name := range entry.After {
-			rp, present := positions[name]
-			if present && rp >= pos {
-				errs = append(errs, ValidationError{
-					Direction:  direction,
-					PluginName: p.Name,
-					Position:   pos,
-					Message: fmt.Sprintf("After %q expects it earlier; it's at position %d (must be < %d)",
-						name, rp, pos),
-				})
-			}
-		}
-
-		// Claims: at most one declarer per claim string per chain.
-		for _, claim := range entry.Claims {
-			if other, taken := claimedBy[claim]; taken && other != p.Name {
-				errs = append(errs, ValidationError{
-					Direction:  direction,
-					PluginName: p.Name,
-					Position:   pos,
-					Message: fmt.Sprintf("Claim %q already declared by %q in this chain",
-						claim, other),
-				})
-			} else {
-				claimedBy[claim] = p.Name
-			}
-		}
 	}
 	return errs
 }

@@ -189,8 +189,8 @@ canaried; auth gates should stay on `enforce` (the default).
 
 ## Declaring plugin relationships
 
-`PluginCapabilities` carries four fields that let a plugin express how it
-relates to other plugins in the same chain. All four are checked at
+`PluginCapabilities` carries two fields that let a plugin express how it
+depends on other plugins in the same chain. Both are checked at
 `plugins.Build` time (startup and hot-reload), and misconfigurations
 fail loud before serving traffic.
 
@@ -198,24 +198,20 @@ fail loud before serving traffic.
 type PluginCapabilities struct {
     ReadsBody   bool
     WritesBody  bool
-    Reads       []string
-    Writes      []string
 
     Requires    []string   // ALL must be present + earlier (hard)
     RequiresAny []string   // AT LEAST ONE must be present + run after it (hard)
-    After       []string   // SOFT ordering; silent if absent
-    Claims      []string   // <=1 per claim per chain (mutex)
+
+    Description string
 }
 ```
 
-| Field | All present? | At least one? | Silent if absent? | Ordering enforced? |
-|---|---|---|---|---|
-| `Requires` | ✓ | — | — | ✓ |
-| `RequiresAny` | — | ✓ | — | ✓ |
-| `After` | — | — | ✓ | ✓ |
-| `Claims` | — | — | — | — (mutex) |
+| Field | All present? | At least one? | Ordering enforced? |
+|---|---|---|---|
+| `Requires` | ✓ | — | ✓ |
+| `RequiresAny` | — | ✓ | ✓ |
 
-All four are chain-scoped — validation runs within the inbound chain
+Both are chain-scoped — validation runs within the inbound chain
 OR within the outbound chain, independently. Plugin names are
 case-sensitive and must match the `Name()` returned by the plugin.
 
@@ -254,48 +250,6 @@ func (p *PIIScrubber) Capabilities() pipeline.PluginCapabilities {
     }
 }
 ```
-
-### `After` — soft ordering
-
-Use for optional ordering relationships: the plugin benefits from a
-named plugin running earlier when present, but runs fine without it.
-Absent named plugin is not an error.
-
-```go
-// Adds per-protocol labels to request counts if a parser is
-// present; falls back to generic labels otherwise.
-func (p *RequestCounter) Capabilities() pipeline.PluginCapabilities {
-    return pipeline.PluginCapabilities{
-        After: []string{"a2a-parser", "mcp-parser", "inference-parser"},
-    }
-}
-```
-
-### `Claims` — mutual exclusion
-
-A claim is a semantic resource that exactly one plugin per chain
-owns. Two plugins declaring the same claim fail startup.
-
-Claim strings are arbitrary, but the well-known set lives as Go
-constants in `authbridge/authlib/contracts/claims.go` — plugin
-authors reference the constants instead of string literals so
-typos are compile errors and the canonical set is greppable.
-
-```go
-import "github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
-
-// token-exchange and token-broker both declare this; they can't
-// coexist in the same outbound chain.
-func (p *TokenExchange) Capabilities() pipeline.PluginCapabilities {
-    return pipeline.PluginCapabilities{
-        Claims: []string{contracts.ClaimAuthorizationHeader},
-    }
-}
-```
-
-Third-party plugins may declare arbitrary strings — the framework
-enforces uniqueness of whatever it sees, not "must be from the list."
-Upstream a new constant in a follow-up PR when a claim stabilizes.
 
 ### Error collection
 
@@ -725,11 +679,8 @@ before/after (never the raw body).
 
 ```go
 type PluginCapabilities struct {
-    Reads      []string // extension slot names this plugin reads
-    Writes     []string // extension slot names this plugin writes
-    ReadsBody  bool     // plugin reads pctx.Body / pctx.ResponseBody
-    WritesBody bool     // plugin may call pctx.SetBody / pctx.SetResponseBody
-    BodyAccess bool     // DEPRECATED alias for ReadsBody; folded by Normalize()
+    ReadsBody  bool  // plugin reads pctx.Body / pctx.ResponseBody
+    WritesBody bool  // plugin may call pctx.SetBody / pctx.SetResponseBody
 }
 ```
 
@@ -737,9 +688,6 @@ type PluginCapabilities struct {
 - `WritesBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
   rewrites to the upstream (and `pctx.SetResponseBody` to the
   downstream client).
-- `BodyAccess`: deprecated. `PluginCapabilities.Normalize()` folds it
-  into `ReadsBody` for one release of migration grace; new plugins
-  should never set it.
 
 ### Build-time validation (enforced by `pipeline.New`)
 

@@ -288,14 +288,14 @@ func (f *fakePlugin) OnResponse(_ context.Context, _ *pipeline.Context) pipeline
 func TestHandlePipeline(t *testing.T) {
 	inbound, err := pipeline.New([]pipeline.Plugin{
 		&fakePlugin{name: "jwt-validation"},
-		&fakePlugin{name: "a2a-parser", caps: pipeline.PluginCapabilities{Writes: []string{"a2a"}, BodyAccess: true}},
+		&fakePlugin{name: "a2a-parser", caps: pipeline.PluginCapabilities{ReadsBody: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	outbound, err := pipeline.New([]pipeline.Plugin{
 		&fakePlugin{name: "token-exchange"},
-		&fakePlugin{name: "mcp-parser", caps: pipeline.PluginCapabilities{Writes: []string{"mcp"}, BodyAccess: true}},
+		&fakePlugin{name: "mcp-parser", caps: pipeline.PluginCapabilities{ReadsBody: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -329,8 +329,8 @@ func TestHandlePipeline(t *testing.T) {
 	if body.Inbound[0].Name != "jwt-validation" || body.Inbound[0].Position != 1 {
 		t.Errorf("inbound[0] = %+v", body.Inbound[0])
 	}
-	if !body.Inbound[1].BodyAccess || len(body.Inbound[1].Writes) == 0 || body.Inbound[1].Writes[0] != "a2a" {
-		t.Errorf("inbound[1] = %+v", body.Inbound[1])
+	if !body.Inbound[1].ReadsBody {
+		t.Errorf("inbound[1] should have ReadsBody=true, got %+v", body.Inbound[1])
 	}
 	if body.Outbound[1].Direction != "outbound" {
 		t.Errorf("outbound direction = %q, want outbound", body.Outbound[1].Direction)
@@ -612,16 +612,13 @@ func TestHandleGet_SerializesPluginsMap(t *testing.T) {
 	}
 }
 
-// TestHandlePipelineSurfacesCapabilityMetadata verifies the new
-// metadata fields (Requires/RequiresAny/After/Claims/Description)
-// flow through to /v1/pipeline and are omitted when empty.
+// TestHandlePipelineSurfacesCapabilityMetadata verifies capability metadata
+// (Requires/RequiresAny/Description) flows through to /v1/pipeline and is
+// omitted when empty.
 func TestHandlePipelineSurfacesCapabilityMetadata(t *testing.T) {
 	rich := pipeline.PluginCapabilities{
-		Writes:      []string{"mcp"},
 		Requires:    []string{"a2a-parser"},
 		RequiresAny: []string{"jwt-validation", "token-broker"},
-		After:       []string{"mcp-parser"},
-		Claims:      []string{"authorization-header"},
 		Description: "Test plugin description",
 	}
 	inbound, err := pipeline.New([]pipeline.Plugin{
@@ -665,15 +662,9 @@ func TestHandlePipelineSurfacesCapabilityMetadata(t *testing.T) {
 	if reqA, _ := got["requiresAny"].([]any); len(reqA) != 2 {
 		t.Errorf("requiresAny = %v", got["requiresAny"])
 	}
-	if a, _ := got["after"].([]any); len(a) != 1 || a[0] != "mcp-parser" {
-		t.Errorf("after = %v", got["after"])
-	}
-	if c, _ := got["claims"].([]any); len(c) != 1 || c[0] != "authorization-header" {
-		t.Errorf("claims = %v", got["claims"])
-	}
 
 	bare := raw.Inbound[1]
-	for _, k := range []string{"requires", "requiresAny", "after", "claims", "description"} {
+	for _, k := range []string{"requires", "requiresAny", "description"} {
 		if _, present := bare[k]; present {
 			t.Errorf("bare plugin should omit %q, got %v", k, bare[k])
 		}
@@ -683,7 +674,7 @@ func TestHandlePipelineSurfacesCapabilityMetadata(t *testing.T) {
 func TestHandlePluginCatalog_ListsRegisteredPlugins(t *testing.T) {
 	stub := func() []CatalogEntry {
 		return []CatalogEntry{
-			{Name: "alpha", Description: "First plugin", Writes: []string{"x"}},
+			{Name: "alpha", Description: "First plugin"},
 			{Name: "beta", Requires: []string{"alpha"}},
 		}
 	}

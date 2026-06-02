@@ -86,13 +86,9 @@ type PipelinePlugin struct {
 	Name        string          `json:"name"`
 	Direction   string          `json:"direction"`
 	Position    int             `json:"position"`
-	BodyAccess  bool            `json:"bodyAccess"`
-	Writes      []string        `json:"writes"`
-	Reads       []string        `json:"reads"`
+	ReadsBody   bool            `json:"readsBody"`
 	Requires    []string        `json:"requires,omitempty"`
 	RequiresAny []string        `json:"requiresAny,omitempty"`
-	After       []string        `json:"after,omitempty"`
-	Claims      []string        `json:"claims,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Config      json.RawMessage `json:"config,omitempty"`
 }
@@ -114,20 +110,12 @@ type PluginCatalog struct {
 // PluginCatalogEntry mirrors the server's sessionapi.CatalogEntry.
 // Describes a registered plugin's static type-level metadata; the
 // catalog includes plugins not currently in the active pipeline.
-//
-// readsBody is the modern field name (matches pipeline.PluginCapabilities
-// post-Normalize); the older bodyAccess alias is intentionally NOT
-// emitted on this new wire shape.
 type PluginCatalogEntry struct {
 	Name        string             `json:"name"`
 	Direction   string             `json:"direction,omitempty"`
 	ReadsBody   bool               `json:"readsBody,omitempty"`
-	Writes      []string           `json:"writes,omitempty"`
-	Reads       []string           `json:"reads,omitempty"`
 	Requires    []string           `json:"requires,omitempty"`
 	RequiresAny []string           `json:"requiresAny,omitempty"`
-	After       []string           `json:"after,omitempty"`
-	Claims      []string           `json:"claims,omitempty"`
 	Description string             `json:"description,omitempty"`
 	Fields      []PluginFieldEntry `json:"fields,omitempty"`
 }

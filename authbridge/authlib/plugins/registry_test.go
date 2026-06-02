@@ -259,140 +259,17 @@ func TestValidateRelationships_RequiresAny(t *testing.T) {
 	}
 }
 
-// TestValidateRelationships_After covers the soft-ordering rule:
-// silent when named plugin is absent, error when present but later.
-func TestValidateRelationships_After(t *testing.T) {
-	tests := []struct {
-		name      string
-		plugins   []pipeline.Plugin
-		wantErr   bool
-		wantInMsg []string
-	}{
-		{
-			name: "named plugin absent — no constraint",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("request-counter", pipeline.PluginCapabilities{
-					After: []string{"mcp-parser"},
-				}),
-			},
-			wantErr: false,
-		},
-		{
-			name: "named plugin present earlier — ok",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("mcp-parser", pipeline.PluginCapabilities{}),
-				mkRelPlugin("request-counter", pipeline.PluginCapabilities{
-					After: []string{"mcp-parser"},
-				}),
-			},
-			wantErr: false,
-		},
-		{
-			name: "named plugin present but later — error says reorder",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("request-counter", pipeline.PluginCapabilities{
-					After: []string{"mcp-parser"},
-				}),
-				mkRelPlugin("mcp-parser", pipeline.PluginCapabilities{}),
-			},
-			wantErr:   true,
-			wantInMsg: []string{"request-counter", "After", "mcp-parser", "reorder"},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateRelationships(tc.plugins)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
-			}
-			if err != nil {
-				msg := err.Error()
-				for _, want := range tc.wantInMsg {
-					if !containsSubstring(msg, want) {
-						t.Errorf("error %q missing %q", msg, want)
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestValidateRelationships_Claims covers the mutual-exclusion rule:
-// exactly one plugin per claim string per chain.
-func TestValidateRelationships_Claims(t *testing.T) {
-	tests := []struct {
-		name      string
-		plugins   []pipeline.Plugin
-		wantErr   bool
-		wantInMsg []string
-	}{
-		{
-			name: "single claimant — ok",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("token-exchange", pipeline.PluginCapabilities{
-					Claims: []string{"authorization_header"},
-				}),
-			},
-			wantErr: false,
-		},
-		{
-			name: "distinct claims on different plugins — ok",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("token-exchange", pipeline.PluginCapabilities{
-					Claims: []string{"authorization_header"},
-				}),
-				mkRelPlugin("jwt-validation", pipeline.PluginCapabilities{
-					Claims: []string{"identity_resolution"},
-				}),
-			},
-			wantErr: false,
-		},
-		{
-			name: "two plugins claim the same string — error names both",
-			plugins: []pipeline.Plugin{
-				mkRelPlugin("token-exchange", pipeline.PluginCapabilities{
-					Claims: []string{"authorization_header"},
-				}),
-				mkRelPlugin("token-broker", pipeline.PluginCapabilities{
-					Claims: []string{"authorization_header"},
-				}),
-			},
-			wantErr:   true,
-			wantInMsg: []string{"token-exchange", "token-broker", "authorization_header", "configure only one"},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateRelationships(tc.plugins)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
-			}
-			if err != nil {
-				msg := err.Error()
-				for _, want := range tc.wantInMsg {
-					if !containsSubstring(msg, want) {
-						t.Errorf("error %q missing %q", msg, want)
-					}
-				}
-			}
-		})
-	}
-}
-
 // TestValidateRelationships_CollectsAllErrors verifies the collector
 // policy: a chain with multiple problems reports them all in one
 // error, rather than short-circuiting on the first. Operators iterate
 // on a single YAML fix rather than a sequence of startups.
 func TestValidateRelationships_CollectsAllErrors(t *testing.T) {
 	plugins := []pipeline.Plugin{
-		mkRelPlugin("a-claims-x", pipeline.PluginCapabilities{
-			Claims: []string{"x"},
-		}),
-		mkRelPlugin("b-claims-x", pipeline.PluginCapabilities{
-			Claims: []string{"x"}, // conflicts with a-claims-x
-		}),
-		mkRelPlugin("c-requires-missing", pipeline.PluginCapabilities{
+		mkRelPlugin("a-requires-missing", pipeline.PluginCapabilities{
 			Requires: []string{"does-not-exist"},
+		}),
+		mkRelPlugin("b-requires-any-missing", pipeline.PluginCapabilities{
+			RequiresAny: []string{"also-missing"},
 		}),
 	}
 	err := validateRelationships(plugins)
@@ -401,10 +278,10 @@ func TestValidateRelationships_CollectsAllErrors(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"a-claims-x",
-		"b-claims-x",
-		"c-requires-missing",
+		"a-requires-missing",
 		"does-not-exist",
+		"b-requires-any-missing",
+		"also-missing",
 	} {
 		if !containsSubstring(msg, want) {
 			t.Errorf("error message should mention %q: %s", want, msg)
@@ -629,7 +506,6 @@ func TestCatalog_IncludesRegisteredPlugins(t *testing.T) {
 			name: a,
 			caps: pipeline.PluginCapabilities{
 				Description: "A plugin",
-				Writes:      []string{"out-a"},
 			},
 		}
 	})
@@ -639,7 +515,6 @@ func TestCatalog_IncludesRegisteredPlugins(t *testing.T) {
 			name: b,
 			caps: pipeline.PluginCapabilities{
 				Description: "B plugin",
-				Reads:       []string{"out-a"},
 				Requires:    []string{a},
 			},
 		}
@@ -722,7 +597,7 @@ func TestCatalog_ReturnsDefensiveCopy(t *testing.T) {
 	const name = "test-defensive-copy"
 	RegisterPlugin(name, func() pipeline.Plugin {
 		return &relPlugin{name: name, caps: pipeline.PluginCapabilities{
-			Writes: []string{"slot-a"},
+			Requires: []string{"dep-a"},
 		}}
 	})
 	t.Cleanup(func() { UnregisterPlugin(name) })
@@ -740,8 +615,8 @@ func TestCatalog_ReturnsDefensiveCopy(t *testing.T) {
 		t.Fatal("seeded plugin missing from Catalog")
 	}
 
-	// Mutate the returned slice and the nested Writes slice.
-	first[idx].Capabilities.Writes[0] = "MUTATED"
+	// Mutate the returned slice and the nested Requires slice.
+	first[idx].Capabilities.Requires[0] = "MUTATED"
 	first[idx].Capabilities.Description = "MUTATED"
 
 	// A second call must still see the original values.
@@ -756,8 +631,8 @@ func TestCatalog_ReturnsDefensiveCopy(t *testing.T) {
 	if idx2 < 0 {
 		t.Fatal("seeded plugin missing from second Catalog call")
 	}
-	if got := second[idx2].Capabilities.Writes[0]; got != "slot-a" {
-		t.Errorf("cache tainted by caller mutation: Writes[0] = %q, want slot-a", got)
+	if got := second[idx2].Capabilities.Requires[0]; got != "dep-a" {
+		t.Errorf("cache tainted by caller mutation: Requires[0] = %q, want dep-a", got)
 	}
 	if got := second[idx2].Capabilities.Description; got != "" {
 		t.Errorf("cache tainted by caller mutation: Description = %q, want empty", got)

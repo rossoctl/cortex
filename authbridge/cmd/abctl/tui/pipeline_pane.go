@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
 
@@ -19,7 +18,6 @@ func newPipelineTable() table.Model {
 			{Title: "DIRECTION", Width: 10},
 			{Title: "PLUGIN", Width: 22},
 			{Title: "DEPS", Width: 5},
-			{Title: "WRITES", Width: 18},
 			{Title: "BODY", Width: 6},
 			{Title: "EVENTS", Width: 8},
 		}),
@@ -30,9 +28,7 @@ func newPipelineTable() table.Model {
 }
 
 // rebuildPipelineTable renders the plugin list with a "(app)" divider row
-// between inbound and outbound. eventsPerPlugin counts how many events in
-// the cached data came from each plugin (by matching the event's written
-// extension against the plugin's Writes).
+// between inbound and outbound.
 func (m *model) rebuildPipelineTable() {
 	if m.pipeline == nil {
 		m.pipelineTbl.SetRows(nil)
@@ -58,7 +54,7 @@ func (m *model) rebuildPipelineTable() {
 
 func pipelineRow(p apiclient.PipelinePlugin, events int, chain []apiclient.PipelinePlugin) table.Row {
 	body := "no"
-	if p.BodyAccess {
+	if p.ReadsBody {
 		body = "yes"
 	}
 	eventsStr := ""
@@ -66,7 +62,7 @@ func pipelineRow(p apiclient.PipelinePlugin, events int, chain []apiclient.Pipel
 		eventsStr = fmt.Sprintf("%d", events)
 	}
 	// DEPS column: ✓ when all declared dependencies are met, ✗ when any
-	// fail, blank when the plugin declares no Requires/RequiresAny/After.
+	// fail, blank when the plugin declares no Requires/RequiresAny.
 	// Blank vs ✓ avoids a misleading "looks fine" mark on plugins that
 	// have nothing to verify in the first place.
 	deps := ""
@@ -77,16 +73,11 @@ func pipelineRow(p apiclient.PipelinePlugin, events int, chain []apiclient.Pipel
 			deps = "✗"
 		}
 	}
-	// Plugin names used to be colored by protocol but bubbles v1's
-	// runewidth.Truncate miscounts ANSI escape bytes as visible width,
-	// which truncated the closing \x1b[0m reset for longer names and
-	// bled color into adjacent cells. Blocked on bubbles v2 upgrade.
 	return table.Row{
 		fmt.Sprintf("%d", p.Position),
 		p.Direction,
 		p.Name,
 		deps,
-		strings.Join(p.Writes, ","),
 		body,
 		eventsStr,
 	}

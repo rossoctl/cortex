@@ -12,9 +12,7 @@ func validateFixtureCatalog() []apiclient.PluginCatalogEntry {
 		{Name: "jwt-validation", Description: "Inbound JWT"},
 		{Name: "a2a-parser", Description: "Parser"},
 		{Name: "mcp-parser", Description: "MCP parser"},
-		{Name: "ibac", Description: "IBAC", Requires: []string{"mcp-parser"}, After: []string{"a2a-parser"}},
-		{Name: "claim-a", Claims: []string{"authorization-header"}},
-		{Name: "claim-b", Claims: []string{"authorization-header"}},
+		{Name: "ibac", Description: "IBAC", Requires: []string{"mcp-parser"}},
 	}
 }
 
@@ -85,27 +83,6 @@ func TestValidatePipeline_MisorderedRequires(t *testing.T) {
 	}
 }
 
-func TestValidatePipeline_AfterMisorder(t *testing.T) {
-	yaml := `pipeline:
-  outbound:
-    plugins:
-      - name: ibac
-      - name: a2a-parser
-      - name: mcp-parser
-`
-	errs := ValidatePipeline([]byte(yaml), validateFixtureCatalog())
-	// ibac.After=[a2a-parser]; a2a-parser is at position 2 > 1.
-	found := false
-	for _, e := range errs {
-		if e.PluginName == "ibac" && strings.Contains(e.Message, "After \"a2a-parser\"") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected After-misorder for ibac; got %+v", errs)
-	}
-}
-
 func TestValidatePipeline_UnknownPlugin(t *testing.T) {
 	yaml := `pipeline:
   inbound:
@@ -115,25 +92,6 @@ func TestValidatePipeline_UnknownPlugin(t *testing.T) {
 	errs := ValidatePipeline([]byte(yaml), validateFixtureCatalog())
 	if len(errs) != 1 || !strings.Contains(errs[0].Message, "Unknown plugin") {
 		t.Fatalf("expected Unknown plugin error; got %+v", errs)
-	}
-}
-
-func TestValidatePipeline_ClaimsConflict(t *testing.T) {
-	yaml := `pipeline:
-  outbound:
-    plugins:
-      - name: claim-a
-      - name: claim-b
-`
-	errs := ValidatePipeline([]byte(yaml), validateFixtureCatalog())
-	found := false
-	for _, e := range errs {
-		if strings.Contains(e.Message, "already declared") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected Claims conflict; got %+v", errs)
 	}
 }
 

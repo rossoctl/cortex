@@ -42,7 +42,7 @@ func TestConfiguredPluginRawConfig(t *testing.T) {
 func TestConfiguredPluginPassesThroughPluginMethods(t *testing.T) {
 	fake := &fakePlugin{
 		name: "jwt-validation",
-		caps: PluginCapabilities{Reads: []string{"a"}, Writes: []string{"security"}},
+		caps: PluginCapabilities{ReadsBody: true, Description: "test plugin"},
 	}
 	cp := WrapConfigured(fake, json.RawMessage(`{}`))
 
@@ -50,11 +50,11 @@ func TestConfiguredPluginPassesThroughPluginMethods(t *testing.T) {
 		t.Fatalf("Name pass-through broken: %q", cp.Name())
 	}
 	caps := cp.Capabilities()
-	if len(caps.Reads) != 1 || caps.Reads[0] != "a" {
-		t.Fatalf("Capabilities pass-through broken: %+v", caps)
+	if !caps.ReadsBody {
+		t.Fatalf("Capabilities pass-through broken: ReadsBody should be true, got %+v", caps)
 	}
-	if len(caps.Writes) != 1 || caps.Writes[0] != "security" {
-		t.Fatalf("Capabilities pass-through broken: %+v", caps)
+	if caps.Description != "test plugin" {
+		t.Fatalf("Capabilities pass-through broken: Description mismatch, got %+v", caps)
 	}
 	cp.OnRequest(context.Background(), nil)
 	cp.OnResponse(context.Background(), nil)
