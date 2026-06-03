@@ -104,6 +104,11 @@ build-sidecar:  ## Build the authbridge sidecar image from the repo root
 load-sidecar:  ## Load the sidecar image into the kind cluster
 	@echo "[*] Loading $(SIDECAR_IMAGE) into kind cluster $(KIND_CLUSTER_NAME) ..."
 	kind load docker-image $(SIDECAR_IMAGE) --name $(KIND_CLUSTER_NAME)
+	@# With the podman provider, kind leaves the image on the node as
+	@# localhost/<img>; the operator references the bare tag (docker.io/library/<img>),
+	@# so tag it there too or IfNotPresent will try (and fail) to pull. Mirrors load-images.
+	@$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images tag \
+	    localhost/$(SIDECAR_IMAGE) docker.io/library/$(SIDECAR_IMAGE) >/dev/null 2>&1 || true
 
 # Point the kagenti platform config at our locally-built sidecar tag so
 # the operator's injecting webhook uses it for echo-agent. We edit the
