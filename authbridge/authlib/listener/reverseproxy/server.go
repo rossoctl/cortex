@@ -236,13 +236,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", newAuth)
 	}
 
-	// Inbound recording is gated on A2A by design: reverseproxy is the
-	// A2A-only listener (its session keying and rekey logic are A2A-specific
-	// — see modifyResponse). Forwardproxy widens the analogous gate to
-	// cover MCP/Inference/Invocations/plugins because outbound traffic is
-	// not A2A-only. A non-A2A inbound, or an A2A request that fails to
-	// parse, is intentionally not recorded here.
-	if s.Sessions != nil && pctx.Extensions.A2A != nil {
+	// Record the inbound request event whenever there is something
+	// observable: an A2A conversation, plugin invocations, or plugin-public
+	// Custom entries. Mirrors extproc.recordInboundSession's widened gate so
+	// observability does not depend on the a2a-parser being in the pipeline
+	// (e.g. a jwt-validation allow on an auth-only agent must still show, just
+	// as denials already do via recordInboundReject). The A2A-specific session
+	// rekey in modifyResponse stays A2A-gated.
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
 		sid := inboundSessionID(pctx)
 		// Snapshot-copy the protocol extension and use the shared helpers
 		// for plugin invocations / observability / identity. Mirrors what
@@ -254,7 +256,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			Phase:       pipeline.SessionRequest,
 			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
 			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-			Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
 			TLS:         eventTLS(pctx),
@@ -326,7 +328,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// SSE responses still get recorded — the body is whatever the
 	// pipeline saw at this point (may be empty for streamed bodies),
 	// but the status code and plugin invocations are always meaningful.
-	if s.Sessions != nil && pctx.Extensions.A2A != nil {
+	respPlugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || respPlugins != nil) {
 		sid := inboundSessionID(pctx)
 		s.Sessions.Append(sid, pipeline.SessionEvent{
 			At:          time.Now(),
@@ -334,7 +337,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 			Phase:       pipeline.SessionResponse,
 			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
 			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-			Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+			Plugins:     respPlugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
 			StatusCode:  resp.StatusCode,
