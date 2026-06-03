@@ -1,0 +1,63 @@
+# Finance MCP server — the tool backend the finance-agent calls.
+# Plain in-cluster workload (no authbridge injection); the agent reaches
+# it at http://finance-mcp.team1.svc.cluster.local:8888/mcp.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finance-mcp
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: finance-mcp
+    app.kubernetes.io/part-of: finance-sparc-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: finance-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: finance-mcp
+        app.kubernetes.io/part-of: finance-sparc-demo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: finance-mcp
+          image: finance-mcp:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8888
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 200m
+              memory: 64Mi
+            requests:
+              cpu: 20m
+              memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finance-mcp
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: finance-mcp
+    app.kubernetes.io/part-of: finance-sparc-demo
+spec:
+  selector:
+    app.kubernetes.io/name: finance-mcp
+  ports:
+    - port: 8888
+      targetPort: 8888
+      protocol: TCP
+      name: http
+  type: ClusterIP

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kagenti-sparc-service"
+version = "0.1.0"
+description = "Kagenti SPARC reflection service — a thin in-process HTTP wrapper around the SPARC pre-tool reflection component from the agent-lifecycle-toolkit (ALTK)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    # The SPARC engine itself, consumed directly from PyPI (no vendoring).
+    "agent-lifecycle-toolkit==0.10.1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+kagenti-sparc-service = "sparc_service.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sparc_service"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

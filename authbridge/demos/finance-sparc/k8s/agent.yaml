@@ -1,0 +1,121 @@
+# finance-sparc demo agent — operator-injected, kagenti-UI-discoverable.
+#
+# Required labels (same contract as demos/ibac/k8s/agent.yaml):
+#   kagenti.io/type: agent       — UI lists agents by this label
+#   kagenti.io/inject: enabled   — operator's webhook injects authbridge
+#   kagenti.io/spire: disabled   — demo doesn't depend on SPIRE identity
+#   protocol.kagenti.io/a2a: ""  — declares A2A for the chat flow
+#
+# The operator port-steals (containerPort 8000 → agent on 8001, PORT and
+# HTTP_PROXY set so outbound flows through the injected sidecar's forward
+# proxy). We do NOT ship a per-agent authbridge ConfigMap — the operator
+# creates authbridge-config-finance-agent; scripts/patch-sparc-config.sh
+# enables the parsers + sparc plugin after deploy.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: finance-agent
+  namespace: team1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finance-agent
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: finance-agent
+    app.kubernetes.io/part-of: finance-sparc-demo
+    kagenti.io/type: agent
+    protocol.kagenti.io/a2a: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: finance-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: finance-agent
+        app.kubernetes.io/part-of: finance-sparc-demo
+        kagenti.io/type: agent
+        kagenti.io/inject: enabled
+        kagenti.io/spire: disabled
+        protocol.kagenti.io/a2a: ""
+    spec:
+      serviceAccountName: finance-agent
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: finance-agent:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PORT
+              value: "8000"
+            - name: OLLAMA_URL
+              value: "http://ollama.team1.svc.cluster.local:11434"
+            - name: OLLAMA_MODEL
+              value: "llama3.2:1b"
+            - name: FINANCE_MCP_URL
+              value: "http://finance-mcp.team1.svc.cluster.local:8888"
+            - name: AGENT_PUBLIC_URL
+              value: "http://finance-agent.team1.svc.cluster.local:8080/"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          # /shared is mounted by the operator-injected authbridge sidecar
+          # (it reads /shared/client-id.txt). The agent doesn't read it;
+          # the volume just has to exist on the Pod.
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: finance-agent
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: finance-agent
+    app.kubernetes.io/part-of: finance-sparc-demo
+spec:
+  selector:
+    app.kubernetes.io/name: finance-agent
+  ports:
+    - port: 8080
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  type: ClusterIP
+---
+# AgentRuntime triggers operator-managed Keycloak client registration
+# (the Secret the authbridge sidecar mounts at /shared/). The operator
+# auto-creates the AgentCard CR for the kagenti.io/type=agent Deployment.
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: finance-agent
+  namespace: team1
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finance-agent

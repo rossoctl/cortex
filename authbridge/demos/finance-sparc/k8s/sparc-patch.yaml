@@ -1,0 +1,53 @@
+# SPARC plugin-pipeline patch fragment.
+#
+# NOT a Kubernetes manifest. scripts/patch-sparc-config.sh merges these
+# additions into the operator-rendered authbridge ConfigMap
+# (authbridge-config-finance-agent in team1):
+#   - prepend a2a-parser to inbound (so the session carries the user turn)
+#   - append inference-parser + mcp-parser + sparc to outbound
+#       inference-parser: captures the agent's LLM call (messages incl. system
+#                         prompt + tool specs) into the session — SPARC's generic
+#                         conversation/tool-spec source
+#       mcp-parser:       parses the outbound MCP tools/call (the tool call)
+#       sparc:            reflects and enforces (mcp mode → MCP tool result)
+
+inbound_prepend:
+  - name: a2a-parser
+
+outbound_append:
+  - name: inference-parser
+  - name: mcp-parser
+  - name: sparc
+    config:
+      # The in-cluster SPARC reflection service. The plugin POSTs to {endpoint}/reflect.
+      # ${...} placeholders are substituted by scripts/patch-sparc-config.sh.
+      reflector_endpoint: "${SPARC_REFLECTOR_ENDPOINT}"
+
+      # Gate the MCP tools/call and return the clarification as an MCP tool
+      # result (the kagenti norm). Use "inference" for non-MCP agents.
+      enforcement: "mcp"
+
+      # fast_track = hallucination + function-selection checks.
+      track: "fast_track"
+
+      # Return SPARC's reflection to the agent on a reject (reflection mode):
+      # observe = log only; reflect = return the clarification; deny = hard block.
+      on_reject_action: "reflect"
+
+      # Escalate a reject to a hard deny when SPARC's score (1=worst..5=best) is
+      # this low. 0 disables (reflect handles all rejects).
+      deny_score_threshold: 0
+
+      # Don't reflect on trivial read-only tools — saves a round-trip.
+      skip_tools:
+        - "list_currencies"
+
+      # SPARC is a quality gate, not auth: if the service is unreachable, allow
+      # and log rather than break the agent.
+      fail_policy: "open"
+
+      # Max time the plugin waits for a reflection verdict. watsonx answers in
+      # ~5s; a CPU-only in-cluster Ollama is slower, so the Makefile raises this
+      # for PROVIDER=ollama. The plugin reflects out-of-band, so this is NOT
+      # bounded by the forward proxy's upstream timeout.
+      timeout_ms: ${SPARC_TIMEOUT_MS}
