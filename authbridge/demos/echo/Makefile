@@ -94,6 +94,13 @@ preflight:  ## Verify kagenti is installed + tools are available
 	  echo "       Install: pip3 install --user pyyaml"; \
 	  exit 1; \
 	}
+	@python3 -c 'import keycloak' 2>/dev/null || { \
+	  echo "ERROR: python-keycloak is required (used later by setup-keycloak)."; \
+	  echo "       Install: pip install python-keycloak"; \
+	  echo "       Checked here in preflight so demo-echo fails before the"; \
+	  echo "       build/deploy steps rather than after them."; \
+	  exit 1; \
+	}
 
 # ---------- Sidecar (authbridge proxy) ----------
 
