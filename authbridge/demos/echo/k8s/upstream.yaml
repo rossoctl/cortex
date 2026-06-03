@@ -1,0 +1,67 @@
+# Echo upstream for the credential placeholder-swap demo.
+#
+# Returns the request's Authorization header on GET /echo. Plain HTTP
+# service in team1.
+#
+# CRITICAL: this workload carries NO `kagenti.io/*` labels. That keeps
+# the operator's injecting webhook from touching it — echo-upstream must
+# stay a plain, un-injected "external" upstream so the demo can show the
+# credential the agent's authbridge sidecar produced reaching it
+# unmodified by any upstream-side authbridge.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-upstream
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: echo-upstream
+    app.kubernetes.io/part-of: echo-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo-upstream
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo-upstream
+        app.kubernetes.io/part-of: echo-demo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: upstream
+          image: echo-upstream:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-upstream
+  namespace: team1
+spec:
+  selector:
+    app.kubernetes.io/name: echo-upstream
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP

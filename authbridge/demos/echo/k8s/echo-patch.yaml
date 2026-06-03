@@ -1,0 +1,14 @@
+# Enables credential placeholder swap on the operator-created
+# authbridge-config-echo-agent ConfigMap, and registers the echo-upstream
+# token-exchange route. Applied by scripts/patch-echo-config.sh (added separately).
+inbound_plugin_config:
+  jwt-validation:
+    placeholder_mode: true
+    placeholder_ttl: "1h"
+outbound_plugin_config:
+  token-exchange:
+    resolve_placeholders: true
+routes:
+  - host: "echo-upstream"
+    target_audience: "echo-upstream"
+    token_scopes: "openid echo-upstream-aud"
