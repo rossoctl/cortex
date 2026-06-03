@@ -39,8 +39,9 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
 
-	// Only two plugins: drop the parsers and token-broker.
+	// Auth gates only: drop the parsers and token-broker.
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )

@@ -17,6 +17,7 @@ import (
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
 	jwtvalidation "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
+	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	tokenexchange "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
@@ -35,6 +36,7 @@ func TestBuiltinsRegistered(t *testing.T) {
 		"a2a-parser":       true,
 		"mcp-parser":       true,
 		"inference-parser": true,
+		"opa":              true,
 	}
 	got := plugins.RegisteredPlugins()
 	gotSet := make(map[string]bool, len(got))

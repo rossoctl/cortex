@@ -17,6 +17,7 @@ Built-in plugins and the open plugin registry. Plugin authoring docs live under
 | `mcp-parser` | Parse Model Context Protocol traffic into `Extensions.MCP` |
 | `inference-parser` | Parse OpenAI-style / Ollama inference traffic into `Extensions.Inference` |
 | [`ibac`](../../docs/ibac-plugin.md) | Outbound Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's most recent intent. Catches prompt-injection / data-exfiltration attempts |
+| `opa` | OPA policy evaluation on inbound and outbound requests via bundle download |
 
 ## Reusable building blocks for plugin authors
 
