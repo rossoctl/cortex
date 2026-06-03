@@ -227,21 +227,22 @@ Wait for the Shipwright build to complete and the deployment to become ready.
 kubectl get pods -n team1
 ```
 
-Expected output (Step 2 defaults — `proxy-sidecar` mode with SPIRE identity enabled):
+Expected output (Step 2 defaults — `proxy-sidecar` mode):
 
 ```text
 NAME                               READY   STATUS    RESTARTS   AGE
-weather-service-58768bdb67-xxxxx   3/3     Running   0          2m
+weather-service-58768bdb67-xxxxx   2/2     Running   0          2m
 weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 ```
 
-> **Note:** The container count depends on the AuthBridge mode and whether
-> SPIRE identity is enabled. With Step 2's defaults — `proxy-sidecar` mode
-> plus SPIRE identity — `weather-service` runs `agent` + `authbridge-proxy`
-> + `spiffe-helper` (`3/3`). If you unchecked **Enable SPIRE identity**, the
-> `spiffe-helper` container is absent (`2/2`). With `envoy-sidecar` mode
-> you'll see `agent` + `envoy-proxy` (plus a `proxy-init` init container)
-> instead of `authbridge-proxy`. See the
+> **Note:** AuthBridge ships as a single combined sidecar image (since
+> kagenti-extensions#411). `weather-service` runs `agent` + the combined
+> AuthBridge sidecar — `2/2` — regardless of whether SPIRE identity is
+> enabled. The `spiffe-helper` is bundled inside the combined image and
+> activated per workload via `SPIRE_ENABLED` (driven by the
+> `kagenti.io/spire: enabled` label); it is not a separate container. In
+> `envoy-sidecar` mode the pod is still `2/2` (`agent` + the combined
+> sidecar) plus a `proxy-init` init container for iptables setup. See the
 > [AuthBridge deployment guide](https://github.com/kagenti/kagenti/blob/main/docs/authbridge/deployment-guide.md)
 > for the full mode/label reference.
 
@@ -251,23 +252,20 @@ weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service -o jsonpath='{.items[0].spec.containers[*].name}'
 ```
 
-Expected (Step 2 defaults — `proxy-sidecar` mode with SPIRE identity):
-
-```text
-agent authbridge-proxy spiffe-helper
-```
-
-Without SPIRE identity (Step 2 checkbox unchecked):
+Expected (Step 2 defaults — `proxy-sidecar` mode):
 
 ```text
 agent authbridge-proxy
 ```
 
-Or, in envoy-sidecar mode:
+Or, in `envoy-sidecar` mode:
 
 ```text
 agent envoy-proxy
 ```
+
+The container *names* don't change with SPIRE — `spiffe-helper` runs inside
+the combined sidecar, not as a separate container.
 
 ### Check operator-managed client registration
 
