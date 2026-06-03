@@ -10,7 +10,7 @@
 
 **Spec:** `authbridge/docs/superpowers/specs/2026-06-02-credential-placeholder-swap-design.md`
 
-**All commands run from** `/Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions/authbridge`.
+**All commands run from** the repository's `authbridge/` module root (the directory containing `go.work`).
 
 **Scope (v1):** `authbridge-proxy` / `authbridge-lite` (reverseproxy + forwardproxy) and `authbridge-envoy` (extproc), all single-replica. `extauthz` (waypoint) and an external store are deferred — the waypoint topology needs the external store anyway (see spec compatibility table).
 

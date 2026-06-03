@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-02
 **Status:** Draft (design approved, pending spec review)
-**Scope:** authbridge — `jwt-validation` plugin, `token-exchange` plugin, a new shared store, and a small `reverseproxy` change.
+**Scope (v1):** authbridge — `jwt-validation` plugin, `token-exchange` plugin, a new shared store, and inbound-header propagation in the **`reverseproxy` and `extproc`** listeners (the two single-process topologies that ship today). `extauthz`/waypoint and an external store are **deferred** — see "Out of scope". This scope statement is authoritative; the per-listener and files-touched sections below mark `extauthz` as deferred to match.
 
 ## Problem
 
@@ -135,14 +135,15 @@ on both inbound and outbound contexts.
 
 Mint requires the minted placeholder to actually reach the agent, i.e. the **inbound**
 pipeline's `Authorization` mutation must be propagated to the request forwarded to the
-agent. **No listener does this today** — all three propagate only the *outbound*
-`Authorization` swap. Each needs the inbound mirror, in its own idiom:
+agent. Before this change no listener did this — they propagated only the *outbound*
+`Authorization` swap. **v1 implements the inbound mirror for `reverseproxy` and `extproc`**;
+`extauthz` is deferred (see Out of scope). Each needs it in its own idiom:
 
-| Listener | Today | Change |
-|----------|-------|--------|
-| `reverseproxy` | clones headers into `pctx`, copies only **body** mutations back (`server.go:171,220-225,253`); inbound header mutations dropped | after `Run`, if `pctx.Headers.Get("Authorization")` changed, copy it to `r.Header` before `ServeHTTP` |
-| `extproc` | `handleOutbound` emits `replaceTokenResponse` on auth change (`server.go:469-480`); `handleInbound`/`handleInboundBody` (143-184) emit **no** auth mutation | capture `originalAuth`/`newAuth` in the inbound handlers and emit the same `replaceTokenResponse` HeaderMutation when changed |
-| `extauthz` | inbound `Check` validates but returns no request-header injection for the agent | add the placeholder header to the inbound `OkResponse` (request-header mutation) |
+| Listener | v1 | Today | Change |
+|----------|----|-------|--------|
+| `reverseproxy` | ✅ done | clones headers into `pctx`, copies only **body** mutations back (`server.go:171,220-225,253`); inbound header mutations dropped | after `Run`, if `pctx.Headers.Get("Authorization")` changed, copy it to `r.Header` before `ServeHTTP` |
+| `extproc` | ✅ done | `handleOutbound` emits `replaceTokenResponse` on auth change; `handleInbound`/`handleInboundBody` emit **no** auth mutation | capture `originalAuth`/`newAuth` in the inbound handlers and emit the `replaceTokenResponse` HeaderMutation (with `RemoveHeaders: x-authbridge-direction`) when changed |
+| `extauthz` | ⛔ deferred | inbound `Check` validates but returns no request-header injection for the agent | (future) add the placeholder header to the inbound `OkResponse` (request-header mutation) |
 
 This generalizes cleanly to "inbound plugins may rewrite the request to the agent," a
 capability the listeners arguably should have regardless.
@@ -297,11 +298,11 @@ inbound-propagation idiom and the store backend differ.
 | `authlib/listener/reverseproxy/server.go` | inbound Authorization propagation (copy `pctx.Headers` → `r.Header`); accept + set shared store |
 | `authlib/listener/forwardproxy/server.go` | accept + set shared store on pctx (outbound resolve already propagates) |
 | `authlib/listener/extproc/server.go` | inbound Authorization propagation in `handleInbound`/`handleInboundBody` (emit `replaceTokenResponse` on change); accept + set shared store on both pctx |
-| `authlib/listener/extauthz/server.go` | inbound request-header injection in `Check` `OkResponse`; accept + set shared store on both pctx |
+| `authlib/listener/extauthz/server.go` | ⛔ **deferred (not in v1)** — future inbound request-header injection in `Check` `OkResponse` |
 | `authlib/plugins/jwtvalidation/plugin.go` | `placeholder_mode` / `placeholder_ttl`; mint logic |
 | `authlib/plugins/tokenexchange/plugin.go` | `resolve_placeholders`; route-gated resolve step |
-| `cmd/authbridge-proxy/main.go`, `cmd/authbridge-lite/main.go`, `cmd/authbridge-envoy/main.go` | create store, inject into listeners |
-| docs | plugin-reference / plugin-tutorial updates for the new mode |
+| `cmd/authbridge-proxy/main.go`, `cmd/authbridge-lite/main.go`, `cmd/authbridge-envoy/main.go` | create store, inject into listeners, `Close()` on shutdown |
+| docs | plugin-reference updates for the new mode |
 
 ## Attribution
 
