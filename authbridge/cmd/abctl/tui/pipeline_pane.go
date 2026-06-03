@@ -40,8 +40,11 @@ func (m *model) rebuildPipelineTable() {
 	for _, p := range m.pipeline.Inbound {
 		rows = append(rows, pipelineRow(p, counts[p.Name], m.pipeline.Inbound))
 	}
-	// Divider between inbound and outbound.
-	rows = append(rows, table.Row{"", "", "── (app) ──", "", "", "", ""})
+	// Divider between inbound and outbound. Cell count MUST match the 6
+	// columns defined in newPipelineTable (#, DIRECTION, PLUGIN, DEPS, BODY,
+	// EVENTS) — bubbles' table.renderRow indexes columns by cell position and
+	// panics on a mismatch.
+	rows = append(rows, table.Row{"", "", "── (app) ──", "", "", ""})
 	for _, p := range m.pipeline.Outbound {
 		rows = append(rows, pipelineRow(p, counts[p.Name], m.pipeline.Outbound))
 	}
