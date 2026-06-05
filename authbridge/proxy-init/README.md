@@ -50,6 +50,23 @@ proxy regardless of whether the app honors `HTTP_PROXY`.
 An IPv6 mirror drops external v6 egress (allowing loopback, link-local,
 the proxy UID, and `CLUSTER_CIDRS6`).
 
+> **`CLUSTER_CIDRS` is Kind-shaped by default.** The `10.0.0.0/8` default
+> covers Kind (pods `10.244.0.0/16` + services `10.96.0.0/16`). Other
+> distros differ — **OpenShift** uses services `172.30.0.0/16` and pods
+> `10.128.0.0/14`, and `172.30.0.0/16` is **outside** `10/8`, so the
+> default would drop in-cluster service traffic. On OCP/EKS/etc. you
+> **must** override `CLUSTER_CIDRS` with the cluster's real pod+service
+> ranges. The script logs the resolved value at startup, and the
+> operator wiring (follow-up PR) sets it from the cluster's CIDRs.
+
+> **`enforce-drop` intentionally ignores `OUTBOUND_PORTS_EXCLUDE`** (a
+> `redirect`-mode knob). Any destination previously bypassed that way —
+> e.g. a direct LLM endpoint at `host.docker.internal:11434` — is now
+> dropped unless it goes through the forward proxy or falls within
+> `CLUSTER_CIDRS`. That is the point: `enforce-drop` closes direct-egress
+> holes. Operators relying on a bypass must route it through the proxy
+> (or, for in-cluster targets, include it in `CLUSTER_CIDRS`).
+
 **Why `mangle` OUTPUT, not `filter`:** when Istio ambient is active it
 installs an in-pod `nat OUTPUT` REDIRECT (`ISTIO_OUTPUT` → ztunnel
 `:15001`). The netfilter OUTPUT hook order is `raw → mangle → nat →
