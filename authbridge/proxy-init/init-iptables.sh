@@ -126,6 +126,22 @@
 
 set -e
 
+# --- Mode selection ---
+# MODE selects the interception strategy:
+#   redirect      (default) — envoy-sidecar: transparently REDIRECT pod traffic
+#                 to the Envoy listeners (the behavior documented above).
+#   enforce-drop  — proxy-sidecar: a fail-closed egress guard. The app is
+#                 configured with HTTP_PROXY pointing at AuthBridge's forward
+#                 proxy; this mode DROPs any egress that bypasses the proxy,
+#                 forcing all external traffic through AuthBridge regardless of
+#                 whether the app honors HTTP_PROXY. It installs no REDIRECT and
+#                 no PREROUTING/inbound rules. See setup_enforce_drop() below.
+MODE="${MODE:-redirect}"
+case "${MODE}" in
+  redirect|enforce-drop) ;;
+  *) echo "ERROR: unknown MODE='${MODE}' (expected: redirect | enforce-drop)" >&2; exit 1 ;;
+esac
+
 # --- Auto-detect iptables backend ---
 # Prefer iptables-legacy for maximum compatibility with Kubernetes networking.
 # The nft backend sets rules in a different netfilter table that may not be
@@ -153,6 +169,17 @@ SSH_PORT="${SSH_PORT:-22}"
 OUTBOUND_PORTS_EXCLUDE="${OUTBOUND_PORTS_EXCLUDE:-}"
 INBOUND_PORTS_EXCLUDE="${INBOUND_PORTS_EXCLUDE:-}"
 
+# enforce-drop mode: in-cluster destinations the agent may reach directly
+# (pods / services / DNS) — everything else egressing the pod is dropped.
+# Defaults to the RFC1918 10/8 block which covers typical Kind pod (10.244/16)
+# and service (10.96/16) CIDRs; override with the cluster's actual ranges.
+CLUSTER_CIDRS="${CLUSTER_CIDRS:-10.0.0.0/8}"
+CLUSTER_CIDRS6="${CLUSTER_CIDRS6:-}"   # IPv6 in-cluster CIDRs (dual-stack); empty = none
+
+# IPv6 counterpart of the detected iptables backend (iptables-legacy ->
+# ip6tables-legacy, iptables -> ip6tables). Override with IP6TABLES_CMD.
+IP6T="${IP6TABLES_CMD:-$(echo "${IPT}" | sed 's/iptables/ip6tables/')}"
+
 # Istio ztunnel defaults
 ZTUNNEL_HBONE_PORT="${ZTUNNEL_HBONE_PORT:-15008}"
 ZTUNNEL_MARK="${ZTUNNEL_MARK:-0x539/0xfff}"  # 0x539 = 1337 decimal, ztunnel's socket fwmark
@@ -162,10 +189,113 @@ ISTIO_HEALTH_PROBE_SRC="${ISTIO_HEALTH_PROBE_SRC:-169.254.7.127}"
 # It must be passed via the Kubernetes Downward API (status.podIP) or set manually.
 # We use DNAT to the pod IP instead of REDIRECT to avoid needing route_localnet=1,
 # which would require a privileged init container (to write to read-only /proc/sys).
-if [ -z "${POD_IP}" ]; then
-  echo "ERROR: POD_IP environment variable is not set." >&2
+# POD_IP is only needed by redirect mode (DNAT target for the ambient inbound
+# rule). enforce-drop does no DNAT, so it does not require it.
+if [ "${MODE}" = "redirect" ] && [ -z "${POD_IP}" ]; then
+  echo "ERROR: POD_IP environment variable is not set (required for redirect mode)." >&2
   echo "Set it via the Kubernetes Downward API (status.podIP) or manually." >&2
   exit 1
+fi
+
+# =============================================================================
+# enforce-drop mode (proxy-sidecar fail-closed egress guard)
+# =============================================================================
+#
+# proxy-sidecar configures the app with HTTP_PROXY=127.0.0.1:<forward-proxy>.
+# Unlike redirect mode we do NOT transparently REDIRECT — you cannot redirect
+# raw traffic into a CONNECT forward proxy. Instead we DROP any egress that
+# leaves the pod without going through the proxy, forcing all external traffic
+# through AuthBridge regardless of whether the app honors HTTP_PROXY.
+#
+# Placement — a dedicated chain hooked from *mangle* OUTPUT at position 1:
+#   * Istio ambient, when active, installs an in-pod `nat OUTPUT` REDIRECT
+#     (ISTIO_OUTPUT -> ztunnel :15001). The netfilter OUTPUT hook order is
+#     raw -> mangle -> nat -> filter, so a DROP in mangle evaluates the
+#     ORIGINAL destination and fires BEFORE ambient's nat redirect can rewrite
+#     it. A DROP in `filter` would run after nat and be defeated (dst already
+#     rewritten to 127.0.0.1). -I 1 also places us ahead of Istio's appended
+#     (-A) mangle ISTIO_OUTPUT chain.
+#   * Works identically with no ambient, in-pod ambient, or node-level ambient
+#     (in the node-level case our pod-netns rule runs before the packet ever
+#     reaches the host netns).
+#
+# Rule order in the chain: RETURN ztunnel's own sockets (fwmark 0x539, a no-op
+# when ambient is absent) -> RETURN the proxy's own egress (PROXY_UID) ->
+# RETURN loopback (app -> proxy) -> RETURN in-cluster CIDRs (mesh/DNS) ->
+# DROP everything else (direct external egress, incl. UDP/QUIC).
+setup_enforce_drop() {
+  CHAIN="AB_EGRESS"
+
+  echo "enforce-drop: installing fail-closed egress guard (mangle OUTPUT, chain ${CHAIN})"
+  echo "enforce-drop: exempt proxy UID=${PROXY_UID}; allowed in-cluster CIDRs=${CLUSTER_CIDRS}"
+
+  # --- IPv4 ---
+  ${IPT} -t mangle -N "${CHAIN}" 2>/dev/null || true
+  ${IPT} -t mangle -F "${CHAIN}"
+  # Replies to inbound connections (and related flows) are locally generated and
+  # also traverse OUTPUT — a reply is never a "bypass". Let established/related
+  # traffic through FIRST, so e.g. kubelet health-probe responses to an
+  # off-cluster node IP (in Kind the node is 172.18.0.0/16, outside CLUSTER_CIDRS)
+  # are not caught by the terminal DROP. Only NEW app-initiated flows are gated.
+  ${IPT} -t mangle -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  # ztunnel's own sockets (ambient) carry fwmark 0x539 — let them through so the
+  # mesh/HBONE path keeps working. No-op when ambient is not installed.
+  ${IPT} -t mangle -A "${CHAIN}" -m mark --mark "${ZTUNNEL_MARK}" -j RETURN
+  # the AuthBridge proxy's own re-originated egress (must run as PROXY_UID).
+  ${IPT} -t mangle -A "${CHAIN}" -m owner --uid-owner "${PROXY_UID}" -j RETURN
+  # app -> proxy over loopback (HTTP_PROXY target), and any loopback traffic.
+  ${IPT} -t mangle -A "${CHAIN}" -o lo -j RETURN
+  ${IPT} -t mangle -A "${CHAIN}" -d 127.0.0.0/8 -j RETURN
+  # in-cluster traffic (pods / services / DNS) — carried by the mesh, not the proxy.
+  for cidr in $(echo "${CLUSTER_CIDRS}" | tr ',' ' '); do
+    [ -n "${cidr}" ] && ${IPT} -t mangle -A "${CHAIN}" -d "${cidr}" -j RETURN
+  done
+  # everything else == direct external egress that bypassed the proxy. Drop it.
+  # No -p filter, so UDP (QUIC/HTTP-3) is dropped as well as TCP.
+  ${IPT} -t mangle -A "${CHAIN}" -j DROP
+  # Hook at position 1 so we run before any appended Istio mangle chain and
+  # before nat OUTPUT.
+  if ! ${IPT} -t mangle -C OUTPUT -j "${CHAIN}" 2>/dev/null; then
+    ${IPT} -t mangle -I OUTPUT 1 -j "${CHAIN}"
+  fi
+  echo "enforce-drop: IPv4 egress guard configured"
+
+  # --- IPv6 ---
+  # Cluster is IPv4-only by default; until v6 cluster CIDRs are wired
+  # (CLUSTER_CIDRS6), drop external v6 egress while allowing: established/related
+  # replies, loopback, link-local unicast (fe80::/10) and link-local multicast
+  # (ff02::/16, which carries NDP neighbor/router solicitations and MLD), the
+  # proxy UID, and ztunnel's mark.
+  if command -v "${IP6T%% *}" >/dev/null 2>&1 && ${IP6T} -t mangle -L >/dev/null 2>&1; then
+    ${IP6T} -t mangle -N "${CHAIN}" 2>/dev/null || true
+    ${IP6T} -t mangle -F "${CHAIN}"
+    ${IP6T} -t mangle -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -m mark --mark "${ZTUNNEL_MARK}" -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -m owner --uid-owner "${PROXY_UID}" -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -o lo -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -d ::1/128 -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -d fe80::/10 -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -d ff02::/16 -j RETURN
+    for cidr in $(echo "${CLUSTER_CIDRS6}" | tr ',' ' '); do
+      [ -n "${cidr}" ] && ${IP6T} -t mangle -A "${CHAIN}" -d "${cidr}" -j RETURN
+    done
+    ${IP6T} -t mangle -A "${CHAIN}" -j DROP
+    if ! ${IP6T} -t mangle -C OUTPUT -j "${CHAIN}" 2>/dev/null; then
+      ${IP6T} -t mangle -I OUTPUT 1 -j "${CHAIN}"
+    fi
+    echo "enforce-drop: IPv6 egress guard configured"
+  else
+    echo "enforce-drop: ip6tables unavailable — skipping IPv6 egress guard"
+  fi
+
+  echo "enforce-drop: fail-closed egress guard active"
+}
+
+# Dispatch enforce-drop here and exit; redirect mode falls through to the
+# transparent-interception logic below.
+if [ "${MODE}" = "enforce-drop" ]; then
+  setup_enforce_drop
+  exit 0
 fi
 
 # =============================================================================
