@@ -232,6 +232,12 @@ setup_enforce_drop() {
   # --- IPv4 ---
   ${IPT} -t mangle -N "${CHAIN}" 2>/dev/null || true
   ${IPT} -t mangle -F "${CHAIN}"
+  # Replies to inbound connections (and related flows) are locally generated and
+  # also traverse OUTPUT — a reply is never a "bypass". Let established/related
+  # traffic through FIRST, so e.g. kubelet health-probe responses to an
+  # off-cluster node IP (in Kind the node is 172.18.0.0/16, outside CLUSTER_CIDRS)
+  # are not caught by the terminal DROP. Only NEW app-initiated flows are gated.
+  ${IPT} -t mangle -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
   # ztunnel's own sockets (ambient) carry fwmark 0x539 — let them through so the
   # mesh/HBONE path keeps working. No-op when ambient is not installed.
   ${IPT} -t mangle -A "${CHAIN}" -m mark --mark "${ZTUNNEL_MARK}" -j RETURN
@@ -256,16 +262,20 @@ setup_enforce_drop() {
 
   # --- IPv6 ---
   # Cluster is IPv4-only by default; until v6 cluster CIDRs are wired
-  # (CLUSTER_CIDRS6), drop all external v6 egress while allowing loopback,
-  # link-local (NDP), the proxy UID, and ztunnel's mark.
+  # (CLUSTER_CIDRS6), drop external v6 egress while allowing: established/related
+  # replies, loopback, link-local unicast (fe80::/10) and link-local multicast
+  # (ff02::/16, which carries NDP neighbor/router solicitations and MLD), the
+  # proxy UID, and ztunnel's mark.
   if command -v "${IP6T%% *}" >/dev/null 2>&1 && ${IP6T} -t mangle -L >/dev/null 2>&1; then
     ${IP6T} -t mangle -N "${CHAIN}" 2>/dev/null || true
     ${IP6T} -t mangle -F "${CHAIN}"
+    ${IP6T} -t mangle -A "${CHAIN}" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
     ${IP6T} -t mangle -A "${CHAIN}" -m mark --mark "${ZTUNNEL_MARK}" -j RETURN
     ${IP6T} -t mangle -A "${CHAIN}" -m owner --uid-owner "${PROXY_UID}" -j RETURN
     ${IP6T} -t mangle -A "${CHAIN}" -o lo -j RETURN
     ${IP6T} -t mangle -A "${CHAIN}" -d ::1/128 -j RETURN
     ${IP6T} -t mangle -A "${CHAIN}" -d fe80::/10 -j RETURN
+    ${IP6T} -t mangle -A "${CHAIN}" -d ff02::/16 -j RETURN
     for cidr in $(echo "${CLUSTER_CIDRS6}" | tr ',' ' '); do
       [ -n "${cidr}" ] && ${IP6T} -t mangle -A "${CHAIN}" -d "${cidr}" -j RETURN
     done

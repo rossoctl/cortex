@@ -53,6 +53,7 @@ echo "--- mangle ruleset ---"; echo "${dump}"
 
 assert() { if echo "${dump}" | grep -qE "$2"; then echo "PASS: $1"; else echo "FAIL: $1"; fail=1; fi; }
 assert "AB_EGRESS hooked from OUTPUT"  '^-A OUTPUT -j AB_EGRESS'
+assert "established/related RETURN"    'AB_EGRESS -m conntrack --ctstate (ESTABLISHED,RELATED|RELATED,ESTABLISHED) -j RETURN'
 assert "ztunnel mark RETURN"           'AB_EGRESS .*mark.*0x539.*-j RETURN'
 assert "proxy UID RETURN"              'AB_EGRESS .*--uid-owner 1337 -j RETURN'
 assert "loopback iface RETURN"         'AB_EGRESS -o lo -j RETURN'
@@ -63,6 +64,12 @@ assert "terminal DROP"                 'AB_EGRESS -j DROP'
 pos1=$("${IPT}" -t mangle -L OUTPUT --line-numbers -n | awk '$1=="1"{print $2}')
 if [ "${pos1}" = "AB_EGRESS" ]; then echo "PASS: AB_EGRESS at OUTPUT position 1"
 else echo "FAIL: AB_EGRESS not at OUTPUT position 1 (got '${pos1}')"; fail=1; fi
+
+# the established/related RETURN must be the first rule in the chain (replies
+# must be let through before any owner/dest evaluation).
+first_rule=$("${IPT}" -t mangle -S AB_EGRESS | grep '^-A AB_EGRESS' | head -1)
+if echo "${first_rule}" | grep -q 'conntrack'; then echo "PASS: established/related RETURN is first in AB_EGRESS"
+else echo "FAIL: first AB_EGRESS rule is not the conntrack RETURN (got: ${first_rule})"; fail=1; fi
 
 natcount=$("${IPT}" -t nat -S | grep -cE 'AB_EGRESS|REDIRECT|PROXY_' || true)
 if [ "${natcount:-0}" -eq 0 ]; then echo "PASS: no nat-table rules created"

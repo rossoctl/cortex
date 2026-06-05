@@ -121,8 +121,9 @@ container automatically:
 - `redirect` mode (`MODE` unset) when the resolved AuthBridge mode is
   `envoy-sidecar`.
 - `enforce-drop` mode (`MODE=enforce-drop`) when `proxy-sidecar`
-  egress enforcement is enabled (opt-in; see the kagenti-operator
-  injector wiring).
+  egress enforcement is enabled (opt-in). _The operator wiring that
+  sets this lands in the follow-up kagenti-operator PR; this PR only
+  adds the mode to the image._
 
 See
 [`authbridge/demos/weather-agent/demo-ui-advanced.md`](../demos/weather-agent/demo-ui-advanced.md)
