@@ -77,18 +77,25 @@ func (s *Server) dispatch(conn *net.TCPConn) {
 		return
 	}
 	// Defense-in-depth against a self-redirect loop: a genuinely REDIRECTed
-	// connection never has a loopback original destination (the enforce-redirect
-	// iptables rules RETURN loopback before the REDIRECT). So a loopback dst here
-	// means a direct dial to the listener port, where SO_ORIGINAL_DST reports the
-	// listener's own address — tunnelling to it would spiral into ever more
-	// connections/goroutines. Drop it.
-	if host, _, splitErr := net.SplitHostPort(dst); splitErr == nil {
+	// connection's original destination is always some external host — never
+	// this listener itself. Two ways a connection could point back at us:
+	//   - a loopback dst (a direct dial to 127.0.0.1:<port>); the enforce-redirect
+	//     rules RETURN loopback before the REDIRECT, so a real capture never has one;
+	//   - the listener's own address (e.g. a podIP:<port> self-dial that slipped
+	//     past the iptables CLUSTER_CIDRS RETURN under a misconfigured CIDR set).
+	// Tunnelling either would spiral into ever more connections/goroutines. The
+	// iptables layer is the primary control; this is belt-and-suspenders. Drop it.
+	selfLoop := dst == conn.LocalAddr().String()
+	if host, _, splitErr := net.SplitHostPort(dst); !selfLoop && splitErr == nil {
 		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-			slog.Warn("transparent-proxy: dropping connection whose original destination is loopback (not a redirect; would self-loop)",
-				"remote", conn.RemoteAddr().String(), "dst", dst)
-			_ = conn.Close()
-			return
+			selfLoop = true
 		}
+	}
+	if selfLoop {
+		slog.Warn("transparent-proxy: dropping self-referential connection (would self-loop)",
+			"remote", conn.RemoteAddr().String(), "dst", dst, "local", conn.LocalAddr().String())
+		_ = conn.Close()
+		return
 	}
 	s.handle(conn, dst)
 }
