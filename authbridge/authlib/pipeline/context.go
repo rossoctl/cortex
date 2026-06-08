@@ -277,6 +277,16 @@ func (c *Context) clearCurrent() {
 // them.
 func (c *Context) RejectingPlugin() string { return c.rejectingPlugin }
 
+// CurrentPhase reports the phase of the plugin dispatch currently in
+// flight — InvocationPhaseRequest while Pipeline.Run is iterating
+// OnRequest, InvocationPhaseResponse while Pipeline.RunResponse is
+// iterating OnResponse, and "" outside a dispatch. Plugins read it to
+// distinguish request from response without inferring the phase from
+// body presence (an empty-bodied 204 response would otherwise look
+// like a request). Set by the framework via setCurrent before each
+// dispatch; see SetCurrentPlugin.
+func (c *Context) CurrentPhase() InvocationPhase { return c.currentPhase }
+
 // setRejectingPlugin records the name of the plugin that returned
 // Reject. Framework-internal; callers in Pipeline.Run / RunResponse
 // set this once per request, never overwrite (first rejection wins,

@@ -1,0 +1,114 @@
+# Keycloak with the cpex-demo realm imported at boot.
+#
+# We pin KC_HOSTNAME=localhost so JWT `iss` claims emitted by Keycloak
+# read `http://localhost:8081/realms/cpex-demo` — the URL the chat
+# agent (running on the host) hits via `kubectl port-forward`. The
+# gateway's CPEX/APL identity layer validates the iss string match
+# against the same value but fetches JWKS via the cluster-internal
+# service DNS (`keycloak.cpex-demo:8080`). Split-horizon, standard
+# pattern.
+#
+# Image: quay.io/keycloak/keycloak:26 — Keycloak 26 lifts the
+# `client-credentials` audience claim for service-account tokens
+# the way our realm-export's hr-copilot client expects.
+
+# NOTE: the keycloak-realm ConfigMap is built by `make apply` via
+# `kubectl create configmap --from-file=k8s/realm-export.json`. Don't
+# inline a placeholder ConfigMap here — its data would race with the
+# file-driven one (whoever runs second wins) and Keycloak would fail
+# realm import on the placeholder content.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: cpex-demo
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: cpex-demo
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: cpex-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/part-of: cpex-demo
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.6.3
+          args:
+            - "start-dev"
+            - "--import-realm"
+          env:
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: "admin"
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              value: "admin"
+            - name: KC_HTTP_PORT
+              value: "8080"
+            # Hostname/issuer URL: cluster DNS. Tokens carry this in
+            # `iss` regardless of how clients reach the service —
+            # gateway pods (in-cluster) and the chat agent
+            # (port-forwarded localhost:8081 → keycloak svc) both
+            # land on tokens with iss=http://keycloak.cpex-demo:8080/...,
+            # which is what cpex.yaml verifies.
+            - name: KC_HOSTNAME
+              value: "http://keycloak.cpex-demo:8080"
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
+              value: "false"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            # Standard Token Exchange (V2, RFC 8693) backs the demo's
+            # cpex-gateway → workday-api / github-api delegate() flow. It
+            # is GA + enabled by default from Keycloak 26.2 on (feature
+            # token-exchange-standard:v2) — no KC_FEATURES flag, no
+            # fine-grained admin permissions. Authorization is per-client:
+            # the requester (cpex-gateway) has standard.token.exchange.enabled
+            # in realm-export.json, and the user's subject token carries
+            # cpex-gateway in its `aud` (the cpex-gateway-as-audience mapper).
+            # Do NOT enable the legacy `token-exchange` (V1) preview feature
+            # here — it routes the request down the deprecated FGAP path and
+            # the exchange is rejected with "Client not allowed to exchange".
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+          readinessProbe:
+            httpGet:
+              path: /realms/cpex-demo/.well-known/openid-configuration
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm

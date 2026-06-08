@@ -1,8 +1,9 @@
-go 1.25.0
+go 1.25.4
 
 use (
 	./authlib
 	./cmd/abctl
+	./cmd/authbridge-cpex
 	./cmd/authbridge-envoy
 	./cmd/authbridge-lite
 	./cmd/authbridge-proxy

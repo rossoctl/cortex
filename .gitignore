@@ -67,3 +67,11 @@ __pycache__/
 .mypy_cache/
 test-jwt-rotation.sh
 kagenti-webhook/bin/
+
+# Go build artifacts — local `go build` outputs in cmd/* dirs
+# (binary name matches the package dir; trivially `git add`-ed by mistake).
+authbridge/cmd/abctl/abctl
+authbridge/cmd/authbridge-proxy/authbridge-proxy
+authbridge/cmd/authbridge-envoy/authbridge-envoy
+authbridge/cmd/authbridge-lite/authbridge-lite
+authbridge/cmd/authbridge-cpex/authbridge-cpex

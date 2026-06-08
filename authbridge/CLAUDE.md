@@ -17,6 +17,12 @@ binaries with shared auth logic in `authlib/`:
 - `cmd/authbridge-lite/` — proxy-sidecar mode, lite plugin set (auth gates
   only, parsers dropped). For size-optimized deployments that don't need
   protocol-aware session events.
+- `cmd/authbridge-cpex/` — proxy-sidecar mode, full plugin set plus the
+  `cpex` plugin. Built with `-tags cpex` and requires cgo (CGO_ENABLED=1):
+  it links `libcpex_ffi.a` from a pinned CPEX release to route hooks through
+  the CPEX framework (APL DSL + named CPEX policy plugins). The FFI ABI
+  version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`. The other three
+  binaries are pure-Go (CGO_ENABLED=0) and do not import the cpex package.
 
 Each binary is hardcoded to its deployment shape; mode is no longer selected
 at runtime. The YAML `mode:` field must match the binary or boot fails.
@@ -60,6 +66,12 @@ authbridge/
 ├── cmd/authbridge-lite/              # proxy-sidecar mode. Lite plugin set (no parsers).
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar lite combined image
+│   └── entrypoint.sh
+│
+├── cmd/authbridge-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
+│   ├── main.go
+│   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
 ├── proxy-init/                       # iptables init container (envoy-sidecar mode only)

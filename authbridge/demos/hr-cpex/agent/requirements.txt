@@ -1,0 +1,18 @@
+# LLM provider abstraction — supports OpenAI, Anthropic, Ollama,
+# WatsonX, Azure, Bedrock, and more. Lets the demo run against
+# whatever the operator has access to without code changes.
+#
+# Exact pins (== convention matches hr-mcp-server/requirements.txt) for
+# reproducible builds. litellm is pinned at the lowest safe release:
+# 1.82.7 / 1.82.8 had a supply-chain compromise (see CVE / GH advisory),
+# so 1.83.0 is the floor. rich / httpx pinned to the lowest version that
+# satisfied their prior ranges.
+litellm==1.83.0
+
+# Rich for pretty terminal output (boxed personas, color-coded
+# tool calls, etc.).
+rich==13.7.0
+
+# httpx for the gateway POST. Already pulled transitively by litellm
+# but listed explicitly so the dep is visible.
+httpx==0.27.0

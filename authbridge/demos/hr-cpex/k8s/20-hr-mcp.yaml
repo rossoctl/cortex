@@ -1,0 +1,62 @@
+# hr-mcp backend — FastAPI server speaking MCP-shaped JSON-RPC over
+# HTTP. Implements get_compensation, send_email, and search_repos
+# tools used by the demo personas.
+#
+# Image is built locally: `docker build -t hr-mcp:dev .` from the
+# hr-mcp-server source dir, then `kind load docker-image hr-mcp:dev
+# --name kagenti`. The imagePullPolicy: Never below tells the
+# kubelet to use the locally-loaded image rather than pull from a
+# registry.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: hr-mcp
+  namespace: cpex-demo
+spec:
+  selector:
+    app.kubernetes.io/name: hr-mcp
+  ports:
+    - name: http
+      port: 9100
+      targetPort: 9100
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hr-mcp
+  namespace: cpex-demo
+  labels:
+    app.kubernetes.io/name: hr-mcp
+    app.kubernetes.io/part-of: cpex-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hr-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hr-mcp
+        app.kubernetes.io/part-of: cpex-demo
+    spec:
+      containers:
+        - name: hr-mcp
+          image: hr-mcp:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 9100
+          # No readiness probe: hr-mcp is a JSON-RPC MCP server with
+          # no `/` route, and adding a health endpoint requires
+          # patching the upstream hr-mcp-server source. The pod is
+          # considered ready once the container starts; sub-second
+          # FastAPI startup makes this fine for demo use.
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              memory: "256Mi"

@@ -391,10 +391,28 @@ func (d *DelegationExtension) Depth() int {
 }
 
 // DelegationHop represents one hop in the delegation chain.
+//
+// Audience, Strategy, and FromCache enrich a hop produced by an
+// AuthBridge auth plugin (today: token-exchange) so downstream policy
+// can reason about WHAT a token was minted for and HOW. They map onto
+// the corresponding CPEX DelegationHop fields. All three are optional —
+// a producer that only knows the subject leaves them zero.
 type DelegationHop struct {
 	SubjectID string
 	Scopes    []string
 	Timestamp time.Time
+
+	// Audience is the target audience the hop's token was minted for
+	// (RFC 8693 `audience`). Empty when the hop isn't an exchange.
+	Audience string
+
+	// Strategy names how the hop was produced — e.g. "token-exchange"
+	// for an RFC 8693 exchange. Empty when unclassified.
+	Strategy string
+
+	// FromCache reports the hop's token was served from the exchange
+	// cache rather than freshly minted at the IdP.
+	FromCache bool
 }
 
 // AppendHop adds a hop to the delegation chain. This is the only way to extend
