@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for the scenario scripts. Source from each script:
 #
 #   source "$(dirname "$0")/_lib.sh"

@@ -1,6 +1,6 @@
 module github.com/kagenti/kagenti-extensions/authbridge/cmd/authbridge-lite
 
-go 1.25.0
+go 1.25.4
 
 replace github.com/kagenti/kagenti-extensions/authbridge/authlib => ../../authlib
 

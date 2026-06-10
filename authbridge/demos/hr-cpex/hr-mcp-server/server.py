@@ -200,6 +200,14 @@ def _redact_token(value: str) -> str:
     return value
 
 
+def _log_safe(value: Any) -> str:
+    """Neutralize a user-controlled value for single-line logging: coerce to
+    str and replace CR/LF and other control characters with spaces so a
+    crafted request field can't forge or split log entries (CWE-117)."""
+    s = value if isinstance(value, str) else str(value)
+    return "".join(ch if ch.isprintable() else " " for ch in s)
+
+
 @app.post("/mcp")
 async def mcp_endpoint(request: Request) -> JSONResponse:
     body_bytes = await request.body()
@@ -217,10 +225,13 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
             logger.info("  %-25s = %s", name, _redact_token(v))
     try:
         rpc = json.loads(body_bytes)
-        logger.info("  body.method               = %s", rpc.get("method"))
+        logger.info("  body.method               = %s", _log_safe(rpc.get("method")))
         params = rpc.get("params", {})
-        logger.info("  body.params.name          = %s", params.get("name"))
-        logger.info("  body.params.arguments     = %s", json.dumps(params.get("arguments", {})))
+        logger.info("  body.params.name          = %s", _log_safe(params.get("name")))
+        logger.info(
+            "  body.params.arguments     = %s",
+            _log_safe(json.dumps(params.get("arguments", {}))),
+        )
     except Exception as e:
         logger.warning("body is not JSON-RPC: %s", e)
         return JSONResponse(
@@ -252,19 +263,21 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
 
     try:
         out = impl(args)
-    except Exception as e:
-        logger.exception("tool '%s' failed", tool_name)
+    except Exception:
+        # Full detail (including the stack trace) goes to the server log;
+        # the client gets a generic message so internal state isn't exposed.
+        logger.exception("tool '%s' failed", _log_safe(tool_name))
         return JSONResponse(
             {
                 "jsonrpc": "2.0",
-                "error": {"code": -32000, "message": str(e)},
+                "error": {"code": -32000, "message": "internal tool error"},
                 "id": rpc_id,
             },
             status_code=500,
         )
 
     logger.info("OUTBOUND RESPONSE")
-    logger.info("  tool                      = %s", tool_name)
+    logger.info("  tool                      = %s", _log_safe(tool_name))
     logger.info("  payload                   = %s", json.dumps(out)[:200])
     return JSONResponse(
         {

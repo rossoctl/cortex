@@ -296,8 +296,14 @@ def call_tool(
         "X-Session-Id": session_id,
     }
     # Explicit per-client proxy — ONLY this flow goes through cpex.
-    with httpx.Client(proxy=MCP_PROXY, timeout=30) as client:
-        resp = client.post(MCP_URL, json=payload, headers=headers)
+    try:
+        with httpx.Client(proxy=MCP_PROXY, timeout=30) as client:
+            resp = client.post(MCP_URL, json=payload, headers=headers)
+    except httpx.HTTPError as e:
+        # Transport failure (timeout, connect refused, reset) — return a
+        # structured tool error so the tool-calling loop can report it
+        # rather than letting the exception abort the whole A2A turn.
+        return 502, {"error": f"MCP transport error: {e}"}
     try:
         data = resp.json()
     except (json.JSONDecodeError, ValueError):

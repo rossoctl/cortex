@@ -121,6 +121,16 @@ spec:
         - name: agent
           image: hr-cpex-agent:dev
           imagePullPolicy: Never
+          # Baseline container hardening — drop OS privilege the agent
+          # never needs. (Non-root execution would require the image to
+          # add a USER; left out so the demo image stays minimal.)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           env:
             - name: PORT
               value: "8001"
@@ -170,6 +180,18 @@ spec:
         - name: authbridge-cpex
           image: authbridge-cpex:dev
           imagePullPolicy: Never
+          # The authbridge-cpex image already runs as a non-root user
+          # (USER 1001 in its Dockerfile), so enforce it here along with
+          # the baseline privilege drop.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           args:
             - "--config"
             - "/etc/authbridge/authbridge.yaml"

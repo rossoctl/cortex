@@ -19,7 +19,12 @@
 # (hr-mcp-server/, k8s/, agent/).
 
 KIND_CLUSTER ?= kagenti
-NAMESPACE    ?= cpex-demo
+# Fixed, not overridable: the k8s/*.yaml manifests hardcode the
+# `cpex-demo` namespace (00-namespace.yaml plus metadata.namespace on
+# every object), so an override here would create the ConfigMaps in one
+# namespace while the Deployments landed in `cpex-demo` — and the later
+# `set env` / `rollout status` targets would miss them.
+NAMESPACE    := cpex-demo
 
 # Image tags — local images, loaded into kind, never pushed to a
 # registry. imagePullPolicy: Never in the Deployment manifests.

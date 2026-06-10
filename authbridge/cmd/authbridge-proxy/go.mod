@@ -1,6 +1,6 @@
 module github.com/kagenti/kagenti-extensions/authbridge/cmd/authbridge-proxy
 
-go 1.25.0
+go 1.25.4
 
 require github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101000000-000000000000
 

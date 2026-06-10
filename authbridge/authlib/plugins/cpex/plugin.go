@@ -340,11 +340,14 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 	// A CPEX-internal failure (FFI error, runtime panic) is an upstream
 	// fault, not a policy decision, so reject with 502. Status is set
 	// explicitly for the same reason as the deny path: cpex.error is not
-	// in the listener's static codeToStatus table.
+	// in the listener's static codeToStatus table. The detailed error
+	// (which may name FFI symbols, backends, or config paths) is logged
+	// for operators; the client only sees a generic message.
+	slog.Error("cpex: invoke failed", "hook", hook, "error", err)
 	return denyWithStatus(pctx, http.StatusBadGateway,
 		fmt.Sprintf("cpex error on %s", hook),
 		"cpex.error",
-		err.Error(),
+		"cpex invocation failed",
 	)
 }
 
@@ -452,10 +455,13 @@ func (p *CPEX) handleDecisionError(pctx *pipeline.Context, err error) pipeline.A
 		pctx.Observe(fmt.Sprintf("cpex error (fail_open): %v", err))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
+	// Log the detailed error for operators; return a generic client message
+	// so internal CPEX/runtime details don't leak in the deny response.
+	slog.Error("cpex: decision handling failed", "error", err)
 	return denyWithStatus(pctx, http.StatusBadGateway,
 		fmt.Sprintf("cpex error: %v", err),
 		"cpex.error",
-		err.Error(),
+		"cpex decision handling failed",
 	)
 }
 

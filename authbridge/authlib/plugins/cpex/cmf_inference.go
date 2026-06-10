@@ -151,11 +151,16 @@ func applyInferenceRequestBodyMod(pctx *pipeline.Context, newContents []string) 
 // assistant completion text with newCompletion (the single redacted text
 // part CPEX returned on the response phase).
 //
-// It rewrites `choices[].message.content` for every choice that currently
-// carries a string content. Streaming responses (SSE: a sequence of
-// `data:` frames, not a single JSON object) are not rewritable here — the
-// body won't parse as one JSON object, so we return an error and let the
-// caller fail closed rather than forward an unredacted stream.
+// It rewrites the single string-content choice's `message.content`.
+// Because the write side receives only one redacted completion while the
+// read side (inferenceResponseParts) emits one text part per choice, a
+// response carrying more than one string-content choice (n>1) is an
+// ambiguous single-value rewrite — we fail closed rather than overwrite
+// the other choices' distinct completions with one value. Streaming
+// responses (SSE: a sequence of `data:` frames, not a single JSON object)
+// are not rewritable here — the body won't parse as one JSON object, so we
+// return an error and let the caller fail closed rather than forward an
+// unredacted stream.
 //
 // Returns mutated=false (no error) when there's nothing to change:
 // newCompletion empty, no choices, or no string content to replace.
@@ -174,7 +179,12 @@ func applyInferenceResponseBodyMod(pctx *pipeline.Context, newCompletion string)
 	if !ok {
 		return false, nil
 	}
-	changed := false
+
+	// Collect the choices carrying string content, matching what the read
+	// side surfaced. We only hold one redacted completion, so >1 such
+	// choice is ambiguous: fail closed instead of stamping the same value
+	// over distinct completions.
+	targets := make([]map[string]any, 0, len(choices))
 	for _, ch := range choices {
 		choice, ok := ch.(map[string]any)
 		if !ok {
@@ -185,13 +195,21 @@ func applyInferenceResponseBodyMod(pctx *pipeline.Context, newCompletion string)
 			continue
 		}
 		if c, ok := msg["content"].(string); ok && c != "" {
-			msg["content"] = newCompletion
-			changed = true
+			targets = append(targets, msg)
 		}
 	}
-	if !changed {
+	if len(targets) == 0 {
 		return false, nil
 	}
+	if len(targets) > 1 {
+		return false, fmt.Errorf(
+			"inference response has %d string-content choices; single-value redaction rewrite is ambiguous",
+			len(targets))
+	}
+	if targets[0]["content"] == newCompletion {
+		return false, nil
+	}
+	targets[0]["content"] = newCompletion
 
 	newBody, err := json.Marshal(envelope)
 	if err != nil {

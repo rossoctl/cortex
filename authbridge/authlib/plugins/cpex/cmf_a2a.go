@@ -102,8 +102,14 @@ func applyA2ARequestBodyMod(pctx *pipeline.Context, newTexts []string) (mutated 
 		if !ok {
 			continue
 		}
+		// Only non-empty text parts participate, matching the read side
+		// (a2aToCMFParts / a2aResponseParts both drop empty text). Counting
+		// empty text-kind parts here would drift against newTexts and
+		// trip a false count-mismatch error.
 		if kind, _ := po["kind"].(string); kind == "text" {
-			targets = append(targets, po)
+			if t, ok := po["text"].(string); ok && t != "" {
+				targets = append(targets, po)
+			}
 		}
 	}
 
@@ -179,7 +185,9 @@ func applyA2AResponseBodyMod(pctx *pipeline.Context, newArtifact string) (mutate
 			if kind, _ := po["kind"].(string); kind != "text" {
 				continue
 			}
-			if _, ok := po["text"].(string); !ok {
+			// Skip empty text parts so we rewrite the same part the read
+			// side surfaced (a2aResponseParts emits only non-empty text).
+			if t, ok := po["text"].(string); !ok || t == "" {
 				continue
 			}
 			po["text"] = newArtifact

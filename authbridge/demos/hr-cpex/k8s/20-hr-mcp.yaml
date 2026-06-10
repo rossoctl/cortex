@@ -45,6 +45,16 @@ spec:
         - name: hr-mcp
           image: hr-mcp:dev
           imagePullPolicy: Never
+          # Baseline container hardening — drop OS privilege the demo
+          # never needs. (Non-root execution would require the image to
+          # add a USER; left out so the demo image stays minimal.)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - name: http
               containerPort: 9100

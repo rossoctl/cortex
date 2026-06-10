@@ -95,7 +95,7 @@ RUN cd cmd/authbridge-cpex && \
 # but fails at runtime with "GLIBC_2.39 not found". When we eventually
 # move to a statically-linked CGO build (or the musl asset variant),
 # we can downgrade this back to the smaller base.
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash ca-certificates && \

@@ -17,9 +17,11 @@ uvicorn[standard]==0.32.0
 # LLM provider abstraction — supports OpenAI, Anthropic, Ollama, WatsonX,
 # Azure, Bedrock, and more, so the demo runs against whatever the operator
 # has access to without code changes. litellm is pinned at the lowest safe
-# release: 1.82.7 / 1.82.8 had a supply-chain compromise, so 1.83.0 is the
-# floor.
-litellm==1.83.0
+# release: 1.82.7 / 1.82.8 had a supply-chain compromise (1.83.0 floor) and
+# 1.83.0–1.83.9 carry a SQL-injection / SSTI / RCE / sandbox-escape cluster
+# (GHSA-r75f-5x8p-qvmc, -xqmj-j6mv-4862, -v4p8-mg3p-g94g, -wxxx-gvqv-xp7p),
+# all patched by 1.83.10.
+litellm==1.83.10
 
 # httpx for the MCP tool call (routed through the sidecar forward proxy).
 # Bumped to 0.28.1 to satisfy a2a-sdk's httpx>=0.28.1 floor.

@@ -142,6 +142,26 @@ func TestInferenceResponseBodyMod_RewritesChoiceContent(t *testing.T) {
 	}
 }
 
+func TestInferenceResponseBodyMod_MultiChoiceFailsClosed(t *testing.T) {
+	// n>1: two choices carry string content, but only one redacted
+	// completion is available. Stamping it over both would collapse
+	// distinct completions, so the rewrite must fail closed.
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"choices":[{"message":{"role":"assistant","content":"first 123-45-6789"}},{"message":{"role":"assistant","content":"second answer"}}]}`),
+	}
+	original := append([]byte(nil), pctx.ResponseBody...)
+	mutated, err := applyInferenceResponseBodyMod(pctx, "first [REDACTED]")
+	if err == nil {
+		t.Fatal("multi-choice response rewrite should fail closed with an error")
+	}
+	if mutated {
+		t.Fatal("must not mutate a multi-choice response")
+	}
+	if string(pctx.ResponseBody) != string(original) {
+		t.Fatalf("response body must be left untouched on fail-closed, got %s", pctx.ResponseBody)
+	}
+}
+
 func TestInferenceResponseBodyMod_StreamingFailsClosed(t *testing.T) {
 	pctx := &pipeline.Context{
 		ResponseBody: []byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"),

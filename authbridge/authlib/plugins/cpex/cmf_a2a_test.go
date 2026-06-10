@@ -83,6 +83,30 @@ func TestA2ARequestBodyMod_CountDriftFailsClosed(t *testing.T) {
 	}
 }
 
+func TestA2ARequestBodyMod_EmptyTextPartNotCounted(t *testing.T) {
+	// An empty text-kind part is dropped by the read side (a2aToCMFParts),
+	// so the write side must not count it either — otherwise it drifts
+	// against newTexts and trips a false count-mismatch error.
+	pctx := &pipeline.Context{
+		Body: []byte(`{"params":{"message":{"parts":[{"kind":"text","text":"ssn 123-45-6789"},{"kind":"text","text":""}]}}}`),
+	}
+	mutated, err := applyA2ARequestBodyMod(pctx, []string{"ssn [REDACTED]"})
+	if err != nil || !mutated {
+		t.Fatalf("empty text part should not cause drift; mutated=%v err=%v", mutated, err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(pctx.Body, &decoded); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	parts := decoded["params"].(map[string]any)["message"].(map[string]any)["parts"].([]any)
+	if got := parts[0].(map[string]any)["text"]; got != "ssn [REDACTED]" {
+		t.Fatalf("non-empty text part not redacted: %v", got)
+	}
+	if got := parts[1].(map[string]any)["text"]; got != "" {
+		t.Fatalf("empty text part must stay untouched, got %v", got)
+	}
+}
+
 // --- applyA2AResponseBodyMod ---
 
 func TestA2AResponseBodyMod_RewritesArtifact(t *testing.T) {
