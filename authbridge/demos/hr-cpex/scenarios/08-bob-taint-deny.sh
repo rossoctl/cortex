@@ -20,7 +20,7 @@
 #   S2  new session, get_compensation      → 200  (taints session "secret")
 #   S3  SAME session as S2, clean body     → 403  cpex.session_tainted_secret
 #
-# Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/authbridge-cpex
+# Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"

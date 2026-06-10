@@ -30,7 +30,7 @@
 # is denied (cpex.session_tainted_secret). Same id, different subject =
 # different outcome. Pre-fix, S3 would have returned 403.
 #
-# Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/authbridge-cpex
+# Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"

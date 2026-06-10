@@ -26,7 +26,7 @@ note "                  permissions claim includes repo:read:internal"
 ALICE=$(mint alice)
 CLIENT=$(mint hr-copilot)
 
-curl -s -X POST "$GATEWAY/mcp" \
+curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CLIENT" \
   -H "X-User-Token: $ALICE" \

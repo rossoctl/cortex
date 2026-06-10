@@ -26,7 +26,7 @@ note "Expected: Cedar never runs; IdP never called"
 BOB=$(mint bob)
 CLIENT=$(mint hr-copilot)
 
-curl -s -X POST "$GATEWAY/mcp" \
+curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CLIENT" \
   -H "X-User-Token: $BOB" \

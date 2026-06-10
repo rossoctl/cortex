@@ -2,7 +2,19 @@
 #
 #   source "$(dirname "$0")/_lib.sh"
 
-GATEWAY="${GATEWAY:-http://localhost:8090}"
+# Post-A2A-rework: CPEX now enforces on the agent's OUTBOUND path, so the
+# deterministic curl scenarios drive the tool through the sidecar's FORWARD
+# proxy (not a reverse-proxy gateway in front of hr-mcp). curl uses the
+# forward proxy with the absolute in-cluster MCP URL — the proxy resolves
+# the host cluster-side and runs the outbound mcp-parser → cpex pipeline,
+# exactly as the agent's own tool calls do.
+#
+#   PROXY       — sidecar forward proxy on the host (port-forwarded by
+#                 `make port-forward` as 8083 -> pod 8081; 8081 is taken
+#                 by Keycloak on the host)
+#   MCP_TARGET  — absolute URL the proxy forwards to (cluster DNS)
+PROXY="${PROXY:-http://localhost:8083}"
+MCP_TARGET="${MCP_TARGET:-http://hr-mcp.cpex-demo:9100/mcp}"
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mint() {
@@ -41,7 +53,7 @@ _post_tool() {
   # `${extra[@]+"${extra[@]}"}` expands to nothing when the array is empty
   # without tripping `set -u` on bash 3.2 (macOS), where a bare
   # `"${extra[@]}"` on an empty array errors "unbound variable".
-  curl -isS --max-time 10 -X POST "$GATEWAY/mcp" \
+  curl -isS --max-time 10 -x "$PROXY" -X POST "$MCP_TARGET" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $client_token" \
     -H "X-User-Token: $user_token" \

@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+# Copyright 2026
+# SPDX-License-Identifier: Apache-2.0
+"""HR copilot agent — exposes A2A `message/send`; CPEX fires on its egress.
+
+This is the containerized agent for the hr-cpex demo. It speaks A2A
+(via the official `a2a-sdk`) on the inbound side and calls the hr-mcp
+tools on the outbound side. The authbridge-cpex sidecar enforces CPEX
+on the **outbound** path (the agent's tool calls), so the whole policy
+chain — identity, Cedar PDP, RFC 8693 delegation, redaction, PII scan,
+session taint, audit — runs as a transparent egress guardrail on the
+agent rather than at a gateway in front of the tool.
+
+    A2A client (chat.py on the host — mints persona + client tokens)
+        │  POST message/send   headers: X-User-Token, Authorization,
+        │                               X-Session-Id ; contextId in body
+        ▼
+    authbridge-cpex sidecar — reverse proxy :8000  (inbound: passthrough)
+        ▼
+    THIS agent  :8001
+        │  ① LLM loop:  litellm → host.docker.internal:11434   DIRECT, no proxy
+        │  ② tool call: POST /mcp, re-attaching X-User-Token +
+        │               Authorization + X-Session-Id from the inbound request
+        ▼  via explicit per-client proxy → sidecar forward proxy :8081
+    authbridge-cpex sidecar — forward proxy  (outbound: mcp-parser → cpex)
+        │  identity (jwt-user ← X-User-Token, jwt-client ← Authorization)
+        │  Cedar PDP · redact(args.ssn) · pii-scan · session taint
+        │  delegate(workday/github-oauth) — RFC 8693 → Keycloak
+        ▼
+    hr-mcp  :9100
+
+Two outbound flows, deliberately handled differently (the Ollama footgun):
+
+  * LLM inference goes **DIRECT** to the model endpoint. We never set a
+    global HTTP_PROXY on this container — if we did, litellm/httpx would
+    route inference through the sidecar's forward proxy and cpex would
+    try (and fail) to evaluate it as a tool call.
+  * Only the MCP `tools/call` uses an explicit `httpx.Client(proxy=...)`
+    pointed at the sidecar's forward proxy, so cpex sees exactly the
+    traffic it's meant to govern. Mirrors the ibac demo's split
+    (demos/ibac/agent/main.go: callOllama direct, proxiedClient for tools).
+
+Identity threading is the crux: cpex resolves identity from headers on
+the *outbound* request, and the subject it derives keys the session-taint
+store. So every tool call must carry the user's X-User-Token and the
+client's Authorization forward, and the X-Session-Id that scopes taint.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import uuid
+from typing import Any
+
+import httpx
+import litellm
+import uvicorn
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.events import EventQueue
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+from a2a.utils import new_agent_text_message
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+log = logging.getLogger("hr-cpex-agent")
+
+# ---------------------------------------------------------------------------
+# Config (env-driven so the Pod manifest owns the wiring)
+# ---------------------------------------------------------------------------
+
+PORT = int(os.environ.get("PORT", "8001"))
+# Where the MCP tool lives. The agent POSTs here; httpx routes the call
+# through MCP_PROXY (the sidecar forward proxy), so cpex governs it.
+MCP_URL = os.environ.get("MCP_URL", "http://hr-mcp.cpex-demo:9100/mcp")
+# The sidecar forward proxy. ONLY the MCP client uses this — never as a
+# global HTTP_PROXY (that would drag inference through cpex too).
+MCP_PROXY = os.environ.get("MCP_PROXY", "http://localhost:8081")
+# litellm-routed model. Defaults to local Ollama (no API key). Override
+# with any LiteLLM-supported provider via MODEL + the provider's env.
+MODEL = os.environ.get("MODEL", "ollama/llama3.2:3b")
+# Inference endpoint. For the ollama provider this is the native base
+# (litellm appends /api/...). Set to host.docker.internal in-cluster so
+# the agent reaches an Ollama running on the developer's laptop.
+LLM_API_BASE = os.environ.get("LLM_API_BASE") or None
+# What the agent advertises in its agent card as its callable address.
+AGENT_PUBLIC_URL = os.environ.get("AGENT_PUBLIC_URL", "http://hr-cpex-agent.cpex-demo:8080/")
+
+# ---------------------------------------------------------------------------
+# Tools + prompt (lifted verbatim from the original chat.py — the gateway
+# enforcement story depends on these exact tool shapes, e.g. the `ssn`
+# echo-back arg that redaction strips).
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are an HR assistant for an HR copilot app. Help the user look up "
+    "employee compensation, view directories, send emails, and similar "
+    "tasks. Use the provided tools when needed. "
+    "\n\n"
+    "How to interpret tool results: "
+    "\n"
+    "  * If the tool returns a normal result, present the data to the "
+    "user. If any field's value is the literal string `[REDACTED]`, "
+    "show it as-is in your answer — that is the gateway's transparent "
+    "enforcement marker that the field exists but is hidden for this "
+    "caller. Do NOT apologize or refuse; just include the field with "
+    "the value `[REDACTED]`. "
+    "\n"
+    "  * If the tool returns an `error` envelope (a JSON-RPC error "
+    "with a `code` and `message`), the gateway denied the call. "
+    "Acknowledge politely without revealing the internal violation "
+    "code — the user may not have permission for that operation. "
+    "\n"
+    "  * If the tool returns an `auth_error`, the request failed at "
+    "the transport layer. Ask the user to re-authenticate."
+)
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_compensation",
+            "description": (
+                "Get compensation data for an employee. Returns salary, bonus, department, and optionally SSN."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "employee_id": {
+                        "type": "string",
+                        "description": "Employee identifier (e.g., EMP-001234)",
+                    },
+                    "include_ssn": {
+                        "type": "boolean",
+                        "description": "Whether to include SSN in the response",
+                        "default": False,
+                    },
+                    "ssn": {
+                        "type": "string",
+                        "description": (
+                            "An echo-back of the employee's SSN if the caller "
+                            "claims to already know it — this is exactly the "
+                            "kind of field the gateway redacts when the "
+                            "caller lacks the necessary permission."
+                        ),
+                    },
+                },
+                "required": ["employee_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "display_compensation",
+            "description": ("Display a compensation summary for the employee (band only, no salary)."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "employee_id": {"type": "string"},
+                },
+                "required": ["employee_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_directory",
+            "description": "Get the employee directory listing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "department": {
+                        "type": "string",
+                        "description": "Optional department filter",
+                        "default": "",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send an email (simulated).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["to", "subject", "body"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_repos",
+            "description": (
+                "Search the internal GitHub Enterprise for repositories. "
+                "Filter by name substring and/or visibility. Visibility is "
+                "one of `internal`, `public`, `external`."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {
+                        "type": "string",
+                        "description": "Substring to filter repo names (e.g. 'web-app').",
+                        "default": "",
+                    },
+                    "visibility": {
+                        "type": "string",
+                        "description": (
+                            "Repo visibility — `internal` (default), `public`, or `external`. "
+                            "External repos are typically off-limits for engineering."
+                        ),
+                        "enum": ["internal", "public", "external"],
+                    },
+                },
+                "required": ["visibility"],
+            },
+        },
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# MCP tool client — every call flows through the sidecar forward proxy so
+# cpex governs it, carrying the caller's identity headers on egress.
+# ---------------------------------------------------------------------------
+
+
+def format_tool_response(status: int, data: dict[str, Any]) -> str:
+    """Convert the MCP/cpex response into something compact the LLM can
+    read. Same three shapes the gateway returned in the standalone demo:
+
+      * HTTP 200 + {"result": ...}                          — happy path
+      * HTTP 200 + {"error": {code, message, data}}         — cpex deny
+      * HTTP 4xx/5xx + plain text                           — transport/auth
+    """
+    if status == 401:
+        body = data.get("text") if isinstance(data, dict) else str(data)
+        return json.dumps({"gateway_status": 401, "auth_error": body})
+    if status >= 400:
+        return json.dumps({"gateway_status": status, "error": data})
+    if "error" in data:
+        err = data["error"]
+        return json.dumps(
+            {
+                "error": err.get("message", "tool error"),
+                "violation": (err.get("data") or {}).get("violation"),
+            }
+        )
+    result = data.get("result", {})
+    content = result.get("content", [])
+    text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    combined = "".join(text_parts)
+    return combined or json.dumps(result)
+
+
+def call_tool(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    user_token: str,
+    client_token: str,
+    session_id: str,
+    request_id: int,
+) -> tuple[int, dict[str, Any]]:
+    """POST a single MCP tools/call through the sidecar forward proxy.
+
+    cpex (running on the sidecar's outbound pipeline) reads identity from
+    the headers we re-attach here: jwt-user from X-User-Token, jwt-client
+    from Authorization. X-Session-Id scopes the per-conversation taint
+    bucket; the cpex session store binds it to the resolved subject, so
+    the same id under a different user is a different bucket.
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+        "id": request_id,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": client_token,  # already "Bearer <client token>"
+        "X-User-Token": user_token,
+        "X-Session-Id": session_id,
+    }
+    # Explicit per-client proxy — ONLY this flow goes through cpex.
+    with httpx.Client(proxy=MCP_PROXY, timeout=30) as client:
+        resp = client.post(MCP_URL, json=payload, headers=headers)
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        data = {"text": resp.text}
+    return resp.status_code, data
+
+
+# ---------------------------------------------------------------------------
+# Agent turn — the litellm tool-calling loop (synchronous; reused from the
+# original chat.py). Per-conversation message history is keyed by session
+# id so a continuing chat keeps context, while a `switch`/`relogin` on the
+# client (fresh session id) starts clean — matching the old UX.
+# ---------------------------------------------------------------------------
+
+
+class HRAgent:
+    def __init__(self) -> None:
+        self._histories: dict[str, list[dict[str, Any]]] = {}
+        self._request_id = 0
+
+    def _history(self, session_id: str) -> list[dict[str, Any]]:
+        hist = self._histories.get(session_id)
+        if hist is None:
+            hist = [{"role": "system", "content": SYSTEM_PROMPT}]
+            self._histories[session_id] = hist
+        return hist
+
+    def run_turn(
+        self,
+        user_text: str,
+        *,
+        user_token: str,
+        client_token: str,
+        session_id: str,
+    ) -> str:
+        """One user turn: LLM (direct) → tool calls (proxied/cpex) → LLM."""
+        messages = self._history(session_id)
+        messages.append({"role": "user", "content": user_text})
+
+        completion_kwargs: dict[str, Any] = {}
+        if LLM_API_BASE:
+            completion_kwargs["api_base"] = LLM_API_BASE
+
+        try:
+            response = litellm.completion(
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                **completion_kwargs,
+            )
+        except Exception as e:  # noqa: BLE001 — surface any LLM error to the user
+            messages.pop()
+            log.warning("LLM error: %s", e)
+            return f"(LLM error: {e})"
+
+        assistant = response.choices[0].message
+        if not assistant.tool_calls:
+            text = assistant.content or "(no response)"
+            messages.append({"role": "assistant", "content": text})
+            return text
+
+        # Tool-call path: replay each call through cpex, then summarize.
+        messages.append(assistant.model_dump())
+        for tc in assistant.tool_calls:
+            fn = tc.function
+            try:
+                args = json.loads(fn.arguments) if isinstance(fn.arguments, str) else fn.arguments
+            except json.JSONDecodeError:
+                args = {}
+            self._request_id += 1
+            log.info(
+                "tool call (session=%s): %s(%s)",
+                session_id,
+                fn.name,
+                json.dumps(args, separators=(",", ":")),
+            )
+            status, data = call_tool(
+                fn.name,
+                args,
+                user_token=user_token,
+                client_token=client_token,
+                session_id=session_id,
+                request_id=self._request_id,
+            )
+            tool_text = format_tool_response(status, data)
+            log.info("tool result (session=%s, http=%s): %s", session_id, status, tool_text)
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_text})
+
+        try:
+            final = litellm.completion(model=MODEL, messages=messages, **completion_kwargs)
+            text = final.choices[0].message.content or ""
+        except Exception as e:  # noqa: BLE001
+            text = f"(LLM error summarizing tool results: {e})"
+        messages.append({"role": "assistant", "content": text})
+        return text
+
+
+# ---------------------------------------------------------------------------
+# A2A executor — bridges the SDK's message/send into a turn of the agent.
+# ---------------------------------------------------------------------------
+
+
+class HRAgentExecutor(AgentExecutor):
+    def __init__(self) -> None:
+        self._agent = HRAgent()
+
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        user_text = context.get_user_input()
+
+        # The a2a-sdk's DefaultCallContextBuilder stows the raw inbound
+        # HTTP headers under call_context.state['headers'] (lowercased).
+        # This is where the identity the client minted arrives — we read
+        # it here and thread it forward onto the tool call so cpex can
+        # resolve the same user/client on the outbound path.
+        headers: dict[str, str] = {}
+        if context.call_context is not None:
+            headers = context.call_context.state.get("headers", {}) or {}
+        user_token = headers.get("x-user-token", "")
+        authorization = headers.get("authorization", "")
+
+        # Session id scopes cpex taint. Prefer the A2A contextId (what the
+        # client put in the message); fall back to an explicit header, then
+        # mint one so a header-less caller still gets a stable bucket.
+        session_id = context.context_id or headers.get("x-session-id") or uuid.uuid4().hex
+
+        if not user_token or not authorization:
+            await event_queue.enqueue_event(
+                new_agent_text_message(
+                    "Missing identity: the request reached the agent without "
+                    "both X-User-Token and Authorization. Re-authenticate on "
+                    "the client.",
+                    context.context_id,
+                    context.task_id,
+                )
+            )
+            return
+
+        log.info("A2A turn (session=%s): %s", session_id, user_text)
+        # litellm + httpx are synchronous; run off the event loop so we
+        # don't block the server while the model and tools work.
+        reply = await asyncio.to_thread(
+            self._agent.run_turn,
+            user_text,
+            user_token=user_token,
+            client_token=authorization,
+            session_id=session_id,
+        )
+        await event_queue.enqueue_event(new_agent_text_message(reply, context.context_id, context.task_id))
+
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        # Single-shot turns; nothing long-running to cancel.
+        raise NotImplementedError("cancel is not supported")
+
+
+def build_agent_card() -> AgentCard:
+    return AgentCard(
+        name="HR Copilot",
+        description=(
+            "HR assistant that looks up employee compensation, directories, "
+            "and sends email via an HR MCP tool. In this demo the agent's "
+            "authbridge-cpex sidecar enforces CPEX/APL policy on the agent's "
+            "outbound tool calls — identity, Cedar authorization, SSN "
+            "redaction, PII scanning, RFC 8693 delegation, and cross-tool "
+            "session taint all fire on egress."
+        ),
+        url=AGENT_PUBLIC_URL,
+        version="0.1.0",
+        protocol_version="0.3.0",
+        preferred_transport="JSONRPC",
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[
+            AgentSkill(
+                id="hr_copilot",
+                name="HR copilot",
+                description=(
+                    "Answer HR questions by calling tools: compensation "
+                    "lookup (with policy-gated SSN), employee directory, and "
+                    "email. Outbound calls are governed by CPEX in the agent's "
+                    "sidecar."
+                ),
+                tags=["demo", "hr", "cpex"],
+                examples=[
+                    "Look up compensation for EMP-001234, include the SSN.",
+                    "Search internal repos for 'web-app'.",
+                ],
+            )
+        ],
+    )
+
+
+def main() -> None:
+    handler = DefaultRequestHandler(
+        agent_executor=HRAgentExecutor(),
+        task_store=InMemoryTaskStore(),
+    )
+    app = A2AStarletteApplication(agent_card=build_agent_card(), http_handler=handler).build()
+    log.info("HR copilot A2A agent on :%d (MCP via proxy %s → %s)", PORT, MCP_PROXY, MCP_URL)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level=os.environ.get("LOG_LEVEL", "info").lower())
+
+
+if __name__ == "__main__":
+    main()

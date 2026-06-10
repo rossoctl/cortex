@@ -1,9 +1,22 @@
 # CPEX Bridge Demo
 
-An AuthBridge sidecar fronts an MCP backend on a Kagenti kind cluster
-and enforces authorization with CPEX/APL.
+An LLM **agent** runs as a container exposing **A2A** (`message/send`),
+with an **authbridge-cpex sidecar enforcing CPEX/APL on the agent's
+outbound tool calls** to an MCP backend, on a Kagenti kind cluster. CPEX
+is a transparent **egress guardrail on the agent**: identity, Cedar PDP,
+RFC 8693 delegation, redaction, PII scanning, session taint, and audit
+all fire when the agent calls a tool — not at a gateway in front of it.
 
-## Why CPEX/APL, not just a PDP
+> **Architecture note.** Earlier revisions of this demo ran CPEX as a
+> standalone gateway *in front of* `hr-mcp` (enforcing on the inbound
+> path), with the "agent" being a host-side `chat.py` script. It has been
+> reworked to the agent-sidecar shape above (matching the `ibac` demo):
+> the agent is now containerized, `chat.py` is a thin A2A client, and CPEX
+> enforces on the agent's **outbound** path. CPEX is direction-agnostic,
+> so the policy in `cpex-policy.yaml` is unchanged — only *where* it runs
+> moved (inbound → outbound), expressed in the sidecar's pipeline.
+
+## Why CPEX
 
 A decision engine like OPA or Cedar answers one question: given this
 input, is the action allowed? That verdict still has to be wired into
@@ -13,7 +26,7 @@ sensitive fields from the payload, and writes an audit record, all in
 the right order with the right short-circuits. That orchestration is
 normally bespoke code in every gateway.
 
-APL is the connective layer that makes the orchestration itself
+CPEX APL is the connective layer that makes the orchestration itself
 declarative. A policy is a per-resource chain of steps, and those steps
 compose three things a plain PDP does not:
 
@@ -32,11 +45,6 @@ compose three things a plain PDP does not:
   can gate on its result, refusing to forward a token the IdP narrowed
   below what the call needs. Issuing credentials becomes part of the
   authorization decision rather than a side effect bolted on afterward.
-
-For AuthBridge, that is the difference between native Go plugins that
-each make one fixed decision and an operator-editable policy that
-composes identity, any PDP, token exchange, redaction, and audit into a
-single declarative chain, shipped as a ConfigMap.
 
 ## What this demo shows
 
@@ -59,13 +67,21 @@ install Kagenti or create a cluster. You need:
 - A Kagenti kind cluster named `kagenti`. Install it from the
   [Kagenti repository][kagenti]. Override `KIND_CLUSTER` in the
   Makefile if yours has a different name.
-- Docker, to build the two local images. They load into kind and are
-  never pushed to a registry.
+- Docker, to build the three local images (`hr-cpex-agent`,
+  `authbridge-cpex`, `hr-mcp`). They load into kind and are never pushed
+  to a registry.
 - kubectl, configured for the cluster.
+- An Ollama running on the host with a tool-capable model pulled
+  (`ollama pull llama3.2:3b`) — only needed for the interactive chat;
+  the `make scenarios` curl matrix does not use the LLM. Ollama must
+  listen beyond loopback so cluster pods can reach it: set
+  `OLLAMA_HOST=0.0.0.0` and restart Ollama. How a pod reaches the host
+  depends on your Docker provider — see **Pointing the agent at Ollama**
+  below.
 
 Everything else is vendored in this directory: the `hr-mcp` backend,
-the AuthBridge manifests, and the chat agent. No sibling checkouts
-needed.
+the AuthBridge manifests, the agent, and the chat client. No sibling
+checkouts needed.
 
 The demo creates one namespace, `cpex-demo`. `make undeploy` removes it
 cleanly and leaves the rest of the cluster untouched.
@@ -75,24 +91,32 @@ cleanly and leaves the rest of the cluster untouched.
 ## Quick start
 
 ```bash
-make deploy         # build images, load into kind, apply manifests, wait for Ready
-make port-forward   # in another terminal: Keycloak on :8081, gateway on :8082
-make scenarios      # run the seven curl scenarios
+make deploy         # build images (agent + authbridge-cpex + hr-mcp), load into kind, apply, wait for Ready
+make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094
+make scenarios      # run the nine curl scenarios
 ```
 
-`make scenarios` exercises three personas across allow, deny, and
-redact paths:
+`make scenarios` drives the tool through the agent's **forward-proxy**
+(the same egress path the agent's own tool calls take), exercising the
+personas across allow, deny, and redact paths:
 
 ```
-01-bob-allow.sh                 PASS   SSN visible
-02-alice-deny.sh                DENY   APL require(role.hr)
-03-eve-redact.sh                PASS   SSN redacted in response   <- the one to watch
-04-alice-internal-allow.sh      PASS   Cedar permit + token exchange
-05-alice-external-cedar-deny.sh DENY   Cedar default-deny
-06-bob-apl-deny.sh              DENY   APL team mismatch
-07-bob-pii-deny.sh              DENY   PII validator (PII in the body)
-08-bob-taint-deny.sh            DENY   taint propagation (session touched secrets)
+01-bob-allow.sh                      PASS   SSN visible
+02-alice-deny.sh                     DENY   APL require(role.hr)
+03-eve-redact.sh                     PASS   SSN redacted in response   <- the one to watch
+04-alice-internal-allow.sh           PASS   Cedar permit + token exchange
+05-alice-external-cedar-deny.sh      DENY   Cedar default-deny
+06-bob-apl-deny.sh                   DENY   APL team mismatch
+07-bob-pii-deny.sh                   DENY   PII validator (PII in the body)
+08-bob-taint-deny.sh                 DENY   taint propagation (session touched secrets)
+09-cross-principal-taint-isolation.sh PASS  taint is subject-bound (same id, different user)
 ```
+
+The scenarios are deterministic curl runs and skip the LLM entirely:
+each posts an MCP `tools/call` through the sidecar forward proxy
+(`curl -x http://localhost:8083 http://hr-mcp.cpex-demo:9100/mcp`),
+carrying the same `Authorization` + `X-User-Token` (+ `X-Session-Id`)
+the agent would. The interactive chat (below) is the full A2A path.
 
 **Act 4 — taint propagation (scenario 08).** Reading compensation runs
 `taint(secret, session)`, attaching the label `secret` to the CPEX
@@ -106,6 +130,16 @@ PII deny. Scenario 08 shows all three beats with fresh per-run session
 ids: a clean session sends fine (S1 → 200), reading compensation taints
 a second session (S2 → 200), and that session can no longer send email
 (S3 → 403 `cpex.session_tainted_secret`).
+
+**Act 5 — cross-principal taint isolation (scenario 09).** Session taint
+is keyed by the authenticated subject, not the raw `X-Session-Id`: the
+CPEX session store hashes `sha256(subject_id : session_id)`. So the
+*same* session id under two different users resolves to two different
+buckets. Scenario 09 proves it — eve taints a shared session id (S2),
+but bob reusing that exact id still sends mail (S3 → 200), because
+`H(bob:id) ≠ H(eve:id)`. This is why identity must resolve on the
+outbound path: the agent re-attaches `X-User-Token` so cpex derives the
+subject that scopes (and isolates) taint.
 
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same
 request, the same backend returns the same record, but Eve's response
@@ -121,31 +155,70 @@ comes back without the SSN because the policy redacts it.
 
 ## Interactive chat
 
-The scenarios are deterministic curl runs. For a live demo, drive the
-gateway with an LLM agent that switches persona mid-conversation.
+The scenarios are deterministic curl runs. For a live demo, talk to the
+**agent over A2A** with `chat.py` — a thin client that mints persona
+tokens and switches persona mid-conversation. The LLM and the tools live
+in the agent container; `chat.py` only sends `message/send` and renders
+the reply.
 
-Set up the agent once:
+The agent itself runs an LLM (default `ollama/llama3.2:3b`). Make sure an
+Ollama is running on the host with the model pulled and listening beyond
+loopback so the cluster can reach it:
+
+```bash
+ollama pull llama3.2:3b
+OLLAMA_HOST=0.0.0.0 ollama serve     # or, for the macOS app:
+                                     #   launchctl setenv OLLAMA_HOST 0.0.0.0 && relaunch Ollama
+```
+
+See **Pointing the agent at Ollama** below for the per-provider address;
+`make ollama-check` verifies a pod can actually reach it.
+
+Set up the **client** once (its deps are separate from the agent image —
+no litellm needed host-side):
 
 ```bash
 cd agent
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-client.txt
 ```
 
-Run it against a local Ollama, no API key required:
+Run it (the A2A endpoint is the agent Service, exposed on `:8082` by
+`make port-forward`):
 
 ```bash
-ollama pull llama3.1
-GATEWAY_URL=http://localhost:8082/mcp python chat.py --persona eve
+python chat.py --persona eve
+# or point at a different endpoint:
+AGENT_URL=http://localhost:8082 python chat.py --persona bob
 ```
 
-The agent defaults to `ollama/llama3.1`. Point `--model` at any
-litellm-supported provider for stronger tool-calling:
+To run the agent against a non-Ollama model, set `MODEL` (and the
+provider's API-key env) on the `agent` container — model selection now
+lives in the container, not the client. `MODEL` and `LLM_API_BASE` are
+Makefile vars, e.g. `make deploy MODEL=ollama/llama3:70b`.
+
+### Pointing the agent at Ollama
+
+The agent's inference call goes **direct** to `LLM_API_BASE` (never
+through the cpex sidecar — only the MCP tool call is proxied). How a
+cluster pod reaches the host's Ollama depends on your Docker provider, so
+`LLM_API_BASE` is a Makefile var (injected into the deployment on
+`apply`):
+
+| Provider | `LLM_API_BASE` |
+|---|---|
+| Docker Desktop / kind created with host mappings | `http://host.docker.internal:11434` (default) |
+| Rancher Desktop (lima) | `http://192.168.5.2:11434` (the lima host-gateway) |
 
 ```bash
-GATEWAY_URL=http://localhost:8082/mcp python chat.py --persona bob --model gpt-4o-mini
+# Rancher Desktop example:
+make deploy LLM_API_BASE=http://192.168.5.2:11434
+make ollama-check LLM_API_BASE=http://192.168.5.2:11434   # confirms a pod can reach it
 ```
+
+In all cases Ollama must be started with `OLLAMA_HOST=0.0.0.0`. If
+`make ollama-check` fails, it prints exactly these two things to fix.
 
 In-chat commands:
 
@@ -181,34 +254,48 @@ See `agent/CHAT-WALKTHROUGH.md` for a longer script and talking points.
 
 ## How it works
 
-The client sends one MCP request with two JWTs: a client token in
-`Authorization` and the persona's user token in `X-User-Token`. The
-AuthBridge sidecar runs a two-stage pipeline, `mcp-parser -> cpex`,
-and the `cpex` plugin evaluates `cpex-policy.yaml` in order.
+The A2A client sends `message/send` to the agent with two JWTs as HTTP
+headers: a client token in `Authorization` and the persona's user token
+in `X-User-Token`, plus an `X-Session-Id` that scopes session taint. The
+sidecar's **inbound** pipeline is empty (passthrough), so those headers
+reach the agent unmodified. The agent runs its LLM loop and, for each
+tool call, **re-attaches the same headers** onto an MCP `tools/call` that
+egresses through the sidecar's **forward proxy** — where the `mcp-parser
+-> cpex` pipeline runs and `cpex` evaluates `cpex-policy.yaml` in order.
 
 ```
-chat.py / curl (host)
-    |  POST /mcp
-    |    Authorization: client token   ->  jwt-client
-    |    X-User-Token:   persona token ->  jwt-user
-    v  port-forward :8082 -> svc/authbridge-cpex:8080
-+--------------------------------------------------------------+
-| authbridge-cpex pod   (namespace: cpex-demo)                 |
-|                                                              |
-| AuthBridge pipeline:   mcp-parser  ->  cpex                  |
-|   mcp-parser: parse JSON-RPC, set mcp.method / mcp.name      |
-|   cpex:       run cpex-policy.yaml in order:                 |
-|                                                              |
-|     1. identity    resolve subject + client from the two     |
-|                    JWTs, verified against Keycloak JWKS      |
-|     2. APL policy  require(...) -> cedar PDP ->              |
-|                    delegate(...) -> post-check               |
-|     3. plugins     pii-scan (deny), audit-log (observe)      |
-|     4. body        redact(args.ssn) / redact(result.ssn)     |
-+--------------------------------------------------------------+
+chat.py (host A2A client)
+    |  message/send
+    |    Authorization: client token     X-User-Token: persona token
+    |    X-Session-Id: conversation id   contextId in A2A body
+    v  port-forward :8082 -> svc/hr-cpex-agent:8080
++------------------------------------------------------------------+
+| hr-cpex-agent pod   (namespace: cpex-demo)                       |
+|                                                                  |
+|  authbridge-cpex sidecar — reverse proxy :8000                   |
+|    inbound pipeline: []  (passthrough — headers forwarded as-is) |
+|        v                                                         |
+|  agent :8001  (A2A server + litellm tool loop)                   |
+|    - inference: litellm -> host.docker.internal:11434  DIRECT    |
+|                 (never through the sidecar — the Ollama footgun) |
+|    - tool call: POST /mcp, re-attaching Authorization +          |
+|                 X-User-Token + X-Session-Id                      |
+|        v  explicit per-client proxy -> :8081                     |
+|  authbridge-cpex sidecar — forward proxy :8081                   |
+|    outbound pipeline:  mcp-parser  ->  cpex                      |
+|      mcp-parser: parse JSON-RPC, set mcp.method / mcp.name       |
+|      cpex:       run cpex-policy.yaml in order:                  |
+|        1. identity   resolve subject + client from the two JWTs, |
+|                      verified against Keycloak JWKS (subject     |
+|                      keys the session-taint bucket)              |
+|        2. APL policy require(...) -> cedar PDP ->               |
+|                      delegate(...) -> post-check                 |
+|        3. plugins    pii-scan (deny), audit-log (observe), taint |
+|        4. body       redact(args.ssn) / redact(result.ssn)       |
++------------------------------------------------------------------+
          |                                    |
-         |  delegate(): RFC 8693              |  on allow:
-         |  token exchange                    |  reverse-proxy
+         |  delegate(): RFC 8693              |  on allow: forward proxy
+         |  token exchange                    |  to the MCP target
          v                                    v
    Keycloak  svc:8080                    hr-mcp  svc:9100
    realm cpex-demo                       get_compensation
@@ -219,6 +306,14 @@ chat.py / curl (host)
 Response-side redaction (`result.ssn`) runs as the reply flows back
 out through the pipeline, so an SSN the backend returns unsolicited is
 still stripped for a caller without the permission.
+
+**Why inference must bypass the sidecar.** The agent makes two kinds of
+outbound call. The MCP tool call is the one cpex should govern, so it
+goes through the forward proxy (`:8081`). The LLM inference call must
+*not*: it goes direct to `host.docker.internal:11434`. The container
+therefore sets `MCP_PROXY` (used by the MCP client only) and deliberately
+**no `HTTP_PROXY`** — a global proxy would drag inference through cpex,
+which would try to evaluate model traffic as a tool call.
 
 ### Authorization patterns
 
@@ -263,7 +358,7 @@ After editing:
 
 ```bash
 make apply
-kubectl -n cpex-demo rollout restart deployment/authbridge-cpex
+kubectl -n cpex-demo rollout restart deployment/hr-cpex-agent
 ```
 
 `make apply` regenerates the ConfigMap but does not restart the pod,
@@ -277,13 +372,17 @@ fresh pod that mounts the new policy.
 | `k8s/00-namespace.yaml` | The `cpex-demo` namespace |
 | `k8s/10-keycloak.yaml` | Keycloak Service and Deployment |
 | `k8s/20-hr-mcp.yaml` | hr-mcp backend Service and Deployment |
-| `k8s/30-authbridge-cpex.yaml` | AuthBridge config, Service, Deployment |
+| `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: config, Service, Deployment |
 | `k8s/realm-export.json` | Keycloak realm: users, clients, mappers |
 | `k8s/cpex-policy.yaml` | CPEX policy: identity, PDP, delegator, validators, audit |
 | `hr-mcp-server/` | Vendored FastAPI MCP backend, built into `hr-mcp:dev` |
-| `agent/` | Vendored chat agent: `chat.py`, requirements, walkthrough |
-| `scenarios/` | The seven curl scenarios run by `make scenarios` |
-| `mint-token.sh` | Mints a persona JWT via Keycloak. Used by scenarios and the agent |
+| `agent/agent.py` | A2A server + litellm tool loop, built into `hr-cpex-agent:dev` |
+| `agent/chat.py` | Host-side A2A client (mints tokens, drives the demo) |
+| `agent/requirements.txt` | Agent (server) deps — installed into the image |
+| `agent/requirements-client.txt` | Client deps — installed on the host for `chat.py` |
+| `agent/Dockerfile` | Builds `hr-cpex-agent:dev` |
+| `scenarios/` | The nine curl scenarios run by `make scenarios` |
+| `mint-token.sh` | Mints a persona JWT via Keycloak. Used by scenarios |
 | `verify-token-exchange.sh` | Checks RFC 8693 token exchange against the realm |
 
 ## Tear down
@@ -296,11 +395,29 @@ make undeploy   # deletes the cpex-demo namespace
 
 - **Rebuilt an image but the pod still runs the old one.** A rebuild
   leaves the Deployment spec identical, so `kubectl apply` does not roll
-  the pod. After `kind load docker-image authbridge-cpex:dev`, force it
-  with `kubectl -n cpex-demo rollout restart deployment/authbridge-cpex`.
-- **Chat agent cannot reach the gateway.** `chat.py` defaults to
-  `:8090`, but `make port-forward` exposes the gateway on `:8082`. Pass
-  `GATEWAY_URL=http://localhost:8082/mcp`.
+  the pod. After `kind load docker-image hr-cpex-agent:dev` (or
+  `authbridge-cpex:dev`), force it with
+  `kubectl -n cpex-demo rollout restart deployment/hr-cpex-agent`.
+- **Chat client cannot reach the agent.** `chat.py` defaults to
+  `http://localhost:8082`; `make port-forward` exposes the agent Service
+  there. Override with `AGENT_URL=http://localhost:8082`.
+- **Agent replies with an LLM/connection error** (`name resolution` or
+  `all connection attempts failed`). The agent can't reach the host
+  Ollama. Run `make ollama-check` — it tells you the two fixes:
+  (1) start Ollama with `OLLAMA_HOST=0.0.0.0`, and (2) set `LLM_API_BASE`
+  to an address your pods can route to (`host.docker.internal:11434` on
+  Docker Desktop, `192.168.5.2:11434` on Rancher Desktop). See **Pointing
+  the agent at Ollama**. Inference goes direct (not through the sidecar)
+  by design.
+- **Client gets HTTP 503 "all connection attempts failed".** A stale
+  `kubectl port-forward` — the tunnel dies when the agent pod rolls (e.g.
+  after `make deploy`/`set env`). Restart `make port-forward`.
+- **Tool calls aren't being enforced / cpex never fires.** cpex now runs
+  on the agent's **outbound** path. Confirm the MCP call traverses the
+  forward proxy: `kubectl -n cpex-demo logs deploy/hr-cpex-agent -c
+  authbridge-cpex`. The agent must re-attach `X-User-Token` +
+  `Authorization`; without the user token cpex can't resolve a subject
+  and session taint silently stops scoping.
 - **Keycloak token issuer.** `KC_HOSTNAME` sets the `iss` claim to
   `http://keycloak.cpex-demo:8080`. Tokens minted through the
   port-forward at `localhost:8081` still carry that in-cluster issuer,

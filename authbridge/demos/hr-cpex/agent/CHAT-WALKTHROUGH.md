@@ -3,6 +3,12 @@
 A cheat-sheet of prompts to type into `chat.py` and what each one should
 demonstrate. Read it line-by-line during the demo; the LLM does the rest.
 
+`chat.py` is now an **A2A client**: it mints persona tokens and sends
+`message/send` to the containerized agent. The LLM and the tools live in
+the agent; CPEX enforces on the **agent's outbound** tool calls. The
+user-visible behavior below is identical to the old standalone gateway —
+only the enforcement point moved (gateway-inbound → agent-egress).
+
 ## Setup (once)
 
 In one terminal:
@@ -15,7 +21,7 @@ make deploy                          # builds images, loads to kind, applies man
 In a second terminal:
 
 ```bash
-make port-forward                    # exposes Keycloak (:8081) + gateway (:8082)
+make port-forward                    # Keycloak (:8081) + agent (:8082) + fwd proxy (:8083) + session API (:9094)
 ```
 
 In a third terminal (so the audience can see what reaches the backend):
@@ -24,15 +30,17 @@ In a third terminal (so the audience can see what reaches the backend):
 kubectl -n cpex-demo logs -f deploy/hr-mcp
 ```
 
-In a third terminal (the demo itself):
+In a fourth terminal (the demo itself):
 
 ```bash
 cd agent
-GATEWAY_URL=http://localhost:8082/mcp python chat.py --persona bob
+# one-time: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements-client.txt
+# Ollama must be running on the host with the model pulled (ollama pull llama3.2:3b).
+python chat.py --persona bob         # or: AGENT_URL=http://localhost:8082 python chat.py --persona bob
 ```
 
-chat.py writes a banner showing persona + model + gateway URL.
-You're now talking to the LLM, which is in front of the CPEX gateway.
+chat.py writes a banner showing persona + agent endpoint + session.
+You're now talking to the agent over A2A; CPEX governs its egress.
 
 ---
 
@@ -224,7 +232,7 @@ Bob: send an email to alice@corp.com with the subject "FYI"
    `read_delegated_tokens` etc.) — observation can't block — and emits
    a JSON record describing the denied attempt
 
-**In the gateway's logs (`kubectl -n cpex-demo logs -f deploy/authbridge-cpex`):**
+**In the sidecar's logs (`kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex`):**
 
 ```json
 {"ts":"2026-…","plugin":"audit-log","source":"cpex-demo-gateway",
@@ -268,8 +276,9 @@ record, no plugin coordination required.
   what hr-mcp logged. Show `aud: workday-api`, signed by Keycloak.
 - Run `./verify-token-exchange.sh` live — proves RFC 8693 against
   the actual Keycloak running in docker.
-- Edit the cpex.yaml `require(...)` line and `pkill -HUP` the gateway —
-  the new policy takes effect immediately (the manager reloads).
+- Edit `k8s/cpex-policy.yaml`'s `require(...)` line, then `make apply &&
+  kubectl -n cpex-demo rollout restart deploy/hr-cpex-agent` — the fresh
+  pod mounts the new policy.
 - Open `realm-export.json` and show the Keycloak v2 STE setup. Compare
   to MCP's `aud` validation requirement in the authorization spec.
 
@@ -280,6 +289,6 @@ record, no plugin coordination required.
 | Symptom | Fix |
 |---|---|
 | LLM doesn't call tools, just chats | Try a more directive prompt (`call the get_compensation tool with employee_id…`). Llama 8B forgets tools; switch to 70B. |
-| All scenarios return 401 | Keycloak didn't finish importing. `docker compose down -v && docker compose up -d`, wait 30s, re-run `verify-token-exchange.sh`. |
+| All scenarios return 401 | Keycloak didn't finish importing the realm. Wait for the pod: `kubectl -n cpex-demo get pod -l app.kubernetes.io/name=keycloak -w`, then re-run `verify-token-exchange.sh`. |
 | Gateway response is a Pingora `PrematureBodyEnd` | The body-rewrite pad logic regressed. Body rewrite is the only place this happens. |
 | Cedar returns `cedar.default_deny` for an "allow" case | `${args.X}` substitution may have failed — check the gateway log for the resolve error; the bag key it asked for is in the error. |

@@ -1,0 +1,218 @@
+# hr-cpex agent + authbridge-cpex sidecar — the A2A-rework deployment.
+#
+# This replaces the old standalone-gateway 30-authbridge-cpex.yaml. Instead
+# of CPEX fronting hr-mcp on the INBOUND path, the agent now runs as a
+# container and authbridge-cpex is its OUTBOUND sidecar: CPEX fires on the
+# agent's tool calls (mcp-parser → cpex outbound), making it a transparent
+# egress guardrail on the agent. Mirrors the ibac demo's shape, but stays
+# self-contained (explicit sidecar in the pod spec, no operator injection).
+#
+# Traffic:
+#   host A2A client ──► Service hr-cpex-agent :8080
+#                        └─► sidecar reverse proxy :8000  (inbound: passthrough)
+#                             └─► agent :8001  (A2A message/send)
+#   agent tool call ──► sidecar forward proxy :8081  (outbound: mcp-parser → cpex)
+#                        └─► hr-mcp :9100
+#
+# The agent's inference (litellm → Ollama) does NOT go through the sidecar:
+# the agent uses an explicit per-client proxy for the MCP call only and we
+# deliberately do NOT set HTTP_PROXY on the agent container.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authbridge-config
+  namespace: cpex-demo
+data:
+  authbridge.yaml: |
+    mode: proxy-sidecar
+    listener:
+      # Reverse proxy fronts the agent (inbound passthrough — see pipeline).
+      reverse_proxy_addr: ":8000"
+      reverse_proxy_backend: "http://localhost:8001"
+      # Forward proxy is where the agent's MCP tool calls egress; cpex runs
+      # on this outbound path.
+      forward_proxy_addr: ":8081"
+      # Session API and stats bind to localhost only — both expose raw
+      # user content / internal state and have no auth. Reach them via
+      # `kubectl port-forward` (works against the pod regardless of
+      # Service ports), never cluster-wide.
+      session_api_addr: "127.0.0.1:9094"
+    stats:
+      stats_address: "127.0.0.1:9093"
+    session:
+      # The taint scenarios (08/09) depend on the session store; keep it on.
+      enabled: true
+      ttl: 30m
+    pipeline:
+      # Inbound is pure passthrough: the reverse proxy must forward the A2A
+      # client's X-User-Token + Authorization + X-Session-Id headers to the
+      # agent unmodified, so the agent can re-attach them on egress. cpex
+      # does NOT run here — enforcement moved to the outbound path.
+      inbound:
+        plugins: []
+      outbound:
+        plugins:
+          # mcp-parser populates pctx.Extensions.MCP from the agent's
+          # JSON-RPC tool call; cpex reads from there for CMF dispatch.
+          - name: mcp-parser
+          # cpex handles identity, policy, delegation, redaction, PII, and
+          # session taint entirely via its own sub-plugins. Identity
+          # resolvers (jwt-user ← X-User-Token, jwt-client ← Authorization)
+          # MUST run here so the resolved subject is present — the cpex
+          # session store binds taint to that subject (Finding 2). The
+          # CPEX-side YAML lives in the cpex-policy ConfigMap, mounted at
+          # /etc/cpex/cpex.yaml.
+          - name: cpex
+            config:
+              hooks:
+                on_request:
+                  - cmf.tool_pre_invoke
+                on_response:
+                  - cmf.tool_post_invoke
+              config_file: /etc/cpex/cpex.yaml
+              fail_open: false
+              # Bypass hosts default covers keycloak/SPIRE/observability so
+              # those egress calls don't pay the FFI cost.
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hr-cpex-agent
+  namespace: cpex-demo
+  labels:
+    app.kubernetes.io/name: hr-cpex-agent
+    app.kubernetes.io/part-of: cpex-demo
+spec:
+  selector:
+    app.kubernetes.io/name: hr-cpex-agent
+  # Only the sidecar reverse proxy is exposed cluster-wide, so the A2A
+  # client talks THROUGH the sidecar (honest sidecar shape; inbound is
+  # passthrough). The forward proxy (8081) and session API (9094) bind
+  # locally and are reached via `kubectl port-forward` against the pod.
+  ports:
+    - name: a2a
+      port: 8080
+      targetPort: 8000
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hr-cpex-agent
+  namespace: cpex-demo
+  labels:
+    app.kubernetes.io/name: hr-cpex-agent
+    app.kubernetes.io/part-of: cpex-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hr-cpex-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hr-cpex-agent
+        app.kubernetes.io/part-of: cpex-demo
+    spec:
+      containers:
+        # --- The agent (A2A server + litellm tool loop) ---
+        - name: agent
+          image: hr-cpex-agent:dev
+          imagePullPolicy: Never
+          env:
+            - name: PORT
+              value: "8001"
+            # The agent POSTs MCP here; httpx routes it through MCP_PROXY.
+            - name: MCP_URL
+              value: "http://hr-mcp.cpex-demo:9100/mcp"
+            # Sidecar forward proxy — used by the MCP client ONLY. There is
+            # deliberately NO HTTP_PROXY env: a global proxy would drag the
+            # litellm inference call through cpex too (the Ollama footgun).
+            - name: MCP_PROXY
+              value: "http://localhost:8081"
+            # Inference endpoint. Native Ollama base (litellm appends
+            # /api/...). The Makefile overrides MODEL + LLM_API_BASE via
+            # `kubectl set env` on apply, so set them there (or `make deploy
+            # LLM_API_BASE=...`), not here. Defaults below are the
+            # Docker-Desktop / kind-with-host-mappings case; on Rancher
+            # Desktop the host is reached at http://192.168.5.2:11434
+            # (lima host-gateway) and Ollama must bind 0.0.0.0.
+            - name: MODEL
+              value: "ollama/llama3.2:3b"
+            - name: LLM_API_BASE
+              value: "http://host.docker.internal:11434"
+            - name: AGENT_PUBLIC_URL
+              value: "http://hr-cpex-agent.cpex-demo:8080/"
+            - name: LOG_LEVEL
+              value: "info"
+          ports:
+            - name: agent
+              containerPort: 8001
+          # Gate pod readiness on the agent's A2A server actually listening
+          # (litellm import delays uvicorn ~10s). Without this, the pod goes
+          # Ready as soon as the sidecar is, and a client hitting the reverse
+          # proxy mid-startup gets a 503 ("all connection attempts failed").
+          readinessProbe:
+            tcpSocket:
+              port: 8001
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"
+
+        # --- authbridge-cpex sidecar (CPEX on the agent's egress) ---
+        - name: authbridge-cpex
+          image: authbridge-cpex:dev
+          imagePullPolicy: Never
+          args:
+            - "--config"
+            - "/etc/authbridge/authbridge.yaml"
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+          ports:
+            - name: reverse-proxy
+              containerPort: 8000
+            - name: forward-proxy
+              containerPort: 8081
+            - name: session-api
+              containerPort: 9094
+            - name: stats
+              containerPort: 9093
+            - name: health
+              containerPort: 9091
+          volumeMounts:
+            - name: authbridge-config
+              mountPath: /etc/authbridge
+              readOnly: true
+            - name: cpex-policy
+              mountPath: /etc/cpex
+              readOnly: true
+          readinessProbe:
+            # /readyz gates on plugin readiness (ANDs Ready() across
+            # plugins); /healthz is always 200 and only fits liveness.
+            httpGet:
+              path: /readyz
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+      volumes:
+        - name: authbridge-config
+          configMap:
+            name: authbridge-config
+        - name: cpex-policy
+          configMap:
+            name: cpex-policy
