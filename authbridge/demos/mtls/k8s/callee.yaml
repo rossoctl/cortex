@@ -33,9 +33,6 @@ spec:
         app.kubernetes.io/part-of: mtls-demo
         kagenti.io/inject: enabled
         kagenti.io/spire: enabled
-        # Required by the kagenti-operator's mutating-webhook
-        # objectSelector ({kagenti.io/type: [agent, tool]}).
-        kagenti.io/type: agent
     spec:
       serviceAccountName: mtls-callee
       securityContext:
@@ -89,3 +86,19 @@ spec:
       protocol: TCP
       name: http
   type: ClusterIP
+
+---
+# AgentRuntime enrolls this workload with the operator. The operator
+# applies kagenti.io/type=agent to the Deployment and Pod template,
+# which triggers webhook sidecar injection and Keycloak client registration.
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: mtls-callee
+  namespace: team1
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mtls-callee

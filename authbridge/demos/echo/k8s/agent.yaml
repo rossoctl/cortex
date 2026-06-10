@@ -1,7 +1,6 @@
 # Echo demo agent — operator-injected, kagenti-UI-discoverable.
 #
 # Required labels for this agent to show up in the kagenti UI:
-#   kagenti.io/type: agent           — UI lists agents by this label
 #   kagenti.io/inject: enabled       — operator's webhook injects authbridge
 #   kagenti.io/spire: disabled       — demo doesn't depend on SPIRE identity
 #   protocol.kagenti.io/a2a: ""      — declares A2A protocol for the chat flow
@@ -35,10 +34,9 @@ metadata:
   labels:
     app.kubernetes.io/name: echo-agent
     app.kubernetes.io/part-of: echo-demo
-    # Operator's AgentCardReconciler reads these from the workload
+    # Operator's AgentCardReconciler reads this from the workload
     # (not the Pod template) to know what protocol to fetch the card
     # under and to confirm the workload is an agent.
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
@@ -50,7 +48,6 @@ spec:
       labels:
         app.kubernetes.io/name: echo-agent
         app.kubernetes.io/part-of: echo-demo
-        kagenti.io/type: agent
         kagenti.io/inject: enabled
         kagenti.io/spire: disabled
         protocol.kagenti.io/a2a: ""
@@ -145,7 +142,7 @@ spec:
 
 # We intentionally do NOT define an AgentCard CR here — the operator
 # auto-creates `<deployment>-deployment-card` for any Deployment with
-# `kagenti.io/type=agent`. Defining our own collides with the
+# the corresponding AgentRuntime CR. Defining our own collides with the
 # admission webhook ("an AgentCard already targets Deployment X").
 # The operator's CR points at the same Deployment, fetches our
 # `/.well-known/agent-card.json` endpoint, and stuffs the result
