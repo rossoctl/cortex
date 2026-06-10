@@ -1,0 +1,62 @@
+# LLM Models Configuration Template
+# Multiple model configurations for testing and production use
+# Each model entry contains connection details and generation parameters
+
+
+models:
+  # Claude Haiku
+  claude-haiku:
+    model: claude-haiku-4-5-20251001
+    endpoint: <YOUR END POINT HERE>
+    api_key: <YOUR API KEY HERE>
+    temperature: 0.0
+    max_tokens: 8192
+    timeout: 360
+    max_retries: 2
+    description: "Claude Haiku 4.5 via IBM ete-litellm gateway"
+
+  # Azure GPT-5 Nano via ete-litellm
+  gpt-nano:
+    model: Azure/gpt-5-nano-2025-08-07
+    endpoint: <YOUR END POINT HERE>
+    api_key: <YOUR API KEY HERE>
+    temperature: 0.0
+    max_tokens: 8192
+    timeout: 360
+    max_retries: 2
+    description: "Azure GPT-5 Nano via IBM ete-litellm gateway"
+
+  # GCP Gemini 2.0 Flash via ete-litellm
+  gemini:
+    model: GCP/gemini-2.0-flash
+    endpoint: <YOUR END POINT HERE>
+    api_key: <YOUR API KEY HERE>
+    temperature: 0.0
+    max_tokens: 8192
+    timeout: 360
+    max_retries: 2
+    description: "GCP Gemini 2.0 Flash via IBM ete-litellm gateway"
+
+  # OpenAI GPT-OSS 120B via RITS
+  gpt-oss:
+    model: openai/gpt-oss-120b
+    endpoint: <YOUR END POINT HERE>
+    api_key: <YOUR API KEY HERE>
+    temperature: 0.0
+    max_tokens: 8192
+    timeout: 360
+    max_retries: 2
+    description: "OpenAI GPT-OSS 120B via IBM RITS"
+
+  # Ollama local models
+  ollama-llama:
+    model: phi4
+    endpoint: <YOUR END POINT HERE>
+    api_key: <YOUR API KEY HERE>
+    temperature: 0.0
+    max_tokens: 8192
+    timeout: 720
+    max_retries: 2
+    description: "Llama 3.2 via local Ollama"
+
+default_model: ollama-llama
