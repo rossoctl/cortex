@@ -100,8 +100,8 @@ port-forward:  ## Forward Keycloak (8081) + gateway (8082) to localhost
 	kubectl -n $(NAMESPACE) port-forward svc/authbridge-cpex 8082:8080 & \
 	wait
 
-scenarios:  ## Run all 8 demo curl scenarios (assumes port-forward up)
-	@for s in $(CURDIR)/scenarios/0[1-8]-*.sh; do \
+scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
+	@for s in $(CURDIR)/scenarios/0[1-9]-*.sh; do \
 	  GATEWAY=http://localhost:8082 \
 	  KEYCLOAK_HOST=http://localhost:8081 \
 	  "$$s"; \

@@ -44,9 +44,9 @@ type FakeManager struct {
 
 	// Recorded state — read after the test action.
 	LoadedYAML     string
-	Initialized   bool
+	Initialized    bool
 	ShutdownCalled bool
-	Invokes       []FakeInvoke
+	Invokes        []FakeInvoke
 }
 
 // FakeInvoke records one Invoke call on a FakeManager.

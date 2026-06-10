@@ -169,6 +169,18 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
 
+	// bypass_hosts is honored on the outbound phase only and ignored on the
+	// inbound reverse-proxy phase, where the Host header is attacker-
+	// controlled and identity is resolved inside the bypassed chain (Finding
+	// 1). Direction isn't known at Configure time (one instance can serve
+	// either phase), so warn unconditionally when it's set rather than
+	// rejecting the config.
+	if len(c.BypassHosts) > 0 {
+		slog.Warn("cpex: bypass_hosts is honored on the outbound phase only; "+
+			"it is ignored on the inbound reverse-proxy phase where the Host "+
+			"header is attacker-controlled", "bypass_hosts", c.BypassHosts)
+	}
+
 	factory := p.newManager
 	if factory == nil {
 		factory = NewManager
@@ -290,7 +302,12 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 		pctx.Skip("path_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-	if matchesAnyHost(p.bypassHosts, pctx.Host) {
+	// bypass_hosts is honored on OUTBOUND only. On the inbound reverse-proxy
+	// phase the Host header is attacker-controlled and identity has NOT been
+	// pre-validated (it is resolved inside this very chain), so a spoofed Host
+	// must not skip CPEX. Path bypass (above) still applies inbound for
+	// health/discovery. See security review Finding 1.
+	if pctx.Direction == pipeline.Outbound && matchesAnyHost(p.bypassHosts, pctx.Host) {
 		pctx.Skip("host_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}

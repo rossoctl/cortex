@@ -566,7 +566,7 @@ func TestDispatch_PathBypassSkipsInvoke(t *testing.T) {
 	}
 }
 
-func TestDispatch_HostBypassSkipsInvoke(t *testing.T) {
+func TestDispatch_HostBypassSkipsInvokeOutbound(t *testing.T) {
 	fake := &FakeManager{
 		KnownHooks: []string{HookToolPreInvoke},
 		Hooks: map[string]Result{
@@ -574,15 +574,39 @@ func TestDispatch_HostBypassSkipsInvoke(t *testing.T) {
 		},
 	}
 	// keycloak.* is in defaultBypassHosts; port stripping handles
-	// "keycloak.local:8081" cleanly.
+	// "keycloak.local:8081" cleanly. Host bypass is honored on OUTBOUND
+	// only (Finding 1), so the direction must be set for it to apply.
 	p := setupAndInit(t, fake, cfgOneRequestHook)
-	pctx := &pipeline.Context{Host: "keycloak.local:8081"}
+	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: "keycloak.local:8081"}
 	a := p.OnRequest(context.Background(), pctx)
 	if a.Type != pipeline.Continue {
 		t.Fatalf("Type = %d, want Continue (host bypass)", a.Type)
 	}
 	if len(fake.Invokes) != 0 {
 		t.Fatalf("Invoke called %d times, want 0 (host bypass should skip FFI)", len(fake.Invokes))
+	}
+}
+
+// Finding 1: on the inbound reverse-proxy phase the Host header is
+// attacker-controlled and identity is resolved inside the CPEX chain, so a
+// spoofed Host matching bypass_hosts must NOT skip CPEX. The hook still fires.
+func TestDispatch_HostBypassIgnoredInbound(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Reason: "policy says no"},
+		},
+	}
+	p := setupAndInit(t, fake, cfgOneRequestHook)
+	// Same bypass-matching Host as the outbound test, but inbound: the
+	// gate is skipped and the (deny) hook runs.
+	pctx := &pipeline.Context{Direction: pipeline.Inbound, Host: "keycloak.local:8081"}
+	a := p.OnRequest(context.Background(), pctx)
+	if a.Type != pipeline.Reject {
+		t.Fatalf("Type = %d, want Reject (inbound must not honor host bypass)", a.Type)
+	}
+	if len(fake.Invokes) != 1 {
+		t.Fatalf("Invoke called %d times, want 1 (inbound must not skip CPEX on a spoofable Host)", len(fake.Invokes))
 	}
 }
 
