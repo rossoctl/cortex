@@ -70,32 +70,34 @@ def get_config_value(config: Dict[str, Any], *keys, default=None, env_var=None) 
     return value if value != config else default
 
 
-def load_keycloak_env() -> Tuple[str, str, str, str]:
-    """Read and validate Keycloak environment variables."""
+def load_keycloak_config() -> Tuple[str, str]:
+    """Read and validate non-sensitive Keycloak connection settings.
+
+    Credentials are intentionally not returned to avoid tainting non-sensitive
+    variables. They are consumed directly by connect_admin.
+    """
     keycloak_url = os.getenv("KEYCLOAK_URL")
+    realm = os.getenv("REALM_NAME")
     admin_username = os.getenv("KEYCLOAK_ADMIN_USERNAME")
     admin_password = os.getenv("KEYCLOAK_ADMIN_PASSWORD")
-    realm = os.getenv("REALM_NAME")
 
-    if not all([keycloak_url, admin_username, admin_password, realm]):
+    if not all([keycloak_url, realm, admin_username, admin_password]):
         raise ValueError(
             "Missing required environment variables. Please ensure .env file contains "
             "KEYCLOAK_URL, KEYCLOAK_ADMIN_USERNAME, KEYCLOAK_ADMIN_PASSWORD, and REALM_NAME"
         )
 
     assert isinstance(keycloak_url, str)
-    assert isinstance(admin_username, str)
-    assert isinstance(admin_password, str)
     assert isinstance(realm, str)
-    return keycloak_url, admin_username, admin_password, realm
+    return keycloak_url, realm
 
 
-def connect_admin(server_url: str, username: str, password: str, realm_name: str) -> KeycloakAdmin:
+def connect_admin(server_url: str, realm_name: str) -> KeycloakAdmin:
     """Build a KeycloakAdmin client authenticating against the master realm."""
     return KeycloakAdmin(
         server_url=server_url,
-        username=username,
-        password=password,
+        username=os.environ["KEYCLOAK_ADMIN_USERNAME"],
+        password=os.environ["KEYCLOAK_ADMIN_PASSWORD"],
         realm_name=realm_name,
         user_realm_name="master",
     )
@@ -308,7 +310,7 @@ def create_clients(
 
         if client_secret:
             if client_config.get("secret"):
-                print(f"    Secret: {client_secret}")
+                print("    Secret: (configured)")
             else:
                 print("    Secret: (preserved from existing client)")
         else:
@@ -776,16 +778,16 @@ def main(config_file: str, reset_only: bool = False):
     print(f"Loading main configuration from {main_config_path} ...")
     main_config = load_main_config(main_config_path)
 
-    keycloak_url, admin_username, admin_password, realm = load_keycloak_env()
+    keycloak_url, realm = load_keycloak_config()
 
     print(f"\nConnecting to Keycloak at {keycloak_url} ...")
-    admin = connect_admin(keycloak_url, admin_username, admin_password, realm_name="master")
+    admin = connect_admin(keycloak_url, realm_name="master")
 
     # 2. Create realm
     create_realm(admin, realm)
 
     # Switch to the new realm for the remaining provisioning steps
-    admin = connect_admin(keycloak_url, admin_username, admin_password, realm_name=realm)
+    admin = connect_admin(keycloak_url, realm_name=realm)
 
     # 3. Reset prior provisioning artifacts and preserve secrets
     print(f"\n=== Initializing realm state for re-provisioning: {realm} ===")
