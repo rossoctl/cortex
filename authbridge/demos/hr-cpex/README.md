@@ -100,7 +100,7 @@ make scenarios      # run the nine curl scenarios
 (the same egress path the agent's own tool calls take), exercising the
 personas across allow, deny, and redact paths:
 
-```
+```text
 01-bob-allow.sh                      PASS   SSN visible
 02-alice-deny.sh                     DENY   APL require(role.hr)
 03-eve-redact.sh                     PASS   SSN redacted in response   <- the one to watch
@@ -222,7 +222,7 @@ In all cases Ollama must be started with `OLLAMA_HOST=0.0.0.0`. If
 
 In-chat commands:
 
-```
+```text
 switch <name>   swap persona and re-mint both tokens (alice, bob, eve)
 relogin         refresh both tokens if they expire mid-demo
 quit            exit
@@ -230,7 +230,7 @@ quit            exit
 
 Suggested conversation:
 
-```
+```text
 look up the compensation for EMP-001234, include the SSN
   -> 200 OK, SSN included
 
@@ -263,7 +263,7 @@ tool call, **re-attaches the same headers** onto an MCP `tools/call` that
 egresses through the sidecar's **forward proxy** — where the `mcp-parser
 -> cpex` pipeline runs and `cpex` evaluates `cpex-policy.yaml` in order.
 
-```
+```text
 chat.py (host A2A client)
     |  message/send
     |    Authorization: client token     X-User-Token: persona token
@@ -327,7 +327,7 @@ flat permission gate to a four-layer chain.
 permission directly on the user token. APL gates on a flat predicate
 and redacts the SSN on the wire when the permission is missing:
 
-```
+```text
 require(role.hr)
 delegate(workday-oauth, target: workday-api, permissions: [read_compensation])
 plugin(audit-log)

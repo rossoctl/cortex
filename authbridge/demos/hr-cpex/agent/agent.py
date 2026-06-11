@@ -50,6 +50,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 from typing import Any
 
@@ -323,13 +324,26 @@ class HRAgent:
     def __init__(self) -> None:
         self._histories: dict[str, list[dict[str, Any]]] = {}
         self._request_id = 0
+        # The A2A SDK can dispatch turns concurrently, and run_turn() runs on
+        # worker threads (asyncio.to_thread). Guard the shared singleton state
+        # — the _histories map (get-or-create) and the _request_id counter — so
+        # concurrent turns can't corrupt the map or lose an increment. Distinct
+        # session ids get distinct history lists, so per-turn work stays
+        # lock-free; only these two shared touch-points are serialized.
+        self._state_lock = threading.Lock()
 
     def _history(self, session_id: str) -> list[dict[str, Any]]:
-        hist = self._histories.get(session_id)
-        if hist is None:
-            hist = [{"role": "system", "content": SYSTEM_PROMPT}]
-            self._histories[session_id] = hist
-        return hist
+        with self._state_lock:
+            hist = self._histories.get(session_id)
+            if hist is None:
+                hist = [{"role": "system", "content": SYSTEM_PROMPT}]
+                self._histories[session_id] = hist
+            return hist
+
+    def _next_request_id(self) -> int:
+        with self._state_lock:
+            self._request_id += 1
+            return self._request_id
 
     def run_turn(
         self,
@@ -374,7 +388,7 @@ class HRAgent:
                 args = json.loads(fn.arguments) if isinstance(fn.arguments, str) else fn.arguments
             except json.JSONDecodeError:
                 args = {}
-            self._request_id += 1
+            request_id = self._next_request_id()
             log.info(
                 "tool call (session=%s): %s(%s)",
                 session_id,
@@ -387,7 +401,7 @@ class HRAgent:
                 user_token=user_token,
                 client_token=client_token,
                 session_id=session_id,
-                request_id=self._request_id,
+                request_id=request_id,
             )
             tool_text = format_tool_response(status, data)
             log.info("tool result (session=%s, http=%s): %s", session_id, status, tool_text)

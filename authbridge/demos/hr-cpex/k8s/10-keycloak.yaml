@@ -54,6 +54,16 @@ spec:
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.6.3
+          # Baseline container hardening — matches 20-hr-mcp.yaml / 30-agent.yaml.
+          # (The Keycloak image already runs non-root; readOnlyRootFilesystem is
+          # left off because start-dev writes to the in-image H2 store + /tmp.)
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           args:
             - "start-dev"
             - "--import-realm"

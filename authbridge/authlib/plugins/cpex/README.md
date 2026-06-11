@@ -30,7 +30,7 @@ CPEX hooks the operator configured, applies any modifications CPEX returns
 (redacted bodies, mutated headers, session labels), and maps the CPEX outcome
 back into a pipeline action.
 
-```
+```text
 request ─► token-exchange ─► parsers ─► cpex ─────────► upstream ─► response
                               (MCP,        │
                                inference,  │ context
@@ -185,7 +185,7 @@ a2a-parser]`, so `pipeline.Build` fails fast if no parser feeds it.
 The HR demo enforces on the agent's egress (the forward proxy), with inbound left
 as passthrough:
 
-```
+```text
 outbound:  mcp-parser ──► cpex ──► (token exchange happens as part of the policy via delegate)
 ```
 

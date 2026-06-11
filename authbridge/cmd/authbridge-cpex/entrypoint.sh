@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eu
+set -euo pipefail
 
 # AuthBridge CPEX-enabled sidecar entrypoint with process supervision.
 # Manages: authbridge-cpex (authbridge-proxy + CPEX plugin).

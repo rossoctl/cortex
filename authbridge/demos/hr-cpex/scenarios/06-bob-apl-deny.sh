@@ -26,7 +26,10 @@ note "Expected: Cedar never runs; IdP never called"
 BOB=$(mint bob)
 CLIENT=$(mint hr-copilot)
 
-curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
+# Capture then truncate. Piping `curl -i | head` trips `pipefail` (head closes
+# early → curl gets SIGPIPE → non-zero), so capture first and slice with sed
+# (reads to EOF, never early-closes the pipe).
+resp=$(curl -s -i -x "$PROXY" -X POST "$MCP_TARGET" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CLIENT" \
   -H "X-User-Token: $BOB" \
@@ -38,4 +41,5 @@ curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
       "name": "search_repos",
       "arguments": { "visibility": "internal" }
     }
-  }' -i 2>&1 | head -20
+  }' 2>&1)
+printf '%s\n' "$resp" | sed -n '1,20p'

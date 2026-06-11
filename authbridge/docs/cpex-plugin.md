@@ -11,7 +11,7 @@ A single AuthBridge plugin instance (`cpex`) wraps an entire CPEX
 AuthBridge phase via the `hooks` block; CPEX's own YAML defines the
 sub-plugins those hooks dispatch to.
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │ authbridge-cpex (binary built with -tags cpex, links libcpex_ffi)│
 │                                                                  │

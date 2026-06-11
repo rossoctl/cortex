@@ -5,7 +5,7 @@
 
 This document specifies the hook system and plugin runtime for AuthBridge. Hooks provide typed, capability-gated extension points at well-defined stages of the inbound JWT validation and outbound token exchange pipelines. The plugin runtime is built on [CPEX](https://github.com/contextforge-org/contextforge-plugins-framework/tree/main), embedded in-process via Go bindings to the Rust core.
 
-### How it works
+## How it works
 
 AuthBridge defines **hooks** (named extension points at each stage of inbound and outbound processing) and their **typed payloads** (the data available at each hook). At startup, AuthBridge imports and initializes a CPEX `PluginManager`, which loads configured plugins and registers their hook subscriptions. On each request, AuthBridge constructs the payload and extensions at each hook point and hands them to CPEX. CPEX handles plugin dispatch (phase ordering, parallel execution, capability gating) and returns an aggregate `PluginResult`. AuthBridge then applies the result, enforcing tighten-only composition, short-circuit behavior, and error handling.
 

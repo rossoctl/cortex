@@ -93,13 +93,19 @@ case $((${#payload} % 4)) in
   3) payload="${payload}=" ;;
 esac
 decoded=$(printf "%s" "$payload" | tr '_-' '/+' | base64 -d 2>/dev/null || true)
-aud=$(echo "$decoded" | jq -r 'if .aud | type == "array" then .aud[0] else .aud end' 2>/dev/null || echo "?")
+# `aud` may be a string or an array; check MEMBERSHIP rather than the first
+# element, so a valid multi-audience token (e.g. aud=["workday-api","account"])
+# isn't a false failure just because workday-api isn't listed first.
+aud=$(echo "$decoded" | jq -rc '.aud // "?"' 2>/dev/null || echo "?")
+aud_match=$(echo "$decoded" | jq -r --arg want "$AUDIENCE" \
+  '(if (.aud | type) == "array" then .aud else [.aud] end) | index($want) != null' \
+  2>/dev/null || echo "false")
 sub=$(echo "$decoded" | jq -r '.sub // "?"' 2>/dev/null || echo "?")
 
-if [ "$aud" = "$AUDIENCE" ]; then
+if [ "$aud_match" = "true" ]; then
   ok "cpex-gateway → workday-api" "OK (aud=$aud)"
 else
-  fail "cpex-gateway → workday-api" "aud mismatch: expected '$AUDIENCE' got '$aud'"
+  fail "cpex-gateway → workday-api" "aud mismatch: expected to contain '$AUDIENCE' got '$aud'"
   exit 1
 fi
 

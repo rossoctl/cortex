@@ -26,7 +26,10 @@ note "                  permissions claim includes repo:read:internal"
 ALICE=$(mint alice)
 CLIENT=$(mint hr-copilot)
 
-curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
+# Capture then render so a transport/proxy failure surfaces (under `set -e`)
+# instead of being swallowed by a trailing `|| true`. Pretty-print when the
+# body is JSON; fall back to raw otherwise.
+resp=$(curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $CLIENT" \
   -H "X-User-Token: $ALICE" \
@@ -38,4 +41,5 @@ curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
       "name": "search_repos",
       "arguments": { "repo_name": "web-app", "visibility": "internal" }
     }
-  }' | jq . 2>/dev/null || true
+  }')
+printf '%s\n' "$resp" | jq . 2>/dev/null || printf '%s\n' "$resp"
