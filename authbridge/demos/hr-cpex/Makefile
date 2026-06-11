@@ -116,13 +116,24 @@ apply:  ## kubectl apply the manifests (assumes images already loaded)
 
 deploy: build-images load-images apply  ## Full bring-up: build, load, apply
 	@echo
-	@echo "Waiting for rollouts to finish..."
-	@# rollout status follows the new ReplicaSet, so it's correct even when the
-	@# `set env` in `apply` rolls the agent pod (a plain label wait can race a
-	@# terminating old pod against the new one).
-	kubectl -n $(NAMESPACE) rollout status deployment/keycloak      --timeout=180s
-	kubectl -n $(NAMESPACE) rollout status deployment/hr-mcp        --timeout=120s
-	kubectl -n $(NAMESPACE) rollout status deployment/hr-cpex-agent --timeout=120s
+	@# Settle Keycloak FIRST so the cpex sidecar (restarted below) fetches a
+	@# current JWKS. `apply` rolls Keycloak only when its manifest changed; this
+	@# waits either way. We do NOT restart Keycloak — it's an upstream pinned
+	@# image, and restarting it regenerates the realm signing keys, which would
+	@# leave any already-running sidecar serving cpex.auth_unknown_kid.
+	@echo "Waiting for Keycloak to settle..."
+	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
+	@echo
+	@# Force the locally-built :dev images to reload. `kind load` overwrites the
+	@# image in the node store, but a Deployment whose pod template is unchanged
+	@# won't roll on its own (imagePullPolicy: Never, no spec diff) — so a
+	@# code-only rebuild would otherwise keep running the PREVIOUS image. Restart
+	@# the two locally-built workloads (hr-mcp; hr-cpex-agent carries both the
+	@# agent and the authbridge-cpex sidecar) so a rebuild always lands.
+	@echo "Rolling the locally-built workloads onto the freshly-loaded images..."
+	kubectl -n $(NAMESPACE) rollout restart deployment/hr-mcp deployment/hr-cpex-agent
+	kubectl -n $(NAMESPACE) rollout status  deployment/hr-mcp        --timeout=120s
+	kubectl -n $(NAMESPACE) rollout status  deployment/hr-cpex-agent --timeout=120s
 	@echo
 	@printf "\033[1;32mDeploy complete.\033[0m Next:\n"
 	@printf "  make port-forward   # in another terminal\n"
