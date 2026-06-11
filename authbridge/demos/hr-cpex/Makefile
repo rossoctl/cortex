@@ -50,7 +50,12 @@ AGENT_SRC       ?= $(CURDIR)/agent
 #   Override per-env, e.g.:  make deploy LLM_API_BASE=http://192.168.5.2:11434
 #   MODEL — any litellm-routed model the host Ollama has pulled.
 LLM_API_BASE ?= http://host.docker.internal:11434
-MODEL        ?= ollama/llama3.2:3b
+# llama3 (8B) tool-calls on the plain ollama/ provider and renders tool data
+# faithfully at temperature=0 (the agent sets temp=0) — no "thinking" overhead,
+# so it's notably faster than qwen3. Alternatives: ollama/qwen3 (a "thinking"
+# model — richer prose but slower); llama3.2:3b is fastest but a 3B model
+# occasionally editorializes/redacts fields in its prose.
+MODEL        ?= ollama/llama3:latest
 
 .PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check
 

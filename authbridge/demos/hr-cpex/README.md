@@ -72,7 +72,7 @@ install Kagenti or create a cluster. You need:
   to a registry.
 - kubectl, configured for the cluster.
 - An Ollama running on the host with a tool-capable model pulled
-  (`ollama pull llama3.2:3b`) — only needed for the interactive chat;
+  (`ollama pull llama3`) — only needed for the interactive chat;
   the `make scenarios` curl matrix does not use the LLM. Ollama must
   listen beyond loopback so cluster pods can reach it: set
   `OLLAMA_HOST=0.0.0.0` and restart Ollama. How a pod reaches the host
@@ -161,12 +161,12 @@ tokens and switches persona mid-conversation. The LLM and the tools live
 in the agent container; `chat.py` only sends `message/send` and renders
 the reply.
 
-The agent itself runs an LLM (default `ollama/llama3.2:3b`). Make sure an
+The agent itself runs an LLM (default `ollama/llama3:latest`). Make sure an
 Ollama is running on the host with the model pulled and listening beyond
 loopback so the cluster can reach it:
 
 ```bash
-ollama pull llama3.2:3b
+ollama pull llama3
 OLLAMA_HOST=0.0.0.0 ollama serve     # or, for the macOS app:
                                      #   launchctl setenv OLLAMA_HOST 0.0.0.0 && relaunch Ollama
 ```

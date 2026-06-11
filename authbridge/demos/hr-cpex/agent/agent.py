@@ -62,7 +62,7 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.events import EventQueue
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill, Message, Part, Role, TextPart
 from a2a.utils import new_agent_text_message
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -81,7 +81,7 @@ MCP_URL = os.environ.get("MCP_URL", "http://hr-mcp.cpex-demo:9100/mcp")
 MCP_PROXY = os.environ.get("MCP_PROXY", "http://localhost:8081")
 # litellm-routed model. Defaults to local Ollama (no API key). Override
 # with any LiteLLM-supported provider via MODEL + the provider's env.
-MODEL = os.environ.get("MODEL", "ollama/llama3.2:3b")
+MODEL = os.environ.get("MODEL", "ollama/llama3:latest")
 # Inference endpoint. For the ollama provider this is the native base
 # (litellm appends /api/...). Set to host.docker.internal in-cluster so
 # the agent reaches an Ollama running on the developer's laptop.
@@ -90,9 +90,10 @@ LLM_API_BASE = os.environ.get("LLM_API_BASE") or None
 AGENT_PUBLIC_URL = os.environ.get("AGENT_PUBLIC_URL", "http://hr-cpex-agent.cpex-demo:8080/")
 
 # ---------------------------------------------------------------------------
-# Tools + prompt (lifted verbatim from the original chat.py — the gateway
-# enforcement story depends on these exact tool shapes, e.g. the `ssn`
-# echo-back arg that redaction strips).
+# Tools + prompt (lifted from the original chat.py). The SSN demo is
+# response-side: include_ssn=true → the gateway redacts result.ssn for callers
+# without view_ssn. The hardened prompt makes the model relay tool values
+# verbatim so it doesn't fabricate `[REDACTED]` for a real SSN.
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -100,14 +101,26 @@ SYSTEM_PROMPT = (
     "employee compensation, view directories, send emails, and similar "
     "tasks. Use the provided tools when needed. "
     "\n\n"
+    "Only request data the user actually asked for: in particular, set "
+    "get_compensation's `include_ssn` to true ONLY when the user explicitly "
+    "asks to include/show the SSN. If the user just asks to look up "
+    "compensation without mentioning the SSN, leave `include_ssn` false. "
+    "\n\n"
+    "CRITICAL — relay tool data verbatim: when you present a field, copy its "
+    "value EXACTLY as it appears in the tool result. Never invent, mask, "
+    "redact, or replace a value yourself. Only write `[REDACTED]` for a field "
+    "if the tool result's value for that field is literally the string "
+    "`[REDACTED]`; when the tool returns a real value (for example an actual "
+    "social-security number), show that exact value unchanged. The gateway — "
+    "not you — decides what to hide; your job is to relay precisely what it "
+    "returned. "
+    "\n\n"
     "How to interpret tool results: "
     "\n"
-    "  * If the tool returns a normal result, present the data to the "
-    "user. If any field's value is the literal string `[REDACTED]`, "
-    "show it as-is in your answer — that is the gateway's transparent "
-    "enforcement marker that the field exists but is hidden for this "
-    "caller. Do NOT apologize or refuse; just include the field with "
-    "the value `[REDACTED]`. "
+    "  * Normal result: present the data, copying each value verbatim per the "
+    "rule above. A field whose value is `[REDACTED]` is the gateway's "
+    "transparent enforcement marker (the field exists but is hidden for this "
+    "caller) — show it as-is; do NOT apologize or refuse. "
     "\n"
     "  * If the tool returns an `error` envelope (a JSON-RPC error "
     "with a `code` and `message`), the gateway denied the call. "
@@ -135,18 +148,22 @@ TOOLS = [
                     },
                     "include_ssn": {
                         "type": "boolean",
-                        "description": "Whether to include SSN in the response",
+                        "description": (
+                            "Whether to include the SSN in the response. Set to "
+                            "true ONLY when the user explicitly asks for the SSN "
+                            "(e.g. 'include the SSN'). If the user does not "
+                            "mention the SSN, omit this or set it to false."
+                        ),
                         "default": False,
                     },
-                    "ssn": {
-                        "type": "string",
-                        "description": (
-                            "An echo-back of the employee's SSN if the caller "
-                            "claims to already know it — this is exactly the "
-                            "kind of field the gateway redacts when the "
-                            "caller lacks the necessary permission."
-                        ),
-                    },
+                    # NB: no `ssn` request argument is exposed. The SSN demo is
+                    # response-side: set include_ssn=true and the gateway redacts
+                    # result.ssn for callers without view_ssn. An `ssn` echo-back
+                    # arg used to live here, but models populate it
+                    # inconsistently (""/null/omitted) and a null value trips the
+                    # APL redact(args.ssn) type check (expected Str) → 403. The
+                    # request-side args.ssn redaction is still exercised by the
+                    # deterministic curl matrix (scenarios/01-bob-allow.sh).
                 },
                 "required": ["employee_id"],
             },
@@ -352,12 +369,24 @@ class HRAgent:
         user_token: str,
         client_token: str,
         session_id: str,
-    ) -> str:
-        """One user turn: LLM (direct) → tool calls (proxied/cpex) → LLM."""
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """One user turn: LLM (direct) → tool calls (proxied/cpex) → LLM.
+
+        Returns (reply_text, tool_trace). tool_trace is a list of
+        {name, args, status, text} records — one per cpex-governed tool call —
+        which the executor attaches to the A2A response metadata so a client
+        can optionally render what happened on the wire (see chat.py
+        --show-tools). The trace is always collected; the client decides
+        whether to display it."""
         messages = self._history(session_id)
         messages.append({"role": "user", "content": user_text})
 
-        completion_kwargs: dict[str, Any] = {}
+        # temperature=0: deterministic decoding. The demo needs the model to
+        # relay tool values verbatim (not creatively re-word or redact), so the
+        # lowest-temperature, highest-probability completion is what we want —
+        # it measurably reduces a small model's tendency to fabricate
+        # `[REDACTED]` or editorialize fields.
+        completion_kwargs: dict[str, Any] = {"temperature": 0}
         if LLM_API_BASE:
             completion_kwargs["api_base"] = LLM_API_BASE
 
@@ -372,15 +401,16 @@ class HRAgent:
         except Exception as e:  # noqa: BLE001 — surface any LLM error to the user
             messages.pop()
             log.warning("LLM error: %s", e)
-            return f"(LLM error: {e})"
+            return f"(LLM error: {e})", []
 
         assistant = response.choices[0].message
         if not assistant.tool_calls:
             text = assistant.content or "(no response)"
             messages.append({"role": "assistant", "content": text})
-            return text
+            return text, []
 
         # Tool-call path: replay each call through cpex, then summarize.
+        tool_trace: list[dict[str, Any]] = []
         messages.append(assistant.model_dump())
         for tc in assistant.tool_calls:
             fn = tc.function
@@ -406,6 +436,7 @@ class HRAgent:
             tool_text = format_tool_response(status, data)
             log.info("tool result (session=%s, http=%s): %s", session_id, status, tool_text)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_text})
+            tool_trace.append({"name": fn.name, "args": args, "status": status, "text": tool_text})
 
         try:
             final = litellm.completion(model=MODEL, messages=messages, **completion_kwargs)
@@ -413,7 +444,7 @@ class HRAgent:
         except Exception as e:  # noqa: BLE001
             text = f"(LLM error summarizing tool results: {e})"
         messages.append({"role": "assistant", "content": text})
-        return text
+        return text, tool_trace
 
 
 # ---------------------------------------------------------------------------
@@ -459,14 +490,26 @@ class HRAgentExecutor(AgentExecutor):
         log.info("A2A turn (session=%s): %s", session_id, user_text)
         # litellm + httpx are synchronous; run off the event loop so we
         # don't block the server while the model and tools work.
-        reply = await asyncio.to_thread(
+        reply, tool_trace = await asyncio.to_thread(
             self._agent.run_turn,
             user_text,
             user_token=user_token,
             client_token=authorization,
             session_id=session_id,
         )
-        await event_queue.enqueue_event(new_agent_text_message(reply, context.context_id, context.task_id))
+        # Carry the per-turn tool trace in the response message metadata so a
+        # client can optionally show what hit cpex/hr-mcp (see chat.py
+        # --show-tools). new_agent_text_message has no metadata param, so build
+        # the Message directly.
+        message = Message(
+            role=Role.agent,
+            parts=[Part(root=TextPart(text=reply))],
+            message_id=uuid.uuid4().hex,
+            context_id=context.context_id,
+            task_id=context.task_id,
+            metadata={"tool_trace": tool_trace},
+        )
+        await event_queue.enqueue_event(message)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         # Single-shot turns; nothing long-running to cancel.

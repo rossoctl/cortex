@@ -46,23 +46,26 @@ current persona. `quit` to exit.
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import uuid
 
 import httpx
-from a2a.client import A2AClient
+from a2a.client import ClientConfig, ClientFactory
+from a2a.client.middleware import ClientCallContext, ClientCallInterceptor
 from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
     Message,
-    MessageSendParams,
     Part,
     Role,
-    SendMessageRequest,
     Task,
     TextPart,
 )
 from a2a.utils import get_message_text
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 # ---------------------------------------------------------------------------
@@ -191,6 +194,46 @@ def new_session_id(persona: str) -> str:
     return f"chat-{persona}-{uuid.uuid4().hex[:8]}"
 
 
+class _HeaderInterceptor(ClientCallInterceptor):
+    """Inject the per-call identity headers into the outgoing HTTP request.
+
+    The modern a2a-sdk client (ClientFactory) has no per-call `http_kwargs`,
+    so identity that changes per turn (persona token, client token, session
+    id) is passed via the ClientCallContext `state` and merged into the HTTP
+    headers here. The agent reads them off the inbound request and re-attaches
+    them onto its cpex-governed tool calls; contextId carries the same session
+    id inside the A2A envelope as a belt-and-suspenders for taint scoping."""
+
+    async def intercept(self, method_name, request_payload, http_kwargs, agent_card, context):
+        headers = context.state.get("headers") if context else None
+        if headers:
+            merged = dict(http_kwargs.get("headers") or {})
+            merged.update(headers)
+            http_kwargs = {**http_kwargs, "headers": merged}
+        return request_payload, http_kwargs
+
+
+def _agent_card(agent_url: str) -> AgentCard:
+    """Minimal local card so ClientFactory targets `agent_url` over JSON-RPC.
+
+    We build the card locally rather than fetching `/.well-known/agent-card.json`
+    because the agent advertises its in-cluster Service URL there, which isn't
+    reachable from the host — the client connects via the port-forward
+    (`agent_url`), so that's the URL the transport must use."""
+    return AgentCard(
+        name="hr-cpex-agent",
+        description="HR copilot A2A agent (CPEX-governed egress).",
+        url=agent_url,
+        version="0.1.0",
+        protocol_version="0.3.0",
+        preferred_transport="JSONRPC",
+        default_input_modes=["text"],
+        default_output_modes=["text"],
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[],
+    )
+
+
 async def send_turn(
     agent_url: str,
     user_text: str,
@@ -198,62 +241,77 @@ async def send_turn(
     user_token: str,
     client_token: str,
     session_id: str,
-) -> str:
-    """Send one message/send to the agent and return the reply text.
+) -> tuple[str, list[dict]]:
+    """Send one message/send to the agent.
 
-    The identity headers ride on the HTTP request via `http_kwargs`; the
-    agent reads them off the inbound request and threads them onto its
-    cpex-governed tool calls. contextId carries the same session id inside
-    the A2A envelope as a belt-and-suspenders for taint scoping."""
+    Returns (reply_text, tool_trace). The agent stows a per-turn tool trace
+    (the cpex-governed tool calls + their results) in the response message
+    metadata under `tool_trace`; we surface it so the caller can optionally
+    render it (see --show-tools)."""
+    message = Message(
+        role=Role.user,
+        parts=[Part(root=TextPart(text=user_text))],
+        message_id=uuid.uuid4().hex,
+        context_id=session_id,
+    )
+    context = ClientCallContext(
+        state={
+            "headers": {
+                "X-User-Token": user_token,
+                "Authorization": f"Bearer {client_token}",
+                "X-Session-Id": session_id,
+            }
+        }
+    )
+    reply = ""
+    tool_trace: list[dict] = []
     async with httpx.AsyncClient(timeout=60) as httpx_client:
-        client = A2AClient(httpx_client=httpx_client, url=agent_url)
-        request = SendMessageRequest(
-            id=uuid.uuid4().hex,
-            params=MessageSendParams(
-                message=Message(
-                    role=Role.user,
-                    parts=[Part(root=TextPart(text=user_text))],
-                    message_id=uuid.uuid4().hex,
-                    context_id=session_id,
-                )
-            ),
-        )
-        response = await client.send_message(
-            request,
-            http_kwargs={
-                "headers": {
-                    "X-User-Token": user_token,
-                    "Authorization": f"Bearer {client_token}",
-                    "X-Session-Id": session_id,
-                }
-            },
-        )
-    return _extract_reply(response)
+        factory = ClientFactory(ClientConfig(httpx_client=httpx_client, streaming=False))
+        client = factory.create(_agent_card(agent_url), interceptors=[_HeaderInterceptor()])
+        # Non-streaming send yields a single result: either a Message or a
+        # (Task, update) tuple. Extract the agent's text + tool_trace metadata.
+        async for event in client.send_message(message, context=context):
+            if isinstance(event, Message):
+                reply = get_message_text(event) or reply
+                if event.metadata and event.metadata.get("tool_trace"):
+                    tool_trace = event.metadata["tool_trace"]
+            elif isinstance(event, tuple):
+                reply = _text_from_task(event[0]) or reply
+    return (reply or "(empty reply)"), tool_trace
 
 
-def _extract_reply(response) -> str:
-    """Pull the agent's text out of a SendMessageResponse (Message or Task)."""
-    root = getattr(response, "root", response)
-    error = getattr(root, "error", None)
-    if error is not None:
-        return f"(agent error {error.code}: {error.message})"
-    result = getattr(root, "result", None)
-    if result is None:
-        return "(no result)"
-    if isinstance(result, Task):
-        # Prefer the status message; fall back to the first artifact.
-        status_msg = getattr(result.status, "message", None)
-        if status_msg is not None:
-            text = get_message_text(status_msg)
-            if text:
-                return text
-        for artifact in result.artifacts or []:
-            text = "".join(p.root.text for p in artifact.parts if isinstance(p.root, TextPart))
-            if text:
-                return text
-        return "(task completed, no text)"
-    # Message result
-    return get_message_text(result) or "(empty reply)"
+def render_tool_trace(console: Console, trace: list[dict]) -> None:
+    """Print the agent's tool calls + results, indented, with the tool name
+    colored and the result colored by outcome (green allow / red deny)."""
+    for call in trace:
+        name = call.get("name", "?")
+        args = json.dumps(call.get("args", {}), separators=(",", ":"))
+        status = call.get("status")
+        text = call.get("text", "")
+        color = "green" if isinstance(status, int) and status < 400 else "red"
+        # escape() so JSON brackets in args/results aren't parsed as rich markup
+        # (and so a literal `[REDACTED]` renders as-is, not as a style tag).
+        console.print(f"  [bold cyan]→ {escape(name)}[/]([dim]{escape(args)}[/])")
+        # First result line after the arrow; subsequent (pretty-JSON) lines are
+        # indented to align under it so multi-line results stay readable.
+        lines = text.splitlines() or [""]
+        console.print(f"    [{color}]← {escape(lines[0])}[/]")
+        for line in lines[1:]:
+            console.print(f"      [{color}]{escape(line)}[/]")
+
+
+def _text_from_task(task: Task) -> str:
+    """Pull text out of an A2A Task result (status message, then artifacts)."""
+    status_msg = getattr(task.status, "message", None) if task.status else None
+    if status_msg is not None:
+        text = get_message_text(status_msg)
+        if text:
+            return text
+    for artifact in task.artifacts or []:
+        text = "".join(p.root.text for p in artifact.parts if isinstance(p.root, TextPart))
+        if text:
+            return text
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +319,7 @@ def _extract_reply(response) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_chat(persona: str, agent_url: str, keycloak_host: str) -> None:
+def run_chat(persona: str, agent_url: str, keycloak_host: str, show_tools: bool = False) -> None:
     console = Console()
     info = PERSONAS[persona]
 
@@ -357,7 +415,7 @@ def run_chat(persona: str, agent_url: str, keycloak_host: str) -> None:
             continue
 
         try:
-            reply = asyncio.run(
+            reply, tool_trace = asyncio.run(
                 send_turn(
                     agent_url,
                     user_input,
@@ -369,6 +427,8 @@ def run_chat(persona: str, agent_url: str, keycloak_host: str) -> None:
         except httpx.HTTPError as e:
             console.print(f"[red]agent call failed: {e}[/red]")
             continue
+        if show_tools and tool_trace:
+            render_tool_trace(console, tool_trace)
         console.print(f"[bold]assistant:[/bold] {reply}\n")
 
 
@@ -395,8 +455,13 @@ def main() -> int:
         default=os.environ.get("KEYCLOAK_HOST", DEFAULT_KEYCLOAK),
         help=f"Keycloak host (default: {DEFAULT_KEYCLOAK})",
     )
+    p.add_argument(
+        "--show-tools",
+        action="store_true",
+        help="Show the agent's cpex-governed tool calls and their results (indented, colored) before each reply",
+    )
     args = p.parse_args()
-    run_chat(args.persona, args.agent, args.keycloak)
+    run_chat(args.persona, args.agent, args.keycloak, show_tools=args.show_tools)
     return 0
 
 

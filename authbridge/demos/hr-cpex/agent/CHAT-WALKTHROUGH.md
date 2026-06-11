@@ -35,7 +35,7 @@ In a fourth terminal (the demo itself):
 ```bash
 cd agent
 # one-time: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements-client.txt
-# Ollama must be running on the host with the model pulled (ollama pull llama3.2:3b).
+# Ollama must be running on the host with the model pulled (ollama pull llama3).
 python chat.py --persona bob         # or: AGENT_URL=http://localhost:8082 python chat.py --persona bob
 ```
 
