@@ -531,7 +531,9 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	// when the headers were already passed through — without checking
 	// here, a skip-listed host whose request carries a body would still
 	// run the pipeline on the body phase.
-	if s.SkipHosts.Match(pctx.Host) {
+	if pat, matched := s.SkipHosts.MatchPattern(pctx.Host); matched {
+		slog.Info("ext_proc: skip_hosts match (body phase) — bypassing pipeline + session recording",
+			"host", pctx.Host, "pattern", pat, "path", pctx.Path)
 		return allowBodyResponse(), nil
 	}
 

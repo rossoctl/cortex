@@ -210,7 +210,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// response-phase work. RunFinish is also skipped (no defer
 	// registered) because the pipeline never ran and has nothing to
 	// finalize. See ListenerConfig.SkipHosts for motivation.
-	skipped := s.SkipHosts.Match(pctx.Host)
+	//
+	// Audit log: Match keys on r.Host (the agent-supplied Host header
+	// at the listener boundary), and the request is then dialed against
+	// r.URL via s.Client.Do(r). A forged Host that diverges from the
+	// dial target would skip-match yet send to a different upstream —
+	// the same trust shape as ext_proc's :authority. Logging the host
+	// + matched pattern at INFO leaves a per-skip audit trail so
+	// successful self-exemption isn't invisible.
+	pat, skipped := s.SkipHosts.MatchPattern(pctx.Host)
+	if skipped {
+		slog.Info("forward-proxy: skip_hosts match — bypassing pipeline + session recording",
+			"host", pctx.Host, "pattern", pat, "method", r.Method, "path", r.URL.Path)
+	}
 
 	// Finisher dispatch runs after every exit path. RunFinish is a
 	// no-op when pctx.dispatched is empty (pre-pipeline rejects), so
@@ -707,7 +719,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// destination you'd want IBAC or token-exchange to deny on, that
 	// denial does not happen — the SkipHosts list is a "trusted
 	// infrastructure" surface, not a generic per-route policy knob.
-	skipped := s.SkipHosts.Match(pctx.Host)
+	//
+	// CONNECT is safer-by-construction than the HTTP path: r.Host on
+	// CONNECT is the dial target, so a forged Host header cannot
+	// skip-match while dialing elsewhere — the proxy dials the same
+	// "host:port" it matched. We still emit an audit log so a
+	// successful skip leaves a trace.
+	pat, skipped := s.SkipHosts.MatchPattern(pctx.Host)
+	if skipped {
+		slog.Info("forward-proxy: skip_hosts match (CONNECT) — opening tunnel without pipeline + recording",
+			"host", pctx.Host, "pattern", pat)
+	}
 
 	if !skipped {
 		defer func() {

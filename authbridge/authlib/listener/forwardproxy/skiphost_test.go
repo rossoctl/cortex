@@ -1,8 +1,10 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -196,5 +198,169 @@ func TestForwardProxy_SkipHosts_NilMatcherPreservesBehavior(t *testing.T) {
 	}
 }
 
-// silence unused-import warning if mustParseURL ends up only used here
-var _ = strings.TrimSpace
+// TestForwardProxy_SkipHosts_MatchesAgainstHostHeaderNotURL locks the
+// trust-model contract for the HTTP forward path: the skip match keys
+// on the request `Host` header (`r.Host`), not on the dial target
+// derived from `r.URL`. This is what huang195's review called out as
+// the agent-influenceable input — the test exists to make the behavior
+// observable so future maintainers see it when reading the test, and
+// so a refactor that flips this boundary (e.g. switching to r.URL.Host)
+// breaks loudly with a named test.
+//
+// Operators reading this: do NOT add a destination to skip_hosts that
+// you'd want IBAC / token-exchange to deny on. The skip is keyed on
+// agent-influenceable headers; the audit log emitted on each skip is
+// the only after-the-fact signal.
+//
+// The test scopes itself to the trust contract — "skip fires when
+// r.Host matches" — and does NOT assert what happens to the forwarded
+// request afterward. Go's http.Transport behavior with a proxy and a
+// forged Host header is implementation-detail that the trust model
+// shouldn't depend on; what matters is that the skip decision was
+// made on the agent-supplied value.
+func TestForwardProxy_SkipHosts_MatchesAgainstHostHeaderNotURL(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	// Skip pattern matches a hostname that is NOT the dial target.
+	// The dial target is the backend (127.0.0.1:N from backend.URL);
+	// the pattern is a fictitious hostname.
+	skip, err := skiphost.New([]string{"infrastructure-only.example"})
+	if err != nil {
+		t.Fatalf("skiphost.New: %v", err)
+	}
+
+	proxy, mp := newMarkerServer(t, store, skip)
+	defer proxy.Close()
+
+	// Send a request whose Host header is the skip-listed pattern
+	// while r.URL points at the real backend. A normal Go http.Client
+	// would set Host from URL; we override it explicitly to model the
+	// adversarial case.
+	proxyClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(mustParseURL(proxy.URL)),
+		},
+	}
+	req, err := http.NewRequest("GET", backend.URL+"/test", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Host = "infrastructure-only.example" // forged Host header
+
+	// Don't assert on resp/err — the trust-model claim is solely
+	// about the skip decision. Whatever Go's transport ends up doing
+	// with the divergent Host vs URL is incidental.
+	if resp, err := proxyClient.Do(req); err == nil && resp != nil {
+		resp.Body.Close()
+	}
+
+	// The skip matched against the forged Host, so the pipeline
+	// did NOT run. That's the trust-contract assertion: the agent
+	// chose the skip-match value via the Host header, not via the
+	// real dial target.
+	if mp.calls.Load() != 0 {
+		t.Errorf("forged Host: pipeline ran %d times, want 0 — skip matched on r.Host (the agent-supplied Host header), not r.URL.Host", mp.calls.Load())
+	}
+	if sessions := store.ListSessions(); len(sessions) != 0 {
+		t.Errorf("forged Host: %d session(s) recorded, want 0 — skip path bypasses recording", len(sessions))
+	}
+}
+
+// TestForwardProxy_SkipHosts_CONNECT_BypassesPipeline asserts that the
+// CONNECT-tunnel path honors SkipHosts. CONNECT is safer-by-construction
+// than the HTTP path because r.Host IS the dial target, but skip
+// behavior must still be exercised so a regression that disables the
+// CONNECT skip path is caught.
+func TestForwardProxy_SkipHosts_CONNECT_BypassesPipeline(t *testing.T) {
+	// Minimal echo server — stand-in for an HTTPS upstream we don't
+	// want to do TLS to in tests. The skip path opens a tunnel and
+	// shuttles bytes; we just need to prove bytes flow.
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstream.Close()
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		_, _ = conn.Write(append([]byte("echo:"), buf[:n]...))
+	}()
+
+	upstreamAddr := upstream.Addr().String()
+	upstreamHost, _, _ := net.SplitHostPort(upstreamAddr)
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	skip, err := skiphost.New([]string{upstreamHost})
+	if err != nil {
+		t.Fatalf("skiphost.New: %v", err)
+	}
+
+	proxy, mp := newMarkerServer(t, store, skip)
+	defer proxy.Close()
+
+	// Drive CONNECT manually so we can observe the 200 + tunnel.
+	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
+	tunnel, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer tunnel.Close()
+	if _, err := tunnel.Write([]byte("CONNECT " + upstreamAddr + " HTTP/1.1\r\nHost: " + upstreamAddr + "\r\n\r\n")); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+
+	br := bufio.NewReader(tunnel)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT response = %q, want 200 (skip path must still establish the tunnel)", line)
+	}
+	// Drain headers.
+	for {
+		hdr, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read headers: %v", err)
+		}
+		if hdr == "\r\n" || hdr == "\n" {
+			break
+		}
+	}
+
+	// Tunnel up — write some bytes and confirm the echo round-trips.
+	if _, err := tunnel.Write([]byte("hello")); err != nil {
+		t.Fatalf("write through tunnel: %v", err)
+	}
+	got := make([]byte, 32)
+	_ = tunnel.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := br.Read(got)
+	if err != nil && err != io.EOF {
+		t.Fatalf("read tunnel: %v", err)
+	}
+	if string(got[:n]) != "echo:hello" {
+		t.Errorf("tunnel echo = %q, want echo:hello", got[:n])
+	}
+
+	// The skipped CONNECT must NOT have run the outbound pipeline
+	// and must NOT have appended a session event.
+	if mp.calls.Load() != 0 {
+		t.Errorf("skipped CONNECT: pipeline ran %d times, want 0", mp.calls.Load())
+	}
+	if sessions := store.ListSessions(); len(sessions) != 0 {
+		t.Errorf("skipped CONNECT: %d session(s) recorded, want 0", len(sessions))
+	}
+}
+

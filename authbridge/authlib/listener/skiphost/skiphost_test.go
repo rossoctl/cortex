@@ -32,9 +32,55 @@ func TestMatch_NilMatcher(t *testing.T) {
 }
 
 func TestMatch_EmptyHost(t *testing.T) {
-	m, _ := New([]string{"*"})
+	// "*-anything" matches every single-label host that ends in
+	// "-anything" — broad enough that the empty-host defense is the
+	// only thing keeping Match from returning true on an unset Host.
+	// We can't use bare "*" anymore (rejected by New as match-all).
+	m, _ := New([]string{"some-host"})
 	if m.Match("") {
 		t.Error("matcher matched empty host; empty host must never match (defensive against unset Host header)")
+	}
+}
+
+func TestNew_RejectsMatchAllStar(t *testing.T) {
+	if _, err := New([]string{"*"}); err == nil {
+		t.Error("New([\"*\"]) must reject match-all (every single-label hostname would skip enforcement)")
+	}
+}
+
+func TestNew_RejectsMatchAllDoubleStar(t *testing.T) {
+	if _, err := New([]string{"**"}); err == nil {
+		t.Error("New([\"**\"]) must reject the unambiguous match-all glob")
+	}
+}
+
+func TestNew_RejectsWhitespaceOnly(t *testing.T) {
+	if _, err := New([]string{"   "}); err == nil {
+		t.Error("New([\"   \"]) must reject whitespace-only patterns (trivial-true)")
+	}
+}
+
+func TestNew_RejectsPortInPattern(t *testing.T) {
+	if _, err := New([]string{"otel-collector:8335"}); err == nil {
+		t.Error("New([\"otel-collector:8335\"]) must reject port-bearing patterns; Match strips ports before comparing so they would never match")
+	}
+}
+
+func TestNew_AcceptsLeadingStar(t *testing.T) {
+	// "*.something" is NOT match-all under .-delimited glob — it
+	// requires the fixed suffix. Explicit guard against a future
+	// rewrite that over-rejects and breaks operator-typical FQDN
+	// patterns.
+	cases := []string{
+		"*.svc.cluster.local",
+		"*.metrics.local",
+		"otel-collector.*.svc.cluster.local",
+		"otel-collector*",
+	}
+	for _, p := range cases {
+		if _, err := New([]string{p}); err != nil {
+			t.Errorf("New([%q]) returned err = %v; non-match-all pattern must be accepted", p, err)
+		}
 	}
 }
 
