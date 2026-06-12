@@ -264,9 +264,17 @@ setup_enforce_redirect() {
   REDIR_CHAIN="AB_REDIRECT"
   NOTCP_CHAIN="AB_NOTCP"
 
+  # Fail closed and LOUD on zero resolvers: without a nameserver to exempt, the
+  # rules below would drop UDP/53 and capture TCP/53, leaving a running-but-DNS-
+  # dead pod that is far harder to triage than a failed init container. In a
+  # Kubernetes pod kubelet always populates resolv.conf, so an empty result means
+  # a real misconfiguration — surface it as Init:Error rather than silent breakage.
   NAMESERVERS=$(get_nameservers)
   if [ -z "${NAMESERVERS}" ]; then
-    echo "enforce-redirect: WARNING: no nameservers found in ${RESOLV_CONF} — cluster DNS may break (UDP/53 dropped, TCP/53 captured)"
+    echo "enforce-redirect: ERROR: no nameservers found in ${RESOLV_CONF}" >&2
+    echo "enforce-redirect: refusing to start — DNS egress would be dropped (UDP/53) / captured (TCP/53), silently breaking name resolution." >&2
+    echo "enforce-redirect: set RESOLV_CONF to a file with valid 'nameserver' entries if running outside Kubernetes." >&2
+    exit 1
   fi
 
   echo "enforce-redirect: installing fail-closed egress capture"

@@ -147,6 +147,19 @@ else
   echo "FAIL: external UDP not dropped (DROP=${dropc:-?})"; fail=1
 fi
 
+echo "### Fail-closed test: empty resolv.conf must abort init (exit non-zero)"
+# The zero-resolver check runs before any iptables mutation, so this re-invocation
+# leaves the rules above untouched. A running-but-DNS-dead pod is worse than a
+# failed init, so enforce-redirect refuses to start without a resolver to exempt.
+EMPTY_RESOLV=$(mktemp)   # created empty: no `nameserver` lines
+if env MODE=enforce-redirect PROXY_UID=1337 RESOLV_CONF="${EMPTY_RESOLV}" \
+       TRANSPARENT_PORT="${TPORT}" IPTABLES_CMD="${IPT}" IP6TABLES_CMD=ip6tables-nft \
+       sh "${INIT}" >/dev/null 2>&1; then
+  echo "FAIL: init succeeded with empty resolv.conf (should exit non-zero)"; fail=1
+else
+  echo "PASS: init aborts fail-closed when resolv.conf has no nameservers"
+fi
+
 echo
 [ "${fail}" -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit "${fail}"
