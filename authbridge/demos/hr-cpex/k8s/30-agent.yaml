@@ -150,7 +150,7 @@ spec:
             # Desktop the host is reached at http://192.168.5.2:11434
             # (lima host-gateway) and Ollama must bind 0.0.0.0.
             - name: MODEL
-              value: "ollama/llama3:latest"
+              value: "ollama/llama3.2:8b"
             - name: LLM_API_BASE
               value: "http://host.docker.internal:11434"
             - name: AGENT_PUBLIC_URL

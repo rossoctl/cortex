@@ -122,6 +122,34 @@ func TestA2AResponseBodyMod_RewritesArtifact(t *testing.T) {
 	}
 }
 
+func TestA2AResponseBodyMod_MultiPartFailsClosed(t *testing.T) {
+	// Two text-kind artifact parts → ambiguous single-value rewrite → error.
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"result":{"artifacts":[{"parts":[{"kind":"text","text":"part one"},{"kind":"text","text":"part two"}]}]}}`),
+	}
+	mutated, err := applyA2AResponseBodyMod(pctx, "redacted")
+	if err == nil {
+		t.Fatal("expected fail-closed error for multi-part response, got nil")
+	}
+	if mutated {
+		t.Fatal("mutated=true on multi-part fail-closed")
+	}
+}
+
+func TestA2AResponseBodyMod_MultiArtifactMultiPartFailsClosed(t *testing.T) {
+	// Text parts spread across multiple artifacts still triggers the guard.
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"result":{"artifacts":[{"parts":[{"kind":"text","text":"first"}]},{"parts":[{"kind":"text","text":"second"}]}]}}`),
+	}
+	mutated, err := applyA2AResponseBodyMod(pctx, "redacted")
+	if err == nil {
+		t.Fatal("expected fail-closed error for multi-artifact text parts, got nil")
+	}
+	if mutated {
+		t.Fatal("mutated=true on multi-artifact fail-closed")
+	}
+}
+
 func TestA2AResponseBodyMod_StreamingFailsClosed(t *testing.T) {
 	pctx := &pipeline.Context{
 		ResponseBody: []byte("data: {\"result\":{}}\n\n"),

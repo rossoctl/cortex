@@ -12,7 +12,7 @@ import (
 //
 // The real implementation lives in manager_cpex.go (//go:build cpex)
 // and wraps the cpex.PluginManager from the
-// github.com/IBM/contextforge-plugins-framework/go/cpex package. The
+// github.com/contextforge-org/cpex/go/cpex package. The
 // stub in manager_stub.go (//go:build !cpex) makes NewManager error
 // out with a clear "build the cpex binary" message if anyone tries to
 // configure the plugin in a binary that wasn't built with -tags cpex.
@@ -88,9 +88,15 @@ type ManagerOptions struct {
 type Decision int
 
 const (
+	// DecisionUnknown is the zero-value sentinel. A Result whose
+	// Decision was never explicitly set fails closed in applyDecision
+	// (the default arm), so an uninitialised Result never silently
+	// allows traffic.
+	DecisionUnknown Decision = iota
+
 	// DecisionAllow: all sub-plugins continued. Request proceeds
 	// untouched.
-	DecisionAllow Decision = iota
+	DecisionAllow
 
 	// DecisionDeny: at least one sub-plugin returned a policy
 	// violation. Plugin emits pipeline.Deny.
@@ -113,6 +119,8 @@ const (
 // reasons and log fields.
 func (d Decision) String() string {
 	switch d {
+	case DecisionUnknown:
+		return "unknown"
 	case DecisionAllow:
 		return "allow"
 	case DecisionDeny:

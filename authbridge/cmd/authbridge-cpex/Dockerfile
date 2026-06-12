@@ -28,13 +28,11 @@
 #   ./FFI_ABI
 #   ./LICENSE
 #
-# This stage fetches the tarball + its .sha256 sidecar, verifies the
-# checksum, extracts the .a. Cosign verification is a follow-up (we
-# have the .sig/.crt to wire it up); for now the sha256 is the
-# integrity check.
+# This stage fetches the tarball + its .sha256 + cosign signature,
+# verifies the checksum AND the cosign signature, then extracts the .a.
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d AS ffi
 
-RUN apk add --no-cache curl ca-certificates tar
+RUN apk add --no-cache curl ca-certificates tar cosign
 
 ARG CPEX_FFI_VERSION
 ARG TARGETARCH
@@ -44,14 +42,18 @@ ARG TARGETOS=linux
 ARG CPEX_LIBC=gnu
 ARG FFI_ASSET=cpex-ffi-${CPEX_FFI_VERSION}-${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}.tar.gz
 
+ARG CPEX_COSIGN_IDENTITY=https://github.com/contextforge-org/cpex/.github/workflows/release-ffi.yaml@refs/tags/${CPEX_FFI_VERSION}
+ARG CPEX_COSIGN_ISSUER=https://token.actions.githubusercontent.com
+
 WORKDIR /ffi
 RUN set -eu; \
     BASE="https://github.com/contextforge-org/cpex/releases/download/${CPEX_FFI_VERSION}"; \
     echo "[ffi] downloading ${BASE}/${FFI_ASSET}"; \
     curl -fsSLo asset.tar.gz "${BASE}/${FFI_ASSET}"; \
     curl -fsSLo asset.tar.gz.sha256 "${BASE}/${FFI_ASSET}.sha256"; \
-    # sha256 file format: "<hash>  <filename>" — rename our local copy \
-    # so the line matches, then verify. \
+    curl -fsSLo asset.tar.gz.sig "${BASE}/${FFI_ASSET}.sig"; \
+    curl -fsSLo asset.tar.gz.crt "${BASE}/${FFI_ASSET}.crt"; \
+    # SHA-256 integrity check. \
     expected_hash=$(awk '{print $1}' asset.tar.gz.sha256); \
     actual_hash=$(sha256sum asset.tar.gz | awk '{print $1}'); \
     if [ "$expected_hash" != "$actual_hash" ]; then \
@@ -59,6 +61,16 @@ RUN set -eu; \
         exit 1; \
     fi; \
     echo "[ffi] sha256 verified"; \
+    # Cosign signature verification — proves the asset was produced by \
+    # the cpex release workflow and hasn't been tampered with. \
+    cosign verify-blob \
+        --signature asset.tar.gz.sig \
+        --certificate asset.tar.gz.crt \
+        --certificate-identity "${CPEX_COSIGN_IDENTITY}" \
+        --certificate-oidc-issuer "${CPEX_COSIGN_ISSUER}" \
+        asset.tar.gz \
+    && echo "[ffi] cosign signature verified" \
+    || { echo "[ffi] cosign verification FAILED" >&2; exit 1; }; \
     tar -xzf asset.tar.gz; \
     test -f libcpex_ffi.a || { echo "[ffi] libcpex_ffi.a missing from tarball" >&2; exit 1; }; \
     echo "[ffi] extracted libcpex_ffi.a + VERSION=$(cat VERSION) + FFI_ABI=$(cat FFI_ABI)"

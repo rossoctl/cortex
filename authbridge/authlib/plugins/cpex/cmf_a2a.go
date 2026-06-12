@@ -139,18 +139,18 @@ func applyA2ARequestBodyMod(pctx *pipeline.Context, newTexts []string) (mutated 
 }
 
 // applyA2AResponseBodyMod rewrites pctx.ResponseBody — a non-streaming
-// A2A JSON-RPC response — replacing the first artifact text part with
-// newArtifact (the single redacted text part CPEX returned on the
-// response phase).
+// A2A JSON-RPC response — replacing the single artifact text part with
+// newArtifact (the redacted text CPEX returned on the response phase).
 //
-// A2A responses are frequently SSE streams (message/stream); those won't
-// parse as one JSON object, so a requested redaction can't be applied and
-// we return an error to fail closed rather than forward unredacted output.
-// For the non-streaming JSON-RPC shape it rewrites the first text part
-// under result.artifacts[].parts[].
+// Because the write side receives only one redacted text while the read
+// side (a2aResponseParts) emits one text part per non-empty text-kind
+// artifact part, a response carrying more than one such part is an
+// ambiguous single-value rewrite — we fail closed rather than overwrite
+// only the first part and forward the rest unredacted. Streaming (SSE)
+// responses don't parse as one JSON object and also fail closed.
 //
-// Returns mutated=false (no error) when newArtifact is empty or there's no
-// artifact text part to replace.
+// Returns mutated=false (no error) when newArtifact is empty or there's
+// no artifact text part to replace.
 func applyA2AResponseBodyMod(pctx *pipeline.Context, newArtifact string) (mutated bool, err error) {
 	if len(pctx.ResponseBody) == 0 || newArtifact == "" {
 		return false, nil
@@ -168,6 +168,11 @@ func applyA2AResponseBodyMod(pctx *pipeline.Context, newArtifact string) (mutate
 		return false, nil
 	}
 
+	// Collect all non-empty text-kind artifact parts, matching what the
+	// read side surfaced. We only hold one redacted text, so >1 such
+	// part is ambiguous: fail closed instead of stamping the same value
+	// over distinct parts or rewriting only the first.
+	targets := make([]map[string]any, 0, 4)
 	for _, a := range artifacts {
 		artifact, ok := a.(map[string]any)
 		if !ok {
@@ -185,21 +190,31 @@ func applyA2AResponseBodyMod(pctx *pipeline.Context, newArtifact string) (mutate
 			if kind, _ := po["kind"].(string); kind != "text" {
 				continue
 			}
-			// Skip empty text parts so we rewrite the same part the read
-			// side surfaced (a2aResponseParts emits only non-empty text).
-			if t, ok := po["text"].(string); !ok || t == "" {
-				continue
+			if t, ok := po["text"].(string); ok && t != "" {
+				targets = append(targets, po)
 			}
-			po["text"] = newArtifact
-			newBody, err := json.Marshal(envelope)
-			if err != nil {
-				return false, fmt.Errorf("re-serialize A2A response body: %w", err)
-			}
-			pctx.SetResponseBody(newBody)
-			return true, nil
 		}
 	}
-	return false, nil
+
+	if len(targets) == 0 {
+		return false, nil
+	}
+	if len(targets) > 1 {
+		return false, fmt.Errorf(
+			"A2A response has %d text parts; single-value redaction rewrite is ambiguous",
+			len(targets))
+	}
+	if targets[0]["text"] == newArtifact {
+		return false, nil
+	}
+	targets[0]["text"] = newArtifact
+
+	newBody, err := json.Marshal(envelope)
+	if err != nil {
+		return false, fmt.Errorf("re-serialize A2A response body: %w", err)
+	}
+	pctx.SetResponseBody(newBody)
+	return true, nil
 }
 
 // a2aMessageParts navigates a decoded A2A JSON-RPC request envelope to

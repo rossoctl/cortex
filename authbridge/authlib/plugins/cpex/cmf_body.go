@@ -10,6 +10,17 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
+// isStreamingResponseGap reports whether a response-phase invocation has a
+// non-empty body that yielded zero structured content parts — i.e. a
+// streaming (SSE) body the policy engine can't inspect. Callers use this
+// to fail closed rather than silently allowing unredacted content through.
+func isStreamingResponseGap(pctx *pipeline.Context, isResponse bool, cmfPartCount int) bool {
+	if !isResponse || cmfPartCount > 0 || len(pctx.ResponseBody) == 0 {
+		return false
+	}
+	return pctx.Extensions.MCP != nil || pctx.Extensions.Inference != nil || pctx.Extensions.A2A != nil
+}
+
 // sessionIDFromHeaders returns the X-Session-Id request header, the
 // session-correlation key AuthBridge threads into CPEX's session resolver
 // (tier-0 Agent.SessionID) for non-A2A traffic. MCP and inference requests

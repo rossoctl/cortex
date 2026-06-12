@@ -529,6 +529,26 @@ func TestDispatch_ErrorDecisionFailOpen(t *testing.T) {
 	}
 }
 
+func TestDispatch_UnknownDecisionFailsClosed(t *testing.T) {
+	// A Decision value the switch doesn't recognise (including the
+	// zero-value DecisionUnknown) must fail closed via the default arm.
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionUnknown, Reason: "zero-value sentinel"},
+		},
+	}
+	cfg := `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"fail_open":false}`
+	p := setupAndInit(t, fake, cfg)
+	a := p.OnRequest(context.Background(), &pipeline.Context{})
+	if a.Type != pipeline.Reject {
+		t.Fatalf("Type = %d, want Reject (DecisionUnknown must fail closed)", a.Type)
+	}
+	if a.Violation == nil || a.Violation.Code != "cpex.error" {
+		t.Fatalf("want Violation code=cpex.error, got %#v", a.Violation)
+	}
+}
+
 func TestSanitizeReason(t *testing.T) {
 	cases := []struct {
 		in   string

@@ -25,7 +25,7 @@ type FakeManager struct {
 
 	// Hooks maps hook name → canned Result. Invoke returns the
 	// canned Result when the hook name matches; otherwise it
-	// returns DecisionAllow with a "no hook configured" reason.
+	// returns DecisionDeny (fail-closed default for test fidelity).
 	Hooks map[string]Result
 
 	// InvokeErr, if non-nil, is returned from every Invoke before
@@ -107,7 +107,10 @@ func (f *FakeManager) HasHook(name string) bool {
 }
 
 // Invoke records the call and returns InvokeErr (if set), the canned
-// Result for hookName (if in Hooks), or a default DecisionAllow.
+// Result for hookName (if in Hooks), or a default DecisionDeny. The
+// deny default mirrors production fail-closed semantics: tests must
+// explicitly wire Hooks with Allow/Modify results for the paths they
+// exercise, so an unconfigured hook is never silently permitted.
 func (f *FakeManager) Invoke(_ context.Context, hookName string, pctx *pipeline.Context) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,5 +121,5 @@ func (f *FakeManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	if r, ok := f.Hooks[hookName]; ok {
 		return r, nil
 	}
-	return Result{Decision: DecisionAllow, Reason: "fake: no hook configured"}, nil
+	return Result{Decision: DecisionDeny, Reason: "fake: no hook configured (deny by default)"}, nil
 }

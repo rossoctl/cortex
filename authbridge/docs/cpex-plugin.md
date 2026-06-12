@@ -1,5 +1,9 @@
 # cpex plugin
 
+> **`authbridge-cpex` is a build variant** of the AuthBridge proxy-sidecar
+> (`authbridge-proxy`), deployed *in place of* `authbridge-proxy` when
+> CPEX policy enforcement is needed — not an additional sidecar.
+
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
 runtime inside AuthBridge so operators can drive policy with CPEX's
 APL (Attribute Policy Language) DSL — and any of the pre-built CPEX

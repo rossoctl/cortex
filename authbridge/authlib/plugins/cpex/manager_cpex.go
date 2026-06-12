@@ -114,6 +114,18 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	isResponse := pctx.CurrentPhase() == pipeline.InvocationPhaseResponse
 	payload, ext := buildCMF(pctx, isResponse)
 
+	// Streaming-response guard: when we're on the response phase, the
+	// body is non-empty, a protocol parser claimed this traffic, yet the
+	// CMF message has zero content parts — the body is an SSE stream
+	// that the policy engine can't inspect. Rather than silently allowing
+	// the unredacted stream through (the policy had nothing to evaluate),
+	// surface a DecisionError so the fail_open knob governs: the default
+	// fail-closed denies, fail_open=true logs and allows.
+	if isStreamingResponseGap(pctx, isResponse, len(payload.Message.Content)) {
+		return Result{Decision: DecisionError, Reason: "streaming response body not inspectable by policy"},
+			fmt.Errorf("cpex: response body present (%d bytes) but yielded zero content parts — likely SSE stream; failing closed", len(pctx.ResponseBody))
+	}
+
 	// Fused identity-resolve + hook invoke. cpex-core runs the identity
 	// resolvers (jwt-user / jwt-client) ONLY on the identity.resolve hook,
 	// never inside a tool/prompt/resource hook. An FFI host must therefore
@@ -265,8 +277,8 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 }
 
 // applyModificationsToPctx writes CPEX's modified Extensions and body
-// back onto pctx. MCP body modifications are re-serialized; inference /
-// A2A body rewriting is not yet implemented and fails closed (see
+// back onto pctx. MCP, inference, and A2A body modifications are each
+// re-serialized via format-aware write-back functions (see
 // applyBodyModFromCMF).
 //
 // Extension changes applied:

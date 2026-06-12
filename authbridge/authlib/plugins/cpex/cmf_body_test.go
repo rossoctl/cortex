@@ -573,3 +573,74 @@ func TestSessionIDFromHeaders(t *testing.T) {
 		t.Fatalf("got %q, want taint-demo-42", got)
 	}
 }
+
+// --- isStreamingResponseGap ---
+
+func TestIsStreamingResponseGap_SSEBodyWithProtocolExtension(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: []byte("data: {\"result\":{}}\n\n"),
+		Extensions: pipeline.Extensions{
+			A2A: &pipeline.A2AExtension{Method: "message/stream"},
+		},
+	}
+	if !isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("expected streaming gap: SSE body, A2A extension, zero parts")
+	}
+}
+
+func TestIsStreamingResponseGap_InferenceSSE(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: []byte("data: {\"choices\":[{\"delta\":{}}]}\n\n"),
+		Extensions: pipeline.Extensions{
+			Inference: &pipeline.InferenceExtension{Model: "gpt-4"},
+		},
+	}
+	if !isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("expected streaming gap for inference SSE")
+	}
+}
+
+func TestIsStreamingResponseGap_NotOnRequestPhase(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: []byte("data: something\n\n"),
+		Extensions: pipeline.Extensions{
+			A2A: &pipeline.A2AExtension{Method: "message/stream"},
+		},
+	}
+	if isStreamingResponseGap(pctx, false, 0) {
+		t.Fatal("request phase should never report a streaming gap")
+	}
+}
+
+func TestIsStreamingResponseGap_PartsPresent(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"result":{"artifacts":[{"parts":[{"kind":"text","text":"ok"}]}]}}`),
+		Extensions: pipeline.Extensions{
+			A2A: &pipeline.A2AExtension{Method: "message/send"},
+		},
+	}
+	if isStreamingResponseGap(pctx, true, 1) {
+		t.Fatal("should not report gap when parts were successfully extracted")
+	}
+}
+
+func TestIsStreamingResponseGap_EmptyBodyNoGap(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: nil,
+		Extensions: pipeline.Extensions{
+			A2A: &pipeline.A2AExtension{Method: "message/send"},
+		},
+	}
+	if isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("empty body should not be a streaming gap")
+	}
+}
+
+func TestIsStreamingResponseGap_NoProtocolExtension(t *testing.T) {
+	pctx := &pipeline.Context{
+		ResponseBody: []byte("data: something\n\n"),
+	}
+	if isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("no protocol extension → no gap (unrecognised traffic)")
+	}
+}

@@ -1,5 +1,10 @@
 # CPEX
 
+> **Deployment note:** `authbridge-cpex` is a **build variant** of the
+> AuthBridge proxy-sidecar (`authbridge-proxy`), deployed *in place of*
+> `authbridge-proxy` — not an additional sidecar. The operator selects
+> the image when CPEX policy enforcement is needed for a workload.
+
 The CPEX plugin routes AuthBridge pipeline hooks through the [CPEX](https://github.com/contextforge-org/cpex) framework,
 so operators can define authorization flows inline and declaratively, and turn decisions into ordered effects (including invoking CPEX plugins).
 
@@ -139,6 +144,16 @@ policy:
 
 Local structural checks run fast and first; external PDPs run when the local
 checks pass; their decisions feed the same `on_deny` / `on_allow` effect lists.
+
+> **OPA in two places.** AuthBridge ships a native `opa` pipeline plugin
+> (standalone, no CPEX dependency) for simple per-request OPA checks.
+> The CPEX `opa(...)` step shown above runs OPA as a CPEX sub-plugin —
+> within APL's effect framework, so its verdict feeds `on_deny`/`on_allow`
+> effects, session tainting, and ordered composition with other PDPs.
+> Use the native `opa` plugin for standalone binary OPA gates; use
+> CPEX's `opa(...)` when OPA participates in a multi-PDP orchestration
+> flow. The `authzen(...)` and `cedar` steps are doc-level BYOP examples
+> not exercised in this demo.
 
 ## CMF / extension mapping
 
