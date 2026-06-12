@@ -100,6 +100,37 @@ func TestJSON_NonStringSecretPreserved(t *testing.T) {
 	}
 }
 
+func TestJSON_ContainerValuedSensitiveKey(t *testing.T) {
+	in := json.RawMessage(`{"token":{"access_token":"secret","url":"https://idp"}}`)
+	out := JSON(in)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	inner := m["token"].(map[string]any)
+	if inner["access_token"] != "[REDACTED]" {
+		t.Errorf("access_token inside container-valued sensitive key = %v, want [REDACTED]", inner["access_token"])
+	}
+	if inner["url"] != "https://idp" {
+		t.Errorf("url inside container-valued sensitive key = %v, want https://idp", inner["url"])
+	}
+}
+
+func TestJSON_RedactsApiKey(t *testing.T) {
+	in := json.RawMessage(`{"api_key":"k3y","endpoint":"https://api"}`)
+	out := JSON(in)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["api_key"] != "[REDACTED]" {
+		t.Errorf("api_key = %v, want [REDACTED]", m["api_key"])
+	}
+	if m["endpoint"] != "https://api" {
+		t.Errorf("endpoint = %v, want https://api", m["endpoint"])
+	}
+}
+
 func TestJSON_NestedArrayRedaction(t *testing.T) {
 	in := json.RawMessage(`{"data":[[{"client_secret":"xyz","url":"https://a"}]]}`)
 	out := JSON(in)

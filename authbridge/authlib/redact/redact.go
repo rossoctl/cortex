@@ -1,4 +1,7 @@
-// Package redact strips sensitive values from JSON config payloads.
+// Package redact provides best-effort stripping of sensitive values from
+// JSON config payloads served by unauthenticated diagnostic endpoints.
+// The canonical defense is to keep inline secrets out of config entirely
+// (use *_file paths instead); this layer is defense-in-depth.
 package redact
 
 import (
@@ -7,7 +10,7 @@ import (
 )
 
 var sensitiveKeys = []string{
-	"secret", "password", "token", "bearer",
+	"secret", "password", "token", "bearer", "key", "credential",
 }
 
 // JSON redacts values whose keys match sensitive patterns in a
@@ -36,8 +39,8 @@ func redactMap(m map[string]any) {
 		if isSensitiveKey(k) {
 			if _, ok := v.(string); ok {
 				m[k] = "[REDACTED]"
+				continue
 			}
-			continue
 		}
 		switch val := v.(type) {
 		case map[string]any:

@@ -244,8 +244,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		"server_url", serverURL,
 		"broker_url", brokerURL)
 
-	// Extract bearer token
-	subjectToken := auth.ExtractBearer(authHeader)
+	subjectToken := strings.TrimSpace(auth.ExtractBearer(authHeader))
 	if subjectToken == "" {
 		return pctx.DenyAndRecord("missing_subject_token", "auth.missing-token",
 			"broker route requires authorization token")
