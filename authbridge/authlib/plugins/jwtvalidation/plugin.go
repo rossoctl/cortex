@@ -14,6 +14,7 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/otelbridge"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
@@ -386,6 +387,8 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	if p.inner == nil {
 		return pipeline.DenyStatus(503, "upstream.unreachable", "jwt-validation not configured")
 	}
+	ctx = otelbridge.ExtractTraceContext(ctx, pctx.Headers)
+
 	authHeader := pctx.Headers.Get("Authorization")
 	path := pctx.Path
 	var audience string

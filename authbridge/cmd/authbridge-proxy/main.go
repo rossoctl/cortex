@@ -26,6 +26,7 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/observe"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/otelbridge"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/reloader"
@@ -93,6 +94,12 @@ func main() {
 
 	initLogging()
 	startSignalToggle()
+
+	otelShutdown, err := otelbridge.Init(context.Background())
+	if err != nil {
+		log.Fatalf("otel init: %v", err)
+	}
+	defer otelShutdown(context.Background())
 
 	if *configPath == "" {
 		log.Fatal("--config is required")

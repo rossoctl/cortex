@@ -13,6 +13,7 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/otelbridge"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
@@ -577,6 +578,8 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		authHeader = "Bearer " + real
 	}
 
+	ctx = otelbridge.ExtractTraceContext(ctx, pctx.Headers)
+
 	result := p.inner.HandleOutbound(ctx, authHeader, host)
 	// Record an Auth.Outbound entry on every branch so operators have
 	// full outbound audit in the session stream — matches the inbound
@@ -608,6 +611,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 		return pipeline.DenyStatus(result.DenyStatus, code, result.DenyReason)
 	case auth.ActionReplaceToken:
 		pctx.Headers.Set("Authorization", "Bearer "+result.Token)
+		otelbridge.InjectTraceContext(ctx, pctx.Headers)
 		reason := "token_replaced"
 		if result.CacheHit {
 			reason = "cache_hit"
