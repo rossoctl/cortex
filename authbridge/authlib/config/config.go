@@ -334,6 +334,67 @@ type ListenerConfig struct {
 	// (JSON snapshots + SSE stream consumed by abctl or curl). Default per
 	// mode preset is ":9094". Set to empty string to disable the endpoint.
 	SessionAPIAddr string `yaml:"session_api_addr" json:"session_api_addr"`
+
+	// SkipHosts lists outbound destination host patterns whose traffic
+	// bypasses the plugin pipeline AND session recording entirely. The
+	// listener forwards matched requests as a transparent proxy without
+	// running plugins or appending events to any session bucket.
+	//
+	// Intended for high-volume infrastructure traffic that competes
+	// with agent-meaningful events for session-buffer slots. The
+	// canonical example: an OpenTelemetry collector sidecar that emits
+	// dozens of exports per agent turn — without this gate, those
+	// exports occupy the session buffer's FIFO eviction window and
+	// silently push out the inbound A2A user intent that IBAC needs
+	// to align tool calls against, causing IBAC to fall through to
+	// the no_intent skip path on every call after the first.
+	//
+	// Patterns use `.`-delimited glob semantics (same library as
+	// `authproxy-routes`): "otel-collector*" matches the short
+	// service name, "otel-collector.kagenti-system.svc.cluster.local"
+	// matches the FQDN, "*-collector" matches any single-label name
+	// ending in -collector. Port is stripped before matching, so
+	// patterns must NOT include `:port`.
+	//
+	// Empty list (default) preserves current behavior: every outbound
+	// host runs the pipeline and is eligible for session recording.
+	//
+	// Trust model — the value matched against SkipHosts is the
+	// destination Host as observed at the listener boundary, which is
+	// agent-influenceable in two of the three deployment shapes:
+	//
+	//   - ext_proc / envoy-sidecar: matches Envoy's `:authority`
+	//     (fallback `host` header). The agent sets these; Envoy may
+	//     rewrite them per its config, but ultimately the value is
+	//     "what the agent told Envoy it wanted to talk to."
+	//   - HTTP forward-proxy / proxy-sidecar: matches `r.Host` from
+	//     the HTTP request. The request is then dialed against
+	//     `r.URL`, so a forged Host that diverges from the real URL
+	//     host would skip-match yet send to the actual upstream.
+	//   - CONNECT-tunnel / proxy-sidecar: safer-by-construction —
+	//     `r.Host` IS the dial target. A forged Host cannot
+	//     skip-match while dialing elsewhere.
+	//
+	// Implication: do NOT list a destination here that you'd want
+	// IBAC / token-exchange to deny on. Skip means "the operator
+	// trusts every flow to this host enough to bypass the entire
+	// outbound enforcement pipeline." Limit entries to infrastructure
+	// destinations the agent should not be making policy decisions
+	// against in the first place (collector sidecars, log shippers).
+	//
+	// Each skip is logged at INFO with the matched host and pattern
+	// so an operator reviewing logs can see when a pattern fired and
+	// catch unexpected matches early. The `transparentproxy` listener
+	// (proxy-sidecar enforce-redirect mode) intentionally does NOT
+	// consult SkipHosts — that is the hard egress guard and must not
+	// be self-exemptable via the agent's outbound destination.
+	//
+	// Match-all patterns ("*", "**", whitespace-only) and patterns
+	// containing ":port" are rejected at startup so a single
+	// misconfigured entry can't silently disable all outbound
+	// enforcement. Mirrors the bypass-pattern guard added to ibac
+	// in #496.
+	SkipHosts []string `yaml:"skip_hosts" json:"skip_hosts"`
 }
 
 // StatsConfig represents the configuration for reporting config and statistics

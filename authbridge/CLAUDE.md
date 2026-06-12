@@ -579,6 +579,19 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 10. **Outbound passthrough is the safe default**: The `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, which means outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) passes through without token exchange. If this were set to `exchange`, all outbound HTTP calls would attempt token exchange and fail for non-Keycloak destinations.
 
+11. **Chatty observability traffic and IBAC user intent**: The session store is FIFO with a default cap of 100 events per session. Two layered defenses keep the inbound A2A user intent visible to IBAC even when an agent generates dozens of outbound events per turn:
+
+    - **Primary fix — `listener.skip_hosts`**: list infrastructure destinations (OTel collectors, metrics endpoints, log shippers) whose traffic should bypass the pipeline AND session recording entirely. Matched requests are forwarded as a transparent proxy: no plugin runs, no event is appended. Patterns use the same `.`-delimited glob semantics as `authproxy-routes`; ports are stripped before matching. Example:
+      ```yaml
+      listener:
+        skip_hosts:
+          - "otel-collector.*.svc.cluster.local"
+          - "*.metrics.local"
+      ```
+      Any change to `listener.skip_hosts` requires a pod restart (same rule as other `listener.*` fields). Do NOT add hosts here that need IBAC / token-exchange policy applied — bypass means bypass.
+
+    - **Backstop — intent pin in the eviction policy**: even with `skip_hosts` empty, the session store now pins the most-recent inbound A2A request event against FIFO eviction. If the buffer overflows, every other event evicts in normal chronological order; the protected intent stays at its original timestamp, leaving a visible time gap in the timeline. Older intents from earlier turns are NOT pinned — only the latest one — so a multi-turn conversation with huge fan-out can't pile up stale intents and starve the buffer. The pin protects against FIFO eviction only: IBAC's `LastIntent()` survives buffer overflow as long as the session is still alive and an inbound A2A request has landed in it, but can still return nil after session expiry, explicit deletion, or before the first inbound request arrives. The pin is defense-in-depth; reach for `skip_hosts` first when the offending traffic is identifiable infrastructure.
+
 ## DCO Sign-Off (Mandatory)
 
 All commits **must** include a `Signed-off-by` trailer (Developer Certificate of Origin).

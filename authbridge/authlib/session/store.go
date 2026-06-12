@@ -193,16 +193,84 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	s.publishLocked(event)
 
 	if s.maxEvents > 0 && len(sess.Events) > s.maxEvents {
-		excess := len(sess.Events) - s.maxEvents
-		trimmed := make([]pipeline.SessionEvent, s.maxEvents)
-		copy(trimmed, sess.Events[excess:])
-		sess.Events = trimmed
+		sess.Events = trimEventsPinIntent(sess.Events, s.maxEvents)
 	}
 
 	// Evict oldest session if cap is exceeded.
 	if s.maxSessions > 0 && len(s.sessions) > s.maxSessions {
 		s.evictOldestLocked()
 	}
+}
+
+// isIntentEvent matches the SessionView.LastIntent predicate: an
+// inbound A2A request event. IBAC and any future intent-aware
+// guardrail call LastIntent and need the most recent such event to
+// survive FIFO eviction. Defined here so the eviction policy and
+// the consumer view can never drift apart.
+func isIntentEvent(e pipeline.SessionEvent) bool {
+	return e.Direction == pipeline.Inbound &&
+		e.Phase == pipeline.SessionRequest &&
+		e.A2A != nil
+}
+
+// trimEventsPinIntent reduces events to len <= maxEvents while
+// preserving the most-recent intent event, even when that intent
+// sits in the prefix that FIFO would normally evict. All other
+// events evict in chronological order; the protected intent stays
+// at its original index, leaving a temporal gap between it and the
+// first non-evicted event after it. That gap is visible in
+// /v1/sessions and abctl as a discontinuity in the timeline, which
+// is the right shape: the intent's append time is preserved
+// (consumers can correlate against the inbound request's wall-clock
+// timestamp) and chronological order across surviving events stays
+// monotonic.
+//
+// Why pin only the MOST-RECENT intent: a session can carry several
+// user turns ("solve this", then "now do that") and only the latest
+// is what IBAC aligns subsequent tool calls against. Pinning all
+// intents would let stale ones pile up under pathological loads
+// (slow turns + huge fan-out) and starve the buffer.
+//
+// Pathological case — the buffer is mostly intents, exceeds
+// maxEvents, and only the latest is pinned: older intents evict via
+// normal FIFO. There is no scenario where this returns more than
+// maxEvents events.
+//
+// Caller guarantees len(events) > maxEvents and maxEvents > 0;
+// otherwise this is a no-op shape (returns events unchanged).
+func trimEventsPinIntent(events []pipeline.SessionEvent, maxEvents int) []pipeline.SessionEvent {
+	if maxEvents <= 0 || len(events) <= maxEvents {
+		return events
+	}
+	excess := len(events) - maxEvents
+
+	// Locate the most-recent intent. If it sits in the keep window
+	// (index >= excess) it survives a plain FIFO trim — fast path.
+	intentIdx := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if isIntentEvent(events[i]) {
+			intentIdx = i
+			break
+		}
+	}
+	if intentIdx == -1 || intentIdx >= excess {
+		// No protected event in the eviction prefix; FIFO trim.
+		trimmed := make([]pipeline.SessionEvent, maxEvents)
+		copy(trimmed, events[excess:])
+		return trimmed
+	}
+
+	// Protected intent is in the eviction prefix. Build the result
+	// as: [pinned intent] ++ [last maxEvents-1 non-intent-prefix
+	// events]. We keep the intent at the front so its original
+	// timestamp is preserved AND the resulting slice stays
+	// chronologically ordered (intent.At < kept-tail.At by construction —
+	// it's the oldest surviving event).
+	out := make([]pipeline.SessionEvent, 0, maxEvents)
+	out = append(out, events[intentIdx])
+	tailStart := len(events) - (maxEvents - 1)
+	out = append(out, events[tailStart:]...)
+	return out
 }
 
 // View returns a read-only snapshot of the session's events.

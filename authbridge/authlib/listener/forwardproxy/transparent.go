@@ -42,6 +42,17 @@ import (
 // hard control against a hostile one — only the IP is ground truth. Hard
 // enforcement would need IP-set allowlists or SNI/cert cross-checks.
 //
+// SkipHosts is intentionally NOT consulted here. listener.skip_hosts is an
+// ops convenience for the cooperative-egress paths (forward proxy + ext_proc),
+// where bypassing the pipeline on infrastructure traffic is fine because the
+// agent is trusted to honor HTTP_PROXY anyway. The transparent path exists
+// precisely as the hard egress guard against agents that route around the
+// cooperative paths, and pctx.Host here is recovered from agent-controlled
+// SNI/Host bytes on the wire — making it self-exemptable would defeat the
+// reason this listener exists. If you find yourself wanting to add a
+// SkipHosts check here to "match the other listeners," don't — that's the
+// failure mode this comment is explicitly trying to prevent.
+//
 // HandleTransparentConn owns clientConn's lifecycle and always closes it.
 func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	defer func() { _ = clientConn.Close() }()

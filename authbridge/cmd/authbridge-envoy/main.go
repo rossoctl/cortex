@@ -45,6 +45,7 @@ import (
 	// Only the ext_proc listener is compiled in (no ext_authz, no
 	// HTTP proxies).
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/extproc"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
@@ -218,8 +219,17 @@ func main() {
 	store := shared.New()
 	defer store.Close() // stop the TTL janitor on normal main return
 
+	// SkipHosts: outbound destinations that bypass the pipeline AND
+	// session recording entirely. See ListenerConfig.SkipHosts for the
+	// motivating case (chatty observability sidecars evicting the
+	// inbound A2A user intent from the session FIFO).
+	skipHosts, err := skiphost.New(cfg.Listener.SkipHosts)
+	if err != nil {
+		log.Fatalf("listener.skip_hosts: %v", err)
+	}
+
 	var grpcServers []*grpc.Server
-	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, store, cfg.Listener.ExtProcAddr))
+	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, store, skipHosts, cfg.Listener.ExtProcAddr))
 
 	statsProvider := func() *auth.Stats {
 		sources := plugins.CollectStats(inboundH.Load())
@@ -302,13 +312,14 @@ func main() {
 	}
 }
 
-func startGRPCExtProc(inbound, outbound *pipeline.Holder, sessions *session.Store, store pipeline.SharedStore, addr string) *grpc.Server {
+func startGRPCExtProc(inbound, outbound *pipeline.Holder, sessions *session.Store, store pipeline.SharedStore, skipHosts *skiphost.Matcher, addr string) *grpc.Server {
 	srv := grpc.NewServer()
 	extprocv3.RegisterExternalProcessorServer(srv, &extproc.Server{
 		InboundPipeline:  inbound,
 		OutboundPipeline: outbound,
 		Sessions:         sessions,
 		Shared:           store,
+		SkipHosts:        skipHosts,
 	})
 	registerHealth(srv)
 	reflection.Register(srv)

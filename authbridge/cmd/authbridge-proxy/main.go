@@ -39,6 +39,7 @@ import (
 	// (no gRPC, no envoy types).
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/transparentproxy"
 
 	// Plugins. Auth gates first, then the protocol parsers that
@@ -256,6 +257,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("creating forward proxy: %v", err)
 	}
+	// SkipHosts: outbound destinations that bypass the pipeline AND
+	// session recording entirely. See ListenerConfig.SkipHosts for the
+	// motivating case (chatty observability sidecars evicting the
+	// inbound A2A user intent from the session FIFO).
+	skipHosts, err := skiphost.New(cfg.Listener.SkipHosts)
+	if err != nil {
+		log.Fatalf("listener.skip_hosts: %v", err)
+	}
+	fpSrv.SkipHosts = skipHosts
 	sharedStore := shared.New()
 	defer sharedStore.Close() // stop the TTL janitor on normal main return
 	rpSrv.Shared = sharedStore
