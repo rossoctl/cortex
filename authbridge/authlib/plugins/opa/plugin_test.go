@@ -42,6 +42,22 @@ func (c *capturingDecider) Decision(_ context.Context, opts sdk.DecisionOptions)
 
 func (c *capturingDecider) Stop(_ context.Context) {}
 
+// newTestOPA creates an OPA plugin instance with a mock shared SDK for testing.
+func newTestOPA(dec decider, inc includeSet) *OPA {
+	s := &sharedSDK{decider: dec, done: make(chan struct{})}
+	s.ready.Store(true)
+	p := &OPA{inc: inc}
+	p.shared.Store(s)
+	return p
+}
+
+// resetSingleton clears the package-level singleton for test isolation.
+func resetSingleton() {
+	singletonMu.Lock()
+	singleton = nil
+	singletonMu.Unlock()
+}
+
 // --- Configure tests ---
 
 func TestConfigure_MissingBundleURL(t *testing.T) {
@@ -176,26 +192,12 @@ func TestCapabilities(t *testing.T) {
 	p := &OPA{}
 	caps := p.Capabilities()
 
-	expectedRequires := []string{"jwt-validation"}
-	if len(caps.Requires) != len(expectedRequires) {
-		t.Fatalf("expected Requires=%v, got %v", expectedRequires, caps.Requires)
+	if len(caps.Requires) != 0 {
+		t.Errorf("expected no hard Requires, got %v", caps.Requires)
 	}
-	for i, v := range expectedRequires {
-		if caps.Requires[i] != v {
-			t.Errorf("Requires[%d]: expected %q, got %q", i, v, caps.Requires[i])
-		}
+	if len(caps.RequiresAny) != 0 {
+		t.Errorf("expected no hard RequiresAny, got %v", caps.RequiresAny)
 	}
-
-	expectedRequiresAny := []string{"a2a-parser", "mcp-parser", "inference-parser"}
-	if len(caps.RequiresAny) != len(expectedRequiresAny) {
-		t.Fatalf("expected RequiresAny=%v, got %v", expectedRequiresAny, caps.RequiresAny)
-	}
-	for i, v := range expectedRequiresAny {
-		if caps.RequiresAny[i] != v {
-			t.Errorf("RequiresAny[%d]: expected %q, got %q", i, v, caps.RequiresAny[i])
-		}
-	}
-
 	if caps.Description != "OPA policy enforcement for inbound and outbound requests." {
 		t.Errorf("unexpected Description: %q", caps.Description)
 	}
@@ -899,11 +901,7 @@ func TestOnRequest_NotReady(t *testing.T) {
 
 func TestOnRequest_Allow(t *testing.T) {
 	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: true}}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "GET",
@@ -921,11 +919,7 @@ func TestOnRequest_Allow(t *testing.T) {
 
 func TestOnRequest_Deny(t *testing.T) {
 	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: false}}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "GET",
@@ -946,11 +940,7 @@ func TestOnRequest_Deny(t *testing.T) {
 
 func TestOnRequest_DecisionError(t *testing.T) {
 	var dec decider = &mockDecider{err: fmt.Errorf("bundle not loaded")}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "GET",
@@ -968,11 +958,7 @@ func TestOnRequest_DecisionError(t *testing.T) {
 
 func TestOnRequest_UndefinedSkips(t *testing.T) {
 	var dec decider = &mockDecider{err: undefinedErr()}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "GET",
@@ -994,11 +980,7 @@ func TestOnRequest_OutboundUsesCorrectPath(t *testing.T) {
 		result:  &sdk.DecisionResult{Result: true},
 		capture: &capturedPath,
 	}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    "GET",
@@ -1020,11 +1002,7 @@ func TestOnRequest_InboundUsesCorrectPath(t *testing.T) {
 		result:  &sdk.DecisionResult{Result: true},
 		capture: &capturedPath,
 	}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "POST",
@@ -1064,11 +1042,7 @@ func TestOnResponse_NotReady(t *testing.T) {
 
 func TestOnResponse_Allow(t *testing.T) {
 	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: true}}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Inbound,
 		Method:          "GET",
@@ -1088,11 +1062,7 @@ func TestOnResponse_Allow(t *testing.T) {
 
 func TestOnResponse_Deny(t *testing.T) {
 	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: false}}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction:  pipeline.Inbound,
 		Method:     "GET",
@@ -1111,11 +1081,7 @@ func TestOnResponse_Deny(t *testing.T) {
 
 func TestOnResponse_UndefinedSkips(t *testing.T) {
 	var dec decider = &mockDecider{err: undefinedErr()}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction:  pipeline.Outbound,
 		Method:     "GET",
@@ -1138,11 +1104,7 @@ func TestOnResponse_OutboundUsesCorrectPath(t *testing.T) {
 		result:  &sdk.DecisionResult{Result: true},
 		capture: &capturedPath,
 	}
-	p := &OPA{
-		inc: newIncludeSet(nil),
-	}
-	p.decider.Store(&dec)
-	p.ready.Store(true)
+	p := newTestOPA(dec, newIncludeSet(nil))
 	pctx := &pipeline.Context{
 		Direction:  pipeline.Outbound,
 		Method:     "GET",
@@ -1168,14 +1130,14 @@ func TestBuildOPAConfig(t *testing.T) {
 			PollingMinDelay: 10,
 			PollingMaxDelay: 120,
 		},
-		agentID: "my-agent",
+		agentID: "spiffe://mybest.com/ns/team1/sa/test-agent",
 	}
 	data, agentID, err := p.buildOPAConfig()
 	if err != nil {
 		t.Fatalf("buildOPAConfig failed: %v", err)
 	}
-	if agentID != "my-agent" {
-		t.Errorf("expected agentID 'my-agent', got %q", agentID)
+	if agentID != "spiffe://mybest.com/ns/team1/sa/test-agent" {
+		t.Errorf("expected agentID 'spiffe://mybest.com/ns/team1/sa/test-agent', got %q", agentID)
 	}
 	var cfg map[string]any
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -1188,11 +1150,13 @@ func TestBuildOPAConfig(t *testing.T) {
 	}
 	bundles := cfg["bundles"].(map[string]any)
 	authz := bundles["authz"].(map[string]any)
-	if authz["resource"] != "bundles/my-agent.tar.gz" {
-		t.Errorf("expected bundles/my-agent.tar.gz, got %v", authz["resource"])
+	// Verify URL-encoded SPIFFE ID in resource (without spiffe:// prefix)
+	expected := "bundles?spiffe=mybest.com%2Fns%2Fteam1%2Fsa%2Ftest-agent"
+	if authz["resource"] != expected {
+		t.Errorf("expected %s, got %v", expected, authz["resource"])
 	}
 }
-func TestBuildOPAConfig_PathEscaping(t *testing.T) {
+func TestBuildOPAConfig_SPIFFEIDEncoding(t *testing.T) {
 	tests := []struct {
 		name             string
 		agentID          string
@@ -1200,28 +1164,40 @@ func TestBuildOPAConfig_PathEscaping(t *testing.T) {
 		wantResourcePath string
 	}{
 		{
-			name:             "valid agentID",
+			name:             "SPIFFE ID with namespace and service account",
+			agentID:          "spiffe://mybest.com/ns/team1/sa/badass",
+			wantErr:          false,
+			wantResourcePath: "bundles?spiffe=mybest.com%2Fns%2Fteam1%2Fsa%2Fbadass",
+		},
+		{
+			name:             "SPIFFE ID without prefix (legacy format)",
+			agentID:          "mybest.com/ns/team1/sa/badass",
+			wantErr:          false,
+			wantResourcePath: "bundles?spiffe=mybest.com%2Fns%2Fteam1%2Fsa%2Fbadass",
+		},
+		{
+			name:             "simple SPIFFE ID",
+			agentID:          "spiffe://example.com/workload",
+			wantErr:          false,
+			wantResourcePath: "bundles?spiffe=example.com%2Fworkload",
+		},
+		{
+			name:             "SPIFFE ID with hyphens",
+			agentID:          "spiffe://example.com/ns/my-namespace/sa/my-service",
+			wantErr:          false,
+			wantResourcePath: "bundles?spiffe=example.com%2Fns%2Fmy-namespace%2Fsa%2Fmy-service",
+		},
+		{
+			name:             "legacy agentID without slashes",
 			agentID:          "my-agent",
 			wantErr:          false,
-			wantResourcePath: "bundles/my-agent.tar.gz",
+			wantResourcePath: "bundles?spiffe=my-agent",
 		},
 		{
-			name:             "agentID with forward slash gets escaped",
-			agentID:          "../evil",
-			wantErr:          false,
-			wantResourcePath: "bundles/..%2Fevil.tar.gz",
-		},
-		{
-			name:             "agentID with backslash gets escaped",
-			agentID:          "..\\evil",
-			wantErr:          false,
-			wantResourcePath: "bundles/..%5Cevil.tar.gz",
-		},
-		{
-			name:             "agentID with special chars",
+			name:             "agentID with special chars gets encoded",
 			agentID:          "agent@domain.com",
 			wantErr:          false,
-			wantResourcePath: "bundles/agent@domain.com.tar.gz",
+			wantResourcePath: "bundles?spiffe=agent%40domain.com",
 		},
 		{
 			name:    "empty agentID",
@@ -1258,4 +1234,141 @@ func TestBuildOPAConfig_PathEscaping(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Singleton tests ---
+
+func TestStartOPA_SingletonReuse(t *testing.T) {
+	resetSingleton()
+	defer resetSingleton()
+
+	// Seed the singleton with a mock decider as if the first instance started.
+	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: true}}
+	singletonMu.Lock()
+	singleton = &sharedSDK{
+		decider:   dec,
+		done:      make(chan struct{}),
+		bundleURL: "http://bundle-service:8080",
+		agentID:   "spiffe://example.com/ns/team1/sa/agent1",
+		refCount:  1,
+	}
+	singleton.ready.Store(true)
+	singletonMu.Unlock()
+
+	// Second instance with the same bundle_url should reuse the singleton.
+	p := &OPA{
+		cfg:     opaConfig{BundleURL: "http://bundle-service:8080"},
+		agentID: "spiffe://example.com/ns/team1/sa/agent1",
+	}
+	if err := p.startOPA(); err != nil {
+		t.Fatalf("startOPA failed: %v", err)
+	}
+	if p.shared.Load() != singleton {
+		t.Fatal("expected second instance to share the singleton")
+	}
+	if singleton.refCount != 2 {
+		t.Errorf("expected refCount=2, got %d", singleton.refCount)
+	}
+	if !p.Ready() {
+		t.Fatal("expected Ready() true from shared singleton")
+	}
+}
+
+func TestStartOPA_SingletonDifferentBundleURL(t *testing.T) {
+	resetSingleton()
+	defer resetSingleton()
+
+	// Seed the singleton with bundle_url "http://first-service:8080".
+	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: true}}
+	singletonMu.Lock()
+	singleton = &sharedSDK{
+		decider:   dec,
+		done:      make(chan struct{}),
+		bundleURL: "http://first-service:8080",
+		agentID:   "spiffe://example.com/ns/team1/sa/agent1",
+		refCount:  1,
+	}
+	singleton.ready.Store(true)
+	singletonMu.Unlock()
+
+	// Second instance with a DIFFERENT bundle_url should still reuse the
+	// singleton (warning logged, second config skipped).
+	p := &OPA{
+		cfg:     opaConfig{BundleURL: "http://second-service:9090"},
+		agentID: "spiffe://example.com/ns/team1/sa/agent1",
+	}
+	if err := p.startOPA(); err != nil {
+		t.Fatalf("startOPA failed: %v", err)
+	}
+	if p.shared.Load() != singleton {
+		t.Fatal("expected second instance to reuse singleton despite different bundle_url")
+	}
+	if singleton.refCount != 2 {
+		t.Errorf("expected refCount=2, got %d", singleton.refCount)
+	}
+	// The singleton should retain the FIRST bundle_url.
+	if singleton.bundleURL != "http://first-service:8080" {
+		t.Errorf("expected singleton to keep first bundle_url, got %q", singleton.bundleURL)
+	}
+}
+
+func TestShutdown_RefCounting(t *testing.T) {
+	resetSingleton()
+	defer resetSingleton()
+
+	stopped := false
+	var dec decider = &mockDecider{result: &sdk.DecisionResult{Result: true}}
+	// Override Stop to track when it's called.
+	trackingDec := &trackingStopDecider{decider: dec, stopped: &stopped}
+	singletonMu.Lock()
+	singleton = &sharedSDK{
+		decider:   trackingDec,
+		done:      make(chan struct{}),
+		bundleURL: "http://bundle-service:8080",
+		agentID:   "agent1",
+		refCount:  2,
+	}
+	singleton.ready.Store(true)
+	singletonMu.Unlock()
+
+	p1 := &OPA{}
+	p1.shared.Store(singleton)
+	p2 := &OPA{}
+	p2.shared.Store(singleton)
+
+	// First shutdown decrements refCount but does not stop the SDK.
+	if err := p1.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown p1 failed: %v", err)
+	}
+	if stopped {
+		t.Fatal("SDK should not be stopped after first Shutdown")
+	}
+	if singleton == nil {
+		t.Fatal("singleton should still exist after first Shutdown")
+	}
+
+	// Second shutdown stops the SDK and clears the singleton.
+	if err := p2.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown p2 failed: %v", err)
+	}
+	if !stopped {
+		t.Fatal("SDK should be stopped after last Shutdown")
+	}
+	if singleton != nil {
+		t.Fatal("singleton should be nil after last Shutdown")
+	}
+}
+
+// trackingStopDecider wraps a decider and records when Stop is called.
+type trackingStopDecider struct {
+	decider decider
+	stopped *bool
+}
+
+func (d *trackingStopDecider) Decision(ctx context.Context, opts sdk.DecisionOptions) (*sdk.DecisionResult, error) {
+	return d.decider.Decision(ctx, opts)
+}
+
+func (d *trackingStopDecider) Stop(_ context.Context) {
+	*d.stopped = true
 }

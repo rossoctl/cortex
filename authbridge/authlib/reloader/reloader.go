@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -308,7 +309,13 @@ func validateReloadable(active, next *config.Config) error {
 	if active.Mode != next.Mode {
 		diffs = append(diffs, fmt.Sprintf("mode (%s→%s)", active.Mode, next.Mode))
 	}
-	if active.Listener != next.Listener {
+	// reflect.DeepEqual rather than `!=` because ListenerConfig now
+	// contains a SkipHosts []string field, and slices are not
+	// comparable with `!=`. The semantic stays the same: any field
+	// difference under listener.* fails reload and asks for a restart,
+	// because these addresses (and skip-host patterns) are bound at
+	// listener construction.
+	if !reflect.DeepEqual(active.Listener, next.Listener) {
 		diffs = append(diffs, "listener.*")
 	}
 	if len(diffs) > 0 {

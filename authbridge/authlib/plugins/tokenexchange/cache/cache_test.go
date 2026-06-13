@@ -65,6 +65,30 @@ func TestCacheKeyCollisionResistance(t *testing.T) {
 	}
 }
 
+func TestMaxSize_RandomEviction(t *testing.T) {
+	const maxSize = 100
+	c := New(WithMaxSize(maxSize))
+	for i := range maxSize {
+		c.Set("token"+string(rune(i)), "aud", "val", 5*time.Minute)
+	}
+	if c.Len() != maxSize {
+		t.Fatalf("pre-check: cache len = %d, want %d", c.Len(), maxSize)
+	}
+
+	c.Set("overflow", "aud", "val", 5*time.Minute)
+
+	got := c.Len()
+	// After eviction ~25% is removed, so we expect roughly 75 + 1 = 76 entries.
+	// Allow some margin: between 70 and 80.
+	if got < 70 || got > 80 {
+		t.Errorf("after overflow: cache len = %d, want ~76 (75%% of %d + 1)", got, maxSize)
+	}
+	// The new entry must be present.
+	if _, ok := c.Get("overflow", "aud"); !ok {
+		t.Error("overflow entry not found after eviction")
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	c := New()
 	done := make(chan struct{})

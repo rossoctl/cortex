@@ -10,6 +10,7 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/redact"
 )
 
 type StatServer struct {
@@ -88,15 +89,16 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 func handleConfigFactory(provider ConfigProvider) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// Plugin config subtrees are captured verbatim as json.RawMessage
-		// by the PluginEntry unmarshaler. Operators shouldn't put
-		// secrets in the runtime config — the per-plugin convention is
-		// to reference a file path instead (client_secret_file, etc.) —
-		// so we render the config as-is. If a plugin ever needs to
-		// suppress a known-sensitive field here, it can be added to a
-		// redaction pass in a follow-up.
-		err := json.NewEncoder(w).Encode(provider())
+		raw, err := json.Marshal(provider())
 		if err != nil {
+			slog.Default().Info("Failed to marshal configuration", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"marshal failed"}` + "\n"))
+			return
+		}
+		redacted := redact.JSON(raw)
+		redacted = append(redacted, '\n')
+		if _, err := w.Write(redacted); err != nil {
 			slog.Default().Info("Failed to send configuration", "err", err)
 		}
 	}

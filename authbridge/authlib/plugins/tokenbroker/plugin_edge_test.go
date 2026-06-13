@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
@@ -39,9 +40,9 @@ func TestExtractBearer_EdgeCases(t *testing.T) {
 			want:   "",
 		},
 		{
-			name:   "wrong case",
+			name:   "lowercase bearer (RFC 6750 case-insensitive)",
 			header: "bearer abc123",
-			want:   "",
+			want:   "abc123",
 		},
 		{
 			name:   "bearer with no token",
@@ -51,12 +52,12 @@ func TestExtractBearer_EdgeCases(t *testing.T) {
 		{
 			name:   "bearer with trailing whitespace",
 			header: "Bearer   ",
-			want:   "",
+			want:   "  ",
 		},
 		{
 			name:   "bearer with leading spaces in token",
 			header: "Bearer  token",
-			want:   "token",
+			want:   " token",
 		},
 		{
 			name:   "token with internal spaces",
@@ -67,9 +68,9 @@ func TestExtractBearer_EdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractBearer(tt.header)
+			got := auth.ExtractBearer(tt.header)
 			if got != tt.want {
-				t.Errorf("extractBearer(%q) = %q, want %q", tt.header, got, tt.want)
+				t.Errorf("ExtractBearer(%q) = %q, want %q", tt.header, got, tt.want)
 			}
 		})
 	}
@@ -484,7 +485,7 @@ func TestTokenBroker_OnRequest_DifferentAuthSchemes(t *testing.T) {
 		{"Digest auth", "Digest username=\"user\"", true},
 		{"No auth", "", true},
 		{"Malformed Bearer", "Bearertoken", true},
-		{"Bearer lowercase", "bearer token", true},
+		{"Bearer lowercase (RFC 6750 case-insensitive)", "bearer token", false},
 	}
 
 	for _, tt := range tests {
@@ -585,6 +586,6 @@ func BenchmarkExtractBearer(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = extractBearer(header)
+		_ = auth.ExtractBearer(header)
 	}
 }

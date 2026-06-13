@@ -83,3 +83,40 @@ func TestMatch_CustomPatterns(t *testing.T) {
 		t.Error("expected /private/data to not match")
 	}
 }
+
+func TestNewMatcher_RejectsFootgunPatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{"star", "*"},
+		{"slash-star", "/*"},
+		{"empty", ""},
+		{"whitespace-only", "  "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewMatcher([]string{tt.pattern})
+			if err == nil {
+				t.Errorf("NewMatcher(%q) should return error for match-all pattern", tt.pattern)
+			}
+		})
+	}
+}
+
+func TestNewMatcher_AllowsSpecificStar(t *testing.T) {
+	_, err := NewMatcher([]string{"/.well-known/*"})
+	if err != nil {
+		t.Fatalf("specific star pattern should be allowed: %v", err)
+	}
+}
+
+func TestNewMatcher_TrimsWhitespace(t *testing.T) {
+	m, err := NewMatcher([]string{" /healthz "})
+	if err != nil {
+		t.Fatalf("whitespace-padded pattern should be accepted: %v", err)
+	}
+	if !m.Match("/healthz") {
+		t.Error("trimmed pattern should match /healthz")
+	}
+}
