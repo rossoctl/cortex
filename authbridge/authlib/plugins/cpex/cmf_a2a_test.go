@@ -120,6 +120,11 @@ func TestA2AResponseBodyMod_RewritesArtifact(t *testing.T) {
 	if want := "leaked [REDACTED]"; !jsonContains(t, pctx.ResponseBody, want) {
 		t.Fatalf("artifact not redacted in %s", pctx.ResponseBody)
 	}
+	// Assert the original secret is GONE, not merely that the redacted
+	// string is present (a partial rewrite would satisfy the latter).
+	if contains(string(pctx.ResponseBody), "123-45-6789") {
+		t.Fatalf("original secret still present after redaction: %s", pctx.ResponseBody)
+	}
 }
 
 func TestA2AResponseBodyMod_MultiPartFailsClosed(t *testing.T) {

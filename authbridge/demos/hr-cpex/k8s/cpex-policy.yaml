@@ -1,5 +1,10 @@
 # CPEX runtime config for the HR demo.
 #
+# DEMO ONLY — this file embeds hardcoded client secrets
+# (client_secret_source.kind: literal) and points at a local Keycloak
+# over plaintext http. Do NOT use in production: source secrets from a
+# mounted file / Secret (kind: file) and use TLS to the IdP.
+#
 # ── How to read this file ───────────────────────────────────────────
 # The `routes:` block at the BOTTOM is the story: three tool routes,
 # one per demo act, each spelling out the authorization chain for that

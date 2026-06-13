@@ -152,8 +152,9 @@ checks pass; their decisions feed the same `on_deny` / `on_allow` effect lists.
 > effects, session tainting, and ordered composition with other PDPs.
 > Use the native `opa` plugin for standalone binary OPA gates; use
 > CPEX's `opa(...)` when OPA participates in a multi-PDP orchestration
-> flow. The `authzen(...)` and `cedar` steps are doc-level BYOP examples
-> not exercised in this demo.
+> flow. Note: the CPEX `opa(...)` and `authzen(...)` steps above are
+> doc-level BYOP examples — the hr-cpex demo exercises only the embedded
+> `cedar` PDP, not external OPA/AuthZEN.
 
 ## CMF / extension mapping
 
