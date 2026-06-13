@@ -184,3 +184,64 @@ func TestWriteRejection_Unchanged(t *testing.T) {
 		t.Errorf("error = %v, want ibac.blocked", body["error"])
 	}
 }
+
+// TestMarshalMCPRejectionBody_BadDetailsFallsBackToMinimalFrame: a
+// plugin can populate Violation.Details with anything (it's
+// map[string]any). If the value is unmarshalable (e.g. a channel),
+// the full frame fails. The body MUST still be a parseable JSON-RPC
+// 2.0 error frame so the MCP client surfaces this as a tool-call
+// failure rather than a parse error on a 200 application/json
+// response. The fallback drops optional data; everything else
+// (jsonrpc version, id, error.code, error.message) survives.
+func TestMarshalMCPRejectionBody_BadDetailsFallsBackToMinimalFrame(t *testing.T) {
+	action := pipeline.DenyWithDetails("ibac.blocked", "intent does not align", map[string]any{
+		"unmarshalable": make(chan int), // json.Marshal returns UnsupportedTypeError
+	})
+	body := MarshalMCPRejectionBody(action, "call-1")
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("body must round-trip even when details fail to marshal: %v\n%s", err, body)
+	}
+	if parsed["jsonrpc"] != "2.0" {
+		t.Errorf("jsonrpc = %v, want 2.0", parsed["jsonrpc"])
+	}
+	if parsed["id"] != "call-1" {
+		t.Errorf("id = %v, want call-1 (id alone marshals fine, must be preserved)", parsed["id"])
+	}
+	errObj, ok := parsed["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("error field missing or wrong type: %v", parsed["error"])
+	}
+	if errObj["code"] != float64(-32000) {
+		t.Errorf("error.code = %v, want -32000", errObj["code"])
+	}
+	if errObj["message"] != "intent does not align" {
+		t.Errorf("error.message = %v, want IBAC reason", errObj["message"])
+	}
+	if _, hasData := errObj["data"]; hasData {
+		t.Errorf("error.data must be omitted on fallback; got %v", errObj["data"])
+	}
+}
+
+// TestMarshalMCPRejectionBody_BadIDFallsBackToNullID: if the request
+// id itself can't be marshaled (defensive — mcp-parser only stores
+// string/number/null today, but RPCID is `any`), we fall back to
+// id=null per JSON-RPC 2.0 §5.1, which permits null when the
+// original id can't be detected. The body must still be a valid
+// JSON-RPC error frame.
+func TestMarshalMCPRejectionBody_BadIDFallsBackToNullID(t *testing.T) {
+	body := MarshalMCPRejectionBody(mcpAction(), make(chan int))
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("body must round-trip even when id fails to marshal: %v\n%s", err, body)
+	}
+	if parsed["id"] != nil {
+		t.Errorf("id = %v, want null (unmarshalable id must drop to null)", parsed["id"])
+	}
+	errObj, _ := parsed["error"].(map[string]any)
+	if errObj["message"] != "intent does not align" {
+		t.Errorf("error.message = %v, want IBAC reason (preserved across fallback)", errObj["message"])
+	}
+}

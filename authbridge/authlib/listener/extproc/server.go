@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/sseframe"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
@@ -859,7 +860,7 @@ func replaceTokenResponse(token string) *extprocv3.ProcessingResponse {
 func rejectFromActionForRequest(action pipeline.Action, pctx *pipeline.Context) *extprocv3.ProcessingResponse {
 	if pctx != nil && pctx.Extensions.MCP != nil &&
 		pctx.Extensions.MCP.Method != "" && pctx.Extensions.MCP.RPCID != nil {
-		body := mcpRejectionBody(action, pctx.Extensions.MCP.RPCID)
+		body := httpx.MarshalMCPRejectionBody(action, pctx.Extensions.MCP.RPCID)
 		return &extprocv3.ProcessingResponse{
 			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
 				ImmediateResponse: &extprocv3.ImmediateResponse{
@@ -873,47 +874,6 @@ func rejectFromActionForRequest(action pipeline.Action, pctx *pipeline.Context) 
 		}
 	}
 	return rejectFromAction(action)
-}
-
-// JSON-RPC 2.0 server-error code; see authlib/listener/httpx/render.go for
-// rationale on -32000 specifically.
-const jsonRPCServerError = -32000
-
-func mcpRejectionBody(action pipeline.Action, id any) []byte {
-	v := action.Violation
-	message := "request rejected"
-	var data map[string]any
-	if v != nil {
-		if v.Reason != "" {
-			message = v.Reason
-		}
-		data = map[string]any{}
-		if v.Code != "" {
-			data["error"] = v.Code
-		}
-		if v.PluginName != "" {
-			data["plugin"] = v.PluginName
-		}
-		if v.Description != "" {
-			data["description"] = v.Description
-		}
-		if len(v.Details) > 0 {
-			data["details"] = v.Details
-		}
-		if len(data) == 0 {
-			data = nil
-		}
-	}
-	body, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error": map[string]any{
-			"code":    jsonRPCServerError,
-			"message": message,
-			"data":    data,
-		},
-	})
-	return body
 }
 
 // rejectFromAction turns a pipeline Reject into an Envoy ImmediateResponse,

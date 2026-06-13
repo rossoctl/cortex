@@ -76,6 +76,28 @@ func shouldRenderMCPError(pctx *pipeline.Context) bool {
 const jsonRPCServerError = -32000
 
 func writeMCPRejection(w http.ResponseWriter, action pipeline.Action, id any) {
+	body := MarshalMCPRejectionBody(action, id)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+// mcpRejectionFallback is a precomputed JSON-RPC 2.0 error frame used as
+// the last-resort body when both the full and minimal marshal attempts
+// fail. It is guaranteed to round-trip through json.Unmarshal so MCP
+// clients always see a parseable frame on a 200 application/json
+// response.
+var mcpRejectionFallback = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"request rejected"}}`)
+
+// MarshalMCPRejectionBody renders a Reject Action as a JSON-RPC 2.0
+// error frame body. It is guaranteed to return a non-empty, parseable
+// JSON byte slice so callers can safely send it on a 200
+// application/json response: marshal the full frame first; on error
+// (e.g. a plugin populated Violation.Details with an unmarshalable
+// value, or id is unmarshalable), retry with a minimal frame that omits
+// optional data and falls back to id=null; on further error, return a
+// constant precomputed frame.
+func MarshalMCPRejectionBody(action pipeline.Action, id any) []byte {
 	v := action.Violation
 	message := "request rejected"
 	var data map[string]any
@@ -100,7 +122,7 @@ func writeMCPRejection(w http.ResponseWriter, action pipeline.Action, id any) {
 			data = nil
 		}
 	}
-	body, _ := json.Marshal(map[string]any{
+	if body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error": map[string]any{
@@ -108,8 +130,27 @@ func writeMCPRejection(w http.ResponseWriter, action pipeline.Action, id any) {
 			"message": message,
 			"data":    data,
 		},
-	})
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	}); err == nil {
+		return body
+	}
+	// Full frame failed to marshal — retry without optional data, and
+	// keep the original id only if it survives marshaling on its own
+	// (otherwise drop to null per JSON-RPC 2.0 §5.1).
+	safeID := any(nil)
+	if id != nil {
+		if _, err := json.Marshal(id); err == nil {
+			safeID = id
+		}
+	}
+	if body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      safeID,
+		"error": map[string]any{
+			"code":    jsonRPCServerError,
+			"message": message,
+		},
+	}); err == nil {
+		return body
+	}
+	return mcpRejectionFallback
 }
