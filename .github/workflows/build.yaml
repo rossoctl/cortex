@@ -116,18 +116,21 @@ jobs:
             # Add 'latest' tag for version tags, workflow_dispatch, and pushes to main
             type=raw,value=latest,enable=${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
 
-      # 6b. Resolve build-args. authbridge-cpex needs CPEX_FFI_VERSION,
-      # the single source of truth for the FFI ABI this image links
-      # (read from the file next to its Dockerfile). Other images leave
-      # this empty (an undeclared build-arg is ignored by their builds).
+      # 6b. Resolve build-args. authbridge-cpex needs CPEX_FFI_VERSION
+      # (the release tag) and CPEX_FFI_ABI (the FFI ABI integer the
+      # linked lib must report) — both read from the files next to its
+      # Dockerfile and asserted against the tarball at build time. Other
+      # images leave this empty (an undeclared build-arg is ignored).
       - name: Resolve build args
         id: buildargs
         run: |
           if [[ "${{ matrix.image_config.name }}" == "authbridge-cpex" ]]; then
             VERSION="$(tr -d '[:space:]' < authbridge/cmd/authbridge-cpex/CPEX_FFI_VERSION)"
+            ABI="$(tr -d '[:space:]' < authbridge/cmd/authbridge-cpex/CPEX_FFI_ABI)"
             {
               echo "args<<EOF"
               echo "CPEX_FFI_VERSION=${VERSION}"
+              echo "CPEX_FFI_ABI=${ABI}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else

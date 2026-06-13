@@ -42,9 +42,12 @@ import (
 // which silently allows traffic the policy meant to deny.
 //
 // The audit-log risk this opens — bearer tokens reaching audit
-// payloads — is mitigated by configuring audit-log to drop
-// Authorization from its output (or by terminating TLS at the
-// sidecar so tokens are short-lived and bound to mTLS).
+// payloads and the unauthenticated session API — is NOT optional to
+// mitigate: any audit-log sub-plugin MUST be configured to drop the
+// Authorization header from its output, and the session API MUST stay
+// bound to in-cluster addresses only (never behind ingress). Pairing
+// with sidecar TLS termination (short-lived, mTLS-bound tokens) is a
+// further hardening, not a substitute.
 //
 // This table and the helpers below are tag-free (no //go:build cpex)
 // so the default CGO_ENABLED=0 test build exercises them; the cgo
@@ -77,9 +80,10 @@ var secretHeaderExact = map[string]struct{}{
 // follow §3.2.2, lands in secretHeaderPrefixes and is stripped before
 // reaching here.)
 //
-// Sensitive headers (Authorization, Cookie, X-Api-Key, …) are
-// dropped via secretHeaderPrefixes / secretHeaderExact, NOT silently
-// truncated.
+// Sensitive headers (Cookie, X-Api-Key, …) are dropped via
+// secretHeaderPrefixes / secretHeaderExact, NOT silently truncated.
+// Authorization is the deliberate exception — see the NOTE above: it
+// is kept so CPEX identity plugins can read the bearer.
 func flattenHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return nil

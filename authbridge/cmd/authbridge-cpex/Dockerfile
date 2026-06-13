@@ -11,10 +11,15 @@
 # enable CPEX.
 
 # ---------- Stage 1: fetch libcpex_ffi.a from the pinned release ----
-# The CPEX_FFI_VERSION file at the root of this directory is the
-# single source of truth for which CPEX FFI ABI this binary expects.
-# A pre-commit hook (TODO follow-up) enforces it matches the go.mod
-# pin for the cpex Go bindings.
+# The CPEX_FFI_VERSION file at the root of this directory pins the
+# release tag; CPEX_FFI_ABI pins the FFI ABI integer the linked lib must
+# report. Both are asserted at build time below: the extracted tarball's
+# VERSION must equal CPEX_FFI_VERSION and its FFI_ABI must equal
+# CPEX_FFI_ABI, so a renamed/mismatched asset fails the build rather than
+# linking a lib whose ABI the Go bindings don't expect. The bindings
+# additionally assert the ABI at runtime (go/cpex/abi.go panics at init()
+# if the linked lib's cpex_ffi_abi_version() != its expected value), so a
+# drift is caught both at build and at boot.
 #
 # Asset naming on the cpex release page:
 #   cpex-ffi-${VERSION}-${OS}-${ARCH}-${LIBC}.tar.gz   (tarball)
@@ -35,6 +40,10 @@ FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd1
 RUN apk add --no-cache curl ca-certificates tar cosign
 
 ARG CPEX_FFI_VERSION
+# CPEX_FFI_ABI pins the FFI ABI integer the linked lib must report. The
+# Makefile sources it from the CPEX_FFI_ABI file (same dir as
+# CPEX_FFI_VERSION); the extract step below asserts the tarball matches.
+ARG CPEX_FFI_ABI
 ARG TARGETARCH
 ARG TARGETOS=linux
 # LIBC defaults to gnu (Debian/Ubuntu container hosts). Override to
@@ -73,7 +82,23 @@ RUN set -eu; \
     || { echo "[ffi] cosign verification FAILED" >&2; exit 1; }; \
     tar -xzf asset.tar.gz; \
     test -f libcpex_ffi.a || { echo "[ffi] libcpex_ffi.a missing from tarball" >&2; exit 1; }; \
-    echo "[ffi] extracted libcpex_ffi.a + VERSION=$(cat VERSION) + FFI_ABI=$(cat FFI_ABI)"
+    # Assert the tarball's pinned identity matches what we expect. A \
+    # mismatched VERSION means the asset was renamed/swapped; a mismatched \
+    # FFI_ABI means the lib's C surface differs from what the Go bindings \
+    # were generated against (a CGO mis-marshal waiting to happen). \
+    # VERSION is a multi-line key=value manifest (version=, git_sha=, \
+    # tuple=, …); pull the version= line. FFI_ABI is a bare integer. \
+    got_version=$(grep -E '^version=' VERSION | head -1 | cut -d= -f2- | tr -d '[:space:]'); \
+    if [ "$got_version" != "$CPEX_FFI_VERSION" ]; then \
+        echo "[ffi] VERSION mismatch: tarball says '$got_version', expected '$CPEX_FFI_VERSION'" >&2; \
+        exit 1; \
+    fi; \
+    got_abi=$(tr -d '[:space:]' < FFI_ABI); \
+    if [ -n "$CPEX_FFI_ABI" ] && [ "$got_abi" != "$CPEX_FFI_ABI" ]; then \
+        echo "[ffi] FFI_ABI mismatch: tarball says '$got_abi', expected '$CPEX_FFI_ABI' (bump CPEX_FFI_ABI + the Go binding)" >&2; \
+        exit 1; \
+    fi; \
+    echo "[ffi] extracted libcpex_ffi.a + VERSION=$got_version + FFI_ABI=$got_abi (asserted)"
 
 # ---------- Stage 2: build authbridge-cpex with cgo + -tags cpex ----
 # golang:bookworm (glibc) — alpine + musl would need extra ring/

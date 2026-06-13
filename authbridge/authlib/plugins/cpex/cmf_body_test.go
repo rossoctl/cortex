@@ -16,7 +16,7 @@ func TestMCPRequestBodyMod_ToolsCallArgsReplaced(t *testing.T) {
 		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_compensation","arguments":{"employee_id":"E001","include_ssn":true}}}`),
 	}
 	newArgs := map[string]any{"employee_id": "E001"} // include_ssn redacted
-	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: newArgs})
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: newArgs, ArgsSet: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestMCPRequestBodyMod_PromptsGetArgsReplaced(t *testing.T) {
 		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"weather","arguments":{"city":"SF"}}}`),
 	}
 	newArgs := map[string]any{"city": "REDACTED"}
-	mutated, err := applyMCPRequestBodyMod(pctx, "prompts/get", MCPRequestBodyMod{NewArguments: newArgs})
+	mutated, err := applyMCPRequestBodyMod(pctx, "prompts/get", MCPRequestBodyMod{NewArguments: newArgs, ArgsSet: true})
 	if err != nil || !mutated {
 		t.Fatalf("mutated=%v err=%v", mutated, err)
 	}
@@ -54,7 +54,7 @@ func TestMCPRequestBodyMod_ResourcesReadURIReplaced(t *testing.T) {
 	pctx := &pipeline.Context{
 		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///secret"}}`),
 	}
-	mutated, err := applyMCPRequestBodyMod(pctx, "resources/read", MCPRequestBodyMod{NewURI: "file:///public"})
+	mutated, err := applyMCPRequestBodyMod(pctx, "resources/read", MCPRequestBodyMod{NewURI: "file:///public", URISet: true})
 	if err != nil || !mutated {
 		t.Fatalf("mutated=%v err=%v", mutated, err)
 	}
@@ -63,7 +63,8 @@ func TestMCPRequestBodyMod_ResourcesReadURIReplaced(t *testing.T) {
 	}
 }
 
-func TestMCPRequestBodyMod_EmptyArgsNoOp(t *testing.T) {
+func TestMCPRequestBodyMod_UnsetArgsNoOp(t *testing.T) {
+	// No ArgsSet flag (e.g. CPEX returned no tool_call part) → no-op.
 	orig := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"a":1}}}`)
 	pctx := &pipeline.Context{Body: append([]byte(nil), orig...)}
 	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{})
@@ -71,10 +72,38 @@ func TestMCPRequestBodyMod_EmptyArgsNoOp(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	if mutated {
-		t.Fatal("expected mutated=false on empty mod")
+		t.Fatal("expected mutated=false when ArgsSet is false")
 	}
 	if string(pctx.Body) != string(orig) {
 		t.Fatalf("body changed despite no-op: %s", pctx.Body)
+	}
+}
+
+func TestMCPRequestBodyMod_StripAllArgsApplies(t *testing.T) {
+	// A "strip all arguments" redaction returns an empty args map WITH
+	// ArgsSet=true. This MUST apply (clear params.arguments), not no-op:
+	// inferring no-op from emptiness would forward the original secret.
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"ssn":"123-45-6789"}}}`),
+	}
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call",
+		MCPRequestBodyMod{NewArguments: map[string]any{}, ArgsSet: true})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !mutated {
+		t.Fatal("expected mutated=true: empty-but-set args is a real redaction")
+	}
+	if strings.Contains(string(pctx.Body), "123-45-6789") {
+		t.Fatalf("original secret args forwarded despite strip-all redaction: %s", pctx.Body)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(pctx.Body, &decoded); err != nil {
+		t.Fatalf("re-decode: %v", err)
+	}
+	args := decoded["params"].(map[string]any)["arguments"].(map[string]any)
+	if len(args) != 0 {
+		t.Fatalf("arguments should be empty after strip-all: %v", args)
 	}
 }
 
@@ -82,7 +111,7 @@ func TestMCPRequestBodyMod_UnsupportedMethodNoOp(t *testing.T) {
 	pctx := &pipeline.Context{
 		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`),
 	}
-	mutated, err := applyMCPRequestBodyMod(pctx, "initialize", MCPRequestBodyMod{NewArguments: map[string]any{"x": 1}})
+	mutated, err := applyMCPRequestBodyMod(pctx, "initialize", MCPRequestBodyMod{NewArguments: map[string]any{"x": 1}, ArgsSet: true})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -93,7 +122,7 @@ func TestMCPRequestBodyMod_UnsupportedMethodNoOp(t *testing.T) {
 
 func TestMCPRequestBodyMod_MalformedJSONError(t *testing.T) {
 	pctx := &pipeline.Context{Body: []byte(`{not json`)}
-	_, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}})
+	_, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}, ArgsSet: true})
 	if err == nil {
 		t.Fatal("expected error on malformed JSON")
 	}
@@ -101,7 +130,7 @@ func TestMCPRequestBodyMod_MalformedJSONError(t *testing.T) {
 
 func TestMCPRequestBodyMod_EmptyBodyNoOp(t *testing.T) {
 	pctx := &pipeline.Context{}
-	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}})
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}, ArgsSet: true})
 	if err != nil || mutated {
 		t.Fatalf("mutated=%v err=%v on empty body", mutated, err)
 	}
@@ -111,7 +140,7 @@ func TestMCPRequestBodyMod_NoParamsObjectNoOp(t *testing.T) {
 	pctx := &pipeline.Context{
 		Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`),
 	}
-	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}})
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{NewArguments: map[string]any{"a": 1}, ArgsSet: true})
 	if err != nil || mutated {
 		t.Fatalf("mutated=%v err=%v on body without params", mutated, err)
 	}
@@ -143,6 +172,31 @@ func TestMCPResponseBodyMod_TextBlockReplaced(t *testing.T) {
 	}
 	if strings.Contains(body, "123-45-6789") {
 		t.Fatalf("old SSN still present in rewritten response: %s", body)
+	}
+}
+
+func TestMCPResponseBodyMod_MultiTextBlockFailsClosed(t *testing.T) {
+	// A tools/call result with ≥2 text blocks is an ambiguous rewrite:
+	// the read side (extractToolResultContent) only surfaced the first
+	// block to the policy, and we hold one redacted value. Rewriting only
+	// block[0] would forward block[1] (here carrying the same secret)
+	// verbatim. Must fail closed.
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"first block ssn:123-45-6789"},{"type":"text","text":"second block ssn:123-45-6789"}]}}`),
+	}
+	newContent := map[string]any{"name": "Jane Smith"} // SSN removed
+	mutated, err := applyMCPResponseBodyMod(pctx, "tools/call", newContent)
+	if err == nil {
+		t.Fatal("expected fail-closed error for multi-text-block response, got nil")
+	}
+	if mutated {
+		t.Fatal("mutated=true on multi-block fail-closed")
+	}
+	// The body must be untouched — and critically, the planted secret in
+	// the un-inspected blocks must NOT have been forwarded as a "success".
+	// (We assert via the returned error contract; the body stays original.)
+	if !strings.Contains(string(pctx.ResponseBody), "second block ssn:123-45-6789") {
+		t.Fatalf("response body unexpectedly altered: %s", pctx.ResponseBody)
 	}
 }
 

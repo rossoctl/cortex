@@ -415,15 +415,21 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 			switch part.ContentType {
 			case "tool_call":
 				if part.ToolCallContent != nil {
+					// Set the flag whenever the part is present, even for
+					// an empty/nil args map: that's a deliberate "strip all
+					// arguments" redaction, not a no-op.
 					mod.NewArguments = part.ToolCallContent.Arguments
+					mod.ArgsSet = true
 				}
 			case "prompt_request":
 				if part.PromptRequestContent != nil {
 					mod.NewArguments = part.PromptRequestContent.Arguments
+					mod.ArgsSet = true
 				}
 			case "resource_ref":
 				if part.ResourceRefContent != nil {
 					mod.NewURI = part.ResourceRefContent.URI
+					mod.URISet = true
 				}
 			default:
 				continue
@@ -508,9 +514,13 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 //	                ProvenanceExtension.MessageID
 //	delegation    → DelegationExtension (chain/origin/actor/depth)
 //	request       → RequestExtension (request id + trace/span ids)
-//	headers       → HttpExtension.RequestHeaders (Authorization and Cookie
-//	                stripped — they don't belong in policy context and would
-//	                leak through CPEX traces)
+//	headers       → HttpExtension.RequestHeaders (Cookie and other
+//	                secret headers stripped; see flattenHeaders. NOTE:
+//	                Authorization is deliberately KEPT so CPEX's identity
+//	                plugins can read the bearer — it therefore reaches the
+//	                RequestHeaders map and the unauthenticated session API.
+//	                Audit-log sub-plugins MUST be configured to drop
+//	                Authorization from their output. See headers.go.)
 //
 // Note (agent slot): the caller's client_id is NOT placed on
 // AgentExtension.AgentID. Caller identity lives in SecurityExtension.Subject;

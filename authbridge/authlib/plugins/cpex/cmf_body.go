@@ -444,12 +444,23 @@ func stringifyRPCID(id any) string {
 //	prompts/get    → NewArguments  → params.arguments
 //	resources/read → NewURI        → params.uri
 //
+// ArgsSet / URISet are the explicit "this field carries a real
+// modification" signals. We do NOT infer intent from emptiness: a
+// policy whose redaction is "strip all arguments" legitimately returns
+// an empty (or nil) arguments map, and a "blank the URI" redaction
+// returns an empty URI. Treating empty-as-no-op would silently forward
+// the ORIGINAL body (secret intact) while the policy believed it had
+// redacted. The cgo adapter sets these flags when the corresponding
+// CMF content part is present, regardless of value.
+//
 // Other methods are no-ops — the operator's APL policy can't rewrite
 // protocol mechanics (initialize, tools/list, etc.) because there's
 // no semantically meaningful target for the rewrite.
 type MCPRequestBodyMod struct {
 	NewArguments map[string]any
+	ArgsSet      bool
 	NewURI       string
+	URISet       bool
 }
 
 // applyMCPRequestBodyMod rewrites pctx.Body, which is expected to be
@@ -473,12 +484,16 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 
 	switch method {
 	case "tools/call", "prompts/get":
-		if len(mod.NewArguments) == 0 {
+		// Gate on the explicit ArgsSet flag, NOT len()==0: a policy that
+		// stripped all arguments returns an empty map and still means to
+		// rewrite. Inferring no-op from emptiness would forward the
+		// original (un-redacted) arguments.
+		if !mod.ArgsSet {
 			return false, nil
 		}
 		params["arguments"] = mod.NewArguments
 	case "resources/read":
-		if mod.NewURI == "" {
+		if !mod.URISet {
 			return false, nil
 		}
 		params["uri"] = mod.NewURI
@@ -503,6 +518,17 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 //     Don't introduce structuredContent on a response that didn't carry
 //     it; clients sniffing for the new shape would be surprised.
 //
+// Fail-closed on multiple text blocks: the read side
+// (extractToolResultContent) surfaces only the FIRST text block to the
+// policy, and we hold a single redacted value. A result.content[] with
+// >1 text block is therefore an ambiguous rewrite — blocks[1..] were
+// never shown to the policy, so rewriting only block[0] would forward
+// the others (potentially carrying the same secret) verbatim while
+// reporting success. We return an error so the caller fails closed
+// rather than leaking the un-inspected blocks (mirrors the A2A and
+// inference response guards). Rewrite all blocks would be wrong too —
+// we'd stamp one value over distinct blocks.
+//
 // Returns mutated=true when SetResponseBody was called; mutated=false
 // when the body wasn't a tools/call response, had no result.content,
 // or the response had no replaceable text block.
@@ -524,19 +550,29 @@ func applyMCPResponseBodyMod(pctx *pipeline.Context, method string, newContent a
 
 	replaced := false
 
-	// Primary path: rewrite the first text block in result.content[].
-	// This is what every MCP client we see today reads from.
+	// Primary path: rewrite the text block in result.content[]. Collect
+	// all text blocks first so >1 fails closed rather than silently
+	// leaving blocks[1..] unredacted (the read side only inspected the
+	// first; we only hold one redacted value).
 	if contentArr, ok := result["content"].([]any); ok {
+		textBlocks := make([]map[string]any, 0, len(contentArr))
 		for _, block := range contentArr {
 			blockObj, ok := block.(map[string]any)
 			if !ok {
 				continue
 			}
 			if t, ok := blockObj["type"].(string); ok && t == "text" {
-				blockObj["text"] = stringifyForTextBlock(newContent)
-				replaced = true
-				break
+				textBlocks = append(textBlocks, blockObj)
 			}
+		}
+		if len(textBlocks) > 1 {
+			return false, fmt.Errorf(
+				"MCP tools/call response has %d text blocks; single-value redaction rewrite is ambiguous",
+				len(textBlocks))
+		}
+		if len(textBlocks) == 1 {
+			textBlocks[0]["text"] = stringifyForTextBlock(newContent)
+			replaced = true
 		}
 	}
 
