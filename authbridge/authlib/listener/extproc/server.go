@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/sseframe"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
@@ -499,7 +500,7 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 	if action.Type == pipeline.Reject {
 		s.recordOutboundReject(pctx, action)
 		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
-		return rejectFromAction(action), nil
+		return rejectFromActionForRequest(action, pctx), nil
 	}
 
 	s.recordOutboundSession(pctx)
@@ -551,7 +552,7 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	if action.Type == pipeline.Reject {
 		s.recordOutboundReject(pctx, action)
 		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
-		return rejectFromAction(action), nil
+		return rejectFromActionForRequest(action, pctx), nil
 	}
 
 	s.recordOutboundSession(pctx)
@@ -849,6 +850,30 @@ func replaceTokenResponse(token string) *extprocv3.ProcessingResponse {
 			},
 		},
 	}
+}
+
+// rejectFromActionForRequest is the MCP-aware sibling of rejectFromAction.
+// When pctx carries an MCP JSON-RPC request shape (Method + non-nil RPCID),
+// the response is an HTTP 200 carrying a JSON-RPC 2.0 error frame so the
+// caller's MCP client surfaces this as one failed tool call rather than a
+// transport break. All other shapes fall through to rejectFromAction.
+func rejectFromActionForRequest(action pipeline.Action, pctx *pipeline.Context) *extprocv3.ProcessingResponse {
+	if pctx != nil && pctx.Extensions.MCP != nil &&
+		pctx.Extensions.MCP.Method != "" && pctx.Extensions.MCP.RPCID != nil {
+		body := httpx.MarshalMCPRejectionBody(action, pctx.Extensions.MCP.RPCID)
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extprocv3.ImmediateResponse{
+					Status: &typev3.HttpStatus{Code: typev3.StatusCode(http.StatusOK)},
+					Body:   body,
+					Headers: &extprocv3.HeaderMutation{SetHeaders: []*corev3.HeaderValueOption{{
+						Header: &corev3.HeaderValue{Key: "content-type", RawValue: []byte("application/json")},
+					}}},
+				},
+			},
+		}
+	}
+	return rejectFromAction(action)
 }
 
 // rejectFromAction turns a pipeline Reject into an Envoy ImmediateResponse,

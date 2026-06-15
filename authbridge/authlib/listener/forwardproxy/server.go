@@ -260,7 +260,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 		if action.Type == pipeline.Reject {
 			s.recordOutboundReject(pctx, action)
-			httpx.WriteRejection(w, action)
+			// Render as a JSON-RPC error frame when the rejected
+			// request was MCP JSON-RPC, so the agent's MCP client
+			// surfaces this as one failed tool call rather than a
+			// transport break. Falls through to plain HTTP-level
+			// rejection for non-MCP traffic.
+			httpx.WriteRejectionForRequest(w, action, pctx)
 			return
 		}
 	}
@@ -748,7 +753,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 		if action.Type == pipeline.Reject {
 			s.recordOutboundReject(pctx, action)
-			httpx.WriteRejection(w, action)
+			// Render as a JSON-RPC error frame when the rejected
+			// request was MCP JSON-RPC, so the agent's MCP client
+			// surfaces this as one failed tool call rather than a
+			// transport break. Falls through to plain HTTP-level
+			// rejection for non-MCP traffic.
+			httpx.WriteRejectionForRequest(w, action, pctx)
 			return
 		}
 	}
