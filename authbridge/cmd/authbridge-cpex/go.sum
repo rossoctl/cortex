@@ -20,6 +20,8 @@ github.com/containerd/platforms v0.2.1 h1:zvwtM3rz2YHPQsF2CHYM8+KtB5dvhISiXh5ZpS
 github.com/containerd/platforms v0.2.1/go.mod h1:XHCb+2/hzowdiut9rkudds9bE5yJ7npe7dG/wG+uFPw=
 github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.1 h1:HWKqhOoh3dEscE8jWe0dYiOOegLW1liQmQ/RqBj7+Ks=
 github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.1/go.mod h1:SuDkdY76asy9MP/72YKqhc2FBcFZ9t5PKe3CeXSO4/g=
+github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2 h1:Ddpq+JFjnA7G4VUiHJPP2520GPmIv2XmikUV2n/gRd0=
+github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2/go.mod h1:SuDkdY76asy9MP/72YKqhc2FBcFZ9t5PKe3CeXSO4/g=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

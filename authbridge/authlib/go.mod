@@ -3,7 +3,7 @@ module github.com/kagenti/kagenti-extensions/authbridge/authlib
 go 1.25.4
 
 require (
-	github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.1
+	github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gobwas/glob v0.2.3

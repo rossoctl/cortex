@@ -46,9 +46,12 @@ ARG CPEX_FFI_VERSION
 ARG CPEX_FFI_ABI
 ARG TARGETARCH
 ARG TARGETOS=linux
-# LIBC defaults to gnu (Debian/Ubuntu container hosts). Override to
-# `musl` for Alpine-based deployments.
-ARG CPEX_LIBC=gnu
+# LIBC selects which CPEX FFI asset variant to link. We default to `musl`
+# so the runtime stage can be Alpine (~8 MB) instead of debian:trixie-slim
+# (~80-100 MB) — the base image, not the FFI binary, dominates this image's
+# size. Override to `gnu` only for a glibc runtime (then also flip the
+# builder/runtime bases below back to bookworm/debian).
+ARG CPEX_LIBC=musl
 ARG FFI_ASSET=cpex-ffi-${CPEX_FFI_VERSION}-${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}.tar.gz
 
 ARG CPEX_COSIGN_IDENTITY=https://github.com/contextforge-org/cpex/.github/workflows/release-ffi.yaml@refs/tags/${CPEX_FFI_VERSION}
@@ -101,11 +104,17 @@ RUN set -eu; \
     echo "[ffi] extracted libcpex_ffi.a + VERSION=$got_version + FFI_ABI=$got_abi (asserted)"
 
 # ---------- Stage 2: build authbridge-cpex with cgo + -tags cpex ----
-# golang:bookworm (glibc) — alpine + musl would need extra ring/
-# tokio cross-compile setup that the design doc defers to PR 2.
-FROM golang:1.25-bookworm@sha256:bb979b278ffb8d31c8b07336fd187ef8fafc8766ebeaece524304483ea137e96 AS builder
+# golang:alpine (musl) so we link the musl CPEX FFI asset and run on the
+# small Alpine base. CGO needs a C compiler + musl headers (gcc, musl-dev).
+#
+# IMPORTANT: this pins the multi-arch *index* digest, not a single-arch
+# sub-manifest. Unlike the pure-Go images (CGO_ENABLED=0, which cross-compile
+# from any builder arch), this build links a native-arch libcpex_ffi.a, so the
+# builder must run on the target arch. An amd64-only digest would make the
+# arm64 build either fail to find an arm64 builder or link an incompatible .a.
+FROM golang:1.25-alpine@sha256:8d95af53d0d58e1759ddb4028285d9b1239067e4fbf4f544618cad0f60fbc354 AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache git ca-certificates gcc musl-dev
 
 WORKDIR /app
 
@@ -116,27 +125,35 @@ COPY --from=ffi /ffi/libcpex_ffi.a /libs/libcpex_ffi.a
 
 ENV GOWORK=off
 ENV CGO_ENABLED=1
-ENV CGO_LDFLAGS="-L/libs -lcpex_ffi -lm -ldl"
-# Let Go auto-download the toolchain version go.mod requires. The
-# pinned base image carries 1.25.1; cpex bindings need 1.25.4 (and
-# transitively bumps our cmd/authbridge-cpex/go.mod). GOTOOLCHAIN=auto
-# means "download the version go.mod asks for" — keeps the base image
-# pin stable across toolchain bumps.
+# musl folds libdl/libpthread into libc, so there is no separate -ldl to
+# link against (as there is on glibc). Keep -lm for the FFI's math symbols.
+#
+# No stack-size linker flag is needed: musl's small default thread stack
+# (128 KB) used to trip cedar-policy's stacker recursion guard ("recursion
+# limit reached"), but CPEX >= v0.2.0-alpha.2 wraps its cedar dispatch in
+# stacker::maybe_grow, so the FFI grows its own stack regardless of the host.
+ENV CGO_LDFLAGS="-L/libs -lcpex_ffi -lm"
+# Let Go auto-download the toolchain version go.mod requires. The pinned
+# base image carries 1.25.1; cpex bindings need 1.25.4 (and transitively
+# bump our cmd/authbridge-cpex/go.mod). GOTOOLCHAIN=auto means "download
+# the version go.mod asks for" — keeps the base image pin stable across
+# toolchain bumps.
 ENV GOTOOLCHAIN=auto
+# -trimpath drops absolute build paths for reproducibility; -s -w drop the
+# Go symbol table + DWARF (panic traces still resolve via pclntab).
 RUN cd cmd/authbridge-cpex && \
-    go build -tags cpex -ldflags="-s -w" -o /authbridge-cpex .
+    go build -tags cpex -trimpath -ldflags="-s -w" -o /authbridge-cpex .
 
 # ---------- Stage 3: runtime ----------------------------------------
-# debian:trixie (Debian 13) for GLIBC 2.39+ — the cpex release .a is
-# built against that floor. bookworm (Debian 12, GLIBC 2.36) link-loads
-# but fails at runtime with "GLIBC_2.39 not found". When we eventually
-# move to a statically-linked CGO build (or the musl asset variant),
-# we can downgrade this back to the smaller base.
-FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
+# Alpine — same base + digest the authbridge-proxy / -lite images pin. The
+# musl FFI asset links against musl, so no glibc floor and no debian base.
+# entrypoint.sh is bash, so we install bash (matching the proxy image).
+FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# libgcc provides libgcc_s.so.1 — the C++/Rust stack unwinder the FFI links
+# against (the CPEX .a is built panic=unwind, so it references _Unwind_*).
+# glibc bases ship it implicitly; on Alpine it must be installed explicitly.
+RUN apk add --no-cache bash ca-certificates libgcc
 
 COPY --from=builder --chmod=755 /authbridge-cpex /usr/local/bin/authbridge-cpex
 COPY --chmod=755 cmd/authbridge-cpex/entrypoint.sh /usr/local/bin/entrypoint.sh

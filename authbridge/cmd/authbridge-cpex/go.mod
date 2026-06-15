@@ -6,7 +6,7 @@ require github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.1 // indirect
+	github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
