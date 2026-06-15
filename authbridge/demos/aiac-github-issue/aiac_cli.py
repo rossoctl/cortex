@@ -114,8 +114,25 @@ def generate_policy_only(policy_file: Path, config_path: Path, output_file: str)
             print(f"    - {cr['client']}: {cr['role']}")
 
 
-def run_full_pipeline(policy_text_file: str, policy_name: str | None) -> None:
-    """Export realm → generate policy → delete old composites → apply new policy."""
+def _confirm_apply(policy_file: Path) -> bool:
+    """Print the generated policy and ask for confirmation. Returns True to proceed."""
+    print()
+    print_step("Generated policy — review before applying to Keycloak")
+    try:
+        print(policy_file.read_text())
+    except OSError as e:
+        print_error(f"Could not read generated policy: {e}")
+        return False
+    print()
+    try:
+        answer = input("Apply this policy to Keycloak? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    return answer in ("y", "yes")
+
+
+def run_full_pipeline(policy_text_file: str, policy_name: str | None, yes: bool = False) -> None:
+    """Export realm → generate policy → (confirm) → delete old composites → apply new policy."""
     from keycloak import KeycloakAdmin
 
     script_dir = Path(__file__).parent
@@ -181,6 +198,12 @@ def run_full_pipeline(policy_text_file: str, policy_name: str | None) -> None:
             sys.exit(1)
         print()
 
+        if not yes:
+            if not _confirm_apply(policy_file):
+                print_info("Aborted — no changes made to Keycloak.")
+                sys.exit(0)
+        print()
+
         print_step("Step 3: Removing old access control rules from Keycloak")
         admin = KeycloakAdmin(
             server_url=keycloak_url,
@@ -239,6 +262,13 @@ def main() -> None:
         help="Path to natural-language policy file",
     )
     parser.add_argument("policy_name", nargs="?", help="Optional policy name override")
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt and apply the generated policy immediately.",
+    )
 
     args = parser.parse_args()
 
@@ -246,7 +276,7 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    run_full_pipeline(args.policy_text_file, args.policy_name)
+    run_full_pipeline(args.policy_text_file, args.policy_name, yes=args.yes)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,15 @@ def get_client_ids(admin: KeycloakAdmin) -> Dict[str, str]:
     return {client["clientId"]: client["id"] for client in clients}
 
 
+def get_live_client_roles(admin: KeycloakAdmin, client_ids: Dict[str, str]) -> Dict[str, set]:
+    """Return a mapping of client_name -> set of live role names fetched from Keycloak."""
+    live_roles: Dict[str, set] = {}
+    for client_name, client_id in client_ids.items():
+        roles = admin.get_client_roles(client_id)
+        live_roles[client_name] = {role["name"] for role in roles}
+    return live_roles
+
+
 def add_client_role_to_realm_role_composite(
     admin: KeycloakAdmin,
     realm: str,
@@ -75,20 +84,26 @@ def apply_access_control_policy(
     """Apply the policy by making realm roles composites of client roles."""
     user_role_to_client_roles = load_access_control_policy(access_control_policy_file)
 
+    # Pre-validate all policy roles against live Keycloak state before writing anything.
+    # This ensures a regenerated or hand-edited policy can't reference non-existent roles.
+    live_roles = get_live_client_roles(admin, client_ids)
+    for user_role, client_role_mappings in user_role_to_client_roles.items():
+        for mapping in client_role_mappings:
+            client_name = mapping["client"]
+            role_name = mapping["role"]
+            if client_name not in client_ids:
+                raise ValueError(f"Policy references unknown client '{client_name}'")
+            if role_name not in live_roles.get(client_name, set()):
+                raise ValueError(
+                    f"Policy references role '{role_name}' that does not exist on client '{client_name}' in Keycloak"
+                )
+
     print("\n=== Making realm roles composites of client roles ===")
     for user_role, client_role_mappings in user_role_to_client_roles.items():
         print(f"\nProcessing realm role '{user_role}':")
         for mapping in client_role_mappings:
             client_name = mapping["client"]
             role_name = mapping["role"]
-
-            if client_name not in client_ids:
-                print(f"  Warning: Client '{client_name}' not found")
-                continue
-
             client_id = client_ids[client_name]
-            try:
-                add_client_role_to_realm_role_composite(admin, realm, user_role, client_id, role_name)
-                print(f"  ✓ Added client role '{client_name}.{role_name}' to realm role '{user_role}'")
-            except Exception as e:
-                print(f"  ℹ Client role '{client_name}.{role_name}' already in composite or error: {e}")
+            add_client_role_to_realm_role_composite(admin, realm, user_role, client_id, role_name)
+            print(f"  ✓ Added client role '{client_name}.{role_name}' to realm role '{user_role}'")

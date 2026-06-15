@@ -284,7 +284,7 @@ EXPLANATION: Specific issue 1. Specific issue 2.
         error_msg = str(e)
         # Handle "Already borrowed" errors gracefully
         if "Already borrowed" in error_msg or "BadRequestError" in error_msg:
-            return (True, True, "Verification skipped due to API rate limiting")
+            return (False, False, "Verification skipped due to transient API error; retry required")
         return (False, False, f"Could not verify policy: {error_msg}")
 
 

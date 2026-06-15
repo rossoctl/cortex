@@ -1,0 +1,8 @@
+# Runtime credentials — copy aiac.env.TEMPLATE to aiac.env and fill in your values.
+aiac.env
+
+# LLM config with real endpoints/keys — copy llm_conf.yaml.TEMPLATE to llm_conf.yaml and fill in your values.
+aiac_agent/config/llm_conf.yaml
+
+# Generated policy files — created at runtime, not intended for version control.
+generated_configs/
