@@ -3,6 +3,7 @@ package cpex
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -337,11 +338,22 @@ func extractToolResultFromBody(body []byte) any {
 		return nil
 	}
 	var envelope map[string]any
-	if json.Unmarshal(body, &envelope) != nil {
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		// Benign and common (e.g. a non-JSON tool result), so debug only.
+		// Log the size, never the body — it can carry secrets/PII.
+		slog.Debug("cpex: tools/call response body is not valid JSON; result.* predicates will not resolve",
+			"bytes", len(body))
 		return nil
 	}
 	result, _ := envelope["result"].(map[string]any)
-	return extractToolResultContent(result)
+	content := extractToolResultContent(result)
+	if content == nil {
+		// Valid JSON, but not a tools/call result shape we can project into
+		// CMF (wrong types / missing fields). Debug only; no body content.
+		slog.Debug("cpex: could not extract a tool result from the response (unexpected shape); result.* predicates will not resolve",
+			"bytes", len(body))
+	}
+	return content
 }
 
 // extractToolResultContent pulls the inner tool payload out of an MCP

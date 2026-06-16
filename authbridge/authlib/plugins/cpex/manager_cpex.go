@@ -65,9 +65,10 @@ func (c *cpexManager) LoadConfig(yaml string) error {
 // finishes on its own when cpex_initialize returns; its handle is
 // reclaimed by the framework's later Shutdown (or the GC finalizer).
 //
-// TODO: switch to a context-aware Initialize if the rcpex bindings
-// gain one, so a stuck init can be cancelled rather than merely
-// abandoned.
+// TODO(cpex-ffi-cancel): switch to a context-aware Initialize if the rcpex
+// bindings gain one, so a stuck init can be cancelled rather than merely
+// abandoned. Shares the follow-up with awaitBackground's wait_for_background_tasks
+// (both need an abortable FFI call); lands on the next CPEX release.
 func (c *cpexManager) Initialize(ctx context.Context) error {
 	done := make(chan error, 1)
 	go func() {
@@ -212,32 +213,50 @@ func lowerHeaders(h http.Header) map[string]string {
 	return out
 }
 
-// backgroundWaitTimeout bounds how long awaitBackground blocks on a
-// single Invoke's background tasks. A stalled sink (e.g. an audit
-// endpoint that never responds) would otherwise pin one goroutine per
-// request indefinitely; the deadline caps the leak at one goroutine for
-// at most this long. Best-effort — the result only feeds slog — so a
-// generous value avoids dropping work product from merely-slow sinks.
-const backgroundWaitTimeout = 30 * time.Second
+// backgroundWaitTimeout is a backstop on how long awaitBackground's outer
+// goroutine waits for a single Invoke's background tasks. It is set just
+// ABOVE the FFI's own wall-clock bound (FFI_WALL_CLOCK_TIMEOUT, ~60s, which
+// run_safely wraps around wait_for_background_tasks in cpex-ffi). In normal
+// operation bg.Wait returns at or before that FFI bound, so the `done` arm
+// in awaitBackground wins and this timer never fires; it exists only so the
+// outer goroutine can't block forever if the FFI never returns (a fully
+// starved tokio runtime whose timer can't fire). Keep it > the FFI bound.
+const backgroundWaitTimeout = 65 * time.Second
 
 // awaitBackground blocks on bg.Wait — which returns when every
 // background sub-plugin spawned by this Invoke has finished — and
 // logs the per-sub-plugin error report (if any) via slog. Operators
 // pipe the slog output to their audit/observability stack.
 //
-// Bounded by backgroundWaitTimeout: bg.Wait runs in an inner goroutine
-// and we select on it vs a timer. On timeout we log a WARN and return,
-// so a stalled sink can't leak goroutines without bound. The inner
-// goroutine still exits whenever bg.Wait eventually returns.
+// Two-layer bound. bg.Wait runs in an inner goroutine; we select it
+// against backgroundWaitTimeout. The PRIMARY bound is the FFI itself:
+// cpex_wait_background runs wait_for_background_tasks under run_safely's
+// tokio::time::timeout (FFI_WALL_CLOCK_TIMEOUT, ~60s), so bg.Wait returns —
+// successfully, or with an RC_TIMEOUT error — within that window even
+// against a merely-hung sink. Because backgroundWaitTimeout is set above
+// that bound, the `done` arm wins in normal operation and the inner
+// goroutine is reclaimed every time; the timer is only a backstop for the
+// case where the FFI never returns at all.
+//
+// Residual leak (documented, not fixed here): if the tokio runtime is fully
+// starved — every worker pinned by non-yielding / CPU-bound or
+// std::thread::sleep-ing sub-plugins, so even the FFI's own timer can't
+// fire — bg.Wait never returns, and this inner goroutine (plus the
+// *rcpex.BackgroundTasks it holds) cannot be reclaimed: the timer frees the
+// OUTER goroutine, but Go cannot cancel a goroutine parked in a cgo call.
+//
+// TODO(cpex-ffi-cancel): this residual starvation leak is not fixable
+// Go-side (you can't cancel a goroutine parked in a cgo call). Give cpex-ffi
+// an abortable wait_for_background_tasks so the inner goroutine is
+// reclaimable; lands in a follow-up PR on the next CPEX release. Same root
+// cause as the Initialize TODO above.
 //
 // Concurrency notes:
 //   - The goroutine outlives the request; it does NOT touch pctx
 //     (pctx may be reused by the framework after Invoke returns).
 //     hook and reqID are captured by value.
 //   - If the manager shuts down while we're waiting, bg.Wait
-//     returns an error which we log at WARN. We do not attempt to
-//     cancel — the underlying FFI doesn't expose a cancel knob, and
-//     a graceful shutdown should drain background tasks anyway.
+//     returns an error which we log at WARN.
 //   - elapsed gives operators a knob to spot slow async work in the
 //     log stream (e.g. a slow audit sink).
 func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
