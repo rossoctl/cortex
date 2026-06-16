@@ -8,7 +8,9 @@
 # The Deployment uses imagePullPolicy: Never so the kubelet takes the
 # locally-loaded image rather than pulling from a registry.
 
-FROM python:3.12-slim
+# Pinned by digest (multi-arch index) to match the SHA-pinned authbridge-cpex
+# image in this PR; bump deliberately rather than floating on the tag.
+FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
 
 WORKDIR /app
 

@@ -440,3 +440,14 @@ make undeploy   # deletes the cpex-demo namespace
   land first.
 - **Production TLS.** Keycloak runs on plaintext HTTP. Wire a cert via
   cert-manager and disable the `insecure_http` flags for real use.
+- **Internal endpoint hardening.** The sidecar's session API (`:9094`) and
+  stats endpoint (`:9093`) have no authentication. This demo binds both to
+  `127.0.0.1` in `authbridge-config` (see `session_api_addr` /
+  `stats_address` in `k8s/30-agent.yaml`), so they are reachable only from
+  inside the pod and via `kubectl port-forward`, not cluster-wide. Note the
+  AuthBridge default for these addresses is all-interfaces (`:9094` /
+  `:9093`); a deployment that does not override them to loopback would expose
+  them on the pod IP. Since the session API can surface session labels and
+  request content, production should keep them loopback-bound (or add a
+  NetworkPolicy) and add authentication on the session API. Do not expose
+  either port through a Service.

@@ -1,9 +1,13 @@
 # CPEX runtime config for the HR demo.
 #
-# DEMO ONLY — this file embeds hardcoded client secrets
-# (client_secret_source.kind: literal) and points at a local Keycloak
-# over plaintext http. Do NOT use in production: source secrets from a
-# mounted file / Secret (kind: file) and use TLS to the IdP.
+# DEMO ONLY — points at a local Keycloak over plaintext http. Do NOT use
+# in production without TLS to the IdP.
+#
+# The gateway client secret is sourced with `client_secret_source.kind: file`
+# from a mounted Secret (see the cpex-gateway-secret Secret + /etc/cpex-secrets
+# mount in k8s/30-agent.yaml), so the secret value is NOT inlined in this
+# policy manifest. The `literal` and `env_var` source kinds also exist; file
+# is the production-shaped one.
 #
 # ── How to read this file ───────────────────────────────────────────
 # The `routes:` block at the BOTTOM is the story: three tool routes,
@@ -110,8 +114,8 @@ plugins:
       insecure_http: true
       client_id: "cpex-gateway"
       client_secret_source:
-        kind: literal
-        secret: "cpex-gateway-secret"
+        kind: file
+        path: /etc/cpex-secrets/client-secret
       timeout_seconds: 5
       default_outbound_header: "Authorization"
 
@@ -139,8 +143,8 @@ plugins:
       insecure_http: true
       client_id: "cpex-gateway"
       client_secret_source:
-        kind: literal
-        secret: "cpex-gateway-secret"
+        kind: file
+        path: /etc/cpex-secrets/client-secret
       timeout_seconds: 5
       default_outbound_header: "Authorization"
 

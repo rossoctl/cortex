@@ -76,6 +76,24 @@ data:
               # those egress calls don't pay the FFI cost.
 
 ---
+# Gateway OAuth client secret, mounted into the sidecar as a file so the CPEX
+# policy can reference it with `client_secret_source.kind: file` instead of
+# inlining the value in the policy manifest. This models the production
+# pattern (secret stays in a Secret, not in committed policy YAML).
+#
+# DEMO ONLY: the value itself is a well-known demo secret and the Secret is
+# created from plaintext here. A real deployment sources it from an external
+# secret manager / sealed secret and never commits the literal.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cpex-gateway-secret
+  namespace: cpex-demo
+type: Opaque
+stringData:
+  client-secret: "cpex-gateway-secret"
+
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -216,6 +234,12 @@ spec:
             - name: cpex-policy
               mountPath: /etc/cpex
               readOnly: true
+            # Gateway client secret as a file (kind: file in the policy).
+            # Separate mount path from /etc/cpex so it doesn't collide with
+            # the cpex-policy ConfigMap mount.
+            - name: cpex-gateway-secret
+              mountPath: /etc/cpex-secrets
+              readOnly: true
           readinessProbe:
             # /readyz gates on plugin readiness (ANDs Ready() across
             # plugins); /healthz is always 200 and only fits liveness.
@@ -238,3 +262,6 @@ spec:
         - name: cpex-policy
           configMap:
             name: cpex-policy
+        - name: cpex-gateway-secret
+          secret:
+            secretName: cpex-gateway-secret
