@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/redact"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
 
@@ -230,18 +231,8 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 			RequiresAny: caps.RequiresAny,
 			Description: caps.Description,
 		}
-		// Surface raw config when the plugin was wrapped by the registry.
-		// Non-Configurable plugins don't satisfy RawConfigProvider; Config
-		// stays nil and json.Marshal omits it via omitempty.
-		//
-		// Trust note: bytes are emitted verbatim. The framework convention
-		// is that secrets live behind *_file paths, never inline (mirrors
-		// the policy at :9093/config). This endpoint is in-cluster only;
-		// a regex-based redaction layer would be illusory given how many
-		// secret-like field names exist in practice. Enforce no-inline-
-		// secrets at config-review time instead.
 		if rc, ok := pl.(pipeline.RawConfigProvider); ok {
-			view.Config = rc.RawConfig()
+			view.Config = redact.JSON(rc.RawConfig())
 		}
 		out[i] = view
 	}

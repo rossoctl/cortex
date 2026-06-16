@@ -24,7 +24,9 @@ type Cache struct {
 type Option func(*Cache)
 
 // WithMaxSize sets the maximum number of cache entries.
-// When exceeded, expired entries are evicted first; if still full, all entries are cleared.
+// When exceeded, expired entries are evicted first; if still full,
+// ~25% of entries are randomly evicted using Go's non-deterministic
+// map iteration order.
 func WithMaxSize(n int) Option {
 	return func(c *Cache) { c.maxSize = n }
 }
@@ -67,9 +69,7 @@ func (c *Cache) Set(subjectToken, audience, token string, ttl time.Duration) {
 	if len(c.entries) >= c.maxSize {
 		c.evictExpired()
 		if len(c.entries) >= c.maxSize {
-			// TODO: Consider LRU or random-sample eviction for high-cardinality
-			// traffic. Full clear can cause temporary cache-miss storms.
-			c.entries = make(map[string]entry)
+			c.evictRandom()
 		}
 	}
 	c.entries[key] = entry{
@@ -83,6 +83,16 @@ func (c *Cache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
+}
+
+func (c *Cache) evictRandom() {
+	target := c.maxSize * 3 / 4
+	for k := range c.entries {
+		if len(c.entries) <= target {
+			break
+		}
+		delete(c.entries, k)
+	}
 }
 
 func (c *Cache) evictExpired() {

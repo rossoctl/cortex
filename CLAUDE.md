@@ -44,7 +44,7 @@ kagenti-extensions/
 │   │   ├── main.go
 │   │   ├── Dockerfile        #     proxy-sidecar lite combined image
 │   │   └── entrypoint.sh
-│   ├── proxy-init/           #   iptables init container (envoy-sidecar mode only)
+│   ├── proxy-init/           #   iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
 │   │   ├── init-iptables.sh
 │   │   ├── Dockerfile.init
 │   │   ├── Makefile
@@ -76,7 +76,7 @@ kagenti-extensions/
 
 **Common:**
 - `authlib/` — shared auth library (JWT validation, token exchange, caching, routing, all listener implementations, all plugins).
-- `proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode only.
+- `proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
 - `proxy-init/Dockerfile.init` — proxy-init container image.
 
 **Ports (envoy-sidecar):** 15123 (outbound), 15124 (inbound), 9090 (ext-proc), 9901 (admin)
@@ -149,13 +149,20 @@ Three mode-specific binaries, one Dockerfile per binary:
 
 ### PR Title Convention
 
-PRs must follow **conventional commits** format:
+PR titles must follow the format:
 
 ```
-<type>: <Subject starting with uppercase>
+<Prefix>: <Subject starting with uppercase>
 ```
 
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
+The CI title check (`deepakputhraya/action-pr-title`) is **case-sensitive** and
+requires a **capitalized** prefix from this set: `Build`, `Chore`, `CI`, `Docs`,
+`Feat`, `Fix`, `Perf`, `Refactor`, `Revert`, `Style`, `Test`, `Feature`,
+`Bug fix`, `Proposal`, `Breaking change`, `Other`, `Other/Misc`.
+
+Note: commit *message* examples elsewhere in this doc use lowercase
+(`feat:` / `fix:`) — that is fine for commits, but the PR *title* check rejects
+lowercase prefixes. Use `Fix:` / `Feat:` / `Docs:` in PR titles.
 
 ## Container Images
 
@@ -167,7 +174,7 @@ All images are pushed to `ghcr.io/kagenti/kagenti-extensions/` from
 | **`authbridge`** | **`authbridge/cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar combined image (default mode): authbridge-proxy (full plugin set incl. parsers) + spiffe-helper. No Envoy.** |
 | `authbridge-envoy` | `authbridge/cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) + spiffe-helper |
 | `authbridge-lite` | `authbridge/cmd/authbridge-lite/Dockerfile` | proxy-sidecar lite combined image: authbridge-lite (auth gates only, parsers dropped) + spiffe-helper. Same listener layout as `authbridge`; not yet referenced by the operator's default config |
-| `proxy-init` | `authbridge/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar mode only) |
+| `proxy-init` | `authbridge/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 
 In all three combined images, `spiffe-helper` is started conditionally
 based on the `SPIRE_ENABLED` env var (set by the operator when SPIRE

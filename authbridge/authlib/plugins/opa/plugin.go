@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/open-policy-agent/opa/sdk"
+	opalog "github.com/open-policy-agent/opa/v1/logging"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
@@ -82,11 +85,91 @@ func (c *opaConfig) validate() error {
 	return nil
 }
 
+// slogBridge bridges OPA's logging.Logger interface to Go's slog, so that all
+// OPA SDK internal messages (bundle downloads, parse errors, activation) surface
+// in the authbridge log stream.
+type slogBridge struct {
+	level  opalog.Level
+	fields map[string]interface{}
+}
+
+func newSlogBridge() *slogBridge {
+	return &slogBridge{level: opalog.Debug}
+}
+
+func (b *slogBridge) attrs() []slog.Attr {
+	attrs := make([]slog.Attr, 0, len(b.fields)+1)
+	attrs = append(attrs, slog.String("component", "opa-sdk"))
+	for k, v := range b.fields {
+		attrs = append(attrs, slog.Any(k, v))
+	}
+	return attrs
+}
+
+func (b *slogBridge) Debug(msg string, a ...interface{}) {
+	if len(a) > 0 {
+		msg = fmt.Sprintf(msg, a...)
+	}
+	slog.LogAttrs(context.Background(), slog.LevelDebug, msg, b.attrs()...)
+}
+
+func (b *slogBridge) Info(msg string, a ...interface{}) {
+	if len(a) > 0 {
+		msg = fmt.Sprintf(msg, a...)
+	}
+	slog.LogAttrs(context.Background(), slog.LevelInfo, msg, b.attrs()...)
+}
+
+func (b *slogBridge) Warn(msg string, a ...interface{}) {
+	if len(a) > 0 {
+		msg = fmt.Sprintf(msg, a...)
+	}
+	slog.LogAttrs(context.Background(), slog.LevelWarn, msg, b.attrs()...)
+}
+
+func (b *slogBridge) Error(msg string, a ...interface{}) {
+	if len(a) > 0 {
+		msg = fmt.Sprintf(msg, a...)
+	}
+	slog.LogAttrs(context.Background(), slog.LevelError, msg, b.attrs()...)
+}
+
+func (b *slogBridge) WithFields(fields map[string]interface{}) opalog.Logger {
+	cp := &slogBridge{level: b.level, fields: make(map[string]interface{}, len(b.fields)+len(fields))}
+	for k, v := range b.fields {
+		cp.fields[k] = v
+	}
+	for k, v := range fields {
+		cp.fields[k] = v
+	}
+	return cp
+}
+
+func (b *slogBridge) SetLevel(level opalog.Level) { b.level = level }
+func (b *slogBridge) GetLevel() opalog.Level      { return b.level }
+
 // decider abstracts OPA decision-making for testability.
 type decider interface {
 	Decision(ctx context.Context, options sdk.DecisionOptions) (*sdk.DecisionResult, error)
 	Stop(ctx context.Context)
 }
+
+// sharedSDK holds the process-wide singleton OPA SDK instance. Both inbound
+// and outbound plugin instances share one SDK (one bundle download, one
+// memory footprint) because the bundle is per-agent, not per-direction.
+type sharedSDK struct {
+	decider   decider
+	ready     atomic.Bool
+	done      chan struct{}
+	bundleURL string
+	agentID   string
+	refCount  int
+}
+
+var (
+	singletonMu sync.Mutex
+	singleton   *sharedSDK
+)
 
 // OPA evaluates requests against OPA bundles downloaded from a Kagenti
 // Bundle Server. The bundle resource path is derived from the agent's
@@ -95,8 +178,7 @@ type OPA struct {
 	cfg      opaConfig
 	inc      includeSet
 	agentID  string
-	decider  atomic.Pointer[decider]
-	ready    atomic.Bool
+	shared   atomic.Pointer[sharedSDK]
 	bgCancel atomic.Pointer[context.CancelFunc]
 }
 
@@ -108,8 +190,6 @@ func (p *OPA) Name() string { return "opa" }
 
 func (p *OPA) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		Requires:    []string{"jwt-validation"},
-		RequiresAny: []string{"a2a-parser", "mcp-parser", "inference-parser"},
 		Description: "OPA policy enforcement for inbound and outbound requests.",
 	}
 }
@@ -152,7 +232,12 @@ func (p *OPA) Configure(raw json.RawMessage) error {
 
 func (p *OPA) Init(_ context.Context) error {
 	if p.agentID != "" {
-		return p.startOPA()
+		slog.Info("opa: initializing with agent_id", "agent_id", p.agentID)
+		if err := p.startOPA(); err != nil {
+			slog.Error("opa: initialization failed", "error", err, "agent_id", p.agentID)
+			return err
+		}
+		return nil
 	}
 	if p.cfg.AgentIDFile == "" {
 		return errors.New("opa: no agent_id or agent_id_file configured")
@@ -179,24 +264,74 @@ func (p *OPA) Init(_ context.Context) error {
 }
 
 func (p *OPA) startOPA() error {
+	singletonMu.Lock()
+	defer singletonMu.Unlock()
+
+	if singleton != nil {
+		if singleton.bundleURL != p.cfg.BundleURL {
+			slog.Warn("opa: redundant bundle_url for the opa sdk singleton - second config skipped",
+				"skipped_bundle_url", p.cfg.BundleURL,
+				"active_bundle_url", singleton.bundleURL)
+		}
+		singleton.refCount++
+		p.shared.Store(singleton)
+		slog.Info("opa: reusing shared OPA SDK singleton", "agent_id", singleton.agentID)
+		return nil
+	}
+
 	cfgBytes, agentID, err := p.buildOPAConfig()
 	if err != nil {
+		slog.Error("opa: failed to build OPA config", "error", err)
 		return err
 	}
+
+	slog.Info("opa: starting OPA SDK with config", "config", string(cfgBytes), "agent_id", agentID)
+
 	readyCh := make(chan struct{})
+
+	opaLogger := newSlogBridge()
+
 	opa, err := sdk.New(context.Background(), sdk.Options{
-		Config: bytes.NewReader(cfgBytes),
-		Ready:  readyCh,
+		Config:        bytes.NewReader(cfgBytes),
+		Ready:         readyCh,
+		Logger:        opaLogger,
+		ConsoleLogger: opaLogger,
+		V1Compatible:  true,
 	})
 	if err != nil {
+		slog.Error("opa: failed to initialize OPA SDK", "error", err, "agent_id", agentID)
 		return fmt.Errorf("opa sdk.New: %w", err)
 	}
-	var dec decider = opa
-	p.decider.Store(&dec)
+
+	s := &sharedSDK{
+		decider:   opa,
+		done:      make(chan struct{}),
+		bundleURL: p.cfg.BundleURL,
+		agentID:   agentID,
+		refCount:  1,
+	}
+	singleton = s
+	p.shared.Store(s)
+
 	go func() {
-		<-readyCh
-		p.ready.Store(true)
-		slog.Info("opa: bundle loaded and policy activated", "agent_id", agentID)
+		select {
+		case <-readyCh:
+			s.ready.Store(true)
+			slog.Info("opa: bundle loaded and policy activated", "agent_id", agentID)
+			return
+		case <-s.done:
+			return
+		case <-time.After(30 * time.Second):
+			slog.Warn("opa: bundle not yet available after 30s, will keep retrying",
+				"agent_id", agentID,
+				"bundle_url", p.cfg.BundleURL)
+		}
+		select {
+		case <-readyCh:
+			s.ready.Store(true)
+			slog.Info("opa: bundle loaded and policy activated", "agent_id", agentID)
+		case <-s.done:
+		}
 	}()
 	return nil
 }
@@ -208,8 +343,12 @@ func (p *OPA) buildOPAConfig() ([]byte, string, error) {
 		return nil, "", errors.New("agentID is empty")
 	}
 
-	// Escape agentID to prevent path traversal and ensure safe URL path segment
-	escapedAgentID := url.PathEscape(agentID)
+	// Strip "spiffe://" prefix if present to get the SPIFFE ID for the query parameter
+	spiffeID := strings.TrimPrefix(agentID, "spiffe://")
+
+	// URL-encode SPIFFE ID for query parameter
+	// This is REQUIRED because SPIFFE IDs contain '/' which must be encoded as %2F
+	escapedSPIFFEID := url.QueryEscape(spiffeID)
 
 	cfg := map[string]any{
 		"services": map[string]any{
@@ -220,12 +359,18 @@ func (p *OPA) buildOPAConfig() ([]byte, string, error) {
 		"bundles": map[string]any{
 			"authz": map[string]any{
 				"service":  "kagenti",
-				"resource": fmt.Sprintf("bundles/%s.tar.gz", escapedAgentID),
+				"resource": fmt.Sprintf("bundles?spiffe=%s", escapedSPIFFEID),
 				"polling": map[string]any{
 					"min_delay_seconds": p.cfg.PollingMinDelay,
 					"max_delay_seconds": p.cfg.PollingMaxDelay,
 				},
 			},
+		},
+		"decision_logs": map[string]any{
+			"console": true,
+		},
+		"logging": map[string]any{
+			"level": "info",
 		},
 	}
 	data, _ := json.Marshal(cfg)
@@ -236,14 +381,27 @@ func (p *OPA) Shutdown(ctx context.Context) error {
 	if cancel := p.bgCancel.Swap(nil); cancel != nil {
 		(*cancel)()
 	}
-	if dec := p.decider.Load(); dec != nil {
-		(*dec).Stop(ctx)
+	s := p.shared.Swap(nil)
+	if s == nil {
+		return nil
+	}
+	singletonMu.Lock()
+	defer singletonMu.Unlock()
+	s.refCount--
+	if s.refCount <= 0 {
+		close(s.done)
+		s.decider.Stop(ctx)
+		singleton = nil
 	}
 	return nil
 }
 
 func (p *OPA) Ready() bool {
-	return p.ready.Load()
+	s := p.shared.Load()
+	if s == nil {
+		return false
+	}
+	return s.ready.Load()
 }
 
 func (p *OPA) decisionPath(pctx *pipeline.Context, phase string) string {
@@ -260,8 +418,8 @@ func (p *OPA) decisionPath(pctx *pipeline.Context, phase string) string {
 }
 
 func (p *OPA) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
-	dec := p.decider.Load()
-	if dec == nil || !p.ready.Load() {
+	s := p.shared.Load()
+	if s == nil || !s.ready.Load() {
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Reason: "opa_not_ready",
@@ -271,7 +429,7 @@ func (p *OPA) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Ac
 
 	path := p.decisionPath(pctx, "request")
 	input := buildInput(pctx, p.inc)
-	result, err := (*dec).Decision(ctx, sdk.DecisionOptions{
+	result, err := s.decider.Decision(ctx, sdk.DecisionOptions{
 		Path:  path,
 		Input: input,
 	})
@@ -308,8 +466,8 @@ func (p *OPA) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Ac
 }
 
 func (p *OPA) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
-	dec := p.decider.Load()
-	if dec == nil || !p.ready.Load() {
+	s := p.shared.Load()
+	if s == nil || !s.ready.Load() {
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Reason: "opa_not_ready",
@@ -323,7 +481,7 @@ func (p *OPA) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.A
 		"status_code": pctx.StatusCode,
 		"headers":     flattenHeaders(pctx.ResponseHeaders),
 	}
-	result, err := (*dec).Decision(ctx, sdk.DecisionOptions{
+	result, err := s.decider.Decision(ctx, sdk.DecisionOptions{
 		Path:  path,
 		Input: input,
 	})

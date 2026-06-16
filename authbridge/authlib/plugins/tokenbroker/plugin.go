@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/gobwas/glob"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker/client"
@@ -243,8 +244,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		"server_url", serverURL,
 		"broker_url", brokerURL)
 
-	// Extract bearer token
-	subjectToken := extractBearer(authHeader)
+	subjectToken := strings.TrimSpace(auth.ExtractBearer(authHeader))
 	if subjectToken == "" {
 		return pctx.DenyAndRecord("missing_subject_token", "auth.missing-token",
 			"broker route requires authorization token")
@@ -328,15 +328,6 @@ func (p *TokenBroker) OnResponse(ctx context.Context, pctx *pipeline.Context) pi
 		"status_code", pctx.StatusCode,
 		"has_response_body", len(pctx.ResponseBody) > 0)
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// extractBearer extracts the bearer token from an Authorization header.
-func extractBearer(authHeader string) string {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(authHeader, prefix) {
-		return ""
-	}
-	return strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
 }
 
 // loadBrokerRoutesFromFile loads broker routes from a YAML file.

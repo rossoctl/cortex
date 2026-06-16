@@ -22,7 +22,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/sseframe"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
@@ -41,6 +43,15 @@ type Server struct {
 	OutboundPipeline *pipeline.Holder
 	Sessions         *session.Store       // nil when session tracking is disabled
 	Shared           pipeline.SharedStore // process-scoped store; set by main, may be nil
+
+	// SkipHosts, when non-nil and matching pctx.Host on an outbound
+	// request, causes the listener to return passResponse() / nil pctx
+	// immediately — bypassing the pipeline AND session recording for
+	// that request. Forward the bytes; do nothing else. See
+	// authlib/config/config.go ListenerConfig.SkipHosts for the
+	// motivating case (OTel-collector traffic evicting the inbound
+	// A2A intent from the session buffer's FIFO window).
+	SkipHosts *skiphost.Matcher
 }
 
 // Process handles the bidirectional ext_proc stream.
@@ -161,6 +172,7 @@ func (s *Server) handleInbound(stream extprocv3.ExternalProcessor_ProcessServer,
 	action := s.InboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		s.recordInboundReject(pctx, action)
+		s.InboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
 		return rejectFromAction(action), nil
 	}
 
@@ -188,6 +200,7 @@ func (s *Server) handleInboundBody(stream extprocv3.ExternalProcessor_ProcessSer
 	action := s.InboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		s.recordInboundReject(pctx, action)
+		s.InboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
 		return rejectFromAction(action), nil
 	}
 
@@ -467,6 +480,15 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 		pctx.Host = getHeader(headers, "host")
 	}
 
+	// SkipHosts short-circuit: forward the request as a transparent
+	// proxy without running the pipeline or recording a session event.
+	// pctx=nil signals the response handlers (handleResponseHeaders,
+	// handleResponseBody) and the deferred RunFinish to no-op as well —
+	// all four phases are skipped consistently. See ListenerConfig.SkipHosts.
+	if s.SkipHosts.Match(pctx.Host) {
+		return passResponse(), nil
+	}
+
 	if s.Sessions != nil {
 		if aid := s.Sessions.ActiveSession(); aid != "" {
 			pctx.Session = s.Sessions.View(aid)
@@ -477,7 +499,8 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 	action := s.OutboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		s.recordOutboundReject(pctx, action)
-		return rejectFromAction(action), nil
+		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
+		return rejectFromActionForRequest(action, pctx), nil
 	}
 
 	s.recordOutboundSession(pctx)
@@ -506,6 +529,18 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 		pctx.Host = getHeader(headers, "host")
 	}
 
+	// SkipHosts short-circuit: see handleOutbound for rationale. The
+	// body-phase entry point needs the same gate because Envoy may
+	// deliver the body in a separate ProcessingRequest message even
+	// when the headers were already passed through — without checking
+	// here, a skip-listed host whose request carries a body would still
+	// run the pipeline on the body phase.
+	if pat, matched := s.SkipHosts.MatchPattern(pctx.Host); matched {
+		slog.Info("ext_proc: skip_hosts match (body phase) — bypassing pipeline + session recording",
+			"host", pctx.Host, "pattern", pat, "path", pctx.Path)
+		return allowBodyResponse(), nil
+	}
+
 	if s.Sessions != nil {
 		if aid := s.Sessions.ActiveSession(); aid != "" {
 			pctx.Session = s.Sessions.View(aid)
@@ -516,7 +551,8 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	action := s.OutboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		s.recordOutboundReject(pctx, action)
-		return rejectFromAction(action), nil
+		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
+		return rejectFromActionForRequest(action, pctx), nil
 	}
 
 	s.recordOutboundSession(pctx)
@@ -814,6 +850,30 @@ func replaceTokenResponse(token string) *extprocv3.ProcessingResponse {
 			},
 		},
 	}
+}
+
+// rejectFromActionForRequest is the MCP-aware sibling of rejectFromAction.
+// When pctx carries an MCP JSON-RPC request shape (Method + non-nil RPCID),
+// the response is an HTTP 200 carrying a JSON-RPC 2.0 error frame so the
+// caller's MCP client surfaces this as one failed tool call rather than a
+// transport break. All other shapes fall through to rejectFromAction.
+func rejectFromActionForRequest(action pipeline.Action, pctx *pipeline.Context) *extprocv3.ProcessingResponse {
+	if pctx != nil && pctx.Extensions.MCP != nil &&
+		pctx.Extensions.MCP.Method != "" && pctx.Extensions.MCP.RPCID != nil {
+		body := httpx.MarshalMCPRejectionBody(action, pctx.Extensions.MCP.RPCID)
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+				ImmediateResponse: &extprocv3.ImmediateResponse{
+					Status: &typev3.HttpStatus{Code: typev3.StatusCode(http.StatusOK)},
+					Body:   body,
+					Headers: &extprocv3.HeaderMutation{SetHeaders: []*corev3.HeaderValueOption{{
+						Header: &corev3.HeaderValue{Key: "content-type", RawValue: []byte("application/json")},
+					}}},
+				},
+			},
+		}
+	}
+	return rejectFromAction(action)
 }
 
 // rejectFromAction turns a pipeline Reject into an Envoy ImmediateResponse,

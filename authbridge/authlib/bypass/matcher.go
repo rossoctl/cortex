@@ -22,12 +22,18 @@ type Matcher struct {
 // NewMatcher creates a Matcher from the given patterns.
 // Returns an error if any pattern has invalid path.Match syntax.
 func NewMatcher(patterns []string) (*Matcher, error) {
-	for _, p := range patterns {
-		if _, err := path.Match(p, "/"); err != nil {
+	clean := make([]string, len(patterns))
+	for i, p := range patterns {
+		trimmed := strings.TrimSpace(p)
+		if _, err := path.Match(trimmed, "/"); err != nil {
 			return nil, fmt.Errorf("invalid bypass pattern %q: %w", p, err)
 		}
+		if trimmed == "" || trimmed == "*" || trimmed == "/*" {
+			return nil, fmt.Errorf("bypass pattern %q is too broad; use specific path globs", p)
+		}
+		clean[i] = trimmed
 	}
-	return &Matcher{patterns: patterns}, nil
+	return &Matcher{patterns: clean}, nil
 }
 
 // Match checks if the given request path matches any bypass pattern.

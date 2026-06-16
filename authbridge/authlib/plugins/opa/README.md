@@ -9,7 +9,7 @@ responses against the loaded policy using four fixed decision paths.
 1. At startup the plugin reads the agent's client ID from `/shared/client-id.txt`
    (mounted by the kagenti-operator from a Keycloak-credentials Secret).
 2. It creates an embedded OPA engine via the OPA Go SDK and configures it to
-   fetch `bundles/<agent-id>.tar.gz` from the bundle server.
+   fetch `bundles?spiffe=<url-encoded-spiffe-id>` from the bundle server.
 3. The SDK downloads the bundle, activates the policy, and begins periodic
    polling for updates (respecting `ETag` / `If-None-Match` for lightweight
    304 responses).
@@ -415,9 +415,11 @@ The plugin interprets the decision as follows:
 
 ## Bundle layout
 
-The bundle server must serve a standard OPA bundle at the path
-`bundles/<agent-id>.tar.gz`. A minimal bundle contains a single `.rego` file
-for the inbound request path:
+The bundle server must serve a standard OPA bundle at
+`bundles?spiffe=<url-encoded-spiffe-id>`. The SPIFFE ID is read from
+`/shared/client-id.txt` (or the `agent_id` config field), stripped of
+the `spiffe://` prefix, and URL-encoded. A minimal bundle contains a
+single `.rego` file for the inbound request path:
 
 ```
 bundles/my-agent.tar.gz
