@@ -28,7 +28,7 @@
 #
 # Contrast with scenario 08, where bob reusing his OWN tainted session
 # is denied (cpex.session_tainted_secret). Same id, different subject =
-# different outcome. Pre-fix, S3 would have returned 403.
+# different outcome. Pre-fix, S3 would have been denied.
 #
 # Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex
 
@@ -57,5 +57,5 @@ step "S3 · Bob → send_email, SAME session id as eve used, clean body"
 note "Session: $SID_SHARED  (same string — but bound to bob's subject now)"
 note "Expected: 200 OK — bob's key H(bob:$SID_SHARED) != eve's H(eve:$SID_SHARED),"
 note "so bob does NOT inherit eve's \"secret\" taint. THIS is the Finding 2 fix."
-note "Pre-fix (raw session key) this would have been 403 cpex.session_tainted_secret."
+note "Pre-fix (raw session key) this would have been denied (cpex.session_tainted_secret)."
 SESSION_ID="$SID_SHARED" call_send_email "$BOB" "$CLIENT" "$CLEAN_BODY"

@@ -18,7 +18,7 @@
 # Three steps:
 #   S1  clean session, clean body          → 200  (baseline: email works)
 #   S2  new session, get_compensation      → 200  (taints session "secret")
-#   S3  SAME session as S2, clean body     → 403  cpex.session_tainted_secret
+#   S3  SAME session as S2, clean body     → 200 + JSON-RPC error frame, cpex.session_tainted_secret
 #
 # Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex
 
@@ -44,7 +44,7 @@ SESSION_ID="$SID_TAINT" call_get_compensation "$BOB" "$CLIENT" true
 
 step "S3 · Bob → send_email (SAME session as S2, clean body)"
 note "Session: $SID_TAINT (now carries label \"secret\" from S2)"
-note "Expected: HTTP 403, code=cpex.session_tainted_secret"
+note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.session_tainted_secret"
 note "Denied by the session taint — NOT by pii-scan (the body has no PII)"
 note "This is the cross-tool data-flow control: looked at secrets → can't email out"
 SESSION_ID="$SID_TAINT" call_send_email "$BOB" "$CLIENT" "$CLEAN_BODY"

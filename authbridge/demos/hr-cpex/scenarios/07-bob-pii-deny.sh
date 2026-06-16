@@ -12,9 +12,9 @@
 # its observation record for the deny, so operators see the event.
 #
 # Expected:
-#   * HTTP 403 with JSON error body, code = cpex.pii_detected — a CPEX
-#     policy deny is surfaced by AuthBridge as a transport-level 403
-#     (not a 500, not an MCP JSON-RPC envelope)
+#   * HTTP 200 with an MCP JSON-RPC 2.0 error frame, error.data.error =
+#     cpex.pii_detected (the forward proxy renders MCP-protocol errors for
+#     MCP requests; see authbridge/authlib/listener/httpx/render.go)
 #   * Backend (hr-mcp) NEVER receives the call — the deny is
 #     enforced at the gateway plugin layer
 #   * stderr (from the gateway process) shows a JSON audit record
@@ -24,7 +24,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Bob (HR + email_send) → send_email with SSN in body"
-note "Expected: HTTP 403, code=cpex.pii_detected"
+note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.pii_detected"
 note "Triggered by: pii-scan plugin catches the SSN pattern in args"
 note "Expected: audit-log still emits a record describing the deny"
 note "Expected upstream: no inbound request (gateway plugin denied)"

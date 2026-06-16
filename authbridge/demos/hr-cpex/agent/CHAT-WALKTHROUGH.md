@@ -76,8 +76,8 @@ Alice: look up the compensation for EMP-001234
 
 **Expected:**
 - LLM invokes `get_compensation(employee_id="EMP-001234")`
-- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32001`,
-  `data.violation = "routes.tool:get_compensation.apl.policy[0]"`
+- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32000`,
+  `data.error = "cpex.routes_tool_get_compensation_apl_policy_0_"`
 - LLM apologizes politely without revealing the violation code
   (system prompt tells it to do exactly this)
 
@@ -171,8 +171,8 @@ short-circuited at the PDP.)
 
 **Expected:**
 - LLM invokes `search_repos(repo_name="partner-sdk", visibility="external")`
-- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32001`,
-  `data.violation = "cedar.default_deny"`
+- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32000`,
+  `data.error = "cpex.cedar_default_deny"`
 - LLM apologizes
 
 **Under the hood:**
@@ -198,8 +198,8 @@ Bob: search the engineering repos for anything
 
 **Expected:**
 - LLM invokes `search_repos(visibility="internal")` (or similar)
-- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32001`,
-  `data.violation = "routes.tool:search_repos.apl.policy[0]"`
+- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32000`,
+  `data.error = "cpex.routes_tool_search_repos_apl_policy_0_"`
 - LLM apologizes
 
 **Talking point:** the APL gate denied at the cheapest layer — Bob is
@@ -220,8 +220,8 @@ Bob: send an email to alice@corp.com with the subject "FYI"
 
 **Expected:**
 - LLM invokes `send_email(to="alice@corp.com", subject="FYI", body="Jane's SSN is 555-12-3456 if you need it")`
-- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32001`,
-  `data.violation = "pii.detected"`
+- Gateway response: **HTTP 200 + JSON-RPC error envelope**, code `-32000`,
+  `data.error = "cpex.pii_detected"`
 - LLM apologizes
 
 **Under the hood:**

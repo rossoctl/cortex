@@ -10,15 +10,16 @@
 #   Layers 3-4 — never reached. No token exchange. GitHub never sees
 #             the request.
 #
-# Result: HTTP 403 with JSON error body, code = cpex.cedar_default_deny
-# — a CPEX policy deny is surfaced by AuthBridge as a transport-level
-# 403 (not a 500, not an MCP JSON-RPC envelope).
+# Result: HTTP 200 with an MCP JSON-RPC 2.0 error frame,
+# error.data.error = cpex.cedar_default_deny (the forward proxy renders
+# MCP-protocol errors for MCP requests; see
+# authbridge/authlib/listener/httpx/render.go).
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Alice (engineering) → search_repos(visibility='external')"
-note "Expected: HTTP 403, code=cpex.cedar_default_deny"
+note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.cedar_default_deny"
 note "Triggered by: Cedar denies — engineering can't read external repos"
 note "Expected upstream: no inbound request (gateway short-circuits at PDP)"
 

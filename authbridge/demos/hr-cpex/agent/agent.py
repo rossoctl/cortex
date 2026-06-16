@@ -161,7 +161,7 @@ TOOLS = [
                     # result.ssn for callers without view_ssn. An `ssn` echo-back
                     # arg used to live here, but models populate it
                     # inconsistently (""/null/omitted) and a null value trips the
-                    # APL redact(args.ssn) type check (expected Str) → 403. The
+                    # APL redact(args.ssn) type check (expected Str) → deny. The
                     # request-side args.ssn redaction is still exercised by the
                     # deterministic curl matrix (scenarios/01-bob-allow.sh).
                 },
@@ -269,11 +269,15 @@ def format_tool_response(status: int, data: dict[str, Any]) -> str:
     if status >= 400:
         return json.dumps({"gateway_status": status, "error": data})
     if "error" in data:
+        # MCP JSON-RPC 2.0 error frame (HTTP 200). The forward proxy renders
+        # cpex denials this way for MCP requests; the violation code lives at
+        # error.data.error (see authbridge/authlib/listener/httpx/render.go),
+        # NOT error.data.violation.
         err = data["error"]
         return json.dumps(
             {
                 "error": err.get("message", "tool error"),
-                "violation": (err.get("data") or {}).get("violation"),
+                "violation": (err.get("data") or {}).get("error"),
             }
         )
     result = data.get("result", {})

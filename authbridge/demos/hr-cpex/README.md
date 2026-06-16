@@ -129,7 +129,7 @@ content, which is what distinguishes it from scenario 07's content-based
 PII deny. Scenario 08 shows all three beats with fresh per-run session
 ids: a clean session sends fine (S1 → 200), reading compensation taints
 a second session (S2 → 200), and that session can no longer send email
-(S3 → 403 `cpex.session_tainted_secret`).
+(S3 → denied with an MCP JSON-RPC error frame, `cpex.session_tainted_secret`).
 
 **Act 5 — cross-principal taint isolation (scenario 09).** Session taint
 is keyed by the authenticated subject, not the raw `X-Session-Id`: the

@@ -89,9 +89,9 @@ fake Manager.
 Each AuthBridge phase (`OnRequest`, `OnResponse`) dispatches an
 ordered list of CPEX hook names. Hooks fire one at a time; the chain
 short-circuits on the first sub-plugin that returns deny. A sub-plugin
-that returns `modify` records the Invocation, applies header/label
-changes to pctx, and lets the chain continue. CPEX's standard hook
-names:
+that returns `modify` records the Invocation, applies its modifications
+to pctx (rewritten body, mutated headers, session labels), and lets the
+chain continue. CPEX's standard hook names:
 
 | Hook | Fires for | Typical sub-plugins |
 |---|---|---|
@@ -193,7 +193,7 @@ plugins:
 
 ## Status codes & reasons
 
-| Code | HTTP | Meaning |
+| Code | HTTP (non-MCP) | Meaning |
 |---|---|---|
 | `cpex.error` | 502 | CPEX FFI returned an error and `fail_open: false`. Body carries the underlying error message. |
 | `cpex.denied` | 403 | A CPEX sub-plugin returned deny without a violation code. |
@@ -203,13 +203,26 @@ The `Invocation.Reason` field carries the CPEX-side reason string for
 all of the above so operator dashboards can render the original
 sub-plugin message alongside the namespaced code.
 
-**HTTP status.** A policy `deny` is an authorization decision and
-renders as **403 Forbidden**; a CPEX-internal error (fail-closed)
-renders as **502 Bad Gateway** (the policy engine itself failed — an
-upstream fault, not a client error). The plugin sets both statuses
-explicitly: the namespaced `cpex.*` codes are dynamic and never appear
-in the listener's static `codeToStatus` table, so without an explicit
-status `Violation.Render` would default every CPEX outcome to 500.
+**HTTP status / wire shape.** The plugin sets a status on every
+rejection — **403 Forbidden** for a policy `deny`, **502 Bad Gateway**
+for a CPEX-internal error (the policy engine itself failed — an upstream
+fault, not a client error). It must set these explicitly: the namespaced
+`cpex.*` codes are dynamic and never appear in the listener's static
+`codeToStatus` table, so without an explicit status `Violation.Render`
+would default every CPEX outcome to 500.
+
+How that reaches the client depends on the listener and the request. On
+the HTTP proxies (forward / reverse), a **classified MCP request** (the
+MCP extension is populated with a JSON-RPC `method` and `id`) is rendered
+as an **MCP JSON-RPC 2.0 error frame at HTTP 200**, with the id echoed
+back:
+`{"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":<reason>,"data":{"error":"cpex.<code>","plugin":"cpex"}}}`.
+The caller's MCP client then surfaces a failed tool call rather than a
+transport break, and the `cpex.*` code rides in `error.data.error` (not
+the HTTP status). Non-MCP requests — and JSON-RPC notifications with no
+id — get the plain 403 / 502 in the table above. (See
+`authbridge/authlib/listener/httpx/render.go`; the gRPC listeners,
+extproc / extauthz, don't use this renderer.)
 
 ## Bypass list curation
 
@@ -296,12 +309,19 @@ need to route background results separately from foreground logs.
 
 ## Limitations
 
-- **Body modifications aren't yet re-serialized.** When a CPEX
-  sub-plugin returns `modify` with a body payload change (the PII
-  scanner's redaction path is the canonical case), the cpex plugin
-  applies header and label changes to pctx but logs a warning and
-  leaves `pctx.Body` unchanged. Format-aware re-serialization
-  (CMF → JSON-RPC / OpenAI) is on the roadmap.
+- **Single-value body redaction; multi-part rewrites fail closed.** Body
+  modifications **are** re-serialized. When a CPEX sub-plugin returns
+  `modify` with a body payload change (the PII scanner / `redact` path is
+  the canonical case), the cpex plugin rewrites `pctx.Body` format-aware
+  per protocol — MCP `tools/call` arguments and results, inference
+  messages, and A2A artifact parts (see `applyBodyModFromCMF` and the
+  per-format `applyMCP*/applyInference*/applyA2A*` write-backs). The
+  residual limitation is value cardinality: the CMF write-back carries a
+  single redacted value, so a body with more than one redactable text
+  part (an MCP result with multiple text blocks, a multi-part A2A
+  artifact) is ambiguous to rewrite and is **rejected fail-closed** rather
+  than partially redacted. Single-part bodies — the common case, and what
+  the demo exercises — redact and forward normally.
 - **Per-sub-plugin Invocations** require the CPEX FFI to expose
   per-sub-plugin outcomes; today CPEX returns an aggregate
   `PipelineResult` with a single `Violation`. The cpex plugin emits
@@ -319,7 +339,7 @@ need to route background results separately from foreground logs.
 | Pipeline build fails at boot: `cpex plugin: this binary was not built with -tags cpex` | Operator pointed `authbridge-proxy` (no cgo) at a config containing a `cpex` plugin. | Use the `authbridge-cpex` image instead; or rebuild with `-tags cpex` against a downloaded `libcpex_ffi.a`. |
 | Pipeline build fails: `cpex bypass_paths: invalid bypass pattern` | An entry in `bypass_paths` has bad `path.Match` syntax. | Fix the glob pattern (`/api/*/v1`, `/static/**` etc.). |
 | Pipeline build fails: `cpex config: pattern "*" matches everything` | Operator wrote a wildcard pattern in `bypass_hosts` or `bypass_paths`. | If you want to disable cpex, remove it from the pipeline; don't bypass everything. |
-| All traffic returns 502 with `cpex.error`, JWKS errors in logs | CPEX's APL identity plugin can't reach Keycloak. | Check the `apl.identity.jwt.jwks_url` is reachable from inside the pod; check the cpex bypass list doesn't include Keycloak (it should). |
+| All traffic is rejected with `cpex.error` (a 200 MCP error frame for MCP calls, else 502), JWKS errors in logs | CPEX's APL identity plugin can't reach Keycloak. | Check the `apl.identity.jwt.jwks_url` is reachable from inside the pod; check the cpex bypass list doesn't include Keycloak (it should). |
 | Audit logger silently produces no records | `BackgroundTasks` goroutine started but the audit sink is unreachable. | Search the slog stream for `cpex: background sub-plugin error` — the request ID and elapsed time correlate the failure with the foreground request. |
 
 ## See also

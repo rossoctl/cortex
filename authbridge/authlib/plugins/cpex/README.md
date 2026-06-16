@@ -233,7 +233,7 @@ taint all run inside cpex via its own sub-plugins, so the AuthBridge-side
 | `hooks.on_response` | empty | CPEX hooks fired during OnResponse, in order |
 | `config` | empty | CPEX runtime YAML inline; mutually exclusive with `config_file` |
 | `config_file` | empty | path to CPEX YAML; mounted from a ConfigMap in production |
-| `fail_open` | `false` | on a CPEX internal error: deny with 502 (false) or continue (true) |
+| `fail_open` | `false` | on a CPEX internal error: deny (false) or continue (true). The rejection renders per the listener — MCP error frame for MCP requests, else HTTP 502 (see Decisions and denials) |
 | `worker_threads` | `0` | CPEX tokio worker pool size; 0 lets CPEX pick |
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
@@ -256,19 +256,41 @@ The plugin maps the CPEX outcome onto AuthBridge's five-value invocation
 vocabulary:
 
 - **allow**: all sub-plugins continued, request proceeds untouched.
-- **deny**: a sub-plugin returned a policy violation. Rejects with HTTP 403 and a
-  `cpex.<code>` violation code (`cpex.pii_detected`,
-  `cpex.session_tainted_secret`, and so on).
+- **deny**: a sub-plugin returned a policy violation with a `cpex.<code>` code
+  (`cpex.pii_detected`, `cpex.session_tainted_secret`, and so on). The plugin
+  emits a `Reject`; how it appears on the wire is the listener's call, not the
+  plugin's (see below).
 - **modify**: policy rewrote the body, headers, or labels. Changes are applied,
   the request continues.
 - **observe**: audit-only outcome, recorded, request continues.
 
+**How a rejection is rendered.** The plugin sets the decision and a status
+(`403` for a policy deny, `502` for a CPEX-internal error); the HTTP/proxy
+listeners then choose the wire shape (`authbridge/authlib/listener/httpx/render.go`):
+
+- **Classified MCP request** (an MCP parser populated the MCP extension with a
+  JSON-RPC `method` and `id`) → an **MCP JSON-RPC 2.0 error frame at HTTP 200**,
+  with the original id echoed back:
+  `{"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":<reason>,"data":{"error":"cpex.<code>","plugin":"cpex"}}}`.
+  The caller's MCP client surfaces this as a failed tool call rather than a
+  transport break. This covers both a policy deny and a fail-closed internal
+  error — they differ in the frame's `message` / `data.error`, not the HTTP
+  status.
+- **Everything else** (non-MCP requests, or JSON-RPC notifications with no id) →
+  a plain HTTP response carrying the status the plugin set: **403 Forbidden** for
+  a policy deny, **502 Bad Gateway** for a CPEX-internal error, with a
+  `{"error":"cpex.<code>",...}` body.
+
+(The gRPC listeners — extproc / extauthz — don't use this renderer and surface
+denials per their own protocol.)
+
 A CPEX policy `deny` is a normal outcome and is always honored. `fail_open` only
 governs CPEX-internal failures (an FFI error, an unreachable backend, a
-modification that cannot be applied). With `fail_open: false` those reject with
-HTTP 502; with `true` they log and continue. The default is fail-closed because a
-CPEX error usually means a misconfigured policy or an unreachable PDP, and
-silently allowing traffic in that state is rarely intended.
+modification that cannot be applied): with `fail_open: false` those are rejected
+(rendered as above — an MCP error frame for MCP requests, otherwise HTTP 502);
+with `true` they log and continue. The default is fail-closed because a CPEX
+error usually means a misconfigured policy or an unreachable PDP, and silently
+allowing traffic in that state is rarely intended.
 
 ## Building and testing
 
