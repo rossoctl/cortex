@@ -389,6 +389,7 @@ setup_enforce_redirect() {
     if ! ${IP6T} -t nat -C OUTPUT -j "${REDIR_CHAIN}" 2>/dev/null; then
       ${IP6T} -t nat -I OUTPUT 1 -j "${REDIR_CHAIN}"
     fi
+    require_jump "${IP6T}" nat OUTPUT "${REDIR_CHAIN}"
 
     ${IP6T} -t mangle -N "${NOTCP_CHAIN}" 2>/dev/null || true
     ${IP6T} -t mangle -F "${NOTCP_CHAIN}"
@@ -409,6 +410,7 @@ setup_enforce_redirect() {
     if ! ${IP6T} -t mangle -C OUTPUT -j "${NOTCP_CHAIN}" 2>/dev/null; then
       ${IP6T} -t mangle -I OUTPUT 1 -j "${NOTCP_CHAIN}"
     fi
+    require_jump "${IP6T}" mangle OUTPUT "${NOTCP_CHAIN}"
     echo "enforce-redirect: IPv6 egress capture configured"
   else
     echo "enforce-redirect: ip6tables unavailable — skipping IPv6 egress capture"
