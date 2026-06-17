@@ -38,15 +38,13 @@ func TestMinter_LeafChainsToCA_AndHasSAN(t *testing.T) {
 }
 
 func TestMinter_IPLiteralSAN(t *testing.T) {
-	m, pool := newTestMinter(t)
+	m, _ := newTestMinter(t)
 	c2, err := m.GetCertificateForHost("10.0.0.5")
 	if err != nil {
 		t.Fatalf("GetCertificateForHost(ip): %v", err)
 	}
 	leaf, _ := x509.ParseCertificate(c2.Certificate[0])
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
-		// IP SANs verify via IPAddresses, not DNSName; the explicit SAN check below is authoritative.
-	}
+	// IP SANs verify via IPAddresses, not DNSName; the explicit SAN check below is authoritative.
 	found := false
 	for _, ip := range leaf.IPAddresses {
 		if ip.Equal(net.ParseIP("10.0.0.5")) {
