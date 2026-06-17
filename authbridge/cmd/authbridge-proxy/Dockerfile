@@ -26,8 +26,9 @@ WORKDIR /app
 COPY authlib/ authlib/
 COPY cmd/authbridge-proxy/ cmd/authbridge-proxy/
 
+ARG GO_BUILD_TAGS=""
 ENV GOWORK=off
-RUN cd cmd/authbridge-proxy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /authbridge-proxy .
+RUN cd cmd/authbridge-proxy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-proxy .
 
 # Stage 2: Runtime — alpine (has bash, ~5 MB base)
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d

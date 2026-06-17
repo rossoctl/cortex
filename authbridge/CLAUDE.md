@@ -11,9 +11,10 @@ binaries with shared auth logic in `authlib/`:
 
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
   proxies. Full plugin set (jwt-validation, token-exchange, a2a-parser,
-  mcp-parser, inference-parser, ibac, sparc).
+  mcp-parser, inference-parser, ibac, sparc). Ibac is excludable via
+  `-tags exclude_plugin_ibac`.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
-  into Envoy. Full plugin set.
+  into Envoy. Full plugin set. Same build-tag exclusions apply.
 - `cmd/authbridge-lite/` — proxy-sidecar mode, lite plugin set (auth gates
   only, parsers dropped). For size-optimized deployments that don't need
   protocol-aware session events.
