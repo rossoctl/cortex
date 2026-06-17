@@ -19,8 +19,9 @@ WORKDIR /app
 COPY authlib/ authlib/
 COPY cmd/authbridge-envoy/ cmd/authbridge-envoy/
 
+ARG GO_BUILD_TAGS=""
 ENV GOWORK=off
-RUN cd cmd/authbridge-envoy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /authbridge-envoy .
+RUN cd cmd/authbridge-envoy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-envoy .
 
 # Stage 2: Get Envoy binary. Already stripped upstream; nothing to do.
 FROM docker.io/envoyproxy/envoy:v1.37.1 AS envoy-source

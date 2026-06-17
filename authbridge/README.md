@@ -383,6 +383,66 @@ python keycloak_sync.py --config routes.yaml --agent-client "spiffe://..." --yes
 
 This creates target clients, audience scopes, and assigns scopes to the agent.
 
+## Build-tag plugin selection
+
+Downstream distributions and custom deployments can exclude specific
+plugins at build time using Go build tags. The default build (no tags)
+includes every plugin — existing Dockerfiles, CI, and Makefiles keep
+working with zero changes.
+
+### Available tags
+
+| Tag | Plugin excluded | Effect |
+|-----|----------------|--------|
+| `exclude_plugin_ibac` | IBAC (Intent-Based Access Control) | Removes the LLM-judge plugin and its runtime dependencies |
+
+### Usage
+
+**Go build:**
+
+```bash
+# Default — all plugins included (same as today)
+go build ./cmd/authbridge-proxy
+
+# Exclude IBAC
+go build -tags exclude_plugin_ibac ./cmd/authbridge-proxy
+```
+
+**Docker build:**
+
+```bash
+# Default — all plugins
+docker build -f cmd/authbridge-proxy/Dockerfile .
+
+# Exclude IBAC
+docker build --build-arg GO_BUILD_TAGS=exclude_plugin_ibac \
+  -f cmd/authbridge-proxy/Dockerfile .
+```
+
+Multiple tags can be combined with commas: `-tags "exclude_plugin_ibac,exclude_plugin_foo"`.
+
+### Adding build tags to a new plugin
+
+To make a plugin excludable:
+
+1. Create a `plugins_<name>.go` file in each `cmd/` binary that imports the plugin:
+
+```go
+//go:build !exclude_plugin_<name>
+
+package main
+
+import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/<name>"
+```
+
+2. Remove the corresponding `_ "...plugins/<name>"` import from that binary's `main.go`.
+
+3. Add the tag to the table above.
+
+The build constraint `!exclude_plugin_<name>` means the file is included by
+default. Passing `-tags exclude_plugin_<name>` excludes it, which prevents the
+plugin package from being imported and compiled into the binary.
+
 ## Component Documentation
 
 - [authlib](authlib/README.md) — Shared auth building blocks (Go library)

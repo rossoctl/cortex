@@ -50,7 +50,6 @@ import (
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/ibac"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
