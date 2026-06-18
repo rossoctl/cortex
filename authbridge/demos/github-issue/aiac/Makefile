@@ -8,7 +8,7 @@
 #   make reset           # wipe generated configs + re-provision realm
 #
 # Prerequisites:
-#   - Python 3.9+ with pip/uv
+#   - uv (https://docs.astral.sh/uv/)
 #   - Keycloak running and accessible
 #   - aiac.env configured (copy from aiac.env.TEMPLATE)
 #   - aiac_agent/config/llm_conf.yaml configured (copy from llm_conf.yaml.TEMPLATE)
@@ -31,17 +31,28 @@ help:  ## Show this menu (default)
 	     $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
 	@printf "  \033[36m%-20s\033[0m %s\n" "POLICY" "policy file to apply (default: policies/regular_policy.txt)"
-	@printf "  \033[36m%-20s\033[0m %s\n" "PYTHON"  "Python interpreter (default: python3)"
-	@printf "\nPrerequisites: Python 3.9+, Keycloak running, aiac.env and llm_conf.yaml configured.\n\n"
+	@printf "  \033[36m%-20s\033[0m %s\n" "PYTHON"  "Python interpreter (default: kagenti-extensions/.venv/bin/python)"
+	@printf "\nPrerequisites: uv, Keycloak running, aiac.env and llm_conf.yaml configured.\n\n"
 
 POLICY ?= policies/regular_policy.txt
-PYTHON ?= python3
+
+# Resolve the venv relative to this Makefile, regardless of where make is invoked.
+MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+VENV         := $(MAKEFILE_DIR)../../../../.venv
+PYTHON       ?= $(VENV)/bin/python
 
 # ---------- Pre-flight ----------
 
-preflight:  ## Verify prerequisites (Python, aiac.env, llm_conf.yaml, Keycloak)
-	@$(PYTHON) --version >/dev/null 2>&1 || { \
-	  echo "ERROR: $(PYTHON) not found."; exit 1; \
+preflight:  ## Verify prerequisites (uv, venv, aiac.env, llm_conf.yaml, Keycloak)
+	@command -v uv >/dev/null 2>&1 || { \
+	  echo "ERROR: uv not found."; \
+	  echo "       Install: curl -LsSf https://astral.sh/uv/install.sh | sh"; \
+	  exit 1; \
+	}
+	@test -x "$(VENV)/bin/python" || { \
+	  echo "ERROR: venv not found at $(VENV)"; \
+	  echo "       Run: uv venv $(VENV)"; \
+	  exit 1; \
 	}
 	@test -f aiac.env || { \
 	  echo "ERROR: aiac.env not found."; \
@@ -55,7 +66,7 @@ preflight:  ## Verify prerequisites (Python, aiac.env, llm_conf.yaml, Keycloak)
 	}
 	@$(PYTHON) -c 'import dotenv, yaml, keycloak, langgraph' 2>/dev/null || { \
 	  echo "ERROR: Python dependencies missing."; \
-	  echo "       Run: pip install -r ../../../requirements.txt"; \
+	  echo "       Run: uv pip install --python $(VENV)/bin/python -r ../../../requirements.txt"; \
 	  exit 1; \
 	}
 	@KEYCLOAK_URL=$$(grep -E '^KEYCLOAK_URL=' aiac.env | cut -d= -f2-); \
