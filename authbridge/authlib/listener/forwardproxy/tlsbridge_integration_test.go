@@ -222,3 +222,183 @@ func TestTransparentBridge(t *testing.T) {
 		t.Fatalf("HandleTransparentConn did not return after conns closed")
 	}
 }
+
+// TestConnectBridge drives the full CONNECT → 200 → agent-TLS → decrypt →
+// pipeline → re-originate loop through the PUBLIC forward-proxy HTTP handler
+// (so the real net/http Hijack path runs). An httptest TLS origin stands in
+// for the upstream. The agent dials the proxy, issues CONNECT, reads the 200,
+// then speaks TLS over the SAME raw conn trusting the bridge's ephemeral CA;
+// the proxy forges a leaf, terminates, runs the pipeline (probe records the
+// plaintext), and re-originates to the real origin. Body must arrive intact.
+func TestConnectBridge(t *testing.T) {
+	// 1) TLS origin on a random port. CONNECT doesn't go through shouldSniff,
+	//    so any port works here.
+	var gotOriginPath string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOriginPath = r.URL.Path
+		if r.URL.Path == "/secret" {
+			_, _ = w.Write([]byte("OK-SECRET"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	origin := httptest.NewTLSServer(handler)
+	defer origin.Close()
+
+	originCAPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: origin.Certificate().Raw,
+	})
+
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatalf("parse origin URL: %v", err)
+	}
+	originHostPort := originURL.Host // "127.0.0.1:port"
+
+	// 2) Build the bridge Engine. ScopeAll so the loopback origin isn't
+	//    treated as in-cluster and skipped. Ports must include the origin's
+	//    random port (the CONNECT classify keys on portOf(r.Host)).
+	src, err := tlsbridge.NewEphemeralSource()
+	if err != nil {
+		t.Fatalf("NewEphemeralSource: %v", err)
+	}
+	minter := tlsbridge.NewMinter(src, tlsbridge.MinterOpts{})
+	up, err := tlsbridge.NewUpstreamClient(originCAPEM)
+	if err != nil {
+		t.Fatalf("NewUpstreamClient: %v", err)
+	}
+	engine := &tlsbridge.Engine{
+		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
+			Scope: tlsbridge.ScopeAll,
+			Ports: map[int]bool{portOf(originHostPort): true},
+		}),
+		Term:     tlsbridge.NewTerminator(minter),
+		Skip:     tlsbridge.NewSkipSet(),
+		Upstream: up,
+		CAPEM:    src.CACertPEM(),
+	}
+
+	// 3) Server wired with a real OutboundPipeline carrying the recording probe.
+	probe := &bridgeProbePlugin{}
+	p, err := plugintesting.BuildPipeline([]pipeline.Plugin{probe})
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Client:           http.DefaultClient,
+		TLSBridge:        engine,
+	}
+
+	// 4) Stand up the public forward-proxy HTTP handler so Hijack works.
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+
+	// 5) Raw-dial the proxy and issue CONNECT to the origin host:port.
+	rawConn, err := net.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = rawConn.Close() }()
+	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	connectReq, err := http.NewRequest(http.MethodConnect, "//"+originHostPort, nil)
+	if err != nil {
+		t.Fatalf("new CONNECT request: %v", err)
+	}
+	connectReq.Host = originHostPort
+	connectReq.URL.Host = originHostPort
+	if err := connectReq.Write(rawConn); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+
+	// Read the 200 Connection Established. http.ReadResponse against the
+	// CONNECT request consumes exactly the status line + headers (no body),
+	// leaving the raw conn positioned at the first post-200 byte — which is
+	// where the agent's ClientHello begins.
+	br := bufio.NewReader(rawConn)
+	connectResp, err := http.ReadResponse(br, connectReq)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if connectResp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", connectResp.StatusCode)
+	}
+	_ = connectResp.Body.Close()
+
+	// 6) Agent-side TLS over the SAME raw conn (wrapped so any bytes ReadResponse
+	//    buffered past the 200 are replayed — there should be none, but be safe).
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(engine.CAPEM) {
+		t.Fatalf("failed to append bridge CA PEM to pool")
+	}
+	host := hostOnly(originHostPort) // "127.0.0.1"
+	tlsTransport := &bufferedConn{Conn: rawConn, r: br}
+	tconn := tls.Client(tlsTransport, &tls.Config{
+		ServerName: host,
+		RootCAs:    pool,
+		NextProtos: []string{"http/1.1"},
+	})
+	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("agent-side TLS handshake through CONNECT bridge failed: %v", err)
+	}
+
+	// 7) GET /secret over the bridged TLS conn. Same goroutine-write +
+	//    http.ReadResponse split as TestTransparentBridge: the server makes a
+	//    blocking upstream round-trip between reading the request and writing
+	//    the response, so a single-goroutine RoundTrip can wedge.
+	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	writeErr := make(chan error, 1)
+	go func() { writeErr <- req.Write(tconn) }()
+
+	resp, err := http.ReadResponse(bufio.NewReader(tconn), req)
+	if err != nil {
+		t.Fatalf("read response over bridged TLS conn: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if werr := <-writeErr; werr != nil {
+		t.Fatalf("write request over bridged TLS conn: %v", werr)
+	}
+
+	// 8) Assertions.
+	if probe.calls == 0 {
+		t.Fatalf("probe plugin never ran — pipeline did not see decrypted request (CONNECT bridge branch missing?)")
+	}
+	if probe.gotPath != "/secret" {
+		t.Errorf("probe recorded path = %q, want /secret", probe.gotPath)
+	}
+	if probe.gotMethod != http.MethodGet {
+		t.Errorf("probe recorded method = %q, want GET", probe.gotMethod)
+	}
+	if gotOriginPath != "/secret" {
+		t.Errorf("origin received path = %q, want /secret", gotOriginPath)
+	}
+	if got := strings.TrimSpace(string(body)); got != "OK-SECRET" {
+		t.Errorf("response body = %q, want OK-SECRET", got)
+	}
+}
+
+// bufferedConn wraps a net.Conn whose leading bytes were partly drained into a
+// bufio.Reader (e.g. by http.ReadResponse on the CONNECT 200), so a subsequent
+// reader (the agent's tls.Client) replays those buffered bytes before reading
+// from the wire. Mirrors peekedConn's Read-replays-buffered semantics for the
+// client side of the test harness.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }

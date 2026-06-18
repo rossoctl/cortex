@@ -4,6 +4,7 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
@@ -865,6 +866,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// there are no Invocations to attribute the event to.
 	if !skipped {
 		s.recordTunnelOpened(pctx)
+	}
+
+	if s.TLSBridge != nil {
+		pc := &peekedConn{Conn: clientConn, r: bufio.NewReaderSize(clientConn, sniffBufSize)}
+		clientConn = pc // replay peeked bytes into whichever path runs
+		first, _ := pc.Peek(5)
+		authority := r.Host // CONNECT target is already host:port
+		key := hostOnly(r.Host)
+		if !s.TLSBridge.Skip.Contains(key) {
+			// ip is the hostname for a name CONNECT target (ParseIP→nil ⇒ never
+			// matched as in-cluster; the transparent path keys on the dialed IP).
+			if v, _ := s.TLSBridge.Decision.Classify(key, key, portOf(r.Host), first); v == tlsbridge.Terminate {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream
+				if s.bridgeServe(clientConn, authority, key) {
+					return
+				}
+				// fell open → re-dial for the tunnel
+				if up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout); derr == nil {
+					tunnel(clientConn, up2)
+					_ = up2.Close()
+				}
+				return
+			}
+		}
 	}
 
 	// Bidirectional copy until either side closes.
