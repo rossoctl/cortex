@@ -441,6 +441,40 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 	}
 }
 
+// bridgeServe attempts to bridge: verify the upstream origin first (reversibility),
+// then forge a leaf + terminate the agent TLS + run the UNCHANGED pipeline via
+// serveOutbound. authority is host:port (used to dial+verify upstream and to set
+// r.URL.Host); host is the skip/log key. Returns true if it consumed the connection
+// (success OR an unrecoverable post-forge failure that was logged); false to fall
+// back to a plain tunnel — so no working call is ever broken.
+func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
+	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
+	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
+	//    verified), which is all we need. Only a transport/TLS error fails here.
+	resp, err := s.TLSBridge.Upstream.Head("https://" + authority)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
+	}
+	_ = resp.Body.Close()
+
+	// 2) Forge + terminate downstream.
+	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
+	if err != nil {
+		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
+		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
+		return true // conn is dead post-forge; nothing left to tunnel
+	}
+
+	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
+	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Scheme = "https"
+		r.URL.Host = authority // host:port — preserves non-443 origins
+		s.serveOutbound(w, r, true)
+	}))
+	return true
+}
+
 // recordOutboundResponseEvent emits the SessionResponse event for a
 // completed outbound response. Extracted from handleRequest so the
 // streaming path can call it once at end-of-stream and the buffered
@@ -952,12 +986,4 @@ func portOf(authority string) int {
 		}
 	}
 	return 443
-}
-
-// nameOrIP prefers the sniffed SNI name, falling back to the dialed IP.
-func nameOrIP(name, ip string) string {
-	if name != "" {
-		return name
-	}
-	return ip
 }
