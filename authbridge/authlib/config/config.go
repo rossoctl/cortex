@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -42,8 +43,9 @@ type Config struct {
 	TLSBridge *TLSBridgeConfig `yaml:"tls_bridge,omitempty" json:"tls_bridge,omitempty"`
 }
 
-// TLSBridgeConfig configures the outbound TLS bridge (MITM termination of
-// agent egress so the outbound plugin pipeline sees decrypted HTTPS).
+// TLSBridgeConfig configures the outbound TLS bridge (TLS termination of
+// agent egress — formerly "MITM" — so the outbound plugin pipeline sees
+// decrypted HTTPS).
 type TLSBridgeConfig struct {
 	Enabled          bool     `yaml:"enabled" json:"enabled"`
 	Scope            string   `yaml:"scope" json:"scope"` // external | all
@@ -65,6 +67,11 @@ func (b *TLSBridgeConfig) Validate() error {
 	}
 	if b.CASource == "file" && (b.CACertPath == "" || b.CAKeyPath == "") {
 		return fmt.Errorf("tls_bridge.ca_source=file requires ca_cert_path and ca_key_path")
+	}
+	for _, c := range b.InternalCIDRs {
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			return fmt.Errorf("tls_bridge.internal_cidrs: %q is not a valid CIDR: %w", c, err)
+		}
 	}
 	return nil
 }

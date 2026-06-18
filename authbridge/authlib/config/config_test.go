@@ -750,6 +750,31 @@ func TestConfig_TLSBridgeBlockDecodes(t *testing.T) {
 	}
 }
 
+func TestTLSBridgeConfig_Validate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     TLSBridgeConfig
+		wantErr bool
+	}{
+		{"valid empty", TLSBridgeConfig{}, false},
+		{"valid full", TLSBridgeConfig{Scope: "all", CASource: "ephemeral", InternalCIDRs: []string{"10.0.0.0/8", "172.30.0.0/16"}}, false},
+		{"bad scope", TLSBridgeConfig{Scope: "internal"}, true},
+		{"bad ca_source", TLSBridgeConfig{CASource: "vault"}, true},
+		{"file ca without paths", TLSBridgeConfig{CASource: "file"}, true},
+		{"file ca with paths", TLSBridgeConfig{CASource: "file", CACertPath: "/c", CAKeyPath: "/k"}, false},
+		{"bad cidr typo", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0/8", "10.0.0.0./8"}}, true},
+		{"bad cidr missing mask", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // Absent mtls block leaves cfg.MTLS nil — today's behavior, no TLS.
 func TestLoad_MTLS_AbsentBlock(t *testing.T) {
 	dir := t.TempDir()
