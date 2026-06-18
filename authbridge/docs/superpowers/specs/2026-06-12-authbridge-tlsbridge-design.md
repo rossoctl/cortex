@@ -50,6 +50,46 @@ impersonate the remote origin so the agent's TLS terminates at AuthBridge. That 
 > first cut may exist transiently during implementation, but h2 is a prerequisite for enabling MITM by
 > default — it is not a fast-follow.)
 
+## Protocol & port coverage (scope — what the bridge does NOT see)
+
+The TLS bridge is an **HTTPS-inspection** mechanism, not a general egress-inspection guarantee. It yields
+decrypted, pipeline-visible traffic only when **all** of these hold: the connection is **TCP**, on a
+**configured bridge port** (default `{443, 8443}`), the first bytes are a **TLS ClientHello** record, and the
+agent **trusts the forged CA**. Everything outside that envelope is either tunneled opaquely (still egresses;
+the pipeline sees only `host:port` via the per-connection egress gate) or dropped. The categories with **no
+content visibility**:
+
+| Category | Examples | Why blind | Outcome |
+|---|---|---|---|
+| **Non-TLS TCP** | SSH (22); plaintext DB (Postgres 5432, MySQL 3306, Redis 6379, Mongo 27017); SMTP/IMAP/FTP/LDAP; raw/custom TCP; h2c | first bytes ≠ TLS ClientHello → `non-tls`; usually non-bridge port → `port` | tunneled |
+| **TLS on non-standard ports** | LDAPS 636, SMTPS 465, IMAPS 993, AMQPS 5671, MQTTS 8883, DB-over-TLS, custom HTTPS on `:9443` etc. | port not in the bridge set → `port` (configurable) | tunneled |
+| **STARTTLS** | SMTP/IMAP/POP3/LDAP/XMPP/Postgres plaintext→TLS upgrade | connection opens plaintext; the 5-byte peek isn't a ClientHello → `non-tls` | tunneled |
+| **Non-TCP** | QUIC / HTTP-3 (UDP 443), DTLS, WireGuard/IPsec/VPN | `enforce-redirect` DROPs external non-TCP | **dropped** (forces TCP fallback for QUIC; a no-fallback client fails) |
+| **Un-MITM-able TLS** | cert-pinned clients; client-cert/mTLS to the origin; ECH / encrypted-SNI | leaf rejected / upstream-verify fails / SNI unreadable → fail open | tunneled (auto-skip) |
+
+**Why the port gate is load-bearing (not just perf).** The downstream serving layer (`ServeConn`) parses the
+decrypted bytes as **HTTP/1.1 or h2**. TLS on `443`/`8443` is ~always HTTP(S); TLS on `636`/`465`/`5671`/DB
+ports is **not** HTTP. Bridging those would terminate the connection and then fail to serve non-HTTP wire bytes
+as HTTP → a **broken** agent connection (the upstream-verify `HEAD` probe usually rejects a non-HTTP origin and
+makes us fall open, but that is a fragile net that also sprays `HEAD /` at non-HTTP services). The port gate
+keeps interception **HTTP-only by operator intent**. To inspect HTTPS on an extra port, **widen the configured
+port set** (`Decision.Ports` is arbitrary; expose a `ports:` config key) — do **not** bridge all ports.
+
+**Non-goals (coverage):**
+- **Non-HTTP protocols** (SSH, databases, SMTP/LDAP/AMQP/MQTT, raw TCP) — out of scope; inspecting/controlling
+  them needs a protocol-aware proxy/bastion or, for *control without decryption*, connection-level egress
+  policy.
+- **STARTTLS upgrade detection** — out of scope (the first-byte heuristic intentionally does not track
+  mid-connection upgrades).
+- **envoy-sidecar bridging** — out of scope; it would need a separate Envoy-data-plane mechanism (dynamic
+  per-SNI leaf issuance via SDS/filter + terminate/originate config), not this Go-proxy bridge. The operator
+  rejects `tlsBridgeMode=enabled` with `envoy-sidecar` at admission. A future "Phase 3" if a real need arises.
+
+**The backstop is connection-level egress policy.** Allow/deny by `host:port` *without* decryption, enforced at
+the per-connection egress gate that already runs on every captured connection (it sees the destination even
+when it cannot read the payload). That layer covers SSH, databases, STARTTLS, odd-port TLS, and pinned/mTLS
+traffic, and composes with the bridge: the bridge decrypts what it can (HTTPS), policy gates the rest.
+
 ## Design decisions
 
 | Topic | Decision |
