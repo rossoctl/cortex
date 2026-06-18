@@ -253,15 +253,12 @@ func main() {
 	// here and set on fpSrv below (mirroring fpSrv.SkipHosts / fpSrv.Shared).
 	// A nil *Engine leaves today's blind-tunnel behavior intact.
 	var bridge *tlsbridge.Engine
-	if cfg.TLSBridge != nil && cfg.TLSBridge.Enabled {
-		var src tlsbridge.CASource
-		if cfg.TLSBridge.CASource == "file" {
-			src, err = tlsbridge.NewFileSource(cfg.TLSBridge.CACertPath, cfg.TLSBridge.CAKeyPath)
-		} else {
-			src, err = tlsbridge.NewEphemeralSource()
-		}
-		if err != nil {
-			log.Fatalf("tls-bridge CA init failed: %v", err)
+	if cfg.TLSBridge != nil && cfg.TLSBridge.Mode == "enabled" {
+		// CA is always the operator-mounted cert-manager Secret (tls.crt/tls.key
+		// under ca_dir). EphemeralSource exists only for in-process tests.
+		src, cerr := tlsbridge.NewFileSource(cfg.TLSBridge.CADir+"/tls.crt", cfg.TLSBridge.CADir+"/tls.key")
+		if cerr != nil {
+			log.Fatalf("tls-bridge CA init failed: %v", cerr)
 		}
 		var extra []byte
 		if cfg.TLSBridge.UpstreamCABundle != "" {
@@ -274,10 +271,6 @@ func main() {
 			log.Fatalf("tls-bridge upstream client failed: %v", uerr)
 		}
 		minter := tlsbridge.NewMinter(src, tlsbridge.MinterOpts{})
-		scope := tlsbridge.ScopeExternal
-		if cfg.TLSBridge.Scope == "all" {
-			scope = tlsbridge.ScopeAll
-		}
 		var ports map[int]bool // nil => NewDecision defaults to {443, 8443}
 		if len(cfg.TLSBridge.Ports) > 0 {
 			ports = make(map[int]bool, len(cfg.TLSBridge.Ports))
@@ -287,7 +280,7 @@ func main() {
 		}
 		bridge = &tlsbridge.Engine{
 			Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-				Scope: scope, Ports: ports, InternalCIDRs: cfg.TLSBridge.InternalCIDRs, SkipHosts: cfg.TLSBridge.SkipHosts,
+				Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts,
 			}),
 			Term:     tlsbridge.NewTerminator(minter),
 			Skip:     tlsbridge.NewSkipSet(),
@@ -295,7 +288,7 @@ func main() {
 			CAPEM:    src.CACertPEM(),
 		}
 		tlsbridge.RunTrustSelfCheck(bridge.CAPEM)
-		slog.Info("tls-bridge enabled", "scope", cfg.TLSBridge.Scope, "ca_source", cfg.TLSBridge.CASource)
+		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir)
 	}
 
 	// Proxy-sidecar: reverse proxy on the inbound path + forward proxy

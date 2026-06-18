@@ -131,16 +131,14 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 
 	if s.TLSBridge != nil {
 		// host is the policy authority: "<sniffed-SNI>:port" when a name was
-		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP;
-		// ip is always the dialed IP (for the in-cluster CIDR gate).
-		ip := hostOnly(dst)
+		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
 		key := hostOnly(host)
 		var first []byte
 		if pc, ok := clientConn.(*peekedConn); ok {
 			first, _ = pc.Peek(5)
 		}
 		if !s.TLSBridge.Skip.Contains(key) {
-			v, reason := s.TLSBridge.Decision.Classify(key, ip, portOf(dst), first)
+			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
 			if v == tlsbridge.Terminate {
 				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
 				if s.bridgeServe(clientConn, host, key) {

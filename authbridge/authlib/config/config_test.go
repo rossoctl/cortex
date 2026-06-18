@@ -733,10 +733,10 @@ spiffe: {}
 func TestConfig_TLSBridgeBlockDecodes(t *testing.T) {
 	y := []byte("mode: proxy-sidecar\n" +
 		"tls_bridge:\n" +
-		"  enabled: true\n" +
-		"  scope: external\n" +
-		"  ca_source: ephemeral\n" +
-		"  skip_hosts: [\"pinned.example.com\"]\n")
+		"  mode: enabled\n" +
+		"  ca_dir: /etc/authbridge/tls-bridge-ca\n" +
+		"  passthrough_hosts: [\"pinned.example.com\"]\n" +
+		"  ports: [443, 9443]\n")
 	p := filepath.Join(t.TempDir(), "cfg.yaml")
 	if err := os.WriteFile(p, y, 0o600); err != nil {
 		t.Fatal(err)
@@ -745,8 +745,11 @@ func TestConfig_TLSBridgeBlockDecodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.TLSBridge == nil || !cfg.TLSBridge.Enabled || cfg.TLSBridge.Scope != "external" {
+	if cfg.TLSBridge == nil || cfg.TLSBridge.Mode != "enabled" || cfg.TLSBridge.CADir != "/etc/authbridge/tls-bridge-ca" {
 		t.Fatalf("tls_bridge block did not decode: %+v", cfg.TLSBridge)
+	}
+	if len(cfg.TLSBridge.PassthroughHosts) != 1 || len(cfg.TLSBridge.Ports) != 2 {
+		t.Fatalf("passthrough_hosts/ports did not decode: %+v", cfg.TLSBridge)
 	}
 }
 
@@ -757,13 +760,10 @@ func TestTLSBridgeConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid empty", TLSBridgeConfig{}, false},
-		{"valid full", TLSBridgeConfig{Scope: "all", CASource: "ephemeral", InternalCIDRs: []string{"10.0.0.0/8", "172.30.0.0/16"}}, false},
-		{"bad scope", TLSBridgeConfig{Scope: "internal"}, true},
-		{"bad ca_source", TLSBridgeConfig{CASource: "vault"}, true},
-		{"file ca without paths", TLSBridgeConfig{CASource: "file"}, true},
-		{"file ca with paths", TLSBridgeConfig{CASource: "file", CACertPath: "/c", CAKeyPath: "/k"}, false},
-		{"bad cidr typo", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0/8", "10.0.0.0./8"}}, true},
-		{"bad cidr missing mask", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0"}}, true},
+		{"valid disabled", TLSBridgeConfig{Mode: "disabled"}, false},
+		{"valid enabled with ca_dir", TLSBridgeConfig{Mode: "enabled", CADir: "/etc/authbridge/tls-bridge-ca"}, false},
+		{"bad mode", TLSBridgeConfig{Mode: "external"}, true},
+		{"enabled without ca_dir", TLSBridgeConfig{Mode: "enabled"}, true},
 		{"valid ports", TLSBridgeConfig{Ports: []int{443, 8443, 9443}}, false},
 		{"port zero", TLSBridgeConfig{Ports: []int{0}}, true},
 		{"port too high", TLSBridgeConfig{Ports: []int{70000}}, true},

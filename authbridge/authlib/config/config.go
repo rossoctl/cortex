@@ -5,7 +5,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 
@@ -47,14 +46,21 @@ type Config struct {
 // agent egress — formerly "MITM" — so the outbound plugin pipeline sees
 // decrypted HTTPS).
 type TLSBridgeConfig struct {
-	Enabled          bool     `yaml:"enabled" json:"enabled"`
-	Scope            string   `yaml:"scope" json:"scope"` // external | all
-	InternalCIDRs    []string `yaml:"internal_cidrs" json:"internal_cidrs"`
-	CASource         string   `yaml:"ca_source" json:"ca_source"` // file | ephemeral
-	CACertPath       string   `yaml:"ca_cert_path" json:"ca_cert_path"`
-	CAKeyPath        string   `yaml:"ca_key_path" json:"ca_key_path"`
-	UpstreamCABundle string   `yaml:"upstream_ca_bundle" json:"upstream_ca_bundle"`
-	SkipHosts        []string `yaml:"skip_hosts" json:"skip_hosts"`
+	// Mode is the bridge posture: "disabled" (off) or "enabled" (intercept all
+	// eligible egress on the configured Ports). Empty == disabled.
+	Mode string `yaml:"mode" json:"mode"` // disabled | enabled
+	// CADir holds the per-agent signing CA, mounted from the operator's
+	// cert-manager Secret. The bridge reads tls.crt + tls.key (to sign leaves);
+	// ca.crt is the trust cert handed to the agent. cert-manager Secret key
+	// conventions, so only the directory is configured.
+	CADir string `yaml:"ca_dir" json:"ca_dir"`
+	// UpstreamCABundle is an extra-roots PEM file for re-origination (private-CA
+	// origins the agent trusts); empty == system roots only.
+	UpstreamCABundle string `yaml:"upstream_ca_bundle" json:"upstream_ca_bundle"`
+	// PassthroughHosts are hosts to tunnel (never intercept). Distinct from
+	// listener.skip_hosts, which bypasses the whole pipeline; these still run the
+	// egress gate, they just aren't TLS-terminated.
+	PassthroughHosts []string `yaml:"passthrough_hosts" json:"passthrough_hosts"`
 	// Ports is the set of TCP ports to intercept as TLS. Empty => {443, 8443}.
 	// Only HTTP(S)-bearing ports belong here: the bridge serves the decrypted
 	// stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS,
@@ -64,19 +70,11 @@ type TLSBridgeConfig struct {
 
 // Validate is called from the loader when TLSBridge != nil.
 func (b *TLSBridgeConfig) Validate() error {
-	if b.Scope != "" && b.Scope != "external" && b.Scope != "all" {
-		return fmt.Errorf("tls_bridge.scope must be 'external' or 'all', got %q", b.Scope)
+	if b.Mode != "" && b.Mode != "disabled" && b.Mode != "enabled" {
+		return fmt.Errorf("tls_bridge.mode must be 'disabled' or 'enabled', got %q", b.Mode)
 	}
-	if b.CASource != "" && b.CASource != "file" && b.CASource != "ephemeral" {
-		return fmt.Errorf("tls_bridge.ca_source must be 'file' or 'ephemeral', got %q", b.CASource)
-	}
-	if b.CASource == "file" && (b.CACertPath == "" || b.CAKeyPath == "") {
-		return fmt.Errorf("tls_bridge.ca_source=file requires ca_cert_path and ca_key_path")
-	}
-	for _, c := range b.InternalCIDRs {
-		if _, _, err := net.ParseCIDR(c); err != nil {
-			return fmt.Errorf("tls_bridge.internal_cidrs: %q is not a valid CIDR: %w", c, err)
-		}
+	if b.Mode == "enabled" && b.CADir == "" {
+		return fmt.Errorf("tls_bridge.mode=enabled requires ca_dir")
 	}
 	for _, p := range b.Ports {
 		if p < 1 || p > 65535 {

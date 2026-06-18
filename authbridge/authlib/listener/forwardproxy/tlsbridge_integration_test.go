@@ -95,8 +95,8 @@ func TestTransparentBridge(t *testing.T) {
 	}
 	originHostPort := originURL.Host // "127.0.0.1:port"
 
-	// 2) Build the bridge Engine. ScopeAll so the loopback origin isn't
-	//    treated as in-cluster and skipped.
+	// 2) Build the bridge Engine. Ports is set to the origin's port so the
+	//    bridge intercepts it (the bridge has no in-cluster vs external scope).
 	src, err := tlsbridge.NewEphemeralSource()
 	if err != nil {
 		t.Fatalf("NewEphemeralSource: %v", err)
@@ -108,7 +108,6 @@ func TestTransparentBridge(t *testing.T) {
 	}
 	engine := &tlsbridge.Engine{
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{portOf(originHostPort): true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),
@@ -267,7 +266,6 @@ func TestTransparentBridge_CustomPort(t *testing.T) {
 		// Only the custom port is configured — proves both that it IS bridged
 		// (despite shouldSniff not knowing it) and that the default set is replaced.
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{customPort: true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),
@@ -369,9 +367,8 @@ func TestConnectBridge(t *testing.T) {
 	}
 	originHostPort := originURL.Host // "127.0.0.1:port"
 
-	// 2) Build the bridge Engine. ScopeAll so the loopback origin isn't
-	//    treated as in-cluster and skipped. Ports must include the origin's
-	//    random port (the CONNECT classify keys on portOf(r.Host)).
+	// 2) Build the bridge Engine. Ports must include the origin's random port
+	//    (the CONNECT classify keys on portOf(r.Host)).
 	src, err := tlsbridge.NewEphemeralSource()
 	if err != nil {
 		t.Fatalf("NewEphemeralSource: %v", err)
@@ -383,7 +380,6 @@ func TestConnectBridge(t *testing.T) {
 	}
 	engine := &tlsbridge.Engine{
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{portOf(originHostPort): true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),
@@ -575,7 +571,6 @@ func TestBridge_UnverifiableUpstream_FallsOpenToTunnel(t *testing.T) {
 	}
 	engine := &tlsbridge.Engine{
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{portOf(originHostPort): true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),
@@ -714,7 +709,6 @@ func TestBridge_PinnedClient_AutoSkipsThenTunnels(t *testing.T) {
 	}
 	engine := &tlsbridge.Engine{
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{portOf(originHostPort): true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),
@@ -879,7 +873,6 @@ func TestBridge_NonTLS_Passthrough(t *testing.T) {
 	}
 	engine := &tlsbridge.Engine{
 		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Scope: tlsbridge.ScopeAll,
 			Ports: map[int]bool{portOf(originHostPort): true},
 		}),
 		Term:     tlsbridge.NewTerminator(minter),

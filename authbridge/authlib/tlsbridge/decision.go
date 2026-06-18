@@ -1,7 +1,6 @@
 package tlsbridge
 
 import (
-	"net"
 	"sync"
 )
 
@@ -12,36 +11,20 @@ const (
 	Terminate
 )
 
-type Scope int
-
-const (
-	ScopeExternal Scope = iota // default: do not bridge internal/mesh destinations
-	ScopeAll                   // bridge everything eligible (no-mesh / standalone)
-)
-
 type DecisionOpts struct {
-	Ports         map[int]bool
-	Scope         Scope
-	InternalCIDRs []string
-	SkipHosts     []string
+	Ports     map[int]bool
+	SkipHosts []string
 }
 
 type Decision struct {
-	ports    map[int]bool
-	scope    Scope
-	internal []*net.IPNet
-	skip     map[string]bool
+	ports map[int]bool
+	skip  map[string]bool
 }
 
 func NewDecision(o DecisionOpts) *Decision {
-	d := &Decision{ports: o.Ports, scope: o.Scope, skip: map[string]bool{}}
+	d := &Decision{ports: o.Ports, skip: map[string]bool{}}
 	if d.ports == nil {
 		d.ports = map[int]bool{443: true, 8443: true}
-	}
-	for _, c := range o.InternalCIDRs {
-		if _, n, err := net.ParseCIDR(c); err == nil {
-			d.internal = append(d.internal, n)
-		}
 	}
 	for _, h := range o.SkipHosts {
 		d.skip[h] = true
@@ -55,8 +38,11 @@ func NewDecision(o DecisionOpts) *Decision {
 // the configured ports, never drifting from Classify's port gate.
 func (d *Decision) HandlesPort(port int) bool { return d.ports[port] }
 
-// Classify decides whether to bridge. first is the peeked client bytes.
-func (d *Decision) Classify(host, ip string, port int, first []byte) (Verdict, string) {
+// Classify decides whether to bridge. first is the peeked client bytes. The
+// bridge intercepts everything eligible on the configured ports (no in-cluster
+// vs external distinction): a port + valid-TLS-record + not-skip-listed
+// connection is terminated; anything else passes through.
+func (d *Decision) Classify(host string, port int, first []byte) (Verdict, string) {
 	if !d.ports[port] {
 		return Passthrough, "port"
 	}
@@ -66,23 +52,7 @@ func (d *Decision) Classify(host, ip string, port int, first []byte) (Verdict, s
 	if d.skip[host] {
 		return Passthrough, "skip"
 	}
-	if d.scope == ScopeExternal && d.isInternal(ip) {
-		return Passthrough, "in-cluster"
-	}
 	return Terminate, ""
-}
-
-func (d *Decision) isInternal(ip string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false // a hostname (not an IP) is never matched as in-cluster — see CONNECT-path note
-	}
-	for _, n := range d.internal {
-		if n.Contains(parsed) {
-			return true
-		}
-	}
-	return false
 }
 
 // looksLikeTLSRecord validates the 5-byte TLS record header (not just 0x16):
