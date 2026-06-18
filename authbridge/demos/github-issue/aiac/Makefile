@@ -64,7 +64,7 @@ preflight:  ## Verify prerequisites (uv, venv, aiac.env, llm_conf.yaml, Keycloak
 	  echo "       Copy aiac_agent/config/llm_conf.yaml.TEMPLATE and configure your LLM."; \
 	  exit 1; \
 	}
-	@$(PYTHON) -c 'import dotenv, yaml, keycloak, langgraph' 2>/dev/null || { \
+	@$(PYTHON) -c 'import dotenv, yaml, keycloak, langgraph, langchain_core, langchain_openai, pydantic' 2>/dev/null || { \
 	  echo "ERROR: Python dependencies missing."; \
 	  echo "       Run: uv pip install --python $(VENV)/bin/python -r ../../../requirements.txt"; \
 	  exit 1; \

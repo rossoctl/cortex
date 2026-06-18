@@ -601,7 +601,7 @@ def load_keycloak_config() -> Tuple[str, str]:
 
     if not all([keycloak_url, realm, admin_username, admin_password]):
         raise ValueError(
-            "Missing required environment variables. Please ensure .env file contains "
+            "Missing required environment variables. Please ensure aiac.env file contains "
             "KEYCLOAK_URL, KEYCLOAK_ADMIN_USERNAME, KEYCLOAK_ADMIN_PASSWORD, and REALM_NAME"
         )
 
@@ -1352,7 +1352,7 @@ def main_rbac(config_file: str, reset_only: bool = False):
     map_scopes_to_roles(admin, realm, client_ids, scope_ids)
 
     # 11. Create users
-    users_config = main_config["users"]
+    users_config = main_config.get("users", [])
     create_users(admin, users_config)
 
     # 12. Summary

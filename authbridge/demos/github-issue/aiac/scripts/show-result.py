@@ -86,9 +86,9 @@ def main() -> None:
                 print(f"    {GREEN}✓{RESET}  {container}.{name}")
 
     gen_dir = AIAC_DIR / "generated_configs"
-    policy_files = sorted(gen_dir.glob("*_policy.yaml")) if gen_dir.exists() else []
+    policy_files = list(gen_dir.glob("*_policy.yaml")) if gen_dir.exists() else []
     if policy_files:
-        latest = policy_files[-1]
+        latest = max(policy_files, key=lambda p: p.stat().st_mtime_ns)
         section(f"Last generated policy: {latest.name}")
         print(latest.read_text())
     else:

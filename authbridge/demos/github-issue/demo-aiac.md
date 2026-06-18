@@ -19,7 +19,7 @@ AI-driven policy management capabilities.
 
 ## Architecture Overview
 
-```
+```txt
 Natural Language Policy Description
          │
          ▼
@@ -89,7 +89,7 @@ This lets you demonstrate finer-grained authorization: a user with full access c
 **Build and Load Container Images (if not already done)**
 
 The agent and tool container images must be built locally and loaded into the kind cluster (they are not published to a public registry):
-```
+```bash
 cd <path-to>/agent-examples
 
 # Build the GitHub tool image
@@ -216,12 +216,12 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent \
 ```
 
 Expected (proxy-sidecar mode, the cluster default):
-```
+```txt
 agent authbridge-proxy
 ```
 
 Or, in envoy-sidecar mode:
-```
+```txt
 agent envoy-proxy
 ```
 
@@ -234,7 +234,7 @@ kubectl get pods -n team1
 ```
 
 Expected output:
-```
+```txt
 NAME                               READY   STATUS    RESTARTS   AGE
 git-issue-agent-xxxxxxxxxx-xxxxx   2/2     Running   0          2m
 github-tool-yyyyyyyyyyy-yyyyy       1/1     Running   0          3m
@@ -270,7 +270,7 @@ kubectl logs deployment/git-issue-agent -n team1 -c agent
 ```
 
 Expected:
-```
+```txt
 INFO:     Started server process [17]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
@@ -324,7 +324,7 @@ curl -s http://git-issue-agent:8080/.well-known/agent.json | jq .
 ```
 
 Expected :
-```
+```txt
 Agent card information (publicly accessible)
 ```
 
@@ -339,7 +339,7 @@ curl -s -X POST http://git-issue-agent:8080/ \
 ```
 
 Expected:
-```
+```txt
 {
   "error": "auth.unauthorized",
   "message": "missing Authorization header",
@@ -442,9 +442,6 @@ ALICE_TOKEN=$(curl -s -X POST \
    --data-urlencode "client_id=$CLIENT_ID" \
    --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
 
-echo $ALICE_TOKEN
-echo $ALICE_TOKEN | cut -d. -f2- | base64 -d | jq .
-
 
 curl -s --max-time 300 \
   -H "Authorization: Bearer $ALICE_TOKEN" \
@@ -484,9 +481,6 @@ BOB_TOKEN=$(curl -s -X POST \
 
 echo "Bob token length: ${#BOB_TOKEN}"
 echo "Bob scopes: $(echo $BOB_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.scope')"
-
-echo $BOB_TOKEN
-echo $BOB_TOKEN | cut -d. -f2- | base64 -d | jq .
 
 curl -s --max-time 300 \
   -H "Authorization: Bearer $BOB_TOKEN" \
@@ -660,9 +654,6 @@ ALICE_TOKEN=$(curl -s -X POST \
    --data-urlencode "client_id=$CLIENT_ID" \
    --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
 
-echo $ALICE_TOKEN
-echo $ALICE_TOKEN | cut -d. -f2- | base64 -d | jq .
-
 
 curl -s --max-time 300 \
   -H "Authorization: Bearer $ALICE_TOKEN" \
@@ -713,8 +704,6 @@ BOB_TOKEN=$(curl -s -X POST \
 echo "Bob token length: ${#BOB_TOKEN}"
 echo "Bob scopes: $(echo $BOB_TOKEN | cut -d. -f2- | base64 -d 2>/dev/null | jq -r '.scope')"
 
-echo $BOB_TOKEN
-echo $BOB_TOKEN | cut -d. -f2- | base64 -d | jq .
 
 curl -s --max-time 300 \
   -H "Authorization: Bearer $BOB_TOKEN" \
@@ -762,10 +751,6 @@ CHARLIE_TOKEN=$(curl -s -X POST \
    -d "password=charlie123" \
    --data-urlencode "client_id=$CLIENT_ID" \
    --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
-
-echo $CHARLIE_TOKEN
-echo $CHARLIE_TOKEN | cut -d. -f2- | base64 -d | jq .
-
 
 
 curl -s --max-time 300 \
@@ -828,7 +813,7 @@ echo -e "\n5. Sales is now just like Tech-support (\"Other personnel\"):"
 yq '.policy.sales[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/permissive_policy_policy.yaml
 ```
 Expected output :
-```bash
+```txt
 1. Developer has github-full-access:
 client: github-tool
 role: github-full-access
