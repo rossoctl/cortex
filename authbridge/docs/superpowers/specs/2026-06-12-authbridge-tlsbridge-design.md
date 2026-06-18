@@ -242,20 +242,31 @@ reason (`port|non-tls|skip|in-cluster|ech|upstream-verify|handshake-fail`). Beyo
 
 ## Config
 
-A pointer block on `Config` mirroring the `MTLS`/`SPIFFE` idiom:
+A pointer block on `Config` mirroring the `MTLS`/`SPIFFE` idiom.
+
+> **AS-BUILT schema (simplified from the original design narrative above).** The
+> implemented `tls_bridge:` block is deliberately smaller than the early sketch.
+> Decisions folded in:
+> - **No `scope`/`internal_cidrs`.** The `external` vs `all` distinction was dropped:
+>   the bridge intercepts everything eligible on the configured `ports`, full stop
+>   (`mode: disabled|enabled`, matching the operator's `tlsBridgeMode` 1:1). No
+>   in-cluster gate in `Decision`.
+> - **No `ca_source`/`ca_cert_path`/`ca_key_path`/`ca_export_path`.** A single
+>   `ca_dir` holds the operator-mounted cert-manager Secret (keys `tls.crt`/`tls.key`/`ca.crt`
+>   by convention). The ephemeral in-memory CA is **test-only** (`NewEphemeralSource`,
+>   not config-selectable) — a real agent can't trust an unexported in-memory CA.
+> - **No X.509 Name Constraints** on the per-agent CA (unconstrained; containment =
+>   per-agent isolation + sidecar-only `0440` key + rotation).
+> - **`skip_hosts` → `passthrough_hosts`** to disambiguate from `listener.skip_hosts`
+>   (which bypasses the whole pipeline; these still run the egress gate, just not TLS-terminated).
 
 ```yaml
-mitm:
-  enabled: true
-  scope: external            # external | all   (which traffic to intercept)
-  internal_cidrs: []         # treated as in-cluster when scope=external (else discovered)
-  ca_source: file            # file | ephemeral
-  ca_cert_path: /etc/authbridge/mitm-ca/tls.crt
-  ca_key_path:  /etc/authbridge/mitm-ca/tls.key
-  ca_export_path: /var/run/authbridge/mitm-ca.pem   # ephemeral mode only
+tls_bridge:
+  mode: enabled              # disabled | enabled  (enabled = intercept all eligible on ports)
+  ca_dir: /etc/authbridge/tls-bridge-ca   # operator-mounted cert-manager Secret: tls.crt/tls.key/ca.crt
   upstream_ca_bundle: ""     # extra roots for re-origination (agent's private CAs); empty = system roots
-  skip_hosts: []             # static passthrough; auto-skip augments this at runtime
-  leaf_cache: { max: 1024, ttl: 24h }
+  passthrough_hosts: []      # static passthrough; the runtime auto-skip set augments this
+  ports: []                  # TLS ports to intercept; empty => {443, 8443}. HTTP(S)-only.
 ```
 
 Read in `main.go` beside the `fpMTLS` block; construct `CASource` + `Minter` + `Terminator` + the upstream
