@@ -49,6 +49,12 @@ func NewDecision(o DecisionOpts) *Decision {
 	return d
 }
 
+// HandlesPort reports whether port is in the bridge's interception set. It is
+// the single source of truth for "which ports the bridge cares about" — the
+// transparent listener consults it so it sniffs (and thus can bridge) exactly
+// the configured ports, never drifting from Classify's port gate.
+func (d *Decision) HandlesPort(port int) bool { return d.ports[port] }
+
 // Classify decides whether to bridge. first is the peeked client bytes.
 func (d *Decision) Classify(host, ip string, port int, first []byte) (Verdict, string) {
 	if !d.ports[port] {

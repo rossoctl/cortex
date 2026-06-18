@@ -66,7 +66,12 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// HTTP/TLS ports so non-HTTP protocols are not delayed by the peek. The dial
 	// target stays dst (the IP); only pctx.Host gets the recovered name.
 	host := dst
-	if shouldSniff(dst) {
+	// Sniff on the standard HTTP/TLS ports, OR on whatever ports the TLS bridge
+	// is configured to intercept — so a configured non-standard bridge port
+	// (e.g. 9443) still gets the peekable conn the bridge branch needs. The
+	// bridge's own port set is the single source of truth (no drift with
+	// shouldSniff's heuristic list).
+	if shouldSniff(dst) || (s.TLSBridge != nil && s.TLSBridge.Decision.HandlesPort(portOf(dst))) {
 		name, wrapped := sniffHost(clientConn)
 		clientConn = wrapped
 		if name != "" {

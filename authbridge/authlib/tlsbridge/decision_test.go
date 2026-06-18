@@ -78,3 +78,22 @@ func TestSkipSet_AutoSkip(t *testing.T) {
 		t.Error("Add then Contains failed")
 	}
 }
+
+func TestDecision_HandlesPort(t *testing.T) {
+	// Default set when Ports is nil.
+	d := NewDecision(DecisionOpts{})
+	if !d.HandlesPort(443) || !d.HandlesPort(8443) {
+		t.Error("default set must handle 443 and 8443")
+	}
+	if d.HandlesPort(9443) {
+		t.Error("default set must not handle 9443")
+	}
+	// Custom set replaces the default.
+	c := NewDecision(DecisionOpts{Ports: map[int]bool{9443: true}})
+	if !c.HandlesPort(9443) {
+		t.Error("custom set must handle 9443")
+	}
+	if c.HandlesPort(443) {
+		t.Error("custom set must not handle 443 (it replaces, not augments, the default)")
+	}
+}

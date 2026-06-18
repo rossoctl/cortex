@@ -764,6 +764,10 @@ func TestTLSBridgeConfig_Validate(t *testing.T) {
 		{"file ca with paths", TLSBridgeConfig{CASource: "file", CACertPath: "/c", CAKeyPath: "/k"}, false},
 		{"bad cidr typo", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0/8", "10.0.0.0./8"}}, true},
 		{"bad cidr missing mask", TLSBridgeConfig{InternalCIDRs: []string{"10.0.0.0"}}, true},
+		{"valid ports", TLSBridgeConfig{Ports: []int{443, 8443, 9443}}, false},
+		{"port zero", TLSBridgeConfig{Ports: []int{0}}, true},
+		{"port too high", TLSBridgeConfig{Ports: []int{70000}}, true},
+		{"port negative", TLSBridgeConfig{Ports: []int{-1}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

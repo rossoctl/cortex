@@ -278,9 +278,16 @@ func main() {
 		if cfg.TLSBridge.Scope == "all" {
 			scope = tlsbridge.ScopeAll
 		}
+		var ports map[int]bool // nil => NewDecision defaults to {443, 8443}
+		if len(cfg.TLSBridge.Ports) > 0 {
+			ports = make(map[int]bool, len(cfg.TLSBridge.Ports))
+			for _, p := range cfg.TLSBridge.Ports {
+				ports[p] = true
+			}
+		}
 		bridge = &tlsbridge.Engine{
 			Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-				Scope: scope, InternalCIDRs: cfg.TLSBridge.InternalCIDRs, SkipHosts: cfg.TLSBridge.SkipHosts,
+				Scope: scope, Ports: ports, InternalCIDRs: cfg.TLSBridge.InternalCIDRs, SkipHosts: cfg.TLSBridge.SkipHosts,
 			}),
 			Term:     tlsbridge.NewTerminator(minter),
 			Skip:     tlsbridge.NewSkipSet(),

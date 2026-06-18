@@ -55,6 +55,11 @@ type TLSBridgeConfig struct {
 	CAKeyPath        string   `yaml:"ca_key_path" json:"ca_key_path"`
 	UpstreamCABundle string   `yaml:"upstream_ca_bundle" json:"upstream_ca_bundle"`
 	SkipHosts        []string `yaml:"skip_hosts" json:"skip_hosts"`
+	// Ports is the set of TCP ports to intercept as TLS. Empty => {443, 8443}.
+	// Only HTTP(S)-bearing ports belong here: the bridge serves the decrypted
+	// stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS,
+	// SMTPS, DB-over-TLS, …) would break it.
+	Ports []int `yaml:"ports" json:"ports"`
 }
 
 // Validate is called from the loader when TLSBridge != nil.
@@ -71,6 +76,11 @@ func (b *TLSBridgeConfig) Validate() error {
 	for _, c := range b.InternalCIDRs {
 		if _, _, err := net.ParseCIDR(c); err != nil {
 			return fmt.Errorf("tls_bridge.internal_cidrs: %q is not a valid CIDR: %w", c, err)
+		}
+	}
+	for _, p := range b.Ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("tls_bridge.ports: %d is out of range 1-65535", p)
 		}
 	}
 	return nil

@@ -135,7 +135,7 @@ func TestTransparentBridge(t *testing.T) {
 	//    side believes it captured a connection whose SO_ORIGINAL_DST is the
 	//    origin's host:port.
 	clientSide, serverSide := net.Pipe()
-	defer clientSide.Close()
+	defer func() { _ = clientSide.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -220,6 +220,119 @@ func TestTransparentBridge(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("HandleTransparentConn did not return after conns closed")
+	}
+}
+
+// TestTransparentBridge_CustomPort proves the configurable-ports path: the
+// origin runs on a RANDOM ephemeral port (NOT in shouldSniff's hardcoded
+// {80,443,8080,8443} set), and the bridge is configured (Decision.Ports) to
+// intercept exactly that port. Before the shouldSniff↔Decision.Ports unification
+// the transparent path would not sniff this port, so the bridge could never peek
+// and the call would tunnel (agent handshake would fail against the origin's real
+// cert). With the unification, HandlesPort(port) widens the sniff and the bridge
+// engages. Asserting decryption here is the regression test for that wiring.
+func TestTransparentBridge_CustomPort(t *testing.T) {
+	var gotOriginPath string
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOriginPath = r.URL.Path
+		if r.URL.Path == "/secret" {
+			_, _ = w.Write([]byte("OK-SECRET"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer origin.Close()
+
+	originCAPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatalf("parse origin URL: %v", err)
+	}
+	originHostPort := originURL.Host // 127.0.0.1:<random ephemeral port>
+	customPort := portOf(originHostPort)
+	if customPort == 443 || customPort == 8443 || customPort == 80 || customPort == 8080 {
+		t.Skipf("random origin port %d collided with a default sniff port; rerun", customPort)
+	}
+
+	src, err := tlsbridge.NewEphemeralSource()
+	if err != nil {
+		t.Fatalf("NewEphemeralSource: %v", err)
+	}
+	minter := tlsbridge.NewMinter(src, tlsbridge.MinterOpts{})
+	up, err := tlsbridge.NewUpstreamClient(originCAPEM)
+	if err != nil {
+		t.Fatalf("NewUpstreamClient: %v", err)
+	}
+	engine := &tlsbridge.Engine{
+		// Only the custom port is configured — proves both that it IS bridged
+		// (despite shouldSniff not knowing it) and that the default set is replaced.
+		Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
+			Scope: tlsbridge.ScopeAll,
+			Ports: map[int]bool{customPort: true},
+		}),
+		Term:     tlsbridge.NewTerminator(minter),
+		Skip:     tlsbridge.NewSkipSet(),
+		Upstream: up,
+		CAPEM:    src.CACertPEM(),
+	}
+
+	probe := &bridgeProbePlugin{}
+	p, err := plugintesting.BuildPipeline([]pipeline.Plugin{probe})
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Client: http.DefaultClient, TLSBridge: engine}
+
+	clientSide, serverSide := net.Pipe()
+	defer func() { _ = clientSide.Close() }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.HandleTransparentConn(serverSide, originHostPort)
+	}()
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(engine.CAPEM) {
+		t.Fatalf("append bridge CA")
+	}
+	host := hostOnly(originHostPort)
+	tconn := tls.Client(clientSide, &tls.Config{ServerName: host, RootCAs: pool, NextProtos: []string{"http/1.1"}})
+	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("agent handshake through bridge on custom port failed: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	writeErr := make(chan error, 1)
+	go func() { writeErr <- req.Write(tconn) }()
+	resp, err := http.ReadResponse(bufio.NewReader(tconn), req)
+	if err != nil {
+		t.Fatalf("read response on custom-port bridge: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if werr := <-writeErr; werr != nil {
+		t.Fatalf("write request: %v", werr)
+	}
+
+	if probe.gotPath != "/secret" {
+		t.Errorf("probe path = %q, want /secret (bridge did not engage on custom port)", probe.gotPath)
+	}
+	if gotOriginPath != "/secret" {
+		t.Errorf("origin path = %q, want /secret", gotOriginPath)
+	}
+	if got := strings.TrimSpace(string(body)); got != "OK-SECRET" {
+		t.Errorf("body = %q, want OK-SECRET", got)
+	}
+
+	_ = clientSide.Close()
+	_ = serverSide.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("HandleTransparentConn did not return")
 	}
 }
 
