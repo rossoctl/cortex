@@ -42,6 +42,11 @@ const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer
 // are for.
 const streamReadIdleTimeout = 5 * time.Minute
 
+// upstreamVerifyTimeout bounds the pre-forge HEAD reachability/cert probe in
+// bridgeServe. It applies to that probe only — never to the relay, which must
+// stay unbounded so streaming responses aren't cut off.
+const upstreamVerifyTimeout = 10 * time.Second
+
 // Server is an HTTP forward proxy that performs token exchange on outbound requests.
 //
 // OutboundPipeline is a holder so the bound pipeline can be hot-swapped
@@ -451,8 +456,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
 	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
-	//    verified), which is all we need. Only a transport/TLS error fails here.
-	resp, err := s.TLSBridge.Upstream.Head("https://" + authority)
+	//    verified), which is all we need. Only a transport/TLS error fails here. The
+	//    verify is bounded by its own context timeout so a slow/stalled origin can't
+	//    pin the bridging goroutine — the timeout is on this probe ONLY, not on the
+	//    relay (which must stay unbounded for streaming responses).
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false
+	}
+	resp, err := s.TLSBridge.Upstream.Do(req)
 	if err != nil {
 		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
 		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin

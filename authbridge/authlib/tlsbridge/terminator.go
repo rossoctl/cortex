@@ -3,7 +3,12 @@ package tlsbridge
 import (
 	"crypto/tls"
 	"net"
+	"time"
 )
+
+// handshakeTimeout bounds the server-side TLS handshake against the agent so a
+// stalled/malicious client cannot pin the serving goroutine indefinitely.
+const handshakeTimeout = 10 * time.Second
 
 // Terminator wraps a sniffed client conn as a tls.Server, using the Minter to
 // forge a per-SNI leaf. ALPN offers h2 + http/1.1.
@@ -26,8 +31,12 @@ func (t *Terminator) Terminate(client net.Conn, host string) (*tls.Conn, error) 
 		},
 	}
 	conn := tls.Server(client, cfg)
+	// Bound the handshake; clear the deadline on success so it does not leak
+	// into the served-connection (keep-alive) lifetime.
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := conn.Handshake(); err != nil {
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }

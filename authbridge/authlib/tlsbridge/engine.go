@@ -24,6 +24,12 @@ type Engine struct {
 // env is set, so this simply notes that egress will safely tunnel.
 func RunTrustSelfCheck(caPEM []byte) {
 	want := strings.TrimSpace(string(caPEM))
+	if want == "" {
+		// An empty CA would make strings.Contains below always true → a false
+		// "trust self-check OK". Guard so an empty/misconstructed CA is visible.
+		slog.Warn("tls-bridge trust self-check skipped: empty CA PEM")
+		return
+	}
 	for _, env := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE"} {
 		p := os.Getenv(env)
 		if p == "" {

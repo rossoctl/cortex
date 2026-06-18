@@ -45,7 +45,12 @@ func NewMinter(src CASource, o MinterOpts) *Minter {
 	if o.LeafTTL <= 0 {
 		o.LeafTTL = 24 * time.Hour
 	}
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		// P-256 keygen from crypto/rand effectively never fails; if it does, fail
+		// fast at construction rather than nil-deref later in mint().
+		panic(fmt.Errorf("tlsbridge: generate leaf key: %w", err))
+	}
 	return &Minter{
 		src: src, max: o.CacheMax, ttl: o.LeafTTL, leafKey: key,
 		ll: list.New(), items: make(map[string]*list.Element),
