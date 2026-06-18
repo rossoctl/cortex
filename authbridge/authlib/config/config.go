@@ -60,6 +60,9 @@ func (b *TLSBridgeConfig) Validate() error {
 	if b.Scope != "" && b.Scope != "external" && b.Scope != "all" {
 		return fmt.Errorf("tls_bridge.scope must be 'external' or 'all', got %q", b.Scope)
 	}
+	if b.CASource != "" && b.CASource != "file" && b.CASource != "ephemeral" {
+		return fmt.Errorf("tls_bridge.ca_source must be 'file' or 'ephemeral', got %q", b.CASource)
+	}
 	if b.CASource == "file" && (b.CACertPath == "" || b.CAKeyPath == "") {
 		return fmt.Errorf("tls_bridge.ca_source=file requires ca_cert_path and ca_key_path")
 	}
