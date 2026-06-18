@@ -110,22 +110,24 @@ kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/git-issue-a
 Create and activate a Python virtual environment:
 
 ```bash
-cd kagenti-extensions/authbridge/demos/aiac-github-issue
+cd kagenti-extensions/
 
 # Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+uv sync
+source .venv/bin/activate  # On Windows: venv\Scripts\activate
+
+cd authbridge/
 
 # Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-
+uv pip install --upgrade pip
+uv pip install -r requirements.txt
+```
 
 ### Step 2: Apply Demo ConfigMaps
 
-The Kagenti installer creates default ConfigMaps (`authbridge-config`, `spiffe-helper-config`, `envoy-config`) and the `keycloak-admin-secret` Secret in the target namespace with the correct `kagenti` realm settings.
+The Kagenti installer creates default ConfigMaps.
 
-Apply the demo-specific ConfigMaps — the `authproxy-routes` ConfigMap configures per-route token exchange (target audience and scopes for the `github-tool` host), and `authbridge-config` sets the agent's SPIFFE ID for inbound audience validation. Apply this **before** deploying the agent.
+Apply the demo-specific ConfigMaps — the `authproxy-routes` ConfigMap configures per-route token exchange (target audience and scopes for the `github-tool` host), and `authbridge-config` sets the agent SPIFFE ID for inbound audience validation. Apply this **before** deploying the agent.
 
 ```bash
 cd kagenti-extensions/authbridge
@@ -134,7 +136,7 @@ cd kagenti-extensions/authbridge
 kubectl create namespace team1 --dry-run=client -o yaml | kubectl apply -f -
 
 # Apply demo ConfigMaps (authbridge-config and authproxy-routes)
-kubectl apply -f demos/aiac-github-issue/k8s/configmaps.yaml -n team1
+kubectl apply -f demos/github-issue/k8s/configmaps.yaml -n team1
 ```
 
 > **Note:** If you're using a different namespace, edit `configmaps.yaml` and update the `namespace` field, or set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.
@@ -179,10 +181,16 @@ This enables fine-grained authorization: users with full access can see issues o
 Deploy the GitHub MCP tool as a target service. This deployment does **not** get AuthBridge injection (it is the target, not the caller):
 
 ```bash
-kubectl apply -f demos/aiac-github-issue/k8s/github-tool-deployment.yaml -n team1
+kubectl apply -f demos/github-issue/k8s/github-tool-deployment.yaml -n team1
 
 # Wait for the tool to be ready
 kubectl wait --for=condition=available --timeout=120s deployment/github-tool -n team1
+```
+
+#### Check tool logs
+
+```bash
+kubectl logs deployment/github-tool -n team1
 ```
 
 ### Step 5: Deploy the GitHub Issue Agent
@@ -190,7 +198,7 @@ kubectl wait --for=condition=available --timeout=120s deployment/github-tool -n 
 Deploy the agent with AuthBridge labels. The webhook will automatically inject one combined AuthBridge sidecar. In envoy-sidecar mode it also injects a `proxy-init` init container for iptables setup:
 
 ```bash
-kubectl apply -f demos/aiac-github-issue/k8s/git-issue-agent-deployment.yaml -n team1
+kubectl apply -f demos/github-issue/k8s/git-issue-agent-deployment.yaml -n team1
 
 # Wait for the agent to be ready (may take longer due to client registration)
 kubectl wait --for=condition=available --timeout=180s deployment/git-issue-agent -n team1
@@ -209,12 +217,12 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent \
 
 Expected (proxy-sidecar mode, the cluster default):
 ```
-agent authbridge-proxy spiffe-helper
+agent authbridge-proxy
 ```
 
 Or, in envoy-sidecar mode:
 ```
-agent envoy-proxy spiffe-helper
+agent envoy-proxy
 ```
 
 ### Step 6: Validate the Deployment
@@ -228,7 +236,7 @@ kubectl get pods -n team1
 Expected output:
 ```
 NAME                               READY   STATUS    RESTARTS   AGE
-git-issue-agent-xxxxxxxxxx-xxxxx   3/3     Running   0          2m
+git-issue-agent-xxxxxxxxxx-xxxxx   2/2     Running   0          2m
 github-tool-yyyyyyyyyyy-yyyyy       1/1     Running   0          3m
 ```
 
@@ -246,16 +254,13 @@ Expected: A Secret name starting with `kagenti-keycloak-client-credentials-....`
 **Follow the operator-side registration:**
 
 ```bash
-kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+kubectl logs deployment/kagenti-controller-manager -n kagenti-system \
   | grep -iE "clientregistration|git-issue-agent" | tail -20
 ```
 
 Expected (operator log lines):
 ```
-ClientRegistrationReconciler: ensured Keycloak client
-  spiffe://localtest.me/ns/team1/sa/git-issue-agent
-ClientRegistrationReconciler: wrote Secret
-  kagenti-keycloak-client-credentials-<hex8>
+{"level":"info","ts":"2026-06-16T18:14:20Z","msg":"operator client registration applied","controller":"clientregistration","controllerGroup":"apps","controllerKind":"Deployment","Deployment":{"name":"git-issue-agent","namespace":"team1"},"namespace":"team1","name":"git-issue-agent","reconcileID":"d4654c2c-7bcd-4596-8277-c643b550d70d","workload":"git-issue-agent","namespace":"team1","secret":"kagenti-keycloak-client-credentials-352ed374f36956bc"}
 ```
 
 #### Check agent logs
@@ -266,16 +271,12 @@ kubectl logs deployment/git-issue-agent -n team1 -c agent
 
 Expected:
 ```
-SVID JWT file /opt/jwt_svid.token not found.
-CLIENT_SECRET file not found at /shared/secret.txt
-INFO: JWKS_URI is set - using JWT Validation middleware
 INFO:     Started server process [17]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```
 
-> **These warnings are expected and harmless.** The agent's built-in auth code probes for SVID and client-secret files at startup. With AuthBridge, these files are produced and consumed inside the AuthBridge sidecar, not by the agent container directly. The agent falls back to JWKS-based JWT validation (`JWKS_URI is set`), which is the correct behavior.
 
 #### Verify LLM is configured
 
@@ -283,7 +284,7 @@ The agent uses an LLM for inference. Ensure your LLM is accessible:
 
 **For Ollama (local):**
 ```bash
-# Pull the model
+# Pull the model e.g. ibm/granite4:latest, phi4:latest, llama3.2:latest, etc.
 ollama pull ibm/granite4:latest
 
 # List available models
@@ -355,35 +356,47 @@ exit
 ### Step 8: Configure Environment Variables and LLM Settings
 
 #### Keycloak Configuration
-Edit the `aiac.env` file with your Keycloak connection settings:
+- Create `aiac/aiac.env`
+- Edit and configure your preferred LLM
+- see example [aiac.env](aiac/aiac.env.TEMPLATE):
 
-```bash
-# Keycloak Configuration
+update the required values e.g.:
+```txt
 KEYCLOAK_URL=http://keycloak.localtest.me:8080
 KEYCLOAK_ADMIN_USERNAME=admin
-KEYCLOAK_ADMIN_PASSWORD=admin
+KEYCLOAK_ADMIN_PASSWORD=<admin password>
 REALM_NAME=kagenti
 ```
 
 #### LLM Configuration
-- Create `aiac_agent/config/llm_conf.yaml`
+- Create `aiac/aiac_agent/config/llm_conf.yaml`
 - Edit and configure your preferred LLM
-- see example [llm_conf](aiac_agent/config/llm_conf.yaml.TEMPLATE) :
+- see example [llm_conf](aiac/aiac_agent/config/llm_conf.yaml.TEMPLATE) :
 
 ### Step 9: Initialize Keycloak Realm
+
 Run the setup script to create the demo realm with clients, roles, and users:
 
 ```bash
-python setup_keycloak.py config.yaml
+python setup_keycloak.py -rbac config.yaml
 ```
+
+Open bash inside the test client pod
+```bash
+kubectl exec -it test-client -n team1 -- bash
+```
+
+⚠️ NOTE ⚠️
+Inside the test pod, verify the Keycloak users credentials are set properly before moving forward. If needed, fix credentials manually via the UI ONLY in kagenti realm:
+
 
 This creates:
 
 | Resource | Name | Purpose |
 |----------|------|---------|
 | **Realm** | `kagenti` | Keycloak realm for the demo |
-| **Clients** | `demo-ui`, `git-issue-agent`, `github-tool` | Service clients with roles |
-| **Realm Roles** | `admin`, `developer`, `sales`, `tech-support` | User roles |
+| **Clients** | `git-issue-agent`, `github-tool` | Service clients with roles |
+| **Realm Roles** | `developer`, `sales`, `tech-support` | User roles |
 | **Users** | `alice`, `bob`, `charlie` | Demo users with different roles |
 | **Client Scopes** | Role-specific scopes with audience mappers | For token exchange |
 
@@ -391,9 +404,8 @@ This creates:
 
 ### Step 10: Initial state - users are not allowed to list issues
 
-⚠️  NOTE ⚠️  - make sure alice|alice123 (bob/bob123) appear in keycloak users under 'kagenti' realm (reset password if needed and make sure temporary password is set)
 
-The user 'alice' is allowed to send requests to the git issue agent, how ever the agent is not allowed to invoke the githb tool.
+The user 'alice' is allowed to send requests to the git issue agent, however the agent is not allowed to invoke the githb tool.
 First, get a valid token from Keycloak, then pass it in the request to the agent endpoint.
 Authbridge inbound check will allow the request to proceed to the agent.
 The agent in turn, will try to invoke the github tool.
@@ -403,11 +415,11 @@ Authbridge outbound check will exchange the token, then deny the request since t
 
 REALM_NAME="kagenti"
 
-  ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token \
-    -d "grant_type=password" \
-    -d "client_id=admin-cli" \
-    -d "username=admin" \
-    -d "password=admin" | jq -r ".access_token")
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "client_id=admin-cli" \
+  -d "username=admin" \
+  -d "password=admin" | jq -r ".access_token")
 
 SPIFFE_ID="spiffe://localtest.me/ns/team1/sa/git-issue-agent"
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -451,6 +463,16 @@ curl -s --max-time 300 \
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 
+```
+#### Expected output
+```txt
+Failure message, e.g. "I'm sorry I was unable to fulfill your request...."  due to JWT validation failure.
+```
+This happends since the git issue agent is not authorized to invoke the github tool yet.
+Token exchange will fail (HTTP 400): invalid_client: github tool audience not found
+
+
+```bash
 # SAME BEHAVIOUR AS FOR ALICE
 BOB_TOKEN=$(curl -s -X POST \
   "http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token" \
@@ -488,7 +510,7 @@ curl -s --max-time 300 \
 <sub><span style="color: gray; font-size: 0.9em;">
 Troubleshooting: \
 If INTERNAL_ID shows null, the Keycloak query didn't find the client. \
-Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak.py was run.
+Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak_aiac.py was run.
 </span></sub>
 
 <sub><span style="color: gray; font-size: 0.9em;">
@@ -508,32 +530,23 @@ Look for error message e.g. "Invalid user credentials" will require updating use
 </span></sub>
 
 
-Expected:
-```
-Failure message, e.g. "I'm sorry I was unable to fulfill your request...."  due to JWT validation failure.
 
-This happends since the git issue agent is not authorized to invoke the github tool yet.
-Token exchange will fail (HTTP 400): invalid_client: github tool audience not found
-```
 #### Check exact failure details in AuthBridge logs
 
 Verify that AuthBridge is handling inbound validation and outbound token exchange:
 
 ```bash
 # Check AuthBridge/Envoy proxy logs
-kubectl logs deployment/git-issue-agent -n team1 -c authbridge-proxy | tail -50
-or
-kubectl logs deployment/git-issue-agent -n team1 -c envoy-proxy | tail -50
+SIDECAR=envoy-proxy # or authbridge-proxy
+kubectl logs deployment/git-issue-agent -n team1 -c $SIDECAR | grep failed
 ```
 
 Expected log entries showing:
+```txt
+... msg="token exchange failed" host=github-tool-mcp:9090 error="token exchange failed (HTTP 400): invalid_request: Requested audience not available: github-tool"
+... msg="pipeline: plugin rejected request" plugin=token-exchange status=503 code=upstream.token-exchange-failed reason="token exchange failed"
 ```
-JWT validation failed" error="validating JWT: invalid JWT"
-"pipeline: plugin rejected request" plugin=jwt-validation status=401 code=auth.unauthorized reason="token validation failed"
-inbound authorized subject="" clientID=spiffe://localtest.me/ns/team1/sa/git-issue-agent
-"token exchange failed" host=github-tool-mcp:9090 error="token exchange failed (HTTP 400): invalid_client: Audience not found"
-"pipeline: plugin rejected request" plugin=token-exchange status=503 code=upstream.token-exchange-failed reason="token exchange failed"
-```
+
 
 
 
@@ -548,6 +561,7 @@ NOTE - To test policy generation without applying to Keycloak - use the 'generat
 Now run the full pipeline to apply the policy to Keycloak:
 
 ```bash
+cd authbridge/demos/github-issue/aiac/
 python aiac_cli.py policies/regular_policy.txt
 ```
 
@@ -593,7 +607,7 @@ role: github-tool-aud
 null
 ```
 
-### Step 14: Verify Policy in Keycloak
+### Step 14: Verify policy successfully implemented in Keycloak
 
 You can verify the applied policy in the Keycloak admin console:
 
