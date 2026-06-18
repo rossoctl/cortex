@@ -4,6 +4,7 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
 	authtls "github.com/kagenti/kagenti-extensions/authbridge/authlib/tls"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
 )
 
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes
@@ -38,6 +41,11 @@ const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer
 // gaps should emit SSE heartbeats — it's what comment lines in SSE
 // are for.
 const streamReadIdleTimeout = 5 * time.Minute
+
+// upstreamVerifyTimeout bounds the pre-forge HEAD reachability/cert probe in
+// bridgeServe. It applies to that probe only — never to the relay, which must
+// stay unbounded so streaming responses aren't cut off.
+const upstreamVerifyTimeout = 10 * time.Second
 
 // Server is an HTTP forward proxy that performs token exchange on outbound requests.
 //
@@ -58,6 +66,8 @@ type Server struct {
 	// See authlib/config/config.go ListenerConfig.SkipHosts for
 	// motivation.
 	SkipHosts *skiphost.Matcher
+
+	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -193,7 +203,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 		return
 	}
+	s.serveOutbound(w, r, false)
+}
 
+// serveOutbound runs the outbound pipeline for one decrypted/plaintext request
+// and re-originates it. isBridge=true marks requests produced by TLS bridging:
+// they are origin-form (the caller sets r.URL.Scheme/Host) and must re-originate
+// via the dedicated upstream client, never the mesh-mTLS s.Client.
+func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge bool) {
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -331,7 +348,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
 
-	resp, err := s.Client.Do(r)
+	client := s.Client
+	if isBridge && s.TLSBridge != nil {
+		client = s.TLSBridge.Upstream
+	}
+	resp, err := client.Do(r)
 	if err != nil {
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 		return
@@ -424,6 +445,50 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)
 	}
+}
+
+// bridgeServe attempts to bridge: verify the upstream origin first (reversibility),
+// then forge a leaf + terminate the agent TLS + run the UNCHANGED pipeline via
+// serveOutbound. authority is host:port (used to dial+verify upstream and to set
+// r.URL.Host); host is the skip/log key. Returns true if it consumed the connection
+// (success OR an unrecoverable post-forge failure that was logged); false to fall
+// back to a plain tunnel — so no working call is ever broken.
+func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
+	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
+	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
+	//    verified), which is all we need. Only a transport/TLS error fails here. The
+	//    verify is bounded by its own context timeout so a slow/stalled origin can't
+	//    pin the bridging goroutine — the timeout is on this probe ONLY, not on the
+	//    relay (which must stay unbounded for streaming responses).
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false
+	}
+	resp, err := s.TLSBridge.Upstream.Do(req)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
+	}
+	_ = resp.Body.Close()
+
+	// 2) Forge + terminate downstream.
+	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
+	if err != nil {
+		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
+		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
+		return true // conn is dead post-forge; nothing left to tunnel
+	}
+
+	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
+	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Scheme = "https"
+		r.URL.Host = authority // host:port — preserves non-443 origins
+		s.serveOutbound(w, r, true)
+	}))
+	return true
 }
 
 // recordOutboundResponseEvent emits the SessionResponse event for a
@@ -818,6 +883,28 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.recordTunnelOpened(pctx)
 	}
 
+	if s.TLSBridge != nil {
+		pc := &peekedConn{Conn: clientConn, r: bufio.NewReaderSize(clientConn, sniffBufSize)}
+		clientConn = pc // replay peeked bytes into whichever path runs
+		first, _ := pc.Peek(5)
+		authority := r.Host // CONNECT target is already host:port
+		key := hostOnly(r.Host)
+		if !s.TLSBridge.Skip.Contains(key) {
+			if v, _ := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first); v == tlsbridge.Terminate {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream
+				if s.bridgeServe(clientConn, authority, key) {
+					return
+				}
+				// fell open → re-dial for the tunnel
+				if up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout); derr == nil {
+					tunnel(clientConn, up2)
+					_ = up2.Close()
+				}
+				return
+			}
+		}
+	}
+
 	// Bidirectional copy until either side closes.
 	tunnel(clientConn, upstream)
 }
@@ -908,7 +995,6 @@ func (i *idleReadCloser) closeIdempotent() {
 	i.closeOnce.Do(func() { _ = i.rc.Close() })
 }
 
-
 // enableKeepalive turns on TCP keepalive with a 30s probe interval on
 // the underlying *net.TCPConn, if conn unwraps to one. No-op on other
 // connection types (notably *tls.Conn, which doesn't apply on the
@@ -920,4 +1006,22 @@ func enableKeepalive(conn net.Conn) {
 	}
 	_ = tcp.SetKeepAlive(true)
 	_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+}
+
+// hostOnly strips the port from an authority ("h:443" → "h"); returns input if no port.
+func hostOnly(authority string) string {
+	if h, _, err := net.SplitHostPort(authority); err == nil {
+		return h
+	}
+	return authority
+}
+
+// portOf returns the port from an authority, defaulting to 443.
+func portOf(authority string) int {
+	if _, p, err := net.SplitHostPort(authority); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return 443
 }

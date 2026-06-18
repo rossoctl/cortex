@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -37,6 +38,51 @@ type Config struct {
 	// = today's spiffe-helper-driven behavior (until the chart/operator
 	// follow-ups land and start populating the block).
 	SPIFFE *SPIFFEConfig `yaml:"spiffe,omitempty" json:"spiffe,omitempty"`
+	// TLSBridge, when non-nil and Enabled, terminates agent outbound TLS so the
+	// outbound pipeline sees decrypted HTTPS. See docs/.../tlsbridge-design.md.
+	TLSBridge *TLSBridgeConfig `yaml:"tls_bridge,omitempty" json:"tls_bridge,omitempty"`
+}
+
+// TLSBridgeConfig configures the outbound TLS bridge (TLS termination of
+// agent egress — formerly "MITM" — so the outbound plugin pipeline sees
+// decrypted HTTPS).
+type TLSBridgeConfig struct {
+	// Mode is the bridge posture: "disabled" (off) or "enabled" (intercept all
+	// eligible egress on the configured Ports). Empty == disabled.
+	Mode string `yaml:"mode" json:"mode"` // disabled | enabled
+	// CADir holds the per-agent signing CA, mounted from the operator's
+	// cert-manager Secret. The bridge reads tls.crt + tls.key (to sign leaves);
+	// ca.crt is the trust cert handed to the agent. cert-manager Secret key
+	// conventions, so only the directory is configured.
+	CADir string `yaml:"ca_dir" json:"ca_dir"`
+	// UpstreamCABundle is an extra-roots PEM file for re-origination (private-CA
+	// origins the agent trusts); empty == system roots only.
+	UpstreamCABundle string `yaml:"upstream_ca_bundle" json:"upstream_ca_bundle"`
+	// PassthroughHosts are hosts to tunnel (never intercept). Distinct from
+	// listener.skip_hosts, which bypasses the whole pipeline; these still run the
+	// egress gate, they just aren't TLS-terminated.
+	PassthroughHosts []string `yaml:"passthrough_hosts" json:"passthrough_hosts"`
+	// Ports is the set of TCP ports to intercept as TLS. Empty => {443, 8443}.
+	// Only HTTP(S)-bearing ports belong here: the bridge serves the decrypted
+	// stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS,
+	// SMTPS, DB-over-TLS, …) would break it.
+	Ports []int `yaml:"ports" json:"ports"`
+}
+
+// Validate is called from the loader when TLSBridge != nil.
+func (b *TLSBridgeConfig) Validate() error {
+	if b.Mode != "" && b.Mode != "disabled" && b.Mode != "enabled" {
+		return fmt.Errorf("tls_bridge.mode must be 'disabled' or 'enabled', got %q", b.Mode)
+	}
+	if b.Mode == "enabled" && b.CADir == "" {
+		return fmt.Errorf("tls_bridge.mode=enabled requires ca_dir")
+	}
+	for _, p := range b.Ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("tls_bridge.ports: %d is out of range 1-65535", p)
+		}
+	}
+	return nil
 }
 
 // MTLSMode names the inbound + outbound TLS posture. Vocabulary
@@ -461,5 +507,31 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.TLSBridge != nil {
+		if err := cfg.TLSBridge.Validate(); err != nil {
+			return nil, err
+		}
+		// With the bridge on, the session API may carry decrypted request/response
+		// bodies; restrict its bind to loopback so other pods can't scrape it.
+		// kubectl port-forward (abctl) still works — it targets the pod's loopback.
+		if cfg.TLSBridge.Mode == "enabled" {
+			cfg.Listener.SessionAPIAddr = forceLocalhost(cfg.Listener.SessionAPIAddr)
+		}
+	}
+
 	return &cfg, nil
+}
+
+// forceLocalhost rewrites a bind address to 127.0.0.1, preserving the port:
+// ":9094" / "0.0.0.0:9094" / "[::]:9094" -> "127.0.0.1:9094". Empty stays empty;
+// a malformed address is left as-is so the bind itself surfaces the error.
+func forceLocalhost(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
