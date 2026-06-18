@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -87,6 +88,51 @@ func startSignalToggle() {
 	}()
 }
 
+// spiffeProviderNeeded reports whether any configured feature actually consumes
+// the SPIFFE Provider: top-level mTLS (needs the X509Source on both listeners)
+// or a plugin whose identity is spiffe-based (needs the JWT-SVID source — today
+// only token-exchange, gated on identity.type=spiffe). When nothing consumes
+// it, the provider — and its blocking SPIRE Workload API dial in NewProvider —
+// is skipped, so the binary boots even on clusters without SPIRE.
+func spiffeProviderNeeded(c *config.Config) bool {
+	if c.MTLS != nil {
+		return true
+	}
+	for _, p := range c.Pipeline.Inbound.Plugins {
+		if pluginUsesSPIFFEIdentity(p) {
+			return true
+		}
+	}
+	for _, p := range c.Pipeline.Outbound.Plugins {
+		if pluginUsesSPIFFEIdentity(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginUsesSPIFFEIdentity reports whether a plugin's config selects the spiffe
+// identity scheme (identity.type=spiffe) — the only plugin-level consumer of
+// the Provider today (token-exchange). The `identity` block is a shared
+// convention; a new SPIFFE-consuming plugin must either follow it or extend
+// this predicate.
+func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
+	if len(p.Config) == 0 {
+		return false
+	}
+	var probe struct {
+		Identity struct {
+			Type string `json:"type"`
+		} `json:"identity"`
+	}
+	if err := json.Unmarshal(p.Config, &probe); err != nil {
+		// Unparseable here just means the plugin's own typed decode will fail
+		// later with a precise error; don't force the provider on for it.
+		return false
+	}
+	return probe.Identity.Type == "spiffe"
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
@@ -112,8 +158,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("initial config load: %v", err)
 	}
+	// Build the SPIFFE Provider only when something actually consumes it —
+	// top-level mTLS (X509Source for the listeners) or a plugin whose identity
+	// is spiffe-based (JWT-SVID for token-exchange). The platform's base config
+	// ships an empty `spiffe: {}` for every agent, and NewProvider blocks until
+	// the SPIRE Workload API returns the first SVID; constructing it on mere
+	// presence of the block would hang any agent on a cluster without SPIRE —
+	// e.g. a proxy-sidecar agent that only runs the TLS bridge, which mints
+	// leaves from a cert-manager CA and never touches an SVID. Need-driven
+	// construction keeps such agents decoupled from SPIRE. See spiffeProviderNeeded.
 	var provider *spiffe.Provider
-	if bootCfg.SPIFFE != nil {
+	if bootCfg.SPIFFE != nil && spiffeProviderNeeded(bootCfg) {
 		mirrorFiles := true
 		if bootCfg.SPIFFE.MirrorFiles != nil {
 			mirrorFiles = *bootCfg.SPIFFE.MirrorFiles
@@ -127,6 +182,9 @@ func main() {
 			log.Fatalf("spiffe provider: %v", err)
 		}
 		defer provider.Close()
+	} else if bootCfg.SPIFFE != nil {
+		slog.Info("spiffe block present but unused (no mTLS, no spiffe-identity plugin) — " +
+			"skipping SPIRE provider; no Workload API connection will be attempted")
 	}
 
 	// This binary is hardcoded to proxy-sidecar. Rejecting other modes
@@ -286,7 +344,6 @@ func main() {
 			Upstream: up,
 			CAPEM:    src.CACertPEM(),
 		}
-		tlsbridge.RunTrustSelfCheck(bridge.CAPEM)
 		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir)
 	}
 
