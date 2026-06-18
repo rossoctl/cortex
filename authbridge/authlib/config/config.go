@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -510,7 +511,27 @@ func Load(path string) (*Config, error) {
 		if err := cfg.TLSBridge.Validate(); err != nil {
 			return nil, err
 		}
+		// With the bridge on, the session API may carry decrypted request/response
+		// bodies; restrict its bind to loopback so other pods can't scrape it.
+		// kubectl port-forward (abctl) still works — it targets the pod's loopback.
+		if cfg.TLSBridge.Mode == "enabled" {
+			cfg.Listener.SessionAPIAddr = forceLocalhost(cfg.Listener.SessionAPIAddr)
+		}
 	}
 
 	return &cfg, nil
+}
+
+// forceLocalhost rewrites a bind address to 127.0.0.1, preserving the port:
+// ":9094" / "0.0.0.0:9094" / "[::]:9094" -> "127.0.0.1:9094". Empty stays empty;
+// a malformed address is left as-is so the bind itself surfaces the error.
+func forceLocalhost(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }

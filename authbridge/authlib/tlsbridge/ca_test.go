@@ -114,3 +114,50 @@ func TestFileSource_RejectsGarbage(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSource_RejectsNonCAOrMismatch(t *testing.T) {
+	// writePair builds a self-signed cert from certKey and writes it next to
+	// fileKey (PKCS#8). When certKey != fileKey the cert/key public keys differ.
+	writePair := func(t *testing.T, isCA bool, certKey, fileKey *ecdsa.PrivateKey) (string, string) {
+		t.Helper()
+		tmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "t"},
+			NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+			IsCA: isCA, BasicConstraintsValid: true,
+		}
+		if isCA {
+			tmpl.KeyUsage = x509.KeyUsageCertSign
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, certKey.Public(), certKey)
+		if err != nil {
+			t.Fatalf("create cert: %v", err)
+		}
+		dir := t.TempDir()
+		certP := filepath.Join(dir, "tls.crt")
+		keyP := filepath.Join(dir, "tls.key")
+		kd, _ := x509.MarshalPKCS8PrivateKey(fileKey)
+		if err := os.WriteFile(certP, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+			t.Fatalf("write cert: %v", err)
+		}
+		if err := os.WriteFile(keyP, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kd}), 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		return certP, keyP
+	}
+
+	k1, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	k2, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	t.Run("non-CA cert", func(t *testing.T) {
+		certP, keyP := writePair(t, false, k1, k1) // matching key, but IsCA=false
+		if _, err := NewFileSource(certP, keyP); err == nil {
+			t.Fatal("expected error for IsCA=false cert, got nil")
+		}
+	})
+	t.Run("mismatched cert/key", func(t *testing.T) {
+		certP, keyP := writePair(t, true, k1, k2) // cert carries k1's pubkey; file holds k2
+		if _, err := NewFileSource(certP, keyP); err == nil {
+			t.Fatal("expected error for cert/key mismatch, got nil")
+		}
+	})
+}

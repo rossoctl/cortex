@@ -90,6 +90,21 @@ func NewFileSource(certPath, keyPath string) (CASource, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Fail loud at load on a misissued Secret. Without these checks a non-CA or
+	// mismatched cert/key loads "fine" and then silently fails to sign minted
+	// leaves at request time → the agent rejects the chain → every call falls
+	// open to tunnel, with no error. A cert-manager Secret can be misconfigured
+	// (wrong issuerRef, leaf instead of CA, mid-rotation key mismatch), so verify.
+	if !cert.IsCA {
+		return nil, fmt.Errorf("tlsbridge: CA cert %s is not a CA (IsCA=false)", certPath)
+	}
+	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, fmt.Errorf("tlsbridge: CA cert %s lacks KeyUsageCertSign", certPath)
+	}
+	pub, ok := cert.PublicKey.(interface{ Equal(x crypto.PublicKey) bool })
+	if !ok || !pub.Equal(key.Public()) {
+		return nil, fmt.Errorf("tlsbridge: CA cert %s and key %s do not match", certPath, keyPath)
+	}
 	return &staticSource{cert: cert, key: key, certPEM: certPEM}, nil
 }
 
