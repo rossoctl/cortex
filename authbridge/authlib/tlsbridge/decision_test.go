@@ -1,6 +1,9 @@
 package tlsbridge
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestDecision_Classify(t *testing.T) {
 	d := NewDecision(DecisionOpts{
@@ -52,6 +55,30 @@ func TestSkipSet_AutoSkip(t *testing.T) {
 	s.Add("h")
 	if !s.Contains("h") {
 		t.Error("Add then Contains failed")
+	}
+}
+
+func TestSkipSet_TTLExpires(t *testing.T) {
+	s := NewSkipSet()
+	s.ttl = 20 * time.Millisecond // same-package test can tighten the TTL
+	s.Add("h")
+	if !s.Contains("h") {
+		t.Fatal("should contain immediately after Add")
+	}
+	time.Sleep(40 * time.Millisecond)
+	if s.Contains("h") {
+		t.Error("entry should have expired (self-healing re-attempt)")
+	}
+}
+
+func TestSkipSet_Bounded(t *testing.T) {
+	s := NewSkipSet()
+	s.max = 2 // cap small; a flood of distinct SNIs must not grow it unbounded
+	s.Add("a")
+	s.Add("b")
+	s.Add("c")
+	if len(s.m) > 2 {
+		t.Errorf("SkipSet grew past max: len=%d, want <=2", len(s.m))
 	}
 }
 

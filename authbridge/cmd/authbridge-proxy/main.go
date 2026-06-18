@@ -249,7 +249,7 @@ func main() {
 	}
 
 	// TLS bridge: when enabled, the forward proxy terminates agent outbound
-	// TLS (MITM) so the outbound pipeline sees decrypted HTTPS. Constructed
+	// TLS so the outbound pipeline sees decrypted HTTPS. Constructed
 	// here and set on fpSrv below (mirroring fpSrv.SkipHosts / fpSrv.Shared).
 	// A nil *Engine leaves today's blind-tunnel behavior intact.
 	var bridge *tlsbridge.Engine

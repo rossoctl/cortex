@@ -2,6 +2,7 @@ package tlsbridge
 
 import (
 	"sync"
+	"time"
 )
 
 type Verdict int
@@ -66,21 +67,59 @@ func looksLikeTLSRecord(b []byte) bool {
 	return b[0] == 0x16 && b[1] == 0x03 && b[2] >= 0x01 && b[2] <= 0x04
 }
 
+const (
+	// skipTTL bounds how long an auto-skipped host stays skipped before the
+	// bridge re-attempts interception (self-healing: a transiently-pinned or
+	// rotated client gets another chance). skipMax caps the set so a flood of
+	// distinct SNIs (each rejecting the forged leaf) cannot grow it unbounded —
+	// since scope removal routes ALL eligible egress through here.
+	skipTTL = 10 * time.Minute
+	skipMax = 4096
+)
+
 // SkipSet is the runtime auto-skip set (hosts whose minted leaf the client
-// rejected). Concurrent-safe; augments the static skip list.
+// rejected). Concurrent-safe; augments the static skip list. Entries expire
+// after skipTTL and the set is bounded to skipMax (oldest-expiry eviction).
 type SkipSet struct {
-	mu sync.RWMutex
-	m  map[string]bool
+	mu  sync.RWMutex
+	ttl time.Duration
+	max int
+	m   map[string]time.Time // host -> expiry
 }
 
-func NewSkipSet() *SkipSet { return &SkipSet{m: map[string]bool{}} }
+func NewSkipSet() *SkipSet {
+	return &SkipSet{ttl: skipTTL, max: skipMax, m: map[string]time.Time{}}
+}
+
 func (s *SkipSet) Add(host string) {
 	s.mu.Lock()
-	s.m[host] = true
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if len(s.m) >= s.max {
+		// Purge expired entries; if still full, drop the earliest-expiring one.
+		// Add is cold (only fires when a minted leaf is rejected), so an O(n)
+		// sweep here is cheap.
+		var oldestK string
+		var oldestT time.Time
+		for k, exp := range s.m {
+			if !exp.After(now) {
+				delete(s.m, k)
+				continue
+			}
+			if oldestK == "" || exp.Before(oldestT) {
+				oldestK, oldestT = k, exp
+			}
+		}
+		if len(s.m) >= s.max && oldestK != "" {
+			delete(s.m, oldestK)
+		}
+	}
+	s.m[host] = now.Add(s.ttl)
 }
+
 func (s *SkipSet) Contains(host string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.m[host]
+	exp, ok := s.m[host]
+	return ok && time.Now().Before(exp) // expired entries read as absent; Add reclaims them
 }
