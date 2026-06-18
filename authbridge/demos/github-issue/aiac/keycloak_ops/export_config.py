@@ -359,4 +359,4 @@ def export_config(realm_name: str, output_file: str):
     print(f"  - {len(clients_config)} clients")
     print(f"  - {len(realm_roles)} realm roles")
     print(f"  - {len(users_config)} users")
-    print("\nYou can now use this file with setup_demo.py")
+    print("\nYou can now use this file with setup_keycloak.py -rbac")

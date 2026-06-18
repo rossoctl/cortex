@@ -3,7 +3,7 @@
 # Optional 'secret' parameter: if not provided, Keycloak will auto-generate the client secret
 clients:
   - client_id: "kagenti"
-    secret: "demo-ui-secret"
+    #secret: "demo-ui-secret-for-testing-do-not-use"
     direct_access_grants: true
     roles:
       - name: "demo-ui"

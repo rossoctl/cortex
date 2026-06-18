@@ -41,6 +41,3 @@ class PolicyState(TypedDict):
     errors: List[str]  # NOT accumulated - replaced on each validation attempt
     retry_count: int
     validation_passed: bool  # Boolean flag for retry decision, not accumulated
-
-
-# Made with Bob

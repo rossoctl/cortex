@@ -292,6 +292,3 @@ Return in this format:
   }}
 ]
 ```"""
-
-
-# Made with Bob

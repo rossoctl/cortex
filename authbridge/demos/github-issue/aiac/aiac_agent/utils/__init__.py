@@ -15,5 +15,3 @@ __all__ = [
     "validate_policy_structure",
     "verify_policy_semantics",
 ]
-
-# Made with Bob

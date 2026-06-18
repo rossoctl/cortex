@@ -102,6 +102,3 @@ def extract_realm_roles_and_clients(
     client_audience_targets = config.get("client_audience_targets", {})
 
     return realm_roles, client_roles_map, client_audience_targets
-
-
-# Made with Bob

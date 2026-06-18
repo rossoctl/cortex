@@ -285,6 +285,3 @@ def get_default_llm() -> BaseChatModel:
     if llm is None:
         llm = create_llm()
     return llm
-
-
-# Made with Bob

@@ -17,5 +17,3 @@ __all__ = [
     "extract_realm_roles_and_clients",
     "MAX_VALIDATION_RETRIES",
 ]
-
-# Made with Bob

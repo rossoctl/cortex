@@ -13,5 +13,3 @@ __all__ = [
     "build_system_prompt",
     "build_retry_prompt",
 ]
-
-# Made with Bob

@@ -116,6 +116,3 @@ def print_explanation(explanation: str, is_retry: bool = False, verbose: bool = 
         print("=" * 80)
         print(explanation)
         print("=" * 80 + "\n")
-
-
-# Made with Bob

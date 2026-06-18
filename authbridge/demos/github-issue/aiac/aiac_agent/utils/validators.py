@@ -286,6 +286,3 @@ EXPLANATION: Specific issue 1. Specific issue 2.
         if "Already borrowed" in error_msg or "BadRequestError" in error_msg:
             return (False, False, "Verification skipped due to transient API error; retry required")
         return (False, False, f"Could not verify policy: {error_msg}")
-
-
-# Made with Bob

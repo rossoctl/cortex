@@ -510,7 +510,7 @@ curl -s --max-time 300 \
 <sub><span style="color: gray; font-size: 0.9em;">
 Troubleshooting: \
 If INTERNAL_ID shows null, the Keycloak query didn't find the client. \
-Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak_aiac.py was run.
+Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak.py was run.
 </span></sub>
 
 <sub><span style="color: gray; font-size: 0.9em;">
@@ -858,5 +858,5 @@ To clean up and start fresh:
 rm -f generated_configs/*.yaml
 
 # re-provision the realm
-python setup_keycloak.py config.yaml
+python setup_keycloak.py -rbac config.yaml
 ```

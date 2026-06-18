@@ -572,5 +572,3 @@ if __name__ == "__main__":
     print("Please use main.py to run the policy builder:")
     print("  python main.py <policy_file.txt> <config.yaml> <output_file.yaml>")
     sys.exit(1)
-
-# Made with Bob
