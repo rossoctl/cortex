@@ -5,8 +5,43 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
+
+// TestPageActivePane_EventsTable verifies PgDn/PgUp page the events table by a
+// near-full screen (one row of overlap), clamped to the row range — the lever
+// for sessions that now hold up to session.max_events (500) rows.
+func TestPageActivePane_EventsTable(t *testing.T) {
+	events := make([]pipeline.SessionEvent, 40)
+	for i := range events {
+		events[i] = pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			Host: "h", Inference: &pipeline.InferenceExtension{Model: "m"},
+		}
+	}
+	m := &model{
+		pane: paneEvents, selectedSess: "s", bodyHeight: 12,
+		events: map[string][]pipeline.SessionEvent{"s": events},
+	}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+	m.eventsTbl.SetCursor(0)
+
+	h := m.eventsTbl.Height()
+	if h < 2 {
+		t.Fatalf("table height too small to page: %d", h)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyPgDown})
+	if got := m.eventsTbl.Cursor(); got != h-1 {
+		t.Errorf("PgDn from top: cursor=%d, want %d", got, h-1)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyPgUp})
+	if got := m.eventsTbl.Cursor(); got != 0 {
+		t.Errorf("PgUp back to top: cursor=%d, want 0", got)
+	}
+}
 
 // TestShortPhase covers the rendered string for every SessionPhase.
 // SessionDenied renders as "req" (not "deny") because the deny

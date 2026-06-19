@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
@@ -272,6 +273,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.goBottom()
 		return nil
 
+	case "pgup", "pgdown", "pgdn":
+		// Page the active pane. Sessions can hold up to session.max_events
+		// (500) rows, so one-row-at-a-time nav isn't enough. Explicit here
+		// (rather than relying on the table component's own binding) so the
+		// page size carries a one-row overlap for context and the detail
+		// viewport pages too.
+		return m.pageActivePane(msg)
+
 	case "P":
 		// Open the registered-plugin catalog. Available from any
 		// session-view pane; in --endpoint mode the picker fields
@@ -387,6 +396,42 @@ func (m *model) goBottom() {
 	}
 }
 
+// pageActivePane moves the active pane by one page. Tables move the cursor by
+// (visible height − 1) rows — one row of overlap keeps context across the
+// jump — clamped to the row range by table.MoveUp/MoveDown. The detail/
+// plugin-detail viewport delegates to its built-in page scrolling. Picker
+// panes (namespaces/pods) never reach here; they return early in handleKey
+// and page via their own component's binding.
+func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
+	up := msg.String() == "pgup"
+	page := func(t *table.Model) {
+		n := t.Height() - 1
+		if n < 1 {
+			n = 1
+		}
+		if up {
+			t.MoveUp(n)
+		} else {
+			t.MoveDown(n)
+		}
+	}
+	switch m.pane {
+	case paneEvents:
+		page(&m.eventsTbl)
+	case paneSessions:
+		page(&m.sessionsTbl)
+	case panePipeline:
+		page(&m.pipelineTbl)
+	case paneCatalog:
+		page(&m.catalogTbl)
+	case paneDetail, panePluginDetail:
+		var cmd tea.Cmd
+		m.detailVp, cmd = m.detailVp.Update(msg)
+		return cmd
+	}
+	return nil
+}
+
 // setFlash shows a transient message in the footer for flashDuration.
 func (m *model) setFlash(s string) {
 	m.flash = s
@@ -414,7 +459,7 @@ func (m *model) helpView() string {
 		if m.hideInactive {
 			skipHint = "[s] show all"
 		}
-		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
+		base := "[↑↓] nav  [⇞⇟] page  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
 		// Surface the hidden-message count so a filtered timeline doesn't
 		// look like data loss. Only annotate when hiding is on AND at
 		// least one message was hidden.
