@@ -304,18 +304,22 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	var rpc jsonRPCResponse
-	if err := json.Unmarshal(frame, &rpc); err != nil {
-		// A malformed JSON-RPC message in a stream is unusual but
-		// recoverable — skip it and keep going. Don't return Reject
-		// because the listener is forwarding bytes regardless of what
-		// we say (record-only contract).
-		slog.Debug("mcp-parser: malformed frame, skipping", "error", err, "frameLen", len(frame))
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-	if rpc.Result == nil && rpc.Error == nil {
-		// Notifications, heartbeats, or other JSON-RPC shapes without
-		// a result/error envelope — silently skip (no observation).
+	// Parse SSE-aware: a frame is normally one SSE event's pre-stripped
+	// JSON-RPC payload (streaming path), but the buffered dispatch hands the
+	// WHOLE response body as a single last=true frame — and for a Streamable
+	// HTTP server that body is a raw `data: {...}` SSE blob. A bare
+	// json.Unmarshal fails on that blob and silently drops the result (the
+	// tools/list-response-not-recorded bug). parseMCPResponse tries a direct
+	// decode first (clean frame), then scans `data:` lines (raw SSE blob), so
+	// both shapes record correctly.
+	rpc, ok := parseMCPResponse(frame)
+	if !ok {
+		// Notifications, heartbeats, malformed frames, or other shapes with
+		// no JSON-RPC result/error envelope — nothing to record per-frame.
+		// The end-of-stream last=true call records a Skip if no envelope was
+		// ever seen, so the response row still pairs with its request.
+		slog.Debug("mcp-parser: response frame carried no JSON-RPC result/error",
+			"frameLen", len(frame), "frame", parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
