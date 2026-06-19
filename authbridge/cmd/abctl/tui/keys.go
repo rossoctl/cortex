@@ -273,12 +273,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.goBottom()
 		return nil
 
-	case "pgup", "pgdown", "pgdn":
+	case "pgup", "pgdown", "pgdn", "b", "f":
 		// Page the active pane. Sessions can hold up to session.max_events
-		// (500) rows, so one-row-at-a-time nav isn't enough. Explicit here
-		// (rather than relying on the table component's own binding) so the
-		// page size carries a one-row overlap for context and the detail
-		// viewport pages too.
+		// (500) rows, so one-row-at-a-time nav isn't enough. b/f (less/vim
+		// style) work on any keyboard; PgUp/PgDn map to fn+↑/fn+↓ on Mac
+		// laptops. Explicit here (rather than the table component's own
+		// binding) so all of them share a one-row overlap for context and the
+		// detail viewport pages too.
 		return m.pageActivePane(msg)
 
 	case "P":
@@ -403,7 +404,7 @@ func (m *model) goBottom() {
 // panes (namespaces/pods) never reach here; they return early in handleKey
 // and page via their own component's binding.
 func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
-	up := msg.String() == "pgup"
+	up := msg.String() == "pgup" || msg.String() == "b"
 	page := func(t *table.Model) {
 		n := t.Height() - 1
 		if n < 1 {
@@ -459,7 +460,7 @@ func (m *model) helpView() string {
 		if m.hideInactive {
 			skipHint = "[s] show all"
 		}
-		base := "[↑↓] nav  [⇞⇟] page  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
 		// Surface the hidden-message count so a filtered timeline doesn't
 		// look like data loss. Only annotate when hiding is on AND at
 		// least one message was hidden.

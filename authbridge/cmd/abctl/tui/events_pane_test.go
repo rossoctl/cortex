@@ -41,6 +41,16 @@ func TestPageActivePane_EventsTable(t *testing.T) {
 	if got := m.eventsTbl.Cursor(); got != 0 {
 		t.Errorf("PgUp back to top: cursor=%d, want 0", got)
 	}
+
+	// b/f (the keys shown in the footer, work on any keyboard) page the same way.
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if got := m.eventsTbl.Cursor(); got != h-1 {
+		t.Errorf("f (page down) from top: cursor=%d, want %d", got, h-1)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	if got := m.eventsTbl.Cursor(); got != 0 {
+		t.Errorf("b (page up) back to top: cursor=%d, want 0", got)
+	}
 }
 
 // TestShortPhase covers the rendered string for every SessionPhase.
