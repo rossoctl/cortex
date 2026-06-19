@@ -53,7 +53,9 @@ import (
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/sparc"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
+	// Named (not blank) so pluginUsesSPIFFEIdentity can reference the shared
+	// SpiffeIdentity constant instead of duplicating the "spiffe" literal.
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
 )
 
 var logLevel = new(slog.LevelVar)
@@ -130,7 +132,7 @@ func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
 		// later with a precise error; don't force the provider on for it.
 		return false
 	}
-	return probe.Identity.Type == "spiffe"
+	return probe.Identity.Type == tokenexchange.SpiffeIdentity
 }
 
 func main() {

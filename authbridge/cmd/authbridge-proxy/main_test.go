@@ -45,6 +45,9 @@ func TestSpiffeProviderNeeded(t *testing.T) {
 			Name: "some-plugin", Config: identityConfig("spiffe"),
 		}), true},
 		{"plugin with no config", outbound(config.PluginEntry{Name: "jwt-validation"}), false},
+		{"malformed plugin config", outbound(config.PluginEntry{
+			Name: "bad-plugin", Config: json.RawMessage(`{not valid json`),
+		}), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,10 +70,21 @@ func TestProviderConsumersCoveredByPredicate(t *testing.T) {
 	// Plugins whose SPIFFE need spiffeProviderNeeded is known to detect.
 	covered := map[string]bool{"token-exchange": true}
 	for _, name := range plugins.SPIFFEConsumerPlugins() {
+		// Tripwire: a new consumer must be consciously reviewed and listed.
 		if !covered[name] {
 			t.Errorf("plugin %q implements spiffe.ProviderConsumer but is not covered by "+
 				"spiffeProviderNeeded; make it signal its need via identity.type=spiffe (or "+
 				"extend the predicate), then add %q to this set", name, name)
+		}
+		// Functional: the predicate must actually fire for that consumer's
+		// spiffe config, so it never receives a nil Provider.
+		cfg := &config.Config{Pipeline: config.PipelineConfig{
+			Outbound: config.PipelineStageConfig{Plugins: []config.PluginEntry{
+				{Name: name, Config: identityConfig("spiffe")},
+			}},
+		}}
+		if !spiffeProviderNeeded(cfg) {
+			t.Errorf("spiffeProviderNeeded must return true for consumer %q with identity.type=spiffe", name)
 		}
 	}
 }

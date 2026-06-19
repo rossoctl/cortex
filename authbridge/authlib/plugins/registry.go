@@ -86,6 +86,12 @@ func RegisteredPlugins() []string {
 // actual need (see cmd/authbridge-proxy's spiffeProviderNeeded) use this to
 // assert their need-detection covers every consumer; a new consumer that slips
 // past the predicate would otherwise silently receive a nil Provider.
+//
+// This probes by constructing each plugin and type-asserting. That is safe
+// because PluginFactory is contractually a cheap, side-effect-free constructor
+// (see PluginFactory: no construction args; deps + goroutines are created in
+// Configure/Init, not the factory). If a factory ever gains construction-time
+// side effects, switch this to a static capability tag instead of a live probe.
 func SPIFFEConsumerPlugins() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
