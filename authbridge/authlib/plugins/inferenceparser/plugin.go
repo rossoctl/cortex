@@ -32,57 +32,22 @@ func (p *InferenceParser) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	// No Invocation recorded when the parser doesn't apply to this
-	// message — wrong path (anything other than OpenAI chat/completion
-	// endpoints), empty body, or non-JSON body. Operators infer
-	// "inference-parser exists in this pipeline" from config, not per-
-	// event rows.
-	if pctx.Path != "/v1/chat/completions" && pctx.Path != "/v1/completions" {
+	// Dispatch by endpoint dialect: OpenAI chat/completions vs Anthropic
+	// Messages. No Invocation is recorded when the parser doesn't apply
+	// (unrecognized path, empty body, or non-JSON body) — operators infer
+	// "inference-parser is in this pipeline" from config, not per-event rows.
+	var ext *pipeline.InferenceExtension
+	switch pctx.Path {
+	case "/v1/chat/completions", "/v1/completions":
+		ext = parseOpenAIRequest(pctx.Body)
+	case anthropicMessagesPath:
+		ext = parseAnthropicRequest(pctx.Body)
+	default:
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-
-	if len(pctx.Body) == 0 {
-		slog.Debug("inference-parser: no body, skipping")
+	if ext == nil {
+		slog.Debug("inference-parser: no/invalid body, skipping", "path", pctx.Path)
 		return pipeline.Action{Type: pipeline.Continue}
-	}
-
-	var req inferenceRequest
-	if err := json.Unmarshal(pctx.Body, &req); err != nil {
-		slog.Debug("inference-parser: invalid JSON", "error", err)
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-
-	ext := &pipeline.InferenceExtension{
-		Model:       req.Model,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		TopP:        req.TopP,
-		Stream:      req.Stream,
-		ToolChoice:  req.ToolChoice,
-		// Every populated InferenceExtension is an outbound LLM call —
-		// the agent making a real action. The "don't judge inference
-		// by default" choice is operator policy, lives in IBAC's
-		// judge_inference config; the classification verdict here is
-		// independent of that policy.
-		IsAction: true,
-	}
-
-	for _, msg := range req.Messages {
-		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
-	}
-
-	for _, tool := range req.Tools {
-		if tool.Function.Name == "" {
-			continue
-		}
-		ext.Tools = append(ext.Tools, pipeline.InferenceTool{
-			Name:        tool.Function.Name,
-			Description: tool.Function.Description,
-			Parameters:  tool.Function.paramsMap(),
-		})
 	}
 
 	pctx.Extensions.Inference = ext
@@ -95,6 +60,47 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 
 	pctx.Observe("matched_" + ext.Model)
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// parseOpenAIRequest builds an InferenceExtension from an OpenAI
+// chat/completions (or completions) request body. Returns nil for an empty or
+// non-JSON body. Every populated extension is an outbound LLM call — an agent
+// action (IsAction); the "don't judge inference by default" choice is operator
+// policy in IBAC, independent of this classification.
+func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
+	if len(body) == 0 {
+		return nil
+	}
+	var req inferenceRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	ext := &pipeline.InferenceExtension{
+		Model:       req.Model,
+		Temperature: req.Temperature,
+		MaxTokens:   req.MaxTokens,
+		TopP:        req.TopP,
+		Stream:      req.Stream,
+		ToolChoice:  req.ToolChoice,
+		IsAction:    true,
+	}
+	for _, msg := range req.Messages {
+		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	for _, tool := range req.Tools {
+		if tool.Function.Name == "" {
+			continue
+		}
+		ext.Tools = append(ext.Tools, pipeline.InferenceTool{
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.paramsMap(),
+		})
+	}
+	return ext
 }
 
 // OnResponse is the legacy buffered-path response hook. Because this
@@ -118,9 +124,17 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	}
 
 	if ext.Stream {
-		parseInferenceSSE(pctx.ResponseBody, ext)
+		if pctx.Path == anthropicMessagesPath {
+			parseAnthropicSSE(pctx.ResponseBody, ext)
+		} else {
+			parseInferenceSSE(pctx.ResponseBody, ext)
+		}
 	} else {
-		parseInferenceJSON(pctx.ResponseBody, ext)
+		if pctx.Path == anthropicMessagesPath {
+			parseAnthropicJSON(pctx.ResponseBody, ext)
+		} else {
+			parseInferenceJSON(pctx.ResponseBody, ext)
+		}
 	}
 
 	logInferenceFinalized(ext)
@@ -165,35 +179,25 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 			pctx.Skip("no_response_body")
 			return pipeline.Action{Type: pipeline.Continue}
 		}
-		parseInferenceJSON(frame, ext)
+		if pctx.Path == anthropicMessagesPath {
+			parseAnthropicJSON(frame, ext)
+		} else {
+			parseInferenceJSON(frame, ext)
+		}
 		logInferenceFinalized(ext)
 		pctx.Observe("matched_" + ext.Model + "_response")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	// Streaming path. Lazily allocate the per-stream scratch.
+	// Streaming path. Lazily allocate the per-stream scratch, then fold this
+	// frame into it via the dialect-specific handler.
 	state := getOrCreateStreamState(pctx)
 
 	if len(frame) > 0 {
-		// Each frame is one OpenAI streaming chunk: data: { choices: [...], usage: ... }
-		// or the literal sentinel "[DONE]". Skip the sentinel.
-		if !bytes.Equal(bytes.TrimSpace(frame), []byte("[DONE]")) {
-			var chunk inferenceStreamChunk
-			if err := json.Unmarshal(frame, &chunk); err != nil {
-				slog.Debug("inference-parser: malformed streaming chunk, skipping", "error", err)
-			} else {
-				for _, c := range chunk.Choices {
-					if c.Delta.Content != "" {
-						state.completion.WriteString(c.Delta.Content)
-					}
-					if c.FinishReason != "" {
-						ext.FinishReason = c.FinishReason
-					}
-				}
-				if chunk.Usage.TotalTokens > 0 {
-					state.usage = chunk.Usage
-				}
-			}
+		if pctx.Path == anthropicMessagesPath {
+			foldAnthropicFrame(frame, state, ext)
+		} else {
+			foldOpenAIFrame(frame, state, ext)
 		}
 	}
 
@@ -214,6 +218,32 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		pctx.Observe("matched_" + ext.Model + "_response")
 	}
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// foldOpenAIFrame folds one OpenAI streaming chunk (data: {choices,usage}) into
+// the running stream state. The "[DONE]" sentinel and malformed chunks are
+// skipped. Usage arrives (cumulative) when the client set
+// stream_options.include_usage.
+func foldOpenAIFrame(frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
+	if bytes.Equal(bytes.TrimSpace(frame), []byte("[DONE]")) {
+		return
+	}
+	var chunk inferenceStreamChunk
+	if err := json.Unmarshal(frame, &chunk); err != nil {
+		slog.Debug("inference-parser: malformed streaming chunk, skipping", "error", err)
+		return
+	}
+	for _, c := range chunk.Choices {
+		if c.Delta.Content != "" {
+			state.completion.WriteString(c.Delta.Content)
+		}
+		if c.FinishReason != "" {
+			ext.FinishReason = c.FinishReason
+		}
+	}
+	if chunk.Usage.TotalTokens > 0 {
+		state.usage = chunk.Usage
+	}
 }
 
 func getOrCreateStreamState(pctx *pipeline.Context) *inferenceStreamState {
