@@ -188,7 +188,7 @@ func main() {
 				slog.Warn("invalid session.ttl, using default", "value", cfg.Session.TTL, "error", err)
 			}
 		}
-		maxEvents := 100
+		maxEvents := 500 // raised from 100: recording every message (incl. no-plugin-activity) ~doubles volume
 		if cfg.Session.MaxEvents > 0 {
 			maxEvents = cfg.Session.MaxEvents
 		}

@@ -9,45 +9,9 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
 
-// eventScopedToPlugin returns a shallow copy of e whose Invocations and
-// per-plugin Plugins map are limited to the given plugin. Event-level context
-// (protocol slot, identity) is preserved; filterForDetail still trims those by
-// phase. Returns e unchanged when plugin is empty.
-func eventScopedToPlugin(e *pipeline.SessionEvent, plugin string) *pipeline.SessionEvent {
-	if e == nil || plugin == "" {
-		return e
-	}
-	scoped := *e // shallow copy
-	if e.Invocations != nil {
-		scoped.Invocations = &pipeline.Invocations{
-			Inbound:  filterInvocationsByPlugin(e.Invocations.Inbound, plugin),
-			Outbound: filterInvocationsByPlugin(e.Invocations.Outbound, plugin),
-		}
-	}
-	if e.Plugins != nil {
-		if raw, ok := e.Plugins[plugin]; ok {
-			scoped.Plugins = map[string]json.RawMessage{plugin: raw}
-		} else {
-			scoped.Plugins = nil
-		}
-	}
-	return &scoped
-}
-
-// filterInvocationsByPlugin returns the invocations in invs whose Plugin
-// matches plugin, preserving order. Returns nil when none match.
-func filterInvocationsByPlugin(invs []pipeline.Invocation, plugin string) []pipeline.Invocation {
-	var out []pipeline.Invocation
-	for _, iv := range invs {
-		if iv.Plugin == plugin {
-			out = append(out, iv)
-		}
-	}
-	return out
-}
-
-// showDetail loads e into the detail viewport as colorized JSON and
-// remembers the focused event so yank (y) can find it.
+// showDetail loads the row's event into the detail viewport as colorized
+// JSON and remembers the focused row so yank (y) can find the event and
+// layout() can re-render on resize.
 //
 // Marshal with SessionEvent.MarshalJSON first (readable wire form — string
 // enums, durationMs), then filter inference/mcp extensions so request
@@ -55,21 +19,20 @@ func filterInvocationsByPlugin(invs []pipeline.Invocation, plugin string) []pipe
 // response-side fields (TUI readability only — wire format is unchanged,
 // and yank still writes the full JSON).
 //
-// When the event arrived over TLS (SessionEvent.TLS non-nil), a small
-// header block is prepended to the JSON so operators can see the
-// connection-level identity at a glance. Absent for plaintext events.
+// The whole event is rendered — all plugin invocations, both directions —
+// because the timeline is now one row per message; the per-plugin breakdown
+// lives here in the detail, not in separate rows.
 //
-// The events list is one row per plugin invocation, so showDetail takes the
-// selected invocation and renders a copy of the event scoped to that plugin
-// (see eventScopedToPlugin). A nil invocation renders the whole event.
-func (m *model) showDetail(e *pipeline.SessionEvent, inv *pipeline.Invocation) {
+// When a CONNECT tunnel was folded into this row (TLS bridge), a one-block
+// summary of the tunnel is prepended so the operator sees the bridged
+// origin and the connection-level decision without a separate row. When the
+// event arrived over TLS (SessionEvent.TLS non-nil), a small TLS header
+// block is prepended too. Both absent for plaintext, non-bridged events.
+func (m *model) showDetail(r eventRow) {
+	e := r.event
+	m.detailRow = r
 	m.detailEvent = e
-	m.detailInvocation = inv
-	ev := e
-	if inv != nil {
-		ev = eventScopedToPlugin(e, inv.Plugin)
-	}
-	data, err := json.Marshal(ev)
+	data, err := json.Marshal(e)
 	if err != nil {
 		m.detailVp.SetContent("error marshaling event: " + err.Error())
 		return
@@ -81,11 +44,33 @@ func (m *model) showDetail(e *pipeline.SessionEvent, inv *pipeline.Invocation) {
 		// content keeps its highlighting.
 		content = ansi.Wrap(content, w, " -")
 	}
+	if r.tunnel != nil {
+		content = tunnelHeader(r.tunnel) + "\n\n" + content
+	}
 	if header := tlsHeader(e.TLS); header != "" {
 		content = header + "\n\n" + content
 	}
 	m.detailVp.SetContent(content)
 	m.detailVp.GotoTop()
+}
+
+// tunnelHeader summarizes the CONNECT tunnel folded into a TLS-bridged
+// request row: the bridged origin (host:port) and any gate invocations that
+// ran on the tunnel-open before the bytes were decrypted. Lets an operator
+// see the connection-level decision without a separate row.
+//
+//	tunnel:  CONNECT example.com:443 (TLS bridge)
+//	  jwt-validation skip (no_inbound_identity)
+func tunnelHeader(tunnel *pipeline.SessionEvent) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("tunnel:  CONNECT %s (TLS bridge)", tunnel.Host))
+	for _, iv := range allInvocations(tunnel) {
+		b.WriteString(fmt.Sprintf("\n  %s %s", iv.Plugin, iv.Action))
+		if iv.Reason != "" {
+			b.WriteString(" (" + iv.Reason + ")")
+		}
+	}
+	return b.String()
 }
 
 // tlsHeader builds a one-block summary of the TLS connection state.

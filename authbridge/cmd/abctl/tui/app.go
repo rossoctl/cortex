@@ -193,41 +193,43 @@ type model struct {
 	filter       string
 	filtering    bool
 	paused       bool
-	// showSkips toggles whether Action=skip rows render in the events
-	// table. False (default) hides them — most operators care about
-	// allow/deny/modify/observe events. Toggle with `s`. hiddenSkips
-	// is the count from the most recent rebuildEventsTable, surfaced
-	// in the footer so a sparse-looking timeline doesn't read as
-	// data loss.
-	showSkips     bool
-	hiddenSkips   int
-	flash         string
-	flashUntil    time.Time
-	width, height int
+	// hideInactive toggles whether passthrough / skip-only messages are
+	// hidden from the events table. False (default) shows every message —
+	// the operator asked to see all network traffic, processed or not.
+	// Toggle with `s` to focus on plugin activity (deny/modify/allow/
+	// observe). hiddenInactive is the count from the most recent
+	// rebuildEventsTable, surfaced in the footer so a filtered timeline
+	// doesn't read as data loss.
+	hideInactive   bool
+	hiddenInactive int
+	flash          string
+	flashUntil     time.Time
+	width, height  int
 	// bodyHeight is the inner height available to panes (terminal height
 	// minus title + footer). Cached by layout() so rebuildEventsTable can
 	// size the events table after accounting for the IDENTITY banner.
 	bodyHeight int
 
 	// Panel components.
-	sessionsTbl  table.Model
-	eventsTbl    table.Model
-	pipelineTbl  table.Model
-	catalogTbl   table.Model
-	detailVp     viewport.Model
-	detailEvent  *pipeline.SessionEvent
-	// detailInvocation is the plugin invocation selected in the events pane
-	// when the detail view was opened. Used to re-scope the event to that
-	// plugin on resize/re-render. nil means "whole event" (no invocation).
-	detailInvocation *pipeline.Invocation
-	detailPlugin     *apiclient.PipelinePlugin
+	sessionsTbl table.Model
+	eventsTbl   table.Model
+	pipelineTbl table.Model
+	catalogTbl  table.Model
+	detailVp    viewport.Model
+	detailEvent *pipeline.SessionEvent
+	// detailRow is the full events-pane row (event + any folded CONNECT
+	// tunnel) the detail view was opened on. Kept so layout() can re-render
+	// the detail pane on resize without re-deriving the tunnel fold.
+	detailRow    eventRow
+	detailPlugin *apiclient.PipelinePlugin
 	filterInput  textinput.Model
 
-	// visibleRows holds the invocationRow spec for each rendered row in
-	// eventsTbl. Populated by rebuildEventsTable so selectedEvent can
-	// return the (event, invocation) tuple the cursor is on without
-	// re-walking the cache. Reset on every rebuild.
-	visibleRows []invocationRow
+	// visibleRows holds the eventRow for each rendered row in eventsTbl —
+	// one per network message. Populated by rebuildEventsTable so
+	// selectedEvent / selectedEventRow can return the message the cursor is
+	// on (and any folded tunnel) without re-walking the cache. Reset on
+	// every rebuild.
+	visibleRows []eventRow
 
 	// pipeline is the fetched plugin composition. nil until the initial
 	// GetPipeline response arrives; the pipeline pane shows "(loading…)"

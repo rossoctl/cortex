@@ -144,12 +144,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "s":
-		// Toggle skip-row visibility. Only meaningful while the events
-		// pane is active, but accepting the key on any pane keeps the
-		// keybinding simple and lets operators "set their preference"
-		// before drilling into a session. rebuildEventsTable is a no-op
-		// when no session is selected.
-		m.showSkips = !m.showSkips
+		// Toggle hiding of passthrough / skip-only messages. Default is
+		// off (show everything); turning it on focuses the timeline on
+		// plugin activity. Only meaningful while the events pane is
+		// active, but accepting the key on any pane keeps the keybinding
+		// simple and lets operators set their preference before drilling
+		// into a session. rebuildEventsTable is a no-op when no session
+		// is selected.
+		m.hideInactive = !m.hideInactive
 		m.rebuildEventsTable()
 		return nil
 
@@ -203,11 +205,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
 		case paneEvents:
-			ev := m.selectedEvent()
-			if ev == nil {
+			er, ok := m.selectedEventRow()
+			if !ok {
 				return nil
 			}
-			m.showDetail(ev, m.selectedInvocation())
+			m.showDetail(er)
 			m.pane = paneDetail
 			return nil
 		case panePipeline:
@@ -408,13 +410,17 @@ func (m *model) helpView() string {
 		}
 		return "[↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [p] pause  [q] quit"
 	case paneEvents:
-		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  [s] skips  [p] pause  [q] quit"
-		// Surface the hidden-skip count so a sparse timeline doesn't
-		// look like data loss. Only annotate when there's something
-		// to say (skips off AND at least one row was hidden).
-		if !m.showSkips && m.hiddenSkips > 0 {
-			base = fmt.Sprintf("%s  ·  %d skip%s hidden",
-				base, m.hiddenSkips, plural(m.hiddenSkips))
+		skipHint := "[s] hide skips"
+		if m.hideInactive {
+			skipHint = "[s] show all"
+		}
+		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
+		// Surface the hidden-message count so a filtered timeline doesn't
+		// look like data loss. Only annotate when hiding is on AND at
+		// least one message was hidden.
+		if m.hideInactive && m.hiddenInactive > 0 {
+			base = fmt.Sprintf("%s  ·  %d hidden",
+				base, m.hiddenInactive)
 		}
 		return base
 	case paneDetail:
@@ -476,7 +482,7 @@ func (m *model) layout() {
 	// Re-wrap the detail viewport to the new width so long JSON values
 	// continue to fit after a terminal resize.
 	if m.detailEvent != nil {
-		m.showDetail(m.detailEvent, m.detailInvocation)
+		m.showDetail(m.detailRow)
 	}
 }
 

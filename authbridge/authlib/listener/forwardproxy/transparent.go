@@ -180,9 +180,10 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context) {
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 	}
-	if ev.Invocations != nil || plugins != nil {
-		s.Sessions.Append(sid, ev)
-	}
+	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
+	// plugin activity) are still visible. For a TLS-bridged call abctl folds
+	// this CONNECT event into the decrypted inner-request row.
+	s.Sessions.Append(sid, ev)
 }
 
 // tunnel bidirectionally copies between two connections until either side

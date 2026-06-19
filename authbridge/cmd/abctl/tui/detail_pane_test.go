@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -67,61 +66,38 @@ func TestTLSHeader_PeerOnly(t *testing.T) {
 	}
 }
 
-// eventScopedToPlugin must restrict both the Invocations slices and the
-// per-plugin Plugins map to the selected plugin, and must NOT mutate the
-// original event (the shallow copy aliases the slices/map otherwise).
-func TestEventScopedToPlugin_FiltersToSelectedPlugin(t *testing.T) {
-	ev := &pipeline.SessionEvent{
+// tunnelHeader summarizes the folded CONNECT tunnel on a TLS-bridged row:
+// the bridged origin (host:port) and any gate invocation that ran on the
+// tunnel-open before the bytes were decrypted.
+func TestTunnelHeader_OriginAndInvocations(t *testing.T) {
+	got := tunnelHeader(&pipeline.SessionEvent{
+		Host: "api.anthropic.com:443",
 		Invocations: &pipeline.Invocations{
-			Inbound: []pipeline.Invocation{
-				{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
-				{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+			Outbound: []pipeline.Invocation{
+				{Plugin: "jwt-validation", Action: pipeline.ActionSkip, Reason: "no_inbound_identity"},
 			},
 		},
-		Plugins: map[string]json.RawMessage{
-			"jwt-validation": json.RawMessage("{}"),
-			"a2a-parser":     json.RawMessage("{}"),
-		},
-	}
-
-	scoped := eventScopedToPlugin(ev, "jwt-validation")
-
-	if got := len(scoped.Invocations.Inbound); got != 1 {
-		t.Fatalf("scoped inbound invocations = %d, want 1", got)
-	}
-	if got := scoped.Invocations.Inbound[0].Plugin; got != "jwt-validation" {
-		t.Errorf("scoped invocation plugin = %q, want %q", got, "jwt-validation")
-	}
-	if got := len(scoped.Plugins); got != 1 {
-		t.Fatalf("scoped Plugins entries = %d, want 1", got)
-	}
-	if _, ok := scoped.Plugins["jwt-validation"]; !ok {
-		t.Errorf("scoped Plugins missing jwt-validation key: %v", scoped.Plugins)
-	}
-	if _, ok := scoped.Plugins["a2a-parser"]; ok {
-		t.Errorf("scoped Plugins unexpectedly retained a2a-parser")
-	}
-
-	// Original event must be untouched (no aliasing of slice/map).
-	if got := len(ev.Invocations.Inbound); got != 2 {
-		t.Errorf("original inbound invocations mutated: = %d, want 2", got)
-	}
-	if got := len(ev.Plugins); got != 2 {
-		t.Errorf("original Plugins map mutated: = %d, want 2", got)
+	})
+	for _, want := range []string{
+		"CONNECT api.anthropic.com:443",
+		"TLS bridge",
+		"jwt-validation skip",
+		"no_inbound_identity",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tunnelHeader missing %q\ngot:\n%s", want, got)
+		}
 	}
 }
 
-// An empty plugin string means "no specific invocation" — the helper returns
-// the event unchanged (same pointer) so old whole-event behavior is preserved.
-func TestEventScopedToPlugin_EmptyPluginReturnsUnchanged(t *testing.T) {
-	ev := &pipeline.SessionEvent{
-		Invocations: &pipeline.Invocations{
-			Inbound: []pipeline.Invocation{
-				{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
-			},
-		},
+// A tunnel with no gate invocations (pure passthrough that was then bridged)
+// still names the origin without trailing invocation lines.
+func TestTunnelHeader_NoInvocations(t *testing.T) {
+	got := tunnelHeader(&pipeline.SessionEvent{Host: "example.com:8443"})
+	if !strings.Contains(got, "CONNECT example.com:8443") {
+		t.Errorf("tunnelHeader missing origin\ngot:\n%s", got)
 	}
-	if got := eventScopedToPlugin(ev, ""); got != ev {
-		t.Errorf("eventScopedToPlugin(ev, \"\") = %p, want original %p", got, ev)
+	if strings.Count(got, "\n") != 0 {
+		t.Errorf("tunnelHeader with no invocations should be one line\ngot:\n%s", got)
 	}
 }

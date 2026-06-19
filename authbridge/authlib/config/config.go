@@ -198,7 +198,7 @@ type SessionConfig struct {
 	// "user didn't say" with "user said false" and silently flip the default.
 	Enabled     *bool  `yaml:"enabled" json:"enabled"`
 	TTL         string `yaml:"ttl" json:"ttl"`                   // duration string; default: 30m
-	MaxEvents   int    `yaml:"max_events" json:"max_events"`     // max events per session; default: 100
+	MaxEvents   int    `yaml:"max_events" json:"max_events"`     // max events per session; default: 500
 	MaxSessions int    `yaml:"max_sessions" json:"max_sessions"` // max concurrent sessions; default: 100 (0 = unlimited)
 }
 

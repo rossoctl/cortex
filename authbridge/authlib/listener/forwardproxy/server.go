@@ -307,16 +307,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
 		}
-		// Record whenever ANY protocol-or-plugin context is present —
-		// MCP/Inference (parser-emitted), Invocations (gate plugins like
-		// jwt-validation/token-exchange), or plugin-public Plugins
-		// entries. Earlier the gate was just MCP||Inference; widening
-		// it ensures auth-only outbound traffic and pure observability
-		// events show up in abctl. Don't narrow this back without
-		// understanding why each clause is necessary.
-		if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
-			s.Sessions.Append(sid, ev)
-		}
+		// Record EVERY message that reaches the pipeline — even when no
+		// plugin acted and no parser matched (Invocations/MCP/Inference all
+		// nil). The session API is an observability surface; a request the
+		// pipeline saw but no plugin touched is still a network message the
+		// operator wants to see (it carries Host, and the paired response
+		// carries StatusCode). skip_hosts traffic never reaches here (the
+		// !skipped guard above), so it stays suppressed by design.
+		s.Sessions.Append(sid, ev)
 	}
 
 	newAuth := pctx.Headers.Get("Authorization")
@@ -519,11 +517,10 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Error:       pipeline.DeriveError(pctx),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
-	// Same widened gate as the request side — see the request-phase
-	// comment for why each clause matters.
-	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
-		s.Sessions.Append(sid, ev)
-	}
+	// Always record — see the request-phase comment. This is what surfaces
+	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
+	// + Error even with empty invocations.
+	s.Sessions.Append(sid, ev)
 }
 
 // isEventStream reports whether a Content-Type header value names the

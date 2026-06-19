@@ -256,7 +256,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// as denials already do via recordInboundReject). The A2A-specific session
 	// rekey in modifyResponse stays A2A-gated.
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
+	// Record every inbound request the pipeline saw, even with no plugin
+	// activity (skip_hosts is N/A inbound).
+	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
 		// Snapshot-copy the protocol extension and use the shared helpers
 		// for plugin invocations / observability / identity. Mirrors what
@@ -378,7 +380,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// pipeline saw at this point (may be empty for streamed bodies),
 	// but the status code and plugin invocations are always meaningful.
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
+	// Always pair every inbound request with a response row (carries StatusCode).
+	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
 		s.Sessions.Append(sid, pipeline.SessionEvent{
 			At:          time.Now(),
@@ -513,9 +516,8 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		return
 	}
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if !(pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
-		return
-	}
+	// Always record the streaming response (carries StatusCode), even with
+	// no plugin activity.
 	sid := inboundSessionID(pctx)
 	// Rekey default → contextId mirroring the buffered path's behavior;
 	// streaming A2A message/stream may discover the contextId mid-stream.
