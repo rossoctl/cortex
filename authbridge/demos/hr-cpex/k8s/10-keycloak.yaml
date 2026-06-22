@@ -17,6 +17,12 @@
 # inline a placeholder ConfigMap here — its data would race with the
 # file-driven one (whoever runs second wins) and Keycloak would fail
 # realm import on the placeholder content.
+#
+# DEMO ONLY: the passwords and client secrets in realm-export.json are
+# for local development. Do not use in production. (This note lives here,
+# not as a `_WARNING` key inside realm-export.json — Keycloak 26's
+# `--import-realm` rejects unknown top-level RealmRepresentation fields,
+# which crashes the import on a fresh-DB boot.)
 
 apiVersion: v1
 kind: Service
