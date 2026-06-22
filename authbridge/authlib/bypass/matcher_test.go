@@ -34,6 +34,7 @@ func TestMatch(t *testing.T) {
 		{"/healthz", true},
 		{"/readyz", true},
 		{"/livez", true},
+		{"/metrics", true},
 
 		// Non-bypass paths
 		{"/test", false},
@@ -43,11 +44,15 @@ func TestMatch(t *testing.T) {
 		// Query string stripping
 		{"/healthz?verbose=true", true},
 		{"/.well-known/agent.json?format=json", true},
+		{"/metrics?format=prometheus", true},
 
 		// Path normalization (security)
 		{"//healthz", true},
 		{"/./healthz", true},
 		{"/foo/../healthz", true},
+
+		// Sub-paths of /metrics are NOT bypassed (exact match only)
+		{"/metrics/cadvisor", false},
 
 		// Well-known does NOT match nested paths (path.Match * doesn't cross /)
 		{"/.well-known/foo/bar", false},
