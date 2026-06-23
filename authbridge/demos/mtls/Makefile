@@ -10,10 +10,28 @@ CALLEE_ENVOY   ?= mtls-callee-envoy
 help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-32s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
+.PHONY: wait-operator-labels
+wait-operator-labels: ## Wait for the operator to apply kagenti.io/type from AgentRuntime CRs
+	@for deploy in $(CALLER) $(CALLEE); do \
+	  echo "[*] Waiting for operator to label $$deploy ..."; \
+	  for i in $$(seq 1 60); do \
+	    val=$$(kubectl -n $(NAMESPACE) get deploy/$$deploy \
+	      -o jsonpath="{.spec.template.metadata.labels['kagenti.io/type']}" 2>/dev/null); \
+	    if [ "$$val" = "agent" ]; then echo "    ✓ $$deploy labeled"; break; fi; \
+	    sleep 2; \
+	  done; \
+	  val=$$(kubectl -n $(NAMESPACE) get deploy/$$deploy \
+	    -o jsonpath="{.spec.template.metadata.labels['kagenti.io/type']}" 2>/dev/null); \
+	  if [ "$$val" != "agent" ]; then \
+	    echo "ERROR: operator did not label $$deploy within 120s"; exit 1; \
+	  fi; \
+	done
+
 .PHONY: deploy
 deploy: ## Deploy caller + callee pods (both with mtls.mode: strict)
 	kubectl apply -f k8s/caller.yaml
 	kubectl apply -f k8s/callee.yaml
+	$(MAKE) wait-operator-labels
 	./scripts/patch-mtls-config.sh $(NAMESPACE) strict
 	kubectl -n $(NAMESPACE) rollout restart deploy/$(CALLER) deploy/$(CALLEE)
 	kubectl -n $(NAMESPACE) rollout status deploy/$(CALLER) deploy/$(CALLEE) --timeout=120s
@@ -26,6 +44,7 @@ demo-mtls: deploy ## Deploy + run the encryption-on-the-wire check (strict mode)
 demo-mtls-permissive: ## Same shape but with mtls.mode: permissive; verify mixed-mode serving
 	kubectl apply -f k8s/caller.yaml
 	kubectl apply -f k8s/callee.yaml
+	$(MAKE) wait-operator-labels
 	./scripts/patch-mtls-config.sh $(NAMESPACE) permissive
 	kubectl -n $(NAMESPACE) rollout restart deploy/$(CALLER) deploy/$(CALLEE)
 	kubectl -n $(NAMESPACE) rollout status deploy/$(CALLER) deploy/$(CALLEE) --timeout=120s

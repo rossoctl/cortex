@@ -183,11 +183,11 @@ python demos/weather-agent/setup_keycloak_weather_advanced.py -n team1
 
 > **Expected catalog quirk.** The **Agent Catalog** shows **two** entries:
 > `weather-service-advanced` *and* `weather-tool-advanced`. The **Tool
-> Catalog** is empty. This is by design — the advanced demo labels the
-> tool with `kagenti.io/type: agent` so AuthBridge gets injected on it
-> (the `injectTools` feature gate is off by default; see the
-> [kubectl appendix](#operator-gotchas)). Pick `weather-service-advanced`
-> for chat.
+> Catalog** is empty. This is by design — the tool's AgentRuntime CR
+> uses `type: agent` so the operator applies `kagenti.io/type=agent`
+> and AuthBridge gets injected (the `injectTools` feature gate is off
+> by default; see the [kubectl appendix](#operator-gotchas)). Pick
+> `weather-service-advanced` for chat.
 
 1. **Agent Catalog** → namespace `team1` → `weather-service-advanced` →
    **View Details**. The agent card should render (proves the agent is up and
@@ -302,12 +302,14 @@ If you'd rather skip the UI entirely, the same demo runs via raw manifests.
 python authbridge/demos/weather-agent/setup_keycloak_weather_advanced.py \
   -n team1 --wait-tool-client &
 
-# 2. Apply manifests (the deploy script applies AgentRuntime CRs too)
+# 2. Apply manifests
 kubectl apply -f authbridge/demos/weather-agent/k8s/configmaps-advanced.yaml
 kubectl apply -f authbridge/demos/weather-agent/k8s/weather-tool-advanced.yaml
+kubectl apply -f authbridge/demos/weather-agent/k8s/agentruntime-weather-tool-advanced.yaml
 kubectl rollout status deploy/weather-tool-advanced -n team1 --timeout=300s
 
 kubectl apply -f authbridge/demos/weather-agent/k8s/weather-service-advanced.yaml
+kubectl apply -f authbridge/demos/weather-agent/k8s/agentruntime-weather-service-advanced.yaml
 kubectl rollout status deploy/weather-service-advanced -n team1 --timeout=420s
 
 # 3. Re-run Keycloak setup so the agent client gets the optional exchange scope

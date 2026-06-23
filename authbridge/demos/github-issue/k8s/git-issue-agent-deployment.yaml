@@ -21,10 +21,12 @@
 #   - Calls the GitHub MCP tool via HTTP
 #   - Token exchange to the tool is handled transparently by the AuthBridge sidecar
 #
-# Labels (must be on Pod template):
-#   kagenti.io/type: agent      - Required: identifies this as an agent workload
+# Labels (on Pod template):
 #   kagenti.io/inject: enabled  - Enables AuthBridge sidecar injection
 #   kagenti.io/spire: enabled   - Enables SPIRE-based identity (set to "disabled" if no SPIRE)
+#
+# kagenti.io/type is applied automatically by the operator when the
+# AgentRuntime CR (at the end of this file) is created.
 #
 # Usage:
 #   kubectl apply -f git-issue-agent-deployment.yaml
@@ -53,7 +55,6 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: git-issue-agent
-        kagenti.io/type: agent
         kagenti.io/inject: enabled
         kagenti.io/spire: enabled
     spec:
@@ -140,3 +141,21 @@ spec:
       targetPort: 8000
       protocol: TCP
   type: ClusterIP
+
+---
+# AgentRuntime triggers operator-managed Keycloak client registration
+# (creates kagenti-keycloak-client-credentials-<hash> Secret with
+# client-id.txt and client-secret.txt that the authbridge sidecar
+# mounts at /shared/). The operator also applies kagenti.io/type=agent
+# to the Deployment and Pod template, enabling webhook sidecar injection.
+apiVersion: agent.kagenti.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: git-issue-agent
+  namespace: team1
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: git-issue-agent
