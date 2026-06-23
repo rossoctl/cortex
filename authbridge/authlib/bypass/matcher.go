@@ -9,7 +9,7 @@ import (
 )
 
 // DefaultPatterns are paths that skip inbound JWT validation by default.
-var DefaultPatterns = []string{"/.well-known/*", "/healthz", "/readyz", "/livez"}
+var DefaultPatterns = []string{"/.well-known/*", "/healthz", "/readyz", "/livez", "/metrics"}
 
 // Matcher checks request paths against a set of bypass patterns.
 // Patterns use Go's path.Match syntax (e.g., "/.well-known/*").
