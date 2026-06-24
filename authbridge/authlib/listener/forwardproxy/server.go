@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -292,6 +293,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		// Pin this session so the paired response event records into the
+		// same bucket. Without it, recordOutboundResponseEvent re-resolves
+		// ActiveSession() at response time, which interleaving traffic (a
+		// health probe under "default") can flip mid-stream — mis-filing a
+		// streaming inference response away from its request's session.
+		pctx.OutboundSessionID = sid
 		// Snapshot-copy the protocol extension so the request event
 		// doesn't see response-phase mutations on the same MCP/Inference
 		// struct (e.g. token counts assigned in OnResponse).
@@ -498,7 +505,14 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.Sessions.ActiveSession()
+	// Prefer the session pinned when the request event was recorded so the
+	// response lands in the same bucket. Fall back to ActiveSession() only
+	// when nothing was pinned (defensive — a response-only path), then to
+	// the default bucket. See Context.OutboundSessionID.
+	sid := pctx.OutboundSessionID
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
@@ -914,7 +928,23 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // boundaries the upstream produced. Returns true when every byte
 // was written; false on any write error so the caller can stop
 // forwarding without re-checking each Write.
+//
+// The sseframe reader drops the SSE `event:` field (it surfaces only
+// data payloads), which is correct for data-only streams (MCP/A2A
+// JSON-RPC, OpenAI chat chunks). But Anthropic's Messages streaming
+// REQUIRES a typed `event:` line before each `data:` — without it the
+// Anthropic client can't finalize the stream and falls back to a
+// non-streaming retry, doubling the upstream call. Reconstruct the
+// `event:` line from the payload's top-level "type" (which, for an
+// Anthropic stream event, is exactly the SSE event name). Frames
+// without a top-level string "type" get no event line, preserving the
+// data-only shape the other protocols expect.
 func writeSSEFrame(w io.Writer, frame []byte) bool {
+	if ev := sseEventName(frame); ev != "" {
+		if _, err := io.WriteString(w, "event: "+ev+"\n"); err != nil {
+			return false
+		}
+	}
 	for len(frame) > 0 {
 		nl := bytes.IndexByte(frame, '\n')
 		var line []byte
@@ -939,6 +969,44 @@ func writeSSEFrame(w io.Writer, frame []byte) bool {
 		return false
 	}
 	return true
+}
+
+// sseEventName returns the SSE `event:` name to emit for an SSE data
+// payload, or "" when none should be emitted. It maps a frame to one of
+// the known Anthropic Messages stream events via the payload's top-level
+// JSON "type"; reconstructing that `event:` line keeps the relayed stream
+// byte-faithful Anthropic SSE (the sseframe reader drops it).
+//
+// Two deliberate constraints:
+//   - Fast path: skip the JSON parse entirely for frames that cannot carry
+//     a top-level "type" (data-only JSON-RPC / OpenAI chat chunks with
+//     "object" / "[DONE]"), so high-rate token streams stay allocation-free
+//     on the proxy's hot data path.
+//   - Allowlist: emit only the fixed set of Anthropic stream event names.
+//     The "type" comes from an upstream the bridge does not trust, so
+//     echoing it verbatim would let a crafted value inject SSE fields (a
+//     CRLF in "type") or steer the client's event dispatch with an
+//     arbitrary name. Exact-matching a constant set makes both impossible
+//     and scopes reconstruction to Anthropic — a future data-only protocol
+//     that happens to carry a top-level "type" (e.g. the OpenAI Responses
+//     API) is left untouched.
+func sseEventName(frame []byte) string {
+	if !bytes.Contains(frame, []byte(`"type"`)) {
+		return ""
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(frame, &probe); err != nil {
+		return ""
+	}
+	switch probe.Type {
+	case "message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop", "ping", "error":
+		return probe.Type
+	default:
+		return ""
+	}
 }
 
 // idleReader wraps r so each Read enforces an idle deadline. The
