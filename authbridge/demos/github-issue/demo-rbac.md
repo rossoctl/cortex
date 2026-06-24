@@ -32,27 +32,27 @@ providing end-to-end security:
 │  ┌───────────────────────────────────────────────────────────────────────────┐   │
 │  │                  GIT-ISSUE-AGENT POD (namespace: team1)                   │   │
 │  │                                                                           │   │
-│  │  ┌──────────────────┐  ┌────────────────────────────────────────────┐  │   │
-│  │  │  git-issue-agent │  │  AuthBridge sidecar (combined image)        │  │   │
-│  │  │  (A2A agent,     │  │  Container name depends on resolved mode:   │  │   │
-│  │  │   port 8000)     │  │    proxy-sidecar (default): authbridge-proxy│  │   │
-│  │  └──────────────────┘  │    envoy-sidecar:           envoy-proxy     │  │   │
-│  │                        │                                              │  │   │
-│  │                        │  Inbound:                                    │  │   │
-│  │                        │    - Validates JWT (signature + issuer +     │  │   │
-│  │                        │      audience via JWKS)                      │  │   │
-│  │                        │    - Returns 401 for invalid/missing tokens  │  │   │
-│  │                        │  Outbound:                                   │  │   │
-│  │                        │    - HTTP: Exchanges token via Keycloak      │  │   │
-│  │                        │      → aud: github-tool                      │  │   │
-│  │                        │    - HTTPS: TLS passthrough                  │  │   │
-│  │                        │                                              │  │   │
-│  │                        │  spiffe-helper bundled inside the image     │  │   │
-│  │                        │  (gated by SPIRE_ENABLED).                   │  │   │
-│  │                        │  Keycloak client registration is             │  │   │
-│  │                        │  operator-managed; the resulting Secret      │  │   │
-│  │                        │  is mounted at /shared/client-{id,secret}.txt│  │   │
-│  │                        └────────────────────────────────────────────┘  │   │
+│  │  ┌──────────────────┐  ┌───────────────────────────────────────────--─┐   │   │
+│  │  │  git-issue-agent │  │  AuthBridge sidecar (combined image)         │   │   │
+│  │  │  (A2A agent,     │  │  Container name depends on resolved mode:    │   │   │
+│  │  │   port 8000)     │  │    proxy-sidecar (default): authbridge-proxy │   │   │
+│  │  └──────────────────┘  │    envoy-sidecar:           envoy-proxy      │   │   │
+│  │                        │                                              │   │   │
+│  │                        │  Inbound:                                    │   │   │
+│  │                        │    - Validates JWT (signature + issuer +     │   │   │
+│  │                        │      audience via JWKS)                      │   │   │
+│  │                        │    - Returns 401 for invalid/missing tokens  │   │   │
+│  │                        │  Outbound:                                   │   │   │
+│  │                        │    - HTTP: Exchanges token via Keycloak      │   │   │
+│  │                        │      → aud: github-tool                      │   │   │
+│  │                        │    - HTTPS: TLS passthrough                  │   │   │
+│  │                        │                                              │   │   │
+│  │                        │  spiffe-helper bundled inside the image      │   │   │
+│  │                        │  (gated by SPIRE_ENABLED).                   │   │   │
+│  │                        │  Keycloak client registration is             │   │   │
+│  │                        │  operator-managed; the resulting Secret      │   │   │
+│  │                        │  is mounted at /shared/client-{id,secret}.txt│   │   │
+│  │                        └────────────────────────────────────────────--┘   │   │
 │  └───────────────────────────────────────────────────────────────────────────┘   │
 │                                      │                                           │
 │                      Exchanged token │(aud: github-tool)                         │
@@ -236,7 +236,57 @@ kubectl apply -f authbridge/demos/github-issue/k8s/configmaps-webhook.yaml -n te
 
 ---
 
-## Step 2: Apply Demo ConfigMaps
+## Step 2: Configure Keycloak
+
+Keycloak needs to be configured with the correct clients, scopes, and users for the
+token exchange flow between the agent and the GitHub tool.
+
+### Port-forward Keycloak (if needed)
+
+The setup script connects to Keycloak at `http://keycloak.localtest.me:8080`.
+If Keycloak is not already reachable at that address (e.g., via an ingress),
+start a port-forward in a separate terminal:
+
+```bash
+kubectl port-forward service/keycloak-service -n keycloak 8080:8080
+```
+
+### Run the setup script
+
+```bash
+cd authbridge
+
+# Create virtual environment (if not already done)
+uv sync
+source venv/bin/activate
+uv pip install --upgrade pip
+uv pip install -r requirements.txt
+
+cd demos/github-issue
+# Run the Keycloak setup for this demo
+python setup_keycloak.py -rbac aiac/config/rbac/config.yaml -policy aiac/config/rbac/policy.yaml
+```
+
+
+This creates:
+
+| Resource | Name | Purpose |
+|----------|------|---------|
+| **Realm** | `kagenti` | Keycloak realm for the demo |
+| **Client** | `spiffe://localtest.me/ns/team1/sa/git-issue-agent` | Agent client (already existed) with github-agent role |
+| **Client** | `github-tool` | Target audience for token exchange |
+| **Client Role** | `github-agent` | Access role for the GitHub issue agent |
+| **Client Role** | `github-tool-aud` | Audience role for GitHub tool access |
+| **Client Role** | `github-full-access` | Full access role for GitHub tool operations |
+| **Scope** | `github-agent` | Client scope for agent access (DEFAULT for agent client) |
+| **Scope** | `github-tool-aud` | Client scope for tool audience (OPTIONAL for agent) |
+| **Scope** | `github-full-access` | Client scope for privileged access (OPTIONAL for agent) |
+| **User** | `alice` (password: `alice123`) | User with 'developer' role - has privileged access  |
+| **User** | `bob` (password: `bob123`) | User with 'tech-support' role - has public access |
+| **User** | `charlie` (password: `charlie123`) | User with 'Sales' role - has no access udner regular policy or public access under permissive policy |
+---
+
+## Step 3: Apply Demo ConfigMaps
 
 The Kagenti installer creates default ConfigMaps (`authbridge-config`,
 `spiffe-helper-config`, `envoy-config`) and the `keycloak-admin-secret` Secret
@@ -269,7 +319,7 @@ kubectl apply -f demos/github-issue/k8s/configmaps.yaml
 
 ---
 
-## Step 3: Create GitHub PAT Secret
+## Step 4: Create GitHub PAT Secret
 
 The GitHub tool needs PAT tokens to access the GitHub API. Create a Kubernetes secret
 with your tokens:
@@ -290,7 +340,7 @@ kubectl create secret generic github-tool-secrets -n team1 \
 
 ---
 
-## Step 4: Deploy the GitHub Tool
+## Step 5: Deploy the GitHub Tool
 
 Deploy the GitHub MCP tool as a target service. This deployment does **not** get
 AuthBridge injection (it is the target, not the caller):
@@ -303,7 +353,7 @@ kubectl wait --for=condition=available --timeout=120s deployment/github-tool -n 
 
 ---
 
-## Step 5: Deploy the GitHub Issue Agent
+## Step 6: Deploy the GitHub Issue Agent
 
 Deploy the agent with AuthBridge labels. The webhook will automatically
 inject one combined AuthBridge sidecar (post-#411). In envoy-sidecar mode
@@ -343,7 +393,7 @@ agent envoy-proxy
 
 ---
 
-## Step 6: Validate the Deployment
+## Step 7: Validate the Deployment
 
 ### Check pod status
 
@@ -444,56 +494,6 @@ ollama serve
 >   LLM_API_BASE="http://ollama.ollama.svc:11434" \
 >   OLLAMA_API_BASE="http://ollama.ollama.svc:11434"
 > ```
-
----
-
-## Step 7: Configure Keycloak
-
-Keycloak needs to be configured with the correct clients, scopes, and users for the
-token exchange flow between the agent and the GitHub tool.
-
-### Port-forward Keycloak (if needed)
-
-The setup script connects to Keycloak at `http://keycloak.localtest.me:8080`.
-If Keycloak is not already reachable at that address (e.g., via an ingress),
-start a port-forward in a separate terminal:
-
-```bash
-kubectl port-forward service/keycloak-service -n keycloak 8080:8080
-```
-
-### Run the setup script
-
-```bash
-cd authbridge
-
-# Create virtual environment (if not already done)
-uv sync
-source venv/bin/activate
-uv pip install --upgrade pip
-uv pip install -r requirements.txt
-
-# Run the Keycloak setup for this demo
-python demos/github-issue/setup_keycloak.py
-```
-
-This creates:
-
-| Resource | Name | Purpose |
-|----------|------|---------|
-| **Realm** | `kagenti` | Keycloak realm for the demo |
-| **Client** | `spiffe://localtest.me/ns/team1/sa/git-issue-agent` | Agent client with github-agent role |
-| **Client** | `github-tool` | Target audience for token exchange |
-| **Client Role** | `github-agent` | Access role for the GitHub issue agent |
-| **Client Role** | `github-tool-aud` | Audience role for GitHub tool access |
-| **Client Role** | `github-full-access` | Full access role for GitHub tool operations |
-| **Scope** | `github-agent` | Client scope for agent access (DEFAULT for agent client) |
-| **Scope** | `github-tool-aud` | Client scope for tool audience (OPTIONAL for agent) |
-| **Scope** | `github-full-access` | Client scope for privileged access (OPTIONAL for agent) |
-| **Realm Role** | `regular` | Standard user access level |
-| **Realm Role** | `privileged` | Elevated user access level |
-| **User** | `alice` (password: `alice123`) | User with 'regular' realm role |
-| **User** | `bob` (password: `bob123`) | User with 'privileged' realm role |
 
 ---
 
@@ -850,14 +850,14 @@ privilege levels get different GitHub API access through the same agent.
 
 | User | Token Scope | Tool PAT Used | Public Repos | Private Repos |
 |------|-------------|---------------|:------------:|:-------------:|
-| **Alice** | `openid` (no `github-full-access`) | `PUBLIC_ACCESS_PAT` | Yes | No |
-| **Bob** | `openid github-full-access` | `PRIVILEGED_ACCESS_PAT` | Yes | Yes |
+| **Alice** | `openid github-full-access` | `PRIVILEGED_ACCESS_PAT` | Yes | Yes |
+| **Bob** | `openid` (no `github-full-access`) | `PUBLIC_ACCESS_PAT` | Yes | No |
 
 The flow:
 1. User authenticates with Keycloak using `password` grant
-2. Request is sent to Agent (on behalf of User)
+2. Request is sent to Agent (on behalf of User).
 3. Agent invokes Tool to perform its github task
-4. AuthBridge exchanges the token
+4. AuthBridge exchanges the token. Alice's (developer) token will include `github-full-access`, Bob's (tech-support) will not.
 5. The GitHub tool checks for `REQUIRED_SCOPE` (`github-full-access`) in the exchanged token
 6. Tokens with the scope get the privileged PAT; tokens without get the public-only PAT
 
@@ -933,7 +933,7 @@ curl -s --max-time 300 \
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 ```
 
-**Alice queries a private repo** (should fail — PUBLIC_ACCESS_PAT cannot access it):
+**Alice queries a private repo** (should succeed — PRIVILEGED_ACCESS_PAT has access):
 
 ```bash
 curl -s --max-time 300 \
@@ -954,10 +954,10 @@ curl -s --max-time 300 \
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 ```
 
-> **Expected:** Alice's request for the private repo fails because the GitHub tool
-> uses `PUBLIC_ACCESS_PAT`, which has no access to private repositories.
+> **Expected:** Alice's request for the private repo succeeds because the GitHub tool
+> uses `PRIVILEGED_ACCESS_PAT`, which has access to private repositories.
 
-### 10d. Test as Bob (privileged access)
+### 10d. Test as Bob
 
 Bob authenticates with Keycloak using `password` grant.
 
@@ -974,7 +974,7 @@ echo "Bob token length: ${#BOB_TOKEN}"
 echo "Bob scopes: $(echo $BOB_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.scope')"
 ```
 
-**Bob queries the same private repo** (should succeed — PRIVILEGED_ACCESS_PAT has access):
+**Bob queries the same private repo** (should fail — PUBLIC_ACCESS_PAT cannot access it):
 
 ```bash
 curl -s --max-time 300 \
@@ -995,8 +995,8 @@ curl -s --max-time 300 \
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 ```
 
-> **Expected:** Bob's request succeeds because the exchanged token contains
-> `github-full-access`, so the GitHub tool uses `PRIVILEGED_ACCESS_PAT`.
+> **Expected:** Bob's request fails because the exchanged token dosn't contain
+> `github-full-access`, so the GitHub tool uses `PUBLIC_ACCESS_PAT`.
 
 ### 10e. Verify scope-based PAT selection in tool logs
 
@@ -1007,13 +1007,10 @@ exit
 kubectl logs deployment/github-tool -n team1 | grep -E "REQUIRED_SCOPE|scopes"
 ```
 
-Expected output (two requests, different scope outcomes):
+Expected output (Bob doesnt have required scope):
 
 ```
-This OIDC user has scopes "openid email profile"
-The REQUIRED_SCOPE "github-full-access" NOT IN scopes [openid email profile]
-This OIDC user has scopes "openid email profile github-full-access"
-The REQUIRED_SCOPE "github-full-access" in scopes [openid email profile github-full-access]
+"The REQUIRED_SCOPE NOT IN scopes" requiredScope=github-full-access scopes="[agent-team1-git-issue-agent-aud profile github-tool-aud email openid]"
 ```
 
 ### 10f. Clean up
@@ -1167,20 +1164,10 @@ kubectl delete mutatingwebhookconfiguration kagenti-webhook-authbridge-mutating-
 
 | File | Description |
 |------|-------------|
-| `demos/github-issue/demo-manual.md` | This guide |
+| `demos/github-issue/demo-rbac.md` | This guide (variant or demo-manual.md) |
+| `demos/github-issue/demo-manual.md` | This guide's baseline |
 | `demos/github-issue/demo-ui.md` | UI-driven deployment guide |
 | `demos/github-issue/setup_keycloak.py` | Keycloak configuration script |
 | `demos/github-issue/k8s/configmaps.yaml` | Demo-specific authbridge-config override |
 | `demos/github-issue/k8s/git-issue-agent-deployment.yaml` | Agent deployment with AuthBridge labels |
 | `demos/github-issue/k8s/github-tool-deployment.yaml` | GitHub tool deployment (no injection) |
-
-## Next Steps
-
-- **UI Deployment**: See [demo-ui.md](demo-ui.md) for deploying via the Kagenti dashboard
-- **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
-  JWT validation and outbound token exchange internals
-- **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
-  route-based token exchange to multiple tool services
-- **Access Policies**: See the [access policies proposal](../../PROPOSAL-access-policies.md)
-  for role-based delegation control
-- **AuthBridge Overview**: See the [AuthBridge README](../../README.md) for architecture details

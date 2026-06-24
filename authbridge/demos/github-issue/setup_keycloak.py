@@ -54,11 +54,11 @@ This script supports two modes:
     are intentionally left alone.
 
     Usage:
-        python setup_keycloak.py -rbac config_file.yaml [-policy policy.yaml] [--reset-only]
+        python setup_keycloak.py -rbac <path-to>/config.yaml [-policy <path-to>/policy.yaml] [--reset-only]
 
     Arguments:
-        -rbac config_file.yaml    Path to main configuration YAML file
-        -policy policy.yaml       Path to access control policy YAML file (optional).
+        -rbac <path-to>/config_file.yaml    Path to main configuration YAML file
+        -policy <path-to>/policy.yaml       Path to access control policy YAML file (optional).
                                   Makes realm roles composites of the client roles
                                   declared in the policy, implementing RBAC through
                                   OAuth2 token scopes.
@@ -81,7 +81,6 @@ Security Note:
   in any production or internet-exposed environment.
 """
 
-import argparse
 import json
 import os
 import sys
@@ -254,24 +253,7 @@ def get_or_create_user(keycloak_admin, user_config):
         raise
 
 
-def main_manual():
-    parser = argparse.ArgumentParser(description="Setup Keycloak for GitHub Issue Agent + AuthBridge demo")
-    parser.add_argument(
-        "--namespace",
-        "-n",
-        default=DEFAULT_NAMESPACE,
-        help=f"Kubernetes namespace (default: {DEFAULT_NAMESPACE})",
-    )
-    parser.add_argument(
-        "--service-account",
-        "-s",
-        default=DEFAULT_SERVICE_ACCOUNT,
-        help=f"Service account name (default: {DEFAULT_SERVICE_ACCOUNT})",
-    )
-    args = parser.parse_args()
-
-    namespace = args.namespace
-    service_account = args.service_account
+def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAULT_SERVICE_ACCOUNT):
     agent_spiffe_id = get_spiffe_id(namespace, service_account)
 
     print("=" * 70)
@@ -1396,7 +1378,7 @@ def main_rbac(config_file: str, policy_file: Optional[str] = None, reset_only: b
 
     # 1. Load configuration (env + YAML)
     load_dotenv(script_dir / "aiac" / "aiac.env")
-    main_config_path = script_dir / "aiac" / config_file
+    main_config_path = script_dir / config_file
     print(f"Loading main configuration from {main_config_path} ...")
     main_config = load_main_config(main_config_path)
 
@@ -1447,7 +1429,7 @@ def main_rbac(config_file: str, policy_file: Optional[str] = None, reset_only: b
 
     # 8.5. Apply access control policy (if provided)
     if policy_file:
-        policy_path = script_dir / "aiac" / policy_file
+        policy_path = script_dir / policy_file
         print(f"\nApplying access control policy from {policy_path} ...")
         client_id_mapping = {name: info["id"] for name, info in client_ids.items()}
         apply_access_control_policy(admin, realm, policy_path, client_id_mapping, scope_ids)
@@ -1471,25 +1453,51 @@ def main_rbac(config_file: str, policy_file: Optional[str] = None, reset_only: b
 # ===========================================================================
 
 if __name__ == "__main__":
-    if "-rbac" in sys.argv:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Setup Keycloak for GitHub Issue Agent + AuthBridge demo",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""modes:
+  Manual mode (default, no -rbac):
+    python setup_keycloak.py [--namespace NS] [--service-account SA]
+
+  RBAC mode (-rbac):
+    python setup_keycloak.py -rbac <path-to>/config.yaml [-policy <path-to>/policy.yaml] [--reset-only]
+""",
+    )
+    parser.add_argument(
+        "--namespace",
+        "-n",
+        default=DEFAULT_NAMESPACE,
+        help=f"Kubernetes namespace (default: {DEFAULT_NAMESPACE})",
+    )
+    parser.add_argument(
+        "--service-account",
+        "-s",
+        default=DEFAULT_SERVICE_ACCOUNT,
+        help=f"Service account name (default: {DEFAULT_SERVICE_ACCOUNT})",
+    )
+    parser.add_argument(
+        "-rbac",
+        metavar="CONFIG_FILE",
+        help="Path to main YAML config file — enables RBAC mode",
+    )
+    parser.add_argument(
+        "-policy",
+        metavar="POLICY_FILE",
+        help="Path to access control policy YAML (RBAC mode, optional)",
+    )
+    parser.add_argument(
+        "--reset-only",
+        action="store_true",
+        help="Run cleanup pass only, skip provisioning (RBAC mode)",
+    )
+    args = parser.parse_args()
+
+    if args.rbac:
         try:
-            idx = sys.argv.index("-rbac")
-            if idx + 1 >= len(sys.argv):
-                print(
-                    "Usage: python setup_keycloak.py -rbac config.yaml [-policy policy.yaml] [--reset-only]",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            config_file = sys.argv[idx + 1]
-            policy_file = None
-            if "-policy" in sys.argv:
-                pidx = sys.argv.index("-policy")
-                if pidx + 1 >= len(sys.argv):
-                    print("Error: -policy requires a file argument", file=sys.stderr)
-                    sys.exit(1)
-                policy_file = sys.argv[pidx + 1]
-            reset_only = "--reset-only" in sys.argv
-            main_rbac(config_file, policy_file=policy_file, reset_only=reset_only)
+            main_rbac(args.rbac, policy_file=args.policy, reset_only=args.reset_only)
         except Exception as e:
             import traceback
 
@@ -1497,4 +1505,4 @@ if __name__ == "__main__":
             traceback.print_exc()
             sys.exit(1)
     else:
-        main_manual()
+        main_manual(namespace=args.namespace, service_account=args.service_account)
