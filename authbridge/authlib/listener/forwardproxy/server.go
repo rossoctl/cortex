@@ -972,23 +972,41 @@ func writeSSEFrame(w io.Writer, frame []byte) bool {
 }
 
 // sseEventName returns the SSE `event:` name to emit for an SSE data
-// payload, or "" when none should be emitted. Anthropic Messages
-// stream events carry a top-level JSON "type" (message_start,
-// content_block_start, content_block_delta, content_block_stop,
-// message_delta, message_stop, ping, error) that equals the SSE event
-// name the upstream sent; reconstructing it keeps the relayed stream
-// byte-faithful Anthropic SSE. Non-JSON frames ("[DONE]") and
-// data-only protocols (MCP/A2A JSON-RPC with "jsonrpc"/"kind", OpenAI
-// chat chunks with "object") have no top-level string "type" and
-// return "", so their data-only framing is preserved unchanged.
+// payload, or "" when none should be emitted. It maps a frame to one of
+// the known Anthropic Messages stream events via the payload's top-level
+// JSON "type"; reconstructing that `event:` line keeps the relayed stream
+// byte-faithful Anthropic SSE (the sseframe reader drops it).
+//
+// Two deliberate constraints:
+//   - Fast path: skip the JSON parse entirely for frames that cannot carry
+//     a top-level "type" (data-only JSON-RPC / OpenAI chat chunks with
+//     "object" / "[DONE]"), so high-rate token streams stay allocation-free
+//     on the proxy's hot data path.
+//   - Allowlist: emit only the fixed set of Anthropic stream event names.
+//     The "type" comes from an upstream the bridge does not trust, so
+//     echoing it verbatim would let a crafted value inject SSE fields (a
+//     CRLF in "type") or steer the client's event dispatch with an
+//     arbitrary name. Exact-matching a constant set makes both impossible
+//     and scopes reconstruction to Anthropic — a future data-only protocol
+//     that happens to carry a top-level "type" (e.g. the OpenAI Responses
+//     API) is left untouched.
 func sseEventName(frame []byte) string {
+	if !bytes.Contains(frame, []byte(`"type"`)) {
+		return ""
+	}
 	var probe struct {
 		Type string `json:"type"`
 	}
 	if err := json.Unmarshal(frame, &probe); err != nil {
 		return ""
 	}
-	return probe.Type
+	switch probe.Type {
+	case "message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop", "ping", "error":
+		return probe.Type
+	default:
+		return ""
+	}
 }
 
 // idleReader wraps r so each Read enforces an idle deadline. The

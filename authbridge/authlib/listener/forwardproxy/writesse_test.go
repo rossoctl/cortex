@@ -25,6 +25,13 @@ func TestSSEEventName(t *testing.T) {
 		{"a2a kind not type", `{"kind":"status-update","taskId":"t1"}`, ""},
 		{"non-json [DONE]", `[DONE]`, ""},
 		{"empty", ``, ""},
+		// Allowlist guards: the "type" comes from an untrusted upstream, so
+		// unknown / non-Anthropic / injection-bearing values must NOT become
+		// event names.
+		{"unknown type not allowlisted", `{"type":"foo"}`, ""},
+		{"openai responses top-level type", `{"type":"response.output_text.delta"}`, ""},
+		{"crlf injection in type rejected", "{\"type\":\"message_start\\nid: 1\"}", ""},
+		{"crlf injection bare rejected", "{\"type\":\"x\\r\\nevent: injected\"}", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,5 +91,33 @@ func TestWriteSSEFrameMultiLineData(t *testing.T) {
 	want := "data: line-a\ndata: line-b\n\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("multi-line frame:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestWriteSSEFrameRejectsUnknownAndInjection is the end-to-end guard for the
+// allowlist: a frame whose top-level "type" is unknown, non-Anthropic, or
+// carries injection bytes (CRLF) must be relayed data-only — never an
+// attacker-controlled event: line.
+func TestWriteSSEFrameRejectsUnknownAndInjection(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"foo"}`,
+		`{"type":"response.output_text.delta"}`,
+		"{\"type\":\"message_start\\nid: 1\"}",
+		"{\"type\":\"x\\r\\nevent: injected\"}",
+	} {
+		var buf bytes.Buffer
+		if !writeSSEFrame(&buf, []byte(frame)) {
+			t.Fatalf("writeSSEFrame returned false for %q", frame)
+		}
+		// The security property is "no SSE event: FIELD line was emitted".
+		// A literal "event:" inside a data payload is harmless — every body
+		// line is written with a "data: " prefix, so only a reconstructed
+		// name from sseEventName could produce a bare event: line.
+		got := buf.String()
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(line, "event:") {
+				t.Fatalf("emitted an event: line for %q:\n%q", frame, got)
+			}
+		}
 	}
 }
