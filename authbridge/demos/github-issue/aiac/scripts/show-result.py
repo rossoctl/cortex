@@ -51,6 +51,7 @@ def main() -> None:
     parser.add_argument(
         "--config-path",
         type=Path,
+        required=True,
         help="Path to the RBAC configuration YAML file",
     )
     args = parser.parse_args()

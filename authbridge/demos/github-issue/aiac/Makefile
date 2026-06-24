@@ -31,12 +31,12 @@ help:  ## Show this menu (default)
 	     $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
 	@printf "  \033[36m%-20s\033[0m %s\n" "POLICY" "policy file to apply (default: policies/regular_policy.txt)"
-	@printf "  \033[36m%-20s\033[0m %s\n" "RBAC_CONFIG" "RBAC config file (default: config/rbac/rbac_config.yaml)"
+	@printf "  \033[36m%-20s\033[0m %s\n" "RBAC_CONFIG" "RBAC config file (default: rbac/config.yaml)"
 	@printf "  \033[36m%-20s\033[0m %s\n" "PYTHON"  "Python interpreter (default: kagenti-extensions/.venv/bin/python)"
 	@printf "\nPrerequisites: uv, Keycloak running, aiac.env and llm_conf.yaml configured.\n\n"
 
 POLICY ?= policies/regular_policy.txt
-RBAC_CONFIG ?= ../rbac/config.yaml
+RBAC_CONFIG ?= rbac/config.yaml
 
 # Resolve the venv relative to this Makefile, regardless of where make is invoked.
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
@@ -83,7 +83,7 @@ preflight:  ## Verify prerequisites (uv, venv, aiac.env, llm_conf.yaml, Keycloak
 
 setup: preflight  ## Provision Keycloak realm with clients, roles, and users
 	@echo "[*] Provisioning Keycloak realm ..."
-	$(PYTHON) ../setup_keycloak.py -rbac aiac/$(RBAC_CONFIG)
+	$(PYTHON) ../setup_keycloak.py -rbac $(RBAC_CONFIG)
 	@echo "[✓] Keycloak realm provisioned."
 
 # ---------- Apply policy ----------
@@ -98,7 +98,7 @@ apply-permissive: apply-policy  ## Generate + apply the permissive policy (grant
 # ---------- Show result ----------
 
 show-result: preflight  ## Show active composite-role mappings in Keycloak (verify applied policy)
-	$(PYTHON) scripts/show-result.py --config-path $(RBAC_CONFIG)
+	$(PYTHON) scripts/show-result.py --config-path ../$(RBAC_CONFIG)
 
 # ---------- Reset ----------
 
@@ -106,5 +106,5 @@ reset: preflight  ## Wipe generated configs and re-provision the realm from scra
 	@echo "[*] Removing generated configs ..."
 	@rm -f config/*.yaml
 	@echo "[*] Re-provisioning Keycloak realm ..."
-	$(PYTHON) ../setup_keycloak.py -rbac aiac/$(RBAC_CONFIG)
+	$(PYTHON) ../setup_keycloak.py -rbac $(RBAC_CONFIG)
 	@echo "[✓] Reset complete."
