@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -914,7 +915,23 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // boundaries the upstream produced. Returns true when every byte
 // was written; false on any write error so the caller can stop
 // forwarding without re-checking each Write.
+//
+// The sseframe reader drops the SSE `event:` field (it surfaces only
+// data payloads), which is correct for data-only streams (MCP/A2A
+// JSON-RPC, OpenAI chat chunks). But Anthropic's Messages streaming
+// REQUIRES a typed `event:` line before each `data:` — without it the
+// Anthropic client can't finalize the stream and falls back to a
+// non-streaming retry, doubling the upstream call. Reconstruct the
+// `event:` line from the payload's top-level "type" (which, for an
+// Anthropic stream event, is exactly the SSE event name). Frames
+// without a top-level string "type" get no event line, preserving the
+// data-only shape the other protocols expect.
 func writeSSEFrame(w io.Writer, frame []byte) bool {
+	if ev := sseEventName(frame); ev != "" {
+		if _, err := io.WriteString(w, "event: "+ev+"\n"); err != nil {
+			return false
+		}
+	}
 	for len(frame) > 0 {
 		nl := bytes.IndexByte(frame, '\n')
 		var line []byte
@@ -939,6 +956,26 @@ func writeSSEFrame(w io.Writer, frame []byte) bool {
 		return false
 	}
 	return true
+}
+
+// sseEventName returns the SSE `event:` name to emit for an SSE data
+// payload, or "" when none should be emitted. Anthropic Messages
+// stream events carry a top-level JSON "type" (message_start,
+// content_block_start, content_block_delta, content_block_stop,
+// message_delta, message_stop, ping, error) that equals the SSE event
+// name the upstream sent; reconstructing it keeps the relayed stream
+// byte-faithful Anthropic SSE. Non-JSON frames ("[DONE]") and
+// data-only protocols (MCP/A2A JSON-RPC with "jsonrpc"/"kind", OpenAI
+// chat chunks with "object") have no top-level string "type" and
+// return "", so their data-only framing is preserved unchanged.
+func sseEventName(frame []byte) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(frame, &probe); err != nil {
+		return ""
+	}
+	return probe.Type
 }
 
 // idleReader wraps r so each Read enforces an idle deadline. The
