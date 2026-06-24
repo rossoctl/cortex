@@ -12,9 +12,9 @@ binaries with shared auth logic in `authlib/`:
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
   proxies. Compiles in every plugin by default (jwt-validation, token-exchange,
   a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker).
-  Every plugin except jwt-validation + token-exchange is excludable via
-  `-tags exclude_plugin_<name>` — one `plugins_<name>.go` file per plugin,
-  gated by `//go:build !exclude_plugin_<name>`.
+  **Every** plugin is excludable via `-tags exclude_plugin_<name>` — one
+  `plugins_<name>.go` file per plugin, gated by `//go:build !exclude_plugin_<name>`;
+  `main.go` imports no plugin package directly.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
   into Envoy. Full plugin set. The `exclude_plugin_ibac` tag applies here too.
 - `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`
