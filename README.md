@@ -10,7 +10,7 @@ Kubernetes security extensions for the [Kagenti](https://github.com/kagenti/kage
 - **Mode-specific binaries** under [`authbridge/cmd/`](./authbridge/cmd/):
   - [`authbridge-proxy`](./authbridge/cmd/authbridge-proxy/) — proxy-sidecar (default): HTTP forward + reverse proxies, full plugin set.
   - [`authbridge-envoy`](./authbridge/cmd/authbridge-envoy/) — envoy-sidecar: ext_proc gRPC server hooked into Envoy, full plugin set.
-  - [`authbridge-lite`](./authbridge/cmd/authbridge-lite/) — proxy-sidecar with auth-only plugins (no parsers); for size-constrained deployments.
+  - `authbridge-lite` — **not a separate binary**: the `authbridge-lite` image is `authbridge-proxy` built with `exclude_plugin_*` tags (auth-only: jwt-validation + token-exchange), for size-constrained deployments. See [`authbridge-proxy`](./authbridge/cmd/authbridge-proxy/).
 - **[proxy-init](./authbridge/proxy-init/)** — iptables init container used by envoy-sidecar mode for transparent traffic interception.
 - **[Keycloak Sync](./authbridge/keycloak_sync.py)** — Declarative tool for synchronizing Keycloak configuration.
 
@@ -29,7 +29,7 @@ mode-specific combined images, and the per-component sidecars
 |-------|-------------|
 | `authbridge` | proxy-sidecar combined (default): authbridge-proxy + bundled spiffe-helper, full plugin set |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper, full plugin set |
-| `authbridge-lite` | proxy-sidecar shape, auth-only plugins (no parsers) for size-constrained deployments |
+| `authbridge-lite` | `authbridge-proxy` built with `exclude_plugin_*` tags — auth-only (jwt-validation + token-exchange, OPA + parsers dropped), for size-constrained deployments. A build variant, not a separate binary |
 | `proxy-init` | Alpine + iptables init container (envoy-sidecar mode only) |
 
 `spiffe-helper` is bundled inside each combined image and gated per

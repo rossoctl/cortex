@@ -6,9 +6,9 @@
 //
 // Mode is hardcoded to envoy-sidecar; YAML configs that specify a
 // different mode are rejected at boot. For proxy-sidecar mode (HTTP
-// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy. For a
-// size-optimized proxy-sidecar build with parsers dropped, use
-// cmd/authbridge-lite.
+// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy — which
+// also produces the size-optimized authbridge-lite image when built
+// with exclude_plugin_* tags.
 package main
 
 import (

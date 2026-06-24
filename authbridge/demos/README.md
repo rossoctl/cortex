@@ -5,9 +5,9 @@ authentication for Kubernetes agent workloads. Each demo progressively introduce
 more AuthBridge capabilities.
 
 > **Note:** These demos use the operator-injected combined sidecar (after
-> kagenti-extensions#411 — one image per mode: `authbridge` for proxy-sidecar,
-> `authbridge-envoy` for envoy-sidecar, `authbridge-lite` for the auth-only
-> shape). The previous `authbridge-unified` image and the per-component
+> kagenti-extensions#411 — `authbridge` for proxy-sidecar, `authbridge-envoy`
+> for envoy-sidecar, and `authbridge-lite`, the proxy image built auth-only
+> via `exclude_plugin_*` tags). The previous `authbridge-unified` image and the per-component
 > sidecars (`client-registration`, standalone `spiffe-helper`) have been
 > removed.
 

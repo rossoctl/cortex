@@ -11,7 +11,7 @@ binary you run, not at runtime via a flag.
 |---|---|---|---|---|
 | [`authbridge-proxy/`](authbridge-proxy/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/kagenti/kagenti-extensions/authbridge` |
 | [`authbridge-envoy/`](authbridge-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/kagenti/kagenti-extensions/authbridge-envoy` |
-| [`authbridge-lite/`](authbridge-lite/) | `proxy-sidecar` | HTTP forward + reverse proxies | lite (jwt-validation + token-exchange only — parsers dropped) | `ghcr.io/kagenti/kagenti-extensions/authbridge-lite` |
+| `authbridge-lite` _(build variant of `authbridge-proxy`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `authbridge-proxy` built with `exclude_plugin_*` tags (jwt-validation + token-exchange only; OPA + parsers dropped) | `ghcr.io/kagenti/kagenti-extensions/authbridge-lite` |
 | [`abctl/`](abctl/) | n/a | n/a | n/a | not published — local TUI for the Session Events API |
 
 Each binary directory contains `main.go`, `go.mod`/`go.sum`,
@@ -34,7 +34,7 @@ ConfigMap contracts are documented in
 
 ## Ports
 
-**Proxy-sidecar (`authbridge-proxy`, `authbridge-lite`):**
+**Proxy-sidecar (`authbridge-proxy`, and its `authbridge-lite` image variant):**
 
 | Port | Purpose |
 |---|---|
@@ -60,7 +60,8 @@ ConfigMap contracts are documented in
 - **Need ambient/transparent interception via Envoy**: use
   `authbridge-envoy`. Requires the [`proxy-init`](../authproxy/)
   iptables init container.
-- **Size-constrained, no protocol-aware events needed**: use
-  `authbridge-lite`. Same listener layout as `authbridge-proxy` but
-  without parsers — abctl will only see denial events and basic
-  auth-level invocations, not full A2A/MCP/Inference protocol context.
+- **Size-constrained, no protocol-aware events needed**: use the
+  `authbridge-lite` image — the `authbridge-proxy` binary built with
+  `exclude_plugin_*` tags (auth-only). Same listener layout, but without
+  parsers/OPA — abctl will only see denial events and basic auth-level
+  invocations, not full A2A/MCP/Inference protocol context.

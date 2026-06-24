@@ -1,12 +1,17 @@
 // Package main is the proxy-sidecar authbridge binary: HTTP forward
-// proxy + reverse proxy, no Envoy / gRPC dependencies, full plugin set
-// (jwt-validation, token-exchange, a2a-parser, mcp-parser,
-// inference-parser).
+// proxy + reverse proxy, no Envoy / gRPC dependencies. By default it
+// compiles in every registered plugin; individual plugins can be
+// dropped at build time via `-tags exclude_plugin_<name>` (each lives
+// in its own plugins_<name>.go file). jwt-validation and token-exchange
+// are always compiled in.
+//
+// The `authbridge-lite` image is this same binary built with the
+// parser/opa/token-broker plugins excluded, leaving only jwt-validation
+// + token-exchange — it is a build variant, not a separate binary.
 //
 // Mode is hardcoded to proxy-sidecar; YAML configs that specify a
 // different mode are rejected at boot. For envoy-sidecar mode, use
-// cmd/authbridge-envoy. For a size-optimized build with parsers
-// dropped, use cmd/authbridge-lite.
+// cmd/authbridge-envoy.
 package main
 
 import (
@@ -44,15 +49,11 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/transparentproxy"
 
-	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for abctl.
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
+	// Always-compiled plugins (the "lite" footprint). Every other plugin
+	// is wired via its own plugins_<name>.go file gated by
+	// `//go:build !exclude_plugin_<name>`, so it can be dropped at build
+	// time (e.g. the authbridge-lite image excludes all but these two).
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/sparc"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
 	// Named (not blank) so pluginUsesSPIFFEIdentity can reference the shared
 	// SpiffeIdentity constant instead of duplicating the "spiffe" literal.
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"

@@ -22,11 +22,6 @@ updates:
     directory: /authbridge/cmd/authbridge-envoy
     schedule:
       interval: weekly
-  - package-ecosystem: gomod
-    directory: /authbridge/cmd/authbridge-lite
-    schedule:
-      interval: weekly
-
   # Go - abctl TUI
   - package-ecosystem: gomod
     directory: /authbridge/cmd/abctl
