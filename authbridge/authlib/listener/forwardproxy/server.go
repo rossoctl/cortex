@@ -293,6 +293,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		// Pin this session so the paired response event records into the
+		// same bucket. Without it, recordOutboundResponseEvent re-resolves
+		// ActiveSession() at response time, which interleaving traffic (a
+		// health probe under "default") can flip mid-stream — mis-filing a
+		// streaming inference response away from its request's session.
+		pctx.OutboundSessionID = sid
 		// Snapshot-copy the protocol extension so the request event
 		// doesn't see response-phase mutations on the same MCP/Inference
 		// struct (e.g. token counts assigned in OnResponse).
@@ -499,7 +505,14 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.Sessions.ActiveSession()
+	// Prefer the session pinned when the request event was recorded so the
+	// response lands in the same bucket. Fall back to ActiveSession() only
+	// when nothing was pinned (defensive — a response-only path), then to
+	// the default bucket. See Context.OutboundSessionID.
+	sid := pctx.OutboundSessionID
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
