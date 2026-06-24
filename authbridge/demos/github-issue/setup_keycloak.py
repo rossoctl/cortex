@@ -1363,8 +1363,21 @@ def apply_access_control_policy(
             try:
                 _add_client_role_to_realm_role_composite(admin, realm, user_role, client_id, role_name)
                 print(f"  ✓ Added client role '{client_name}.{role_name}' to realm role '{user_role}'")
-            except Exception as e:
-                print(f"  ℹ Client role '{client_name}.{role_name}' already in composite or error: {e}")
+            except KeycloakPostError as e:
+                # HTTP 409 Conflict indicates the composite relationship already exists (idempotent)
+                if e.response_code == 409:
+                    print(
+                        f"  ℹ Client role '{client_name}.{role_name}' already in composite for realm role '{user_role}'"
+                    )
+                else:
+                    # Re-raise other Keycloak API errors (auth failures, malformed requests, etc.)
+                    raise
+            except KeycloakGetError as e:
+                # Role lookup failures indicate missing roles - these should not be suppressed
+                raise RuntimeError(
+                    f"Failed to add client role '{client_name}.{role_name}' to realm role '{user_role}': "
+                    f"Role not found (client_id={client_id})"
+                ) from e
 
 
 # ---------------------------------------------------------------------------

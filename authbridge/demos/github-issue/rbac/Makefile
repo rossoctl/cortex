@@ -20,7 +20,7 @@
 #   - PRIVILEGED_ACCESS_PAT and PUBLIC_ACCESS_PAT set for the deploy target
 
 .PHONY: help preflight build-images setup-namespace setup-keycloak apply-configmaps \
-        check-pats create-secret deploy-tool deploy-agent deploy validate test test-rbac clean
+        check-pats create-secret deploy-tool deploy-agent deploy validate test-ab test-rbac clean
 
 # `make` with no target prints help.
 .DEFAULT_GOAL := help

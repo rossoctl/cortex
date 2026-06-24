@@ -264,7 +264,7 @@ uv pip install -r requirements.txt
 
 cd demos/github-issue
 # Run the Keycloak setup for this demo
-python setup_keycloak.py -rbac aiac/config/rbac/config.yaml -policy aiac/config/rbac/policy.yaml
+python setup_keycloak.py -rbac rbac/config.yaml -policy rbac/policy.yaml
 ```
 
 
