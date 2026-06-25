@@ -11,10 +11,11 @@
 // and rewrites the header in place. Unresolvable placeholders fail closed
 // (the request is denied rather than forwarded with the placeholder).
 //
-// The Resolver is the swap seam: the default implementations resolve from
-// an inline map (isolation testing), a mounted secret directory, or the
-// process environment. A future gateway-gRPC resolver (calling OpenShell's
-// GetSandboxProviderEnvironment) plugs in here without touching the plugin.
+// The Resolver is the swap seam. The primary source is the OpenShell gateway
+// (the `gateway` config block — fetches the sandbox's resolved provider
+// environment via GetSandboxProviderEnvironment, requires running as a
+// sidecar in the sandbox pod). For testing it can resolve from an inline
+// map, a mounted secret directory, or the process environment.
 package placeholderresolve
 
 import (
@@ -31,6 +32,7 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/placeholderresolve/gateway"
 )
 
 // defaultPrefix is the OpenShell placeholder prefix. Kept identical to the
@@ -43,6 +45,13 @@ const defaultPrefix = "openshell:resolve:env:"
 // after the prefix and (because it admits no '/' or '.') also makes the
 // file-source path join safe from traversal.
 const envKeyPattern = `([A-Za-z_][A-Za-z0-9_]*)`
+
+// Default OpenShell sidecar paths for the gateway source (match the k8s
+// driver's pod-spec conventions).
+const (
+	defaultMTLSCertDir = "/etc/openshell-tls/client"
+	defaultSATokenPath = "/var/run/secrets/openshell/token"
+)
 
 // placeholderResolveConfig is the plugin's local config schema. Field tags
 // drive both runtime decoding (json) and operator-facing schema
@@ -57,14 +66,27 @@ type placeholderResolveConfig struct {
 	// upstream wire today).
 	Headers []string `json:"headers" description:"Request headers to scan for placeholders." default:"Authorization"`
 
+	// Gateway, when set, resolves each KEY from the OpenShell gateway's
+	// resolved provider environment (the native-provider source). Takes
+	// precedence over mappings/secret_dir/env. Requires running as a sidecar
+	// in the sandbox pod (shared SA + sandbox-id annotation).
+	Gateway *gatewayConfig `json:"gateway" description:"Resolve credentials from the OpenShell gateway (sandbox sidecar)."`
+
 	// Mappings is an optional inline KEY->value map used as the resolver
-	// source. Intended for isolation testing; takes precedence over
-	// secret_dir and env when non-empty.
+	// source. Intended for isolation testing.
 	Mappings map[string]string `json:"mappings" description:"Inline KEY->value resolver source (isolation testing)."`
 
-	// SecretDir, when set (and Mappings empty), resolves each KEY by
-	// reading <SecretDir>/<KEY> as a credential file.
+	// SecretDir, when set, resolves each KEY by reading <SecretDir>/<KEY> as
+	// a credential file.
 	SecretDir string `json:"secret_dir" description:"Directory to resolve each KEY from a file named <KEY>."`
+}
+
+// gatewayConfig configures the OpenShell-gateway resolver source.
+type gatewayConfig struct {
+	Endpoint    string `json:"endpoint" required:"true" description:"OpenShell gateway gRPC endpoint, e.g. https://openshell.<ns>.svc:8080."`
+	MTLSCertDir string `json:"mtls_cert_dir" description:"Dir holding ca.crt/tls.crt/tls.key for mTLS to the gateway." default:"/etc/openshell-tls/client"`
+	SATokenPath string `json:"sa_token_path" description:"Projected SA token file (audience openshell-gateway)." default:"/var/run/secrets/openshell/token"`
+	SandboxID   string `json:"sandbox_id" required:"true" description:"This sandbox's id (OPENSHELL_SANDBOX_ID); must match the gateway-minted JWT."`
 }
 
 func (c *placeholderResolveConfig) applyDefaults() {
@@ -73,6 +95,14 @@ func (c *placeholderResolveConfig) applyDefaults() {
 	}
 	if len(c.Headers) == 0 {
 		c.Headers = []string{"Authorization"}
+	}
+	if c.Gateway != nil {
+		if c.Gateway.MTLSCertDir == "" {
+			c.Gateway.MTLSCertDir = defaultMTLSCertDir
+		}
+		if c.Gateway.SATokenPath == "" {
+			c.Gateway.SATokenPath = defaultSATokenPath
+		}
 	}
 }
 
@@ -83,14 +113,30 @@ func (c *placeholderResolveConfig) validate() error {
 	if len(c.Headers) == 0 {
 		return errors.New("headers must list at least one header")
 	}
+	if c.Gateway != nil {
+		if c.Gateway.Endpoint == "" {
+			return errors.New("gateway.endpoint is required")
+		}
+		if c.Gateway.SandboxID == "" {
+			return errors.New("gateway.sandbox_id is required")
+		}
+	}
 	return nil
 }
 
 // Resolver maps a placeholder KEY to its real secret value. ok is false
-// when the key is unknown — the plugin fails closed on a false. This is the
-// swap seam: the gateway-gRPC source (B2) implements this interface.
+// when the key is unknown — the plugin fails closed on a false.
 type Resolver interface {
 	Resolve(ctx context.Context, key string) (string, bool)
+}
+
+// lifecycleResolver is implemented by resolvers needing background warm-up
+// (the gateway source). The map/file/env resolvers do not implement it and
+// are treated as always-ready.
+type lifecycleResolver interface {
+	Start(ctx context.Context) error
+	Ready() bool
+	Stop(ctx context.Context) error
 }
 
 // mapResolver resolves from an inline map (isolation testing).
@@ -148,9 +194,10 @@ func (p *PlaceholderResolve) Capabilities() pipeline.PluginCapabilities {
 	}
 }
 
-// ConfigSchema surfaces field metadata to config-aware tooling.
+// ConfigSchema surfaces field metadata to config-aware tooling. A non-nil
+// Gateway is passed so the nested block's fields are reflected.
 func (p *PlaceholderResolve) ConfigSchema() []pipeline.FieldSchema {
-	return pipeline.SchemaOf(placeholderResolveConfig{})
+	return pipeline.SchemaOf(placeholderResolveConfig{Gateway: &gatewayConfig{}})
 }
 
 func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
@@ -172,11 +219,21 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("placeholder-resolve: compile prefix pattern: %w", err)
 	}
 
-	// Pick the resolver source. Mappings wins (deterministic, for tests),
-	// then a mounted secret dir, else the process environment. The gateway
-	// gRPC source (B2) will be selected here behind a new config option.
+	// Pick the resolver source. The gateway (native OpenShell provider) wins;
+	// then inline mappings, a mounted secret dir, else the process env.
 	var resolver Resolver
 	switch {
+	case c.Gateway != nil:
+		gw, gerr := gateway.New(gateway.Config{
+			Endpoint:    c.Gateway.Endpoint,
+			MTLSCertDir: c.Gateway.MTLSCertDir,
+			SATokenPath: c.Gateway.SATokenPath,
+			SandboxID:   c.Gateway.SandboxID,
+		})
+		if gerr != nil {
+			return fmt.Errorf("placeholder-resolve: gateway resolver: %w", gerr)
+		}
+		resolver = gw
 	case len(c.Mappings) > 0:
 		resolver = mapResolver(c.Mappings)
 	case c.SecretDir != "":
@@ -190,6 +247,33 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 	p.cfg = c
 	p.re = re
 	p.resolver = resolver
+	return nil
+}
+
+// Init starts a lifecycle-capable resolver's background warm-up (the gateway
+// source). It returns promptly; readiness is reported via Ready so the
+// pipeline gates traffic until the credential cache is primed.
+func (p *PlaceholderResolve) Init(ctx context.Context) error {
+	if lr, ok := p.resolver.(lifecycleResolver); ok {
+		return lr.Start(ctx)
+	}
+	return nil
+}
+
+// Ready reports resolver readiness — always true for the static
+// (map/file/env) resolvers; gated on the primed cache for the gateway source.
+func (p *PlaceholderResolve) Ready() bool {
+	if lr, ok := p.resolver.(lifecycleResolver); ok {
+		return lr.Ready()
+	}
+	return true
+}
+
+// Shutdown stops a lifecycle-capable resolver's background work.
+func (p *PlaceholderResolve) Shutdown(ctx context.Context) error {
+	if lr, ok := p.resolver.(lifecycleResolver); ok {
+		return lr.Stop(ctx)
+	}
 	return nil
 }
 
@@ -263,4 +347,7 @@ func validResolved(s string) bool {
 var (
 	_ pipeline.Plugin       = (*PlaceholderResolve)(nil)
 	_ pipeline.Configurable = (*PlaceholderResolve)(nil)
+	_ pipeline.Initializer  = (*PlaceholderResolve)(nil)
+	_ pipeline.Readier      = (*PlaceholderResolve)(nil)
+	_ pipeline.Shutdowner   = (*PlaceholderResolve)(nil)
 )

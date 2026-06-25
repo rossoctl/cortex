@@ -1,0 +1,48 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package openshell.v1;
+
+// Minimal subset of the OpenShell gateway API: only the two RPCs the AuthBridge
+// placeholder-resolve gateway resolver calls, plus their messages. The full
+// OpenShell API is intentionally NOT vendored here. The package, service, RPC,
+// and message names and field numbers match the gateway's openshell.v1.OpenShell
+// service exactly, so the wire contract is unchanged.
+service OpenShell {
+  // Get provider environment for a sandbox (called by the sandbox supervisor, and
+  // by an AuthBridge sidecar, at startup). Restricted to the sandbox's own identity.
+  rpc GetSandboxProviderEnvironment(GetSandboxProviderEnvironmentRequest)
+      returns (GetSandboxProviderEnvironmentResponse);
+
+  // Mint a gateway JWT bound to the calling sandbox's identity (Bearer SA token).
+  rpc IssueSandboxToken(IssueSandboxTokenRequest) returns (IssueSandboxTokenResponse);
+}
+
+// IssueSandboxToken request. The caller is identified by its SA-token bearer
+// credential, so the request body carries no fields.
+message IssueSandboxTokenRequest {}
+
+// IssueSandboxToken response.
+message IssueSandboxTokenResponse {
+  // Gateway-minted JWT bound to the calling sandbox's UUID.
+  string token = 1;
+  // Absolute expiry of the issued token, milliseconds since the epoch. 0 means
+  // the token is non-expiring.
+  int64 expires_at_ms = 2;
+}
+
+message GetSandboxProviderEnvironmentRequest {
+  // The sandbox ID.
+  string sandbox_id = 1;
+}
+
+message GetSandboxProviderEnvironmentResponse {
+  // Provider credential environment variables.
+  map<string, string> environment = 1;
+  // Fingerprint for the provider credential inputs that produced environment.
+  uint64 provider_env_revision = 2;
+  // Expiration timestamps for returned environment variables.
+  map<string, int64> credential_expires_at_ms = 3;
+}

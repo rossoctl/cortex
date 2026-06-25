@@ -1,0 +1,21 @@
+# Generates Go gRPC stubs from the trimmed OpenShell gateway proto. Only the two
+# RPCs the placeholder-resolve gateway resolver calls are vendored (see
+# proto/openshell.proto), so a single go_package override is needed. The proto
+# declares no go_package, so managed mode injects it; module= output places it
+# under genproto/openshellv1. Remote plugins are pinned to match authlib/go.mod.
+#
+# Regenerate: cd authlib/openshell && buf generate
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package
+      path: openshell.proto
+      value: github.com/kagenti/kagenti-extensions/authbridge/authlib/openshell/genproto/openshellv1
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.6
+    out: genproto
+    opt: module=github.com/kagenti/kagenti-extensions/authbridge/authlib/openshell/genproto
+  - remote: buf.build/grpc/go:v1.5.1
+    out: genproto
+    opt: module=github.com/kagenti/kagenti-extensions/authbridge/authlib/openshell/genproto
