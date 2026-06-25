@@ -44,14 +44,17 @@ jobs:
             context: ./authbridge
             dockerfile: cmd/authbridge-proxy/Dockerfile
 
-          # AuthBridge proxy-sidecar lite combined image —
-          # authbridge-lite (auth-only plugins, parsers dropped for
-          # binary size) + spiffe-helper. Same listener layout as the
-          # full proxy image; not yet referenced by the operator's
-          # default config.
+          # AuthBridge proxy-sidecar LITE image — the SAME authbridge-proxy
+          # binary + Dockerfile, built with exclude_plugin_* tags so only
+          # jwt-validation + token-exchange compile in (drops the OPA SDK
+          # and the parsers, roughly halving the binary). A build variant,
+          # not a separate binary. Same listener layout as the full proxy
+          # image; not yet referenced by the operator's default config.
           - name: authbridge-lite
             context: ./authbridge
-            dockerfile: cmd/authbridge-lite/Dockerfile
+            dockerfile: cmd/authbridge-proxy/Dockerfile
+            build_args: |
+              GO_BUILD_TAGS=exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker
 
           # SPARC reflection service — the backend the `sparc` plugin calls.
           # Deployed once per cluster via authbridge/sparc-service/deploy.
@@ -112,6 +115,7 @@ jobs:
         with:
           context: ${{ matrix.image_config.context }}
           file: ${{ matrix.image_config.context }}/${{ matrix.image_config.dockerfile }}
+          build-args: ${{ matrix.image_config.build_args }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}

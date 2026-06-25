@@ -6,9 +6,9 @@ import (
 )
 
 // PluginsCatalog adapts plugins.Catalog() into the wire-shaped
-// CatalogEntry slice WithCatalog expects. Three binaries (authbridge-
-// proxy, -envoy, -lite) plug it in identically; centralizing the
-// conversion here keeps the field list one-place.
+// CatalogEntry slice WithCatalog expects. Both binaries (authbridge-
+// proxy, -envoy) plug it in identically; centralizing the conversion
+// here keeps the field list one-place.
 //
 // Direction is left empty: the catalog describes plugin TYPES, and
 // most plugins can be configured into either chain (parsers especially).

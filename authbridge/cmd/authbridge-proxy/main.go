@@ -1,12 +1,18 @@
 // Package main is the proxy-sidecar authbridge binary: HTTP forward
-// proxy + reverse proxy, no Envoy / gRPC dependencies, full plugin set
-// (jwt-validation, token-exchange, a2a-parser, mcp-parser,
-// inference-parser).
+// proxy + reverse proxy, no Envoy / gRPC dependencies. By default it
+// compiles in every registered plugin. Every plugin — including
+// jwt-validation and token-exchange — has its own plugins_<name>.go
+// file gated by `//go:build !exclude_plugin_<name>`, so any subset can
+// be dropped at build time via `-tags exclude_plugin_<name>`. main.go
+// imports no plugin package directly.
+//
+// The `authbridge-lite` image is this same binary built with everything
+// except jwt-validation + token-exchange excluded — it is a build
+// variant, not a separate binary.
 //
 // Mode is hardcoded to proxy-sidecar; YAML configs that specify a
 // different mode are rejected at boot. For envoy-sidecar mode, use
-// cmd/authbridge-envoy. For a size-optimized build with parsers
-// dropped, use cmd/authbridge-lite.
+// cmd/authbridge-envoy.
 package main
 
 import (
@@ -43,19 +49,10 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/transparentproxy"
-
-	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for abctl.
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/sparc"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
-	// Named (not blank) so pluginUsesSPIFFEIdentity can reference the shared
-	// SpiffeIdentity constant instead of duplicating the "spiffe" literal.
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
+	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
+	// by `//go:build !exclude_plugin_<name>`. main.go imports no plugin
+	// package directly, so every plugin can be dropped at build time. The
+	// authbridge-lite image excludes all but jwt-validation + token-exchange.
 )
 
 var logLevel = new(slog.LevelVar)
@@ -113,6 +110,13 @@ func spiffeProviderNeeded(c *config.Config) bool {
 	return false
 }
 
+// spiffeIdentityType is the `identity.type` config value that selects the
+// SPIFFE identity scheme. It is a shared config convention (token-exchange is
+// the only consumer today); kept as a local constant so main.go stays
+// decoupled from any specific plugin package — every plugin is build-tag
+// excludable via plugins_<name>.go.
+const spiffeIdentityType = "spiffe"
+
 // pluginUsesSPIFFEIdentity reports whether a plugin's config selects the spiffe
 // identity scheme (identity.type=spiffe) — the only plugin-level consumer of
 // the Provider today (token-exchange). The `identity` block is a shared
@@ -132,7 +136,7 @@ func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
 		// later with a precise error; don't force the provider on for it.
 		return false
 	}
-	return probe.Identity.Type == tokenexchange.SpiffeIdentity
+	return probe.Identity.Type == spiffeIdentityType
 }
 
 func main() {

@@ -10,14 +10,17 @@ The unified `cmd/authbridge/` binary has been split into three mode-specific
 binaries with shared auth logic in `authlib/`:
 
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
-  proxies. Full plugin set (jwt-validation, token-exchange, a2a-parser,
-  mcp-parser, inference-parser, ibac, sparc). Ibac is excludable via
-  `-tags exclude_plugin_ibac`.
+  proxies. Compiles in every plugin by default (jwt-validation, token-exchange,
+  a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker).
+  **Every** plugin is excludable via `-tags exclude_plugin_<name>` — one
+  `plugins_<name>.go` file per plugin, gated by `//go:build !exclude_plugin_<name>`;
+  `main.go` imports no plugin package directly.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
-  into Envoy. Full plugin set. Same build-tag exclusions apply.
-- `cmd/authbridge-lite/` — proxy-sidecar mode, lite plugin set (auth gates
-  only, parsers dropped). For size-optimized deployments that don't need
-  protocol-aware session events.
+  into Envoy. Full plugin set. The `exclude_plugin_ibac` tag applies here too.
+- `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`
+  built with `exclude_plugin_*` tags so only jwt-validation + token-exchange
+  compile in (OPA + parsers dropped). For size-optimized deployments that
+  don't need protocol-aware session events.
 
 Each binary is hardcoded to its deployment shape; mode is no longer selected
 at runtime. The YAML `mode:` field must match the binary or boot fails.
@@ -58,11 +61,6 @@ authbridge/
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-lite/              # proxy-sidecar mode. Lite plugin set (no parsers).
-│   ├── main.go
-│   ├── Dockerfile                    #   proxy-sidecar lite combined image
-│   └── entrypoint.sh
-│
 ├── proxy-init/                       # iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
 │   ├── init-iptables.sh              #   iptables setup script
 │   ├── Dockerfile.init               #   proxy-init container image
@@ -92,7 +90,7 @@ authbridge/
 
 ## Component Details
 
-### AuthBridge Binaries (cmd/authbridge-{proxy,envoy,lite}/)
+### AuthBridge Binaries (cmd/authbridge-{proxy,envoy}/)
 
 The mode-specific authbridge binaries handle both traffic directions. Auth logic
 and all listener implementations live in `authlib/` (under `authlib/listener/`);
@@ -362,7 +360,10 @@ make load-image                     # Uses KIND_CLUSTER_NAME env var (default: k
 cd ..
 podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
 podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
-podman build -f cmd/authbridge-lite/Dockerfile  -t authbridge-lite:latest .  # proxy-sidecar lite
+# authbridge-lite: the proxy Dockerfile built with exclude_plugin_* tags (auth-only)
+podman build -f cmd/authbridge-proxy/Dockerfile \
+  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
+  -t authbridge-lite:latest .
 kind load docker-image authbridge:latest       --name kagenti
 kind load docker-image authbridge-envoy:latest --name kagenti
 kind load docker-image authbridge-lite:latest  --name kagenti
@@ -495,11 +496,11 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 ## Code Conventions
 
-### Go (authlib, cmd/authbridge-{proxy,envoy,lite}, demo-app)
+### Go (authlib, cmd/authbridge-{proxy,envoy}, demo-app)
 - Go 1.25
-- Modules: `authbridge/authlib/` (pure library — all listeners, all plugins) and `authbridge/cmd/authbridge-{proxy,envoy,lite}/` (mode-specific binaries that wire listeners + plugins together)
+- Modules: `authbridge/authlib/` (pure library — all listeners, all plugins) and `authbridge/cmd/authbridge-{proxy,envoy}/` (mode-specific binaries that wire listeners + plugins together). The `authbridge-lite` image is the proxy binary built with `exclude_plugin_*` tags, not a separate module.
 - `authbridge/go.work` workspace links the modules for local development
-- Logging with `log/slog`; the binaries log under their own name (`authbridge-proxy`, `authbridge-envoy`, `authbridge-lite`)
+- Logging with `log/slog`; the binaries log under their own name (`authbridge-proxy`, `authbridge-envoy`). Note the `authbridge-lite` image runs the `authbridge-proxy` binary, so it logs as `authbridge-proxy`.
 - gRPC ext-proc using `envoyproxy/go-control-plane` types (in `authlib/listener/extproc`)
 - JWT validation with `lestrrat-go/jwx/v2` (in `authlib/plugins/jwtvalidation/validation`)
 

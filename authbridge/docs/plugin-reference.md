@@ -1140,8 +1140,8 @@ The handle→token store lives in memory and is shared only within a
 single process. The mode therefore works only where inbound mint and
 outbound resolve run in the **same** process:
 
-- the reverse+forward proxy sidecar (`authbridge-proxy` /
-  `authbridge-lite`);
+- the reverse+forward proxy sidecar (`authbridge-proxy`, and its
+  `authbridge-lite` image variant);
 - a **single-replica** extproc/extauthz (`authbridge-envoy`).
 
 Multi-replica (HA) or shared/scaled Istio ambient waypoint deployments

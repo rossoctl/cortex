@@ -12,13 +12,13 @@ The [`cmd/authbridge/`](./cmd/authbridge/) directory contains a unified binary t
 |-------|----------|
 | `authbridge` | proxy-sidecar combined: authbridge-proxy binary + bundled spiffe-helper |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper |
-| `authbridge-lite` | proxy-sidecar shape, auth-only plugins (no parsers) |
+| `authbridge-lite` | `authbridge-proxy` built with `exclude_plugin_*` tags — auth-only (jwt-validation + token-exchange; OPA + parsers dropped). A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
 | `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-| `lite` | `authbridge-lite` | Same shape as proxy-sidecar with auth-only plugins (no parsers) | For size-constrained deployments that don't need protocol-aware session events |
+| `lite` | `authbridge-lite` | The `authbridge-proxy` binary built with `exclude_plugin_*` tags (auth-only: jwt-validation + token-exchange) | For size-constrained deployments that don't need protocol-aware session events |
 
 The kagenti-operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `kagenti.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See kagenti-operator#361.
 
@@ -448,7 +448,7 @@ plugin package from being imported and compiled into the binary.
 - [authlib](authlib/README.md) — Shared auth building blocks (Go library)
 - [cmd/authbridge-proxy](cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- [cmd/authbridge-lite](cmd/authbridge-lite/) — auth-only proxy-sidecar binary (no parsers)
+- `authbridge-lite` image — `cmd/authbridge-proxy` built with `exclude_plugin_*` tags (auth-only); a build variant, not a separate binary
 - [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](docs/) — framework architecture and plugin author references
 
