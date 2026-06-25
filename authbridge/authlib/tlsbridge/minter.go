@@ -38,6 +38,12 @@ type cacheEntry struct {
 	expires time.Time
 }
 
+// renewBefore is the gap between the cache deadline (now+ttl, when Get
+// re-mints) and the leaf's NotAfter (now+ttl+renewBefore). It gives a
+// connection that grabbed the leaf just before re-mint ample remaining
+// validity, and a window for Get's NotAfter backstop to act.
+const renewBefore = time.Hour
+
 func NewMinter(src CASource, o MinterOpts) *Minter {
 	if o.CacheMax <= 0 {
 		o.CacheMax = 1024
@@ -71,7 +77,15 @@ func (m *Minter) GetCertificateForHost(host string) (*tls.Certificate, error) {
 	defer m.mu.Unlock()
 	if el, ok := m.items[host]; ok {
 		e := el.Value.(*cacheEntry)
-		if time.Now().Before(e.expires) {
+		// Gate freshness on WALL-clock deadlines, not the process monotonic
+		// clock. Across a host suspend / VM pause the monotonic clock freezes
+		// while wall time — and the leaf's x509 validity — keeps advancing, so
+		// a monotonic deadline would keep serving a leaf the client already
+		// rejects as expired. e.expires is monotonic-stripped (.Round(0) below);
+		// the Leaf.NotAfter check is the backstop tied to the cert's real
+		// validity, the only value the client actually verifies.
+		now := time.Now()
+		if now.Before(e.expires) && e.cert.Leaf != nil && now.Before(e.cert.Leaf.NotAfter) {
 			m.ll.MoveToFront(el)
 			return e.cert, nil
 		}
@@ -82,7 +96,10 @@ func (m *Minter) GetCertificateForHost(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	el := m.ll.PushFront(&cacheEntry{host: host, cert: cert, expires: time.Now().Add(m.ttl)})
+	// .Round(0) strips the monotonic reading so the deadline is a pure wall-clock
+	// time; comparisons against time.Now() then fall back to the wall clock and
+	// survive suspend (see the cache-hit gate above).
+	el := m.ll.PushFront(&cacheEntry{host: host, cert: cert, expires: time.Now().Add(m.ttl).Round(0)})
 	m.items[host] = el
 	for m.ll.Len() > m.max {
 		back := m.ll.Back()
@@ -102,8 +119,9 @@ func (m *Minter) mint(host string) (*tls.Certificate, error) {
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: host},
 		NotBefore:    time.Now().Add(-time.Minute),
-		// Leaf validity must exceed the cache TTL so a cached leaf never serves past expiry.
-		NotAfter:    time.Now().Add(m.ttl + time.Hour),
+		// Leaf validity outlasts the cache deadline (now+ttl) by renewBefore so
+		// a cached leaf is always re-minted before it can serve past expiry.
+		NotAfter:    time.Now().Add(m.ttl + renewBefore),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -116,8 +134,15 @@ func (m *Minter) mint(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tlsbridge: mint leaf for %s: %w", host, err)
 	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("tlsbridge: parse minted leaf for %s: %w", host, err)
+	}
 	return &tls.Certificate{
 		Certificate: [][]byte{der, caCert.Raw},
 		PrivateKey:  m.leafKey,
+		// Populate Leaf so Get can gate on the cert's real wall-clock NotAfter
+		// (and the TLS stack avoids re-parsing on each handshake).
+		Leaf: leaf,
 	}, nil
 }

@@ -114,7 +114,11 @@ func (s *SkipSet) Add(host string) {
 			delete(s.m, oldestK)
 		}
 	}
-	s.m[host] = now.Add(s.ttl)
+	// .Round(0) strips the monotonic reading so the expiry is a pure wall-clock
+	// time. Contains compares it against time.Now() via the wall clock, so an
+	// entry expires after skipTTL of real time even across a suspend (where the
+	// monotonic clock freezes and would otherwise keep the host skipped longer).
+	s.m[host] = now.Add(s.ttl).Round(0)
 }
 
 func (s *SkipSet) Contains(host string) bool {
