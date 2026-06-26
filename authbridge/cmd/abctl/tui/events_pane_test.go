@@ -492,6 +492,40 @@ func TestRebuildEventsTable_HideInactive(t *testing.T) {
 	}
 }
 
+// TestRebuildEventsTable_HideInactivePerExchange checks that hideInactive
+// suppresses a request/response pair only when BOTH halves are inactive — an
+// active half keeps its (invocation-less) partner visible rather than orphaning
+// it. Exchange A: active request + passthrough response → both shown. Exchange
+// B: skip-only request + invocation-less response → both hidden.
+func TestRebuildEventsTable_HideInactivePerExchange(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "llm",
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "placeholder-resolve", Action: pipeline.ActionModify},
+			}}},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "llm", StatusCode: 200},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "pass",
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "placeholder-resolve", Action: pipeline.ActionSkip},
+			}}},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "pass", StatusCode: 200},
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}}
+	m.eventsTbl = newEventsTable()
+	m.hideInactive = true
+	m.rebuildEventsTable()
+
+	if len(m.visibleRows) != 2 || m.hiddenInactive != 2 {
+		t.Fatalf("per-exchange hide: rows=%d hidden=%d, want 2/2 (active pair shown, passthrough pair hidden)",
+			len(m.visibleRows), m.hiddenInactive)
+	}
+	for _, er := range m.visibleRows {
+		if hostOnly(er.event.Host) != "llm" {
+			t.Errorf("visible row host = %q, want llm (both halves of the active exchange, no orphan)", er.event.Host)
+		}
+	}
+}
+
 // TestComputeEventPairIDs pairs each response row with its preceding request
 // row by direction + host + method, sharing one # across the exchange and
 // minting fresh integers for unpaired rows.

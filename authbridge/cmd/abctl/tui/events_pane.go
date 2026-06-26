@@ -110,10 +110,23 @@ func (m *model) rebuildEventsTable() {
 		// network messages". Turning it on focuses the timeline on plugin
 		// activity (deny/modify/observe/allow). Both the filter and the
 		// headline consider the folded tunnel's invocations too.
+		//
+		// Suppress per EXCHANGE, not per event: a request and its paired
+		// response are hidden only when BOTH sides are inactive. Evaluating each
+		// event against its own phase's invocations alone would hide, say, a
+		// skip-only request while keeping its (invocation-less) response —
+		// orphaning the response. Unpaired rows (a lone CONNECT tunnel-open, or
+		// an unmatched request/response) fall back to per-event.
 		invs := er.invocations()
 		if m.hideInactive && eventInactive(invs) {
-			m.hiddenInactive++
-			continue
+			partnerInactive := true
+			if j, ok := partner[i]; ok {
+				partnerInactive = eventInactive(eventRows[j].invocations())
+			}
+			if partnerInactive {
+				m.hiddenInactive++
+				continue
+			}
 		}
 
 		action, plugin := eventAction(invs)
