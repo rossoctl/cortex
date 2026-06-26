@@ -81,8 +81,17 @@ func (m *model) rebuildEventsTable() {
 		m.eventsTbl.SetHeight(h)
 	}
 
+	// Anchor the cursor to the EVENT it's on, captured before the rebuild
+	// (m.visibleRows is still the previous build, in sync with the table's
+	// current cursor). It's restored below by re-finding that event — its row
+	// index can shift when a CONNECT tunnel folds into its inner request or
+	// hide-inactive filters — so a streamed rebuild never scrolls the view out
+	// from under the user. follow mode pins to the newest event instead.
 	prevRow := m.eventsTbl.Cursor()
-	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1
+	var anchor *pipeline.SessionEvent
+	if prevRow >= 0 && prevRow < len(m.visibleRows) {
+		anchor = m.visibleRows[prevRow].event
+	}
 
 	// One display row per network message. CONNECT tunnel-opens are folded
 	// into the decrypted inner request that immediately follows them (TLS
@@ -160,13 +169,41 @@ func (m *model) rebuildEventsTable() {
 	}
 	m.eventsTbl.SetRows(rows)
 
-	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise
-	// preserve position so reading isn't disturbed by new events.
-	if wasAtEnd && len(rows) > 0 {
+	// Restore the cursor: follow the newest event in follow mode; otherwise
+	// re-find the anchored event by identity (timestamp + direction + phase) so a
+	// shifted row index doesn't jump the view. If the anchored event is gone
+	// (trimmed, folded away, or filtered out), clamp the old index best-effort.
+	switch {
+	case m.follow && len(rows) > 0:
 		m.eventsTbl.SetCursor(len(rows) - 1)
-	} else if prevRow < len(rows) {
-		m.eventsTbl.SetCursor(prevRow)
+	case anchor != nil:
+		same := func(e *pipeline.SessionEvent) bool {
+			return e != nil && e.At.Equal(anchor.At) &&
+				e.Direction == anchor.Direction && e.Phase == anchor.Phase
+		}
+		idx := -1
+		for i := range m.visibleRows {
+			if same(m.visibleRows[i].event) || same(m.visibleRows[i].tunnel) {
+				idx = i
+				break
+			}
+		}
+		if idx >= 0 {
+			m.eventsTbl.SetCursor(idx)
+		} else if prevRow >= 0 && prevRow < len(rows) {
+			m.eventsTbl.SetCursor(prevRow)
+		}
 	}
+}
+
+// syncEventsFollow recomputes follow mode from the cursor: follow the newest
+// event only when the cursor is at (or past) the last row. Called after manual
+// navigation in the events pane so follow reflects where the user landed — a
+// Down that reaches the bottom re-enables following; any other position is a
+// deliberate scroll-away and pins the view there.
+func (m *model) syncEventsFollow() {
+	n := len(m.eventsTbl.Rows())
+	m.follow = n == 0 || m.eventsTbl.Cursor() >= n-1
 }
 
 // selectedEvent returns the event at the cursor row, or nil. The cursor

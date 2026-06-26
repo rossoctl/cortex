@@ -526,6 +526,55 @@ func TestRebuildEventsTable_HideInactivePerExchange(t *testing.T) {
 	}
 }
 
+// TestRebuildEventsTable_FollowPinsToNewest: in follow mode the cursor tracks
+// the newest event as the stream grows.
+func TestRebuildEventsTable_FollowPinsToNewest(t *testing.T) {
+	t0 := time.Now()
+	mk := func(i int) pipeline.SessionEvent {
+		return pipeline.SessionEvent{At: t0.Add(time.Duration(i) * time.Second),
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h"}
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": {mk(0), mk(1)}}}
+	m.eventsTbl = newEventsTable()
+	m.follow = true
+	m.rebuildEventsTable()
+
+	m.events["s"] = append(m.events["s"], mk(2)) // new event streams in
+	m.rebuildEventsTable()
+
+	if got, want := m.eventsTbl.Cursor(), len(m.visibleRows)-1; got != want {
+		t.Errorf("follow: cursor=%d, want newest row %d", got, want)
+	}
+}
+
+// TestRebuildEventsTable_PreservesCursorByIdentity: when NOT following, a rebuild
+// that shifts row indices (here simulated by an event landing ahead of the
+// anchored one — the effect of a CONNECT fold, a hide-inactive change, or a
+// buffer trim) keeps the cursor on the SAME event, not the same index.
+func TestRebuildEventsTable_PreservesCursorByIdentity(t *testing.T) {
+	t0 := time.Now()
+	x := pipeline.SessionEvent{At: t0, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "x"}
+	y := pipeline.SessionEvent{At: t0.Add(time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "y"}
+	z := pipeline.SessionEvent{At: t0.Add(2 * time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "z"}
+
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": {x, y}}}
+	m.eventsTbl = newEventsTable()
+	m.follow = false
+	m.rebuildEventsTable()
+	m.eventsTbl.SetCursor(0) // park on x (row 0)
+	if got := m.visibleRows[m.eventsTbl.Cursor()].event.Host; got != "x" {
+		t.Fatalf("setup: cursor on %q, want x", got)
+	}
+
+	// x's row index shifts from 0 to 1.
+	m.events["s"] = []pipeline.SessionEvent{z, x, y}
+	m.rebuildEventsTable()
+
+	if got := m.visibleRows[m.eventsTbl.Cursor()].event.Host; got != "x" {
+		t.Errorf("after index shift: cursor on %q, want x (followed by identity, not stuck at row 0=z)", got)
+	}
+}
+
 // TestComputeEventPairIDs pairs each response row with its preceding request
 // row by direction + host + method, sharing one # across the exchange and
 // minting fresh integers for unpaired rows.

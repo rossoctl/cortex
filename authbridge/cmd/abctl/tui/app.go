@@ -231,6 +231,14 @@ type model struct {
 	// every rebuild.
 	visibleRows []eventRow
 
+	// follow, when true, pins the events cursor to the newest message as the
+	// stream advances. Set when the user is at the tail (entering a session,
+	// End/G, or a Down that reaches the last row); cleared on any upward or
+	// Home/g navigation. When false, rebuildEventsTable keeps the cursor on the
+	// event it was on by IDENTITY, not by row index — so folding/filtering
+	// can't scroll the view out from under the user.
+	follow bool
+
 	// pipeline is the fetched plugin composition. nil until the initial
 	// GetPipeline response arrives; the pipeline pane shows "(loading…)"
 	// until then.
@@ -301,6 +309,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		cancel:       cancel,
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
+		follow:       true, // start pinned to the latest until the user scrolls up
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),

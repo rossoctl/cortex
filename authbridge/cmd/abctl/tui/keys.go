@@ -202,6 +202,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			m.selectedSess = id
 			m.pane = paneEvents
+			m.follow = true // entering a session: show the latest + follow new events
 			m.rebuildEventsTable()
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
@@ -315,6 +316,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case paneEvents:
 		var cmd tea.Cmd
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
+		m.syncEventsFollow() // follow only if the nav left the cursor at the last row
 		return cmd
 	case paneDetail, panePluginDetail:
 		var cmd tea.Cmd
@@ -367,6 +369,7 @@ func (m *model) goTop() {
 		m.sessionsTbl.SetCursor(0)
 	case paneEvents:
 		m.eventsTbl.SetCursor(0)
+		m.follow = false // jumped to the top: stop following the tail
 	case panePipeline:
 		m.pipelineTbl.SetCursor(0)
 	case paneDetail, panePluginDetail:
