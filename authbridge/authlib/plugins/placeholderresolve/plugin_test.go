@@ -76,8 +76,8 @@ func TestConfigureGatewayDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	if p.cfg.Gateway.MTLSCertDir != defaultMTLSCertDir || p.cfg.Gateway.SATokenPath != defaultSATokenPath {
-		t.Errorf("gateway defaults not applied: %+v", p.cfg.Gateway)
+	if p.cfg.Gateway.SATokenPath != defaultSATokenPath {
+		t.Errorf("gateway sa_token_path default not applied: %+v", p.cfg.Gateway)
 	}
 	_ = p.Shutdown(context.Background())
 }

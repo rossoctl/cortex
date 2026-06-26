@@ -118,7 +118,9 @@ rewritten — it is the only header any listener reconciles to the upstream wire
     gateway:                             # used when source: gateway (OpenShell sandbox sidecar)
       endpoint: "https://openshell.<ns>.svc:8080"    # required
       sandbox_id: "<OPENSHELL_SANDBOX_ID>"           # required; must match the minted JWT
-      mtls_cert_dir: "/etc/openshell-tls/client"     # ca.crt/tls.crt/tls.key; required for https
+      mtls_cert: "/tls/client/tls.crt"               # client cert (OPENSHELL_TLS_CERT); required for https
+      mtls_key:  "/tls/client/tls.key"               # client key  (OPENSHELL_TLS_KEY);  required for https
+      mtls_ca:   "/tls/ca/ca.crt"                    # gateway CA  (OPENSHELL_TLS_CA);   required for https
       sa_token_path: "/var/run/secrets/openshell/token"
       insecure: false                    # opt-in plaintext (non-loopback refused by default)
     # secret_dir: "/etc/authbridge-cred"  # used when source: secret_dir (file per KEY)
@@ -130,7 +132,7 @@ rewritten — it is the only header any listener reconciles to the upstream wire
 | `source` | — (**required**) | `gateway` or `secret_dir`. There is **no implicit fallback** — an unset/unknown source fails `Configure`, so the plugin never silently resolves from an ambient source. |
 | `gateway.endpoint` | — (required for `gateway`) | Gateway gRPC endpoint; `https://` selects mTLS, `http://` plaintext (non-loopback refused unless `insecure`). |
 | `gateway.sandbox_id` | — (required for `gateway`) | Must equal the id bound into the gateway-minted JWT. |
-| `gateway.mtls_cert_dir` | `/etc/openshell-tls/client` | `ca.crt`/`tls.crt`/`tls.key`; required for an `https://` endpoint. |
+| `gateway.mtls_cert` / `mtls_key` / `mtls_ca` | — (required for `https://`) | Client cert, client key, and gateway CA — independent file paths, mirroring OpenShell's `OPENSHELL_TLS_CERT`/`KEY`/`CA` (the driver splits the CA from the client keypair, so they need not share a dir). |
 | `gateway.sa_token_path` | `/var/run/secrets/openshell/token` | Projected SA token (audience `openshell-gateway`). |
 | `gateway.insecure` | `false` | Permit plaintext gRPC to a **non-loopback** gateway. Plaintext sends the SA token + JWT in cleartext, so it is **refused by default** for non-loopback endpoints (loopback always allowed). |
 | `secret_dir` | — (required for `secret_dir`) | Directory; each KEY is read from a path-contained `<secret_dir>/<KEY>` file. |

@@ -43,7 +43,6 @@ const defaultPrefix = "openshell:resolve:env:"
 // Default OpenShell sidecar paths for the gateway source (match the k8s
 // driver's pod-spec conventions).
 const (
-	defaultMTLSCertDir = "/etc/openshell-tls/client"
 	defaultSATokenPath = "/var/run/secrets/openshell/token"
 )
 
@@ -75,7 +74,9 @@ type placeholderResolveConfig struct {
 // gatewayConfig configures the OpenShell-gateway resolver source.
 type gatewayConfig struct {
 	Endpoint    string `json:"endpoint" required:"true" description:"OpenShell gateway gRPC endpoint, e.g. https://openshell.<ns>.svc:8080."`
-	MTLSCertDir string `json:"mtls_cert_dir" description:"Dir holding ca.crt/tls.crt/tls.key for mTLS to the gateway." default:"/etc/openshell-tls/client"`
+	MTLSCert    string `json:"mtls_cert" description:"Client cert file for mTLS to the gateway (OPENSHELL_TLS_CERT). Required for https endpoints."`
+	MTLSKey     string `json:"mtls_key" description:"Client key file for mTLS to the gateway (OPENSHELL_TLS_KEY). Required for https endpoints."`
+	MTLSCA      string `json:"mtls_ca" description:"CA file verifying the gateway server cert (OPENSHELL_TLS_CA). Required for https endpoints."`
 	SATokenPath string `json:"sa_token_path" description:"Projected SA token file (audience openshell-gateway)." default:"/var/run/secrets/openshell/token"`
 	SandboxID   string `json:"sandbox_id" required:"true" description:"This sandbox's id (OPENSHELL_SANDBOX_ID); must match the gateway-minted JWT."`
 	Insecure    bool   `json:"insecure" description:"Permit plaintext gRPC to a non-loopback gateway (opt-in). Sends the SA token + JWT in cleartext; refused by default for non-loopback endpoints." default:"false"`
@@ -86,9 +87,6 @@ func (c *placeholderResolveConfig) applyDefaults() {
 		c.Prefix = defaultPrefix
 	}
 	if c.Source == sourceGateway && c.Gateway != nil {
-		if c.Gateway.MTLSCertDir == "" {
-			c.Gateway.MTLSCertDir = defaultMTLSCertDir
-		}
 		if c.Gateway.SATokenPath == "" {
 			c.Gateway.SATokenPath = defaultSATokenPath
 		}
@@ -169,7 +167,9 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 	case sourceGateway:
 		gw, gerr := gateway.New(gateway.Config{
 			Endpoint:    c.Gateway.Endpoint,
-			MTLSCertDir: c.Gateway.MTLSCertDir,
+			MTLSCert:    c.Gateway.MTLSCert,
+			MTLSKey:     c.Gateway.MTLSKey,
+			MTLSCA:      c.Gateway.MTLSCA,
 			SATokenPath: c.Gateway.SATokenPath,
 			SandboxID:   c.Gateway.SandboxID,
 			Insecure:    c.Gateway.Insecure,

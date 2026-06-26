@@ -197,7 +197,9 @@ func TestDialHTTPSUsesMTLS(t *testing.T) {
 	dir := writeMTLSCertDir(t)
 	c, err := Dial(Config{
 		Endpoint:    "https://gw.example.com:8080",
-		MTLSCertDir: dir,
+		MTLSCert:    filepath.Join(dir, "tls.crt"),
+		MTLSKey:     filepath.Join(dir, "tls.key"),
+		MTLSCA:      filepath.Join(dir, "ca.crt"),
 		SATokenPath: writeSAToken(t, "sa"),
 		SandboxID:   "sb",
 	})
@@ -207,20 +209,20 @@ func TestDialHTTPSUsesMTLS(t *testing.T) {
 	_ = c.Close()
 }
 
-func TestDialHTTPSRequiresCertDir(t *testing.T) {
+func TestDialHTTPSRequiresMTLS(t *testing.T) {
 	_, err := Dial(Config{
 		Endpoint:    "https://gw.example.com:8080",
 		SATokenPath: writeSAToken(t, "sa"),
 		SandboxID:   "sb",
 	})
 	if err == nil {
-		t.Fatal("https without mtls_cert_dir should fail validation")
+		t.Fatal("https without mtls_cert/key/ca should fail validation")
 	}
 }
 
 func TestMTLSConfig(t *testing.T) {
 	dir := writeMTLSCertDir(t)
-	cfg, err := mtlsConfig(dir, "gw.example.com")
+	cfg, err := mtlsConfig(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt"), "gw.example.com")
 	if err != nil {
 		t.Fatalf("mtlsConfig: %v", err)
 	}

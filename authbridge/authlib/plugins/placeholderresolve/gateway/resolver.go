@@ -30,7 +30,9 @@ const (
 // Config locates the gateway and the sandbox identity material.
 type Config struct {
 	Endpoint    string
-	MTLSCertDir string
+	MTLSCert    string
+	MTLSKey     string
+	MTLSCA      string
 	SATokenPath string
 	SandboxID   string
 	// Insecure permits plaintext gRPC to a non-loopback gateway (opt-in).
@@ -52,7 +54,9 @@ type Resolver struct {
 func New(cfg Config) (*Resolver, error) {
 	client, err := openshell.Dial(openshell.Config{
 		Endpoint:    cfg.Endpoint,
-		MTLSCertDir: cfg.MTLSCertDir,
+		MTLSCert:    cfg.MTLSCert,
+		MTLSKey:     cfg.MTLSKey,
+		MTLSCA:      cfg.MTLSCA,
 		SATokenPath: cfg.SATokenPath,
 		SandboxID:   cfg.SandboxID,
 		Insecure:    cfg.Insecure,

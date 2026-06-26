@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,10 +47,14 @@ type Config struct {
 	// Endpoint is the gateway gRPC endpoint (OPENSHELL_ENDPOINT). An
 	// https:// scheme selects mTLS; http:// is plaintext.
 	Endpoint string
-	// MTLSCertDir holds ca.crt + tls.crt + tls.key for mTLS (the
-	// openshell-client-tls secret mount, e.g. /etc/openshell-tls/client).
-	// Required when Endpoint is https://.
-	MTLSCertDir string
+	// MTLSCert, MTLSKey, MTLSCA are the client cert, key, and CA file paths for
+	// mTLS — independent paths mirroring OpenShell's OPENSHELL_TLS_CERT /
+	// OPENSHELL_TLS_KEY / OPENSHELL_TLS_CA (the driver splits the CA into a
+	// separate secret/dir from the client keypair). All three are required when
+	// Endpoint is https://.
+	MTLSCert string
+	MTLSKey  string
+	MTLSCA   string
 	// SATokenPath is the projected SA token file (OPENSHELL_K8S_SA_TOKEN_FILE,
 	// e.g. /var/run/secrets/openshell/token).
 	SATokenPath string
@@ -77,8 +80,8 @@ func (c Config) validate() error {
 	if c.SandboxID == "" {
 		return fmt.Errorf("openshell: sandbox_id is required")
 	}
-	if strings.HasPrefix(c.Endpoint, "https://") && c.MTLSCertDir == "" {
-		return fmt.Errorf("openshell: mtls_cert_dir is required for an https endpoint")
+	if strings.HasPrefix(c.Endpoint, "https://") && (c.MTLSCert == "" || c.MTLSKey == "" || c.MTLSCA == "") {
+		return fmt.Errorf("openshell: mtls_cert, mtls_key, and mtls_ca are required for an https endpoint")
 	}
 	return nil
 }
@@ -118,7 +121,7 @@ func Dial(cfg Config) (*Client, error) {
 	switch {
 	case strings.HasPrefix(cfg.Endpoint, "https://"):
 		target = strings.TrimPrefix(cfg.Endpoint, "https://")
-		tlsCfg, err := mtlsConfig(cfg.MTLSCertDir, hostOnly(target))
+		tlsCfg, err := mtlsConfig(cfg.MTLSCert, cfg.MTLSKey, cfg.MTLSCA, hostOnly(target))
 		if err != nil {
 			return nil, err
 		}
@@ -127,9 +130,9 @@ func Dial(cfg Config) (*Client, error) {
 		target = strings.TrimPrefix(cfg.Endpoint, "http://")
 		plaintext = true
 	default:
-		// No scheme: mTLS when a cert dir is configured, else plaintext.
-		if cfg.MTLSCertDir != "" {
-			tlsCfg, err := mtlsConfig(cfg.MTLSCertDir, hostOnly(target))
+		// No scheme: mTLS when client cert material is configured, else plaintext.
+		if cfg.MTLSCert != "" {
+			tlsCfg, err := mtlsConfig(cfg.MTLSCert, cfg.MTLSKey, cfg.MTLSCA, hostOnly(target))
 			if err != nil {
 				return nil, err
 			}
@@ -251,24 +254,25 @@ func (c *Client) getToken() (string, time.Time) {
 	return c.token, c.tokenExp
 }
 
-// mtlsConfig builds a client mTLS config from a cert dir holding ca.crt,
-// tls.crt, tls.key. The CA pool extends the system roots (mirrors
-// authlib/tlsbridge/upstream.go).
-func mtlsConfig(dir, serverName string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
+// mtlsConfig builds a client mTLS config from independent cert, key, and CA
+// file paths (mirroring OpenShell's OPENSHELL_TLS_CERT/KEY/CA — the driver puts
+// the CA in a different secret/dir than the client keypair). The CA pool extends
+// the system roots (mirrors authlib/tlsbridge/upstream.go).
+func mtlsConfig(certPath, keyPath, caPath, serverName string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("openshell: load client cert from %q: %w", dir, err)
+		return nil, fmt.Errorf("openshell: load client cert (%q, %q): %w", certPath, keyPath, err)
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
-	caPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	caPEM, err := os.ReadFile(caPath)
 	if err != nil {
-		return nil, fmt.Errorf("openshell: read ca.crt from %q: %w", dir, err)
+		return nil, fmt.Errorf("openshell: read ca %q: %w", caPath, err)
 	}
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("openshell: ca.crt in %q is not valid PEM", dir)
+		return nil, fmt.Errorf("openshell: ca %q is not valid PEM", caPath)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
