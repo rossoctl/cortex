@@ -66,19 +66,53 @@ func New(cfg Config) (*Resolver, error) {
 // Resolve returns the real value for an env-var key from the cached
 // environment. It fails closed (ok=false) when the cache is not yet primed,
 // the key is absent, or the key's credential has expired.
+//
+// OpenShell prepends a "v<rev>_" revision prefix to provider-env placeholders
+// (secrets.rs: format!("{PREFIX}v{revision}_{key}")), but the gateway returns
+// the environment keyed by the bare name. So if the literal key misses, strip a
+// single revision prefix and retry the bare name. The literal lookup runs first,
+// so a real env var named like "v2_FOO" still resolves to itself.
 func (r *Resolver) Resolve(_ context.Context, key string) (string, bool) {
 	env := r.env.Load()
 	if env == nil {
 		return "", false
 	}
-	v, ok := env.Values[key]
-	if !ok {
+	lookup := func(k string) (string, bool) {
+		v, ok := env.Values[k]
+		if !ok {
+			return "", false
+		}
+		if exp, has := env.ExpiresAtMs[k]; has && exp > 0 && time.Now().UnixMilli() >= exp {
+			return "", false
+		}
+		return v, true
+	}
+	if v, ok := lookup(key); ok {
+		return v, true
+	}
+	if bare, stripped := stripRevisionPrefix(key); stripped {
+		return lookup(bare)
+	}
+	return "", false
+}
+
+// stripRevisionPrefix removes a single leading "v<digits>_" revision prefix
+// (the form OpenShell prepends to provider-env placeholders). It returns the
+// bare key and true only when the prefix is well-formed — a "v", at least one
+// decimal digit, an underscore, and a non-empty remainder — otherwise "" and
+// false.
+func stripRevisionPrefix(key string) (string, bool) {
+	if len(key) < 3 || key[0] != 'v' {
 		return "", false
 	}
-	if exp, has := env.ExpiresAtMs[key]; has && exp > 0 && time.Now().UnixMilli() >= exp {
+	i := 1
+	for i < len(key) && key[i] >= '0' && key[i] <= '9' {
+		i++
+	}
+	if i == 1 || i >= len(key) || key[i] != '_' || i+1 >= len(key) {
 		return "", false
 	}
-	return v, true
+	return key[i+1:], true
 }
 
 // Start launches the refresh loop on a process-lifetime context (so it
