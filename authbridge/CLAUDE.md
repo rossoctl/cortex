@@ -362,7 +362,7 @@ podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # p
 podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
 # authbridge-lite: the proxy Dockerfile built with exclude_plugin_* tags (auth-only)
 podman build -f cmd/authbridge-proxy/Dockerfile \
-  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
+  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_placeholderresolve,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
   -t authbridge-lite:latest .
 kind load docker-image authbridge:latest       --name kagenti
 kind load docker-image authbridge-envoy:latest --name kagenti

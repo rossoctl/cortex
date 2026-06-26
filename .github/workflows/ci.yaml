@@ -108,7 +108,7 @@ jobs:
         if: matrix.binary == 'authbridge-proxy'
         run: |
           TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser"
-          TAGS="$TAGS,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker"
+          TAGS="$TAGS,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_placeholderresolve,exclude_plugin_sparc,exclude_plugin_tokenbroker"
           go build -v -tags "$TAGS" ./...
           go test -v -race -cover -tags "$TAGS" ./...
 

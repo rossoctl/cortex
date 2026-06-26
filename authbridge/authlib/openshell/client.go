@@ -19,6 +19,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -37,6 +38,10 @@ import (
 	osv1 "github.com/kagenti/kagenti-extensions/authbridge/authlib/openshell/genproto/openshellv1"
 )
 
+// rpcTimeout bounds each gateway RPC so a connected-but-unresponsive gateway
+// cannot block a caller (e.g. the resolver's background refresh loop) forever.
+const rpcTimeout = 10 * time.Second
+
 // Config locates the gateway and the credentials needed to talk to it. The
 // paths mirror what the OpenShell k8s driver injects into the sandbox pod.
 type Config struct {
@@ -54,6 +59,12 @@ type Config struct {
 	// the id the gateway binds into the minted JWT, or the gateway rejects
 	// the provider-environment fetch as cross-sandbox access.
 	SandboxID string
+	// Insecure permits a plaintext (non-TLS) connection to a non-loopback
+	// gateway. Plaintext sends the SA token and minted JWT as cleartext gRPC
+	// metadata, so it is refused by default for non-loopback targets; this
+	// flag is an explicit opt-in (logged with a warning). Loopback targets are
+	// always allowed plaintext.
+	Insecure bool
 }
 
 func (c Config) validate() error {
@@ -103,6 +114,7 @@ func Dial(cfg Config) (*Client, error) {
 
 	target := cfg.Endpoint
 	var creds credentials.TransportCredentials
+	plaintext := false
 	switch {
 	case strings.HasPrefix(cfg.Endpoint, "https://"):
 		target = strings.TrimPrefix(cfg.Endpoint, "https://")
@@ -113,7 +125,7 @@ func Dial(cfg Config) (*Client, error) {
 		creds = credentials.NewTLS(tlsCfg)
 	case strings.HasPrefix(cfg.Endpoint, "http://"):
 		target = strings.TrimPrefix(cfg.Endpoint, "http://")
-		creds = insecure.NewCredentials()
+		plaintext = true
 	default:
 		// No scheme: mTLS when a cert dir is configured, else plaintext.
 		if cfg.MTLSCertDir != "" {
@@ -123,8 +135,21 @@ func Dial(cfg Config) (*Client, error) {
 			}
 			creds = credentials.NewTLS(tlsCfg)
 		} else {
-			creds = insecure.NewCredentials()
+			plaintext = true
 		}
+	}
+
+	if plaintext {
+		// Fail closed: a plaintext transport leaks the SA token and the minted
+		// gateway JWT as cleartext metadata. Only allow it for loopback, or
+		// behind the explicit Insecure opt-in (with a warning).
+		if !cfg.Insecure && !isLoopbackHost(target) {
+			return nil, fmt.Errorf("openshell: refusing plaintext gRPC to non-loopback %q — the SA token and gateway JWT would travel in cleartext; use an https:// endpoint with mtls_cert_dir, or set insecure: true to override", target)
+		}
+		if !isLoopbackHost(target) {
+			slog.Warn("openshell: insecure plaintext gRPC to the gateway — SA token and minted JWT travel unencrypted", "endpoint", cfg.Endpoint)
+		}
+		creds = insecure.NewCredentials()
 	}
 
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
@@ -163,6 +188,8 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) fetchWithToken(ctx context.Context, tok string) (*Environment, error) {
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 	md := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tok)
 	resp, err := c.rpc.GetSandboxProviderEnvironment(md, &osv1.GetSandboxProviderEnvironmentRequest{
 		SandboxId: c.cfg.SandboxID,
@@ -196,6 +223,8 @@ func (c *Client) mint(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("openshell: read SA token %q: %w", c.cfg.SATokenPath, err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
 	md := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+sa)
 	resp, err := c.rpc.IssueSandboxToken(md, &osv1.IssueSandboxTokenRequest{})
 	if err != nil {
@@ -255,4 +284,16 @@ func hostOnly(hostport string) string {
 		return h
 	}
 	return hostport
+}
+
+// isLoopbackHost reports whether the host part of hostport is localhost or a
+// loopback IP — the only targets for which plaintext gRPC is allowed without
+// the explicit Insecure opt-in.
+func isLoopbackHost(hostport string) bool {
+	h := hostOnly(hostport)
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

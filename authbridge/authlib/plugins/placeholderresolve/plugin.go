@@ -87,6 +87,7 @@ type gatewayConfig struct {
 	MTLSCertDir string `json:"mtls_cert_dir" description:"Dir holding ca.crt/tls.crt/tls.key for mTLS to the gateway." default:"/etc/openshell-tls/client"`
 	SATokenPath string `json:"sa_token_path" description:"Projected SA token file (audience openshell-gateway)." default:"/var/run/secrets/openshell/token"`
 	SandboxID   string `json:"sandbox_id" required:"true" description:"This sandbox's id (OPENSHELL_SANDBOX_ID); must match the gateway-minted JWT."`
+	Insecure    bool   `json:"insecure" description:"Permit plaintext gRPC to a non-loopback gateway (opt-in). Sends the SA token + JWT in cleartext; refused by default for non-loopback endpoints." default:"false"`
 }
 
 func (c *placeholderResolveConfig) applyDefaults() {
@@ -229,6 +230,7 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 			MTLSCertDir: c.Gateway.MTLSCertDir,
 			SATokenPath: c.Gateway.SATokenPath,
 			SandboxID:   c.Gateway.SandboxID,
+			Insecure:    c.Gateway.Insecure,
 		})
 		if gerr != nil {
 			return fmt.Errorf("placeholder-resolve: gateway resolver: %w", gerr)

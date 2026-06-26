@@ -33,6 +33,8 @@ type Config struct {
 	MTLSCertDir string
 	SATokenPath string
 	SandboxID   string
+	// Insecure permits plaintext gRPC to a non-loopback gateway (opt-in).
+	Insecure bool
 }
 
 // Resolver caches a sandbox's resolved provider environment from the gateway.
@@ -53,6 +55,7 @@ func New(cfg Config) (*Resolver, error) {
 		MTLSCertDir: cfg.MTLSCertDir,
 		SATokenPath: cfg.SATokenPath,
 		SandboxID:   cfg.SandboxID,
+		Insecure:    cfg.Insecure,
 	})
 	if err != nil {
 		return nil, err
