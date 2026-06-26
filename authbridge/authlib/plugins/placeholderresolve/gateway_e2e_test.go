@@ -51,6 +51,7 @@ func TestOnRequestGatewayResolver(t *testing.T) {
 	}
 
 	raw, _ := json.Marshal(map[string]any{
+		"source": "gateway",
 		"gateway": map[string]any{
 			"endpoint":      "http://" + lis.Addr().String(),
 			"sandbox_id":    "sb-123",

@@ -1,21 +1,24 @@
 // Package placeholderresolve provides an outbound pipeline plugin that
-// resolves OpenShell-style credential placeholders in request headers to
-// their real secret values, on the wire, so the agent never holds the
-// real credential.
+// resolves OpenShell-style credential placeholders in the Authorization
+// header to their real secret values, on the wire, so the agent never holds
+// the real credential.
 //
 // OpenShell injects an agent's credential env (e.g. ANTHROPIC_AUTH_TOKEN)
 // as a placeholder string of the form "openshell:resolve:env:<KEY>". The
-// agent emits that placeholder verbatim (for the `claude` provider it
-// rides in `Authorization: Bearer <placeholder>`); this plugin scans the
-// configured headers, resolves each placeholder via an injected Resolver,
-// and rewrites the header in place. Unresolvable placeholders fail closed
-// (the request is denied rather than forwarded with the placeholder).
+// agent emits that placeholder verbatim (for the `claude` provider it rides
+// in `Authorization: Bearer <placeholder>` — the only header any listener
+// reconciles to the upstream wire). This plugin scans the Authorization
+// header, resolves each placeholder via the configured source, and rewrites
+// the header in place. Unresolvable placeholders fail closed (the request is
+// denied rather than forwarded with the placeholder).
 //
-// The Resolver is the swap seam. The primary source is the OpenShell gateway
-// (the `gateway` config block — fetches the sandbox's resolved provider
-// environment via GetSandboxProviderEnvironment, requires running as a
-// sidecar in the sandbox pod). For testing it can resolve from an inline
-// map, a mounted secret directory, or the process environment.
+// The credential source is selected by the required `source` field:
+//   - "gateway": the OpenShell gateway (fetches the sandbox's resolved
+//     provider environment; requires running as a sidecar in the sandbox pod).
+//   - "secret_dir": a mounted directory, one file per KEY.
+//
+// The resolution + safe header-injection primitives live in authlib/credinject
+// so a future host-keyed injector can reuse them.
 package placeholderresolve
 
 import (
@@ -24,27 +27,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/credinject"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/placeholderresolve/gateway"
 )
 
-// defaultPrefix is the OpenShell placeholder prefix. Kept identical to the
+// defaultPrefix is the OpenShell placeholder prefix — kept identical to the
 // supervisor's so agents are unchanged when AuthBridge replaces OpenShell's
 // internal proxy (OpenShell secrets.rs PLACEHOLDER_PREFIX).
 const defaultPrefix = "openshell:resolve:env:"
-
-// envKeyPattern is OpenShell's env-key grammar: a leading letter/underscore
-// followed by letters, digits, or underscores. It bounds the KEY captured
-// after the prefix and (because it admits no '/' or '.') also makes the
-// file-source path join safe from traversal.
-const envKeyPattern = `([A-Za-z_][A-Za-z0-9_]*)`
 
 // Default OpenShell sidecar paths for the gateway source (match the k8s
 // driver's pod-spec conventions).
@@ -53,32 +47,29 @@ const (
 	defaultSATokenPath = "/var/run/secrets/openshell/token"
 )
 
-// placeholderResolveConfig is the plugin's local config schema. Field tags
-// drive both runtime decoding (json) and operator-facing schema
-// introspection (description / default).
+// Credential source discriminators for the `source` config field.
+const (
+	sourceGateway   = "gateway"
+	sourceSecretDir = "secret_dir"
+)
+
+// placeholderResolveConfig is the plugin's config schema. Field tags drive both
+// runtime decoding (json) and operator-facing schema introspection.
 type placeholderResolveConfig struct {
-	// Prefix is the placeholder prefix to match. The KEY following it is
-	// matched against the env-key grammar.
+	// Prefix is the placeholder prefix to match; the KEY following it is
+	// matched against the OpenShell env-key grammar.
 	Prefix string `json:"prefix" description:"Placeholder prefix to match before the env key." default:"openshell:resolve:env:"`
 
-	// Headers lists the request headers to scan and rewrite. Defaults to
-	// Authorization (the only header the forward proxy propagates to the
-	// upstream wire today).
-	Headers []string `json:"headers" description:"Request headers to scan for placeholders." default:"Authorization"`
+	// Source selects where credentials are resolved from. Required; there is
+	// no implicit fallback — an unconfigured source fails closed.
+	Source string `json:"source" required:"true" description:"Credential source: 'gateway' (OpenShell sandbox sidecar) or 'secret_dir' (mounted files)."`
 
-	// Gateway, when set, resolves each KEY from the OpenShell gateway's
-	// resolved provider environment (the native-provider source). Takes
-	// precedence over mappings/secret_dir/env. Requires running as a sidecar
-	// in the sandbox pod (shared SA + sandbox-id annotation).
-	Gateway *gatewayConfig `json:"gateway" description:"Resolve credentials from the OpenShell gateway (sandbox sidecar)."`
+	// Gateway configures the OpenShell-gateway source (source: gateway).
+	Gateway *gatewayConfig `json:"gateway" description:"OpenShell gateway source config (used when source=gateway)."`
 
-	// Mappings is an optional inline KEY->value map used as the resolver
-	// source. Intended for isolation testing.
-	Mappings map[string]string `json:"mappings" description:"Inline KEY->value resolver source (isolation testing)."`
-
-	// SecretDir, when set, resolves each KEY by reading <SecretDir>/<KEY> as
-	// a credential file.
-	SecretDir string `json:"secret_dir" description:"Directory to resolve each KEY from a file named <KEY>."`
+	// SecretDir is the directory for the file source (source: secret_dir):
+	// each KEY is read from <SecretDir>/<KEY>.
+	SecretDir string `json:"secret_dir" description:"Directory to resolve each KEY from a file named <KEY> (used when source=secret_dir)."`
 }
 
 // gatewayConfig configures the OpenShell-gateway resolver source.
@@ -94,10 +85,7 @@ func (c *placeholderResolveConfig) applyDefaults() {
 	if c.Prefix == "" {
 		c.Prefix = defaultPrefix
 	}
-	if len(c.Headers) == 0 {
-		c.Headers = []string{"Authorization"}
-	}
-	if c.Gateway != nil {
+	if c.Source == sourceGateway && c.Gateway != nil {
 		if c.Gateway.MTLSCertDir == "" {
 			c.Gateway.MTLSCertDir = defaultMTLSCertDir
 		}
@@ -111,73 +99,34 @@ func (c *placeholderResolveConfig) validate() error {
 	if c.Prefix == "" {
 		return errors.New("prefix must not be empty")
 	}
-	if len(c.Headers) == 0 {
-		return errors.New("headers must list at least one header")
-	}
-	if c.Gateway != nil {
+	switch c.Source {
+	case sourceGateway:
+		if c.Gateway == nil {
+			return errors.New("source 'gateway' requires a gateway block")
+		}
 		if c.Gateway.Endpoint == "" {
 			return errors.New("gateway.endpoint is required")
 		}
 		if c.Gateway.SandboxID == "" {
 			return errors.New("gateway.sandbox_id is required")
 		}
+	case sourceSecretDir:
+		if c.SecretDir == "" {
+			return errors.New("source 'secret_dir' requires secret_dir")
+		}
+	case "":
+		return errors.New("source is required (one of: gateway, secret_dir)")
+	default:
+		return fmt.Errorf("unknown source %q (want one of: gateway, secret_dir)", c.Source)
 	}
 	return nil
 }
 
-// Resolver maps a placeholder KEY to its real secret value. ok is false
-// when the key is unknown — the plugin fails closed on a false.
-type Resolver interface {
-	Resolve(ctx context.Context, key string) (string, bool)
-}
-
-// lifecycleResolver is implemented by resolvers needing background warm-up
-// (the gateway source). The map/file/env resolvers do not implement it and
-// are treated as always-ready.
-type lifecycleResolver interface {
-	Start(ctx context.Context) error
-	Ready() bool
-	Stop(ctx context.Context) error
-}
-
-// mapResolver resolves from an inline map (isolation testing).
-type mapResolver map[string]string
-
-func (m mapResolver) Resolve(_ context.Context, key string) (string, bool) {
-	v, ok := m[key]
-	return v, ok
-}
-
-// envResolver resolves from the process environment. An unset or empty var
-// is treated as unresolved (fail closed).
-type envResolver struct{}
-
-func (envResolver) Resolve(_ context.Context, key string) (string, bool) {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return "", false
-	}
-	return v, true
-}
-
-// fileResolver resolves each KEY by reading <dir>/<KEY>. The env-key grammar
-// forbids '/' and '.' so the join cannot escape dir.
-type fileResolver struct{ dir string }
-
-func (f fileResolver) Resolve(_ context.Context, key string) (string, bool) {
-	v, err := config.ReadCredentialFile(filepath.Join(f.dir, key))
-	if err != nil {
-		return "", false
-	}
-	return v, true
-}
-
-// PlaceholderResolve is the outbound plugin. cfg/re/resolver are immutable
-// after Configure returns, so OnRequest reads them without synchronization.
+// PlaceholderResolve is the outbound plugin. cfg/resolver are immutable after
+// Configure returns, so OnRequest reads them without synchronization.
 type PlaceholderResolve struct {
 	cfg      placeholderResolveConfig
-	re       *regexp.Regexp
-	resolver Resolver
+	resolver credinject.Resolver
 }
 
 // New constructs an unconfigured plugin.
@@ -191,7 +140,7 @@ func (p *PlaceholderResolve) Name() string { return "placeholder-resolve" }
 
 func (p *PlaceholderResolve) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		Description: "Resolve OpenShell credential placeholders in headers to real values (fail-closed).",
+		Description: "Resolve OpenShell credential placeholders in the Authorization header to real values (fail-closed).",
 	}
 }
 
@@ -215,16 +164,9 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("placeholder-resolve config: %w", err)
 	}
 
-	re, err := regexp.Compile(regexp.QuoteMeta(c.Prefix) + envKeyPattern)
-	if err != nil {
-		return fmt.Errorf("placeholder-resolve: compile prefix pattern: %w", err)
-	}
-
-	// Pick the resolver source. The gateway (native OpenShell provider) wins;
-	// then inline mappings, a mounted secret dir, else the process env.
-	var resolver Resolver
-	switch {
-	case c.Gateway != nil:
+	var resolver credinject.Resolver
+	switch c.Source {
+	case sourceGateway:
 		gw, gerr := gateway.New(gateway.Config{
 			Endpoint:    c.Gateway.Endpoint,
 			MTLSCertDir: c.Gateway.MTLSCertDir,
@@ -236,36 +178,30 @@ func (p *PlaceholderResolve) Configure(raw json.RawMessage) error {
 			return fmt.Errorf("placeholder-resolve: gateway resolver: %w", gerr)
 		}
 		resolver = gw
-	case len(c.Mappings) > 0:
-		resolver = mapResolver(c.Mappings)
-	case c.SecretDir != "":
-		resolver = fileResolver{dir: c.SecretDir}
-	default:
-		resolver = envResolver{}
+	case sourceSecretDir:
+		resolver = credinject.FileResolver{Dir: c.SecretDir}
 	}
 
 	// Commit only after all fallible construction succeeded, so a failed
-	// Configure leaves the plugin in its zero state.
+	// Configure leaves the plugin in its zero (deny) state.
 	p.cfg = c
-	p.re = re
 	p.resolver = resolver
 	return nil
 }
 
 // Init starts a lifecycle-capable resolver's background warm-up (the gateway
-// source). It returns promptly; readiness is reported via Ready so the
-// pipeline gates traffic until the credential cache is primed.
+// source). Static resolvers are always ready.
 func (p *PlaceholderResolve) Init(ctx context.Context) error {
-	if lr, ok := p.resolver.(lifecycleResolver); ok {
+	if lr, ok := p.resolver.(credinject.LifecycleResolver); ok {
 		return lr.Start(ctx)
 	}
 	return nil
 }
 
-// Ready reports resolver readiness — always true for the static
-// (map/file/env) resolvers; gated on the primed cache for the gateway source.
+// Ready reports resolver readiness — always true for the static (file)
+// resolver; gated on the primed cache for the gateway source.
 func (p *PlaceholderResolve) Ready() bool {
-	if lr, ok := p.resolver.(lifecycleResolver); ok {
+	if lr, ok := p.resolver.(credinject.LifecycleResolver); ok {
 		return lr.Ready()
 	}
 	return true
@@ -273,42 +209,41 @@ func (p *PlaceholderResolve) Ready() bool {
 
 // Shutdown stops a lifecycle-capable resolver's background work.
 func (p *PlaceholderResolve) Shutdown(ctx context.Context) error {
-	if lr, ok := p.resolver.(lifecycleResolver); ok {
+	if lr, ok := p.resolver.(credinject.LifecycleResolver); ok {
 		return lr.Stop(ctx)
 	}
 	return nil
 }
 
+// authHeader is the only header any listener reconciles to the upstream wire,
+// so it is the only header this plugin scans and rewrites.
+const authHeader = "Authorization"
+
 func (p *PlaceholderResolve) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
-	if p.resolver == nil || p.re == nil {
+	if p.resolver == nil {
 		return pipeline.DenyStatus(503, "upstream.unreachable", "placeholder-resolve not configured")
 	}
 
-	anyResolved := false
-	for _, h := range p.cfg.Headers {
-		val := pctx.Headers.Get(h)
-		if val == "" {
-			continue
-		}
-		rewritten, found, ok := p.rewrite(ctx, val)
-		if !found {
-			continue
-		}
-		if !ok {
-			// A placeholder was present but could not be resolved (unknown
-			// key or invalid value). Fail closed — never forward the
-			// placeholder to the upstream.
-			return pctx.DenyAndRecord("placeholder_unresolved", "auth.unauthorized", "unresolvable credential placeholder")
-		}
-		pctx.Headers.Set(h, rewritten)
-		anyResolved = true
+	val := pctx.Headers.Get(authHeader)
+	if val == "" {
+		pctx.Skip("no_authorization")
+		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	if anyResolved {
-		pctx.Modify("placeholder_resolved")
-	} else {
+	rewritten, found, ok := p.rewrite(ctx, val)
+	if !found {
 		pctx.Skip("no_placeholder")
+		return pipeline.Action{Type: pipeline.Continue}
 	}
+	if !ok {
+		// A placeholder was present but could not be resolved (unknown key or
+		// unsafe value). Fail closed — never forward the placeholder upstream.
+		return pctx.DenyAndRecord("placeholder_unresolved", "auth.unauthorized", "unresolvable credential placeholder")
+	}
+	if !credinject.SafeSetHeader(pctx.Headers, authHeader, rewritten) {
+		return pctx.DenyAndRecord("placeholder_unsafe", "auth.unauthorized", "unsafe resolved credential value")
+	}
+	pctx.Modify("placeholder_resolved")
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -316,33 +251,60 @@ func (p *PlaceholderResolve) OnResponse(_ context.Context, _ *pipeline.Context) 
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// rewrite replaces every placeholder in val with its resolved value.
-// Returns (rewritten, found, ok): found is true when at least one
-// placeholder matched; ok is false when a matched placeholder could not be
-// resolved or resolved to an unsafe value (caller must fail closed).
+// rewrite replaces every placeholder (prefix + an OpenShell env key matching
+// [A-Za-z_][A-Za-z0-9_]*) in val with its resolved value. Returns
+// (rewritten, found, ok): found is true when at least one placeholder matched;
+// ok is false when a matched placeholder could not be resolved or resolved to
+// an unsafe value (the caller must fail closed). A prefix not followed by a
+// valid key is left literal.
 func (p *PlaceholderResolve) rewrite(ctx context.Context, val string) (string, bool, bool) {
-	found := false
-	failed := false
-	out := p.re.ReplaceAllStringFunc(val, func(match string) string {
-		found = true
-		key := strings.TrimPrefix(match, p.cfg.Prefix)
-		v, ok := p.resolver.Resolve(ctx, key)
-		if !ok || !validResolved(v) {
-			failed = true
-			return match // unchanged; the request is denied regardless
-		}
-		return v
-	})
-	if failed {
-		return "", true, false
+	if !strings.Contains(val, p.cfg.Prefix) {
+		return val, false, true
 	}
-	return out, found, true
+	found := false
+	var b strings.Builder
+	i := 0
+	for {
+		rel := strings.Index(val[i:], p.cfg.Prefix)
+		if rel < 0 {
+			b.WriteString(val[i:])
+			break
+		}
+		start := i + rel
+		b.WriteString(val[i:start]) // text before the prefix
+		keyStart := start + len(p.cfg.Prefix)
+		keyEnd := keyStart
+		for keyEnd < len(val) && isEnvKeyChar(val[keyEnd], keyEnd == keyStart) {
+			keyEnd++
+		}
+		if keyEnd == keyStart {
+			// Prefix not followed by a valid env key — leave it literal.
+			b.WriteString(p.cfg.Prefix)
+			i = keyStart
+			continue
+		}
+		found = true
+		v, okv := p.resolver.Resolve(ctx, val[keyStart:keyEnd])
+		if !okv || !credinject.SafeHeaderValue(v) {
+			return "", true, false // fail closed; the request is denied
+		}
+		b.WriteString(v)
+		i = keyEnd
+	}
+	return b.String(), found, true
 }
 
-// validResolved rejects resolved values carrying CR, LF, or NUL — guarding
-// against header-injection (CWE-113) via a poisoned credential store.
-func validResolved(s string) bool {
-	return !strings.ContainsAny(s, "\r\n\x00")
+// isEnvKeyChar reports whether c is allowed in an OpenShell env key. The first
+// character must be a letter or underscore; later characters may also be digits.
+func isEnvKeyChar(c byte, first bool) bool {
+	switch {
+	case c == '_', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		return true
+	case !first && c >= '0' && c <= '9':
+		return true
+	default:
+		return false
+	}
 }
 
 // Compile-time interface checks.

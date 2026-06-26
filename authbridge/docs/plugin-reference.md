@@ -106,41 +106,41 @@ error) rather than silently forwarding the real token.
 ### `placeholder-resolve`: credential injection config
 
 Resolves OpenShell credential placeholders (`openshell:resolve:env:<KEY>`) in the
-configured request headers to their real values on the wire, fail-closed. Outbound
-plugin; opt-in (inert unless listed in `pipeline.outbound`).
+**`Authorization`** header to their real values on the wire, fail-closed. Outbound
+plugin; opt-in (inert unless listed in `pipeline.outbound`). Only `Authorization` is
+rewritten — it is the only header any listener reconciles to the upstream wire.
 
 ```yaml
 - name: placeholder-resolve
   config:
     prefix: "openshell:resolve:env:"     # default; the KEY follows this prefix
-    headers: ["Authorization"]            # default; headers to scan + rewrite
-    # Resolver source — precedence: gateway > mappings > secret_dir > process env.
-    gateway:                              # native OpenShell-provider source (sidecar)
+    source: gateway                      # REQUIRED: "gateway" or "secret_dir" (no default — fail-closed)
+    gateway:                             # used when source: gateway (OpenShell sandbox sidecar)
       endpoint: "https://openshell.<ns>.svc:8080"    # required
       sandbox_id: "<OPENSHELL_SANDBOX_ID>"           # required; must match the minted JWT
       mtls_cert_dir: "/etc/openshell-tls/client"     # ca.crt/tls.crt/tls.key; required for https
       sa_token_path: "/var/run/secrets/openshell/token"
-      insecure: false                     # opt-in plaintext (non-loopback refused by default)
-    mappings: {}                          # inline KEY->value (testing)
-    secret_dir: ""                        # resolve KEY from <dir>/<KEY> (mounted secret)
+      insecure: false                    # opt-in plaintext (non-loopback refused by default)
+    # secret_dir: "/etc/authbridge-cred"  # used when source: secret_dir (file per KEY)
 ```
 
 | Field | Default | Notes |
 |-------|---------|-------|
 | `prefix` | `openshell:resolve:env:` | Placeholder prefix; the KEY after it matches `[A-Za-z_][A-Za-z0-9_]*`. |
-| `headers` | `[Authorization]` | `Authorization` is the only header the forward proxy propagates to the upstream wire today. |
-| `gateway.endpoint` | — (required if `gateway` set) | Gateway gRPC endpoint; `https://` selects mTLS, `http://` plaintext. |
-| `gateway.sandbox_id` | — (required if `gateway` set) | Must equal the id bound into the gateway-minted JWT. |
+| `source` | — (**required**) | `gateway` or `secret_dir`. There is **no implicit fallback** — an unset/unknown source fails `Configure`, so the plugin never silently resolves from an ambient source. |
+| `gateway.endpoint` | — (required for `gateway`) | Gateway gRPC endpoint; `https://` selects mTLS, `http://` plaintext (non-loopback refused unless `insecure`). |
+| `gateway.sandbox_id` | — (required for `gateway`) | Must equal the id bound into the gateway-minted JWT. |
 | `gateway.mtls_cert_dir` | `/etc/openshell-tls/client` | `ca.crt`/`tls.crt`/`tls.key`; required for an `https://` endpoint. |
 | `gateway.sa_token_path` | `/var/run/secrets/openshell/token` | Projected SA token (audience `openshell-gateway`). |
-| `gateway.insecure` | `false` | Permit plaintext gRPC to a **non-loopback** gateway. Plaintext sends the SA token + JWT in cleartext, so it is **refused by default** for non-loopback endpoints (loopback is always allowed). |
-| `mappings` / `secret_dir` | — | Static resolver sources (inline map for testing / mounted secret directory). |
+| `gateway.insecure` | `false` | Permit plaintext gRPC to a **non-loopback** gateway. Plaintext sends the SA token + JWT in cleartext, so it is **refused by default** for non-loopback endpoints (loopback always allowed). |
+| `secret_dir` | — (required for `secret_dir`) | Directory; each KEY is read from a path-contained `<secret_dir>/<KEY>` file. |
 
 An unresolved placeholder, or a resolved value containing CR/LF/NUL, fails the
 request closed (`401 auth.unauthorized`) — the placeholder is never forwarded. The
 `gateway` source requires running as a sidecar in the sandbox pod (shared SA + the
 `openshell.io/sandbox-id` annotation) and warms its cache in the background, so the
-pipeline gates traffic on `Ready()` until the first fetch succeeds.
+pipeline gates traffic on `Ready()` until the first fetch succeeds. (The shared
+resolution + safe-header-injection primitives live in `authlib/credinject`.)
 
 ## `on_error` policy
 
