@@ -149,12 +149,11 @@ def run_full_pipeline(policy_text_file: str, policy_name: str | None, yes: bool 
     print_info(f"Policy name: {policy_name}")
     print()
 
-    generated_configs_dir = script_dir / "generated_configs"
+    generated_configs_dir = script_dir / "config"
     generated_configs_dir.mkdir(exist_ok=True)
 
     config_file = generated_configs_dir / f"{policy_name}_config.yaml"
     policy_file = generated_configs_dir / f"{policy_name}_policy.yaml"
-    main_config = "config.yaml"
 
     realm_name = os.getenv("REALM_NAME", "demo")
     keycloak_url = os.getenv("KEYCLOAK_URL")
@@ -212,7 +211,7 @@ def run_full_pipeline(policy_text_file: str, policy_name: str | None, yes: bool 
             realm_name=realm_name,
             user_realm_name="master",
         )
-        delete_access_control_policy(admin, realm_name, script_dir / main_config)
+        delete_access_control_policy(admin, realm_name, config_file=config_file)
         print_success("Old rules removed successfully")
         print()
 
@@ -226,8 +225,8 @@ def run_full_pipeline(policy_text_file: str, policy_name: str | None, yes: bool 
         print_success(f"Policy '{policy_name}' has been successfully updated in Keycloak")
         print()
         print_info("Generated files:")
-        print(f"  - Configuration: generated_configs/{config_file.name}")
-        print(f"  - Rules: generated_configs/{policy_file.name}")
+        print(f"  - Configuration: {config_file}")
+        print(f"  - Rules: {policy_file}")
 
     except Exception as e:
         print_error(f"An error occurred: {e}")

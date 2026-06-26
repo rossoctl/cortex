@@ -378,7 +378,7 @@ REALM_NAME=kagenti
 Run the setup script to create the demo realm with clients, roles, and users:
 
 ```bash
-python setup_keycloak.py -rbac config.yaml
+python setup_keycloak.py -rbac rbac/config.yaml
 ```
 
 Open bash inside the test client pod
@@ -560,26 +560,26 @@ python aiac_cli.py policies/regular_policy.txt
 ```
 
 Review generated files:
-  - Configuration: generated_configs/regular_policy_config.yaml
-  - Rules: generated_configs/regular_policy_policy.yaml
+  - Configuration: config/regular_policy_config.yaml
+  - Rules: config/regular_policy_policy.yaml
 
 
 Verify results
 ```bash
 echo "1. Developer has github-full-access:"
-yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-full-access")' generated_configs/regular_policy_policy.yaml
+yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-full-access")' config/regular_policy_policy.yaml
 
 echo -e "\n2. Developer has github-tool-aud:"
-yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/regular_policy_policy.yaml
+yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-tool-aud")' config/regular_policy_policy.yaml
 
 echo -e "\n3. Tech-support has github-tool-aud:"
-yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/regular_policy_policy.yaml
+yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-tool-aud")' config/regular_policy_policy.yaml
 
 echo -e "\n4. Tech-support does NOT have github-full-access (should be empty):"
-yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-full-access")' generated_configs/regular_policy_policy.yaml
+yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-full-access")' config/regular_policy_policy.yaml
 
 echo -e "\n5. Sales does NOT exist in policy (should be null):"
-yq '.policy.sales' generated_configs/regular_policy_policy.yaml
+yq '.policy.sales' config/regular_policy_policy.yaml
 ```
 Expected output :
 ```bash
@@ -641,7 +641,7 @@ echo "Client ID: $CLIENT_ID  Secret length: ${#CLIENT_SECRET}"
 
 
 # step 2 - run AIAC using regualr policy
-# python AIAC.py policy/regular_policy.txt
+# python aiac_cli.py policies/regular_policy.txt
 # users will be configured acording to the 'regular' policy
 #ALICE (Developer) can list issues in kagenti/kagenti repo
 #ALICE can also list issues in omerboehm/intro2c repo (because she is a DEVELOPER and has full access)
@@ -791,26 +791,26 @@ Apply the updated policy
 python aiac_cli.py policies/permissive_policy.txt
 ```
 Review generated files:
-  - Configuration: generated_configs/permissive_policy_config.yaml
-  - Rules: generated_configs/permissive_policy_policy.yaml
+  - Configuration: config/permissive_policy_config.yaml
+  - Rules: config/permissive_policy_policy.yaml
 
 
 Verify results
 ```bash
 echo "1. Developer has github-full-access:"
-yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-full-access")' generated_configs/permissive_policy_policy.yaml
+yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-full-access")' config/permissive_policy_policy.yaml
 
 echo -e "\n2. Developer has github-tool-aud:"
-yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/permissive_policy_policy.yaml
+yq '.policy.developer[] | select(.client == "github-tool" and .role == "github-tool-aud")' config/permissive_policy_policy.yaml
 
 echo -e "\n3. Tech-support has github-tool-aud:"
-yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/permissive_policy_policy.yaml
+yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-tool-aud")' config/permissive_policy_policy.yaml
 
 echo -e "\n4. Tech-support does NOT have github-full-access (should be empty):"
-yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-full-access")' generated_configs/permissive_policy_policy.yaml
+yq '.policy.tech-support[] | select(.client == "github-tool" and .role == "github-full-access")' config/permissive_policy_policy.yaml
 
 echo -e "\n5. Sales is now just like Tech-support (\"Other personnel\"):"
-yq '.policy.sales[] | select(.client == "github-tool" and .role == "github-tool-aud")' generated_configs/permissive_policy_policy.yaml
+yq '.policy.sales[] | select(.client == "github-tool" and .role == "github-tool-aud")' config/permissive_policy_policy.yaml
 ```
 Expected output :
 ```txt
@@ -831,7 +831,7 @@ role: github-tool-aud
 5. Sales is now just like Tech-support ("Other personnel"):
 client: github-tool
 role: github-tool-aud
-
+```
 
 
 ### Step 17: Reset Realm (Optional)
@@ -839,9 +839,10 @@ role: github-tool-aud
 To clean up and start fresh:
 
 ```bash
+cd demos/github-issue/
 # delete generated policies
-rm -f generated_configs/*.yaml
+rm -f aiac/config/*.yaml
 
 # re-provision the realm
-python setup_keycloak.py -rbac config.yaml
+python setup_keycloak.py -rbac rbac/config.yaml
 ```

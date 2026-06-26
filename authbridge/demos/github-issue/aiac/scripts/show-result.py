@@ -9,6 +9,7 @@ Also prints the last generated policy file for side-by-side comparison.
 Run via: make show-result
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -46,6 +47,15 @@ def section(title: str) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Display composite-role mappings currently active in Keycloak")
+    parser.add_argument(
+        "--config-path",
+        type=Path,
+        required=True,
+        help="Path to the RBAC configuration YAML file",
+    )
+    args = parser.parse_args()
+
     try:
         admin = KeycloakAdmin(
             server_url=KEYCLOAK_URL,
@@ -58,7 +68,11 @@ def main() -> None:
         print(f"{RED}ERROR: Could not connect to Keycloak at {KEYCLOAK_URL}: {e}{RESET}")
         sys.exit(1)
 
-    config_path = AIAC_DIR / "config.yaml"
+    config_path = args.config_path
+    if not config_path.exists():
+        print(f"{RED}ERROR: Config file not found: {config_path}{RESET}")
+        sys.exit(1)
+
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
@@ -85,7 +99,7 @@ def main() -> None:
                 name = c.get("name", "?")
                 print(f"    {GREEN}✓{RESET}  {container}.{name}")
 
-    gen_dir = AIAC_DIR / "generated_configs"
+    gen_dir = AIAC_DIR / "config"
     policy_files = list(gen_dir.glob("*_policy.yaml")) if gen_dir.exists() else []
     if policy_files:
         latest = max(policy_files, key=lambda p: p.stat().st_mtime_ns)
