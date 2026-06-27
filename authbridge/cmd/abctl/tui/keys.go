@@ -387,6 +387,7 @@ func (m *model) goBottom() {
 		if n := len(m.eventsTbl.Rows()); n > 0 {
 			m.eventsTbl.SetCursor(n - 1)
 		}
+		m.follow = true // jumped to the tail: resume following new events
 	case panePipeline:
 		if n := len(m.pipelineTbl.Rows()); n > 0 {
 			m.pipelineTbl.SetCursor(n - 1)

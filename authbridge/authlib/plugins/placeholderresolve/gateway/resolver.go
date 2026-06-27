@@ -123,11 +123,13 @@ func stripRevisionPrefix(key string) (string, bool) {
 // outlives the pipeline's Init budget) and returns immediately. The loop
 // fetches right away; Ready() flips true once the first fetch succeeds.
 func (r *Resolver) Start(_ context.Context) error {
-	if r.bgCancel.Load() != nil {
-		return nil // already started
-	}
 	bgCtx, cancel := context.WithCancel(context.Background())
-	r.bgCancel.Store(&cancel)
+	// Atomic guard against a double Start (correct by construction even though the
+	// pipeline calls Init once): only the goroutine that wins the CAS owns the loop.
+	if !r.bgCancel.CompareAndSwap(nil, &cancel) {
+		cancel() // already started — discard the unused context
+		return nil
+	}
 	go r.refreshLoop(bgCtx)
 	return nil
 }

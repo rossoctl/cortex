@@ -138,7 +138,11 @@ rewritten — it is the only header any listener reconciles to the upstream wire
 | `secret_dir` | — (required for `secret_dir`) | Directory; each KEY is read from a path-contained `<secret_dir>/<KEY>` file. |
 
 An unresolved placeholder, or a resolved value containing CR/LF/NUL, fails the
-request closed (`401 auth.unauthorized`) — the placeholder is never forwarded. The
+request closed (`401 auth.unauthorized`) — the placeholder is never forwarded **under
+the default `enforce` policy**. Run placeholder-resolve under `enforce`: with
+`on_error: observe` the deny is shadowed and the request is forwarded carrying the
+literal placeholder. No real credential leaks (the deny precedes header injection, and
+upstream rejects the bogus bearer), but fail-closed no longer holds. The
 `gateway` source requires running as a sidecar in the sandbox pod (shared SA + the
 `openshell.io/sandbox-id` annotation) and warms its cache in the background, so the
 pipeline gates traffic on `Ready()` until the first fetch succeeds. (The shared
