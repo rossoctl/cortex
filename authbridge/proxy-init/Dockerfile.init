@@ -1,4 +1,4 @@
-FROM docker.io/library/alpine:3.23
+FROM docker.io/library/alpine:3.24
 
 # Install both iptables-nft and iptables-legacy; init-iptables.sh auto-detects
 # the correct backend at runtime by reading /proc/modules (iptable_nat loaded =>
