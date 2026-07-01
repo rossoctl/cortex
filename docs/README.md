@@ -1,3 +1,3 @@
 # Kagenti-Extensions
 
-- [AuthBridge Docs](authbridge/README.md)
+- [AuthBridge Docs](../authbridge/README.md)
