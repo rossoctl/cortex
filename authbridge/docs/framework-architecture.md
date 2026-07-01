@@ -162,6 +162,20 @@ Framework fills `Plugin`, `Phase`, `Path`; authors supply only what's specific t
 
 ### Example
 
+A typical configuration validates inbound traffic with the auth plugins, lets the
+protocol parsers record what is happening, has a guardrail consult the recorded
+session, and finally exchanges a token on the way out:
+
+```yaml
+# authbridge-runtime (abbreviated)
+session:
+  enabled: true
+pipeline:
+  inbound:  [ jwt-validation, a2a-parser ]
+  outbound: [ mcp-parser, ibac, token-exchange ]
+# routes.yaml: { host: github-tool-mcp → audience: github-tool }
+```
+
 The diagram below traces a request through that configuration: an inbound message
 is validated and recorded, then the workload's outbound tool call is judged
 against the recorded intent and finally re-tokenized.
