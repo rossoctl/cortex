@@ -160,6 +160,21 @@ Framework fills `Plugin`, `Phase`, `Path`; authors supply only what's specific t
 
 **Lifetime:** one `*Context` per HTTP transaction. Not reused across requests. Single-threaded — the pipeline guarantees sequential invocation of plugins within a phase, so plugins don't need internal locking for pctx reads/writes.
 
+### Example
+
+The diagram below traces a request through that configuration: an inbound message
+is validated and recorded, then the workload's outbound tool call is judged
+against the recorded intent and finally re-tokenized.
+
+![Plugin pipeline sequence](plugin-sequence.svg)
+
+The pipelines dispatch in **declaration order** on the request phase. On the
+inbound pass `jwt-validation` runs first (and can reject with `401`), then
+`a2a-parser` records the user's request into the session store. On the outbound
+pass `mcp-parser` records the tool call, `ibac` reads the recorded intent to judge
+it (and can reject with `403`), and `token-exchange` swaps in an audience-scoped
+token. The response phase runs the same plugins in reverse order.
+
 ---
 
 ## 4. `Extensions` — typed plugin-to-plugin communication
