@@ -509,17 +509,21 @@ Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak.p
 
 <sub><span style="color: gray; font-size: 0.9em;">
 You can also list all clients with: \
-curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" | jq '.[].clientId'
+`curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" | jq '.[].clientId'`
 </span></sub>
 
 <sub><span style="color: gray; font-size: 0.9em;">
-if ALICE_TOKEN (or BOB_TOKEN) is null or empty run \
+if ALICE_TOKEN (or BOB_TOKEN) is null or empty run
+
+```bash
 curl -s -X POST "http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token" \
    -d "grant_type=password" \
    -d "username=alice" \
    -d "password=alice123" \
    --data-urlencode "client_id=$CLIENT_ID" \
-   --data-urlencode "client_secret=$CLIENT_SECRET" \
+   --data-urlencode "client_secret=$CLIENT_SECRET"
+```
+
 Look for error message e.g. "Invalid user credentials" will require updating user credentials in keycloak
 </span></sub>
 
