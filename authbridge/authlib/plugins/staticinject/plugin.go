@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
@@ -58,11 +59,21 @@ type staticInjectConfig struct {
 	// workload never presents (and therefore never holds) a real
 	// credential — only the agreed-upon placeholder.
 	Placeholder string `json:"placeholder" description:"When set, only inject if the inbound bearer equals this exact placeholder string."`
+
+	// InjectHeader is the request header the resolved credential is written to.
+	// Default "Authorization" (written as "Bearer <value>", preserving legacy
+	// behavior). Any other value (e.g. "x-api-key") writes the RAW credential
+	// value and removes the inbound Authorization header so a stale placeholder
+	// bearer never reaches the backend.
+	InjectHeader string `json:"inject_header" description:"Header to inject the credential into. Default Authorization (Bearer scheme); any other value writes the raw value and drops Authorization." default:"Authorization"`
 }
 
 func (c *staticInjectConfig) applyDefaults() {
 	if c.KeyBy == "" {
 		c.KeyBy = keyByHost
+	}
+	if c.InjectHeader == "" {
+		c.InjectHeader = "Authorization"
 	}
 }
 
@@ -196,8 +207,22 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 		return pipeline.DenyStatus(401, "static-inject.unresolved-key", "no credential available for the resolved key")
 	}
 
-	if !SafeSetHeader(pctx.Headers, "Authorization", "Bearer "+value) {
+	target := p.cfg.InjectHeader
+	var headerVal string
+	if strings.EqualFold(target, "Authorization") {
+		headerVal = "Bearer " + value
+	} else {
+		headerVal = value // raw credential, e.g. x-api-key
+	}
+	if !SafeSetHeader(pctx.Headers, target, headerVal) {
 		return pipeline.DenyStatus(401, "static-inject.unsafe-value", "resolved credential value is unsafe to set as a header")
+	}
+	// When injecting into a non-Authorization header, drop the inbound
+	// Authorization so the placeholder bearer never reaches the backend
+	// (some backends reject a request carrying both a valid key and a
+	// bogus Authorization).
+	if !strings.EqualFold(target, "Authorization") {
+		pctx.Headers.Del("Authorization")
 	}
 
 	return pipeline.Action{Type: pipeline.Continue}

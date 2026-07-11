@@ -118,6 +118,69 @@ func TestDenyOnPlaceholderMismatch(t *testing.T) {
 	}
 }
 
+func TestInjectHeader_XAPIKey(t *testing.T) {
+	p := New()
+	cfg := `{
+		"source": "mappings",
+		"mappings": {"api.example.com": "REALKEY"},
+		"key_by": "host",
+		"inject_header": "x-api-key"
+	}`
+	if err := p.Configure(json.RawMessage(cfg)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+
+	pctx := &pipeline.Context{
+		Host: "api.example.com",
+		Headers: http.Header{
+			"Authorization": []string{"Bearer PLACEHOLDER"},
+		},
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+
+	if action.Type != pipeline.Continue {
+		t.Fatalf("OnRequest() action.Type = %v, want %v (violation: %+v)", action.Type, pipeline.Continue, action.Violation)
+	}
+	if got := pctx.Headers.Get("x-api-key"); got != "REALKEY" {
+		t.Errorf("x-api-key header = %q, want %q (raw value, no Bearer prefix)", got, "REALKEY")
+	}
+	if got := pctx.Headers.Get("Authorization"); got != "" {
+		t.Errorf("Authorization header = %q, want removed (empty)", got)
+	}
+}
+
+func TestInjectHeader_DefaultUnchanged(t *testing.T) {
+	p := New()
+	cfg := `{
+		"source": "mappings",
+		"mappings": {"api.example.com": "REAL"},
+		"key_by": "host"
+	}`
+	if err := p.Configure(json.RawMessage(cfg)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+
+	pctx := &pipeline.Context{
+		Host: "api.example.com",
+		Headers: http.Header{
+			"Authorization": []string{"Bearer PLACEHOLDER"},
+		},
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+
+	if action.Type != pipeline.Continue {
+		t.Fatalf("OnRequest() action.Type = %v, want %v (violation: %+v)", action.Type, pipeline.Continue, action.Violation)
+	}
+	if got := pctx.Headers.Get("Authorization"); got != "Bearer REAL" {
+		t.Errorf("Authorization header = %q, want %q (default inject_header behavior unchanged)", got, "Bearer REAL")
+	}
+	if _, ok := pctx.Headers["X-Api-Key"]; ok {
+		t.Errorf("x-api-key header should not be set when inject_header defaults to Authorization")
+	}
+}
+
 func TestKeyByStatic(t *testing.T) {
 	p := New()
 	cfg := `{
