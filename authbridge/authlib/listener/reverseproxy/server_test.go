@@ -109,6 +109,47 @@ func TestReverseProxy_BypassPath(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_RewritesHostToBackend locks in the fix for the
+// Cloudflare-fronted-backend bug: httputil.NewSingleHostReverseProxy's
+// default Director rewrites the outbound URL but deliberately leaves
+// req.Host as the inbound caller's Host, so backends like
+// api.anthropic.com that validate Host reject the forwarded request.
+// The wrapped Director must set req.Host to the backend target's host
+// after the default rewrite runs.
+func TestReverseProxy_RewritesHostToBackend(t *testing.T) {
+	var gotHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(pipeline.NewHolder(p), nil, backend.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", proxy.URL+"/api/data", nil)
+	req.Host = "authbridge-ab1:8080" // inbound Host, deliberately different from the backend
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	backendHost := strings.TrimPrefix(strings.TrimPrefix(backend.URL, "https://"), "http://")
+	if gotHost != backendHost {
+		t.Errorf("backend received Host = %q, want %q (backend target host)", gotHost, backendHost)
+	}
+}
+
 // --- Body Buffering Tests ---
 
 // bodyRecorderPlugin records whether it received a body during OnRequest.

@@ -93,6 +93,17 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 		return nil, err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// The default Director rewrites the outbound scheme/host/path but
+	// deliberately leaves req.Host as the inbound caller's Host (e.g.
+	// "authbridge-ab1:8080"). Cloudflare-fronted backends like
+	// api.anthropic.com validate Host against the request line and
+	// reject a mismatch, so wrap the Director to rewrite it to the
+	// backend target's host after the default rewrite runs.
+	orig := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		orig(req)
+		req.Host = target.Host
+	}
 	// FlushInterval -1 makes ReverseProxy flush after every Read of
 	// the response body. Required for streaming text/event-stream
 	// responses where each frame must hit the client immediately —
