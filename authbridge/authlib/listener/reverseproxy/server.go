@@ -103,6 +103,16 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 	proxy.Director = func(req *http.Request) {
 		orig(req)
 		req.Host = target.Host
+		// Strip the client's Accept-Encoding. This listener inspects and
+		// re-frames the (SSE) response body, so it must see plaintext. With no
+		// explicit Accept-Encoding, Go's transport negotiates gzip itself and
+		// transparently decompresses the response (dropping Content-Encoding /
+		// Content-Length), so both the re-framing here and the downstream client
+		// get plaintext. Leaving an explicit "Accept-Encoding: gzip" through
+		// would yield a gzipped body the SSE re-framer reads as garbage plus a
+		// Content-Encoding: gzip header over re-emitted plaintext — which makes
+		// SSE clients (e.g. the Anthropic SDK) decode zero events.
+		req.Header.Del("Accept-Encoding")
 	}
 	// FlushInterval -1 makes ReverseProxy flush after every Read of
 	// the response body. Required for streaming text/event-stream
@@ -632,7 +642,16 @@ func (b *streamingResponseBody) Read(p []byte) (int, error) {
 	// gets its own `data: ` prefix and the downstream parser sees the
 	// same event boundaries the upstream produced. For single-line
 	// JSON-RPC payloads this is equivalent to one `data: <payload>\n\n`.
-	out := make([]byte, 0, len(frame)+8)
+	out := make([]byte, 0, len(frame)+16)
+	// Preserve the upstream SSE "event:" line. sseframe surfaces only the
+	// data payload, but clients like the Anthropic SDK type each event from
+	// the "event:" field; dropping it makes the re-framed stream parse to
+	// zero typed events downstream.
+	if ev := b.reader.LastEvent(); len(ev) > 0 {
+		out = append(out, "event: "...)
+		out = append(out, ev...)
+		out = append(out, '\n')
+	}
 	rest := frame
 	for len(rest) > 0 {
 		nl := bytes.IndexByte(rest, '\n')
