@@ -232,7 +232,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("reverse-proxy: buffered request body", "host", r.Host, "bodyLen", len(body))
 	}
 
-	originalAuth := pctx.Headers.Get("Authorization")
 	action := s.InboundPipeline.Run(r.Context(), pctx)
 	if action.Type == pipeline.Reject {
 		s.recordInboundReject(pctx, action)
@@ -250,13 +249,26 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del("Content-Encoding")
 	}
 
-	// Propagate an inbound Authorization mutation to the forwarded
-	// request. A plugin (e.g. jwt-validation in mint mode) may have
-	// replaced the caller's token on pctx.Headers; the proxy forwards
-	// r.Header, so without this the backend would still see the original
-	// token. Only rewrite when the value actually changed.
-	if newAuth := pctx.Headers.Get("Authorization"); newAuth != originalAuth {
-		r.Header.Set("Authorization", newAuth)
+	// Propagate every header mutation the inbound pipeline made to the forwarded
+	// request. pctx.Headers started as a clone of r.Header, so plugins' set / replace
+	// / delete operations on it are the intended backend-facing header set. Only
+	// Authorization used to be forwarded, silently dropping any other injected header
+	// (e.g. static-inject's x-api-key). Content-Length / Content-Encoding are managed
+	// by the body-rewrite block above and the transport, so leave them untouched.
+	skip := func(k string) bool { return k == "Content-Length" || k == "Content-Encoding" }
+	for k := range r.Header {
+		if skip(k) {
+			continue
+		}
+		if _, ok := pctx.Headers[k]; !ok {
+			r.Header.Del(k) // plugin removed it
+		}
+	}
+	for k, vv := range pctx.Headers {
+		if skip(k) {
+			continue
+		}
+		r.Header[k] = append([]string(nil), vv...) // set / overwrite
 	}
 
 	// Record the inbound request event whenever there is something

@@ -150,6 +150,122 @@ func TestReverseProxy_RewritesHostToBackend(t *testing.T) {
 	}
 }
 
+// --- Header Propagation Tests ---
+
+// headerMutatorPlugin applies an arbitrary mutation function to
+// pctx.Headers during OnRequest. Used to simulate plugins like
+// static-inject (set x-api-key, delete Authorization) and
+// jwt-validation's mint mode (replace Authorization) without pulling
+// in their real implementations.
+type headerMutatorPlugin struct {
+	mutate func(h http.Header)
+}
+
+func (p *headerMutatorPlugin) Name() string { return "header-mutator" }
+func (p *headerMutatorPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (p *headerMutatorPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	p.mutate(pctx.Headers)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *headerMutatorPlugin) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestReverseProxy_HeaderMutation_SetAndDelete locks in the fix for the
+// static-inject 401 bug: a plugin that sets a new header (x-api-key)
+// and deletes Authorization on pctx.Headers must have BOTH mutations
+// reach the backend. Before this fix, the reverse proxy only ever
+// propagated an Authorization change, so x-api-key never reached
+// api.anthropic.com and the stale Authorization was still forwarded.
+func TestReverseProxy_HeaderMutation_SetAndDelete(t *testing.T) {
+	var gotAPIKey string
+	var gotAuthOK bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAPIKey = r.Header.Get("x-api-key")
+		_, gotAuthOK = r.Header["Authorization"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	mutator := &headerMutatorPlugin{mutate: func(h http.Header) {
+		h.Set("x-api-key", "REALKEY")
+		h.Del("Authorization")
+	}}
+	p, err := pipeline.New([]pipeline.Plugin{mutator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(pipeline.NewHolder(p), nil, backend.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", proxy.URL+"/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer PLACEHOLDER")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if gotAPIKey != "REALKEY" {
+		t.Errorf("backend x-api-key = %q, want %q", gotAPIKey, "REALKEY")
+	}
+	if gotAuthOK {
+		t.Errorf("backend received an Authorization header; want it deleted")
+	}
+}
+
+// Authorization-replace (mint) regression coverage already exists in
+// placeholder_test.go's TestInboundPropagation_RewrittenAuthReachesBackend
+// (a plugin that replaces Authorization must have the new value reach
+// the backend). Confirmed still green under the full header-diff sync.
+
+// TestReverseProxy_HeaderMutation_PassThroughUnchanged confirms a
+// header the pipeline never touched still reaches the backend
+// unchanged under the new diff-sync (as opposed to only forwarding
+// whatever the pipeline explicitly set).
+func TestReverseProxy_HeaderMutation_PassThroughUnchanged(t *testing.T) {
+	var gotCustom string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCustom = r.Header.Get("X-Untouched")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	// Plugin mutates an unrelated header so pctx.Headers diverges from
+	// a pure clone, but never touches X-Untouched.
+	mutator := &headerMutatorPlugin{mutate: func(h http.Header) {
+		h.Set("x-api-key", "REALKEY")
+	}}
+	p, err := pipeline.New([]pipeline.Plugin{mutator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(pipeline.NewHolder(p), nil, backend.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", proxy.URL+"/api", nil)
+	req.Header.Set("X-Untouched", "still-here")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if gotCustom != "still-here" {
+		t.Errorf("backend X-Untouched = %q, want %q (pass-through header dropped)", gotCustom, "still-here")
+	}
+}
+
 // --- Body Buffering Tests ---
 
 // bodyRecorderPlugin records whether it received a body during OnRequest.
