@@ -10,7 +10,7 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/maximhq/bifrost/core v1.7.0
 	github.com/open-policy-agent/opa v1.4.2
-	github.com/spiffe/go-spiffe/v2 v2.6.0
+	github.com/spiffe/go-spiffe/v2 v2.8.1
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171
