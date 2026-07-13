@@ -12,12 +12,16 @@
 # authbridge-proxy is CGO_ENABLED=0 static, so musl is fine.
 #
 # Build context: ./authbridge (needs access to authlib/ and cmd/authbridge-proxy/)
+#
+# authlib embeds github.com/kagenti/context-guru (a published module, fetched via
+# GOPROXY like any other dependency). It builds pure-Go — skeleton's cgo is behind
+# the cg_skeleton build tag — so CGO_ENABLED=0 below stays correct.
 
 # Stage 1: Build authbridge-proxy binary.
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to
 # shave ~30% off the binary. Go's runtime keeps `pclntab` separately,
 # so panic stack traces still show function names.
-FROM golang:1.25-alpine@sha256:a2ea69f8f07fe886989c61e9da297f932ddf50b42dad2f44d2664710c94dca37 AS builder
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
 
 RUN apk add --no-cache git
 
