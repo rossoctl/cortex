@@ -103,16 +103,24 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 	proxy.Director = func(req *http.Request) {
 		orig(req)
 		req.Host = target.Host
-		// Strip the client's Accept-Encoding. This listener inspects and
-		// re-frames the (SSE) response body, so it must see plaintext. With no
-		// explicit Accept-Encoding, Go's transport negotiates gzip itself and
+		// Strip the client's Accept-Encoding, but only when a plugin will
+		// actually inspect the response body: a StreamingResponder (SSE
+		// re-framing) or any ReadsBody/WritesBody plugin (buffered read into
+		// pctx.ResponseBody). Those paths must see plaintext — with no explicit
+		// Accept-Encoding, Go's transport negotiates gzip itself and
 		// transparently decompresses the response (dropping Content-Encoding /
-		// Content-Length), so both the re-framing here and the downstream client
+		// Content-Length), so both the inspection here and the downstream client
 		// get plaintext. Leaving an explicit "Accept-Encoding: gzip" through
 		// would yield a gzipped body the SSE re-framer reads as garbage plus a
 		// Content-Encoding: gzip header over re-emitted plaintext — which makes
-		// SSE clients (e.g. the Anthropic SDK) decode zero events.
-		req.Header.Del("Accept-Encoding")
+		// SSE clients (e.g. the Anthropic SDK) decode zero events. When no plugin
+		// reads the response body this proxy is a pure pass-through, so leave
+		// Accept-Encoding intact rather than force needless upstream→client
+		// decompression (matters for a remote backend or large non-streamed
+		// bodies; harmless on a localhost sidecar hop).
+		if inbound.NeedsBody() || inbound.HasStreamingResponders() {
+			req.Header.Del("Accept-Encoding")
+		}
 	}
 	// FlushInterval -1 makes ReverseProxy flush after every Read of
 	// the response body. Required for streaming text/event-stream

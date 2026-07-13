@@ -297,11 +297,14 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // TestReverseProxy_StripsAcceptEncoding is the regression guard for
-// the gzip bug: the Director must strip the client's Accept-Encoding
-// so Go's transport negotiates (and transparently decompresses) gzip
-// itself. Leaving an explicit "Accept-Encoding: gzip" through produced
-// a gzipped body the SSE re-framer read as garbage plus a
-// Content-Encoding: gzip header over re-emitted plaintext.
+// the gzip bug: when a plugin inspects the response body, the Director
+// must strip the client's Accept-Encoding so Go's transport negotiates
+// (and transparently decompresses) gzip itself. Leaving an explicit
+// "Accept-Encoding: gzip" through produced a gzipped body the SSE
+// re-framer read as garbage plus a Content-Encoding: gzip header over
+// re-emitted plaintext. The pipeline here carries a body-inspecting
+// StreamingResponder (streamingProbe, ReadsBody=true) so the strip is
+// in scope.
 //
 // This asserts against the outbound request the Director hands to the
 // Transport rather than what a real backend observes on the wire:
@@ -316,7 +319,7 @@ func TestReverseProxy_StripsAcceptEncoding(t *testing.T) {
 	var gotAcceptEncoding string
 	var sawHeader bool
 
-	p, err := pipeline.New(nil)
+	p, err := pipeline.New([]pipeline.Plugin{newStreamingProbe(false)})
 	if err != nil {
 		t.Fatalf("New pipeline: %v", err)
 	}
@@ -351,5 +354,52 @@ func TestReverseProxy_StripsAcceptEncoding(t *testing.T) {
 
 	if sawHeader {
 		t.Errorf("outbound request Accept-Encoding = %q, want stripped (Director did not delete it)", gotAcceptEncoding)
+	}
+}
+
+// TestReverseProxy_PreservesAcceptEncoding_PassThrough is the flip side
+// of the strip: when no plugin reads the response body, the proxy is a
+// pure pass-through and must NOT strip Accept-Encoding — forcing
+// upstream→client decompression there is a needless regression (matters
+// for a remote backend or large non-streamed bodies). The pipeline is
+// empty, so neither NeedsBody() nor HasStreamingResponders() holds and
+// the Director leaves the caller's explicit header intact.
+func TestReverseProxy_PreservesAcceptEncoding_PassThrough(t *testing.T) {
+	var gotAcceptEncoding string
+
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatalf("New pipeline: %v", err)
+	}
+	srv, err := NewServer(pipeline.NewHolder(p), nil, "http://backend.invalid", nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.proxy.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotAcceptEncoding = req.Header.Get("Accept-Encoding")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, err := http.NewRequest("GET", proxy.URL+"/api/data", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotAcceptEncoding != "gzip" {
+		t.Errorf("outbound request Accept-Encoding = %q, want %q preserved (pure pass-through must not strip)", gotAcceptEncoding, "gzip")
 	}
 }
