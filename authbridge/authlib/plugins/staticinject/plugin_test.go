@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -239,6 +241,65 @@ func TestDenyOnUnsafeCredentialValue(t *testing.T) {
 	if got := pctx.Headers.Get("Authorization"); strings.Contains(got, "X-Injected") {
 		t.Errorf("Authorization header = %q, must not contain injected value", got)
 	}
+}
+
+// TestDenyOnEmptyResolvedValue locks in fail-closed behavior when the resolver
+// returns an empty credential. ReadCredentialFile trims a whitespace-only secret
+// file to "" (ok=true), and an inline mapping may hold "" — both must deny rather
+// than forward an empty "Bearer " header.
+func TestDenyOnEmptyResolvedValue(t *testing.T) {
+	t.Run("empty inline mapping value", func(t *testing.T) {
+		p := New()
+		cfg := `{
+			"source": "mappings",
+			"mappings": {"api.example.com": ""},
+			"key_by": "host"
+		}`
+		if err := p.Configure(json.RawMessage(cfg)); err != nil {
+			t.Fatalf("Configure() error = %v", err)
+		}
+
+		pctx := &pipeline.Context{
+			Host:    "api.example.com",
+			Headers: http.Header{"Authorization": []string{"Bearer PLACEHOLDER"}},
+		}
+		action := p.OnRequest(context.Background(), pctx)
+		if action.Type != pipeline.Reject {
+			t.Fatalf("OnRequest() action.Type = %v, want %v (Reject, empty credential)", action.Type, pipeline.Reject)
+		}
+		if got := pctx.Headers.Get("Authorization"); got != "Bearer PLACEHOLDER" {
+			t.Errorf("Authorization header = %q, want unmodified %q", got, "Bearer PLACEHOLDER")
+		}
+	})
+
+	t.Run("whitespace-only secret file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "api.example.com"), []byte("   \n"), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+
+		p := New()
+		cfg := `{
+			"source": "secret_dir",
+			"secret_dir": "` + dir + `",
+			"key_by": "host"
+		}`
+		if err := p.Configure(json.RawMessage(cfg)); err != nil {
+			t.Fatalf("Configure() error = %v", err)
+		}
+
+		pctx := &pipeline.Context{
+			Host:    "api.example.com",
+			Headers: http.Header{"Authorization": []string{"Bearer PLACEHOLDER"}},
+		}
+		action := p.OnRequest(context.Background(), pctx)
+		if action.Type != pipeline.Reject {
+			t.Fatalf("OnRequest() action.Type = %v, want %v (Reject, whitespace-only file)", action.Type, pipeline.Reject)
+		}
+		if got := pctx.Headers.Get("Authorization"); got != "Bearer PLACEHOLDER" {
+			t.Errorf("Authorization header = %q, want unmodified %q", got, "Bearer PLACEHOLDER")
+		}
+	})
 }
 
 // =============================================================================

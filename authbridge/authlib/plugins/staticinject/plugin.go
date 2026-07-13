@@ -203,7 +203,11 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	}
 
 	value, ok := p.resolver.Resolve(ctx, key)
-	if !ok {
+	// Fail closed on an empty credential as well: ReadCredentialFile trims a
+	// whitespace-only secret file to "" and returns ok, and an inline mapping
+	// may hold "". Without this guard either would forward an empty
+	// "Bearer " / raw header instead of denying.
+	if !ok || value == "" {
 		return pipeline.DenyStatus(401, "static-inject.unresolved-key", "no credential available for the resolved key")
 	}
 
