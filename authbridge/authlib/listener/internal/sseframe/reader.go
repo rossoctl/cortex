@@ -46,6 +46,13 @@ type Reader struct {
 	// Reused across ReadFrame calls to avoid per-frame allocation in
 	// the common steady-state case.
 	scratch []byte
+	// lastEvent holds the "event:" field value of the frame most
+	// recently returned by ReadFrame (empty if the frame named no
+	// event type). Reused across calls; valid until the next ReadFrame.
+	// Preserved so a proxy re-framing the stream can reproduce the
+	// upstream's SSE event type — clients like the Anthropic SDK type
+	// each event from the "event:" line, not the data payload.
+	lastEvent []byte
 }
 
 // NewReader wraps r with the given per-frame size cap (bytes).
@@ -84,6 +91,7 @@ const DefaultMaxFrameSize = 1 << 20
 // must copy.
 func (r *Reader) ReadFrame() ([]byte, error) {
 	r.scratch = r.scratch[:0]
+	r.lastEvent = r.lastEvent[:0]
 	hasData := false
 
 	for {
@@ -122,9 +130,17 @@ func (r *Reader) ReadFrame() ([]byte, error) {
 		// value. Lines without a colon name a field with an empty
 		// value, which we don't care about either way.
 		field, value := splitField(line)
+		if field == "event" {
+			// Capture the event type so a re-framing proxy can reproduce
+			// the upstream "event:" line. Copied because value points into
+			// readLine's buffer, which is reused on the next line read.
+			r.lastEvent = append(r.lastEvent[:0], value...)
+			continue
+		}
 		if field != "data" {
-			// We deliberately ignore "event", "id", "retry", and any
-			// unknown field — the consumer only needs the data payload.
+			// We deliberately ignore "id", "retry", and any unknown
+			// field — the consumer only needs the data payload (and the
+			// event type captured above).
 			continue
 		}
 
@@ -144,6 +160,14 @@ func (r *Reader) ReadFrame() ([]byte, error) {
 		}
 	}
 }
+
+// LastEvent returns the "event:" field value of the frame most recently
+// returned by ReadFrame, or an empty slice if that frame named no event
+// type. The returned slice is owned by the Reader and reused on the next
+// ReadFrame call; copy to retain. A re-framing proxy uses this to emit an
+// "event: <type>" line so downstream SSE consumers that type events from
+// the event field (e.g. the Anthropic SDK) see the upstream's framing.
+func (r *Reader) LastEvent() []byte { return r.lastEvent }
 
 // readLine reads one logical SSE line off the underlying buffered
 // reader. Line terminators per the SSE spec are LF, CR, or CRLF —
