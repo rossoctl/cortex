@@ -13,8 +13,8 @@ require (
 	github.com/spiffe/go-spiffe/v2 v2.6.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171
-	google.golang.org/grpc v1.81.1
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478
+	google.golang.org/grpc v1.82.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
