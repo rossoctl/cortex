@@ -199,11 +199,23 @@ Manifests live under `aiac/demo/agents/github_agent/k8s/`, adapted from the gith
 `team1` (installer-provided ConfigMaps/secrets assumed present).
 
 - **`github-agent-deployment.yaml`** — `ServiceAccount` + `Deployment` + `Service` + `AgentRuntime`:
-  - Pod labels `kagenti.io/inject: enabled`, `kagenti.io/spire: enabled`.
+  - **Deployment labels** (on `metadata.labels` **and** pod template): `protocol.kagenti.io/a2a: ""`
+    in addition to `app.kubernetes.io/name: github-agent`. The `protocol.kagenti.io/a2a` label is
+    required by the `AgentCardSyncReconciler` (`shouldSyncWorkload` gate): the operator stamps
+    `kagenti.io/type=agent` automatically via the `AgentRuntime`, but the protocol label must be set
+    in the manifest. Without it, no `AgentCard` CR is auto-created and `analyze_agent` falls back to
+    the default minimal scope.
+  - Pod labels `kagenti.io/inject: enabled`, `kagenti.io/spire: enabled`, `protocol.kagenti.io/a2a: ""`.
   - Container port `8000`; env `MCP_URL=http://github-tool-mcp:9090/mcp`,
     `JWKS_URI=http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/certs`,
     LLM vars, `PORT`, `LOG_LEVEL`; `/shared` `emptyDir` for operator-mounted client creds.
-  - `Service` `8080 → 8000` (ClusterIP).
+  - `Service` (ClusterIP) with **two ports** — port order matters because
+    `AgentCardReconciler.getServicePort()` always takes `Ports[0]`:
+    1. `agent: 8001 → 8001` (first) — direct path to the agent after authbridge port-stealing
+       (`8000 → 8001`); used by the operator's `AgentCardReconciler` to fetch `/.well-known/agent.json`
+       without going through the authbridge reverse proxy (which blocks unauthenticated requests).
+    2. `proxy: 8080 → 8000` (second) — the public/authenticated path through the authbridge reverse
+       proxy; used by A2A clients that carry a valid JWT.
   - `AgentRuntime{ type: agent, targetRef: this Deployment }` — enrolls the workload (operator applies
     `kagenti.io/type=agent`, registers a Keycloak client, injects the AuthBridge sidecar).
   - Image `github-agent:latest`, `imagePullPolicy: IfNotPresent` (kind-load; name is a documented knob).
@@ -240,7 +252,9 @@ Service name; exchanged audience (`github-tool`) == tool `AUDIENCE`.
 5. `kind load docker-image github-agent:latest --name kagenti`.
 6. Ensure `github-tool` + `github-tool-secrets` exist in `team1`.
 7. `kubectl apply -f k8s/configmaps.yaml -f k8s/github-agent-deployment.yaml`.
-8. Confirm AuthBridge injection + `kagenti.io/type=agent`; `kubectl port-forward svc/github-agent 8080:8080 -n team1`;
+8. Confirm AuthBridge injection + `kagenti.io/type=agent`; confirm the `AgentCard` CR was
+   auto-created (`kubectl get agentcard -n team1` → `github-agent-deployment-card`, `SYNCED=True`).
+   `kubectl port-forward svc/github-agent 8080:8080 -n team1` (proxy port);
    send an authenticated A2A message; verify token exchange reaches `github-tool` and an answer returns.
 
 ---
