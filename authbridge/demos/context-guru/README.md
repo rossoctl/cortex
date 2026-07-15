@@ -91,19 +91,34 @@ And the observed answers:
 ## Run it
 
 ```bash
-export CG_MODEL_KEY=<api key for the extract-code model>   # e.g. an OpenAI-compatible key
+export CG_MODEL_KEY=<api key for the extract-code model>       # e.g. an OpenAI-compatible key
+export CG_MODEL_BASE=https://api.openai.com                    # any OpenAI-wire endpoint
 ./run.sh all        # setup + drive off, observe, enforce and print the comparison
 # or step by step:
 ./run.sh setup
 ./run.sh drive enforce      # (or observe / off)
 ```
 
-`run.sh setup` builds the `authbridge-proxy` image **with the context-guru plugin**,
-loads it + the enhanced `finance-mcp` into the `kagenti` kind cluster, creates a
-12,288-token-window Ollama model (`llama3.2-ctx12k`) so the raw request truncates,
-and deploys the agent + sidecar. `run.sh drive <mode>` flips `on_error`, restarts,
-drives the audit, and prints the agent's answer + the byte/token gain from the
-sidecar session API (`:9094`).
+`run.sh setup` builds the `authbridge-proxy` image **with the context-guru plugin**
+(`-tags include_plugin_contextguru` — see *Build integration* below), loads it + the
+enhanced `finance-mcp` into the `kagenti` kind cluster, creates a 12,288-token-window
+Ollama model (`llama3.2-ctx12k`) so the raw request truncates, and deploys the agent
++ sidecar. `run.sh drive <mode>` flips `on_error`, restarts, drives the audit, and
+prints the agent's answer + the byte/token gain from the sidecar session API (`:9094`).
+
+## Build integration
+
+context-guru is **opt-in**: unlike the other plugins (compiled in by default,
+dropped via `-tags exclude_plugin_*`), it is linked only when the binary is built
+with `-tags include_plugin_contextguru`. Its embedded engine pulls a large
+transitive dependency set (bifrost/core, tiktoken-go, tree-sitter grammars,
+starlark), so the default `authbridge-proxy`/`authbridge-envoy` binaries stay lean
+and a deployment that doesn't want compaction never pays for it.
+
+```bash
+cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
+  --build-arg GO_BUILD_TAGS=include_plugin_contextguru -t authbridge-cg:latest .
+```
 
 ## Configuration reference
 

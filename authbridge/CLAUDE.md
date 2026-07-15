@@ -14,7 +14,10 @@ binaries with shared auth logic in `authlib/`:
   a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker).
   **Every** plugin is excludable via `-tags exclude_plugin_<name>` — one
   `plugins_<name>.go` file per plugin, gated by `//go:build !exclude_plugin_<name>`;
-  `main.go` imports no plugin package directly.
+  `main.go` imports no plugin package directly. **Exception:** `context-guru` is
+  **opt-IN** (`//go:build include_plugin_contextguru`, not compiled by default),
+  because its embedded engine pulls a large transitive dependency set; build with
+  `-tags include_plugin_contextguru` to link it in.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
   into Envoy. Full plugin set. The `exclude_plugin_ibac` tag applies here too.
 - `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`

@@ -199,7 +199,16 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		if m.MaxTokens > 0 {
 			p.modelMax = m.MaxTokens
 		}
-		if m.BaseURL != "" && m.Model != "" {
+		switch {
+		case m.BaseURL == "" && m.Model == "":
+			// Empty model block → no static model; LLM components degrade to
+			// deterministic. (Common when the config is present but the operator
+			// hasn't wired an endpoint yet.)
+		case m.BaseURL == "" || m.Model == "":
+			// Exactly one set is almost always a typo/empty ${VAR} expansion that
+			// would silently disable the cheap model. Fail loud instead.
+			return fmt.Errorf("context-guru model config: base_url and model must both be set (got base_url=%q model=%q)", m.BaseURL, m.Model)
+		default:
 			p.static = cgModel{
 				c: llmclient.New(llmclient.Options{
 					Endpoint:           m.BaseURL,
@@ -227,19 +236,27 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	if p.pipe == nil || len(pctx.Body) == 0 || !p.gated(pctx.Path) {
 		return cont
 	}
+	// The engine Store is keyed by session for per-caller isolation. With no
+	// session identity every such request would share one empty key and bleed
+	// compaction state across unrelated callers, so skip compaction entirely.
+	sid := sessionID(pctx)
+	if sid == "" {
+		slog.Debug("context-guru skipped request with no session identity", "path", pctx.Path)
+		return cont
+	}
 	provider := providerFor(pctx.Path)
 	models := cgcomponents.ModelSpec{
 		Static:   p.static,
 		Incoming: p.incomingModel(pctx, provider),
 	}
 	before := len(pctx.Body)
-	out, changed := apply.BodyWithModel(ctx, p.pipe, p.store, provider, pctx.Body, sessionID(pctx), false, models)
+	out, changed := apply.BodyWithModel(ctx, p.pipe, p.store, provider, pctx.Body, sid, false, models)
 	if changed && len(out) > 0 {
 		pctx.SetBody(out)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
 		slog.Info("context-guru rewrote request body",
-			"provider", provider, "path", pctx.Path, "session", sessionID(pctx),
+			"provider", provider, "path", pctx.Path, "session", sid,
 			"bytesBefore", before, "bytesAfter", len(out), "pctSaved", pct(before, len(out)))
 	}
 	return cont
@@ -316,7 +333,9 @@ func modelFromBody(body []byte) string {
 }
 
 // sessionID keys per-session engine state to the conversation: the A2A contextId
-// when present, else the caller subject for multi-tenant isolation.
+// when present, else the caller subject for multi-tenant isolation. Returns ""
+// when neither is available; OnRequest treats that as "skip compaction" rather
+// than sharing one store key across unrelated callers.
 func sessionID(pctx *pipeline.Context) string {
 	if pctx.Session != nil && pctx.Session.ID != "" {
 		return pctx.Session.ID

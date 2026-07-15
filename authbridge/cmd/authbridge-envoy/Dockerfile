@@ -27,7 +27,7 @@ ENV GOWORK=off
 RUN cd cmd/authbridge-envoy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-envoy .
 
 # Stage 2: Get Envoy binary. Already stripped upstream; nothing to do.
-FROM docker.io/envoyproxy/envoy:v1.37.1 AS envoy-source
+FROM docker.io/envoyproxy/envoy:v1.37.1@sha256:29496a88fba9c4c9cdef4afe8fec70f536c5ba111b1c2bddbc5436b091ceca33 AS envoy-source
 
 # Stage 3: Runtime — UBI9-micro (glibc-compatible, ~24 MB, has bash)
 FROM registry.access.redhat.com/ubi9/ubi-micro@sha256:2173487b3b72b1a7b11edc908e9bbf1726f9df46a4f78fd6d19a2bab0a701f38

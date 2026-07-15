@@ -39,17 +39,25 @@ spec:
             - { name: FINANCE_MCP_URL, value: "http://finance-mcp.team1.svc.cluster.local:8888" }
             - { name: AGENT_PUBLIC_URL, value: "http://cg-finance-agent.team1.svc.cluster.local:8080/" }
           volumeMounts: [{ mountPath: /shared, name: shared-data }]
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "1", memory: "512Mi" }
         - name: authbridge-proxy
           image: authbridge-cg:latest       # authbridge-proxy built with the context-guru plugin (see run.sh)
           imagePullPolicy: IfNotPresent
           args: ["--config", "/etc/authbridge/config.yaml"]
           env:
-            - { name: CG_MODEL_BASE, value: "https://ete-litellm.ai-models.vpc-int.res.ibm.com" }
-            - { name: CG_MODEL_NAME, value: "claude-haiku-4-5" }   # capable, cheap extract-code model
+            # Neutral placeholders — run.sh overrides these via `kubectl set env`
+            # from CG_MODEL_BASE / CG_MODEL_NAME so no real endpoint lands in the repo.
+            - { name: CG_MODEL_BASE, value: "https://api.openai.com" }
+            - { name: CG_MODEL_NAME, value: "gpt-4o-mini" }        # capable, cheap extract-code model
             - name: CG_MODEL_KEY
               valueFrom: { secretKeyRef: { name: cg-model-key, key: key } }
           ports: [{ containerPort: 8080 }, { containerPort: 8081 }, { containerPort: 9094 }]
           volumeMounts: [{ mountPath: /etc/authbridge, name: ab-config }]
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
       volumes:
         - { name: shared-data, emptyDir: {} }
         - { name: ab-config, configMap: { name: cg-authbridge-config } }

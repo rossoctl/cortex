@@ -21,20 +21,20 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AB="$(cd "$HERE/../.." && pwd)"                 # authbridge/
 FS="$AB/demos/finance-sparc"
 OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-http://127.0.0.1:11434}"    # host Ollama, as seen from THIS machine
-: "${CG_MODEL_BASE:=https://ete-litellm.ai-models.vpc-int.res.ibm.com}"
-: "${CG_MODEL_NAME:=claude-haiku-4-5}"
+: "${CG_MODEL_NAME:=gpt-4o-mini}"                               # any capable, cheap OpenAI-wire model
 CTX_MODEL="llama3.2-ctx12k"
 
 setup() {
   : "${CG_MODEL_KEY:?set CG_MODEL_KEY to the extract-code model API key}"
+  : "${CG_MODEL_BASE:?set CG_MODEL_BASE to an OpenAI-compatible endpoint for the extract-code model, e.g. https://api.openai.com}"
   local arch; arch=$(docker exec kagenti-control-plane uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')
 
-  echo "==> build authbridge-proxy WITH the context-guru plugin ($arch, pure-Go) + image"
+  echo "==> build authbridge-proxy WITH the context-guru plugin ($arch, pure-Go, -tags include_plugin_contextguru) + image"
   ( cd "$AB" && GOTOOLCHAIN=auto GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-      go build -ldflags="-s -w" -o /tmp/authbridge-proxy-cg ./cmd/authbridge-proxy )
+      go build -tags include_plugin_contextguru -ldflags="-s -w" -o /tmp/authbridge-proxy-cg ./cmd/authbridge-proxy )
   local d=/tmp/cg-img; mkdir -p "$d"; cp /tmp/authbridge-proxy-cg "$d/authbridge-proxy"
   cat > "$d/Dockerfile" <<'DOCKER'
-FROM alpine:3.20
+FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
 RUN apk add --no-cache ca-certificates
 COPY authbridge-proxy /usr/local/bin/authbridge-proxy
 ENTRYPOINT ["/usr/local/bin/authbridge-proxy"]
@@ -53,12 +53,18 @@ DOCKER
     -d "{\"model\":\"$CTX_MODEL\",\"from\":\"llama3.2:3b\",\"parameters\":{\"num_ctx\":12288}}" >/dev/null
 
   echo "==> secret + configmap + deploy agent + context-guru sidecar"
-  kubectl -n "$NS" create secret generic cg-model-key --from-literal=key="$CG_MODEL_KEY" \
+  # Feed the key via a builtin (process substitution), not --from-literal, so it
+  # never appears in kubectl's argv / the process table on a shared host.
+  kubectl -n "$NS" create secret generic cg-model-key --from-file=key=<(printf %s "$CG_MODEL_KEY") \
     --dry-run=client -o yaml | kubectl apply -f -
   kubectl -n "$NS" create configmap cg-authbridge-config --from-file=config.yaml="$HERE/k8s/authbridge-config.yaml" \
     --dry-run=client -o yaml | kubectl apply -f -
   kubectl apply -f "$HERE/k8s/agent.yaml"
   kubectl -n "$NS" set env deploy/cg-finance-agent OLLAMA_MODEL="$CTX_MODEL" >/dev/null
+  # Point the extract-code model at the operator-provided endpoint (agent.yaml
+  # ships only a neutral placeholder; the real endpoint never lands in the repo).
+  kubectl -n "$NS" set env deploy/cg-finance-agent -c authbridge-proxy \
+    CG_MODEL_BASE="$CG_MODEL_BASE" CG_MODEL_NAME="$CG_MODEL_NAME" >/dev/null
   kubectl -n "$NS" rollout status deploy/cg-finance-agent --timeout=120s
 }
 
@@ -77,8 +83,20 @@ JSON
   kubectl -n "$NS" delete pod cgdrive --ignore-not-found >/dev/null; sleep 2
   kubectl -n "$NS" run cgdrive --restart=Never --image=curlimages/curl:8.10.1 \
     --overrides='{"spec":{"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","curl -m 300 -s -X POST http://cg-finance-agent.team1.svc.cluster.local:8080/ -H '"'"'Content-Type: application/json'"'"' --data @/data/drive.json"],"volumeMounts":[{"name":"d","mountPath":"/data"}]}],"volumes":[{"name":"d","configMap":{"name":"cg-drive"}}]}}' >/dev/null
-  while [ "$(kubectl -n "$NS" get pod cgdrive -o jsonpath='{.status.phase}')" = "Running" ] || \
-        [ "$(kubectl -n "$NS" get pod cgdrive -o jsonpath='{.status.phase}')" = "Pending" ]; do sleep 5; done
+  # Wait for the driver pod to finish. Break explicitly on terminal failure so a
+  # crashed/unschedulable pod gives a readable error instead of piping non-JSON
+  # logs into json.loads below.
+  while :; do
+    phase=$(kubectl -n "$NS" get pod cgdrive -o jsonpath='{.status.phase}' 2>/dev/null || echo Unknown)
+    case "$phase" in
+      Succeeded) break ;;
+      Running|Pending) sleep 5 ;;
+      *) echo "!! cgdrive pod ended in phase=$phase — the audit did not complete:"
+         kubectl -n "$NS" describe pod cgdrive | tail -n 25
+         kubectl -n "$NS" logs cgdrive 2>/dev/null || true
+         exit 1 ;;
+    esac
+  done
   echo "--- agent answer ($mode) ---"
   kubectl -n "$NS" logs cgdrive | python3 -c 'import sys,json;b=sys.stdin.read().split("EXIT=")[0].strip();d=json.loads(b);r=d.get("result",{});m=(r.get("status")or{}).get("message")or{};p=m.get("parts") or (r.get("artifacts") or [{}])[0].get("parts",[]);print(" ".join(x.get("text","") for x in p)[:600])'
   echo "--- context-guru gain ($mode) ---"
