@@ -117,6 +117,48 @@ func TestOnRequest_CompactsLargeToolOutput(t *testing.T) {
 	}
 }
 
+// TestOnRequest_SentinelHeader_ShortCircuits covers the one safety-critical
+// branch: the plugin's own extract:code LLM call carries the sentinel, and if it
+// ever transits this forward proxy OnRequest must bail before touching the body —
+// otherwise the compaction call recurses into itself.
+func TestOnRequest_SentinelHeader_ShortCircuits(t *testing.T) {
+	p := configured(t, collapseEngine)
+	body := chatBody(bigToolOutput())
+	pctx := inferencePctx("/v1/chat/completions", body)
+	pctx.Headers.Set(sentinelHeader, "1")
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatal("sentinel header must short-circuit before any compaction")
+	}
+}
+
+// TestOnRequest_NoSession_Skips verifies that a request with neither session nor
+// identity is passed through untouched, so sessionless callers can't share one
+// empty engine-store key.
+func TestOnRequest_NoSession_Skips(t *testing.T) {
+	p := configured(t, collapseEngine)
+	body := chatBody(bigToolOutput())
+	pctx := inferencePctx("/v1/chat/completions", body)
+	pctx.Session = nil // and Identity is nil → sessionID == ""
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if pctx.BodyMutated() {
+		t.Fatal("no session identity must skip compaction (store-key isolation)")
+	}
+}
+
+func TestConfigure_RejectsPartialModel(t *testing.T) {
+	if err := New().Configure(json.RawMessage(`{"model":{"base_url":"http://x"}}`)); err == nil {
+		t.Fatal("expected error when model.model is unset but base_url is set")
+	}
+	if err := New().Configure(json.RawMessage(`{"model":{"model":"gpt-4o-mini"}}`)); err == nil {
+		t.Fatal("expected error when model.base_url is unset but model is set")
+	}
+}
+
 func TestOnRequest_EmptyBody_PassThrough(t *testing.T) {
 	p := configured(t, collapseEngine)
 	pctx := inferencePctx("/v1/chat/completions", nil)
