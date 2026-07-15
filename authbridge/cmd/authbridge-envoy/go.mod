@@ -7,7 +7,7 @@ replace github.com/kagenti/kagenti-extensions/authbridge/authlib => ../../authli
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101000000-000000000000
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.82.0
 )
 
 require (
@@ -115,7 +115,7 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	oras.land/oras-go/v2 v2.5.0 // indirect
