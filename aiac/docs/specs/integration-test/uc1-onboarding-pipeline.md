@@ -143,7 +143,7 @@ asserts the truth table against **each** variant's Rego (step 7). Steps 1–6 de
      the probe query `data.probe.outbound.allow` (in `probe_uc1.rego`), which binds `input.function_name`
      against the generated **user→tool** data maps (`subject_ok`) **only**. The agent→tool gate
      (`target_ok`) is **not** probed — under UC-1's single generic `github-agent.agent` role it is
-     degenerate/empty (see *[The agent→tool gate](#the-agent-tool-gate-degenerate-by-design)*), matching
+     degenerate/empty (see *[The agent-to-tool gate](#the-agent-to-tool-gate-degenerate-by-design)*), matching
      phase-1's "user-gating dimension only."
    - **Name matching** — because `scenario_uc1.py` stores the **full discovered scope names**, the probe
      matches `input.function_name` to a scope by **exact string equality** (no prefix-stripping token-set
@@ -217,7 +217,7 @@ Both are inherent to running real UC-1; making the Rego byte-identical would req
 this test into `policy-pipeline`). The test therefore asserts **same files + same decisions + equivalent
 grant sets**, not identical text.
 
-### The agent→tool gate (degenerate by design)
+### The agent-to-tool gate (degenerate by design)
 
 Phase-1 states outbound access is an **intersection** of the user→tool gate and the agent→tool gate, but
 that "the agent holds all of `github-tool`'s scopes, so this demo exercises the **user-gating dimension
