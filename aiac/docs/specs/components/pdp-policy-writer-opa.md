@@ -181,7 +181,7 @@ A worked example (agent `github-agent`, users `developer`/`tester`, tool `github
 
 ---
 
-## Library: `aiac.pdp.library.policy`
+## Library: `aiac.pdp.policy.library`
 
 HTTP client module wrapping the PDP Policy Writer REST API. Exposes four module-level functions. Service URL is read from the `AIAC_PDP_POLICY_URL` environment variable (default: `http://127.0.0.1:7072`). All functions raise `RuntimeError` on non-2xx response.
 
@@ -210,7 +210,7 @@ python-dotenv
 ### Usage
 
 ```python
-from aiac.pdp.library.policy import apply_policy, apply_agent_policy, delete_agent_policy, delete_policy
+from aiac.pdp.policy.library.api import apply_policy, apply_agent_policy, delete_agent_policy, delete_policy
 from aiac.policy.model.models import PolicyModel, AgentPolicyModel, PolicyRule
 
 apply_agent_policy("weather-agent", agent_model)
