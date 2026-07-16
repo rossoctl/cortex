@@ -670,10 +670,16 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 // through to an unflushed io.Copy and never reached the client until the
 // upstream closed the connection (issue #642).
 //
-// Response-phase plugins (RunResponse / RunResponseFrame) are intentionally not
-// invoked here — consistent with the streaming contract that legacy/body
-// plugins don't run on streamed responses — but the response event is still
-// recorded for the session API / abctl.
+// Unlike handleStreamingResponse, the response-phase pipeline (RunResponse) IS
+// run before the first byte. That is safe only because this path is reached
+// exclusively when no StreamingResponder is configured, so RunResponse cannot
+// double-dispatch a plugin that also handles OnResponseFrame. Running it lets
+// header/status-based response gates fire on streamed responses too — e.g.
+// opa's response-phase deny (status + headers) and litellm-budgettrack's cost
+// accounting (a response header) — and a deny is honored before any byte is
+// written. The plugins reachable here do not read pctx.ResponseBody in
+// OnResponse, so leaving the body unbuffered is fine; body-level response
+// inspection on a stream requires implementing StreamingResponder.
 func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -682,6 +688,15 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 		// defensive guard for test recorders and exotic wrappers.
 		slog.Warn("forward-proxy: ResponseWriter does not support flushing — falling back to buffered for streaming response", "host", r.Host)
 		s.streamFallbackBuffered(w, r, resp, pctx)
+		return
+	}
+
+	// Run the response-phase pipeline before the first byte so header/status
+	// gates still fire on a streamed response and a deny short-circuits before
+	// anything is written. streamFallbackBuffered runs its own RunResponse, so
+	// this is done only on the flushing path to avoid double-dispatch.
+	if respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx); respAction.Type == pipeline.Reject {
+		httpx.WriteRejection(w, respAction)
 		return
 	}
 
