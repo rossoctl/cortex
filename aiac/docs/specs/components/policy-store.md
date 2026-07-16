@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS agent_policies (
 
 **Dependencies:** `fastapi`, `uvicorn[standard]`, `pydantic`. `sqlite3` is stdlib (no new dependency).
 
-**Imports:** `from aiac.policy.model import PolicyModel, AgentPolicyModel`
+**Imports:** `from aiac.policy.model.models import PolicyModel, AgentPolicyModel`
 
 **File structure:**
 
