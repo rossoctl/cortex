@@ -6,7 +6,7 @@
 ## Description
 A FastAPI web service that translates a **Policy Model** into OPA Rego packages and writes them to an `AuthorizationPolicy` Kubernetes Custom Resource. The OPA plugin embedded in each AuthBridge instance fetches the Rego packages relevant to its pod from this CR at startup.
 
-The service is deployed as a container in the **Kagenti Interface Pod** alongside the IdP Configuration Service, behind the `aiac-pdp-policy-writer-service:7072` ClusterIP.
+The service is deployed as a container in the **Kagenti Interface Pod** alongside the IdP Configuration Service, behind the `aiac-pdp-policy-service:7072` ClusterIP.
 
 The service has no dependency on Keycloak. All Keycloak operations (entity reads) are handled by the **IdP Configuration Service** and its library (`aiac.idp.library.configuration`).
 
@@ -241,7 +241,7 @@ For local development, the `kubernetes` client falls back to `~/.kube/config` au
 - Server: uvicorn
 - Bind: `0.0.0.0:7072`
 - Base image: `python:3.12-slim`
-- Kubernetes ClusterIP Service: `aiac-pdp-policy-writer-service:7072`
+- Kubernetes ClusterIP Service: `aiac-pdp-policy-service:7072`
 - Deployment: co-located with IdP Configuration Service as a container in the **Kagenti Interface Pod** (`pdp-interface-deployment.yaml`)
 
 ---
