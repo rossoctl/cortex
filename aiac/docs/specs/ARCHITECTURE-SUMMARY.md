@@ -35,7 +35,7 @@ AIAC introduces a strict three-layer model that cleanly separates policy concern
 | Layer | Component | Responsibility |
 |---|---|---|
 | **Policy Management** | AIAC Agent | Translates natural-language policy into PDP configuration on every trigger |
-| **Policy Decision (PDP)** | OPA | Evaluates LLM-generated Rego rules; issues scoped tokens |
+| **Policy Decision (PDP)** | OPA | Evaluates LLM-generated Rego rules; returns the caller's entitlements/decision |
 | **Policy Enforcement (PEP)** | AuthBridge | Intercepts traffic; exchanges tokens; carries no policy knowledge |
 
 The AIAC Agent subscribes to an event stream (NATS JetStream) and reacts to entity lifecycle
