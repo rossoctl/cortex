@@ -6,7 +6,7 @@
 ## Description
 A FastAPI web service that applies RBAC policy changes to Keycloak by managing composite role mappings. Roles are made composites of service (client) permissions (roles), so that any subject (user) assigned a role automatically inherits the associated service permissions. Stateless — no caching.
 
-This is the **Phase 1** implementation of the PDP Policy Writer. It is deployed as a container in the **Kagenti Interface Pod** alongside the PDP Configuration Service, behind the `aiac-pdp-policy-service:7072` ClusterIP. Phase 2 replaces only this container image (`aiac-pdp-policy-keycloak` → `aiac-pdp-policy-opa`) within the same pod. The service name and port remain stable so the AIAC Agent and library require no reconfiguration.
+This is the **Phase 1** implementation of the PDP Policy Writer. It is deployed as a container in the **Kagenti Interface Pod** alongside the IdP Configuration Service, behind the `aiac-pdp-policy-service:7072` ClusterIP. Phase 2 replaces only this container image (`aiac-pdp-policy-keycloak` → `aiac-pdp-policy-opa`) within the same pod. The service name and port remain stable so the AIAC Agent and library require no reconfiguration.
 
 ## Endpoints
 
@@ -18,7 +18,7 @@ This is the **Phase 1** implementation of the PDP Policy Writer. It is deployed 
 | POST | `/services/{service_id}/permissions` | `POST /admin/realms/{realm}/clients/{service_id}/roles` | Create a new permission (client role) for a specific service |
 | POST | `/services/{service_id}/scopes` | `POST /admin/realms/{realm}/client-scopes` then `PUT .../clients/{service_id}/default-client-scopes/{scope_id}` | Create a realm-level scope and assign it to a service as a default scope (atomic) |
 
-Every endpoint accepts an optional `realm` query parameter, same as the PDP Configuration Service.
+Every endpoint accepts an optional `realm` query parameter, same as the IdP Configuration Service.
 
 `POST /roles/{role_name}/composites` and `DELETE /roles/{role_name}/composites` accept a JSON array of role representation objects `[{"id": "...", "name": "..."}]` and return `204 No Content` on success.
 
@@ -44,7 +44,7 @@ All endpoints return `502 Bad Gateway` with a JSON error body if the Keycloak Ad
 - Bind: `0.0.0.0:7072`
 - Base image: `python:3.12-slim`
 - Kubernetes ClusterIP Service: `aiac-pdp-policy-service:7072`
-- Deployment: co-located with PDP Configuration Service as a container in the **Kagenti Interface Pod** (`pdp-interface-deployment.yaml`)
+- Deployment: co-located with IdP Configuration Service as a container in the **Kagenti Interface Pod** (`pdp-interface-deployment.yaml`)
 
 ## Dependencies (`requirements.txt`)
 

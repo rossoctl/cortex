@@ -44,7 +44,7 @@ All messages carry a minimal JSON payload containing only the entity ID:
 { "id": "<entity-id>" }
 ```
 
-For `aiac.apply.policy.build`, the payload is empty (`{}`). The AIAC Agent pulls all required state from the PDP Configuration Service at processing time — the event payload is a trigger, not a data carrier.
+For `aiac.apply.policy.build`, the payload is empty (`{}`). The AIAC Agent pulls all required state from the IdP Configuration Service at processing time — the event payload is a trigger, not a data carrier.
 
 ---
 
@@ -87,7 +87,7 @@ No authentication credentials are required. The NATS server runs with no-auth co
 A dedicated `aiac-init` init container runs in the **Agent Pod** before the Agent container starts. It orchestrates the AIAC startup sequence:
 
 1. **Wait for NATS** — poll `aiac-event-broker-service:4222` until TCP connection succeeds.
-2. **Wait for PDP Configuration Service** — poll `AIAC_PDP_CONFIG_URL/health` until HTTP 200.
+2. **Wait for IdP Configuration Service** — poll `AIAC_PDP_CONFIG_URL/health` until HTTP 200.
 3. **Wait for PDP Policy Writer** — poll `AIAC_PDP_POLICY_URL/health` until HTTP 200.
 4. **Wait for RAG Ingest Service** — poll `AIAC_RAG_INGEST_URL/health` until HTTP 200 (confirms ChromaDB in the same RAG pod is also up).
 5. **Create NATS JetStream stream** — call `js.add_stream()` idempotently with the `aiac-events` stream configuration. Safe to call on every restart.
