@@ -108,7 +108,7 @@ START → classify_service → [analyze_agent | analyze_tool] → provision_serv
 
   > K8s access: `list` on `agentcards.agent.kagenti.dev` in the target namespace.
 
-- **`analyze_tool`**: non-LLM node; discovers MCP tools. `namespace` + `workload_name` are already resolved by `classify_service` (from the `client.name` split). MCP endpoint lookup uses the **hybrid Keycloak→K8s strategy** decided in issue [`6.2`](../../issues/agent/service-onboarding/6.2-analyze-tool-lookup-strategy.md): the Keycloak client name supplied the key `{namespace, workload_name}`; K8s supplies the reachable endpoint.
+- **`analyze_tool`**: non-LLM node; discovers MCP tools. `namespace` + `workload_name` are already resolved by `classify_service` (from the `client.name` split). MCP endpoint lookup uses the **hybrid Keycloak→K8s strategy** decided in issue `docs/gh-issues/6.2-analyze-tool-lookup-strategy.md`: the Keycloak client name supplied the key `{namespace, workload_name}`; K8s supplies the reachable endpoint.
   1. Locate MCP endpoint:
      a. GET the K8s `Service` named `workload_name` in `namespace` (operator convention: Service name == workload name).
      b. Require the `protocol.kagenti.io/mcp` label present on that Service; `502` (actionable) if absent — the label is applied at deploy time, not stamped by the operator.
@@ -242,4 +242,4 @@ aiac/src/aiac/agent/uc/
 - PRB internals — see [`policy-rules-builder.md`](policy-rules-builder.md).
 - PCE reconcile mechanics — see [`../policy-computation-engine.md`](../policy-computation-engine.md).
 - Response body shape — no success body; handlers return bare HTTP status codes (error responses carry FastAPI's default JSON error body from the raised `HTTPException`). Summary + debug go to the log.
-- MCP endpoint lookup strategy for tools — **resolved** (hybrid Keycloak→K8s) in `docs/issues/agent/service-onboarding/6.2-analyze-tool-lookup-strategy.md` and reflected in the `analyze_tool` node above.
+- MCP endpoint lookup strategy for tools — **resolved** (hybrid Keycloak→K8s) in `docs/gh-issues/6.2-analyze-tool-lookup-strategy.md` and reflected in the `analyze_tool` node above.
