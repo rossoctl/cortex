@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,25 +141,52 @@ func TestForwardProxy_SSE_StreamsWithoutResponder(t *testing.T) {
 // responseProbePlugin is a minimal non-StreamingResponder plugin whose
 // OnResponse uses only status/headers (like opa / litellm-budgettrack). It
 // records that it ran and can deny — used to prove streamPassthrough still runs
-// the response-phase pipeline before streaming.
+// the response-phase pipeline before streaming. When readsBody is set it also
+// declares ReadsBody, so it exercises the ReadsBody-but-not-StreamingResponder
+// footgun (see TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams).
 type responseProbePlugin struct {
-	deny    bool
-	ranResp atomic.Bool
+	deny      bool
+	readsBody bool
+	ranResp   atomic.Bool
+	// sawBodyLen is the length of pctx.ResponseBody observed in OnResponse.
+	sawBodyLen atomic.Int64
 }
 
 func (p *responseProbePlugin) Name() string { return "response-probe" }
 func (p *responseProbePlugin) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{} // no ReadsBody/WritesBody/StreamingResponder → streamPassthrough path
+	// Never a StreamingResponder → streamPassthrough path. ReadsBody is opt-in
+	// so most callers stay on the status/header-only shape.
+	return pipeline.PluginCapabilities{ReadsBody: p.readsBody}
 }
 func (p *responseProbePlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
-func (p *responseProbePlugin) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+func (p *responseProbePlugin) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	p.ranResp.Store(true)
+	p.sawBodyLen.Store(int64(len(pctx.ResponseBody)))
 	if p.deny {
 		return pipeline.DenyStatus(403, "test.denied", "denied by response probe")
 	}
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// syncBuffer is a goroutine-safe io.Writer for capturing slog output written
+// from the proxy's request-handler goroutine while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // sseProxy wires an SSE upstream + a forward proxy with the given pipeline and
@@ -243,5 +272,54 @@ func TestForwardProxy_SSE_HeaderOnResponseRuns(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "event: message") || !strings.Contains(string(body), "id: 7") {
 		t.Errorf("SSE body not delivered verbatim: %q", body)
+	}
+}
+
+// TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams covers the ReadsBody
+// footgun raised in review: a plugin that declares ReadsBody but is NOT a
+// StreamingResponder falls into streamPassthrough. The proxy must NOT buffer to
+// feed it a body (that would reintroduce the #642 timeout on a live stream), so
+// the plugin's OnResponse sees an empty pctx.ResponseBody. The stream must still
+// be delivered verbatim, and the misconfiguration must be surfaced via a warning
+// rather than silently starving the plugin of the body.
+func TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams(t *testing.T) {
+	// Capture slog output. The warning is emitted from the proxy's handler
+	// goroutine, so use a mutex-guarded buffer to stay race-clean; tests in this
+	// package don't run in parallel, so swapping the default logger is safe.
+	logBuf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	probe := &responseProbePlugin{readsBody: true}
+	client, url := sseProxy(t, []pipeline.Plugin{probe})
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if !probe.ranResp.Load() {
+		t.Error("OnResponse did not run on the SSE response")
+	}
+	// The plugin declared ReadsBody, but the stream is passed through unbuffered,
+	// so it sees no body — the documented limitation this warning surfaces.
+	if n := probe.sawBodyLen.Load(); n != 0 {
+		t.Errorf("ReadsBody plugin saw %d body bytes, want 0 (stream is not buffered for it)", n)
+	}
+	// The stream must still be delivered verbatim — no regression to the #642 timeout.
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "event: message") || !strings.Contains(string(body), "id: 7") {
+		t.Errorf("SSE body not delivered verbatim: %q", body)
+	}
+	// The misconfiguration must be logged, not silent.
+	if got := logBuf.String(); !strings.Contains(got, "ReadsBody plugin that is not a StreamingResponder") {
+		t.Errorf("expected a warning about the ReadsBody+SSE misconfiguration, got logs: %q", got)
 	}
 }

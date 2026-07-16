@@ -395,6 +395,21 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				// with per-write flushing. Re-framing (handleStreamingResponse)
 				// would drop the event:/id:/retry: lines that generic SSE
 				// clients (e.g. an MCP Streamable HTTP client) depend on. Fixes #642.
+				//
+				// A plugin that declares ReadsBody (but not WritesBody, and is
+				// not a StreamingResponder) also lands here, and its OnResponse
+				// runs against an empty pctx.ResponseBody: streamPassthrough
+				// forwards the stream without buffering it. We deliberately don't
+				// buffer to satisfy such a plugin — that would reintroduce the
+				// #642 timeout on a live stream. A plugin that must inspect a
+				// streamed body should implement StreamingResponder. Warn
+				// (mirroring the WritesBody fallback above) so the
+				// misconfiguration surfaces instead of the plugin silently seeing
+				// no body. WritesBody is already false in this branch, so
+				// NeedsBody() here implies ReadsBody.
+				if s.OutboundPipeline.NeedsBody() {
+					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
+				}
 				s.streamPassthrough(w, r, resp, pctx)
 				return
 			}
