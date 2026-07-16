@@ -380,13 +380,22 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// declares WritesBody (mutating a body we've already started
 		// forwarding is incompatible with streaming) — fall back to
 		// buffered with a warning log instead.
-		if isEventStream(resp.Header.Get("Content-Type")) &&
-			s.OutboundPipeline.HasStreamingResponders() &&
-			resp.Body != nil {
+		if isEventStream(resp.Header.Get("Content-Type")) && resp.Body != nil {
 			if s.OutboundPipeline.WritesBody() {
+				// A body mutator needs the whole body to rewrite it, so it
+				// can't stream — fall back to the buffered path with a warning.
 				slog.Warn("forward-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", r.Host)
-			} else {
+			} else if s.OutboundPipeline.HasStreamingResponders() {
+				// Streaming-aware plugins (inference-parser, a2a-parser) parse
+				// each SSE frame; handleStreamingResponse re-frames via sseframe.
 				s.handleStreamingResponse(w, r, resp, pctx)
+				return
+			} else {
+				// No streaming responder: relay the SSE stream byte-for-byte
+				// with per-write flushing. Re-framing (handleStreamingResponse)
+				// would drop the event:/id:/retry: lines that generic SSE
+				// clients (e.g. an MCP Streamable HTTP client) depend on. Fixes #642.
+				s.streamPassthrough(w, r, resp, pctx)
 				return
 			}
 		}
@@ -648,6 +657,69 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		}
 		flusher.Flush()
 		bytesWritten += len(frame)
+	}
+}
+
+// streamPassthrough forwards a text/event-stream response to the downstream
+// client byte-for-byte with per-write flushing. It is the streaming path when
+// no StreamingResponder plugin is configured (a plain proxy pipeline). Unlike
+// handleStreamingResponse it does NOT parse or re-frame the stream through
+// sseframe — it relays the exact upstream bytes so that event:, id:, retry:,
+// and comment lines survive, which generic SSE consumers such as an MCP
+// Streamable HTTP client require. Without this path such a response fell
+// through to an unflushed io.Copy and never reached the client until the
+// upstream closed the connection (issue #642).
+//
+// Response-phase plugins (RunResponse / RunResponseFrame) are intentionally not
+// invoked here — consistent with the streaming contract that legacy/body
+// plugins don't run on streamed responses — but the response event is still
+// recorded for the session API / abctl.
+func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// No incremental delivery possible on this ResponseWriter — buffer.
+		// http.Flusher is implemented by net/http's default writer; this is a
+		// defensive guard for test recorders and exotic wrappers.
+		slog.Warn("forward-proxy: ResponseWriter does not support flushing — falling back to buffered for streaming response", "host", r.Host)
+		s.streamFallbackBuffered(w, r, resp, pctx)
+		return
+	}
+
+	// Record the response event on every exit path (normal EOF, upstream read
+	// error, downstream write error) so a SessionResponse row still lands.
+	defer s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+
+	// Forward headers + status before the first byte. Drop Content-Length since
+	// we relay an open-ended chunked stream.
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	flusher.Flush()
+
+	// Copy raw chunks and flush each so intermittent SSE events reach the client
+	// immediately. idleReader bounds a wedged upstream; total size stays
+	// unbounded so long-lived streams aren't cut off.
+	body := idleReader(resp.Body, streamReadIdleTimeout)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				slog.Debug("forward-proxy: streaming write error", "host", r.Host, "error", writeErr)
+				return
+			}
+			flusher.Flush()
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", readErr)
+			}
+			return
+		}
 	}
 }
 
