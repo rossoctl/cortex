@@ -727,6 +727,96 @@ spiffe: {}
 	}
 }
 
+// --- TLS bridge config ---
+
+// The tls_bridge block decodes into TLSBridgeConfig and Load surfaces it.
+func TestConfig_TLSBridgeBlockDecodes(t *testing.T) {
+	y := []byte("mode: proxy-sidecar\n" +
+		"tls_bridge:\n" +
+		"  mode: enabled\n" +
+		"  ca_dir: /etc/authbridge/tls-bridge-ca\n" +
+		"  passthrough_hosts: [\"pinned.example.com\"]\n" +
+		"  ports: [443, 9443]\n")
+	p := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(p, y, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.TLSBridge == nil || cfg.TLSBridge.Mode != "enabled" || cfg.TLSBridge.CADir != "/etc/authbridge/tls-bridge-ca" {
+		t.Fatalf("tls_bridge block did not decode: %+v", cfg.TLSBridge)
+	}
+	if len(cfg.TLSBridge.PassthroughHosts) != 1 || len(cfg.TLSBridge.Ports) != 2 {
+		t.Fatalf("passthrough_hosts/ports did not decode: %+v", cfg.TLSBridge)
+	}
+}
+
+func TestTLSBridgeConfig_Validate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     TLSBridgeConfig
+		wantErr bool
+	}{
+		{"valid empty", TLSBridgeConfig{}, false},
+		{"valid disabled", TLSBridgeConfig{Mode: "disabled"}, false},
+		{"valid enabled with ca_dir", TLSBridgeConfig{Mode: "enabled", CADir: "/etc/authbridge/tls-bridge-ca"}, false},
+		{"bad mode", TLSBridgeConfig{Mode: "external"}, true},
+		{"enabled without ca_dir", TLSBridgeConfig{Mode: "enabled"}, true},
+		{"valid ports", TLSBridgeConfig{Ports: []int{443, 8443, 9443}}, false},
+		{"port zero", TLSBridgeConfig{Ports: []int{0}}, true},
+		{"port too high", TLSBridgeConfig{Ports: []int{70000}}, true},
+		{"port negative", TLSBridgeConfig{Ports: []int{-1}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestForceLocalhost(t *testing.T) {
+	cases := map[string]string{
+		":9094":             "127.0.0.1:9094",
+		"0.0.0.0:9094":      "127.0.0.1:9094",
+		"[::]:9094":         "127.0.0.1:9094",
+		"127.0.0.1:9094":    "127.0.0.1:9094",
+		"":                  "",
+		"no-port-malformed": "no-port-malformed", // left as-is; bind surfaces the error
+	}
+	for in, want := range cases {
+		if got := forceLocalhost(in); got != want {
+			t.Errorf("forceLocalhost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// With the bridge enabled, Load() restricts the session API to loopback so
+// other pods can't scrape decrypted bodies.
+func TestLoad_TLSBridgeHardensSessionAPI(t *testing.T) {
+	y := []byte("mode: proxy-sidecar\n" +
+		"listener:\n" +
+		"  session_api_addr: \":9094\"\n" +
+		"tls_bridge:\n" +
+		"  mode: enabled\n" +
+		"  ca_dir: /etc/authbridge/tls-bridge-ca\n")
+	p := filepath.Join(t.TempDir(), "cfg.yaml")
+	if err := os.WriteFile(p, y, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Listener.SessionAPIAddr != "127.0.0.1:9094" {
+		t.Errorf("session_api_addr = %q, want 127.0.0.1:9094 (bridge on => loopback)", cfg.Listener.SessionAPIAddr)
+	}
+}
+
 // Absent mtls block leaves cfg.MTLS nil — today's behavior, no TLS.
 func TestLoad_MTLS_AbsentBlock(t *testing.T) {
 	dir := t.TempDir()

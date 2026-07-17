@@ -97,6 +97,32 @@ func TestMCPParser_OnResponseFrame_EmptyStreamRecordsSkip(t *testing.T) {
 	}
 }
 
+// TestMCPParser_OnResponseFrame_RawSSEBlob reproduces the live tools/list
+// bug: the forward proxy's buffered dispatch hands the WHOLE response body as
+// one last=true frame, and for a Streamable HTTP (MCP) server that body is a
+// raw "data: {...}" SSE blob — not pre-stripped JSON. The bare json.Unmarshal
+// failed on it and silently dropped the result (response recorded with no
+// result, no invocation). OnResponseFrame must parse the embedded JSON-RPC
+// result and record an observe.
+func TestMCPParser_OnResponseFrame_RawSSEBlob(t *testing.T) {
+	p := NewMCPParser()
+	pctx := &pipeline.Context{
+		Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{Method: "tools/list"}},
+	}
+	blob := []byte("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"get_weather\"}]}}\n\n")
+	pctx.SetCurrentPlugin("mcp-parser", pipeline.InvocationPhaseResponse)
+	p.OnResponseFrame(context.Background(), pctx, blob, true)
+	pctx.ClearCurrentPlugin()
+
+	if pctx.Extensions.MCP.Result == nil {
+		t.Fatal("Result not populated from raw SSE blob — the bug")
+	}
+	inv := pctx.Extensions.Invocations
+	if inv == nil || len(inv.Inbound)+len(inv.Outbound) == 0 {
+		t.Fatal("no mcp-parser observe recorded for the SSE response")
+	}
+}
+
 func TestMCPParser_OnResponseFrame_MalformedFrameSkipped(t *testing.T) {
 	p := NewMCPParser()
 	pctx := &pipeline.Context{

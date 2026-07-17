@@ -15,7 +15,7 @@ type fakePlugin struct {
 	responses int
 }
 
-func (f *fakePlugin) Name() string                  { return f.name }
+func (f *fakePlugin) Name() string                     { return f.name }
 func (f *fakePlugin) Capabilities() PluginCapabilities { return f.caps }
 func (f *fakePlugin) OnRequest(ctx context.Context, pctx *Context) Action {
 	f.requests++
@@ -208,5 +208,52 @@ func TestConfiguredPluginReadyDefaultsTrueForNonReadier(t *testing.T) {
 	}
 	if !r.Ready() {
 		t.Fatal("non-Readier wrapped plugin should default to ready=true")
+	}
+}
+
+// streamingFakePlugin is a Plugin that also implements StreamingResponder,
+// modeling a Configurable + streaming plugin like mcp-parser.
+type streamingFakePlugin struct {
+	fakePlugin
+	frames int
+}
+
+func (s *streamingFakePlugin) OnResponseFrame(_ context.Context, _ *Context, _ []byte, _ bool) Action {
+	s.frames++
+	return Action{Type: Continue}
+}
+
+// TestWrapConfigured_PreservesStreamingResponder is the regression test for the
+// mcp-parser "tools/list response not parsed" bug: a Configurable plugin that
+// also implements StreamingResponder must STILL satisfy StreamingResponder
+// after WrapConfigured, and OnResponseFrame must forward to the inner plugin.
+// Before the fix, the wrapper embedded only the Plugin interface, so
+// OnResponseFrame was not promoted and RunResponseFrame skipped the plugin.
+func TestWrapConfigured_PreservesStreamingResponder(t *testing.T) {
+	inner := &streamingFakePlugin{fakePlugin: fakePlugin{name: "mcp-parser"}}
+	cp := WrapConfigured(inner, json.RawMessage(`{}`))
+
+	sr, ok := cp.(StreamingResponder)
+	if !ok {
+		t.Fatal("wrapped Configurable+StreamingResponder plugin must still satisfy StreamingResponder")
+	}
+	sr.OnResponseFrame(context.Background(), nil, []byte("frame"), true)
+	if inner.frames != 1 {
+		t.Fatalf("OnResponseFrame did not forward to inner plugin: frames=%d, want 1", inner.frames)
+	}
+	// The config is still surfaced through the streaming wrapper.
+	if rc, ok := cp.(RawConfigProvider); !ok || string(rc.RawConfig()) != `{}` {
+		t.Fatalf("streaming wrapper lost RawConfig: ok=%v", ok)
+	}
+}
+
+// TestWrapConfigured_NonStreamingNotPromoted confirms the fix preserves
+// HasStreamingResponders semantics: a Configurable plugin that does NOT
+// implement StreamingResponder must NOT become one through the wrapper, so the
+// listener's streaming-vs-buffered path selection is unchanged.
+func TestWrapConfigured_NonStreamingNotPromoted(t *testing.T) {
+	cp := WrapConfigured(&fakePlugin{name: "token-exchange"}, json.RawMessage(`{}`))
+	if _, ok := cp.(StreamingResponder); ok {
+		t.Fatal("wrapping a non-streaming plugin must not make it a StreamingResponder")
 	}
 }

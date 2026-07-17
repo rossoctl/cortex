@@ -5,8 +5,53 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 )
+
+// TestPageActivePane_EventsTable verifies PgDn/PgUp page the events table by a
+// near-full screen (one row of overlap), clamped to the row range — the lever
+// for sessions that now hold up to session.max_events (500) rows.
+func TestPageActivePane_EventsTable(t *testing.T) {
+	events := make([]pipeline.SessionEvent, 40)
+	for i := range events {
+		events[i] = pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			Host: "h", Inference: &pipeline.InferenceExtension{Model: "m"},
+		}
+	}
+	m := &model{
+		pane: paneEvents, selectedSess: "s", bodyHeight: 12,
+		events: map[string][]pipeline.SessionEvent{"s": events},
+	}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+	m.eventsTbl.SetCursor(0)
+
+	h := m.eventsTbl.Height()
+	if h < 2 {
+		t.Fatalf("table height too small to page: %d", h)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyPgDown})
+	if got := m.eventsTbl.Cursor(); got != h-1 {
+		t.Errorf("PgDn from top: cursor=%d, want %d", got, h-1)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyPgUp})
+	if got := m.eventsTbl.Cursor(); got != 0 {
+		t.Errorf("PgUp back to top: cursor=%d, want 0", got)
+	}
+
+	// b/f (the keys shown in the footer, work on any keyboard) page the same way.
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if got := m.eventsTbl.Cursor(); got != h-1 {
+		t.Errorf("f (page down) from top: cursor=%d, want %d", got, h-1)
+	}
+	m.pageActivePane(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	if got := m.eventsTbl.Cursor(); got != 0 {
+		t.Errorf("b (page up) back to top: cursor=%d, want 0", got)
+	}
+}
 
 // TestShortPhase covers the rendered string for every SessionPhase.
 // SessionDenied renders as "req" (not "deny") because the deny
@@ -29,406 +74,614 @@ func TestShortPhase(t *testing.T) {
 	}
 }
 
-// TestInvocationRow_Cells exercises the ACTION and PLUGIN column
-// renderers for each shape a row can take: an Invocation with an action,
-// multiple invocations (the row is per-invocation, each carries only
-// its own plugin), and the pseudo-row fallback when an event has no
-// Invocations at all.
-func TestInvocationRow_Cells(t *testing.T) {
-	evWithInv := &pipeline.SessionEvent{
-		Invocations: &pipeline.Invocations{
-			Inbound: []pipeline.Invocation{
-				{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
-				{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
-			},
-		},
+// TestEventAction_Precedence locks the per-event ACTION/PLUGIN aggregation.
+// One row per message: the winning action is the highest-ranked across all
+// invocations (deny > modify > observe > allow > skip), the PLUGIN cell names
+// the single responsible plugin, and a shadow deny gets the "*" suffix.
+func TestEventAction_Precedence(t *testing.T) {
+	ev := func(invs ...pipeline.Invocation) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{Invocations: &pipeline.Invocations{Inbound: invs}}
 	}
 	cases := []struct {
 		name       string
-		row        invocationRow
+		event      *pipeline.SessionEvent
 		wantAction string
 		wantPlugin string
 	}{
 		{
-			name:       "empty pseudo-row",
-			row:        invocationRow{event: &pipeline.SessionEvent{}},
+			name:       "no invocations → passthrough markers",
+			event:      &pipeline.SessionEvent{},
 			wantAction: "—",
 			wantPlugin: "—",
 		},
 		{
-			name: "inbound allow",
-			row: invocationRow{
-				event:     evWithInv,
-				inv:       &evWithInv.Invocations.Inbound[0],
-				direction: pipeline.Inbound,
-			},
-			wantAction: "allow",
+			name: "deny dominates observes",
+			event: ev(
+				pipeline.Invocation{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+				pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionDeny},
+				pipeline.Invocation{Plugin: "mcp-parser", Action: pipeline.ActionObserve},
+			),
+			wantAction: "deny",
 			wantPlugin: "jwt-validation",
 		},
 		{
-			name: "inbound observe (parser)",
-			row: invocationRow{
-				event:     evWithInv,
-				inv:       &evWithInv.Invocations.Inbound[1],
-				direction: pipeline.Inbound,
-			},
+			name: "modify beats allow",
+			event: ev(
+				pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
+				pipeline.Invocation{Plugin: "token-exchange", Action: pipeline.ActionModify},
+			),
+			wantAction: "modify",
+			wantPlugin: "token-exchange",
+		},
+		{
+			// The real #23 case: a gate allows AND a parser observes. The
+			// parser (which supplied METHOD) is the informative headline, so
+			// observe must outrank allow.
+			name: "observe beats allow (parser over gate)",
+			event: ev(
+				pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
+				pipeline.Invocation{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+			),
 			wantAction: "observe",
 			wantPlugin: "a2a-parser",
 		},
 		{
-			name: "shadow deny (observe mode)",
-			row: invocationRow{
-				event: &pipeline.SessionEvent{},
-				inv: &pipeline.Invocation{
-					Plugin: "pii-scrubber",
-					Action: pipeline.ActionDeny,
-					Shadow: true,
-				},
-				direction: pipeline.Inbound,
-			},
-			// Asterisk suffix flags the would-have-blocked event so
-			// operators can visually separate real denies from shadow
-			// denies in the timeline.
+			// skip-only (plugins ran but none applied) reads as a passthrough:
+			// no plugin is credited, because naming a skipper (e.g.
+			// token-exchange on an unrelated host) implies it processed the
+			// message.
+			name: "all skip → passthrough markers (no plugin credited)",
+			event: ev(
+				pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionSkip},
+				pipeline.Invocation{Plugin: "token-exchange", Action: pipeline.ActionSkip},
+			),
+			wantAction: "—",
+			wantPlugin: "—",
+		},
+		{
+			// A single skip (the row-30 www.example.org case) is also a
+			// passthrough — token-exchange skipped, nothing was done.
+			name: "single skip → passthrough markers",
+			event: ev(
+				pipeline.Invocation{Plugin: "token-exchange", Action: pipeline.ActionSkip},
+			),
+			wantAction: "—",
+			wantPlugin: "—",
+		},
+		{
+			name: "shadow deny gets asterisk",
+			event: ev(
+				pipeline.Invocation{Plugin: "pii-scrubber", Action: pipeline.ActionDeny, Shadow: true},
+			),
 			wantAction: "deny*",
 			wantPlugin: "pii-scrubber",
+		},
+		{
+			name: "single observe (parser-only)",
+			event: ev(
+				pipeline.Invocation{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+			),
+			wantAction: "observe",
+			wantPlugin: "inference-parser",
+		},
+		{
+			// Shadow deny + a real allow: the deny ran under on_error: observe
+			// and did NOT block, so the headline must reflect the enforced
+			// allow (not "deny*"), with "*" flagging that a shadow policy
+			// would have blocked. The would-have-blocked decision is surfaced
+			// without claiming a block that never happened.
+			name: "shadow deny with enforced allow → allow*",
+			event: ev(
+				pipeline.Invocation{Plugin: "pii-scrubber", Action: pipeline.ActionDeny, Shadow: true},
+				pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
+			),
+			wantAction: "allow*",
+			wantPlugin: "jwt-validation",
+		},
+		{
+			// Shadow deny + a parser observe: enforced winner is observe; the
+			// shadow is flagged with "*".
+			name: "shadow deny with enforced observe → observe*",
+			event: ev(
+				pipeline.Invocation{Plugin: "pii-scrubber", Action: pipeline.ActionDeny, Shadow: true},
+				pipeline.Invocation{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+			),
+			wantAction: "observe*",
+			wantPlugin: "a2a-parser",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.row.actionCell(); got != tc.wantAction {
-				t.Errorf("actionCell = %q, want %q", got, tc.wantAction)
+			gotAction, gotPlugin := eventAction(allInvocations(tc.event))
+			if gotAction != tc.wantAction {
+				t.Errorf("action = %q, want %q", gotAction, tc.wantAction)
 			}
-			if got := tc.row.pluginCell(); got != tc.wantPlugin {
-				t.Errorf("pluginCell = %q, want %q", got, tc.wantPlugin)
+			if gotPlugin != tc.wantPlugin {
+				t.Errorf("plugin = %q, want %q", gotPlugin, tc.wantPlugin)
 			}
 		})
 	}
 }
 
-// TestFlattenInvocations covers the core expansion: an event with N
-// invocations should produce N rows; an event with zero invocations
-// should still produce one pseudo-row so the event stays reachable.
-func TestFlattenInvocations(t *testing.T) {
+// TestEventAction_OutboundInvocations confirms outbound-direction invocations
+// participate in aggregation (forward-proxy events record on the Outbound
+// slot).
+func TestEventAction_OutboundInvocations(t *testing.T) {
+	ev := &pipeline.SessionEvent{
+		Direction: pipeline.Outbound,
+		Invocations: &pipeline.Invocations{
+			Outbound: []pipeline.Invocation{
+				{Plugin: "token-exchange", Action: pipeline.ActionModify},
+			},
+		},
+	}
+	action, plugin := eventAction(allInvocations(ev))
+	if action != "modify" || plugin != "token-exchange" {
+		t.Errorf("eventAction = (%q, %q), want (modify, token-exchange)", action, plugin)
+	}
+}
+
+// TestEventInactive covers the predicate the `s` toggle uses to hide
+// passthrough / skip-only messages. A message with no invocations (a
+// passthrough the operator can now see) and a message where every plugin
+// skipped are both inactive; any non-skip action makes it active.
+func TestEventInactive(t *testing.T) {
+	ev := func(invs ...pipeline.Invocation) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{Invocations: &pipeline.Invocations{Inbound: invs}}
+	}
+	cases := []struct {
+		name  string
+		event *pipeline.SessionEvent
+		want  bool
+	}{
+		{"no invocations (passthrough)", &pipeline.SessionEvent{}, true},
+		{"all skip", ev(
+			pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionSkip},
+			pipeline.Invocation{Plugin: "token-exchange", Action: pipeline.ActionSkip},
+		), true},
+		{"one observe among skips", ev(
+			pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionSkip},
+			pipeline.Invocation{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+		), false},
+		{"allow", ev(pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionAllow}), false},
+		{"deny", ev(pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionDeny}), false},
+		{"shadow deny counts as activity", ev(
+			pipeline.Invocation{Plugin: "pii-scrubber", Action: pipeline.ActionDeny, Shadow: true},
+		), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := eventInactive(allInvocations(tc.event)); got != tc.want {
+				t.Errorf("eventInactive = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildEventRows_MultiPluginIsOneRow locks the core fix: a single message
+// touched by three plugins is exactly ONE display row (not three), and its
+// aggregate headlines the plugin that did the meaningful work (a2a-parser
+// observing) rather than the gate that allowed or the parser that skipped.
+func TestBuildEventRows_MultiPluginIsOneRow(t *testing.T) {
 	events := []pipeline.SessionEvent{
-		// 2 inbound invocations → 2 rows
 		{
 			Direction: pipeline.Inbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "weather-agent",
 			Invocations: &pipeline.Invocations{
 				Inbound: []pipeline.Invocation{
 					{Plugin: "jwt-validation", Action: pipeline.ActionAllow},
 					{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+					{Plugin: "mcp-parser", Action: pipeline.ActionSkip},
 				},
 			},
 		},
-		// 1 outbound invocation → 1 row
-		{
-			Direction: pipeline.Outbound,
-			Invocations: &pipeline.Invocations{
-				Outbound: []pipeline.Invocation{
-					{Plugin: "token-exchange", Action: pipeline.ActionSkip},
-				},
-			},
-		},
-		// no invocations → 1 pseudo-row
-		{Direction: pipeline.Inbound},
 	}
-	got := flattenInvocations(events)
-	if len(got) != 4 {
-		t.Fatalf("flattenInvocations returned %d rows, want 4", len(got))
+	rows := buildEventRows(events)
+	if len(rows) != 1 {
+		t.Fatalf("3-plugin message produced %d rows, want 1", len(rows))
 	}
-	if got[0].inv == nil || got[0].inv.Plugin != "jwt-validation" {
-		t.Errorf("row 0 = %+v, want jwt-validation", got[0])
+	if rows[0].tunnel != nil {
+		t.Errorf("row should have no folded tunnel")
 	}
-	if got[1].inv == nil || got[1].inv.Plugin != "a2a-parser" {
-		t.Errorf("row 1 = %+v, want a2a-parser", got[1])
+	action, plugin := eventAction(rows[0].invocations())
+	if action != "observe" {
+		t.Errorf("aggregate action = %q, want observe", action)
 	}
-	if got[2].inv == nil || got[2].inv.Plugin != "token-exchange" {
-		t.Errorf("row 2 = %+v, want token-exchange", got[2])
-	}
-	if got[3].inv != nil {
-		t.Errorf("row 3 should be pseudo-row with nil inv, got %+v", got[3])
+	if plugin != "a2a-parser" {
+		t.Errorf("aggregate plugin = %q, want a2a-parser", plugin)
 	}
 }
 
-// TestPairInvocationRows verifies that each plugin's request row pairs
-// with its own response row independently. A pipeline with
-// jwt-validation + a2a-parser on both request and response phases yields
-// 4 rows (2 req + 2 resp), and pairing should connect them in-plugin:
-// jwt-validation-req ↔ jwt-validation-resp; a2a-parser-req ↔
-// a2a-parser-resp.
-func TestPairInvocationRows(t *testing.T) {
-	inv := func(plugin string, action pipeline.InvocationAction) *pipeline.Invocation {
-		return &pipeline.Invocation{Plugin: plugin, Action: action}
-	}
-	reqEv := &pipeline.SessionEvent{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest}
-	respEv := &pipeline.SessionEvent{Direction: pipeline.Inbound, Phase: pipeline.SessionResponse}
-	rows := []invocationRow{
-		{event: reqEv, inv: inv("jwt-validation", pipeline.ActionAllow), direction: pipeline.Inbound},
-		{event: reqEv, inv: inv("a2a-parser", pipeline.ActionObserve), direction: pipeline.Inbound},
-		{event: respEv, inv: inv("jwt-validation", pipeline.ActionAllow), direction: pipeline.Inbound},
-		{event: respEv, inv: inv("a2a-parser", pipeline.ActionObserve), direction: pipeline.Inbound},
-	}
-	pairs := pairInvocationRows(rows)
-	if pairs[0] != 2 || pairs[2] != 0 {
-		t.Errorf("expected jwt-validation pair 0↔2, got %v", pairs)
-	}
-	if pairs[1] != 3 || pairs[3] != 1 {
-		t.Errorf("expected a2a-parser pair 1↔3, got %v", pairs)
-	}
-}
-
-// TestMatchInvocationRow_DenyShortcut verifies that typing "deny" in the
-// filter box surfaces both the SessionDenied phase AND any invocation
-// whose Action is ActionDeny (jwt-validation or token-exchange
-// denials).
-func TestMatchInvocationRow_DenyShortcut(t *testing.T) {
-	denied := invocationRow{
-		event: &pipeline.SessionEvent{Phase: pipeline.SessionDenied},
-	}
-	if !matchInvocationRow(denied, "deny") {
-		t.Error("SessionDenied event should match the `deny` shortcut")
-	}
-
-	inboundDeny := invocationRow{
-		event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest},
-		inv:   &pipeline.Invocation{Action: pipeline.ActionDeny},
-	}
-	if !matchInvocationRow(inboundDeny, "deny") {
-		t.Error("inbound-deny invocation should match the `deny` shortcut")
-	}
-
-	clean := invocationRow{
-		event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest},
-		inv:   &pipeline.Invocation{Action: pipeline.ActionAllow},
-	}
-	if matchInvocationRow(clean, "deny") {
-		t.Error("allow invocation should NOT match the `deny` shortcut")
-	}
-}
-
-// TestMatchInvocationRow_PluginSubstring verifies that filtering by plugin
-// name substring-matches against the Invocation.Plugin field so operators
-// can isolate one plugin's rows.
-func TestMatchInvocationRow_PluginSubstring(t *testing.T) {
-	row := invocationRow{
-		event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest},
-		inv:   &pipeline.Invocation{Plugin: "jwt-validation", Action: pipeline.ActionSkip, Reason: "path_bypass", Path: "/healthz"},
-	}
-	if !matchInvocationRow(row, "jwt-validation") {
-		t.Error("filter jwt-validation should match")
-	}
-	if !matchInvocationRow(row, "path_bypass") {
-		t.Error("filter by reason should match")
-	}
-	if !matchInvocationRow(row, "/healthz") {
-		t.Error("filter by path should match")
-	}
-	if matchInvocationRow(row, "token-exchange") {
-		t.Error("filter token-exchange should NOT match a jwt-validation row")
-	}
-}
-
-// TestMatchInvocationRow_PluginPrefix tests the `plugin:<name>` escape-
-// hatch filter — matches when the event's Plugins map contains <name>.
-func TestMatchInvocationRow_PluginPrefix(t *testing.T) {
-	row := invocationRow{
-		event: &pipeline.SessionEvent{
-			Plugins: map[string]json.RawMessage{
-				"rate-limiter": json.RawMessage(`{"allowed":true}`),
-			},
-		},
-	}
-	if !matchInvocationRow(row, "plugin:rate-limiter") {
-		t.Error("expected match on plugin:rate-limiter")
-	}
-	if matchInvocationRow(row, "plugin:nonexistent") {
-		t.Error("expected no match for a plugin not in the map")
-	}
-}
-
-// TestComputeEventPairIDs_BypassResponseWithEmptyInvocations locks the
-// event-level fallback pairing: when a response event has no plugin
-// invocations at all (e.g. jwt-validation bypass response), it should
-// still pair with its preceding request event via direction+host match
-// so the # column shows the same ID on both rows.
-func TestComputeEventPairIDs_BypassResponseWithEmptyInvocations(t *testing.T) {
+// TestBuildEventRows_EmptyInvocationsResponse confirms a status-only response
+// that no plugin acted on (now recorded server-side) renders as one row
+// carrying its status.
+func TestBuildEventRows_EmptyInvocationsResponse(t *testing.T) {
 	events := []pipeline.SessionEvent{
-		// Event 0: bypass req — jwt-validation skip invocation
-		{
-			Direction: pipeline.Inbound,
-			Phase:     pipeline.SessionRequest,
-			Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{
-				Plugin: "jwt-validation",
-				Phase:  pipeline.InvocationPhaseRequest,
-				Action: pipeline.ActionSkip,
-			}}},
-		},
-		// Event 1: bypass resp — no invocations (response-phase filter returns empty)
-		{Direction: pipeline.Inbound, Phase: pipeline.SessionResponse, StatusCode: 200},
-		// Event 2: bypass req (different bypass path, same direction+host="")
-		{
-			Direction: pipeline.Inbound,
-			Phase:     pipeline.SessionRequest,
-			Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{
-				Plugin: "jwt-validation",
-				Phase:  pipeline.InvocationPhaseRequest,
-				Action: pipeline.ActionSkip,
-			}}},
-		},
-		// Event 3: bypass resp
-		{Direction: pipeline.Inbound, Phase: pipeline.SessionResponse, StatusCode: 200},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "example.com"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "example.com", StatusCode: 404},
 	}
-
-	rows := flattenInvocations(events)
-	pairs := pairInvocationRows(rows)
-	ids := computeEventPairIDs(rows, pairs)
-
-	id0, id1 := ids[&events[0]], ids[&events[1]]
-	id2, id3 := ids[&events[2]], ids[&events[3]]
-
-	if id0 != id1 {
-		t.Errorf("bypass req/resp #1: got ids (%d,%d), want equal", id0, id1)
-	}
-	if id2 != id3 {
-		t.Errorf("bypass req/resp #2: got ids (%d,%d), want equal", id2, id3)
-	}
-	if id0 == id2 {
-		t.Errorf("different bypass pairs should have different ids, both got %d", id0)
-	}
-}
-
-// TestPairInvocationRows_MethodDiscrimination locks the method-aware
-// pairing. Fire-and-forget MCP methods (notifications/initialized) have
-// no response; a subsequent tools/list req+resp pair must not be
-// disrupted by the notification's mcp-parser row greedily claiming the
-// tools/list response row.
-func TestPairInvocationRows_MethodDiscrimination(t *testing.T) {
-	mk := func(phase pipeline.SessionPhase, method string) pipeline.SessionEvent {
-		return pipeline.SessionEvent{
-			Direction: pipeline.Outbound,
-			Phase:     phase,
-			MCP:       &pipeline.MCPExtension{Method: method},
-			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{{
-				Plugin: "mcp-parser",
-				Phase:  invocationPhaseFor(phase),
-				Action: pipeline.ActionObserve,
-			}}},
-		}
-	}
-	events := []pipeline.SessionEvent{
-		mk(pipeline.SessionRequest, "notifications/initialized"), // no resp (fire and forget)
-		mk(pipeline.SessionRequest, "tools/list"),
-		mk(pipeline.SessionResponse, "tools/list"),
-	}
-	rows := flattenInvocations(events)
-	pairs := pairInvocationRows(rows)
-	ids := computeEventPairIDs(rows, pairs)
-
-	if ids[&events[1]] != ids[&events[2]] {
-		t.Errorf("tools/list req and resp must share ID, got %d vs %d",
-			ids[&events[1]], ids[&events[2]])
-	}
-	if ids[&events[0]] == ids[&events[1]] {
-		t.Errorf("notifications/initialized (orphan) must not share ID with tools/list, both got %d",
-			ids[&events[0]])
-	}
-}
-
-func invocationPhaseFor(p pipeline.SessionPhase) pipeline.InvocationPhase {
-	if p == pipeline.SessionResponse {
-		return pipeline.InvocationPhaseResponse
-	}
-	return pipeline.InvocationPhaseRequest
-}
-
-// Build a realistic auth-only request/response pair and assert that the
-// flatten → pair pipeline connects them end-to-end. Regression-protects
-// the chart-default case (jwt-validation only, no parsers).
-func TestFlattenPair_AuthOnlyEndToEnd(t *testing.T) {
-	now := time.Date(2026, 5, 8, 14, 22, 5, 0, time.UTC)
-	invs := &pipeline.Invocations{Inbound: []pipeline.Invocation{{Plugin: "jwt-validation", Action: pipeline.ActionAllow}}}
-	events := []pipeline.SessionEvent{
-		{At: now, Direction: pipeline.Inbound, Phase: pipeline.SessionRequest, Invocations: invs, Host: "weather-agent"},
-		{At: now.Add(12 * time.Millisecond), Direction: pipeline.Inbound, Phase: pipeline.SessionResponse, Invocations: invs, Host: "weather-agent", StatusCode: 200, Duration: 12 * time.Millisecond},
-	}
-
-	rows := flattenInvocations(events)
+	rows := buildEventRows(events)
 	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
+		t.Fatalf("got %d rows, want 2", len(rows))
 	}
-	pairs := pairInvocationRows(rows)
-	if pairs[0] != 1 || pairs[1] != 0 {
-		t.Errorf("expected auth-only req/resp to pair: got %v", pairs)
+	resp := rows[1].event
+	if got := statusCell(*resp); got != "404" {
+		t.Errorf("response statusCell = %q, want 404", got)
 	}
-	if got := rows[0].actionCell(); got != "allow" {
-		t.Errorf("req actionCell = %q, want allow", got)
-	}
-	if got := rows[1].pluginCell(); got != "jwt-validation" {
-		t.Errorf("resp pluginCell = %q, want jwt-validation", got)
-	}
-	if got := statusCell(*rows[1].event); got != "200" {
-		t.Errorf("statusCell = %q, want 200", got)
+	action, plugin := eventAction(allInvocations(resp))
+	if action != "—" || plugin != "—" {
+		t.Errorf("no-plugin response aggregate = (%q, %q), want (—, —)", action, plugin)
 	}
 }
 
-// TestIsSkipRow checks the predicate the events table uses to decide
-// whether a row should be hidden under the default skip-hiding mode.
-// Only Action=skip rows return true; the pseudo-row with no
-// Invocation, and rows for any other action, are kept.
-func TestIsSkipRow(t *testing.T) {
+// TestBuildEventRows_CollapsesBridgedConnect locks the CONNECT-fold (Part C):
+// a tunnel-open (host:port, opaque) immediately followed by the decrypted
+// inner request (same host, real method) is ONE row keyed on the inner
+// request, with the tunnel attached. The inner response stays a separate row.
+func TestBuildEventRows_CollapsesBridgedConnect(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		// CONNECT tunnel-open — opaque, host:port, gate invocation only.
+		{
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "api.anthropic.com:443",
+			Tunnel:    true,
+			Invocations: &pipeline.Invocations{
+				Outbound: []pipeline.Invocation{{Plugin: "jwt-validation", Action: pipeline.ActionSkip}},
+			},
+		},
+		// Decrypted inner request — real model, host without port.
+		{
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "api.anthropic.com",
+			Inference: &pipeline.InferenceExtension{Model: "claude-3-5-sonnet"},
+			Invocations: &pipeline.Invocations{
+				Outbound: []pipeline.Invocation{{Plugin: "inference-parser", Action: pipeline.ActionObserve}},
+			},
+		},
+		// Inner response.
+		{
+			Direction:  pipeline.Outbound,
+			Phase:      pipeline.SessionResponse,
+			Host:       "api.anthropic.com",
+			Inference:  &pipeline.InferenceExtension{Model: "claude-3-5-sonnet", TotalTokens: 1200},
+			StatusCode: 200,
+		},
+	}
+	rows := buildEventRows(events)
+	if len(rows) != 2 {
+		t.Fatalf("bridged call produced %d rows, want 2 (collapsed req + resp)", len(rows))
+	}
+	// Row 0: the inner request, with the CONNECT folded as tunnel.
+	if rows[0].event.Inference == nil || rows[0].event.Inference.Model != "claude-3-5-sonnet" {
+		t.Errorf("row 0 should be the decrypted inner request")
+	}
+	if rows[0].tunnel == nil {
+		t.Fatalf("row 0 should carry the folded CONNECT tunnel")
+	}
+	if rows[0].tunnel.Host != "api.anthropic.com:443" {
+		t.Errorf("folded tunnel host = %q, want api.anthropic.com:443", rows[0].tunnel.Host)
+	}
+	// Row 0 host should be the clean inner host (no :443).
+	if rows[0].event.Host != "api.anthropic.com" {
+		t.Errorf("collapsed row host = %q, want api.anthropic.com", rows[0].event.Host)
+	}
+	// Row 1: the response, no tunnel.
+	if rows[1].event.Phase != pipeline.SessionResponse || rows[1].tunnel != nil {
+		t.Errorf("row 1 should be the standalone inner response")
+	}
+}
+
+// TestBuildEventRows_PassthroughTunnelStandsAlone covers every shape in which a
+// non-bridged CONNECT tunnel-open must remain its own row rather than fold:
+// a lone trailing CONNECT, two back-to-back CONNECTs to the SAME host
+// (connection pooling — must NOT fold into each other), and a CONNECT followed
+// by a different-host request (host-mismatch guard).
+func TestBuildEventRows_PassthroughTunnelStandsAlone(t *testing.T) {
+	connect := func(host string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: host, Tunnel: true}
+	}
 	cases := []struct {
-		name string
-		row  invocationRow
-		want bool
+		name   string
+		events []pipeline.SessionEvent
 	}{
 		{
-			name: "skip action",
-			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionSkip}},
-			want: true,
+			name:   "lone trailing CONNECT",
+			events: []pipeline.SessionEvent{connect("passthrough.example:443")},
 		},
 		{
-			name: "allow action",
-			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionAllow}},
-			want: false,
+			name: "two CONNECTs to the same host (pooling) must not fold",
+			events: []pipeline.SessionEvent{
+				connect("api.example.com:443"),
+				connect("api.example.com:443"),
+			},
 		},
 		{
-			name: "deny action",
-			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionDeny}},
-			want: false,
-		},
-		{
-			name: "observe action",
-			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionObserve}},
-			want: false,
-		},
-		{
-			name: "modify action",
-			row:  invocationRow{inv: &pipeline.Invocation{Action: pipeline.ActionModify}},
-			want: false,
-		},
-		{
-			name: "pseudo-row with no invocation",
-			// Parser-only events emit a pseudo-row so they remain
-			// reachable. These should never be classified as skips —
-			// hiding them would lose protocol-only events from the
-			// timeline.
-			row:  invocationRow{event: &pipeline.SessionEvent{}, inv: nil},
-			want: false,
+			name: "CONNECT then different-host request",
+			events: []pipeline.SessionEvent{
+				connect("passthrough.example:443"),
+				{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "other.example",
+					Inference: &pipeline.InferenceExtension{Model: "x"}},
+			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isSkipRow(tc.row); got != tc.want {
-				t.Errorf("isSkipRow = %v, want %v", got, tc.want)
+			rows := buildEventRows(tc.events)
+			if len(rows) != len(tc.events) {
+				t.Fatalf("got %d rows, want %d (nothing should fold)", len(rows), len(tc.events))
+			}
+			for i, r := range rows {
+				if r.tunnel != nil {
+					t.Errorf("row %d unexpectedly folded a tunnel", i)
+				}
 			}
 		})
 	}
 }
 
-// TestComputeSpanGlyphs covers per-row tree-glyph assignment for the
-// PHASE column. Up to two levels of (req, resp) span nesting are
-// surfaced — the largest containing span as outer, the next-largest
-// as inner, deeper levels dropped.
+// TestBuildEventRows_TunnelInvocationsFoldIntoRow locks #3: a bridged row's
+// ACTION/inactive view must include the folded CONNECT tunnel's gate
+// invocations, so an egress gate that ALLOWED the CONNECT is reflected even
+// when the decrypted inner request itself saw no plugin activity.
+func TestBuildEventRows_TunnelInvocationsFoldIntoRow(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		// CONNECT tunnel-open — an egress gate explicitly ALLOWED it.
+		{
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "api.example.com:443", Tunnel: true,
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "egress-policy", Action: pipeline.ActionAllow},
+			}},
+		},
+		// Decrypted inner request — no plugin matched (opaque passthrough body).
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "api.example.com"},
+	}
+	rows := buildEventRows(events)
+	if len(rows) != 1 || rows[0].tunnel == nil {
+		t.Fatalf("expected 1 folded row, got %d (tunnel=%v)", len(rows), rows[0].tunnel != nil)
+	}
+	// The inner event alone has no invocations; the row must surface the
+	// tunnel's allow.
+	if eventInactive(rows[0].invocations()) {
+		t.Error("row with a tunnel-level allow should not be inactive")
+	}
+	action, plugin := eventAction(rows[0].invocations())
+	if action != "allow" || plugin != "egress-policy" {
+		t.Errorf("folded ACTION = (%q, %q), want (allow, egress-policy)", action, plugin)
+	}
+}
+
+// TestRebuildEventsTable_HideInactive is the integration check for #5: the
+// hideInactive toggle (predicate → row build → footer count) suppresses
+// passthrough/skip-only messages while keeping partially-active ones.
+func TestRebuildEventsTable_HideInactive(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		// active — a2a observe
+		{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest, Host: "agent",
+			Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{
+				{Plugin: "jwt-validation", Action: pipeline.ActionSkip}, // partially-active: skip + observe
+				{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
+			}}},
+		// inactive — no invocations (passthrough response)
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "x", StatusCode: 200},
+		// inactive — skip-only
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "y",
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "token-exchange", Action: pipeline.ActionSkip},
+			}}},
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}}
+	m.eventsTbl = newEventsTable()
+
+	m.hideInactive = false
+	m.rebuildEventsTable()
+	if len(m.visibleRows) != 3 || m.hiddenInactive != 0 {
+		t.Fatalf("show-all: rows=%d hidden=%d, want 3/0", len(m.visibleRows), m.hiddenInactive)
+	}
+
+	m.hideInactive = true
+	m.rebuildEventsTable()
+	if len(m.visibleRows) != 1 || m.hiddenInactive != 2 {
+		t.Fatalf("hide: rows=%d hidden=%d, want 1/2", len(m.visibleRows), m.hiddenInactive)
+	}
+	// The surviving row is the partially-active a2a message.
+	if action, _ := eventAction(m.visibleRows[0].invocations()); action != "observe" {
+		t.Errorf("surviving row action = %q, want observe", action)
+	}
+}
+
+// TestComputeEventPairIDs pairs each response row with its preceding request
+// row by direction + host + method, sharing one # across the exchange and
+// minting fresh integers for unpaired rows.
+func TestComputeEventPairIDs(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest, Host: "weather-agent"},
+		{Direction: pipeline.Inbound, Phase: pipeline.SessionResponse, Host: "weather-agent", StatusCode: 200},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "tool"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "tool", StatusCode: 200},
+	}
+	rows := buildEventRows(events)
+	ids, _ := computeEventPairs(rows)
+
+	if ids[&events[0]] != ids[&events[1]] {
+		t.Errorf("inbound req/resp should share id, got %d vs %d", ids[&events[0]], ids[&events[1]])
+	}
+	if ids[&events[2]] != ids[&events[3]] {
+		t.Errorf("outbound req/resp should share id, got %d vs %d", ids[&events[2]], ids[&events[3]])
+	}
+	if ids[&events[0]] == ids[&events[2]] {
+		t.Errorf("distinct exchanges should have distinct ids, both got %d", ids[&events[0]])
+	}
+}
+
+// TestComputeEventPairIDs_MethodDiscrimination locks method-aware pairing: a
+// fire-and-forget request (MCP notifications/initialized, no response) must
+// not steal the response that belongs to a later tools/list request.
+func TestComputeEventPairIDs_MethodDiscrimination(t *testing.T) {
+	mk := func(phase pipeline.SessionPhase, method string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{
+			Direction: pipeline.Outbound,
+			Phase:     phase,
+			Host:      "tool",
+			MCP:       &pipeline.MCPExtension{Method: method},
+		}
+	}
+	events := []pipeline.SessionEvent{
+		mk(pipeline.SessionRequest, "notifications/initialized"), // no response (fire and forget)
+		mk(pipeline.SessionRequest, "tools/list"),
+		mk(pipeline.SessionResponse, "tools/list"),
+	}
+	rows := buildEventRows(events)
+	ids, _ := computeEventPairs(rows)
+
+	if ids[&events[1]] != ids[&events[2]] {
+		t.Errorf("tools/list req and resp must share id, got %d vs %d", ids[&events[1]], ids[&events[2]])
+	}
+	if ids[&events[0]] == ids[&events[1]] {
+		t.Errorf("notifications/initialized must not share id with tools/list, both got %d", ids[&events[0]])
+	}
+}
+
+// TestMatchEventRow_DenyShortcut verifies that typing "deny" surfaces both the
+// SessionDenied phase AND any invocation whose Action is ActionDeny.
+func TestMatchEventRow_DenyShortcut(t *testing.T) {
+	denied := eventRow{event: &pipeline.SessionEvent{Phase: pipeline.SessionDenied}}
+	if !matchEventRow(denied, "deny") {
+		t.Error("SessionDenied event should match the `deny` shortcut")
+	}
+
+	inboundDeny := eventRow{event: &pipeline.SessionEvent{
+		Phase:       pipeline.SessionRequest,
+		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionDeny}}},
+	}}
+	if !matchEventRow(inboundDeny, "deny") {
+		t.Error("event with a deny invocation should match the `deny` shortcut")
+	}
+
+	clean := eventRow{event: &pipeline.SessionEvent{
+		Phase:       pipeline.SessionRequest,
+		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionAllow}}},
+	}}
+	if matchEventRow(clean, "deny") {
+		t.Error("allow-only event should NOT match the `deny` shortcut")
+	}
+}
+
+// TestMatchEventRow_PluginSubstring verifies substring matching across an
+// event's invocation fields (plugin name, reason, path).
+func TestMatchEventRow_PluginSubstring(t *testing.T) {
+	row := eventRow{event: &pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest,
+		Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{
+			{Plugin: "jwt-validation", Action: pipeline.ActionSkip, Reason: "path_bypass", Path: "/healthz"},
+		}},
+	}}
+	if !matchEventRow(row, "jwt-validation") {
+		t.Error("filter jwt-validation should match")
+	}
+	if !matchEventRow(row, "path_bypass") {
+		t.Error("filter by reason should match")
+	}
+	if !matchEventRow(row, "/healthz") {
+		t.Error("filter by path should match")
+	}
+	if matchEventRow(row, "token-exchange") {
+		t.Error("filter token-exchange should NOT match a jwt-validation-only event")
+	}
+}
+
+// TestMatchEventRow_TunnelFields confirms a folded tunnel's fields are
+// searchable on the collapsed row — filtering by the bridged origin's
+// host:port still surfaces the row even though the row's own host is
+// port-stripped.
+func TestMatchEventRow_TunnelFields(t *testing.T) {
+	row := eventRow{
+		event:  &pipeline.SessionEvent{Host: "api.anthropic.com"},
+		tunnel: &pipeline.SessionEvent{Host: "api.anthropic.com:443"},
+	}
+	if !matchEventRow(row, "anthropic.com:443") {
+		t.Error("filter on the tunnel host:port should match the collapsed row")
+	}
+}
+
+// TestMatchEventRow_PluginPrefix tests the `plugin:<name>` escape-hatch filter
+// against the event's Plugins map.
+func TestMatchEventRow_PluginPrefix(t *testing.T) {
+	row := eventRow{event: &pipeline.SessionEvent{
+		Plugins: map[string]json.RawMessage{
+			"rate-limiter": json.RawMessage(`{"allowed":true}`),
+		},
+	}}
+	if !matchEventRow(row, "plugin:rate-limiter") {
+		t.Error("expected match on plugin:rate-limiter")
+	}
+	if matchEventRow(row, "plugin:nonexistent") {
+		t.Error("expected no match for a plugin not in the map")
+	}
+}
+
+// TestStatusCell exercises the realistic auth-only request/response shape:
+// a response carrying a 200 renders that status; a request renders blank.
+func TestStatusCell(t *testing.T) {
+	now := time.Date(2026, 5, 8, 14, 22, 5, 0, time.UTC)
+	req := pipeline.SessionEvent{At: now, Phase: pipeline.SessionRequest, Host: "weather-agent"}
+	resp := pipeline.SessionEvent{At: now.Add(12 * time.Millisecond), Phase: pipeline.SessionResponse,
+		Host: "weather-agent", StatusCode: 200, Duration: 12 * time.Millisecond}
+	if got := statusCell(req); got != "" {
+		t.Errorf("request statusCell = %q, want empty", got)
+	}
+	if got := statusCell(resp); got != "200" {
+		t.Errorf("response statusCell = %q, want 200", got)
+	}
+	if got := durationCell(resp); got != "12ms" {
+		t.Errorf("durationCell = %q, want 12ms", got)
+	}
+}
+
+// TestHostOnly covers port stripping (used by collapse + pairing), including
+// the no-port and IPv6 cases.
+func TestHostOnly(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"example.com:443", "example.com"},
+		{"example.com", "example.com"},
+		{"[::1]:8443", "::1"},
+	}
+	for _, tc := range cases {
+		if got := hostOnly(tc.in); got != tc.want {
+			t.Errorf("hostOnly(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestSpanLevels_Prefix locks the PHASE-column prefix: empty levels render as
+// empty string; one level renders one glyph; two levels render two glyphs.
+func TestSpanLevels_Prefix(t *testing.T) {
+	cases := []struct {
+		name string
+		s    spanLevels
+		want string
+	}{
+		{"none", spanLevels{}, ""},
+		{"outer only — start", spanLevels{outer: glyphStart}, "┌"},
+		{"outer only — middle", spanLevels{outer: glyphMiddle}, "│"},
+		{"outer only — end", spanLevels{outer: glyphEnd}, "└"},
+		{"both — outer middle, inner start", spanLevels{outer: glyphMiddle, inner: glyphStart}, "│┌"},
+		{"both — outer middle, inner end", spanLevels{outer: glyphMiddle, inner: glyphEnd}, "│└"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.s.prefix(); got != tc.want {
+				t.Errorf("prefix() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComputeSpanGlyphs covers per-row tree-glyph assignment for the PHASE
+// column. Up to two levels of (request, response) nesting are surfaced — the
+// widest containing span as outer, the next-widest as inner, deeper dropped.
 func TestComputeSpanGlyphs(t *testing.T) {
 	none := spanLevels{}
 	outer := func(g spanGlyph) spanLevels { return spanLevels{outer: g} }
@@ -440,123 +693,71 @@ func TestComputeSpanGlyphs(t *testing.T) {
 		n     int
 		want  []spanLevels
 	}{
+		{"no pairs", nil, 3, []spanLevels{none, none, none}},
 		{
-			name:  "no pairs",
-			pairs: nil,
-			n:     3,
-			want:  []spanLevels{none, none, none},
-		},
-		{
-			name: "adjacent pair (req at 0, resp at 1)",
-			// Bidirectional, like pairInvocationRows emits.
+			name:  "adjacent pair",
 			pairs: map[int]int{0: 1, 1: 0},
 			n:     2,
 			want:  []spanLevels{outer(glyphStart), outer(glyphEnd)},
 		},
 		{
-			name:  "pair with one row in between",
+			name:  "one row in between",
 			pairs: map[int]int{0: 2, 2: 0},
 			n:     3,
 			want:  []spanLevels{outer(glyphStart), outer(glyphMiddle), outer(glyphEnd)},
 		},
 		{
-			name: "two non-overlapping pairs",
-			pairs: map[int]int{
-				0: 2, 2: 0,
-				3: 5, 5: 3,
-			},
-			n: 6,
-			want: []spanLevels{
-				outer(glyphStart), outer(glyphMiddle), outer(glyphEnd),
-				outer(glyphStart), outer(glyphMiddle), outer(glyphEnd),
-			},
-		},
-		{
-			name: "nested pairs — outer (0,5), inner (2,3)",
-			// Both levels are now visible: the outer's continuation
-			// glyph sits next to the inner's corner so an operator can
-			// see "row 2 is inside an outer span AND opens an inner
-			// span" at a glance.
+			// The real shape: an outer a2a exchange (0,5) bracketing two inner
+			// inference exchanges (1,2) and (3,4).
+			name: "nested exchanges (a2a containing two inference calls)",
 			pairs: map[int]int{
 				0: 5, 5: 0,
-				2: 3, 3: 2,
+				1: 2, 2: 1,
+				3: 4, 4: 3,
 			},
 			n: 6,
 			want: []spanLevels{
-				outer(glyphStart),             // 0: outer starts here
-				outer(glyphMiddle),            // 1: only outer participates
-				both(glyphMiddle, glyphStart), // 2: outer continues, inner starts
-				both(glyphMiddle, glyphEnd),   // 3: outer continues, inner ends
-				outer(glyphMiddle),            // 4: only outer participates
-				outer(glyphEnd),               // 5: outer ends here
-			},
-		},
-		{
-			name: "real-world shape — long outer pair with inner pairs interleaved",
-			// Mirrors the IBAC demo timeline:
-			//   row 0: a2a-parser req     ┌
-			//   row 1: jwt-validation     │            (event-1 continuation)
-			//   row 2: inference-parser req  ┌
-			//   row 3: inference-parser resp └
-			//   row 4: a2a-parser resp    └
-			pairs: map[int]int{
-				0: 4, 4: 0, // outer a2a-parser
-				2: 3, 3: 2, // inner inference-parser
-			},
-			n: 5,
-			want: []spanLevels{
 				outer(glyphStart),
-				outer(glyphMiddle),
+				both(glyphMiddle, glyphStart),
+				both(glyphMiddle, glyphEnd),
 				both(glyphMiddle, glyphStart),
 				both(glyphMiddle, glyphEnd),
 				outer(glyphEnd),
 			},
 		},
 		{
-			name: "deeper nesting collapses to two levels",
-			// outer (0, 7), middle (1, 6), innermost (2, 5). Row 3 sits
-			// inside all three; only the two largest surface so the
-			// PHASE column doesn't blow its width budget.
+			// The #52 case: a pair (2,3) nested THREE deep — inside a middle
+			// span (1,4) inside an outer span (0,5). The innermost pair's
+			// endpoints must still show their ┌/└ corners (so its req/resp
+			// connect) rather than the middle span's bar masking them. inner =
+			// the row's narrowest containing span, not the second-widest.
+			name: "triple-nested innermost pair keeps its corners",
 			pairs: map[int]int{
-				0: 7, 7: 0,
-				1: 6, 6: 1,
-				2: 5, 5: 2,
+				0: 5, 5: 0,
+				1: 4, 4: 1,
+				2: 3, 3: 2,
 			},
-			n: 8,
+			n: 6,
 			want: []spanLevels{
-				outer(glyphStart),
-				both(glyphMiddle, glyphStart),  // outer middle + middle-pair start
-				both(glyphMiddle, glyphMiddle), // middle-pair middle wins over innermost (deeper dropped)
-				both(glyphMiddle, glyphMiddle), // same
-				both(glyphMiddle, glyphMiddle), // same
-				both(glyphMiddle, glyphMiddle), // middle-pair middle (innermost dropped)
-				both(glyphMiddle, glyphEnd),    // middle-pair ends here, outer continues
-				outer(glyphEnd),
+				outer(glyphStart),             // 0: outer starts
+				both(glyphMiddle, glyphStart), // 1: outer mid, middle-span starts
+				both(glyphMiddle, glyphStart), // 2: outer mid, innermost STARTS (was masked to middle)
+				both(glyphMiddle, glyphEnd),   // 3: outer mid, innermost ENDS (was masked to middle)
+				both(glyphMiddle, glyphEnd),   // 4: outer mid, middle-span ends
+				outer(glyphEnd),               // 5: outer ends
 			},
-		},
-		{
-			name: "out-of-bounds endpoint gracefully ignored",
-			// Defensive: pairInvocationRows shouldn't emit pairs with
-			// indices >= n, but the helper must not panic if a future
-			// caller reuses it on a truncated row slice. The span (0,10)
-			// is still treated as containing rows 1 and 2 because they
-			// satisfy a < i < b.
-			pairs: map[int]int{0: 10, 10: 0},
-			n:     3,
-			want:  []spanLevels{outer(glyphStart), outer(glyphMiddle), outer(glyphMiddle)},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := computeSpanGlyphs(tc.pairs, tc.n)
 			if len(got) != len(tc.want) {
-				t.Fatalf("len = %d, want %d (got %v)", len(got), len(tc.want), got)
+				t.Fatalf("len = %d, want %d", len(got), len(tc.want))
 			}
 			for i := range tc.want {
 				if got[i] != tc.want[i] {
 					t.Errorf("row %d: got {outer=%q inner=%q}, want {outer=%q inner=%q}",
-						i,
-						string(rune(got[i].outer)), string(rune(got[i].inner)),
+						i, string(rune(got[i].outer)), string(rune(got[i].inner)),
 						string(rune(tc.want[i].outer)), string(rune(tc.want[i].inner)))
 				}
 			}
@@ -564,28 +765,42 @@ func TestComputeSpanGlyphs(t *testing.T) {
 	}
 }
 
-// TestSpanLevels_Prefix locks the rendered prefix the rebuildEventsTable
-// uses to populate the PHASE column. Empty levels render as empty
-// string; one level renders one glyph; two levels render two glyphs.
-func TestSpanLevels_Prefix(t *testing.T) {
-	cases := []struct {
-		name string
-		s    spanLevels
-		want string
-	}{
-		{"none", spanLevels{}, ""},
-		{"outer only — start", spanLevels{outer: glyphStart}, "┌"},
-		{"outer only — middle", spanLevels{outer: glyphMiddle}, "│"},
-		{"outer only — end", spanLevels{outer: glyphEnd}, "└"},
-		{"both levels — outer middle, inner start", spanLevels{outer: glyphMiddle, inner: glyphStart}, "│┌"},
-		{"both levels — outer middle, inner end", spanLevels{outer: glyphMiddle, inner: glyphEnd}, "│└"},
+// TestComputeEventPairs_NestedExchangeGlyphs is the end-to-end #23 shape: an
+// inbound a2a message/stream request, two outbound inference exchanges during
+// processing, then the a2a response. The a2a request/response must pair and
+// bracket (┌ … └) with the inference exchanges nested (│┌ … │└) inside.
+func TestComputeEventPairs_NestedExchangeGlyphs(t *testing.T) {
+	a2aReq := pipeline.SessionEvent{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest,
+		Host: "claude-agent", A2A: &pipeline.A2AExtension{Method: "message/stream"}}
+	infReq1 := pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "litellm", Inference: &pipeline.InferenceExtension{Model: "claude"}}
+	infResp1 := pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse,
+		Host: "litellm", Inference: &pipeline.InferenceExtension{Model: "claude"}, StatusCode: 200}
+	infReq2 := pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "litellm", Inference: &pipeline.InferenceExtension{Model: "claude"}}
+	infResp2 := pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse,
+		Host: "litellm", Inference: &pipeline.InferenceExtension{Model: "claude"}, StatusCode: 200}
+	a2aResp := pipeline.SessionEvent{Direction: pipeline.Inbound, Phase: pipeline.SessionResponse,
+		Host: "claude-agent", A2A: &pipeline.A2AExtension{Method: "message/stream"}, StatusCode: 200}
+	events := []pipeline.SessionEvent{a2aReq, infReq1, infResp1, infReq2, infResp2, a2aResp}
+
+	rows := buildEventRows(events)
+	ids, partner := computeEventPairs(rows)
+
+	// a2a request (row 0) pairs with a2a response (row 5), spanning everything.
+	if partner[0] != 5 || partner[5] != 0 {
+		t.Errorf("a2a req/resp should pair 0↔5, got partner=%v", partner)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.s.prefix(); got != tc.want {
-				t.Errorf("prefix() = %q, want %q", got, tc.want)
-			}
-		})
+	if ids[&events[0]] != ids[&events[5]] {
+		t.Errorf("a2a req/resp should share #, got %d vs %d", ids[&events[0]], ids[&events[5]])
+	}
+
+	glyphs := computeSpanGlyphs(partner, len(rows))
+	want := []string{"┌", "│┌", "│└", "│┌", "│└", "└"}
+	for i, w := range want {
+		if got := glyphs[i].prefix(); got != w {
+			t.Errorf("row %d prefix = %q, want %q", i, got, w)
+		}
 	}
 }
 

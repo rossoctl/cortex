@@ -160,6 +160,29 @@ else
   echo "PASS: init aborts fail-closed when resolv.conf has no nameservers"
 fi
 
+echo "### Backend detection unit test (/proc/modules seam)"
+# Pull detect_iptables_cmd (and its PROC_MODULES default) out of the script and
+# exercise it against fixture module tables — no real kernel needed. The legacy
+# branch also requires the iptables-legacy binary, so skip the legacy-positive
+# case when it is not installed on the host.
+eval "$(sed -n '/^PROC_MODULES=/,/^}/p' "${INIT}")"
+mods_legacy=$(mktemp); printf 'ip_tables 28672 4 - Live 0x0\niptable_nat 12288 19 - Live 0x0\n' > "${mods_legacy}"
+mods_nft=$(mktemp);    printf 'nf_tables 315392 344 nft_compat - Live 0x0\nnft_compat 20480 0 - Live 0x0\n' > "${mods_nft}"
+if command -v iptables-legacy >/dev/null 2>&1; then
+  got=$(PROC_MODULES="${mods_legacy}" detect_iptables_cmd)
+  [ "${got}" = "iptables-legacy" ] && echo "PASS: iptable_nat loaded => iptables-legacy" \
+    || { echo "FAIL: expected iptables-legacy, got '${got}'"; fail=1; }
+else
+  echo "SKIP: iptables-legacy not installed on host — legacy-positive case skipped"
+fi
+got=$(PROC_MODULES="${mods_nft}" detect_iptables_cmd)
+[ "${got}" = "iptables" ] && echo "PASS: iptable_nat absent => iptables (nft)" \
+  || { echo "FAIL: expected iptables, got '${got}'"; fail=1; }
+got=$(IPTABLES_CMD=iptables-legacy PROC_MODULES="${mods_nft}" detect_iptables_cmd)
+[ "${got}" = "iptables-legacy" ] && echo "PASS: IPTABLES_CMD override wins over detection" \
+  || { echo "FAIL: override ignored, got '${got}'"; fail=1; }
+rm -f "${mods_legacy}" "${mods_nft}"
+
 echo
 [ "${fail}" -eq 0 ] && echo "ALL TESTS PASSED" || echo "SOME TESTS FAILED"
 exit "${fail}"

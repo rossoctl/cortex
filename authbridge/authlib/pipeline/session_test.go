@@ -79,6 +79,7 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 		Identity:   &EventIdentity{Subject: "alice", ClientID: "agent-1"},
 		StatusCode: 200,
 		Error:      &EventError{Kind: "upstream", Message: "timeout"},
+		Tunnel:     true,
 	}
 
 	first, err := json.Marshal(orig)

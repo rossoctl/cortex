@@ -163,3 +163,69 @@ func TestReader_LongDataLineExceedsBufioBuffer(t *testing.T) {
 		t.Errorf("frame len = %d, want %d", len(frame), n)
 	}
 }
+
+// TestReader_LastEvent_Captured locks in the fix that lets a
+// re-framing proxy reproduce the upstream's "event:" line: after
+// ReadFrame returns the data payload, LastEvent must return the
+// event type named on the preceding "event:" line.
+func TestReader_LastEvent_Captured(t *testing.T) {
+	body := "event: message_start\ndata: {\"x\":1}\n\n"
+	r := NewReader(strings.NewReader(body), 0)
+	frame, err := r.ReadFrame()
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if string(frame) != `{"x":1}` {
+		t.Errorf("frame = %q, want %q", frame, `{"x":1}`)
+	}
+	if got := string(r.LastEvent()); got != "message_start" {
+		t.Errorf("LastEvent() = %q, want %q", got, "message_start")
+	}
+}
+
+// TestReader_LastEvent_ResetPerFrame confirms the event type does not
+// stick across frames: a frame with no "event:" line must report an
+// empty LastEvent even when the previous frame named one.
+func TestReader_LastEvent_ResetPerFrame(t *testing.T) {
+	body := "event: message_start\ndata: one\n\ndata: two\n\n"
+	r := NewReader(strings.NewReader(body), 0)
+
+	frame, err := r.ReadFrame()
+	if err != nil {
+		t.Fatalf("first ReadFrame: %v", err)
+	}
+	if string(frame) != "one" {
+		t.Errorf("first frame = %q, want one", frame)
+	}
+	if got := string(r.LastEvent()); got != "message_start" {
+		t.Errorf("first LastEvent() = %q, want %q", got, "message_start")
+	}
+
+	frame, err = r.ReadFrame()
+	if err != nil {
+		t.Fatalf("second ReadFrame: %v", err)
+	}
+	if string(frame) != "two" {
+		t.Errorf("second frame = %q, want two", frame)
+	}
+	if got := r.LastEvent(); len(got) != 0 {
+		t.Errorf("second LastEvent() = %q, want empty (not sticky across frames)", got)
+	}
+}
+
+// TestReader_LastEvent_EmptyForDataOnlyFrame preserves the existing
+// data-only behavior: a frame with no "event:" line at all reports an
+// empty LastEvent.
+func TestReader_LastEvent_EmptyForDataOnlyFrame(t *testing.T) {
+	r := NewReader(strings.NewReader("data: hello\n\n"), 0)
+	frame, err := r.ReadFrame()
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if string(frame) != "hello" {
+		t.Errorf("frame = %q, want hello", frame)
+	}
+	if got := r.LastEvent(); len(got) != 0 {
+		t.Errorf("LastEvent() = %q, want empty", got)
+	}
+}

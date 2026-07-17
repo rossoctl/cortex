@@ -4,14 +4,17 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +27,7 @@ import (
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
 	authtls "github.com/kagenti/kagenti-extensions/authbridge/authlib/tls"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
 )
 
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes
@@ -38,6 +42,11 @@ const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer
 // gaps should emit SSE heartbeats — it's what comment lines in SSE
 // are for.
 const streamReadIdleTimeout = 5 * time.Minute
+
+// upstreamVerifyTimeout bounds the pre-forge HEAD reachability/cert probe in
+// bridgeServe. It applies to that probe only — never to the relay, which must
+// stay unbounded so streaming responses aren't cut off.
+const upstreamVerifyTimeout = 10 * time.Second
 
 // Server is an HTTP forward proxy that performs token exchange on outbound requests.
 //
@@ -58,6 +67,8 @@ type Server struct {
 	// See authlib/config/config.go ListenerConfig.SkipHosts for
 	// motivation.
 	SkipHosts *skiphost.Matcher
+
+	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -193,7 +204,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 		return
 	}
+	s.serveOutbound(w, r, false)
+}
 
+// serveOutbound runs the outbound pipeline for one decrypted/plaintext request
+// and re-originates it. isBridge=true marks requests produced by TLS bridging:
+// they are origin-form (the caller sets r.URL.Scheme/Host) and must re-originate
+// via the dedicated upstream client, never the mesh-mTLS s.Client.
+func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge bool) {
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -275,6 +293,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if sid == "" {
 			sid = session.DefaultSessionID
 		}
+		// Pin this session so the paired response event records into the
+		// same bucket. Without it, recordOutboundResponseEvent re-resolves
+		// ActiveSession() at response time, which interleaving traffic (a
+		// health probe under "default") can flip mid-stream — mis-filing a
+		// streaming inference response away from its request's session.
+		pctx.OutboundSessionID = sid
 		// Snapshot-copy the protocol extension so the request event
 		// doesn't see response-phase mutations on the same MCP/Inference
 		// struct (e.g. token counts assigned in OnResponse).
@@ -290,16 +314,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
 		}
-		// Record whenever ANY protocol-or-plugin context is present —
-		// MCP/Inference (parser-emitted), Invocations (gate plugins like
-		// jwt-validation/token-exchange), or plugin-public Plugins
-		// entries. Earlier the gate was just MCP||Inference; widening
-		// it ensures auth-only outbound traffic and pure observability
-		// events show up in abctl. Don't narrow this back without
-		// understanding why each clause is necessary.
-		if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
-			s.Sessions.Append(sid, ev)
-		}
+		// Record EVERY message that reaches the pipeline — even when no
+		// plugin acted and no parser matched (Invocations/MCP/Inference all
+		// nil). The session API is an observability surface; a request the
+		// pipeline saw but no plugin touched is still a network message the
+		// operator wants to see (it carries Host, and the paired response
+		// carries StatusCode). skip_hosts traffic never reaches here (the
+		// !skipped guard above), so it stays suppressed by design.
+		s.Sessions.Append(sid, ev)
 	}
 
 	newAuth := pctx.Headers.Get("Authorization")
@@ -331,7 +353,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
 
-	resp, err := s.Client.Do(r)
+	client := s.Client
+	if isBridge && s.TLSBridge != nil {
+		client = s.TLSBridge.Upstream
+	}
+	resp, err := client.Do(r)
 	if err != nil {
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 		return
@@ -354,13 +380,37 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// declares WritesBody (mutating a body we've already started
 		// forwarding is incompatible with streaming) — fall back to
 		// buffered with a warning log instead.
-		if isEventStream(resp.Header.Get("Content-Type")) &&
-			s.OutboundPipeline.HasStreamingResponders() &&
-			resp.Body != nil {
+		if isEventStream(resp.Header.Get("Content-Type")) && resp.Body != nil {
 			if s.OutboundPipeline.WritesBody() {
+				// A body mutator needs the whole body to rewrite it, so it
+				// can't stream — fall back to the buffered path with a warning.
 				slog.Warn("forward-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", r.Host)
-			} else {
+			} else if s.OutboundPipeline.HasStreamingResponders() {
+				// Streaming-aware plugins (inference-parser, a2a-parser) parse
+				// each SSE frame; handleStreamingResponse re-frames via sseframe.
 				s.handleStreamingResponse(w, r, resp, pctx)
+				return
+			} else {
+				// No streaming responder: relay the SSE stream byte-for-byte
+				// with per-write flushing. Re-framing (handleStreamingResponse)
+				// would drop the event:/id:/retry: lines that generic SSE
+				// clients (e.g. an MCP Streamable HTTP client) depend on. Fixes #642.
+				//
+				// A plugin that declares ReadsBody (but not WritesBody, and is
+				// not a StreamingResponder) also lands here, and its OnResponse
+				// runs against an empty pctx.ResponseBody: streamPassthrough
+				// forwards the stream without buffering it. We deliberately don't
+				// buffer to satisfy such a plugin — that would reintroduce the
+				// #642 timeout on a live stream. A plugin that must inspect a
+				// streamed body should implement StreamingResponder. Warn
+				// (mirroring the WritesBody fallback above) so the
+				// misconfiguration surfaces instead of the plugin silently seeing
+				// no body. WritesBody is already false in this branch, so
+				// NeedsBody() here implies ReadsBody.
+				if s.OutboundPipeline.NeedsBody() {
+					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
+				}
+				s.streamPassthrough(w, r, resp, pctx)
 				return
 			}
 		}
@@ -426,6 +476,50 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// bridgeServe attempts to bridge: verify the upstream origin first (reversibility),
+// then forge a leaf + terminate the agent TLS + run the UNCHANGED pipeline via
+// serveOutbound. authority is host:port (used to dial+verify upstream and to set
+// r.URL.Host); host is the skip/log key. Returns true if it consumed the connection
+// (success OR an unrecoverable post-forge failure that was logged); false to fall
+// back to a plain tunnel — so no working call is ever broken.
+func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
+	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
+	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
+	//    verified), which is all we need. Only a transport/TLS error fails here. The
+	//    verify is bounded by its own context timeout so a slow/stalled origin can't
+	//    pin the bridging goroutine — the timeout is on this probe ONLY, not on the
+	//    relay (which must stay unbounded for streaming responses).
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false
+	}
+	resp, err := s.TLSBridge.Upstream.Do(req)
+	if err != nil {
+		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
+	}
+	_ = resp.Body.Close()
+
+	// 2) Forge + terminate downstream.
+	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
+	if err != nil {
+		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
+		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
+		return true // conn is dead post-forge; nothing left to tunnel
+	}
+
+	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
+	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Scheme = "https"
+		r.URL.Host = authority // host:port — preserves non-443 origins
+		s.serveOutbound(w, r, true)
+	}))
+	return true
+}
+
 // recordOutboundResponseEvent emits the SessionResponse event for a
 // completed outbound response. Extracted from handleRequest so the
 // streaming path can call it once at end-of-stream and the buffered
@@ -435,7 +529,14 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.Sessions.ActiveSession()
+	// Prefer the session pinned when the request event was recorded so the
+	// response lands in the same bucket. Fall back to ActiveSession() only
+	// when nothing was pinned (defensive — a response-only path), then to
+	// the default bucket. See Context.OutboundSessionID.
+	sid := pctx.OutboundSessionID
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
@@ -454,11 +555,10 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Error:       pipeline.DeriveError(pctx),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
-	// Same widened gate as the request side — see the request-phase
-	// comment for why each clause matters.
-	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
-		s.Sessions.Append(sid, ev)
-	}
+	// Always record — see the request-phase comment. This is what surfaces
+	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
+	// + Error even with empty invocations.
+	s.Sessions.Append(sid, ev)
 }
 
 // isEventStream reports whether a Content-Type header value names the
@@ -572,6 +672,84 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		}
 		flusher.Flush()
 		bytesWritten += len(frame)
+	}
+}
+
+// streamPassthrough forwards a text/event-stream response to the downstream
+// client byte-for-byte with per-write flushing. It is the streaming path when
+// no StreamingResponder plugin is configured (a plain proxy pipeline). Unlike
+// handleStreamingResponse it does NOT parse or re-frame the stream through
+// sseframe — it relays the exact upstream bytes so that event:, id:, retry:,
+// and comment lines survive, which generic SSE consumers such as an MCP
+// Streamable HTTP client require. Without this path such a response fell
+// through to an unflushed io.Copy and never reached the client until the
+// upstream closed the connection (issue #642).
+//
+// Unlike handleStreamingResponse, the response-phase pipeline (RunResponse) IS
+// run before the first byte. That is safe only because this path is reached
+// exclusively when no StreamingResponder is configured, so RunResponse cannot
+// double-dispatch a plugin that also handles OnResponseFrame. Running it lets
+// header/status-based response gates fire on streamed responses too — e.g.
+// opa's response-phase deny (status + headers) and litellm-budgettrack's cost
+// accounting (a response header) — and a deny is honored before any byte is
+// written. The plugins reachable here do not read pctx.ResponseBody in
+// OnResponse, so leaving the body unbuffered is fine; body-level response
+// inspection on a stream requires implementing StreamingResponder.
+func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// No incremental delivery possible on this ResponseWriter — buffer.
+		// http.Flusher is implemented by net/http's default writer; this is a
+		// defensive guard for test recorders and exotic wrappers.
+		slog.Warn("forward-proxy: ResponseWriter does not support flushing — falling back to buffered for streaming response", "host", r.Host)
+		s.streamFallbackBuffered(w, r, resp, pctx)
+		return
+	}
+
+	// Run the response-phase pipeline before the first byte so header/status
+	// gates still fire on a streamed response and a deny short-circuits before
+	// anything is written. streamFallbackBuffered runs its own RunResponse, so
+	// this is done only on the flushing path to avoid double-dispatch.
+	if respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx); respAction.Type == pipeline.Reject {
+		httpx.WriteRejection(w, respAction)
+		return
+	}
+
+	// Record the response event on every exit path (normal EOF, upstream read
+	// error, downstream write error) so a SessionResponse row still lands.
+	defer s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+
+	// Forward headers + status before the first byte. Drop Content-Length since
+	// we relay an open-ended chunked stream.
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	flusher.Flush()
+
+	// Copy raw chunks and flush each so intermittent SSE events reach the client
+	// immediately. idleReader bounds a wedged upstream; total size stays
+	// unbounded so long-lived streams aren't cut off.
+	body := idleReader(resp.Body, streamReadIdleTimeout)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				slog.Debug("forward-proxy: streaming write error", "host", r.Host, "error", writeErr)
+				return
+			}
+			flusher.Flush()
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", readErr)
+			}
+			return
+		}
 	}
 }
 
@@ -818,6 +996,28 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.recordTunnelOpened(pctx)
 	}
 
+	if s.TLSBridge != nil {
+		pc := &peekedConn{Conn: clientConn, r: bufio.NewReaderSize(clientConn, sniffBufSize)}
+		clientConn = pc // replay peeked bytes into whichever path runs
+		first, _ := pc.Peek(5)
+		authority := r.Host // CONNECT target is already host:port
+		key := hostOnly(r.Host)
+		if !s.TLSBridge.Skip.Contains(key) {
+			if v, _ := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first); v == tlsbridge.Terminate {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream
+				if s.bridgeServe(clientConn, authority, key) {
+					return
+				}
+				// fell open → re-dial for the tunnel
+				if up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout); derr == nil {
+					tunnel(clientConn, up2)
+					_ = up2.Close()
+				}
+				return
+			}
+		}
+	}
+
 	// Bidirectional copy until either side closes.
 	tunnel(clientConn, upstream)
 }
@@ -830,7 +1030,23 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // boundaries the upstream produced. Returns true when every byte
 // was written; false on any write error so the caller can stop
 // forwarding without re-checking each Write.
+//
+// The sseframe reader drops the SSE `event:` field (it surfaces only
+// data payloads), which is correct for data-only streams (MCP/A2A
+// JSON-RPC, OpenAI chat chunks). But Anthropic's Messages streaming
+// REQUIRES a typed `event:` line before each `data:` — without it the
+// Anthropic client can't finalize the stream and falls back to a
+// non-streaming retry, doubling the upstream call. Reconstruct the
+// `event:` line from the payload's top-level "type" (which, for an
+// Anthropic stream event, is exactly the SSE event name). Frames
+// without a top-level string "type" get no event line, preserving the
+// data-only shape the other protocols expect.
 func writeSSEFrame(w io.Writer, frame []byte) bool {
+	if ev := sseEventName(frame); ev != "" {
+		if _, err := io.WriteString(w, "event: "+ev+"\n"); err != nil {
+			return false
+		}
+	}
 	for len(frame) > 0 {
 		nl := bytes.IndexByte(frame, '\n')
 		var line []byte
@@ -855,6 +1071,44 @@ func writeSSEFrame(w io.Writer, frame []byte) bool {
 		return false
 	}
 	return true
+}
+
+// sseEventName returns the SSE `event:` name to emit for an SSE data
+// payload, or "" when none should be emitted. It maps a frame to one of
+// the known Anthropic Messages stream events via the payload's top-level
+// JSON "type"; reconstructing that `event:` line keeps the relayed stream
+// byte-faithful Anthropic SSE (the sseframe reader drops it).
+//
+// Two deliberate constraints:
+//   - Fast path: skip the JSON parse entirely for frames that cannot carry
+//     a top-level "type" (data-only JSON-RPC / OpenAI chat chunks with
+//     "object" / "[DONE]"), so high-rate token streams stay allocation-free
+//     on the proxy's hot data path.
+//   - Allowlist: emit only the fixed set of Anthropic stream event names.
+//     The "type" comes from an upstream the bridge does not trust, so
+//     echoing it verbatim would let a crafted value inject SSE fields (a
+//     CRLF in "type") or steer the client's event dispatch with an
+//     arbitrary name. Exact-matching a constant set makes both impossible
+//     and scopes reconstruction to Anthropic — a future data-only protocol
+//     that happens to carry a top-level "type" (e.g. the OpenAI Responses
+//     API) is left untouched.
+func sseEventName(frame []byte) string {
+	if !bytes.Contains(frame, []byte(`"type"`)) {
+		return ""
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(frame, &probe); err != nil {
+		return ""
+	}
+	switch probe.Type {
+	case "message_start", "content_block_start", "content_block_delta",
+		"content_block_stop", "message_delta", "message_stop", "ping", "error":
+		return probe.Type
+	default:
+		return ""
+	}
 }
 
 // idleReader wraps r so each Read enforces an idle deadline. The
@@ -908,7 +1162,6 @@ func (i *idleReadCloser) closeIdempotent() {
 	i.closeOnce.Do(func() { _ = i.rc.Close() })
 }
 
-
 // enableKeepalive turns on TCP keepalive with a 30s probe interval on
 // the underlying *net.TCPConn, if conn unwraps to one. No-op on other
 // connection types (notably *tls.Conn, which doesn't apply on the
@@ -920,4 +1173,22 @@ func enableKeepalive(conn net.Conn) {
 	}
 	_ = tcp.SetKeepAlive(true)
 	_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+}
+
+// hostOnly strips the port from an authority ("h:443" → "h"); returns input if no port.
+func hostOnly(authority string) string {
+	if h, _, err := net.SplitHostPort(authority); err == nil {
+		return h
+	}
+	return authority
+}
+
+// portOf returns the port from an authority, defaulting to 443.
+func portOf(authority string) int {
+	if _, p, err := net.SplitHostPort(authority); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return 443
 }

@@ -12,13 +12,13 @@ The [`cmd/authbridge/`](./cmd/authbridge/) directory contains a unified binary t
 |-------|----------|
 | `authbridge` | proxy-sidecar combined: authbridge-proxy binary + bundled spiffe-helper |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper |
-| `authbridge-lite` | proxy-sidecar shape, auth-only plugins (no parsers) |
+| `authbridge-lite` | `authbridge-proxy` built with `exclude_plugin_*` tags — auth-only (jwt-validation + token-exchange; OPA + parsers dropped). A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
 | `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-| `lite` | `authbridge-lite` | Same shape as proxy-sidecar with auth-only plugins (no parsers) | For size-constrained deployments that don't need protocol-aware session events |
+| `lite` | `authbridge-lite` | The `authbridge-proxy` binary built with `exclude_plugin_*` tags (auth-only: jwt-validation + token-exchange) | For size-constrained deployments that don't need protocol-aware session events |
 
 The kagenti-operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `kagenti.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See kagenti-operator#361.
 
@@ -383,12 +383,72 @@ python keycloak_sync.py --config routes.yaml --agent-client "spiffe://..." --yes
 
 This creates target clients, audience scopes, and assigns scopes to the agent.
 
+## Build-tag plugin selection
+
+Downstream distributions and custom deployments can exclude specific
+plugins at build time using Go build tags. The default build (no tags)
+includes every plugin — existing Dockerfiles, CI, and Makefiles keep
+working with zero changes.
+
+### Available tags
+
+| Tag | Plugin excluded | Effect |
+|-----|----------------|--------|
+| `exclude_plugin_ibac` | IBAC (Intent-Based Access Control) | Removes the LLM-judge plugin and its runtime dependencies |
+
+### Usage
+
+**Go build:**
+
+```bash
+# Default — all plugins included (same as today)
+go build ./cmd/authbridge-proxy
+
+# Exclude IBAC
+go build -tags exclude_plugin_ibac ./cmd/authbridge-proxy
+```
+
+**Docker build:**
+
+```bash
+# Default — all plugins
+docker build -f cmd/authbridge-proxy/Dockerfile .
+
+# Exclude IBAC
+docker build --build-arg GO_BUILD_TAGS=exclude_plugin_ibac \
+  -f cmd/authbridge-proxy/Dockerfile .
+```
+
+Multiple tags can be combined with commas: `-tags "exclude_plugin_ibac,exclude_plugin_foo"`.
+
+### Adding build tags to a new plugin
+
+To make a plugin excludable:
+
+1. Create a `plugins_<name>.go` file in each `cmd/` binary that imports the plugin:
+
+```go
+//go:build !exclude_plugin_<name>
+
+package main
+
+import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/<name>"
+```
+
+2. Remove the corresponding `_ "...plugins/<name>"` import from that binary's `main.go`.
+
+3. Add the tag to the table above.
+
+The build constraint `!exclude_plugin_<name>` means the file is included by
+default. Passing `-tags exclude_plugin_<name>` excludes it, which prevents the
+plugin package from being imported and compiled into the binary.
+
 ## Component Documentation
 
 - [authlib](authlib/README.md) — Shared auth building blocks (Go library)
 - [cmd/authbridge-proxy](cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- [cmd/authbridge-lite](cmd/authbridge-lite/) — auth-only proxy-sidecar binary (no parsers)
+- `authbridge-lite` image — `cmd/authbridge-proxy` built with `exclude_plugin_*` tags (auth-only); a build variant, not a separate binary
 - [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](docs/) — framework architecture and plugin author references
 

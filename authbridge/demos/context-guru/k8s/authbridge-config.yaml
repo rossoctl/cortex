@@ -1,0 +1,51 @@
+# AuthBridge sidecar config for the context-guru demo.
+#
+# Outbound chain: inference-parser (parses the OpenAI /v1/chat/completions body)
+# -> context-guru (compacts the agent's growing tool-output context before it is
+# forwarded to the LLM). context-guru is the single outbound WritesBody plugin
+# (mutually exclusive with sparc) and requires a parser ahead of it.
+#
+# THREE MODES via the context-guru entry's `on_error`:
+#   enforce  (default) — compaction is applied to the outbound request.
+#   observe            — shadow: the engine runs and records what it WOULD save
+#                        (body-mutation session event + logs), but the request is
+#                        forwarded unchanged. Use to A/B the gain on live traffic.
+#   off                — kill-switch: the plugin is dropped entirely (baseline).
+mode: proxy-sidecar
+listener:
+  reverse_proxy_addr: ":8080"
+  forward_proxy_addr: ":8081"
+  reverse_proxy_backend: "http://localhost:8001"   # the agent (moved off :8080)
+pipeline:
+  inbound:
+    plugins: []                                    # no-auth demo; add jwt-validation for the full flow
+  outbound:
+    plugins:
+      - name: inference-parser
+      - name: context-guru
+        on_error: enforce                          # enforce | observe | off  (see header)
+        config:
+          # Only inference paths are compacted; everything else passes through.
+          paths: ["/v1/chat/completions", "/v1/completions", "/v1/messages"]
+          # Static cheap model for the LLM-backed extract:code component. OpenAI wire
+          # only (base_url + /v1/chat/completions). Key injected from a Secret via env.
+          model:
+            base_url: "${CG_MODEL_BASE}"
+            model: "${CG_MODEL_NAME}"
+            api_key: "${CG_MODEL_KEY}"
+          # `engine` is context-guru's native config, passed verbatim to config.LoadBytes.
+          engine:
+            # 2 deterministic reducers (dedup, collapse) + extract strategy=code.
+            pipeline: [dedup, extract, collapse]
+            components:
+              dedup:                               # drop byte-identical tool outputs
+                min_tokens: 40
+              extract:                             # LLM writes a sandboxed, deletion-only,
+                strategy: code                     # containment-proven projection of each
+                marker_mode: summary               # large tool output (v1: no restoration ->
+                model: { source: config }          # summary leaves a ⟪cg⟫ breadcrumb, no stash)
+                trigger: { min_output_tokens: 120 } # only project outputs at least this big
+              collapse:                            # gentle head/tail net for anything extract left
+                max_tokens: 300
+                head_lines: 12
+                tail_lines: 12

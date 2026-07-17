@@ -119,6 +119,18 @@ type Context struct {
 	Identity Identity     // nil before an auth plugin runs
 	Session  *SessionView // nil unless session tracking is enabled
 
+	// OutboundSessionID pins the session bucket resolved when the
+	// outbound REQUEST event was recorded, so the paired RESPONSE event
+	// lands in the same session. recordOutboundResponseEvent reuses it
+	// instead of re-resolving Store.ActiveSession() at response time:
+	// ActiveSession() returns the global "most-recently-updated session",
+	// which interleaving traffic (e.g. a health probe bucketed under
+	// "default") can flip between a streaming request and its response,
+	// mis-filing the response into the wrong session. Empty when no
+	// request event was recorded (skip_hosts, sessions disabled), in
+	// which case the response recorder falls back to ActiveSession().
+	OutboundSessionID string
+
 	// TLS is the connection state of the inbound TLS handshake when
 	// the request arrived over TLS, nil otherwise. Populated by the
 	// reverse-proxy listener; nil for plaintext callers (UI, curl,

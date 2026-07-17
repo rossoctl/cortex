@@ -1,0 +1,14 @@
+# Runtime credentials — copy aiac.env.TEMPLATE to aiac.env and fill in your values.
+aiac.env
+
+# LLM config with real endpoints/keys — copy llm_conf.yaml.TEMPLATE and fill in values.
+aiac_agent/config/llm_conf.yaml
+
+# Generated policy files — created at runtime by aiac_cli.py.
+config/
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/

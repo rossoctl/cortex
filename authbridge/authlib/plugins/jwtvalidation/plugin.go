@@ -100,7 +100,7 @@ type jwtValidationConfig struct {
 
 	// BypassPaths are URL path globs (see authlib/bypass) that skip
 	// validation entirely.
-	BypassPaths []string `json:"bypass_paths" description:"Path globs (path.Match) skipped without JWT validation. Defaults: /healthz /readyz /livez /.well-known/*."`
+	BypassPaths []string `json:"bypass_paths" description:"Path globs (path.Match) skipped without JWT validation. Defaults: /healthz /readyz /livez /metrics /.well-known/*."`
 
 	PlaceholderMode bool   `json:"placeholder_mode" default:"false" description:"After validating the inbound token, replace it with an opaque placeholder before forwarding to the agent; the real token is held in the shared store for the outbound path to resolve. Requires a shared store and token-exchange resolve_placeholders downstream."`
 	PlaceholderTTL  string `json:"placeholder_ttl" default:"1h" description:"How long the real token is retained for outbound resolution (Go duration, e.g. 30m). Default 1h."`

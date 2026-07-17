@@ -38,3 +38,17 @@ side-effect import. See
 for the contract and
 [`docs/plugin-tutorial.md`](../../docs/plugin-tutorial.md#step-6--out-of-tree-plugins)
 for the walkthrough.
+
+### Build-tag plugin exclusion
+
+Some plugins can be excluded at build time using Go build tags. Their
+side-effect import lives in a dedicated `plugins_<name>.go` file (in
+each `cmd/` binary) gated by `//go:build !exclude_plugin_<name>`.
+The default build (no tags) includes everything.
+
+| Tag | Plugin excluded |
+|-----|----------------|
+| `exclude_plugin_ibac` | `ibac` |
+
+See the [authbridge README](../../README.md#build-tag-plugin-selection)
+for usage examples and instructions for tagging additional plugins.

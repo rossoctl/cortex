@@ -137,6 +137,14 @@ type SessionEvent struct {
 	// and for events recorded before the TLS handshake completed.
 	// Populated by the listener layer; plugins do not write to it.
 	TLS *EventTLS
+
+	// Tunnel marks an opaque CONNECT / transparent-redirect tunnel-open: the
+	// bytes are not HTTP, so there's no protocol parse. Set only by
+	// recordTunnelOpened. Consumers (abctl) use it to fold the tunnel into the
+	// decrypted inner request a TLS bridge produces — an explicit producer
+	// signal rather than inferring "tunnel" from host/extension shape, which
+	// an ordinary unparsed request could otherwise mimic.
+	Tunnel bool
 }
 
 // EventTLS describes the TLS state of a connection that produced a
@@ -215,6 +223,7 @@ type sessionEventWire struct {
 	Host        string                     `json:"host,omitempty"`
 	DurationMs  int64                      `json:"durationMs,omitempty"`
 	TLS         *EventTLS                  `json:"tls,omitempty"`
+	Tunnel      bool                       `json:"tunnel,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -234,6 +243,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Host:        e.Host,
 		DurationMs:  e.Duration.Milliseconds(),
 		TLS:         e.TLS,
+		Tunnel:      e.Tunnel,
 	})
 }
 
@@ -261,6 +271,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Host:        w.Host,
 		Duration:    time.Duration(w.DurationMs) * time.Millisecond,
 		TLS:         w.TLS,
+		Tunnel:      w.Tunnel,
 	}
 	return nil
 }

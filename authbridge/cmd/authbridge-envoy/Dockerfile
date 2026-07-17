@@ -10,7 +10,10 @@
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to
 # shave ~30% off the binary. Go's runtime keeps `pclntab` separately,
 # so panic stack traces still show function names.
-FROM golang:1.25-alpine@sha256:a2ea69f8f07fe886989c61e9da297f932ddf50b42dad2f44d2664710c94dca37 AS builder
+# authlib embeds github.com/kagenti/context-guru (a published module, fetched via
+# GOPROXY). It is pure-Go (skeleton cgo is behind the cg_skeleton tag), so
+# CGO_ENABLED=0 stays correct.
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
 
 RUN apk add --no-cache git
 
@@ -19,11 +22,12 @@ WORKDIR /app
 COPY authlib/ authlib/
 COPY cmd/authbridge-envoy/ cmd/authbridge-envoy/
 
+ARG GO_BUILD_TAGS=""
 ENV GOWORK=off
-RUN cd cmd/authbridge-envoy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /authbridge-envoy .
+RUN cd cmd/authbridge-envoy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-envoy .
 
 # Stage 2: Get Envoy binary. Already stripped upstream; nothing to do.
-FROM docker.io/envoyproxy/envoy:v1.37.1 AS envoy-source
+FROM docker.io/envoyproxy/envoy:v1.37.1@sha256:29496a88fba9c4c9cdef4afe8fec70f536c5ba111b1c2bddbc5436b091ceca33 AS envoy-source
 
 # Stage 3: Runtime — UBI9-micro (glibc-compatible, ~24 MB, has bash)
 FROM registry.access.redhat.com/ubi9/ubi-micro@sha256:2173487b3b72b1a7b11edc908e9bbf1726f9df46a4f78fd6d19a2bab0a701f38

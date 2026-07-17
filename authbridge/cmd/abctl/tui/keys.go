@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
@@ -144,12 +145,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "s":
-		// Toggle skip-row visibility. Only meaningful while the events
-		// pane is active, but accepting the key on any pane keeps the
-		// keybinding simple and lets operators "set their preference"
-		// before drilling into a session. rebuildEventsTable is a no-op
-		// when no session is selected.
-		m.showSkips = !m.showSkips
+		// Toggle hiding of passthrough / skip-only messages. Default is
+		// off (show everything); turning it on focuses the timeline on
+		// plugin activity. Only meaningful while the events pane is
+		// active, but accepting the key on any pane keeps the keybinding
+		// simple and lets operators set their preference before drilling
+		// into a session. rebuildEventsTable is a no-op when no session
+		// is selected.
+		m.hideInactive = !m.hideInactive
 		m.rebuildEventsTable()
 		return nil
 
@@ -203,11 +206,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
 		case paneEvents:
-			ev := m.selectedEvent()
-			if ev == nil {
+			er, ok := m.selectedEventRow()
+			if !ok {
 				return nil
 			}
-			m.showDetail(ev, m.selectedInvocation())
+			m.showDetail(er)
 			m.pane = paneDetail
 			return nil
 		case panePipeline:
@@ -269,6 +272,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "G":
 		m.goBottom()
 		return nil
+
+	case "pgup", "pgdown", "pgdn", "b", "f":
+		// Page the active pane. Sessions can hold up to session.max_events
+		// (500) rows, so one-row-at-a-time nav isn't enough. b/f (less/vim
+		// style) work on any keyboard; PgUp/PgDn map to fn+↑/fn+↓ on Mac
+		// laptops. Explicit here (rather than the table component's own
+		// binding) so all of them share a one-row overlap for context and the
+		// detail viewport pages too.
+		return m.pageActivePane(msg)
 
 	case "P":
 		// Open the registered-plugin catalog. Available from any
@@ -385,6 +397,42 @@ func (m *model) goBottom() {
 	}
 }
 
+// pageActivePane moves the active pane by one page. Tables move the cursor by
+// (visible height − 1) rows — one row of overlap keeps context across the
+// jump — clamped to the row range by table.MoveUp/MoveDown. The detail/
+// plugin-detail viewport delegates to its built-in page scrolling. Picker
+// panes (namespaces/pods) never reach here; they return early in handleKey
+// and page via their own component's binding.
+func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
+	up := msg.String() == "pgup" || msg.String() == "b"
+	page := func(t *table.Model) {
+		n := t.Height() - 1
+		if n < 1 {
+			n = 1
+		}
+		if up {
+			t.MoveUp(n)
+		} else {
+			t.MoveDown(n)
+		}
+	}
+	switch m.pane {
+	case paneEvents:
+		page(&m.eventsTbl)
+	case paneSessions:
+		page(&m.sessionsTbl)
+	case panePipeline:
+		page(&m.pipelineTbl)
+	case paneCatalog:
+		page(&m.catalogTbl)
+	case paneDetail, panePluginDetail:
+		var cmd tea.Cmd
+		m.detailVp, cmd = m.detailVp.Update(msg)
+		return cmd
+	}
+	return nil
+}
+
 // setFlash shows a transient message in the footer for flashDuration.
 func (m *model) setFlash(s string) {
 	m.flash = s
@@ -408,13 +456,17 @@ func (m *model) helpView() string {
 		}
 		return "[↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [p] pause  [q] quit"
 	case paneEvents:
-		base := "[↑↓] nav  [↵] detail  [esc] back  [/] filter  [s] skips  [p] pause  [q] quit"
-		// Surface the hidden-skip count so a sparse timeline doesn't
-		// look like data loss. Only annotate when there's something
-		// to say (skips off AND at least one row was hidden).
-		if !m.showSkips && m.hiddenSkips > 0 {
-			base = fmt.Sprintf("%s  ·  %d skip%s hidden",
-				base, m.hiddenSkips, plural(m.hiddenSkips))
+		skipHint := "[s] hide passthru/skip"
+		if m.hideInactive {
+			skipHint = "[s] show all"
+		}
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [esc] back  [/] filter  " + skipHint + "  [p] pause  [q] quit"
+		// Surface the hidden-message count so a filtered timeline doesn't
+		// look like data loss. Only annotate when hiding is on AND at
+		// least one message was hidden.
+		if m.hideInactive && m.hiddenInactive > 0 {
+			base = fmt.Sprintf("%s  ·  %d hidden",
+				base, m.hiddenInactive)
 		}
 		return base
 	case paneDetail:
@@ -476,7 +528,7 @@ func (m *model) layout() {
 	// Re-wrap the detail viewport to the new width so long JSON values
 	// continue to fit after a terminal resize.
 	if m.detailEvent != nil {
-		m.showDetail(m.detailEvent, m.detailInvocation)
+		m.showDetail(m.detailRow)
 	}
 }
 

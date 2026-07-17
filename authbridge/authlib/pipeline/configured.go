@@ -28,6 +28,13 @@ type RawConfigProvider interface {
 // implements each of those four interfaces explicitly and forwards
 // conditionally; see the methods below.
 //
+// StreamingResponder is handled differently — see configuredStreamingPlugin
+// and WrapConfigured. It must NOT be forwarded unconditionally here, because
+// listeners type-assert StreamingResponder to choose the streaming-vs-buffered
+// response path (Pipeline.HasStreamingResponders); making every wrapped plugin
+// a no-op StreamingResponder would silently flip that path selection for
+// non-streaming pipelines.
+//
 // Side effect of unconditional forwarding: every wrapped (i.e., every
 // Configurable) plugin satisfies all four optional interfaces regardless
 // of what the inner plugin actually implements. Callers that distinguish
@@ -39,6 +46,29 @@ type RawConfigProvider interface {
 type configuredPlugin struct {
 	Plugin
 	raw json.RawMessage
+}
+
+// configuredStreamingPlugin is the StreamingResponder-preserving variant of
+// configuredPlugin, returned by WrapConfigured only when the wrapped plugin
+// implements StreamingResponder. The base wrapper embeds the Plugin interface,
+// which does not promote OnResponseFrame — so without this a Configurable +
+// StreamingResponder plugin (e.g. mcp-parser, which has Configure) would lose
+// its response-frame dispatch once wrapped: RunResponseFrame type-asserts
+// StreamingResponder, fails on the bare wrapper, and skips the plugin, leaving
+// MCP/SSE responses unparsed.
+//
+// Using a distinct type (instead of an unconditional no-op OnResponseFrame on
+// configuredPlugin) keeps HasStreamingResponders exact: only plugins that
+// genuinely stream are reported as streaming responders.
+type configuredStreamingPlugin struct {
+	*configuredPlugin
+}
+
+// OnResponseFrame forwards to the wrapped plugin's StreamingResponder
+// implementation. WrapConfigured constructs this wrapper only when the inner
+// plugin implements StreamingResponder, so the assertion always holds.
+func (c *configuredStreamingPlugin) OnResponseFrame(ctx context.Context, pctx *Context, frame []byte, last bool) Action {
+	return c.Plugin.(StreamingResponder).OnResponseFrame(ctx, pctx, frame, last)
 }
 
 // WrapConfigured returns a Plugin whose dynamic type retains the raw
@@ -55,7 +85,14 @@ type configuredPlugin struct {
 // and on the rare hot-reload path.
 func WrapConfigured(p Plugin, raw json.RawMessage) Plugin {
 	cp := append(json.RawMessage(nil), raw...)
-	return &configuredPlugin{Plugin: p, raw: cp}
+	base := &configuredPlugin{Plugin: p, raw: cp}
+	// Preserve StreamingResponder: the embedded Plugin interface does not
+	// promote OnResponseFrame, so a Configurable + StreamingResponder plugin
+	// (e.g. mcp-parser) would otherwise lose response-frame dispatch.
+	if _, ok := p.(StreamingResponder); ok {
+		return &configuredStreamingPlugin{configuredPlugin: base}
+	}
+	return base
 }
 
 // RawConfig returns a defensive copy of the raw config bytes the

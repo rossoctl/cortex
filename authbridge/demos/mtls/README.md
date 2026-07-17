@@ -251,11 +251,12 @@ cleanly for envoy-sidecar too. The namespace-CM patch this demo uses
 is a lighter-weight knob that avoids requiring a CR for every demo
 pod.
 
-### Demo pod manifests need `kagenti.io/type: agent`
+### Demo pod enrollment via AgentRuntime
 
 The kagenti-operator's mutating-webhook `objectSelector` requires
-`kagenti.io/type` in `[agent, tool]`. The demo Pod templates now set
-this label and an explicit `runAsUser: 100` on the `demo-app`
-container (the `curlimages/curl:latest` image runs as the
+`kagenti.io/type` in `[agent, tool]`. The demo manifests include
+AgentRuntime CRs that enroll each workload — the operator applies
+the label automatically. The `demo-app` containers set an explicit
+`runAsUser: 100` (the `curlimages/curl:latest` image runs as the
 non-numeric `curl_user`, which trips the kubelet's `runAsNonRoot`
 check without an explicit numeric UID).

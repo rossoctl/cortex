@@ -37,6 +37,9 @@ Thumbs.db
 *.bak
 *.orig
 
+# Local scratch / working notes (never committed)
+.sketchpad/
+
 # venv
 venv
 .venv

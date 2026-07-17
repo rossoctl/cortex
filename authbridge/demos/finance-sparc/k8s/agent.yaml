@@ -1,7 +1,6 @@
 # finance-sparc demo agent — operator-injected, kagenti-UI-discoverable.
 #
 # Required labels (same contract as demos/ibac/k8s/agent.yaml):
-#   kagenti.io/type: agent       — UI lists agents by this label
 #   kagenti.io/inject: enabled   — operator's webhook injects authbridge
 #   kagenti.io/spire: disabled   — demo doesn't depend on SPIRE identity
 #   protocol.kagenti.io/a2a: ""  — declares A2A for the chat flow
@@ -25,7 +24,6 @@ metadata:
   labels:
     app.kubernetes.io/name: finance-agent
     app.kubernetes.io/part-of: finance-sparc-demo
-    kagenti.io/type: agent
     protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
@@ -37,7 +35,6 @@ spec:
       labels:
         app.kubernetes.io/name: finance-agent
         app.kubernetes.io/part-of: finance-sparc-demo
-        kagenti.io/type: agent
         kagenti.io/inject: enabled
         kagenti.io/spire: disabled
         protocol.kagenti.io/a2a: ""
@@ -106,8 +103,8 @@ spec:
   type: ClusterIP
 ---
 # AgentRuntime triggers operator-managed Keycloak client registration
-# (the Secret the authbridge sidecar mounts at /shared/). The operator
-# auto-creates the AgentCard CR for the kagenti.io/type=agent Deployment.
+# (the Secret the authbridge sidecar mounts at /shared/) and auto-creation
+# of an AgentCard CR for the agent deployment.
 apiVersion: agent.kagenti.dev/v1alpha1
 kind: AgentRuntime
 metadata:

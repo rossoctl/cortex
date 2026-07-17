@@ -23,13 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6
         with:
           go-version-file: authbridge/authlib/go.mod
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
 
@@ -48,9 +48,9 @@ jobs:
       run:
         working-directory: authbridge/authlib
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6
         with:
           go-version-file: authbridge/authlib/go.mod
           cache-dependency-path: authbridge/authlib/go.sum
@@ -76,7 +76,6 @@ jobs:
         binary:
           - authbridge-proxy
           - authbridge-envoy
-          - authbridge-lite
     defaults:
       run:
         working-directory: authbridge/cmd/${{ matrix.binary }}
@@ -86,9 +85,9 @@ jobs:
       # all sibling modules in and slow down CI).
       GOWORK: "off"
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16  # v6
         with:
           go-version-file: authbridge/cmd/${{ matrix.binary }}/go.mod
           cache-dependency-path: authbridge/cmd/${{ matrix.binary }}/go.sum
@@ -101,6 +100,18 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      # The authbridge-lite image is this same authbridge-proxy binary built
+      # with exclude_plugin_* tags (only jwt-validation + token-exchange).
+      # Build AND test that tag set on every PR — build.yaml only exercises
+      # it on tag/main pushes, and this guards against lite-only regressions.
+      - name: Build + test lite variant (exclude_plugin_* tags)
+        if: matrix.binary == 'authbridge-proxy'
+        run: |
+          TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser"
+          TAGS="$TAGS,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker"
+          go build -v -tags "$TAGS" ./...
+          go test -v -race -cover -tags "$TAGS" ./...
+
       - name: Test
         run: go test -v -race -cover ./...
 
@@ -109,9 +120,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
         with:
           python-version: '3.12'
 

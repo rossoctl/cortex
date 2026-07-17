@@ -152,6 +152,10 @@ type peekedConn struct {
 
 func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
+// Peek returns the next n buffered bytes without consuming them. Used by the
+// TLS-bridge classify step on the CONNECT and transparent paths.
+func (c *peekedConn) Peek(n int) ([]byte, error) { return c.r.Peek(n) }
+
 // readOnlyConn adapts a byte buffer to net.Conn for crypto/tls's server-side
 // parser. Reads come from the buffer; writes are discarded (the throwaway
 // handshake never needs to send), and the parser aborts via errSniffDone before

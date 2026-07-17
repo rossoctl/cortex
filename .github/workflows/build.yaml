@@ -44,14 +44,17 @@ jobs:
             context: ./authbridge
             dockerfile: cmd/authbridge-proxy/Dockerfile
 
-          # AuthBridge proxy-sidecar lite combined image —
-          # authbridge-lite (auth-only plugins, parsers dropped for
-          # binary size) + spiffe-helper. Same listener layout as the
-          # full proxy image; not yet referenced by the operator's
-          # default config.
+          # AuthBridge proxy-sidecar LITE image — the SAME authbridge-proxy
+          # binary + Dockerfile, built with exclude_plugin_* tags so only
+          # jwt-validation + token-exchange compile in (drops the OPA SDK
+          # and the parsers, roughly halving the binary). A build variant,
+          # not a separate binary. Same listener layout as the full proxy
+          # image; not yet referenced by the operator's default config.
           - name: authbridge-lite
             context: ./authbridge
-            dockerfile: cmd/authbridge-lite/Dockerfile
+            dockerfile: cmd/authbridge-proxy/Dockerfile
+            build_args: |
+              GO_BUILD_TAGS=exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker
 
           # AuthBridge proxy-sidecar CPEX image — authbridge-proxy built
           # with -tags cpex (links libcpex_ffi.a from a pinned CPEX
@@ -72,11 +75,11 @@ jobs:
     steps:
       # 1. Checkout code
       - name: Checkout repository
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
 
       # 2. Set up QEMU for multi-arch builds
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4
 
       # 3. Set up Docker Buildx
       - name: Set up Docker Buildx
@@ -107,7 +110,7 @@ jobs:
       # 6. Extract Docker metadata
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
         with:
           images: ghcr.io/${{ github.repository }}/${{ matrix.image_config.name }}
           tags: |
@@ -143,6 +146,7 @@ jobs:
         with:
           context: ${{ matrix.image_config.context }}
           file: ${{ matrix.image_config.context }}/${{ matrix.image_config.dockerfile }}
+          build-args: ${{ matrix.image_config.build_args }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}

@@ -567,6 +567,57 @@ func TestRecordOutboundReject_SkipsWithoutInvocations(t *testing.T) {
 	}
 }
 
+// TestForwardProxy_RecordsMessageWithNoPluginActivity locks the Part A
+// behavior: a request/response that no plugin acted on (empty pipeline,
+// no parser match) is still recorded as two session events so abctl can
+// show every network message — not just the ones a plugin touched. The
+// response event carries the upstream status even though Invocations is
+// nil.
+func TestForwardProxy_RecordsMessageWithNoPluginActivity(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer backend.Close()
+
+	// Empty pipeline: zero plugins, so no Invocations are ever appended.
+	p, err := pipeline.New([]pipeline.Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", backend.URL+"/missing", nil)
+	proxyClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 2 {
+		t.Fatalf("expected 2 events (request + response) with no plugin activity, got %+v", v)
+	}
+	reqEv, respEv := v.Events[0], v.Events[1]
+	if reqEv.Phase != pipeline.SessionRequest || reqEv.Invocations != nil {
+		t.Errorf("request event = phase %v invocations %+v, want SessionRequest / nil", reqEv.Phase, reqEv.Invocations)
+	}
+	if respEv.Phase != pipeline.SessionResponse || respEv.StatusCode != http.StatusNotFound {
+		t.Errorf("response event = phase %v status %d, want SessionResponse / 404", respEv.Phase, respEv.StatusCode)
+	}
+	if respEv.Invocations != nil {
+		t.Errorf("response event invocations = %+v, want nil (no plugin acted)", respEv.Invocations)
+	}
+}
+
 // schemeCapturePlugin captures pctx.Scheme for the scheme-wiring
 // test below.
 type schemeCapturePlugin struct {

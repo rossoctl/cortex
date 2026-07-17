@@ -1,0 +1,2 @@
+* Members of the R&D can access both private and public github repositories
+* Other personnel can access public github repositories only

@@ -8,7 +8,32 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
 )
+
+// TestRecordTunnelOpened_SetsTunnelMarker locks the explicit producer marker:
+// a CONNECT / transparent-redirect tunnel-open is recorded with Tunnel=true so
+// consumers (abctl) fold it into the decrypted inner request without inferring
+// "tunnel" from host/extension shape.
+func TestRecordTunnelOpened_SetsTunnelMarker(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{Sessions: store}
+
+	s.recordTunnelOpened(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"})
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 1 {
+		t.Fatalf("expected 1 tunnel-open event, got %+v", v)
+	}
+	ev := v.Events[0]
+	if !ev.Tunnel {
+		t.Error("tunnel-open event must have Tunnel=true")
+	}
+	if ev.Direction != pipeline.Outbound || ev.Phase != pipeline.SessionRequest {
+		t.Errorf("tunnel-open = %v/%v, want Outbound/SessionRequest", ev.Direction, ev.Phase)
+	}
+}
 
 // HandleTransparentConn gates then blind-tunnels: with an allow-all pipeline it
 // must dial the recovered destination and copy bytes both ways, emitting no

@@ -118,9 +118,11 @@
 # but the cluster's networking stack uses legacy tables, our PREROUTING rules
 # have no effect — traffic bypasses Envoy's inbound listener entirely.
 #
-# This script auto-detects the correct backend by checking if iptables-legacy
-# is available and can manipulate the nat table in this network namespace.
-# Override with IPTABLES_CMD env var if needed.
+# This script auto-detects the correct backend by reading the kernel module
+# table (/proc/modules): the legacy nat path needs the `iptable_nat` module,
+# which is loaded on legacy clusters (Kind, kubeadm — kube-proxy uses it) and
+# ABSENT on nft-only platforms (OpenShift/ROSA expose only nf_tables +
+# nft_compat). Override with IPTABLES_CMD env var if needed.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -148,16 +150,26 @@ case "${MODE}" in
 esac
 
 # --- Auto-detect iptables backend ---
-# Prefer iptables-legacy for maximum compatibility with Kubernetes networking.
-# The nft backend sets rules in a different netfilter table that may not be
-# processed for PREROUTING when the cluster uses legacy iptables.
+# Select the backend that is actually FUNCTIONAL in this kernel, not merely
+# listable. A readability probe (`iptables-legacy -t nat -L`) mis-selects legacy
+# on nft-only nodes: the empty legacy nat table still lists fine, so legacy gets
+# chosen and our rules land in a table nothing consults (silent fail-open). A
+# write-probe is unreliable too — individual legacy ops succeed via nft_compat
+# even where the full nat pipeline later fails. Instead we check whether the
+# `iptable_nat` kernel module is loaded: present => legacy nat is in use, match
+# it (Kind, kubeadm); absent => nf_tables is the only working path (OpenShift/
+# ROSA, EKS-nft). /proc/modules is host-kernel-wide, readable from the pod netns,
+# timing-independent (unlike matching Istio's not-yet-installed rules), and not
+# foolable by nft_compat. Override with IPTABLES_CMD (the operator can set it
+# per-platform). PROC_MODULES is overridable for tests.
+PROC_MODULES="${PROC_MODULES:-/proc/modules}"
 detect_iptables_cmd() {
   if [ -n "${IPTABLES_CMD:-}" ]; then
     echo "${IPTABLES_CMD}"
     return
   fi
   if command -v iptables-legacy >/dev/null 2>&1 && \
-     iptables-legacy -t nat -L -n >/dev/null 2>&1; then
+     grep -q '^iptable_nat ' "${PROC_MODULES}" 2>/dev/null; then
     echo "iptables-legacy"
   else
     echo "iptables"
@@ -166,6 +178,24 @@ detect_iptables_cmd() {
 
 IPT=$(detect_iptables_cmd)
 echo "Using iptables command: ${IPT} ($(${IPT} --version 2>/dev/null || echo 'unknown version'))"
+
+# Fail loud if a jump rule we just installed is not actually present in the
+# chosen backend. `set -e` already aborts on hard programming errors; this also
+# catches the subtler case where a command returned 0 but the rule did not land
+# (e.g. rules written into a backend that is not the live datapath), so a
+# fail-closed traffic guard can never silently no-op. Usage:
+#   require_jump <cmd> <table> <parent-chain> <our-chain> [extra match tokens...]
+require_jump() {
+  _rj_cmd="$1"; _rj_tbl="$2"; _rj_parent="$3"; _rj_chain="$4"; shift 4
+  if ! ${_rj_cmd} -t "${_rj_tbl}" -C "${_rj_parent}" "$@" -j "${_rj_chain}" 2>/dev/null; then
+    echo "ERROR: ${_rj_cmd}: '${_rj_chain}' is not installed in ${_rj_tbl} ${_rj_parent}." >&2
+    echo "ERROR: traffic interception is NOT active — refusing to start with enforcement disabled." >&2
+    echo "ERROR: the selected iptables backend could not program rules. On nft-only or managed" >&2
+    echo "ERROR: platforms set IPTABLES_CMD=iptables and ensure NET_ADMIN/NET_RAW are granted" >&2
+    echo "ERROR: (and, on OpenShift, an SELinux context that permits nf_tables access)." >&2
+    exit 1
+  fi
+}
 
 PROXY_PORT="${PROXY_PORT:-15123}"
 INBOUND_PROXY_PORT="${INBOUND_PROXY_PORT:-15124}"
@@ -307,6 +337,7 @@ setup_enforce_redirect() {
   if ! ${IPT} -t nat -C OUTPUT -j "${REDIR_CHAIN}" 2>/dev/null; then
     ${IPT} -t nat -I OUTPUT 1 -j "${REDIR_CHAIN}"
   fi
+  require_jump "${IPT}" nat OUTPUT "${REDIR_CHAIN}"
 
   # --- IPv4: mangle DROP for non-TCP ---
   ${IPT} -t mangle -N "${NOTCP_CHAIN}" 2>/dev/null || true
@@ -332,6 +363,7 @@ setup_enforce_redirect() {
   if ! ${IPT} -t mangle -C OUTPUT -j "${NOTCP_CHAIN}" 2>/dev/null; then
     ${IPT} -t mangle -I OUTPUT 1 -j "${NOTCP_CHAIN}"
   fi
+  require_jump "${IPT}" mangle OUTPUT "${NOTCP_CHAIN}"
   echo "enforce-redirect: IPv4 egress capture configured"
 
   # --- IPv6 ---
@@ -357,6 +389,7 @@ setup_enforce_redirect() {
     if ! ${IP6T} -t nat -C OUTPUT -j "${REDIR_CHAIN}" 2>/dev/null; then
       ${IP6T} -t nat -I OUTPUT 1 -j "${REDIR_CHAIN}"
     fi
+    require_jump "${IP6T}" nat OUTPUT "${REDIR_CHAIN}"
 
     ${IP6T} -t mangle -N "${NOTCP_CHAIN}" 2>/dev/null || true
     ${IP6T} -t mangle -F "${NOTCP_CHAIN}"
@@ -377,6 +410,7 @@ setup_enforce_redirect() {
     if ! ${IP6T} -t mangle -C OUTPUT -j "${NOTCP_CHAIN}" 2>/dev/null; then
       ${IP6T} -t mangle -I OUTPUT 1 -j "${NOTCP_CHAIN}"
     fi
+    require_jump "${IP6T}" mangle OUTPUT "${NOTCP_CHAIN}"
     echo "enforce-redirect: IPv6 egress capture configured"
   else
     echo "enforce-redirect: ip6tables unavailable — skipping IPv6 egress capture"
@@ -483,6 +517,7 @@ ${IPT} -t nat -A PROXY_OUTPUT -p tcp -j REDIRECT --to-port "${PROXY_PORT}"
 if ! ${IPT} -t nat -C OUTPUT -p tcp -j PROXY_OUTPUT 2>/dev/null; then
   ${IPT} -t nat -I OUTPUT 1 -p tcp -j PROXY_OUTPUT
 fi
+require_jump "${IPT}" nat OUTPUT PROXY_OUTPUT -p tcp
 
 # --- Mangle rule: prevent Envoy→app loop through ISTIO_OUTPUT ---
 # After inbound JWT validation, Envoy (UID 1337) connects to the local app.
@@ -566,6 +601,7 @@ ${IPT} -t nat -A PROXY_INBOUND -p tcp -j REDIRECT --to-port "${INBOUND_PROXY_POR
 if ! ${IPT} -t nat -C PREROUTING -p tcp -j PROXY_INBOUND 2>/dev/null; then
   ${IPT} -t nat -I PREROUTING 1 -p tcp -j PROXY_INBOUND
 fi
+require_jump "${IPT}" nat PREROUTING PROXY_INBOUND -p tcp
 
 echo "Inbound iptables rules configured successfully"
 echo "Inbound traffic will be redirected to port ${INBOUND_PROXY_PORT}"

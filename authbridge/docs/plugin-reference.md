@@ -1083,6 +1083,59 @@ Plugins keep ownership of:
 
 The IBAC plugin (`authlib/plugins/ibac/judge.go`) is the in-tree reference; copy its shape when adding a new LLM-using plugin. For what IBAC actually does end-to-end (threat model, configuration, deny-reason vocabulary), see [`ibac-plugin.md`](ibac-plugin.md).
 
+## `static-inject`: static credential injection
+
+An outbound plugin (`authlib/plugins/staticinject`, registered name
+`static-inject`) that swaps a placeholder credential on the outbound
+`Authorization` header for a real static credential, so a
+model-influenced workload never holds the real secret. Unlike
+[Credential placeholder swap](#credential-placeholder-swap) below —
+which mints and resolves a per-request `abph_` handle for a real user
+token across two cooperating plugins — `static-inject` is a single
+self-contained plugin that injects one operator-provisioned static
+credential (an API key, a shared service credential) keyed by
+destination host or a fixed key. The two mechanisms solve different
+problems and do not interact.
+
+The workload authenticates outbound calls with an agreed-upon
+placeholder string; `static-inject` verifies that placeholder (if
+configured) and replaces it with the real credential resolved from
+either a secret-mounted file or an inline map (tests/dev only). The
+real credential is never present in the workload's own config or
+environment.
+
+### Config
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `source` | string | yes | — | `secret_dir` or `mappings`. |
+| `secret_dir` | string | when `source: secret_dir` | — | Directory containing one file per credential key; read via the same whitespace-trimmed `config.ReadCredentialFile` convention other plugins use for file-sourced values (see [File-sourced values](#file-sourced-values)). |
+| `mappings` | map[string]string | when `source: mappings` | — | Inline key→credential map. Tests/dev only — do not put real secrets in YAML. |
+| `key_by` | string | no | `host` | `host` (resolve by the outbound request's destination host) or `static` (always use `key`). |
+| `key` | string | when `key_by: static` | — | The single lookup key used when `key_by` is `static`. |
+| `placeholder` | string | no | — | When set, injection only proceeds if the inbound bearer equals this exact string. |
+
+### Fail-closed
+
+`static-inject` denies (`401`, `static-inject.<reason>`) and leaves the
+`Authorization` header unchanged whenever any step of the swap can't be
+completed cleanly:
+
+- missing or unparsable bearer token (`static-inject.missing-auth`);
+- `placeholder` is set and the inbound bearer doesn't match
+  (`static-inject.placeholder-mismatch`);
+- the resolved key has no credential in the configured source
+  (`static-inject.unresolved-key`);
+- the resolved value would be unsafe to place in a header — contains
+  `\r`, `\n`, or `\x00` — a CWE-113 header-splitting guard
+  (`static-inject.unsafe-value`);
+- the plugin was never successfully `Configure`d
+  (`static-inject.unconfigured`).
+
+There is no partial-injection path: a denied request never forwards
+the placeholder, and a successful swap only ever writes the fully
+resolved real credential.
+
 ## Credential placeholder swap
 
 An opt-in mode that keeps the **real** user token out of the agent. With
@@ -1140,8 +1193,8 @@ The handle→token store lives in memory and is shared only within a
 single process. The mode therefore works only where inbound mint and
 outbound resolve run in the **same** process:
 
-- the reverse+forward proxy sidecar (`authbridge-proxy` /
-  `authbridge-lite`);
+- the reverse+forward proxy sidecar (`authbridge-proxy`, and its
+  `authbridge-lite` image variant);
 - a **single-replica** extproc/extauthz (`authbridge-envoy`).
 
 Multi-replica (HA) or shared/scaled Istio ambient waypoint deployments
@@ -1175,3 +1228,7 @@ interface — a **current limitation**, tracked as a future enhancement.
 - `authbridge/authlib/llmclient/` — chat-completions helper for
   plugins that call an LLM (see "Plugins making outbound LLM calls"
   above).
+- `authbridge/authlib/plugins/staticinject/` — the `static-inject`
+  plugin (see [`static-inject`: static credential injection](#static-inject-static-credential-injection)
+  above); resolver + header-safety helpers are self-contained in this
+  package.

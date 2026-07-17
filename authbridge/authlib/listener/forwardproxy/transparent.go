@@ -10,6 +10,7 @@ import (
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
 )
 
 // HandleTransparentConn processes one outbound connection captured by an
@@ -65,7 +66,12 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// HTTP/TLS ports so non-HTTP protocols are not delayed by the peek. The dial
 	// target stays dst (the IP); only pctx.Host gets the recovered name.
 	host := dst
-	if shouldSniff(dst) {
+	// Sniff on the standard HTTP/TLS ports, OR on whatever ports the TLS bridge
+	// is configured to intercept — so a configured non-standard bridge port
+	// (e.g. 9443) still gets the peekable conn the bridge branch needs. The
+	// bridge's own port set is the single source of truth (no drift with
+	// shouldSniff's heuristic list).
+	if shouldSniff(dst) || (s.TLSBridge != nil && s.TLSBridge.Decision.HandlesPort(portOf(dst))) {
 		name, wrapped := sniffHost(clientConn)
 		clientConn = wrapped
 		if name != "" {
@@ -122,6 +128,32 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	enableKeepalive(upstream)
 
 	s.recordTunnelOpened(pctx)
+
+	if s.TLSBridge != nil {
+		// host is the policy authority: "<sniffed-SNI>:port" when a name was
+		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
+		key := hostOnly(host)
+		var first []byte
+		if pc, ok := clientConn.(*peekedConn); ok {
+			first, _ = pc.Peek(5)
+		}
+		if !s.TLSBridge.Skip.Contains(key) {
+			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
+			if v == tlsbridge.Terminate {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
+				if s.bridgeServe(clientConn, host, key) {
+					return
+				}
+				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
+				if up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout); derr == nil {
+					tunnel(clientConn, up2)
+					_ = up2.Close()
+				}
+				return
+			}
+			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
+		}
+	}
 	tunnel(clientConn, upstream)
 }
 
@@ -147,10 +179,14 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context) {
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		// Explicit opaque-tunnel marker so abctl can fold this CONNECT into
+		// the decrypted inner request without inferring "tunnel" from shape.
+		Tunnel: true,
 	}
-	if ev.Invocations != nil || plugins != nil {
-		s.Sessions.Append(sid, ev)
-	}
+	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
+	// plugin activity) are still visible. For a TLS-bridged call abctl folds
+	// this CONNECT event into the decrypted inner-request row.
+	s.Sessions.Append(sid, ev)
 }
 
 // tunnel bidirectionally copies between two connections until either side

@@ -6,10 +6,26 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
 	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
 )
+
+// waitSeen polls b until it's true, up to ~1s. OnFinish runs in the
+// reverse-proxy handler's deferred RunFinish, which fires only after the
+// streamed response (NewServer sets FlushInterval=-1) has already reached the
+// client — so http.Get can return before OnFinish has run. Poll rather than
+// read immediately, which otherwise races (flaky under -race).
+func waitSeen(b *atomic.Bool) bool {
+	for i := 0; i < 1000; i++ {
+		if b.Load() {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
+}
 
 // finisherStub is a minimal Plugin + Finisher used by these tests to
 // observe OnFinish dispatch and the Outcome the listener derived.
@@ -34,11 +50,13 @@ func (p *finisherStub) OnResponse(context.Context, *pipeline.Context) pipeline.A
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (p *finisherStub) OnFinish(_ context.Context, pctx *pipeline.Context) {
-	p.seen.Store(true)
 	if o := pctx.Outcome(); o != nil {
 		cp := *o
 		p.outcome.Store(&cp)
 	}
+	// Store seen LAST so a reader that observes seen==true is guaranteed to
+	// also see the outcome that was set just above.
+	p.seen.Store(true)
 }
 
 func pipelineWith(t *testing.T, plugins ...pipeline.Plugin) *pipeline.Holder {
@@ -73,7 +91,7 @@ func TestReverseProxy_Finisher_Allow(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if !f.seen.Load() {
+	if !waitSeen(&f.seen) {
 		t.Fatal("OnFinish did not fire")
 	}
 	o := f.outcome.Load()
@@ -133,12 +151,15 @@ func TestReverseProxy_Finisher_Deny(t *testing.T) {
 		t.Errorf("HTTP status = %d, want 403", resp.StatusCode)
 	}
 
-	if !before.seen.Load() {
+	if !waitSeen(&before.seen) {
 		t.Error("before-deny.OnFinish should have fired (OnRequest ran before denial)")
 	}
-	if !denier.seen.Load() {
+	if !waitSeen(&denier.seen) {
 		t.Error("denier.OnFinish should have fired (OnRequest ran and produced the deny)")
 	}
+	// before/denier have fired, so the single RunFinish dispatch is complete;
+	// after-deny was never dispatched (its OnRequest never ran), so its
+	// OnFinish must not have fired.
 	if after.seen.Load() {
 		t.Error("after-deny.OnFinish should NOT have fired (OnRequest never ran)")
 	}

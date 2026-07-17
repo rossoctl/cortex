@@ -112,7 +112,7 @@ RUN set -eu; \
 # from any builder arch), this build links a native-arch libcpex_ffi.a, so the
 # builder must run on the target arch. An amd64-only digest would make the
 # arm64 build either fail to find an arm64 builder or link an incompatible .a.
-FROM golang:1.25-alpine@sha256:8d95af53d0d58e1759ddb4028285d9b1239067e4fbf4f544618cad0f60fbc354 AS builder
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
 
 RUN apk add --no-cache git ca-certificates gcc musl-dev
 

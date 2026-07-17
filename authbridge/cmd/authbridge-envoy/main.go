@@ -6,9 +6,9 @@
 //
 // Mode is hardcoded to envoy-sidecar; YAML configs that specify a
 // different mode are rejected at boot. For proxy-sidecar mode (HTTP
-// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy. For a
-// size-optimized proxy-sidecar build with parsers dropped, use
-// cmd/authbridge-lite.
+// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy — which
+// also produces the size-optimized authbridge-lite image when built
+// with exclude_plugin_* tags.
 package main
 
 import (
@@ -50,7 +50,6 @@ import (
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/ibac"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
 	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
@@ -202,7 +201,7 @@ func main() {
 				slog.Warn("invalid session.ttl, using default", "value", cfg.Session.TTL, "error", err)
 			}
 		}
-		maxEvents := 100
+		maxEvents := 500 // raised from 100: recording every message (incl. no-plugin-activity) ~doubles volume
 		if cfg.Session.MaxEvents > 0 {
 			maxEvents = cfg.Session.MaxEvents
 		}

@@ -93,6 +93,35 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 		return nil, err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	// The default Director rewrites the outbound scheme/host/path but
+	// deliberately leaves req.Host as the inbound caller's Host (e.g.
+	// "authbridge-ab1:8080"). Cloudflare-fronted backends like
+	// api.anthropic.com validate Host against the request line and
+	// reject a mismatch, so wrap the Director to rewrite it to the
+	// backend target's host after the default rewrite runs.
+	orig := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		orig(req)
+		req.Host = target.Host
+		// Strip the client's Accept-Encoding, but only when a plugin will
+		// actually inspect the response body: a StreamingResponder (SSE
+		// re-framing) or any ReadsBody/WritesBody plugin (buffered read into
+		// pctx.ResponseBody). Those paths must see plaintext — with no explicit
+		// Accept-Encoding, Go's transport negotiates gzip itself and
+		// transparently decompresses the response (dropping Content-Encoding /
+		// Content-Length), so both the inspection here and the downstream client
+		// get plaintext. Leaving an explicit "Accept-Encoding: gzip" through
+		// would yield a gzipped body the SSE re-framer reads as garbage plus a
+		// Content-Encoding: gzip header over re-emitted plaintext — which makes
+		// SSE clients (e.g. the Anthropic SDK) decode zero events. When no plugin
+		// reads the response body this proxy is a pure pass-through, so leave
+		// Accept-Encoding intact rather than force needless upstream→client
+		// decompression (matters for a remote backend or large non-streamed
+		// bodies; harmless on a localhost sidecar hop).
+		if inbound.NeedsBody() || inbound.HasStreamingResponders() {
+			req.Header.Del("Accept-Encoding")
+		}
+	}
 	// FlushInterval -1 makes ReverseProxy flush after every Read of
 	// the response body. Required for streaming text/event-stream
 	// responses where each frame must hit the client immediately —
@@ -221,7 +250,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("reverse-proxy: buffered request body", "host", r.Host, "bodyLen", len(body))
 	}
 
-	originalAuth := pctx.Headers.Get("Authorization")
 	action := s.InboundPipeline.Run(r.Context(), pctx)
 	if action.Type == pipeline.Reject {
 		s.recordInboundReject(pctx, action)
@@ -239,13 +267,26 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del("Content-Encoding")
 	}
 
-	// Propagate an inbound Authorization mutation to the forwarded
-	// request. A plugin (e.g. jwt-validation in mint mode) may have
-	// replaced the caller's token on pctx.Headers; the proxy forwards
-	// r.Header, so without this the backend would still see the original
-	// token. Only rewrite when the value actually changed.
-	if newAuth := pctx.Headers.Get("Authorization"); newAuth != originalAuth {
-		r.Header.Set("Authorization", newAuth)
+	// Propagate every header mutation the inbound pipeline made to the forwarded
+	// request. pctx.Headers started as a clone of r.Header, so plugins' set / replace
+	// / delete operations on it are the intended backend-facing header set. Only
+	// Authorization used to be forwarded, silently dropping any other injected header
+	// (e.g. static-inject's x-api-key). Content-Length / Content-Encoding are managed
+	// by the body-rewrite block above and the transport, so leave them untouched.
+	skip := func(k string) bool { return k == "Content-Length" || k == "Content-Encoding" }
+	for k := range r.Header {
+		if skip(k) {
+			continue
+		}
+		if _, ok := pctx.Headers[k]; !ok {
+			r.Header.Del(k) // plugin removed it
+		}
+	}
+	for k, vv := range pctx.Headers {
+		if skip(k) {
+			continue
+		}
+		r.Header[k] = append([]string(nil), vv...) // set / overwrite
 	}
 
 	// Record the inbound request event whenever there is something
@@ -256,7 +297,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// as denials already do via recordInboundReject). The A2A-specific session
 	// rekey in modifyResponse stays A2A-gated.
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
+	// Record every inbound request the pipeline saw, even with no plugin
+	// activity (skip_hosts is N/A inbound).
+	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
 		// Snapshot-copy the protocol extension and use the shared helpers
 		// for plugin invocations / observability / identity. Mirrors what
@@ -378,7 +421,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// pipeline saw at this point (may be empty for streamed bodies),
 	// but the status code and plugin invocations are always meaningful.
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if s.Sessions != nil && (pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
+	// Always pair every inbound request with a response row (carries StatusCode).
+	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
 		s.Sessions.Append(sid, pipeline.SessionEvent{
 			At:          time.Now(),
@@ -513,9 +557,8 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		return
 	}
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if !(pctx.Extensions.A2A != nil || pctx.Extensions.Invocations != nil || plugins != nil) {
-		return
-	}
+	// Always record the streaming response (carries StatusCode), even with
+	// no plugin activity.
 	sid := inboundSessionID(pctx)
 	// Rekey default → contextId mirroring the buffered path's behavior;
 	// streaming A2A message/stream may discover the contextId mid-stream.
@@ -607,7 +650,16 @@ func (b *streamingResponseBody) Read(p []byte) (int, error) {
 	// gets its own `data: ` prefix and the downstream parser sees the
 	// same event boundaries the upstream produced. For single-line
 	// JSON-RPC payloads this is equivalent to one `data: <payload>\n\n`.
-	out := make([]byte, 0, len(frame)+8)
+	out := make([]byte, 0, len(frame)+16)
+	// Preserve the upstream SSE "event:" line. sseframe surfaces only the
+	// data payload, but clients like the Anthropic SDK type each event from
+	// the "event:" field; dropping it makes the re-framed stream parse to
+	// zero typed events downstream.
+	if ev := b.reader.LastEvent(); len(ev) > 0 {
+		out = append(out, "event: "...)
+		out = append(out, ev...)
+		out = append(out, '\n')
+	}
 	rest := frame
 	for len(rest) > 0 {
 		nl := bytes.IndexByte(rest, '\n')

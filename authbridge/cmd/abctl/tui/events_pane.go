@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +22,7 @@ func newEventsTable() table.Model {
 			{Title: "#", Width: 4},
 			{Title: "TIME", Width: 12},
 			{Title: "DIR", Width: 4},
-			{Title: "PHASE", Width: 6},
+			{Title: "PHASE", Width: 7},
 			{Title: "ACTION", Width: 8},
 			{Title: "PLUGIN", Width: 18},
 			{Title: "METHOD", Width: 22},
@@ -34,6 +35,30 @@ func newEventsTable() table.Model {
 	)
 	t.SetStyles(tableStyles())
 	return t
+}
+
+// eventRow is one display row — exactly one network message. The cartesian
+// "row per plugin invocation" model is gone: a message touched by N plugins
+// is a single row, with the per-plugin breakdown available in the detail
+// pane. tunnel, when non-nil, is a CONNECT tunnel-open event folded into a
+// TLS-bridged request (see buildEventRows); it contributes a summary line to
+// the detail pane but no separate row.
+type eventRow struct {
+	event  *pipeline.SessionEvent
+	tunnel *pipeline.SessionEvent
+}
+
+// invocations returns every plugin invocation the row's ACTION/PLUGIN cell and
+// the inactive filter should consider: the event's own, plus any folded
+// CONNECT tunnel's gate invocations — so a bridged row reflects activity on the
+// tunnel-open (e.g. an egress gate that allowed the CONNECT) and isn't wrongly
+// hidden or under-reported.
+func (er eventRow) invocations() []pipeline.Invocation {
+	invs := allInvocations(er.event)
+	if er.tunnel != nil {
+		invs = append(invs, allInvocations(er.tunnel)...)
+	}
+	return invs
 }
 
 // rebuildEventsTable populates the events table from the cache for the
@@ -59,105 +84,66 @@ func (m *model) rebuildEventsTable() {
 	prevRow := m.eventsTbl.Cursor()
 	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1
 
-	// Flatten (event, invocation) into row specs up-front so pair-linking
-	// and filtering can run against the flat row list. Events without
-	// invocations fall back to a single pseudo-row (unusual — the listener
-	// only records events that have at least one Invocation or A2A/MCP/
-	// Inference extension, but parser-only events can still land here if
-	// the parser populated its extension without emitting an Invocation).
-	rowSpecs := flattenInvocations(events)
+	// One display row per network message. CONNECT tunnel-opens are folded
+	// into the decrypted inner request that immediately follows them (TLS
+	// bridge), so a bridged call reads as a single request row — the same
+	// shape as a plaintext call.
+	eventRows := buildEventRows(events)
 
-	// Pair request/response rows by (direction, plugin) so each plugin's
-	// contribution on the request side connects to its contribution on the
-	// response side, independent of other plugins in the same pipeline.
-	pairs := pairInvocationRows(rowSpecs)
+	// Pair request rows with their response rows. ids drives the # column
+	// (one integer repeated across a request/response exchange); partner
+	// drives the PHASE-column span glyphs (┌/│/└) that visually bracket each
+	// exchange even when other events interleave between request and response.
+	ids, partner := computeEventPairs(eventRows)
+	glyphs := computeSpanGlyphs(partner, len(eventRows))
 
-	// Event-level pair IDs for the # column. Assigns each event a small
-	// integer; events that match as a (request, response) pair share one
-	// integer so the operator can scan the column for the repeated
-	// number. Derived from the same row-level pair map that drives the
-	// └resp glyph, so the two visual cues stay consistent.
-	eventIDs := computeEventPairIDs(rowSpecs, pairs)
-
-	// Per-row tree glyph (┌ / │ / └) for the PHASE column. Lets
-	// operators trace a paired (req, resp) span visually even when
-	// other rows interleave between them.
-	spanGlyphs := computeSpanGlyphs(pairs, len(rowSpecs))
-
-	rows := make([]table.Row, 0, len(rowSpecs))
+	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
-	m.hiddenSkips = 0
-	var lastEvent *pipeline.SessionEvent // most-recent event already rendered (post-filter)
-	for i, rs := range rowSpecs {
-		if m.filter != "" && !matchInvocationRow(rs, m.filter) {
+	m.hiddenInactive = 0
+	for i, er := range eventRows {
+		ev := er.event
+		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
 		}
-		// Hide plugin-didn't-act rows by default. Exception: if a skip
-		// row's pair partner (the other side of the req/resp span) is
-		// NOT a skip, keep this row visible — the partner's ┌/└ glyph
-		// would otherwise orphan, making a successful exchange read
-		// as a missing response. This is exactly what
-		// notifications/initialized produces: a request observe paired
-		// with a response skip ("no_response_body"). Both visible
-		// preserves the pair semantics; both hidden when both are
-		// skips keeps the noise down.
-		if !m.showSkips && isSkipRow(rs) {
-			partnerIdx, paired := pairs[i]
-			if !paired || isSkipRow(rowSpecs[partnerIdx]) {
-				m.hiddenSkips++
-				continue
-			}
-		}
-		// A "continuation" row is one whose event is the same as the
-		// previous RENDERED row's event (filtering-aware). We blank the
-		// event-level columns (#, TIME, DIR, PHASE, STATUS, DURATION,
-		// TOKENS, HOST) on continuation rows so an event's multi-plugin
-		// group reads as one visual block — only PLUGIN and ACTION vary.
-		// METHOD stays populated since a multi-plugin row set can still
-		// show per-plugin method context (e.g. a2a-parser observes
-		// message/stream while jwt-validation has no method at all).
-		continuation := lastEvent == rs.event
-
-		var idCell, timeCell, dirCell, phaseCell, statusC, durCell, tokC, hostC string
-		// Up to two levels of (req, resp) span nesting are surfaced as
-		// box-drawing prefixes in PHASE so operators can trace pairs
-		// even when other rows interleave. Width fits the 6-char PHASE
-		// budget: outer (1) + inner (1) + base phase ("resp"/"deny" =
-		// 4) → 6 max.
-		prefix := spanGlyphs[i].prefix()
-		// PHASE is always populated (prefix + "req"/"resp") so a quick
-		// scan down the column reveals lifecycle position even on
-		// continuation rows. Earlier the continuation case rendered
-		// only the prefix, which left operators wondering whether the
-		// row was a request or response invocation.
-		phaseCell = prefix + shortPhase(rs.event.Phase)
-		if !continuation {
-			if id, ok := eventIDs[rs.event]; ok {
-				idCell = strconv.Itoa(id)
-			}
-			timeCell = rs.event.At.Format("15:04:05.00")
-			dirCell = shortDirection(rs.event.Direction)
-			statusC = statusCell(*rs.event)
-			durCell = durationCell(*rs.event)
-			tokC = tokensCell(*rs.event)
-			hostC = truncStr(rs.event.Host, 20)
+		// hideInactive (the `s` toggle) is off by default — every message is
+		// shown, including passthrough/skip-only ones, per "I should see all
+		// network messages". Turning it on focuses the timeline on plugin
+		// activity (deny/modify/observe/allow). Both the filter and the
+		// headline consider the folded tunnel's invocations too.
+		invs := er.invocations()
+		if m.hideInactive && eventInactive(invs) {
+			m.hiddenInactive++
+			continue
 		}
 
+		action, plugin := eventAction(invs)
+		var idCell string
+		if id, ok := ids[ev]; ok {
+			idCell = strconv.Itoa(id)
+		}
+		// Prefix PHASE with the span glyph for this row's exchange. A request
+		// paired with a later response renders ┌; the response renders └;
+		// events nested between them render │ (with a second level when an
+		// inner exchange sits inside an outer one, e.g. inference calls inside
+		// an a2a message/stream). Unpaired rows get no prefix.
+		phaseCell := shortPhase(ev.Phase)
+		if p := glyphs[i].prefix(); p != "" {
+			phaseCell = p + " " + phaseCell
+		}
 		rows = append(rows, table.Row{
 			idCell,
-			timeCell,
-			dirCell,
+			ev.At.Format("15:04:05.00"),
+			shortDirection(ev.Direction),
 			phaseCell,
-			rs.actionCell(),
-			truncStr(rs.pluginCell(), 18),
-			eventMethod(*rs.event),
-			statusC,
-			durCell,
-			tokC,
-			hostC,
+			action,
+			truncStr(plugin, 18),
+			eventMethod(*ev),
+			statusCell(*ev),
+			durationCell(*ev),
+			tokensCell(*ev),
+			truncStr(ev.Host, 20),
 		})
-		m.visibleRows = append(m.visibleRows, rs)
-		lastEvent = rs.event
+		m.visibleRows = append(m.visibleRows, er)
 	}
 	m.eventsTbl.SetRows(rows)
 
@@ -171,209 +157,225 @@ func (m *model) rebuildEventsTable() {
 }
 
 // selectedEvent returns the event at the cursor row, or nil. The cursor
-// points into m.visibleRows (the flattened row list), and each row carries
-// a reference to its source event.
+// points into m.visibleRows (one entry per rendered message), and each row
+// carries a reference to its source event.
 func (m *model) selectedEvent() *pipeline.SessionEvent {
-	if len(m.visibleRows) == 0 {
+	er, ok := m.selectedEventRow()
+	if !ok {
 		return nil
+	}
+	return er.event
+}
+
+// selectedEventRow returns the full row (event + any folded tunnel) under the
+// cursor. ok is false when there are no rendered rows or the cursor is out of
+// range.
+func (m *model) selectedEventRow() (eventRow, bool) {
+	if len(m.visibleRows) == 0 {
+		return eventRow{}, false
 	}
 	cur := m.eventsTbl.Cursor()
 	if cur < 0 || cur >= len(m.visibleRows) {
-		return nil
+		return eventRow{}, false
 	}
-	return m.visibleRows[cur].event
+	return m.visibleRows[cur], true
 }
 
-// selectedInvocation returns the plugin invocation for the highlighted events
-// row, or nil (pseudo-row for an event with no invocations, or no rows).
-func (m *model) selectedInvocation() *pipeline.Invocation {
-	if len(m.visibleRows) == 0 {
-		return nil
-	}
-	cur := m.eventsTbl.Cursor()
-	if cur < 0 || cur >= len(m.visibleRows) {
-		return nil
-	}
-	return m.visibleRows[cur].inv
-}
-
-// invocationRow is one table row — the cartesian product of SessionEvent
-// × Invocation. An event with N plugin invocations produces N rows; an
-// event with no invocations produces one row with an empty invocation.
-// Rendering and filtering both work off this flat list.
-type invocationRow struct {
-	event *pipeline.SessionEvent
-	// inv may be nil when the event has no Invocation records. The
-	// pseudo-row still renders so the event is reachable in the table.
-	inv *pipeline.Invocation
-	// direction is the Invocations.{Inbound,Outbound} this row came
-	// from, disambiguating when a single event somehow carries both
-	// (doesn't happen today but cheap to be explicit).
-	direction pipeline.Direction
-}
-
-func (r invocationRow) actionCell() string {
-	if r.inv == nil {
-		return "—"
-	}
-	// Under on_error: observe the framework converts Reject to a
-	// pass-through and marks the Invocation Shadow=true. Prefix the
-	// action with an asterisk so operators scanning the timeline can
-	// spot would-have-blocked rows at a glance — the request actually
-	// passed. Width stays within the 8-char column budget (deny* fits,
-	// observe* fits, modify* fits at 7).
-	if r.inv.Shadow {
-		return string(r.inv.Action) + "*"
-	}
-	return string(r.inv.Action)
-}
-
-func (r invocationRow) pluginCell() string {
-	if r.inv == nil {
-		return "—"
-	}
-	return r.inv.Plugin
-}
-
-// isSkipRow reports whether r represents a plugin that ran but didn't
-// act on the message (jwt-validation on a bypass path, IBAC on a bypass
-// host, token-exchange with no matching route). Operators usually want
-// these hidden so the timeline shows decisions, not non-events. The
-// `s` keybinding toggles visibility.
-func isSkipRow(r invocationRow) bool {
-	return r.inv != nil && r.inv.Action == pipeline.ActionSkip
-}
-
-// spanGlyph names which corner / side of a (request, response) pair
-// span a row sits at, for tree-style rendering in the PHASE column.
-// rune (not byte) because the box-drawing characters are multi-byte
-// in UTF-8 and would overflow a byte.
-type spanGlyph rune
-
-const (
-	glyphNone   spanGlyph = 0
-	glyphStart  spanGlyph = '┌' // request row that pairs with a later response
-	glyphMiddle spanGlyph = '│' // row strictly between a paired request and its response
-	glyphEnd    spanGlyph = '└' // response row paired with an earlier request
-)
-
-// spanLevels holds the box-drawing glyphs for up to two levels of
-// nested (req, resp) spans on a single row. outer is the largest span
-// containing the row; inner is the next-largest. Deeper nesting is
-// not surfaced — operators only need the broad shape, not the full
-// nesting tree.
-type spanLevels struct {
-	outer spanGlyph
-	inner spanGlyph
-}
-
-// prefix returns the concatenated rune string for the PHASE-column
-// prefix: e.g. "│┌" when the row is inside an outer span and at the
-// start of an inner span; "└" alone when only an outer endpoint
-// applies; "" when the row is in no pair span.
-func (s spanLevels) prefix() string {
-	switch {
-	case s.outer == glyphNone:
-		return ""
-	case s.inner == glyphNone:
-		return string(rune(s.outer))
-	default:
-		return string([]rune{rune(s.outer), rune(s.inner)})
-	}
-}
-
-// computeSpanGlyphs assigns each row up to two tree glyphs (outer +
-// inner) drawn from its position relative to all (req, resp) spans in
-// the row list. The two largest spans containing the row are surfaced;
-// deeper nesting is dropped so the PHASE column doesn't blow its
-// 6-char width budget.
-//
-// pairs is the bidirectional map from pairInvocationRows: pairs[i]=j
-// AND pairs[j]=i for any matched pair (i, j). Unpaired rows are absent.
-// n is the total row count.
-func computeSpanGlyphs(pairs map[int]int, n int) []spanLevels {
-	out := make([]spanLevels, n)
-	if len(pairs) == 0 {
-		return out
-	}
-	// Collect each pair (a, b) with a < b once; the resp→req mirror
-	// entries are skipped.
-	type span struct{ a, b int }
-	spans := make([]span, 0, len(pairs)/2)
-	for a, b := range pairs {
-		if a < b {
-			spans = append(spans, span{a, b})
-		}
-	}
-
-	glyphAt := func(s span, i int) spanGlyph {
-		switch {
-		case i == s.a:
-			return glyphStart
-		case i == s.b:
-			return glyphEnd
-		case s.a < i && i < s.b:
-			return glyphMiddle
-		}
-		return glyphNone
-	}
-
-	for i := range n {
-		// Find every span this row participates in (endpoint or
-		// strictly inside).
-		var participating []span
-		for _, s := range spans {
-			if s.a <= i && i <= s.b {
-				participating = append(participating, s)
+// buildEventRows turns the chronological event slice into display rows, one
+// per network message. The only folding is the TLS-bridge CONNECT pair: a
+// tunnel-open event (opaque, host:port) immediately followed by the decrypted
+// inner request for the same host is rendered as a single row keyed on the
+// inner request, with the tunnel attached for the detail pane. A non-bridged
+// (passthrough) tunnel has no inner request following it, so it stands as its
+// own row — it IS the whole message.
+func buildEventRows(events []pipeline.SessionEvent) []eventRow {
+	rows := make([]eventRow, 0, len(events))
+	for i := 0; i < len(events); i++ {
+		e := &events[i]
+		if i+1 < len(events) && isTunnelOpen(e) {
+			inner := &events[i+1]
+			if isBridgedInner(e, inner) {
+				rows = append(rows, eventRow{event: inner, tunnel: e})
+				i++ // consume the inner request too
+				continue
 			}
 		}
-		if len(participating) == 0 {
-			continue
-		}
-		// Sort by width descending — outer (widest) first, then inner.
-		// Stable so equal-width spans keep their declaration order
-		// (irrelevant in practice but keeps tests deterministic).
-		sort.SliceStable(participating, func(p, q int) bool {
-			return (participating[p].b - participating[p].a) >
-				(participating[q].b - participating[q].a)
-		})
-		out[i].outer = glyphAt(participating[0], i)
-		if len(participating) > 1 {
-			out[i].inner = glyphAt(participating[1], i)
-		}
+		rows = append(rows, eventRow{event: e})
 	}
+	return rows
+}
+
+// isTunnelOpen reports whether e is a CONNECT / transparent-redirect
+// tunnel-open. It keys on the explicit Tunnel marker the producer
+// (recordTunnelOpened) sets — NOT on host/extension shape, which an ordinary
+// unparsed outbound request could mimic and get wrongly folded.
+func isTunnelOpen(e *pipeline.SessionEvent) bool {
+	return e.Tunnel
+}
+
+// isBridgedInner reports whether inner is the decrypted request the TLS bridge
+// produced right after opening tunnel. The two fold into one row: tunnel
+// carries "host:port" + opaque bytes, inner carries the same host (the Host
+// header, usually port-stripped) plus the real method/path. Matching on the
+// host-part (port-insensitive) handles both the standard-443 case (inner host
+// = "example.com") and the non-standard case (inner host = "example.com:8443").
+//
+// Two guards keep unrelated events from folding:
+//   - inner must be another outbound REQUEST, never a response, so a plain
+//     request→response exchange isn't mistaken for a bridged pair.
+//   - inner must NOT itself be a tunnel-open (Tunnel marker). Two back-to-back
+//     passthrough CONNECTs to the same host (common with connection pooling)
+//     would otherwise fold — hiding one real message and mislabeling the other.
+func isBridgedInner(tunnel, inner *pipeline.SessionEvent) bool {
+	host := hostOnly(inner.Host)
+	return inner.Direction == pipeline.Outbound &&
+		inner.Phase == pipeline.SessionRequest &&
+		!isTunnelOpen(inner) &&
+		host != "" &&
+		host == hostOnly(tunnel.Host)
+}
+
+// hostOnly returns the host portion of a "host:port" string, or the input
+// unchanged when it carries no port. Handles bracketed IPv6 literals.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+// allInvocations returns every plugin invocation on an event, both
+// directions concatenated (inbound first). Returns nil when the event
+// carries no Invocations.
+func allInvocations(e *pipeline.SessionEvent) []pipeline.Invocation {
+	if e == nil || e.Invocations == nil {
+		return nil
+	}
+	out := make([]pipeline.Invocation, 0, len(e.Invocations.Inbound)+len(e.Invocations.Outbound))
+	out = append(out, e.Invocations.Inbound...)
+	out = append(out, e.Invocations.Outbound...)
 	return out
 }
 
-// flattenInvocations walks the event slice in order and, for each event,
-// emits one invocationRow per Invocation it carries (Inbound then
-// Outbound). Events with no Invocations fall back to a single pseudo-row
-// so parser-only events (a SessionEvent carrying just MCP or A2A with no
-// matching Invocation) remain reachable.
-func flattenInvocations(events []pipeline.SessionEvent) []invocationRow {
-	out := make([]invocationRow, 0, len(events))
-	for i := range events {
-		e := &events[i]
-		if e.Invocations == nil || (len(e.Invocations.Inbound) == 0 && len(e.Invocations.Outbound) == 0) {
-			out = append(out, invocationRow{event: e, direction: e.Direction})
+// actionRank orders the five invocation verbs for at-a-glance aggregation,
+// highest wins: deny > modify > observe > allow > skip. The pipeline's own
+// outcome only distinguishes deny vs allow (pipeline/outcome.go); the rest of
+// this ordering is an abctl display choice. deny/modify rank top because they
+// changed the message's fate. observe ranks ABOVE allow on purpose: a parser
+// that understood the message (and supplied the METHOD shown on the row) tells
+// the operator more than a gate that merely permitted it — and surfacing the
+// gate while METHOD came from the parser reads as inconsistent. skip is the
+// floor (a plugin ran but didn't apply); 0 is the sentinel for "no plugin
+// acted".
+func actionRank(a pipeline.InvocationAction) int {
+	switch a {
+	case pipeline.ActionDeny:
+		return 5
+	case pipeline.ActionModify:
+		return 4
+	case pipeline.ActionObserve:
+		return 3
+	case pipeline.ActionAllow:
+		return 2
+	case pipeline.ActionSkip:
+		return 1
+	}
+	return 0
+}
+
+// topInvocation returns the highest-ranked invocation satisfying keep and how
+// many tied at that top rank. winner is the zero Invocation (Action "", rank 0)
+// when none satisfy keep.
+func topInvocation(invs []pipeline.Invocation, keep func(pipeline.Invocation) bool) (pipeline.Invocation, int) {
+	best := -1
+	count := 0
+	var winner pipeline.Invocation
+	for _, iv := range invs {
+		if !keep(iv) {
 			continue
 		}
-		for j := range e.Invocations.Inbound {
-			out = append(out, invocationRow{
-				event:     e,
-				inv:       &e.Invocations.Inbound[j],
-				direction: pipeline.Inbound,
-			})
-		}
-		for j := range e.Invocations.Outbound {
-			out = append(out, invocationRow{
-				event:     e,
-				inv:       &e.Invocations.Outbound[j],
-				direction: pipeline.Outbound,
-			})
+		switch r := actionRank(iv.Action); {
+		case r > best:
+			best, count, winner = r, 1, iv
+		case r == best:
+			count++
 		}
 	}
-	return out
+	return winner, count
+}
+
+// shadowFlagged reports whether any invocation is a shadow deny/modify — a
+// plugin that ran under on_error: observe and WOULD have blocked or rewritten
+// the message, but didn't (the framework converted its Reject to a pass and
+// set Shadow). These are the signal a shadow-policy rollout is watching for.
+func shadowFlagged(invs []pipeline.Invocation) bool {
+	for _, iv := range invs {
+		if iv.Shadow && (iv.Action == pipeline.ActionDeny || iv.Action == pipeline.ActionModify) {
+			return true
+		}
+	}
+	return false
+}
+
+// eventAction folds a message's per-plugin invocations into the single ACTION +
+// PLUGIN cell pair shown in the timeline. The headline reflects what actually
+// took effect:
+//
+//   - The winner is the highest-ranked ENFORCED (non-shadow) invocation —
+//     deny > modify > observe > allow > skip (see actionRank). A shadow
+//     deny/modify did NOT take effect (outcome.go enforces deny only when
+//     !Shadow), so it must not headline over the action that really applied.
+//     PLUGIN names that plugin, or "N plugins" when several tie at the top.
+//   - A trailing "*" flags that a shadow policy would have blocked/changed the
+//     message (e.g. "allow*"). Lets a rollout stay scannable without claiming
+//     a block that never happened.
+//   - When nothing enforced acted above a skip, a shadow deny/modify — if
+//     present — becomes the headline ("deny*"), since it's the only signal
+//     worth surfacing (a lone shadow deny on an otherwise-passthrough request).
+//   - Otherwise "—  —": nothing meaningful happened. A skip never credits a
+//     plugin (naming a skipper like "token-exchange" on an unrelated host
+//     reads as if it processed the message). Per-plugin detail is on drill-in.
+func eventAction(invs []pipeline.Invocation) (action, plugin string) {
+	winner, count := topInvocation(invs, func(iv pipeline.Invocation) bool { return !iv.Shadow })
+	shadow := shadowFlagged(invs)
+
+	if actionRank(winner.Action) > actionRank(pipeline.ActionSkip) {
+		action = string(winner.Action)
+		if shadow {
+			action += "*"
+		}
+		if count == 1 {
+			plugin = winner.Plugin
+		} else {
+			plugin = fmt.Sprintf("%d plugins", count)
+		}
+		return action, plugin
+	}
+
+	if shadow {
+		sh, _ := topInvocation(invs, func(iv pipeline.Invocation) bool { return iv.Shadow })
+		return string(sh.Action) + "*", sh.Plugin
+	}
+
+	return "—", "—"
+}
+
+// eventInactive reports whether no plugin took a meaningful action — either no
+// invocations at all (a pure passthrough / unprocessed message) or every
+// invocation was a skip (plugins ran but none matched). A shadow deny/modify
+// counts as activity (it flags a would-have-blocked message worth keeping
+// visible during a rollout). The `s` key hides inactive messages so an
+// operator can focus on plugin activity.
+func eventInactive(invs []pipeline.Invocation) bool {
+	if len(invs) == 0 {
+		return true
+	}
+	for _, iv := range invs {
+		if iv.Action != pipeline.ActionSkip {
+			return false
+		}
+	}
+	return true
 }
 
 func shortDirection(d pipeline.Direction) string {
@@ -400,20 +402,26 @@ func shortPhase(p pipeline.SessionPhase) string {
 	return "?"
 }
 
-// (authCell and responsiblePlugin are gone — their roles moved onto
-// invocationRow's actionCell/pluginCell because each row now corresponds
-// to exactly one plugin's invocation rather than a whole event.)
-
-func eventMethod(e pipeline.SessionEvent) string {
+// eventMethodValue is the raw, untruncated method/model for an event — the A2A
+// method, inference model, or MCP method. Used for logic (pairing, filtering)
+// where truncation would conflate distinct names sharing a 22-char prefix or
+// hide searchable suffixes.
+func eventMethodValue(e pipeline.SessionEvent) string {
 	switch {
 	case e.A2A != nil:
-		return truncStr(e.A2A.Method, 22)
+		return e.A2A.Method
 	case e.Inference != nil:
-		return truncStr(e.Inference.Model, 22)
+		return e.Inference.Model
 	case e.MCP != nil:
-		return truncStr(e.MCP.Method, 22)
+		return e.MCP.Method
 	}
 	return ""
+}
+
+// eventMethod is the display form of the method/model — truncated to the
+// METHOD column width. Render-only; never compare or search on it.
+func eventMethod(e pipeline.SessionEvent) string {
+	return truncStr(eventMethodValue(e), 22)
 }
 
 func statusCell(e pipeline.SessionEvent) string {
@@ -455,90 +463,63 @@ func truncStr(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// computeEventPairIDs assigns a small integer to every SessionEvent,
-// sharing one integer across a (request, response) pair and minting a new
-// one for unpaired events. The pairing decision is delegated to the row-
-// level pair map from pairInvocationRows — if any plugin row on event A
-// pairs with a plugin row on event B, then A and B pair at the event
-// level too. This keeps the # column's IDs consistent with the `└resp`
-// glyph the operator already sees (both derive from the same plugin-
-// level (direction, plugin) match).
+// computeEventPairs matches each response row to its request row and returns
+// two views of the result:
 //
-// Deriving from pairInvocationRows rather than recomputing by
-// direction+host+method avoids a class of bugs with "featureless"
-// requests (no parser matched, so method is empty): multiple concurrent
-// passthrough calls to the same host all share the same host+method
-// key and a naive matcher claims the wrong response.
+//   - ids: a small integer per event, shared across a (request, response)
+//     exchange and freshly minted for unpaired rows. Drives the # column.
+//   - partner: a bidirectional row-index map (partner[i]=j and partner[j]=i)
+//     for matched pairs. Drives the PHASE-column span glyphs.
 //
-// IDs are keyed by event pointer so render loops can look up a row's ID
-// without knowing the slice index. IDs start at 1 and increment in
-// first-seen row order so adjacent pairs get adjacent integers.
-func computeEventPairIDs(rowSpecs []invocationRow, pairs map[int]int) map[*pipeline.SessionEvent]int {
-	// Derive event-level pairs from row-level pairs. pairs is symmetric
-	// (pairs[i]=j and pairs[j]=i), so iterating either entry sets the
-	// map symmetrically. Last-write-wins when a single event pairs
-	// through multiple plugins, but in practice all plugin rows on one
-	// request event point at the same response event.
-	eventPair := make(map[*pipeline.SessionEvent]*pipeline.SessionEvent)
-	for i, j := range pairs {
-		ei, ej := rowSpecs[i].event, rowSpecs[j].event
-		if ei != ej {
-			eventPair[ei] = ej
-		}
-	}
-
-	// Event-level fallback for pairs the row-level matcher can't see.
-	// When a response event has no plugin invocations (e.g. a bypass
-	// path like /.well-known/agent.json — jwt-validation skipped on the
-	// request and no parser matched on the response), its pseudo-row
-	// has no (direction, plugin) key and pairInvocationRows leaves it
-	// unpaired. Scan the ordered event list and link each unpaired
-	// response to the closest preceding unpaired request with matching
-	// direction + host so the # column still reflects the pairing.
-	//
-	// Closest-preceding match is sufficient for bypass traffic where
-	// the response event immediately follows its request in the slice.
-	// Multiple concurrent bypass requests on the same host could
-	// theoretically cross-pair, but that's a near-simultaneous
-	// duplicate-path pattern we don't expect in real traffic.
-	orderedEvents := orderedUniqueEvents(rowSpecs)
-	for i, e := range orderedEvents {
-		if e.Phase != pipeline.SessionResponse {
+// Each response row is matched to the closest preceding unpaired request row
+// sharing direction + host (port-normalized) + method. The method component
+// keeps a fire-and-forget request (e.g. MCP notifications/initialized, which
+// never gets a response) from stealing a later response that belongs to a
+// different method.
+//
+// Closest-preceding adjacency is sufficient for current traffic, where a
+// response follows its request. Concurrent same-host+method calls could in
+// principle cross-pair, but this is a navigational cue, not a correctness
+// guarantee; a server-side correlation id would be the fix if that ever bites.
+//
+// IDs are keyed by event pointer so the render loop can look one up without
+// knowing the row index. They start at 1 and increment in first-seen row order
+// so adjacent exchanges get adjacent integers.
+func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int]int) {
+	partner := make(map[int]int) // row index → matched row index
+	for j := range rows {
+		rj := rows[j].event
+		if rj.Phase != pipeline.SessionResponse {
 			continue
 		}
-		if _, paired := eventPair[e]; paired {
-			continue
-		}
-		for j := i - 1; j >= 0; j-- {
-			prev := orderedEvents[j]
-			if prev.Phase != pipeline.SessionRequest {
+		for i := j - 1; i >= 0; i-- {
+			if _, taken := partner[i]; taken {
 				continue
 			}
-			if _, already := eventPair[prev]; already {
+			ri := rows[i].event
+			if ri.Phase != pipeline.SessionRequest {
 				continue
 			}
-			if prev.Direction != e.Direction || prev.Host != e.Host {
+			if ri.Direction != rj.Direction ||
+				hostOnly(ri.Host) != hostOnly(rj.Host) ||
+				eventMethodValue(*ri) != eventMethodValue(*rj) {
 				continue
 			}
-			eventPair[e] = prev
-			eventPair[prev] = e
+			partner[i] = j
+			partner[j] = i
 			break
 		}
 	}
 
-	ids := make(map[*pipeline.SessionEvent]int)
-	seen := make(map[*pipeline.SessionEvent]bool)
+	ids := make(map[*pipeline.SessionEvent]int, len(rows))
 	next := 0
-	for _, rs := range rowSpecs {
-		e := rs.event
-		if seen[e] {
+	for i := range rows {
+		e := rows[i].event
+		if _, done := ids[e]; done {
 			continue
 		}
-		seen[e] = true
-		// If this event's paired partner has already been assigned an
-		// ID (partner appeared earlier in row order), reuse it.
-		if partner := eventPair[e]; partner != nil {
-			if pid, ok := ids[partner]; ok {
+		if p, ok := partner[i]; ok {
+			if pid, ok := ids[rows[p].event]; ok {
 				ids[e] = pid
 				continue
 			}
@@ -546,64 +527,182 @@ func computeEventPairIDs(rowSpecs []invocationRow, pairs map[int]int) map[*pipel
 		next++
 		ids[e] = next
 	}
-	return ids
+	return ids, partner
 }
 
-// orderedUniqueEvents returns distinct event pointers in the order they
-// first appear in rowSpecs. Used by computeEventPairIDs' event-level
-// fallback to walk events sequentially while looking backward for
-// unpaired request counterparts.
-func orderedUniqueEvents(rowSpecs []invocationRow) []*pipeline.SessionEvent {
-	seen := make(map[*pipeline.SessionEvent]bool, len(rowSpecs))
-	out := make([]*pipeline.SessionEvent, 0, len(rowSpecs))
-	for _, rs := range rowSpecs {
-		if seen[rs.event] {
+// spanGlyph names which corner / side of a (request, response) exchange a row
+// sits at, for the tree-style bracket in the PHASE column. rune (not byte)
+// because the box-drawing characters are multi-byte in UTF-8.
+type spanGlyph rune
+
+const (
+	glyphNone   spanGlyph = 0
+	glyphStart  spanGlyph = '┌' // request row that pairs with a later response
+	glyphMiddle spanGlyph = '│' // row between a paired request and its response
+	glyphEnd    spanGlyph = '└' // response row paired with an earlier request
+)
+
+// spanLevels holds the box-drawing glyphs for up to two nested exchanges on a
+// single row. outer is the widest exchange containing the row; inner is the
+// next-widest. Deeper nesting is dropped — operators only need the broad
+// shape, and the PHASE column has a finite width budget.
+type spanLevels struct {
+	outer spanGlyph
+	inner spanGlyph
+}
+
+// prefix returns the concatenated rune string for the PHASE-column prefix:
+// e.g. "│┌" when the row is inside an outer exchange and opens an inner one;
+// "└" alone when only an outer endpoint applies; "" when the row is in no
+// exchange span.
+func (s spanLevels) prefix() string {
+	switch {
+	case s.outer == glyphNone:
+		return ""
+	case s.inner == glyphNone:
+		return string(rune(s.outer))
+	default:
+		return string([]rune{rune(s.outer), rune(s.inner)})
+	}
+}
+
+// computeSpanGlyphs assigns each row up to two tree glyphs (outer + inner)
+// from its position relative to all (request, response) exchange spans. The
+// two widest spans containing the row are surfaced; deeper nesting is dropped
+// so the PHASE column doesn't blow its width budget.
+//
+// pairs is the bidirectional map from computeEventPairs: pairs[i]=j AND
+// pairs[j]=i for any matched pair (i, j). Unpaired rows are absent. n is the
+// total row count.
+func computeSpanGlyphs(pairs map[int]int, n int) []spanLevels {
+	out := make([]spanLevels, n)
+	if len(pairs) == 0 {
+		return out
+	}
+	// Collect each pair (a, b) with a < b once; the resp→req mirror entries
+	// are skipped.
+	type span struct{ a, b int }
+	spans := make([]span, 0, len(pairs)/2)
+	for a, b := range pairs {
+		if a < b {
+			spans = append(spans, span{a, b})
+		}
+	}
+
+	glyphAt := func(s span, i int) spanGlyph {
+		switch {
+		case i == s.a:
+			return glyphStart
+		case i == s.b:
+			return glyphEnd
+		case s.a < i && i < s.b:
+			return glyphMiddle
+		}
+		return glyphNone
+	}
+
+	for i := range n {
+		// Find every span this row participates in (endpoint or strictly
+		// inside).
+		var participating []span
+		for _, s := range spans {
+			if s.a <= i && i <= s.b {
+				participating = append(participating, s)
+			}
+		}
+		if len(participating) == 0 {
 			continue
 		}
-		seen[rs.event] = true
-		out = append(out, rs.event)
+		// Sort by width descending — widest first, narrowest last. Stable so
+		// equal-width spans keep declaration order (deterministic tests).
+		sort.SliceStable(participating, func(p, q int) bool {
+			return (participating[p].b - participating[p].a) >
+				(participating[q].b - participating[q].a)
+		})
+		// outer = the widest containing span (the broadest context). inner =
+		// the NARROWEST containing span — the row's own tightest exchange —
+		// NOT the second-widest. A row that is an endpoint of a deeply-nested
+		// pair must still show its ┌/└ corner so its request and response
+		// connect visually; picking the second-widest would let an
+		// intermediate enclosing span's middle bar mask it. Example: a
+		// tools/list pair nested inside both an a2a message/stream span and a
+		// long-lived $transport/stream span would otherwise render "││" on
+		// both rows instead of "│┌" / "│└".
+		out[i].outer = glyphAt(participating[0], i)
+		if len(participating) > 1 {
+			out[i].inner = glyphAt(participating[len(participating)-1], i)
+		}
 	}
 	return out
 }
 
-// matchInvocationRow does a case-insensitive substring match across every
-// string field the operator might reasonably search for — the invocation's
-// own fields plus the containing event's protocol extensions. Two prefix
-// shortcuts:
+// matchEventRow does a case-insensitive substring match across every string
+// field the operator might reasonably search for — the event's host/method,
+// the fields of every plugin invocation on it, and its protocol extensions.
+// A folded tunnel's fields are searched too, so filtering by a bridged
+// origin's host still surfaces the collapsed row. Two prefix shortcuts:
 //
-//   - `deny` alone matches SessionDenied events and any invocation
-//     whose Action == ActionDeny — the one-word "show me failures"
-//     filter.
-//   - `plugin:<name>` matches rows whose escape-hatch Plugins map on
-//     the parent event has <name> as a key.
-func matchInvocationRow(r invocationRow, q string) bool {
+//   - `deny` alone matches a SessionDenied event and any invocation whose
+//     Action == ActionDeny — the one-word "show me failures" filter.
+//   - `plugin:<name>` matches rows whose escape-hatch Plugins map has <name>
+//     as a key.
+func matchEventRow(r eventRow, q string) bool {
 	q = strings.ToLower(q)
 
 	if q == "deny" {
-		if r.event.Phase == pipeline.SessionDenied {
+		return eventMatchesDeny(r.event) || (r.tunnel != nil && eventMatchesDeny(r.tunnel))
+	}
+
+	if after, ok := strings.CutPrefix(q, "plugin:"); ok {
+		if _, present := r.event.Plugins[after]; present {
 			return true
 		}
-		if r.inv != nil && r.inv.Action == pipeline.ActionDeny {
-			return true
+		if r.tunnel != nil {
+			_, present := r.tunnel.Plugins[after]
+			return present
 		}
 		return false
 	}
 
-	if after, ok := strings.CutPrefix(q, "plugin:"); ok {
-		_, present := r.event.Plugins[after]
-		return present
+	hay := eventHaystack(r.event)
+	if r.tunnel != nil {
+		hay = append(hay, eventHaystack(r.tunnel)...)
 	}
+	for _, s := range hay {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
+}
 
-	e := r.event
-	hay := []string{e.Host, eventMethod(*e)}
-	if r.inv != nil {
-		hay = append(hay,
-			r.inv.Plugin, string(r.inv.Action), r.inv.Reason, r.inv.Path)
+// eventMatchesDeny reports whether e is a deny — either the terminal
+// SessionDenied phase or any invocation with ActionDeny.
+func eventMatchesDeny(e *pipeline.SessionEvent) bool {
+	if e.Phase == pipeline.SessionDenied {
+		return true
+	}
+	for _, iv := range allInvocations(e) {
+		if iv.Action == pipeline.ActionDeny {
+			return true
+		}
+	}
+	return false
+}
+
+// eventHaystack collects every searchable string on an event: host, method,
+// each invocation's plugin/action/reason/path and detail key=values, the
+// caller identity, and protocol-specific content (A2A parts, MCP error, the
+// inference completion / finish reason).
+func eventHaystack(e *pipeline.SessionEvent) []string {
+	hay := []string{e.Host, eventMethodValue(*e)}
+	for _, iv := range allInvocations(e) {
+		hay = append(hay, iv.Plugin, string(iv.Action), iv.Reason, iv.Path)
 		// Plugin-specific diagnostic context — iterate keys + values so
 		// filter text matches on e.g. "target_audience" / the target
-		// audience value without the UI having to know which keys
-		// each plugin writes.
-		for k, v := range r.inv.Details {
+		// audience value without the UI having to know which keys each
+		// plugin writes.
+		for k, v := range iv.Details {
 			hay = append(hay, k, v)
 		}
 	}
@@ -622,70 +721,7 @@ func matchInvocationRow(r invocationRow, q string) bool {
 	if e.Inference != nil {
 		hay = append(hay, e.Inference.Completion, e.Inference.FinishReason)
 	}
-	for _, s := range hay {
-		if strings.Contains(strings.ToLower(s), q) {
-			return true
-		}
-	}
-	return false
-}
-
-// pairInvocationRows pairs request-phase rows with their response-phase
-// counterparts by (direction, plugin). Each plugin's contribution on the
-// request side connects to its own contribution on the response side,
-// independent of other plugins in the same pipeline — so a jwt-validation
-// request row pairs with a jwt-validation response row even when several
-// other plugins fired on the same event.
-//
-// Sequential pairing is good enough for current traffic: each request
-// row is paired with the NEXT response row that shares (direction, plugin)
-// and hasn't been claimed.
-func pairInvocationRows(rows []invocationRow) map[int]int {
-	pairs := make(map[int]int)
-	// Pair key includes plugin + direction + method (from whichever
-	// parser extension is populated). Without the method component,
-	// a fire-and-forget request like MCP's notifications/initialized
-	// would greedily claim the NEXT mcp-parser response — typically
-	// the response to tools/list — and orphan the actual tools/list
-	// request from its own response. Method discrimination makes the
-	// match specific: mcp-parser/out/tools/list only pairs with
-	// mcp-parser/out/tools/list. Auth plugins have no method; empty
-	// methods still pair with empty methods (same key), preserving
-	// pair behaviour for token-exchange and jwt-validation rows.
-	key := func(r invocationRow) (string, pipeline.Direction, bool) {
-		if r.inv == nil {
-			return "", r.direction, false
-		}
-		return r.inv.Plugin + "|" + eventMethod(*r.event), r.direction, true
-	}
-	for i := range rows {
-		if rows[i].event.Phase != pipeline.SessionRequest {
-			continue
-		}
-		if _, already := pairs[i]; already {
-			continue
-		}
-		k, dir, ok := key(rows[i])
-		if !ok {
-			continue
-		}
-		for j := i + 1; j < len(rows); j++ {
-			if rows[j].event.Phase != pipeline.SessionResponse {
-				continue
-			}
-			if _, taken := pairs[j]; taken {
-				continue
-			}
-			rk, rdir, rok := key(rows[j])
-			if !rok || rk != k || rdir != dir {
-				continue
-			}
-			pairs[i] = j
-			pairs[j] = i
-			break
-		}
-	}
-	return pairs
+	return hay
 }
 
 // identityBannerStyle renders the small bordered box above the events
