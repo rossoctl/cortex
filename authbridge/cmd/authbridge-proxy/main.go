@@ -329,9 +329,12 @@ func main() {
 				log.Fatalf("tls-bridge upstream_ca_bundle read failed: %v", err)
 			}
 		}
-		up, uerr := tlsbridge.NewUpstreamClient(extra)
+		up, uerr := tlsbridge.NewUpstreamClient(extra, cfg.TLSBridge.UpstreamInsecure)
 		if uerr != nil {
 			log.Fatalf("tls-bridge upstream client failed: %v", uerr)
+		}
+		if cfg.TLSBridge.UpstreamInsecure {
+			log.Printf("tls-bridge: upstream_insecure=true — re-origination does NOT verify the upstream TLS cert")
 		}
 		minter := tlsbridge.NewMinter(src, tlsbridge.MinterOpts{})
 		var ports map[int]bool // nil => NewDecision defaults to {443, 8443}
