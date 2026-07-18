@@ -56,6 +56,16 @@ jobs:
             build_args: |
               GO_BUILD_TAGS=exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker
 
+          # AuthBridge proxy-sidecar CPEX image — authbridge-proxy built
+          # with -tags cpex (links libcpex_ffi.a from a pinned CPEX
+          # release) so the `cpex` plugin routes hooks through the CPEX
+          # framework (APL DSL + named CPEX policy plugins). Needs the
+          # CPEX_FFI_VERSION build-arg, read from the CPEX_FFI_VERSION
+          # file in the build step below.
+          - name: authbridge-cpex
+            context: ./authbridge
+            dockerfile: cmd/authbridge-cpex/Dockerfile
+
           # SPARC reflection service — the backend the `sparc` plugin calls.
           # Deployed once per cluster via authbridge/sparc-service/deploy.
           - name: sparc-service
@@ -109,6 +119,27 @@ jobs:
             # Add 'latest' tag for version tags, workflow_dispatch, and pushes to main
             type=raw,value=latest,enable=${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
 
+      # 6b. Resolve build-args. authbridge-cpex needs CPEX_FFI_VERSION
+      # (the release tag) and CPEX_FFI_ABI (the FFI ABI integer the
+      # linked lib must report) — both read from the files next to its
+      # Dockerfile and asserted against the tarball at build time. Other
+      # images leave this empty (an undeclared build-arg is ignored).
+      - name: Resolve build args
+        id: buildargs
+        run: |
+          if [[ "${{ matrix.image_config.name }}" == "authbridge-cpex" ]]; then
+            VERSION="$(tr -d '[:space:]' < authbridge/cmd/authbridge-cpex/CPEX_FFI_VERSION)"
+            ABI="$(tr -d '[:space:]' < authbridge/cmd/authbridge-cpex/CPEX_FFI_ABI)"
+            {
+              echo "args<<EOF"
+              echo "CPEX_FFI_VERSION=${VERSION}"
+              echo "CPEX_FFI_ABI=${ABI}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+
       # 7. Build and push image
       - name: Build and push ${{ matrix.image_config.name }}
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
@@ -120,3 +151,4 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ steps.buildargs.outputs.args }}

@@ -3,6 +3,7 @@ go 1.26.4
 use (
 	./authlib
 	./cmd/abctl
+	./cmd/authbridge-cpex
 	./cmd/authbridge-envoy
 	./cmd/authbridge-proxy
 )

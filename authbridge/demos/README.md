@@ -23,6 +23,7 @@ more AuthBridge capabilities.
 | **[abctl Walkthrough](weather-agent/demo-with-abctl.md)** | Reference | Watch the AuthBridge plugin pipeline live with the `abctl` TUI | Tooling only |
 | **[IBAC](ibac/README.md)** | Intermediate | Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's recorded intent. Reproduces the email-poison / prompt-injection attack from `huang195/ibac`; chat with the agent through the kagenti UI and see the exfiltration blocked, then `make show-result` for a pipeline-level forensic | UI + kubectl |
 | **[SPARC (finance)](finance-sparc/README.md)** | Intermediate | SPARC pre-tool reflection: the `sparc` plugin blocks a hallucinated/ungrounded tool argument (an invented transaction id) before it executes and transparently asks the user to clarify, then approves the corrected call. Complements IBAC — SPARC verifies argument grounding, IBAC verifies intent alignment | UI + kubectl |
+| **[CPEX Bridge (HR)](hr-cpex/README.md)** | Advanced | CPEX/APL declarative policy: one route chains a coarse APL predicate, an embedded Cedar PDP, RFC 8693 token exchange with a post-check, PII redaction and audit plugins. Same request, different data per caller (Bob sees an SSN, Eve gets it redacted). Self-contained: its own kind cluster + namespace, deployed via `make` rather than operator injection | [kubectl (make)](hr-cpex/README.md#quick-start) |
 
 ## Recommended Path
 
@@ -90,6 +91,23 @@ more AuthBridge capabilities.
 - Run the `abctl` TUI against the weather-agent's session API
 - See inbound JWT validation → protocol parsers → outbound exchange
   → LLM inference → response, paired live
+
+### CPEX Bridge (HR) — APL Policy Engine
+- **Self-contained**: own namespace `cpex-demo`, deployed with plain
+  `kubectl apply` via `make deploy` (not operator-injected); the
+  `hr-mcp` backend, Keycloak realm, and chat agent are all vendored
+- Runs the `cpex` plugin (the `authbridge-cpex` image) with CPEX's
+  policy language **APL** as a sidecar in front of an MCP backend
+- **Embedded PDP**: APL consults Cedar through a `cedar:` step (the
+  slot is engine-agnostic by design — OPA, AuthZen, …)
+- **Explicit effects**: field redaction on request *and* response, a
+  PII content guardrail, and structured audit logging — all as policy
+  steps, not backend code
+- **Authorization as action**: RFC 8693 token exchange (`delegate(...)`)
+  is a first-class policy step, with a post-check that refuses to
+  forward a token the IdP narrowed below what the call needs
+- Seven deterministic curl scenarios plus an interactive LLM chat with
+  mid-conversation persona switching (Bob / Eve / Alice)
 
 ## Prerequisites
 

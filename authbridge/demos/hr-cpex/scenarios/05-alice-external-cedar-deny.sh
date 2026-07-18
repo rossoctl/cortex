@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Alice (engineering) asks for an EXTERNAL repo. APL's coarse gate
+# passes (she IS in engineering), but Cedar's policy doesn't permit
+# engineering on external visibility — only security can read those.
+# The denial happens at the gateway BEFORE any IdP call.
+#
+#   Layer 1 — APL gate → passes (team.engineering)
+#   Layer 2 — Cedar → DENIES (engineering policy when-clause fails:
+#             resource.visibility == "external", not "internal")
+#   Layers 3-4 — never reached. No token exchange. GitHub never sees
+#             the request.
+#
+# Result: HTTP 200 with an MCP JSON-RPC 2.0 error frame,
+# error.data.error = cpex.cedar_default_deny (the forward proxy renders
+# MCP-protocol errors for MCP requests; see
+# authbridge/authlib/listener/httpx/render.go).
+
+set -euo pipefail
+source "$(dirname "$0")/_lib.sh"
+
+step "Alice (engineering) → search_repos(visibility='external')"
+note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.cedar_default_deny"
+note "Triggered by: Cedar denies — engineering can't read external repos"
+note "Expected upstream: no inbound request (gateway short-circuits at PDP)"
+
+ALICE=$(mint alice)
+CLIENT=$(mint hr-copilot)
+
+curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $CLIENT" \
+  -H "X-User-Token: $ALICE" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "search_repos",
+      "arguments": { "repo_name": "partner-sdk", "visibility": "external" }
+    }
+  }' -i 2>&1 | head -20

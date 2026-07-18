@@ -20,6 +20,12 @@ binaries with shared auth logic in `authlib/`:
   `-tags include_plugin_contextguru` to link it in.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode. ext_proc gRPC server hooked
   into Envoy. Full plugin set. The `exclude_plugin_ibac` tag applies here too.
+- `cmd/authbridge-cpex/` — proxy-sidecar mode, full plugin set plus the
+  `cpex` plugin. Built with `-tags cpex` and requires cgo (CGO_ENABLED=1):
+  it links `libcpex_ffi.a` from a pinned CPEX release to route hooks through
+  the CPEX framework (APL DSL + named CPEX policy plugins). The FFI ABI
+  version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`. The other
+  binaries are pure-Go (CGO_ENABLED=0) and do not import the cpex package.
 - `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`
   built with `exclude_plugin_*` tags so only jwt-validation + token-exchange
   compile in (OPA + parsers dropped). For size-optimized deployments that
@@ -62,6 +68,12 @@ authbridge/
 ├── cmd/authbridge-envoy/             # envoy-sidecar mode. Full plugin set.
 │   ├── main.go
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy)
+│   └── entrypoint.sh
+│
+├── cmd/authbridge-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
+│   ├── main.go
+│   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
 ├── proxy-init/                       # iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)

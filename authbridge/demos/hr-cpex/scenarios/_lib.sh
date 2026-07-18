@@ -1,0 +1,127 @@
+# shellcheck shell=bash
+# Shared helpers for the scenario scripts. Source from each script:
+#
+#   source "$(dirname "$0")/_lib.sh"
+
+# Post-A2A-rework: CPEX now enforces on the agent's OUTBOUND path, so the
+# deterministic curl scenarios drive the tool through the sidecar's FORWARD
+# proxy (not a reverse-proxy gateway in front of hr-mcp). curl uses the
+# forward proxy with the absolute in-cluster MCP URL — the proxy resolves
+# the host cluster-side and runs the outbound mcp-parser → cpex pipeline,
+# exactly as the agent's own tool calls do.
+#
+#   PROXY       — sidecar forward proxy on the host (port-forwarded by
+#                 `make port-forward` as 8083 -> pod 8081; 8081 is taken
+#                 by Keycloak on the host)
+#   MCP_TARGET  — absolute URL the proxy forwards to (cluster DNS)
+PROXY="${PROXY:-http://localhost:8083}"
+MCP_TARGET="${MCP_TARGET:-http://hr-mcp.cpex-demo:9100/mcp}"
+DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+mint() {
+  "$DEMO_DIR/mint-token.sh" "$1"
+}
+
+_print_response() {
+  # Pretty-print: HTTP status + selected headers + body (jq if it parses,
+  # raw otherwise). Always shows *something* — non-JSON error bodies and
+  # gateway-emitted violation headers stay visible.
+  local raw="$1"
+  local status_line headers body
+  status_line=$(printf '%s' "$raw" | awk 'NR==1 {sub(/\r$/, ""); print; exit}')
+  headers=$(printf '%s' "$raw" | awk 'NR>1 && /^\r?$/ {exit} NR>1 {sub(/\r$/, ""); print}')
+  body=$(printf '%s' "$raw" | awk 'p {print} /^\r?$/ {p=1}')
+  echo "  $status_line"
+  printf '%s\n' "$headers" | awk 'tolower($0) ~ /^x-cpex|^content-type|^www-authenticate/ {print "  " $0}'
+  if [ -n "$body" ]; then
+    echo "  ---"
+    if printf '%s' "$body" | jq . >/dev/null 2>&1; then
+      printf '%s\n' "$body" | jq . | sed 's/^/  /'
+    else
+      printf '%s\n' "$body" | sed 's/^/  /'
+    fi
+  fi
+}
+
+_post_tool() {
+  local user_token="$1" client_token="$2" body="$3"
+  # Thread a CPEX session id when the caller sets SESSION_ID. This lands
+  # in Agent.SessionID (AuthBridge reads X-Session-Id) so session-scoped
+  # CPEX state — e.g. taint labels — persists across separate tool calls
+  # in the same logical session. Unset → no header → unchanged behavior.
+  local extra=()
+  [ -n "${SESSION_ID:-}" ] && extra+=(-H "X-Session-Id: $SESSION_ID")
+  # `${extra[@]+"${extra[@]}"}` expands to nothing when the array is empty
+  # without tripping `set -u` on bash 3.2 (macOS), where a bare
+  # `"${extra[@]}"` on an empty array errors "unbound variable".
+  curl -isS --max-time 10 -x "$PROXY" -X POST "$MCP_TARGET" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $client_token" \
+    -H "X-User-Token: $user_token" \
+    ${extra[@]+"${extra[@]}"} \
+    --data "$body"
+}
+
+call_get_compensation() {
+  local user_token="$1"
+  local client_token="$2"
+  local include_ssn="${3:-false}"
+  local employee_id="${4:-EMP-001234}"
+
+  local body
+  body=$(cat <<EOF
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_compensation",
+    "arguments": {
+      "employee_id": "$employee_id",
+      "include_ssn": $include_ssn,
+      "ssn": "would-be-removed-if-redact-fires"
+    }
+  }
+}
+EOF
+  )
+  _print_response "$(_post_tool "$user_token" "$client_token" "$body")"
+}
+
+call_send_email() {
+  local user_token="$1"
+  local client_token="$2"
+  local body_text="${3:-Quarterly planning sync moved to Thursday.}"
+  local subject="${4:-team update}"
+  local to="${5:-teammate@example.com}"
+
+  local body
+  body=$(cat <<EOF
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "send_email",
+    "arguments": {
+      "to": "$to",
+      "subject": "$subject",
+      "body": "$body_text"
+    }
+  }
+}
+EOF
+  )
+  _print_response "$(_post_tool "$user_token" "$client_token" "$body")"
+}
+
+step() {
+  echo
+  echo "============================================================"
+  echo "$@"
+  echo "============================================================"
+}
+
+note() {
+  echo "  ▸ $*"
+}
