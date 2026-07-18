@@ -20,12 +20,17 @@
 #                    2 validators (pii-scan, audit-log)
 #   global.apl.pdp:  1 Cedar PDP (relationship-based authorization)
 #
-#   routes:          get_compensation  →  ACT 1 · Workday flow
-#                    search_repos      →  ACT 2 · GitHub flow
-#                    send_email        →  ACT 3 · PII scanner
+# Each route names the identities it needs in its `authentication:`
+# block and lists its ordered authorization effects under
+# `authorization.pre_invocation:`. Plugins otherwise resolve by name +
+# hook, so the grouping above is purely for reading.
 #
-# Plugins resolve by name + hook + priority, NOT by their order in this
-# file, so the grouping below is purely for reading.
+# Syntax note: this file uses the CPEX v0.2.2 *canonical* APL shape —
+# per-route `authentication:` + `authorization:` sibling blocks, no
+# `apl:` wrapper, `args:`/`result:` as route-level siblings, and `run(...)`
+# to invoke a plugin as an effect (the old `plugin(...)` spelling still
+# works as an alias). The pre-0.2.1 `identity:` / `policy:` keys are hard
+# errors now.
 # ────────────────────────────────────────────────────────────────────
 #
 # Keycloak runs locally at http://localhost:8081. JWTs are RS256-signed
@@ -40,14 +45,13 @@ plugins:
   # ── IDENTITY ─────────────────────────────────────────────────────
   # Two JWT resolvers fire on identity.resolve: the human user's token
   # (X-User-Token) and the agent's client token (Authorization). Both
-  # verify against the realm JWKS.
+  # verify against the realm JWKS. Each route lists the ones it needs in
+  # its `authentication:` block.
 
   # User identity. Carries the human's roles + permissions claims.
   - name: jwt-user
     kind: identity/jwt
     hooks: [identity.resolve]
-    mode: sequential
-    priority: 10
     on_error: fail
     config:
       role: user
@@ -69,8 +73,6 @@ plugins:
   - name: jwt-client
     kind: identity/jwt
     hooks: [identity.resolve]
-    mode: sequential
-    priority: 20
     on_error: fail
     config:
       role: client
@@ -101,9 +103,9 @@ plugins:
   - name: workday-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
-    mode: sequential
-    priority: 30
-    on_error: fail
+    on_error: fail   # delegation failure must BLOCK the call — get_compensation
+                     # has no require(delegation.granted) post-check, so without
+                     # this a failed token exchange would fail open.
     capabilities:
       - read_inbound_credentials
       - write_delegated_tokens
@@ -130,9 +132,9 @@ plugins:
   - name: github-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
-    mode: sequential
-    priority: 31
-    on_error: fail
+    on_error: fail   # delegation failure must BLOCK the call. search_repos also
+                     # has a granted-permissions post-check, but fail-closed here
+                     # keeps a transport/exchange error from ever slipping through.
     capabilities:
       - read_inbound_credentials
       - write_delegated_tokens
@@ -150,7 +152,7 @@ plugins:
 
   # ── VALIDATORS ───────────────────────────────────────────────────
   # pii-scan denies on sensitive patterns; audit-log observes and never
-  # blocks. Routes invoke them via plugin(pii-scan) / plugin(audit-log).
+  # blocks. Routes invoke them via run(pii-scan) / run(audit-log).
 
   # ----------------------------------------------------------------
   # Field-level validator: PII scanner.
@@ -161,8 +163,6 @@ plugins:
   - name: pii-scan
     kind: validator/pii-scan
     hooks: [cmf.tool_pre_invoke]
-    mode: sequential
-    priority: 25
     on_error: fail
     config:
       detect:
@@ -177,15 +177,14 @@ plugins:
   # client, entity, tool args, and any delegation outcomes. Never
   # blocks — observation only. Wired on every CMF entity hook so
   # the audit trail covers all tool / prompt / resource traffic.
+  # Placed LAST in each route's pre_invocation so the record reflects
+  # the final decision + minted tokens.
   - name: audit-log
     kind: audit/logger
     hooks:
       - cmf.tool_pre_invoke
       - cmf.prompt_pre_invoke
       - cmf.resource_pre_fetch
-    mode: sequential
-    priority: 90    # fires AFTER policy / delegate so the record
-                    # reflects the final decision + minted tokens
     on_error: ignore  # observation failures don't halt traffic
     capabilities:
       - read_subject
@@ -197,10 +196,6 @@ plugins:
       source: cpex-demo-gateway
 
 global:
-  identity:
-    - jwt-user
-    - jwt-client
-
   # ----------------------------------------------------------------
   # Cedar PDP — declarative authorization for relationship-based
   # decisions. The Cedar policies live inline below. APL routes
@@ -254,8 +249,11 @@ routes:
   # role/perm predicate + redacts ssn on the wire if missing.
   # ----------------------------------------------------------------
   - tool: get_compensation
-    apl:
-      policy:
+    authentication:
+      - jwt-user
+      - jwt-client
+    authorization:
+      pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
         # Taint the session: reading compensation marks this session as
@@ -267,22 +265,22 @@ routes:
         - "taint(secret, session)"
         # Emit a structured audit record AFTER the policy + delegate
         # decisions are in. Records who called what, with which scope.
-        - "plugin(audit-log)"
-      args:
-        # `redact(!perm.view_ssn)` fires when the caller LACKS the
-        # permission. The arg key remains, value becomes "[REDACTED]" —
-        # downstream tool can see "ssn was here but you can't read it."
-        ssn: "str | redact(!perm.view_ssn)"
-      result:
-        # Symmetric guard on the response side. The tool may include
-        # the SSN in its result (it does, when include_ssn=true);
-        # without this rule, a caller with role.hr but NOT
-        # perm.view_ssn (e.g. eve) would receive it. Redacting on the
-        # response closes the loop — the LLM-driven flow doesn't even
-        # require the caller to mention `ssn` in args for the guard
-        # to fire, because the SSN comes back unsolicited in the
-        # upstream tool's response.
-        ssn: "str | redact(!perm.view_ssn)"
+        - "run(audit-log)"
+    args:
+      # `redact(!perm.view_ssn)` fires when the caller LACKS the
+      # permission. The arg key remains, value becomes "[REDACTED]" —
+      # downstream tool can see "ssn was here but you can't read it."
+      ssn: "str | redact(!perm.view_ssn)"
+    result:
+      # Symmetric guard on the response side. The tool may include
+      # the SSN in its result (it does, when include_ssn=true);
+      # without this rule, a caller with role.hr but NOT
+      # perm.view_ssn (e.g. eve) would receive it. Redacting on the
+      # response closes the loop — the LLM-driven flow doesn't even
+      # require the caller to mention `ssn` in args for the guard
+      # to fire, because the SSN comes back unsolicited in the
+      # upstream tool's response.
+      ssn: "str | redact(!perm.view_ssn)"
 
   # ════════════════════════════════════════════════════════════════
   # ACT 2 · GITHUB FLOW · scenarios 04-alice-internal / 05-external / 06-bob
@@ -305,8 +303,11 @@ routes:
   #                     forward — the token never reaches GitHub.
   # ----------------------------------------------------------------
   - tool: search_repos
-    apl:
-      policy:
+    authentication:
+      - jwt-user
+      - jwt-client
+    authorization:
+      pre_invocation:
         # Layer 1 — coarse APL gate on group membership.
         - "require(team.engineering | team.security)"
 
@@ -333,7 +334,7 @@ routes:
         - "!(delegation.granted.permissions contains 'repo:read:internal'): deny"
 
         # Audit every github call.
-        - "plugin(audit-log)"
+        - "run(audit-log)"
 
   # ════════════════════════════════════════════════════════════════
   # ACT 3 · PII SCANNER · scenario 07-bob-pii-deny
@@ -347,12 +348,15 @@ routes:
   # via the audit logger.
   # ----------------------------------------------------------------
   - tool: send_email
-    apl:
-      policy:
+    authentication:
+      - jwt-user
+      - jwt-client
+    authorization:
+      pre_invocation:
         - "require(perm.email_send)"
         # Walks args.body / args.subject / args.to and denies if any
         # carries an SSN-like or credit-card-like pattern.
-        - "plugin(pii-scan)"
+        - "run(pii-scan)"
         # ACT 4 · TAINT PROPAGATION · scenario 08-bob-taint-deny
         # Block external email from a session that previously accessed
         # secret data (get_compensation taints the session "secret").
@@ -367,4 +371,4 @@ routes:
         # yet wired in the pinned FFI — labels surface uniformly under
         # `security.labels`). Session scope is what makes it survive to here.
         - "security.labels contains \"secret\": deny('external email blocked: this session accessed secret data', 'session_tainted_secret')"
-        - "plugin(audit-log)"
+        - "run(audit-log)"

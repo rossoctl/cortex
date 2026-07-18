@@ -84,7 +84,7 @@ so resolved credentials reach delegation in CPEX memory.
 ## CPEX plugins
 
 APL routes pull from a toolbox of named CPEX sub-plugins declared in the CPEX
-YAML. Routes invoke them by name through APL steps: `plugin(pii-scan)`,
+YAML. Routes invoke them by name through APL steps: `run(pii-scan)`,
 `delegate(workday-oauth, ...)`, `cedar: { ... }`. See the HR demo for examples.
 
 ## CPEX APL
@@ -96,24 +96,30 @@ sequencing, over the common CMF vocabulary. A route binds a policy to one entity
 ```yaml
 routes:
   - tool: get_compensation
-    apl:
-      policy:
+    authentication:
+      - jwt-user                            # identity plugins that resolve the caller
+      - jwt-client
+    authorization:
+      pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
         - "taint(secret, session)"          # session label persists across calls
-        - "plugin(audit-log)"
-      args:
-        ssn: "str | redact(!perm.view_ssn)" # redact request arg when caller lacks the perm
-      result:
-        ssn: "str | redact(!perm.view_ssn)" # redact the response field too
+        - "run(audit-log)"
+    args:
+      ssn: "str | redact(!perm.view_ssn)"   # redact request arg when caller lacks the perm
+    result:
+      ssn: "str | redact(!perm.view_ssn)"   # redact the response field too
 
   - tool: send_email
-    apl:
-      policy:
+    authentication:
+      - jwt-user
+      - jwt-client
+    authorization:
+      pre_invocation:
         - "require(perm.email_send)"
-        - "plugin(pii-scan)"
+        - "run(pii-scan)"
         - "security.labels contains \"secret\": deny('external email blocked', 'session_tainted_secret')"
-        - "plugin(audit-log)"
+        - "run(audit-log)"
 ```
 
 `get_compensation` taints the session with `secret`. The label persists in the
@@ -127,17 +133,17 @@ APL steps can call out to external policy decision points and act on their
 verdict with the same effect vocabulary:
 
 ```yaml
-policy:
+pre_invocation:
   - require(authenticated)
   - opa("http://opa:8181/v1/data/hr/compensation/deny"):
       on_deny:
         - deny
         - taint(compensation_violation, session)
-        - plugin(audit-log)
+        - run(audit-log)
   - cedar:
       action: "Jans::Action::Read"
       resource_type: "Jans::CompensationRecord"
-      on_deny: [deny, plugin(compliance_alert)]
+      on_deny: [deny, run(compliance_alert)]
   - authzen("https://authz.corp.com/access/v1/evaluation"):
       on_deny: [deny]
 ```

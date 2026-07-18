@@ -14,7 +14,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Alice (engineer) → get_compensation"
-note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.routes_tool_get_compensation_apl_policy_0_"
+note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.routes_tool_get_compensation_apl_pre_invocation_0_"
 note "Triggered by: require(role.hr) deny BEFORE delegation runs"
 note "Expected upstream: no inbound request (gateway short-circuited)"
 

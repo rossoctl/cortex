@@ -37,8 +37,8 @@ compose three things a plain PDP does not:
   cheap predicates first and the PDP only for requests that clear them.
 - **Explicit effects.** Authorization is more than allow or deny. APL
   expresses effects as first-class steps: `redact(...)` rewrites a
-  field on the wire, `plugin(pii-scan)` runs a content guardrail,
-  `plugin(audit-log)` records the outcome. The decision and what to do
+  field on the wire, `run(pii-scan)` runs a content guardrail,
+  `run(audit-log)` records the outcome. The decision and what to do
   about it live in the same place.
 - **Actions as decisions.** `delegate(...)` mints a downstream-scoped
   token (RFC 8693 token exchange) as a policy step, and a post-check
@@ -328,9 +328,11 @@ permission directly on the user token. APL gates on a flat predicate
 and redacts the SSN on the wire when the permission is missing:
 
 ```text
-require(role.hr)
-delegate(workday-oauth, target: workday-api, permissions: [read_compensation])
-plugin(audit-log)
+authentication: [jwt-user, jwt-client]
+authorization.pre_invocation:
+  require(role.hr)
+  delegate(workday-oauth, target: workday-api, permissions: [read_compensation])
+  run(audit-log)
 args.ssn   ->  str | redact(!perm.view_ssn)
 result.ssn ->  str | redact(!perm.view_ssn)
 ```

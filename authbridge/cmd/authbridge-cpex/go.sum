@@ -8,8 +8,8 @@ github.com/bytecodealliance/wasmtime-go/v44 v44.0.0 h1:WRZXnLPIer/TWs5aYPaMlmVcO
 github.com/bytecodealliance/wasmtime-go/v44 v44.0.0/go.mod h1:GP93piU+39CoFVCQ5xfHrPOUtL0APlMnkbblJ2d3YY0=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
-github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2 h1:Ddpq+JFjnA7G4VUiHJPP2520GPmIv2XmikUV2n/gRd0=
-github.com/contextforge-org/cpex/go/cpex v0.2.0-alpha.2/go.mod h1:SuDkdY76asy9MP/72YKqhc2FBcFZ9t5PKe3CeXSO4/g=
+github.com/contextforge-org/cpex/go/cpex v0.2.2 h1:rC0HciJa19nEz9LcjmgwyjoRF3EUFidNpAT6eYu1fhA=
+github.com/contextforge-org/cpex/go/cpex v0.2.2/go.mod h1:SuDkdY76asy9MP/72YKqhc2FBcFZ9t5PKe3CeXSO4/g=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
