@@ -6,7 +6,7 @@
 // available tool specifications. SPARC catches hallucinated / ungrounded
 // arguments (e.g. an invented transaction id) and inappropriate tool selection.
 //
-// Generic by design — works for ANY kagenti agent. SPARC's three inputs are
+// Generic by design — works for ANY rossoctl agent. SPARC's three inputs are
 // collected from exactly what the agent produces, with no bespoke per-agent
 // wiring:
 //
@@ -21,7 +21,7 @@
 // Enforcement is format-aware (the verdict is returned to the agent in the
 // shape it expects):
 //
-//   - enforcement: "mcp" (default; the kagenti norm) — gate the outbound MCP
+//   - enforcement: "mcp" (default; the rossoctl norm) — gate the outbound MCP
 //     tools/call. On a reflected reject, return SPARC's clarification as a
 //     JSON-RPC MCP tool *result*; the agent's MCP client consumes it like any
 //     tool output and asks the user for the missing detail. Robust to LLM
@@ -45,9 +45,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 )
 
 // enforcement modes.

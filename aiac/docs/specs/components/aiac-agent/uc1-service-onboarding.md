@@ -81,11 +81,11 @@ START → classify_service → [analyze_agent | analyze_tool] → provision_serv
 
 ### Nodes
 
-- **`classify_service`**: resolves identity + determines service type from the operator's authoritative `kagenti.io/type` label (values `agent`/`tool`) — **not** from the `entity_id` format.
+- **`classify_service`**: resolves identity + determines service type from the operator's authoritative `rossoctl.io/type` label (values `agent`/`tool`) — **not** from the `entity_id` format.
   1. Store `service_id = trigger.entity_id` (Keycloak `client_id`).
-  2. Resolve identity: call `get_service(service_id)` from `aiac.idp.configuration.api` → `client.name`, which the kagenti-operator sets to `"{namespace}/{workload_name}"` for every workload (agents and tools, SPIRE-enabled or not). Split on the first `/` → store `namespace` and `workload_name`. `502` if `client.name` has no `/` (namespace unrecoverable).
+  2. Resolve identity: call `get_service(service_id)` from `aiac.idp.configuration.api` → `client.name`, which the operator sets to `"{namespace}/{workload_name}"` for every workload (agents and tools, SPIRE-enabled or not). Split on the first `/` → store `namespace` and `workload_name`. `502` if `client.name` has no `/` (namespace unrecoverable).
   3. LIST pods in `namespace`; select the pod owned by `workload_name` via `ownerReferences` (Deployment → ReplicaSet name prefix, or `StatefulSet`/`Sandbox` name match). `502` on Kubernetes API failure or no matching pod.
-  4. Read the `kagenti.io/type` label on that pod and normalize it to a `ServiceType`
+  4. Read the `rossoctl.io/type` label on that pod and normalize it to a `ServiceType`
      member via `ServiceType(label.capitalize())` — the label is lowercase
      (`agent`/`tool`); `ServiceType` values are capitalized (`Agent`/`Tool`):
      - `agent` → `ServiceType.AGENT`; route to `analyze_agent`.
@@ -93,10 +93,10 @@ START → classify_service → [analyze_agent | analyze_tool] → provision_serv
      - Absent or any other value (normalization raises `ValueError`) → `502` (inconsistent deployment).
 
   > K8s access: `list` on `pods` in the target namespace (both paths).
-  > `kagenti.io/type` is authoritative — applied by the kagenti-operator (via the AgentRuntime CR) and propagated to pod labels; it is the operator's own agent/tool discriminator (`SkipReason`, kagenti-operator `internal/clientreg/names.go`). The operator only registers a Keycloak client for a workload that already carries this label, so it is effectively guaranteed for operator-registered clients; a missing/invalid value still fails loud (`502`, naming the workload + label). The `entity_id` format (SPIFFE vs plain) reflects whether SPIRE is enabled, **not** the service type, so it is not used for classification.
+  > `rossoctl.io/type` is authoritative — applied by the operator (via the AgentRuntime CR) and propagated to pod labels; it is the operator's own agent/tool discriminator (`SkipReason`, operator `internal/clientreg/names.go`). The operator only registers a Keycloak client for a workload that already carries this label, so it is effectively guaranteed for operator-registered clients; a missing/invalid value still fails loud (`502`, naming the workload + label). The `entity_id` format (SPIFFE vs plain) reflects whether SPIRE is enabled, **not** the service type, so it is not used for classification.
 
 - **`analyze_agent`**: non-LLM node; reads AgentCard CR.
-  1. LIST `AgentCard` CRs (`agent.kagenti.dev/v1alpha1`) in `namespace`; find the one matching `workload_name`.
+  1. LIST `AgentCard` CRs (`agent.rossoctl.dev/v1alpha1`) in `namespace`; find the one matching `workload_name`.
   2. **AgentCard found** → produce `ServiceProvision`:
      - `roles`: `[RoleDefinition(name=f"{workloadName}.agent", description="Agent role")]`
      - `scopes`: `[ScopeDefinition(name=f"{workloadName}.{skill.name}", description=skill.description) for skill in card.skills]`
@@ -106,12 +106,12 @@ START → classify_service → [analyze_agent | analyze_tool] → provision_serv
      - `scopes`: `[ScopeDefinition(name=f"{workloadName}.access", description="Default access scope")]`
      - `reasoning`: `"partial: no AgentCard found, default scope assigned"`
 
-  > K8s access: `list` on `agentcards.agent.kagenti.dev` in the target namespace.
+  > K8s access: `list` on `agentcards.agent.rossoctl.dev` in the target namespace.
 
 - **`analyze_tool`**: non-LLM node; discovers MCP tools. `namespace` + `workload_name` are already resolved by `classify_service` (from the `client.name` split). MCP endpoint lookup uses the **hybrid Keycloak→K8s strategy** decided in issue `docs/gh-issues/6.2-analyze-tool-lookup-strategy.md`: the Keycloak client name supplied the key `{namespace, workload_name}`; K8s supplies the reachable endpoint.
   1. Locate MCP endpoint:
      a. GET the K8s `Service` named `workload_name` in `namespace` (operator convention: Service name == workload name).
-     b. Require the `protocol.kagenti.io/mcp` label present on that Service; `502` (actionable) if absent — the label is applied at deploy time, not stamped by the operator.
+     b. Require the `protocol.rossoctl.io/mcp` label present on that Service; `502` (actionable) if absent — the label is applied at deploy time, not stamped by the operator.
      c. Build `http://{workload_name}.{namespace}.svc.cluster.local:{port}/mcp`, where `port` is the Service's first port (not hardcoded).
   2. Call `tools/list` (HTTP POST, MCP protocol) on the resolved endpoint.
   3. Produce `ServiceProvision`:
@@ -121,10 +121,10 @@ START → classify_service → [analyze_agent | analyze_tool] → provision_serv
   4. Returns `502` on Service/label lookup failure or MCP call failure.
 
   > K8s access: `get` on `services` in the workload namespace (tool path). Identity is resolved by `classify_service` (config API).
-  > MCP path convention: all MCP tool services must serve at `/mcp` and carry the `protocol.kagenti.io/mcp` label. This label is a **deploy-time prerequisite** — the kagenti-operator does not stamp it today; automatic stamping is requested upstream (`docs/gh-issues/kagenti-operator-mcp-label-stamping.md`). Until then it must be applied at deploy time; `analyze_tool` fails loud (`502`, naming the workload + missing label) if it is absent.
+  > MCP path convention: all MCP tool services must serve at `/mcp` and carry the `protocol.rossoctl.io/mcp` label. This label is a **deploy-time prerequisite** — the operator does not stamp it today; automatic stamping is requested upstream (`docs/gh-issues/operator-mcp-label-stamping.md`). Until then it must be applied at deploy time; `analyze_tool` fails loud (`502`, naming the workload + missing label) if it is absent.
 
 - **`provision_service`**: non-LLM node; calls `create_service_role` and `create_service_scope` from `aiac.idp.configuration.api` for each entry in `ServiceProvision`. Reads `service_id` from state. Writes are **idempotent** (create-or-get).
-  - Also persists the discovered `service_type` onto the Keycloak client via `Configuration.set_service_type(service, service_type)`, which stores it as the **`client.type`** attribute. This is the **authoritative origin** of the attribute that the IdP library's `Service._resolve_keycloak_fields` reads back (see the IdP library spec's type-resolution precedence). No case mapping is needed here: `service_type` is a `ServiceType` (values `Agent`/`Tool`), already matching `client.type` and `Service.type`. Case normalization happens once, upstream, when `classify_service` reads the lowercase `kagenti.io/type` label.
+  - Also persists the discovered `service_type` onto the Keycloak client via `Configuration.set_service_type(service, service_type)`, which stores it as the **`client.type`** attribute. This is the **authoritative origin** of the attribute that the IdP library's `Service._resolve_keycloak_fields` reads back (see the IdP library spec's type-resolution precedence). No case mapping is needed here: `service_type` is a `ServiceType` (values `Agent`/`Tool`), already matching `client.type` and `Service.type`. Case normalization happens once, upstream, when `classify_service` reads the lowercase `rossoctl.io/type` label.
 
 ### State: `OnboardingProvisionState`
 

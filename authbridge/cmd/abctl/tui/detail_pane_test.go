@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // tlsHeader returns "" for plaintext events so callers can prepend
@@ -21,13 +21,13 @@ func TestTLSHeader_FullState(t *testing.T) {
 	got := tlsHeader(&pipeline.EventTLS{
 		Version:      "TLS 1.3",
 		CipherSuite:  "TLS_AES_128_GCM_SHA256",
-		PeerSPIFFEID: "spiffe://kagenti.local/ns/team1/sa/caller-agent",
+		PeerSPIFFEID: "spiffe://rossoctl.local/ns/team1/sa/caller-agent",
 	})
 	for _, want := range []string{
 		"TLS:",
 		"version: TLS 1.3",
 		"cipher: TLS_AES_128_GCM_SHA256",
-		"peer:    spiffe://kagenti.local/ns/team1/sa/caller-agent",
+		"peer:    spiffe://rossoctl.local/ns/team1/sa/caller-agent",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("tlsHeader missing %q\ngot:\n%s", want, got)

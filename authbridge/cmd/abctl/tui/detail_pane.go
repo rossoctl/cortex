@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized
@@ -82,7 +82,7 @@ func tunnelHeader(tunnel *pipeline.SessionEvent) string {
 //
 //	TLS:
 //	  version: TLS 1.3 · cipher: TLS_AES_128_GCM_SHA256
-//	  peer:    spiffe://kagenti.local/ns/team1/sa/caller-agent
+//	  peer:    spiffe://rossoctl.local/ns/team1/sa/caller-agent
 //
 // Empty fields are skipped so the block stays terse on partial data.
 func tlsHeader(tls *pipeline.EventTLS) string {

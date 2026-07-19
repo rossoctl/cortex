@@ -1,6 +1,6 @@
 // Package contextguru is an outbound AuthBridge plugin that compacts an agent's
 // LLM request context before it is forwarded upstream, using the embedded
-// github.com/kagenti/context-guru engine. It runs in the pre-LLM hook
+// github.com/rossoctl/context-guru engine. It runs in the pre-LLM hook
 // (OnRequest): it hands the outbound request body to apply.BodyWithModel, and if
 // the engine rewrote it (dropped/reduced tool outputs, injected cache_control,
 // etc.) it replaces the body via pctx.SetBody. OnResponse is a pass-through in
@@ -26,16 +26,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/llmclient"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/llmclient"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 
-	"github.com/kagenti/context-guru/apply"
-	cgcomponents "github.com/kagenti/context-guru/components"
-	_ "github.com/kagenti/context-guru/components/offload"  // register offload components
-	_ "github.com/kagenti/context-guru/components/reformat" // register reformat components
-	cgconfig "github.com/kagenti/context-guru/config"
-	cgstore "github.com/kagenti/context-guru/store"
+	"github.com/rossoctl/context-guru/apply"
+	cgcomponents "github.com/rossoctl/context-guru/components"
+	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
+	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
+	cgconfig "github.com/rossoctl/context-guru/config"
+	cgstore "github.com/rossoctl/context-guru/store"
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 )
 

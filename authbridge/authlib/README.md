@@ -36,8 +36,8 @@ Plugins own their own configuration and construct any `auth.Auth` they need inte
 
 ```go
 import (
-    "github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-    "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+    "github.com/rossoctl/rossocortex/authbridge/authlib/config"
+    "github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 )
 
 cfg, _ := config.Load("config.yaml")
@@ -58,7 +58,7 @@ For direct use of the `auth/` composition layer (outside of plugins), see `auth/
 ## Go Module
 
 ```
-module github.com/kagenti/kagenti-extensions/authbridge/authlib
+module github.com/rossoctl/rossocortex/authbridge/authlib
 ```
 
 Direct dependencies: `lestrrat-go/jwx/v2`, `gobwas/glob`, `gopkg.in/yaml.v3`. No gRPC or Envoy deps.

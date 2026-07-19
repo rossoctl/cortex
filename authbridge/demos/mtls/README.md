@@ -1,7 +1,7 @@
 # mTLS demo — agent-to-agent encryption via SPIRE X.509 SVIDs
 
 > **Status.** Both variants are verified end-to-end on a kind +
-> kagenti + SPIRE cluster — `make demo-mtls` (proxy-sidecar) and
+> rossoctl + SPIRE cluster — `make demo-mtls` (proxy-sidecar) and
 > `make demo-mtls-envoy*` (envoy-sidecar; see the
 > [envoy-sidecar variant](#envoy-sidecar-variant) section below).
 > An earlier revision of this README flagged the proxy-sidecar demo
@@ -35,7 +35,7 @@ the token-exchange flows — it just proves the mTLS layer is real.
 
 ## Prerequisites
 
-1. **A kagenti install on a kind cluster** with SPIRE enabled.
+1. **A rossoctl install on a kind cluster** with SPIRE enabled.
 2. **kubectl, kind, podman (or docker)** on PATH.
 
 ## Quick start
@@ -74,7 +74,7 @@ The `make demo-mtls` target does:
    workloads pick it up.
 3. Restarts the pods so the new config takes effect (mTLS config
    requires pod restart per the framework hot-reload boundary).
-4. Triggers a request from caller → callee through the kagenti UI
+4. Triggers a request from caller → callee through the rossoctl UI
    flow (caller's outbound forward proxy → callee's inbound reverse
    proxy).
 5. Captures cluster traffic via `tcpdump -i any -n -A 'tcp port 8080'`
@@ -91,9 +91,9 @@ The `make demo-mtls` target does:
   and `make demo-mtls-strict-rejects-plain`.
 - **Cert rotation under load**: tested via unit tests in
   `authlib/spiffe/x509source_test.go`.
-- **kagenti UI integration**: this demo is intentionally pre-UI —
+- **rossoctl UI integration**: this demo is intentionally pre-UI —
   if you want to chat with an mTLS-protected agent, run any other
-  kagenti demo with `mtls: { mode: strict }` added to its config.
+  rossoctl demo with `mtls: { mode: strict }` added to its config.
 - **Ambient mesh interaction**: when ambient is on, ztunnel handles
   the cross-pod hop and authbridge's mTLS is redundant. This demo
   doesn't run ambient. Phase 5 will add ambient detection so the
@@ -161,7 +161,7 @@ only.
 
 ### How the demo wires mTLS
 
-The demo is fully **hand-crafted** — no `kagenti.io/inject` label,
+The demo is fully **hand-crafted** — no `rossoctl.io/inject` label,
 no operator pod injection. This sidesteps both
 [operator-side notes](#operator-side-notes): no RO `/opt` mount because
 we control the volumes, no per-agent CM reconciliation because there
@@ -192,24 +192,24 @@ Production traffic uses ORIGINAL_DST + iptables — that's a
 deployment-shape concern, not a mTLS-design concern. Reusing the
 same TLS blocks (`tls_inspector`, `DownstreamTlsContext`, filter
 chain match, `UpstreamTlsContext`) in the operator's
-`envoy.yaml.tmpl` with ORIGINAL_DST is what the kagenti-operator
+`envoy.yaml.tmpl` with ORIGINAL_DST is what the operator
 follow-up PR does. The follow-up also fixes the RO `/opt` mount
 and per-agent CM rendering; once it lands, the user sets
-`mtlsMode: strict` on the AgentRuntime CR (or in the kagenti UI)
+`mtlsMode: strict` on the AgentRuntime CR (or in the rossoctl UI)
 and the operator wires up the same Envoy YAML this demo ships by
 hand.
 
 ## Operator-side notes
 
 Running both variants against a real cluster surfaced two
-kagenti-operator items worth knowing about. Both are addressed in
-the kagenti-operator companion PR. A third issue (Pod-spec selector
+operator items worth knowing about. Both are addressed in
+the operator companion PR. A third issue (Pod-spec selector
 mismatch) was a demo-side oversight already fixed by the manifest
 updates that landed alongside the envoy-sidecar variant.
 
 ### `/opt` mount asymmetry on envoy-sidecar (operator bug, fixed in companion PR)
 
-The kagenti-operator's pod mutator was mounting `svid-output` at
+The operator's pod mutator was mounting `svid-output` at
 `/opt` with `readOnly: true` on envoy-sidecar's `envoy-proxy`
 container while the proxy-sidecar branch correctly mounted it RW.
 The in-process spiffe Provider mirror writes `/opt/svid.pem`,
@@ -226,11 +226,11 @@ because the file-based `DownstreamTlsContext` / `UpstreamTlsContext`
 references couldn't resolve. **Affects: envoy-sidecar mode only.**
 The fix landed in the companion PR — flips the readOnly bit on the
 `svid-output` volumeMount in `BuildEnvoyProxyContainerWithSpireOption`
-(`kagenti-operator/internal/webhook/injector/container_builder.go`).
+(`operator/internal/webhook/injector/container_builder.go`).
 
 ### Per-agent CMs are operator-owned (by-design; reflected in this PR's script)
 
-The kagenti-operator's pod-mutating webhook builds each per-agent
+The operator's pod-mutating webhook builds each per-agent
 `authbridge-config-<name>` ConfigMap by reading the namespace
 `authbridge-runtime-config` as baseYAML and overlaying values
 resolved from the AgentRuntime CR (or defaults when no CR exists).
@@ -253,8 +253,8 @@ pod.
 
 ### Demo pod enrollment via AgentRuntime
 
-The kagenti-operator's mutating-webhook `objectSelector` requires
-`kagenti.io/type` in `[agent, tool]`. The demo manifests include
+The operator's mutating-webhook `objectSelector` requires
+`rossoctl.io/type` in `[agent, tool]`. The demo manifests include
 AgentRuntime CRs that enroll each workload — the operator applies
 the label automatically. The `demo-app` containers set an explicit
 `runAsUser: 100` (the `curlimages/curl:latest` image runs as the

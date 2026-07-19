@@ -442,7 +442,7 @@ def main():
         help="Path to routes.yaml (default: /etc/authproxy/routes.yaml)",
     )
     parser.add_argument("--keycloak-url", default="http://keycloak.localtest.me:8080", help="Keycloak server URL")
-    parser.add_argument("--realm", default="kagenti", help="Keycloak realm (default: kagenti)")
+    parser.add_argument("--realm", default="rossoctl", help="Keycloak realm (default: rossoctl)")
     parser.add_argument("--admin-user", default="admin", help="Keycloak admin username")
     parser.add_argument("--admin-password", default="admin", help="Keycloak admin password")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would be done without making changes")

@@ -69,7 +69,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 test-jwt-rotation.sh
-kagenti-webhook/bin/
+rossoctl-webhook/bin/
 
 # Go build artifacts — local `go build` outputs in cmd/* dirs
 # (binary name matches the package dir; trivially `git add`-ed by mistake).

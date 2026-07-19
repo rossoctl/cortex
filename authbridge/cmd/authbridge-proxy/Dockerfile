@@ -13,7 +13,7 @@
 #
 # Build context: ./authbridge (needs access to authlib/ and cmd/authbridge-proxy/)
 #
-# authlib embeds github.com/kagenti/context-guru (a published module, fetched via
+# authlib embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY like any other dependency). It builds pure-Go — skeleton's cgo is behind
 # the cg_skeleton build tag — so CGO_ENABLED=0 below stays correct.
 

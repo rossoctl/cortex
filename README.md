@@ -1,6 +1,6 @@
-# Kagenti Extensions
+# Rossoctl Extensions
 
-Kubernetes security extensions for the [Kagenti](https://github.com/kagenti/kagenti) ecosystem, providing **zero-trust authentication** for workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
+Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem, providing **zero-trust authentication** for workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
 
 ## AuthBridge
 
@@ -14,14 +14,14 @@ Kubernetes security extensions for the [Kagenti](https://github.com/kagenti/kage
 - **[proxy-init](./authbridge/proxy-init/)** — iptables init container used by envoy-sidecar mode for transparent traffic interception.
 - **[Keycloak Sync](./authbridge/keycloak_sync.py)** — Declarative tool for synchronizing Keycloak configuration.
 
-Keycloak client registration runs in the [kagenti-operator](https://github.com/kagenti/kagenti-operator) (separate repo, post-#411 / kagenti-operator#361 — no in-pod registration sidecar).
+Keycloak client registration runs in the [operator](https://github.com/rossoctl/operator) (separate repo, post-#411 / operator#361 — no in-pod registration sidecar).
 
 See the [AuthBridge README](./authbridge/README.md) for architecture details and the [demos index](./authbridge/demos/README.md) for getting started.
 
 ## Container Images
 
-All images are published to `ghcr.io/kagenti/kagenti-extensions/`. After
-kagenti-extensions#411 the unified binary was split into three
+All images are published to `ghcr.io/rossoctl/rossocortex/`. After
+rossocortex#411 the unified binary was split into three
 mode-specific combined images, and the per-component sidecars
 (`client-registration`, standalone `spiffe-helper`) were retired:
 
@@ -34,7 +34,7 @@ mode-specific combined images, and the per-component sidecars
 
 `spiffe-helper` is bundled inside each combined image and gated per
 workload by the `SPIRE_ENABLED` env var. Client registration is
-handled by the kagenti-operator's `ClientRegistrationReconciler` and
+handled by the operator's `ClientRegistrationReconciler` and
 no longer ships as a separate image. The legacy `authbridge-unified`,
 `authbridge-light`, `client-registration`, and standalone `spiffe-helper`
 images are no longer published; older release tags continue to
@@ -60,8 +60,8 @@ See [LOCAL_TESTING_GUIDE.md](./LOCAL_TESTING_GUIDE.md) for the full local develo
 
 ## Related Repositories
 
-- [kagenti](https://github.com/kagenti/kagenti) — Core Kagenti platform
-- [kagenti-operator](https://github.com/kagenti/kagenti-operator) — Kubernetes operator for sidecar injection (includes the admission webhook)
+- [rossoctl](https://github.com/rossoctl/rossoctl) — Core Rossoctl platform
+- [operator](https://github.com/rossoctl/operator) — Kubernetes operator for sidecar injection (includes the admission webhook)
 
 ## License
 

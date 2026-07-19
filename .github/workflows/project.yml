@@ -1,4 +1,4 @@
-name: Kagenti Project Automation
+name: Rossoctl Project Automation
 
 on:
   issues:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   add:
-    name: Add item to Kagenti Project
+    name: Add item to Rossoctl Project
 
     permissions:
       issues: write
@@ -19,5 +19,5 @@ jobs:
       contents: read
 
     # Pinned to @main intentionally: org-internal workflows propagate updates automatically.
-    uses: kagenti/.github/.github/workflows/add-to-project.yml@main
+    uses: rossoctl/.github/.github/workflows/add-to-project.yml@main
     secrets: inherit

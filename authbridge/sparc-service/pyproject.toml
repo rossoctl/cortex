@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "kagenti-sparc-service"
+name = "rossoctl-sparc-service"
 version = "0.1.0"
-description = "Kagenti SPARC reflection service — a thin in-process HTTP wrapper around the SPARC pre-tool reflection component from the agent-lifecycle-toolkit (ALTK)."
+description = "Rossoctl SPARC reflection service — a thin in-process HTTP wrapper around the SPARC pre-tool reflection component from the agent-lifecycle-toolkit (ALTK)."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [project.scripts]
-kagenti-sparc-service = "sparc_service.__main__:main"
+rossoctl-sparc-service = "sparc_service.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sparc_service"]

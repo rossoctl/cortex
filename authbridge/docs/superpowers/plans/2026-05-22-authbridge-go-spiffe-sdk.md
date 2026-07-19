@@ -1382,7 +1382,7 @@ func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...p
 
 The existing `Build` function is unchanged; new wiring uses `BuildWithSPIFFE`.
 
-> Import for `spiffe` package: `import "github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"`. Verify there's no cycle (spiffe should not import plugins; plugins importing spiffe is fine).
+> Import for `spiffe` package: `import "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"`. Verify there's no cycle (spiffe should not import plugins; plugins importing spiffe is fine).
 
 - [ ] **Step 4: Run tests**
 
@@ -1446,7 +1446,7 @@ In `authlib/plugins/tokenexchange/plugin.go`:
 
 ```go
 import (
-    fwspiffe "github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+    fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // Add field to TokenExchange struct:
@@ -1767,7 +1767,7 @@ Expected: PASS. If any package still imports `FileX509Source` / `NewFileX509Sour
 git commit -s -m "refactor(spiffe): delete FileX509Source
 
 No runtime caller after the Provider/workloadX509 migration. Deletion
-follows the kagenti CLAUDE.md guidance to remove unused code rather
+follows the rossoctl CLAUDE.md guidance to remove unused code rather
 than leave it behind.
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
@@ -1874,7 +1874,7 @@ Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
 - [ ] PR description includes:
   - Spec link: `authbridge/docs/superpowers/specs/2026-05-22-authbridge-go-spiffe-sdk-design.md`
   - Manual-verification checklist results
-  - Note on chart sequencing: "kagenti chart PR adding `spiffe.jwt_audience` rendering must merge first"
+  - Note on chart sequencing: "rossoctl chart PR adding `spiffe.jwt_audience` rendering must merge first"
   - Image-size delta (~15-20MB compressed reduction per image)
   - `Assisted-By: Claude Code` footer
 

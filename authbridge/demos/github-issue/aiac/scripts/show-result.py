@@ -23,7 +23,7 @@ from keycloak import KeycloakAdmin  # noqa: E402
 
 load_dotenv(dotenv_path=AIAC_DIR / "aiac.env", override=True)
 
-REALM = os.getenv("REALM_NAME", "kagenti")
+REALM = os.getenv("REALM_NAME", "rossoctl")
 KEYCLOAK_URL = os.getenv("KEYCLOAK_URL")
 KEYCLOAK_USER = os.getenv("KEYCLOAK_ADMIN_USERNAME")
 KEYCLOAK_PASS = os.getenv("KEYCLOAK_ADMIN_PASSWORD")

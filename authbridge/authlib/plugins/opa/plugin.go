@@ -17,9 +17,9 @@ import (
 	"github.com/open-policy-agent/opa/sdk"
 	opalog "github.com/open-policy-agent/opa/v1/logging"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 )
 
 const (
@@ -171,7 +171,7 @@ var (
 	singleton   *sharedSDK
 )
 
-// OPA evaluates requests against OPA bundles downloaded from a Kagenti
+// OPA evaluates requests against OPA bundles downloaded from a Rossoctl
 // Bundle Server. The bundle resource path is derived from the agent's
 // identity (/shared/client-id.txt).
 type OPA struct {
@@ -221,8 +221,8 @@ func (p *OPA) Configure(raw json.RawMessage) error {
 				slog.Warn("opa: agent_id_file not yet readable; Init will poll in background",
 					"path", c.AgentIDFile, "error", err)
 			} else {
-				slog.Warn("opa: agent_id_file defaulted to Kagenti convention and not yet readable; "+
-					"Init will poll in background. Set agent_id or agent_id_file if not running under Kagenti.",
+				slog.Warn("opa: agent_id_file defaulted to Rossoctl convention and not yet readable; "+
+					"Init will poll in background. Set agent_id or agent_id_file if not running under Rossoctl.",
 					"path", c.AgentIDFile, "error", err)
 			}
 		}
@@ -352,13 +352,13 @@ func (p *OPA) buildOPAConfig() ([]byte, string, error) {
 
 	cfg := map[string]any{
 		"services": map[string]any{
-			"kagenti": map[string]any{
+			"rossoctl": map[string]any{
 				"url": p.cfg.BundleURL,
 			},
 		},
 		"bundles": map[string]any{
 			"authz": map[string]any{
-				"service":  "kagenti",
+				"service":  "rossoctl",
 				"resource": fmt.Sprintf("bundles?spiffe=%s", escapedSPIFFEID),
 				"polling": map[string]any{
 					"min_delay_seconds": p.cfg.PollingMinDelay,

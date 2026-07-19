@@ -1,6 +1,6 @@
 # context-guru demo — context engineering that keeps an agent under its window
 
-This demo runs the **context-guru** AuthBridge plugin in front of a real Kagenti
+This demo runs the **context-guru** AuthBridge plugin in front of a real Rossoctl
 agent and shows the plugin doing real context engineering: it compacts the
 agent's growing tool-output context before it reaches the LLM, so a task whose
 raw context **exceeds the model's window** still fits — and the agent gets the
@@ -101,7 +101,7 @@ export CG_MODEL_BASE=https://api.openai.com                    # any OpenAI-wire
 
 `run.sh setup` builds the `authbridge-proxy` image **with the context-guru plugin**
 (`-tags include_plugin_contextguru` — see *Build integration* below), loads it + the
-enhanced `finance-mcp` into the `kagenti` kind cluster, creates a 12,288-token-window
+enhanced `finance-mcp` into the `rossoctl` kind cluster, creates a 12,288-token-window
 Ollama model (`llama3.2-ctx12k`) so the raw request truncates, and deploys the agent
 + sidecar. `run.sh drive <mode>` flips `on_error`, restarts, drives the audit, and
 prints the agent's answer + the byte/token gain from the sidecar session API (`:9094`).
@@ -135,7 +135,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 | `config.engine.components.extract.marker_mode` | `full` (reversible, stashes) \| `summary` (breadcrumb) \| `off` (silent) |
 | `config.engine.components.*.trigger` / thresholds | per-component gates (min tokens, head/tail lines) |
 
-`k8s/agent.yaml` deploys the agent + sidecar with **no `kagenti.io/inject` label**,
+`k8s/agent.yaml` deploys the agent + sidecar with **no `rossoctl.io/inject` label**,
 so the demo owns both containers and the config (the operator webhook doesn't
 inject a second sidecar). The extract-code key lives in the `cg-model-key` Secret.
 

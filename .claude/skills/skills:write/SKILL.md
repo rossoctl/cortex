@@ -100,12 +100,12 @@ Claude Code auto-approves commands by matching the first token against `.claude/
 ```markdown
 Check pod status:
 ```bash
-kubectl get pods -n kagenti-system
+kubectl get pods -n rossoctl-system
 ```
 
 Check logs:
 ```bash
-kubectl logs -n kagenti-system deployment/mlflow
+kubectl logs -n rossoctl-system deployment/mlflow
 ```
 ```
 
@@ -115,7 +115,7 @@ For HyperShift, prefix each command individually:
 
 ```markdown
 ```bash
-KUBECONFIG=~/clusters/hcp/kagenti-hypershift-custom-$CLUSTER/auth/kubeconfig kubectl get pods -n kagenti-system
+KUBECONFIG=~/clusters/hcp/rossoctl-hypershift-custom-$CLUSTER/auth/kubeconfig kubectl get pods -n rossoctl-system
 ```
 ```
 
@@ -125,10 +125,10 @@ Commands targeting management clusters or AWS need user approval anyway, so mult
 
 ### Temporary Files
 
-Skills that download logs, artifacts, or save analysis output should use `/tmp/kagenti/<skill-category>/` as the working directory:
+Skills that download logs, artifacts, or save analysis output should use `/tmp/rossoctl/<skill-category>/` as the working directory:
 
 ```bash
-mkdir -p /tmp/kagenti/rca
+mkdir -p /tmp/rossoctl/rca
 ```
 
 This path is auto-approved for read/write in `.claude/settings.json`.
@@ -184,7 +184,7 @@ Every workflow skill (tdd, rca, ci, etc.) MUST include a Task Tracking section. 
 <worktree> | <PR> | <plan-doc> | <topic> | <phase> | <task description>
 ```
 
-- **worktree**: git worktree name (e.g., `mlflow-ci`) or `kagenti` for main repo
+- **worktree**: git worktree name (e.g., `mlflow-ci`) or `rossoctl` for main repo
 - **PR**: PR reference (e.g., `PR#569`) or `none`
 - **plan-doc**: plan filename (e.g., `calm-toast.md`) or `ad-hoc` if no plan
 - **topic**: area of work (e.g., `Kind CI`, `MLflow init`, `CodeQL`)

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/exchange"
-	fwspiffe "github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // Identity type constants.

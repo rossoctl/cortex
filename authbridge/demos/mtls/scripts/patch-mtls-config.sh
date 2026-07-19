@@ -5,7 +5,7 @@
 #
 # Why the namespace CM and not the per-agent CM:
 #
-#   The kagenti-operator's pod-mutating webhook builds each per-agent
+#   The operator's pod-mutating webhook builds each per-agent
 #   `authbridge-config-<name>` CM by reading the namespace
 #   `authbridge-runtime-config` as baseYAML and overlaying values
 #   resolved from the AgentRuntime CR (or defaults when no CR exists).
@@ -40,7 +40,7 @@ echo "[*] Patching $CM in $NAMESPACE with mtls.mode=$MODE"
 
 ORIG=$(kubectl -n "$NAMESPACE" get cm "$CM" -o jsonpath='{.data.config\.yaml}')
 if [[ -z "$ORIG" ]]; then
-  echo "ERROR: ConfigMap $CM has no config.yaml entry — is the kagenti chart installed in this namespace?" >&2
+  echo "ERROR: ConfigMap $CM has no config.yaml entry — is the rossoctl chart installed in this namespace?" >&2
   exit 1
 fi
 

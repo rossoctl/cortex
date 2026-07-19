@@ -13,12 +13,12 @@
 #   - “Other technical personnel” are mapped to the realm role tech‑support.
 #   - Access to private and public GitHub repositories requires both client roles on the `github-tool` client: `github-full-access` (covers private) and `github-tool-aud` (covers public).
 #   - Access to public repositories only requires the `github-tool-aud` role.
-#   - The call chain to reach the GitHub tool is: `kagenti` → `git‑issue‑agent` → `github-tool`. Therefore every user who needs any GitHub access must also receive the entry‑point client role `demo-ui` on `kagenti` and the intermediate role `github-agent` on `git‑issue‑agent`.
+#   - The call chain to reach the GitHub tool is: `rossoctl` → `git‑issue‑agent` → `github-tool`. Therefore every user who needs any GitHub access must also receive the entry‑point client role `demo-ui` on `rossoctl` and the intermediate role `github-agent` on `git‑issue‑agent`.
 #   - All required client‑role pairs are listed as separate objects, respecting the “both” rule.
 
 policy:
   developer:
-  - client: kagenti
+  - client: rossoctl
     role: demo-ui
   - client: spiffe://localtest.me/ns/team1/sa/git-issue-agent
     role: github-agent
@@ -27,7 +27,7 @@ policy:
   - client: github-tool
     role: github-tool-aud
   tech-support:
-  - client: kagenti
+  - client: rossoctl
     role: demo-ui
   - client: spiffe://localtest.me/ns/team1/sa/git-issue-agent
     role: github-agent

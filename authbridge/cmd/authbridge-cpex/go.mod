@@ -1,8 +1,8 @@
-module github.com/kagenti/kagenti-extensions/authbridge/cmd/authbridge-cpex
+module github.com/rossoctl/rossocortex/authbridge/cmd/authbridge-cpex
 
 go 1.26.4
 
-require github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101000000-000000000000
+require github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -38,4 +38,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/kagenti/kagenti-extensions/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib

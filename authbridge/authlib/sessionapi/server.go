@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/redact"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/redact"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // defaultHeartbeatInterval is how often the SSE stream sends a keep-alive
@@ -64,7 +64,7 @@ type CatalogEntry struct {
 
 // FieldSchemaEntry is the wire shape for one config field's schema
 // metadata. Mirrors pipeline.FieldSchema; lives in the sessionapi
-// package so consumers (abctl apiclient, future kagenti-UI clients)
+// package so consumers (abctl apiclient, future rossoctl-UI clients)
 // don't have to import authlib/pipeline transitively.
 type FieldSchemaEntry struct {
 	Name        string             `json:"name"`

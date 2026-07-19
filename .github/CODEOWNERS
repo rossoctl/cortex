@@ -1,12 +1,12 @@
 # Default owners for everything
-* @kagenti/maintainers
+* @rossoctl/maintainers
 
 # AuthBridge components
-authbridge/ @kagenti/maintainers
+authbridge/ @rossoctl/maintainers
 
 # CI/CD and GitHub configuration
-.github/ @kagenti/platform
+.github/ @rossoctl/platform
 
 # Documentation
-*.md @kagenti/maintainers
-docs/ @kagenti/maintainers
+*.md @rossoctl/maintainers
+docs/ @rossoctl/maintainers

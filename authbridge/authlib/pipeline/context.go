@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
 )
 
 // Identity carries the subject identity established by whichever auth

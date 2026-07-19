@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/tlsbridge"
 )
 
 // bridgeProbePlugin records the decrypted request method/path/headers it sees.

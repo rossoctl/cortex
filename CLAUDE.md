@@ -1,6 +1,6 @@
-# CLAUDE.md - Kagenti Extensions
+# CLAUDE.md - Rossoctl Extensions
 
-This file provides context for Claude (AI assistant) when working with the `kagenti-extensions` monorepo.
+This file provides context for Claude (AI assistant) when working with the `rossocortex` monorepo.
 
 ## AI Assistant Instructions
 
@@ -8,18 +8,18 @@ This file provides context for Claude (AI assistant) when working with the `kage
 
 ## Repository Overview
 
-**kagenti-extensions** contains Kubernetes security extensions for the [Kagenti](https://github.com/kagenti/kagenti) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
+**rossocortex** contains Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
 
-The sidecar injection webhook lives in a separate repo: [kagenti/kagenti-operator](https://github.com/kagenti/kagenti-operator).
+The sidecar injection webhook lives in a separate repo: [rossoctl/operator](https://github.com/rossoctl/operator).
 
-**GitHub:** `github.com/kagenti/kagenti-extensions`
-**Container registry:** `ghcr.io/kagenti/kagenti-extensions/<image-name>`
+**GitHub:** `github.com/rossoctl/rossocortex`
+**Container registry:** `ghcr.io/rossoctl/rossocortex/<image-name>`
 **License:** Apache 2.0
 
 ## Top-Level Directory Structure
 
 ```
-kagenti-extensions/
+rossocortex/
 ├── authbridge/               # Authentication bridge components
 │   ├── authlib/              #   Shared auth building blocks (Go module)
 │   │   ├── validation/       #     JWKS-backed JWT verifier
@@ -82,7 +82,7 @@ kagenti-extensions/
 ### 2. Client Registration
 
 Keycloak client registration for workloads is handled by the
-**kagenti-operator** (separate repo) — see `kagenti-operator/docs/operator-managed-client-registration.md`.
+**operator** (separate repo) — see `operator/docs/operator-managed-client-registration.md`.
 The operator creates a Secret with `client-id.txt` + `client-secret.txt`
 and the webhook mounts it at `/shared/` in the workload pod. The
 in-pod `client-registration` sidecar that previously lived in this
@@ -90,7 +90,7 @@ repo has been removed.
 
 ## How the Components Work Together
 
-The kagenti-operator (in a separate repo) injects AuthBridge sidecars
+The operator (in a separate repo) injects AuthBridge sidecars
 into workload pods. Default deployment shape (proxy-sidecar mode):
 
 ```
@@ -163,7 +163,7 @@ lowercase prefixes. Use `Fix:` / `Feat:` / `Docs:` in PR titles.
 
 ## Container Images
 
-All images are pushed to `ghcr.io/kagenti/kagenti-extensions/` from
+All images are pushed to `ghcr.io/rossoctl/rossocortex/` from
 `.github/workflows/build.yaml`:
 
 | Image | Source | Description |
@@ -212,7 +212,7 @@ Hooks:
 | Service | Required | Purpose |
 |---------|----------|---------|
 | Kubernetes | Yes | Target platform (v1.25+ recommended) |
-| [kagenti-operator](https://github.com/kagenti/kagenti-operator) | Yes | Injects AuthBridge sidecars into workload pods |
+| [operator](https://github.com/rossoctl/operator) | Yes | Injects AuthBridge sidecars into workload pods |
 | Keycloak | Yes | OAuth2/OIDC provider, token exchange |
 | SPIRE | Optional | SPIFFE identity (JWT-SVIDs) for workloads |
 
@@ -235,12 +235,12 @@ When the operator injects sidecars, the target namespace needs these resources:
 ### Building Everything Locally
 
 The repo-root `local-build-and-test.sh` orchestrates every image
-the platform needs (`spiffe-idp-setup` from kagenti, plus
+the platform needs (`spiffe-idp-setup` from rossoctl, plus
 `authbridge`, `authbridge-envoy`, `authbridge-lite`, `proxy-init`
 from this repo) and loads them into a Kind cluster:
 
 ```bash
-KAGENTI_DIR=../kagenti ./local-build-and-test.sh
+ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
 ```
 
 To build a single image directly:
@@ -260,8 +260,8 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 ### Running the Full Demo
 
-1. Set up a Kind cluster with SPIRE + Keycloak (use [Kagenti Ansible installer](https://github.com/kagenti/kagenti/blob/main/docs/install.md))
-2. Deploy the webhook via [kagenti-operator](https://github.com/kagenti/kagenti-operator)
+1. Set up a Kind cluster with SPIRE + Keycloak (use [Rossoctl Ansible installer](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md))
+2. Deploy the webhook via [operator](https://github.com/rossoctl/operator)
 3. See the [AuthBridge demos index](authbridge/demos/README.md) for a recommended learning path:
    - **Getting started**: `authbridge/demos/weather-agent/demo-ui.md` (inbound validation, UI deployment)
    - **Full flow**: `authbridge/demos/github-issue/demo-ui.md` (token exchange + scope-based access)
@@ -271,7 +271,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 1. Add entry to `.github/workflows/build.yaml` matrix (`image_config` array)
 2. Provide `name`, `context`, and `dockerfile` fields
-3. Image will be pushed to `ghcr.io/kagenti/kagenti-extensions/<name>`
+3. Image will be pushed to `ghcr.io/rossoctl/rossocortex/<name>`
 
 ## Code Style and Conventions
 

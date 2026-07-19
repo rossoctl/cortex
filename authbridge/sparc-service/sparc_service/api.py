@@ -26,7 +26,7 @@ def create_app(engine: ReflectionEngine | None = None) -> FastAPI:
     engine = engine or ReflectionEngine(settings)
 
     app = FastAPI(
-        title="Kagenti SPARC reflection service",
+        title="Rossoctl SPARC reflection service",
         version="0.1.0",
         summary="In-process SPARC pre-tool reflection over HTTP.",
     )

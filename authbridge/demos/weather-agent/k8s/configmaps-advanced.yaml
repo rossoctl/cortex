@@ -1,11 +1,11 @@
 # AuthBridge overrides for the Weather advanced demo (token exchange to tool).
 #
-# Apply after the Kagenti platform has created the namespace and baseline
+# Apply after the Rossoctl platform has created the namespace and baseline
 # authbridge-config / envoy-config / spiffe-helper-config ConfigMaps.
 #
 # `kubectl apply` replaces the entire `authbridge-config` ConfigMap. The `data` below
-# therefore **includes the same keys** as `charts/kagenti/templates/agent-namespaces.yaml`
-# in the kagenti repo (defaults: keycloak in `keycloak` namespace, realm `kagenti`, split
+# therefore **includes the same keys** as `charts/rossoctl/templates/agent-namespaces.yaml`
+# in the rossoctl repo (defaults: keycloak in `keycloak` namespace, realm `rossoctl`, split
 # horizon `publicUrl`), plus the demo's explicit TOKEN_URL / JWKS_URL for the ext_proc
 # go-processor. If your install overrides `authBridge.clientAuthType`, `keycloak.publicUrl`,
 # or similar, merge those values into this manifest before applying.
@@ -32,18 +32,18 @@ metadata:
   name: authbridge-config
   namespace: team1
 data:
-  # — Same baseline keys as kagenti chart (agent-namespaces authbridge-config) —
+  # — Same baseline keys as rossoctl chart (agent-namespaces authbridge-config) —
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
-  KEYCLOAK_REALM: "kagenti"
+  KEYCLOAK_REALM: "rossoctl"
   KEYCLOAK_NAMESPACE: "keycloak"
-  ISSUER: "http://keycloak.localtest.me:8080/realms/kagenti"
+  ISSUER: "http://keycloak.localtest.me:8080/realms/rossoctl"
   SPIRE_ENABLED: "true"
   CLIENT_AUTH_TYPE: "client-secret"
   SPIFFE_IDP_ALIAS: "spire-spiffe"
-  EXPECTED_AUDIENCE: "http://keycloak.localtest.me:8080/realms/kagenti"
+  EXPECTED_AUDIENCE: "http://keycloak.localtest.me:8080/realms/rossoctl"
   # — Weather advanced: explicit token + JWKS (ext_proc) —
-  TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
-  JWKS_URL: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/certs"
+  TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token"
+  JWKS_URL: "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/certs"
 ---
 apiVersion: v1
 kind: ConfigMap

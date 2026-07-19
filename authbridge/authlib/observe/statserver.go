@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/redact"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/redact"
 )
 
 type StatServer struct {
@@ -69,8 +69,8 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 <html>
   <body>
     <ul>
-    <li><a href="/config">Kagenti AuthBridge configuration</a></li>
-    <li><a href="/stats">Kagenti AuthBridge statistics</a></li>
+    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
+    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
     <li><a href="/reload/status">Config reload status</a></li>
     </ul>
   </body>

@@ -5,7 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // ServerConfig builds an mTLS *tls.Config for the reverse-proxy

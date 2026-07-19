@@ -4,7 +4,7 @@
 #
 # Usage: patch-ibac-config.sh <namespace> <agent-name>
 #
-# The kagenti operator creates `authbridge-config-<agent>` when the
+# The rossoctl operator creates `authbridge-config-<agent>` when the
 # agent's pod is admitted (server-side apply, line 682 of pod_mutator.go).
 # Its default pipeline has only `jwt-validation` inbound and
 # `token-exchange` outbound. This script:

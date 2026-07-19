@@ -328,7 +328,7 @@ metadata:
   creationTimestamp: "2026-05-29T00:00:00Z"
   generation: 7
   managedFields:
-    - manager: kagenti-webhook
+    - manager: rossoctl-webhook
       operation: Apply
 data:
   config.yaml: |

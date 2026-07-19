@@ -19,7 +19,7 @@
 // metadata" — the field appears in the schema but with empty fields.
 //
 // This package owns the shape; presentation (template YAML, hover
-// formatting, JSON Schema) lives in the consumer (abctl, kagenti UI,
+// formatting, JSON Schema) lives in the consumer (abctl, rossoctl UI,
 // future generators).
 
 package pipeline
@@ -31,7 +31,7 @@ import (
 
 // SchemaProvider is implemented by plugins whose config field
 // metadata should appear in the catalog and downstream tooling
-// (abctl edit templates, future kagenti-UI forms, JSON Schema
+// (abctl edit templates, future rossoctl-UI forms, JSON Schema
 // generators). Plugins without configs (a2a-parser,
 // inference-parser today) can omit this interface.
 //

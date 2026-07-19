@@ -21,7 +21,7 @@ import (
 )
 
 // configMapDataKey is the key inside the ConfigMap's data: mapping that
-// holds the runtime YAML. The kagenti-operator and the editor both
+// holds the runtime YAML. The operator and the editor both
 // agree on this name; if a future operator change renames it, all four
 // callers (Fetch, BuildManifest, the two extractInnerYAML branches)
 // flip together by changing this constant.
@@ -301,7 +301,7 @@ func extractInnerYAML(cmYAML []byte) ([]byte, error) {
 
 // Apply writes manifest to a tempfile and runs kubectl apply --server-side
 // with --force-conflicts=true and a dedicated abctl field-manager. The
-// kagenti-operator's webhook owns data.config.yaml on initial creation;
+// operator's webhook owns data.config.yaml on initial creation;
 // the user has explicitly confirmed this edit by pressing "y" at the
 // diff prompt, so taking field-manager ownership is the intended outcome.
 //

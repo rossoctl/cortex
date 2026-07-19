@@ -1,14 +1,14 @@
-# IBAC demo email-assistant agent — operator-injected, kagenti-UI-discoverable.
+# IBAC demo email-assistant agent — operator-injected, rossoctl-UI-discoverable.
 #
-# Required labels for this agent to show up in the kagenti UI:
-#   kagenti.io/inject: enabled       — operator's webhook injects authbridge
-#   kagenti.io/spire: disabled       — demo doesn't depend on SPIRE identity
-#   protocol.kagenti.io/a2a: ""      — declares A2A protocol for the chat flow
+# Required labels for this agent to show up in the rossoctl UI:
+#   rossoctl.io/inject: enabled       — operator's webhook injects authbridge
+#   rossoctl.io/spire: disabled       — demo doesn't depend on SPIRE identity
+#   protocol.rossoctl.io/a2a: ""      — declares A2A protocol for the chat flow
 #
 # The operator's webhook port-steals: it sees containerPort 8000 here,
 # rewrites the agent's port to 8001, and sets PORT=8001 + HTTP_PROXY so
 # the agent's outbound flows through the injected authbridge sidecar's
-# forward proxy on :8081. Inbound traffic from the kagenti backend
+# forward proxy on :8081. Inbound traffic from the rossoctl backend
 # hits the Service on :8080, which the operator points at the sidecar's
 # reverse proxy on :8000, which forwards to the agent on :8001.
 #
@@ -35,7 +35,7 @@ metadata:
     # Operator's AgentCardReconciler reads this from the workload
     # (not the Pod template) to know what protocol to fetch the card
     # under and to confirm the workload is an agent.
-    protocol.kagenti.io/a2a: ""
+    protocol.rossoctl.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -46,9 +46,9 @@ spec:
       labels:
         app.kubernetes.io/name: email-agent
         app.kubernetes.io/part-of: ibac-demo
-        kagenti.io/inject: enabled
-        kagenti.io/spire: disabled
-        protocol.kagenti.io/a2a: ""
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: disabled
+        protocol.rossoctl.io/a2a: ""
     spec:
       serviceAccountName: email-agent
       securityContext:
@@ -72,7 +72,7 @@ spec:
             - name: EMAIL_URL
               value: "http://ibac-email-server.team1.svc.cluster.local:8888"
             # AGENT_PUBLIC_URL is what the agent advertises in its
-            # /.well-known/agent-card.json. The kagenti UI uses it
+            # /.well-known/agent-card.json. The rossoctl UI uses it
             # for the agent card; default below works for the
             # standard team1 install.
             - name: AGENT_PUBLIC_URL
@@ -114,7 +114,7 @@ spec:
   selector:
     app.kubernetes.io/name: email-agent
   # Port 8080 → targetPort 8000 mirrors the github-issue-agent demo
-  # shape. The kagenti backend's /chat endpoint hits the agent's
+  # shape. The rossoctl backend's /chat endpoint hits the agent's
   # Service:8080, which the operator wires to the authbridge sidecar's
   # reverse proxy on :8000.
   ports:
@@ -126,11 +126,11 @@ spec:
 
 ---
 # AgentRuntime triggers operator-managed Keycloak client registration
-# (creates kagenti-keycloak-client-credentials-<hash> Secret with
+# (creates rossoctl-keycloak-client-credentials-<hash> Secret with
 # client-id.txt and client-secret.txt that the authbridge sidecar
 # mounts at /shared/). Without this CR, jwt-validation has no
 # audience to validate against and inbound auth falls over.
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: email-agent
@@ -148,4 +148,4 @@ spec:
 # admission webhook ("an AgentCard already targets Deployment X").
 # The operator's CR points at the same Deployment, fetches our
 # `/.well-known/agent-card.json` endpoint, and stuffs the result
-# into the CR's status — which the kagenti UI then displays.
+# into the CR's status — which the rossoctl UI then displays.

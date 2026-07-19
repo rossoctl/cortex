@@ -3,7 +3,7 @@
 // Speaks MCP (Model Context Protocol) over HTTP — JSON-RPC 2.0 POSTs to /mcp.
 // Serves a small but non-trivial finance dataset through five tools and
 // advertises them via tools/list (so the agent discovers them at runtime like
-// any normal kagenti agent — nothing is hardcoded on the agent side).
+// any normal rossoctl agent — nothing is hardcoded on the agent side).
 //
 // Tools:
 //

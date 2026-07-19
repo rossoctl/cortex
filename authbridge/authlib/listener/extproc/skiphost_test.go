@@ -8,10 +8,10 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/skiphost"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // markerPlugin records one Invocation per OnRequest call so tests can
@@ -84,7 +84,7 @@ func TestExtProc_SkipHosts_OutboundBypass(t *testing.T) {
 		ctx: context.Background(),
 		requests: []*extprocv3.ProcessingRequest{
 			outboundRequest(makeHeaders(
-				":authority", "otel-collector.kagenti-system.svc.cluster.local:8335",
+				":authority", "otel-collector.rossoctl-system.svc.cluster.local:8335",
 				":path", "/v1/traces",
 			)),
 		},

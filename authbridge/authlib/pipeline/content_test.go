@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
 )
 
 func TestA2AExtension_Fragments(t *testing.T) {

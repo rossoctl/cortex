@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // fakeJudge records what it was asked and returns the configured
@@ -261,7 +261,7 @@ func TestOnRequest_BypassHost_Default(t *testing.T) {
 	pctx := makePCtx(t)
 	// Default bypass list ships with "keycloak.*" — the agent's
 	// token exchange to the Keycloak service must never be judged.
-	pctx.Host = "keycloak.kagenti"
+	pctx.Host = "keycloak.rossoctl"
 	action := invokeOnRequest(p, pctx)
 
 	if action.Type != pipeline.Continue {

@@ -5,7 +5,7 @@ hallucinated tool argument before it executes. SPARC's clarification is returned
 as an MCP tool result, so the agent asks the user for the missing detail and then runs the
 corrected call.
 
-The agent is an ordinary kagenti agent: it discovers its tools via MCP `tools/list`, reasons
+The agent is an ordinary rossoctl agent: it discovers its tools via MCP `tools/list`, reasons
 with an Ollama model, and acts through an MCP finance backend. SPARC only sees what the agent
 itself produces — the full conversation (including the system prompt), the discovered tool
 specs in OpenAI format, and the proposed tool call. Those are collected by the parsers from the
@@ -33,10 +33,10 @@ SPARC allow/grounded    tool=issue_refund  score=1.00   # Turn 2: grounded TX482
 
 ## Prerequisites
 
-- A **kagenti kind cluster** with the AuthBridge operator. Core + SPIRE is enough:
+- A **rossoctl kind cluster** with the AuthBridge operator. Core + SPIRE is enough:
   ```bash
-  # from the kagenti repo:
-  scripts/kind/setup-kagenti.sh --with-spire
+  # from the rossoctl repo:
+  scripts/kind/setup-rossoctl.sh --with-spire
   ```
 - `kubectl`, `kind`, `docker` (or `podman`), `python3`, `uv`.
 - **Ollama models.** What you need depends on the reflection provider:
@@ -98,7 +98,7 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
   make logs-agent       # agent + authbridge sidecar logs
   ```
 - **Re-run just the conversation** (cluster already set up): `make drive`.
-- **Tear down the demo** (kagenti install untouched): `make undeploy`.
+- **Tear down the demo** (rossoctl install untouched): `make undeploy`.
 
 ## How it works (and why it's generic)
 
@@ -158,11 +158,11 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
   container runtime's VM resolver went stale after a network change (common with Docker
   Desktop / Rancher Desktop / colima after switching Wi-Fi or VPN). Restart the runtime, or
   point its VM and the kind node at a public resolver (`8.8.8.8`). This is a host-runtime issue,
-  not a demo or kagenti one — the demo scripts contain no machine-specific networking.
+  not a demo or rossoctl one — the demo scripts contain no machine-specific networking.
 - **`authbridge-config-<agent>` reverted to defaults**: the operator rewrites it whenever the
   agent pod rolls. `make demo` (and `make patch-config`) re-apply the SPARC pipeline and wait
   for the live config SHA to converge, so just re-run the relevant target.
-- **Agent pods stuck `ContainerCreating` on a missing `kagenti-keycloak-client-credentials-*`
+- **Agent pods stuck `ContainerCreating` on a missing `rossoctl-keycloak-client-credentials-*`
   secret** (operator log: *"waiting for KEYCLOAK_URL/KEYCLOAK_REALM in authbridge-config"* or
   *"waiting for keycloak-admin-secret"*): a platform/operator-version skew — the operator
   registers the agent's Keycloak client from resources a matching chart version provides. This
@@ -170,12 +170,12 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
   ```bash
   kubectl -n team1 create configmap authbridge-config \
     --from-literal=KEYCLOAK_URL=http://keycloak-service.keycloak:8080 \
-    --from-literal=KEYCLOAK_REALM=kagenti --dry-run=client -o yaml | kubectl apply -f -
-  kubectl -n kagenti-system create secret generic keycloak-admin-secret \
+    --from-literal=KEYCLOAK_REALM=rossoctl --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n rossoctl-system create secret generic keycloak-admin-secret \
     --from-literal=KEYCLOAK_ADMIN_USERNAME=admin \
     --from-literal=KEYCLOAK_ADMIN_PASSWORD=admin --dry-run=client -o yaml | kubectl apply -f -
   ```
-  A kagenti install whose chart and operator versions are aligned creates these automatically.
+  A rossoctl install whose chart and operator versions are aligned creates these automatically.
 - **`PROVIDER=ollama`: `reflector_unavailable` / can't reach the host Ollama**: the cluster
   must reach your host Ollama. Run it with `OLLAMA_HOST=0.0.0.0`, and set `HOST_OLLAMA_URL`
   correctly (Docker Desktop: `http://host.docker.internal:11434`; Rancher Desktop / colima:

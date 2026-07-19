@@ -99,19 +99,19 @@ echo ""
 
 # Check SPIFFE IdP setup job
 echo "6. Checking SPIFFE IdP setup job..."
-if kubectl get job -n kagenti-system kagenti-spiffe-idp-setup-job &>/dev/null; then
-    JOB_STATUS=$(kubectl get job -n kagenti-system kagenti-spiffe-idp-setup-job -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
+if kubectl get job -n rossoctl-system rossoctl-spiffe-idp-setup-job &>/dev/null; then
+    JOB_STATUS=$(kubectl get job -n rossoctl-system rossoctl-spiffe-idp-setup-job -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
     if [ "$JOB_STATUS" == "True" ]; then
         echo "✅ SPIFFE IdP setup job completed successfully"
         echo ""
         echo "Job logs:"
-        kubectl logs -n kagenti-system job/kagenti-spiffe-idp-setup-job --tail=20
+        kubectl logs -n rossoctl-system job/rossoctl-spiffe-idp-setup-job --tail=20
     else
         echo "⚠️  SPIFFE IdP setup job has not completed yet"
-        kubectl get job -n kagenti-system kagenti-spiffe-idp-setup-job
+        kubectl get job -n rossoctl-system rossoctl-spiffe-idp-setup-job
         echo ""
         echo "Job logs:"
-        kubectl logs -n kagenti-system job/kagenti-spiffe-idp-setup-job --tail=50
+        kubectl logs -n rossoctl-system job/rossoctl-spiffe-idp-setup-job --tail=50
     fi
 else
     echo "⚠️  SPIFFE IdP setup job not found (may not be deployed yet)"
@@ -134,7 +134,7 @@ else
     echo ""
     echo "To access Keycloak Admin Console:"
     echo "  1. Open: http://keycloak.localtest.me:8080/admin"
-    echo "  2. Switch to the 'kagenti' realm"
+    echo "  2. Switch to the 'rossoctl' realm"
     echo "  3. Check Identity Providers → Should see 'spire-spiffe' (Type: SPIFFE)"
     echo ""
 fi

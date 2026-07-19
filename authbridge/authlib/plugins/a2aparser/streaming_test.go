@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 func TestA2AParser_OnResponseFrame_FoldsArtifactAndFinalStatus(t *testing.T) {

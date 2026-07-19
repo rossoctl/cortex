@@ -54,8 +54,8 @@ JWT
 JWT's
 JWTs
 Kagent
-Kagenti
-Kagenti's
+Rossoctl
+Rossoctl's
 Keycloak
 Keycloak's
 Kubebuilder
@@ -276,7 +276,7 @@ jsonnet
 jsonpath
 jwks
 k8s
-kagenti
+rossoctl
 keycloak
 ko
 kube

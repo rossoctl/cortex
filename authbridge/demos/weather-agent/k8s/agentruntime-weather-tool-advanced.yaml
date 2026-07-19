@@ -1,14 +1,14 @@
 # Binds the weather-tool-advanced Deployment to the platform AuthBridge injection
 # path. The mutating webhook skips sidecars unless a matching AgentRuntime exists
-# (Kagenti 0.2+ / operator chart with pod-mutator).
+# (Rossoctl 0.2+ / operator chart with pod-mutator).
 #
 # Apply after weather-tool-advanced.yaml (same namespace).
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: weather-tool-advanced
   namespace: team1
-# Use type "agent" so the operator does not force pod labels to kagenti.io/type=tool
+# Use type "agent" so the operator does not force pod labels to rossoctl.io/type=tool
 # (which skips injection when the injectTools feature gate is off). The workload
 # is still the MCP `weather_tool` by container image and Deployment name.
 spec:

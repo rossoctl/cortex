@@ -1,12 +1,12 @@
-module github.com/kagenti/kagenti-extensions/authbridge/cmd/authbridge-envoy
+module github.com/rossoctl/rossocortex/authbridge/cmd/authbridge-envoy
 
 go 1.26.4
 
-replace github.com/kagenti/kagenti-extensions/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib
 
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
-	github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101000000-000000000000
+	github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.82.0
 )
 
@@ -54,7 +54,7 @@ require (
 	github.com/huandu/go-sqlbuilder v1.41.0 // indirect
 	github.com/huandu/xstrings v1.4.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/kagenti/context-guru v0.0.0-20260713113308-b624f2c3d8c2 // indirect
+	github.com/rossoctl/context-guru v0.0.0-20260713113308-b624f2c3d8c2 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect

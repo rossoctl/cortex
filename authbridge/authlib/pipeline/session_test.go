@@ -154,7 +154,7 @@ func TestSessionEvent_Invocations_JSONRoundTrip(t *testing.T) {
 				Action: ActionDeny,
 				Reason: "jwt_failed",
 				Details: map[string]string{
-					"expected_issuer":   "http://keycloak.localtest.me:8080/realms/kagenti",
+					"expected_issuer":   "http://keycloak.localtest.me:8080/realms/rossoctl",
 					"expected_audience": "spiffe://localtest.me/ns/team1/sa/weather-tool",
 				},
 			}},

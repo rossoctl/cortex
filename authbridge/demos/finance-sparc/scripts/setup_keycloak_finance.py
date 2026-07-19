@@ -2,7 +2,7 @@
 """Keycloak setup for the finance-sparc demo.
 
 Makes the finance-agent's inbound jwt-validation pass for tokens minted by the
-demo (scripted ROPC) and by the kagenti UI, by creating an audience client
+demo (scripted ROPC) and by the rossoctl UI, by creating an audience client
 scope that puts the agent's SPIFFE id in the token `aud`, and a public
 direct-access (ROPC) client + a demo user `alice`.
 
@@ -16,10 +16,10 @@ import sys
 from keycloak import KeycloakAdmin
 
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "rossoctl")
 ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 ADMIN_PASS = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
-UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "kagenti")
+UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "rossoctl")
 SPIFFE_TRUST_DOMAIN = os.environ.get("SPIFFE_TRUST_DOMAIN", "localtest.me")
 NAMESPACE = os.environ.get("NAMESPACE", "team1")
 AGENT_SA = os.environ.get("AGENT_SA", "finance-agent")

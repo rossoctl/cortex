@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
 )
 
 // This file wires the named protocol extensions (A2AExtension,

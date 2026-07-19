@@ -1,4 +1,4 @@
-# Demo namespace — self-contained from the rest of kagenti so
+# Demo namespace — self-contained from the rest of rossoctl so
 # `kubectl delete ns cpex-demo` is a clean tear-down.
 apiVersion: v1
 kind: Namespace

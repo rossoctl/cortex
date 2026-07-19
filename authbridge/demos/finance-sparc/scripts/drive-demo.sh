@@ -9,7 +9,7 @@ set -euo pipefail
 
 NS=${1:-team1}
 AGENT=${2:-finance-agent}
-REALM=${KEYCLOAK_REALM:-kagenti}
+REALM=${KEYCLOAK_REALM:-rossoctl}
 ROPC_CLIENT_ID=${ROPC_CLIENT_ID:-finance-sparc-e2e}
 USER=${DEMO_USER:-alice}
 PASS=${DEMO_PASS:-alice123}

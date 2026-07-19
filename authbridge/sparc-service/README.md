@@ -1,4 +1,4 @@
-# Kagenti SPARC reflection service
+# Rossoctl SPARC reflection service
 
 A thin, in-process HTTP wrapper around the **SPARC** pre-tool reflection component
 (`altk.pre_tool.sparc.SPARCReflectionComponent`) from the
@@ -25,7 +25,7 @@ Deploy this service **once per cluster, before enabling the `sparc` plugin** on 
 ```bash
 cd deploy
 export WX_API_KEY=... WX_PROJECT_ID=...   # or PROVIDER=ollama, openai, ...
-make install                              # → kagenti-system; published image
+make install                              # → rossoctl-system; published image
 # kind dev cluster (build + load a local image first):
 make image install
 ```
@@ -147,5 +147,5 @@ SPARC_LLM_PROVIDER=ollama SPARC_MODEL=llama3.2:3b python -m sparc_service
 ## Build the image
 
 ```bash
-docker build -t kagenti-sparc-service:latest .
+docker build -t rossoctl-sparc-service:latest .
 ```

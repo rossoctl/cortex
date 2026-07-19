@@ -1,6 +1,6 @@
 # SPARC reflection service — the backend the AuthBridge `sparc` plugin calls.
 #
-# Deploy this ONCE per cluster (any namespace; kagenti-system by convention)
+# Deploy this ONCE per cluster (any namespace; rossoctl-system by convention)
 # BEFORE enabling the `sparc` plugin on an agent. Agents reach it at
 # http://sparc-service.<namespace>.svc:8090/reflect.
 #
@@ -28,7 +28,7 @@ spec:
         app.kubernetes.io/name: sparc-service
         # The service makes its own egress to the LLM provider; keep it out of
         # agent-side sidecar injection / ambient capture.
-        kagenti.io/inject: disabled
+        rossoctl.io/inject: disabled
     spec:
       securityContext:
         runAsNonRoot: true
@@ -37,7 +37,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sparc-service
-          image: ghcr.io/kagenti/kagenti-extensions/sparc-service:latest
+          image: ghcr.io/rossoctl/rossocortex/sparc-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090

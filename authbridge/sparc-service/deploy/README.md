@@ -23,14 +23,14 @@ make install PROVIDER=litellm MODEL=anthropic/claude-3-5-sonnet ANTHROPIC_API_KE
 
 `make install` creates the `sparc-service-config` ConfigMap and a `sparc-creds` Secret (from
 whatever provider credentials are in your environment), deploys the service into `NAMESPACE`
-(default `kagenti-system`), and waits for it to become ready. Re-running it is idempotent.
+(default `rossoctl-system`), and waits for it to become ready. Re-running it is idempotent.
 
 When it's up, enable the plugin on an agent — see
 [`docs/sparc-plugin.md`](../../docs/sparc-plugin.md#prerequisite-deploy-the-sparc-service).
 
 ## Image
 
-The default image is `ghcr.io/kagenti/kagenti-extensions/sparc-service:latest` (published by CI).
+The default image is `ghcr.io/rossoctl/rossocortex/sparc-service:latest` (published by CI).
 On a **kind** dev cluster, build and load a local image first:
 
 ```bash
@@ -46,7 +46,7 @@ All knobs are `make` variables (mirrors of the service's [environment settings](
 | Variable | Default | Notes |
 |---|---|---|
 | `PROVIDER` | `watsonx` | `watsonx` \| `ollama` \| `openai` \| `azure` \| `litellm` |
-| `NAMESPACE` | `kagenti-system` | where the service is deployed |
+| `NAMESPACE` | `rossoctl-system` | where the service is deployed |
 | `IMAGE` | ghcr `sparc-service:latest` | override for a local build or private registry |
 | `MODEL` | per-provider | required for `azure`/`litellm` (e.g. `azure/<deployment>`) |
 | `TRACK` | `fast_track` | SPARC reflection track |

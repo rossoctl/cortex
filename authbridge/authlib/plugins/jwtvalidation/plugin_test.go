@@ -8,10 +8,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 // invokeOnRequest mirrors what Pipeline.Run does around each plugin
@@ -82,10 +82,10 @@ func TestJWTValidation_Configure_InlineAudienceSuppressesFileDefault(t *testing.
 
 func TestJWTValidation_Configure_DefaultsJWKSFromIssuer(t *testing.T) {
 	p := NewJWTValidation()
-	if err := p.Configure([]byte(`{"issuer":"http://keycloak/realms/kagenti","audience":"a"}`)); err != nil {
+	if err := p.Configure([]byte(`{"issuer":"http://keycloak/realms/rossoctl","audience":"a"}`)); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	if got, want := p.cfg.JWKSURL, "http://keycloak/realms/kagenti/protocol/openid-connect/certs"; got != want {
+	if got, want := p.cfg.JWKSURL, "http://keycloak/realms/rossoctl/protocol/openid-connect/certs"; got != want {
 		t.Errorf("JWKSURL = %q, want %q", got, want)
 	}
 	if p.inner == nil {
@@ -96,15 +96,15 @@ func TestJWTValidation_Configure_DefaultsJWKSFromIssuer(t *testing.T) {
 func TestJWTValidation_Configure_DerivesJWKSFromInternalKeycloakURL(t *testing.T) {
 	p := NewJWTValidation()
 	raw := []byte(`{
-		"issuer": "http://keycloak.localtest.me:8080/realms/kagenti",
+		"issuer": "http://keycloak.localtest.me:8080/realms/rossoctl",
 		"keycloak_url": "http://keycloak-service.keycloak.svc:8080",
-		"keycloak_realm": "kagenti",
+		"keycloak_realm": "rossoctl",
 		"audience": "a"
 	}`)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	want := "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/certs"
+	want := "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/certs"
 	if got := p.cfg.JWKSURL; got != want {
 		t.Errorf("JWKSURL = %q, want %q (internal URL from keycloak_url+realm, not issuer)", got, want)
 	}
@@ -113,10 +113,10 @@ func TestJWTValidation_Configure_DerivesJWKSFromInternalKeycloakURL(t *testing.T
 func TestJWTValidation_Configure_ExplicitJWKSURLWins(t *testing.T) {
 	p := NewJWTValidation()
 	raw := []byte(`{
-		"issuer": "http://keycloak.public:8080/realms/kagenti",
+		"issuer": "http://keycloak.public:8080/realms/rossoctl",
 		"jwks_url": "http://custom-jwks-proxy.example/keys",
 		"keycloak_url": "http://keycloak-internal:8080",
-		"keycloak_realm": "kagenti",
+		"keycloak_realm": "rossoctl",
 		"audience": "a"
 	}`)
 	if err := p.Configure(raw); err != nil {
@@ -129,10 +129,10 @@ func TestJWTValidation_Configure_ExplicitJWKSURLWins(t *testing.T) {
 
 func TestJWTValidation_Configure_PartialKeycloakConfigFallsThroughToIssuer(t *testing.T) {
 	cases := []struct{ name, raw string }{
-		{"keycloak_url without realm", `{"issuer":"http://keycloak/realms/kagenti","keycloak_url":"http://internal:8080","audience":"a"}`},
-		{"keycloak_realm without url", `{"issuer":"http://keycloak/realms/kagenti","keycloak_realm":"kagenti","audience":"a"}`},
+		{"keycloak_url without realm", `{"issuer":"http://keycloak/realms/rossoctl","keycloak_url":"http://internal:8080","audience":"a"}`},
+		{"keycloak_realm without url", `{"issuer":"http://keycloak/realms/rossoctl","keycloak_realm":"rossoctl","audience":"a"}`},
 	}
-	want := "http://keycloak/realms/kagenti/protocol/openid-connect/certs"
+	want := "http://keycloak/realms/rossoctl/protocol/openid-connect/certs"
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := NewJWTValidation()

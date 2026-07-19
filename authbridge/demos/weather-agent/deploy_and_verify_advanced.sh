@@ -3,7 +3,7 @@
 # plus MCP ingress JWT validation on the tool.
 #
 # Prerequisites:
-#   - kubectl configured for a cluster with Kagenti + Keycloak + SPIRE + webhook
+#   - kubectl configured for a cluster with Rossoctl + Keycloak + SPIRE + webhook
 #   - Namespace team1 (or override NAMESPACE) with installer ConfigMaps
 #   - jq installed on the machine running this script
 #   - Python 3.10+ with AuthBridge/requirements.txt (for setup_keycloak_weather_advanced.py)
@@ -32,11 +32,11 @@ SPIFFE_DOMAIN="${SPIFFE_DOMAIN:-localtest.me}"
 TOOL_SPIFFE="spiffe://${SPIFFE_DOMAIN}/ns/${NAMESPACE}/sa/${TOOL_SA}"
 AGENT_SPIFFE="spiffe://${SPIFFE_DOMAIN}/ns/${NAMESPACE}/sa/${AGENT_SA}"
 KC_INTERNAL="${KC_INTERNAL:-http://keycloak-service.keycloak.svc:8080}"
-KC_REALM="${KC_REALM:-kagenti}"
-# Default matches client created by setup_keycloak_weather_advanced.py (kagenti UI
+KC_REALM="${KC_REALM:-rossoctl}"
+# Default matches client created by setup_keycloak_weather_advanced.py (rossoctl UI
 # client often has direct access grants disabled).
 KC_USER_CLIENT_ID="${KC_USER_CLIENT_ID:-weather-advanced-e2e}"
-# For confidential "kagenti" UI client, set KC_USER_CLIENT_SECRET in the environment.
+# For confidential "rossoctl" UI client, set KC_USER_CLIENT_SECRET in the environment.
 #
 # Rollout: align with spec.progressDeadlineSeconds: 1800 on the tool/agent Deployments (Kind
 # can exceed 600s default) and with kubectl --timeout below.
@@ -59,13 +59,13 @@ if [[ "$SKIP_DEPLOY" != "1" ]]; then
 
   log "Deploying weather tool (advanced)..."
   kubectl apply -f "$SCRIPT_DIR/k8s/weather-tool-advanced.yaml"
-  log "Applying AgentRuntime (required in Kagenti 0.2+ for AuthBridge injection)..."
-  if kubectl get crd agentruntimes.agent.kagenti.dev &>/dev/null; then
+  log "Applying AgentRuntime (required in Rossoctl 0.2+ for AuthBridge injection)..."
+  if kubectl get crd agentruntimes.agent.rossoctl.dev &>/dev/null; then
     kubectl apply -f "$SCRIPT_DIR/k8s/agentruntime-weather-tool-advanced.yaml"
     log "Recreating tool pods so the webhook can inject now that AgentRuntime exists..."
     kubectl rollout restart "deployment/weather-tool-advanced" -n "$NAMESPACE"
   else
-    log "WARNING: agentruntimes.agent.kagenti.dev CRD not found — sidecars may not inject."
+    log "WARNING: agentruntimes.agent.rossoctl.dev CRD not found — sidecars may not inject."
   fi
   kubectl rollout status "deployment/weather-tool-advanced" -n "$NAMESPACE" --timeout="$WEATHER_TOOL_ROLLOUT_TIMEOUT"
 
@@ -88,7 +88,7 @@ if [[ "$SKIP_DEPLOY" != "1" ]]; then
 
   log "Deploying weather agent (advanced)..."
   kubectl apply -f "$SCRIPT_DIR/k8s/weather-service-advanced.yaml"
-  if kubectl get crd agentruntimes.agent.kagenti.dev &>/dev/null; then
+  if kubectl get crd agentruntimes.agent.rossoctl.dev &>/dev/null; then
     kubectl apply -f "$SCRIPT_DIR/k8s/agentruntime-weather-service-advanced.yaml"
     kubectl rollout restart "deployment/weather-service-advanced" -n "$NAMESPACE"
   fi
@@ -122,8 +122,8 @@ pick_log_container() {
   local names
   names=$(kubectl get pod -n "$NAMESPACE" "$pod" -o jsonpath='{.spec.containers[*].name}' | tr ' ' '\n')
   # Container name depends on the resolved AuthBridge mode (per
-  # kagenti-operator/internal/webhook/injector/container_builder.go):
-  #   proxy-sidecar (cluster default after kagenti-operator#361):
+  # operator/internal/webhook/injector/container_builder.go):
+  #   proxy-sidecar (cluster default after operator#361):
   #     AuthBridgeProxyContainerName = "authbridge-proxy"
   #   envoy-sidecar:
   #     EnvoyProxyContainerName = "envoy-proxy"

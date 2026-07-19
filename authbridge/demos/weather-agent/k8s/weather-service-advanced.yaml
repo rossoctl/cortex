@@ -32,12 +32,12 @@ spec:
   template:
     metadata:
       labels:
-        protocol.kagenti.io/a2a: ""
+        protocol.rossoctl.io/a2a: ""
         app.kubernetes.io/name: weather-service-advanced
-        kagenti.io/inject: enabled
-        kagenti.io/spire: enabled
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: enabled
       annotations:
-        kagenti.io/outbound-ports-exclude: "11434"
+        rossoctl.io/outbound-ports-exclude: "11434"
     spec:
       serviceAccountName: weather-service-advanced
       securityContext:
@@ -49,7 +49,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: agent
-          image: ghcr.io/kagenti/agent-examples/weather_service:latest
+          image: ghcr.io/rossoctl/examples/weather_service:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

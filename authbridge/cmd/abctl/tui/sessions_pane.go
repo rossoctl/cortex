@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // newSessionsTable builds an empty sessions table.

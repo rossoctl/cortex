@@ -1,6 +1,6 @@
 # Local Testing Guide for JWT-SVID Authentication
 
-> **⚠️ This guide is stale after kagenti-extensions#411.** It was written
+> **⚠️ This guide is stale after rossocortex#411.** It was written
 > for the pre-#411 multi-sidecar shape (separate `client-registration`,
 > `envoy-with-processor`, and standalone `spiffe-helper` containers) and
 > several of its YAML examples reference images that no longer publish.
@@ -23,10 +23,10 @@ This guide walks you through testing JWT-SVID authentication using local images 
 
 ## ⚠️ Important: Use the Build Script
 
-**CRITICAL**: You MUST run the `./local-build-and-test.sh` script to build all required images. Do NOT build images individually with `docker build` or `podman build` commands, as this will miss critical images like `spiffe-idp-setup:local` (located in the kagenti repo).
+**CRITICAL**: You MUST run the `./local-build-and-test.sh` script to build all required images. Do NOT build images individually with `docker build` or `podman build` commands, as this will miss critical images like `spiffe-idp-setup:local` (located in the rossoctl repo).
 
 The script:
-- Builds images from **both** kagenti and kagenti-extensions repositories
+- Builds images from **both** rossoctl and rossocortex repositories
 - Automatically detects Docker vs Podman
 - Loads all images into your Kind cluster
 - Ensures consistent image tags and pull policies
@@ -35,15 +35,15 @@ The script:
 
 - Docker or Podman running
 - Kind CLI installed
-- Both `kagenti` and `kagenti-extensions` repositories cloned
+- Both `rossoctl` and `rossocortex` repositories cloned
 
 ## Step 0: Create Kind Cluster
 
-The Kagenti ansible installer can create a Kind cluster automatically, but for local image testing, it's better to create it manually first:
+The Rossoctl ansible installer can create a Kind cluster automatically, but for local image testing, it's better to create it manually first:
 
 ```bash
 # Create a Kind cluster with the correct name
-kind create cluster --name kagenti-dev --config - <<EOF
+kind create cluster --name rossoctl-dev --config - <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
@@ -58,7 +58,7 @@ nodes:
 EOF
 
 # Verify cluster is running
-kubectl cluster-info --context kind-kagenti-dev
+kubectl cluster-info --context kind-rossoctl-dev
 ```
 
 ## Step 1: Build and Load Local Images
@@ -68,7 +68,7 @@ kubectl cluster-info --context kind-kagenti-dev
 The `local-build-and-test.sh` script is the **only supported way** to build local images for testing. It builds images from both repositories and ensures everything is loaded correctly.
 
 ```bash
-cd kagenti-extensions
+cd rossocortex
 
 # Make the script executable (first time only)
 chmod +x local-build-and-test.sh
@@ -84,39 +84,39 @@ export KIND_EXPERIMENTAL_PROVIDER=podman  # Only needed for Podman
 
 ### What the script builds and loads:
 
-**From kagenti repo** (critical - often missed!):
-- `ghcr.io/kagenti/kagenti/spiffe-idp-setup:local` - Configures SPIFFE Identity Provider in Keycloak
+**From rossoctl repo** (critical - often missed!):
+- `ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local` - Configures SPIFFE Identity Provider in Keycloak
 
-**From kagenti-extensions repo**:
-- `ghcr.io/kagenti/kagenti-extensions/client-registration:local` - Registers agents as Keycloak clients
-- `ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:local` - Envoy proxy with token exchange
-- `ghcr.io/kagenti/kagenti-extensions/proxy-init:local` - iptables initialization
+**From rossocortex repo**:
+- `ghcr.io/rossoctl/rossocortex/client-registration:local` - Registers agents as Keycloak clients
+- `ghcr.io/rossoctl/rossocortex/envoy-with-processor:local` - Envoy proxy with token exchange
+- `ghcr.io/rossoctl/rossocortex/proxy-init:local` - iptables initialization
 
 ### Common Mistakes to Avoid:
 
 ❌ **DON'T** run individual `docker build` or `podman build` commands
-❌ **DON'T** skip building images from the kagenti repo
+❌ **DON'T** skip building images from the rossoctl repo
 ❌ **DON'T** forget to set `KIND_EXPERIMENTAL_PROVIDER=podman` if using Podman
 
 ✅ **DO** run `./local-build-and-test.sh` every time you need to rebuild
-✅ **DO** verify all images are loaded: `kind get images --name kagenti-dev | grep :local`
+✅ **DO** verify all images are loaded: `kind get images --name rossoctl-dev | grep :local`
 
 **Note for Podman users:** The script automatically detects Podman and uses tar archives to load images into Kind, since `kind load docker-image` doesn't work with Podman's image store.
 
-## Step 2: Install Kagenti with Ansible
+## Step 2: Install Rossoctl with Ansible
 
-**IMPORTANT:** For federated-JWT testing with local images, use the unified `federated-jwt-values.yaml` overlay file from kagenti-extensions.
+**IMPORTANT:** For federated-JWT testing with local images, use the unified `federated-jwt-values.yaml` overlay file from rossocortex.
 
-The ansible installer will detect the existing `kagenti-dev` cluster and install into it:
+The ansible installer will detect the existing `rossoctl-dev` cluster and install into it:
 
 ```bash
-# Go to kagenti repo
-cd kagenti
+# Go to rossoctl repo
+cd rossoctl
 
 # Install with dev base values + TWO overlays (deps local images + extensions federated-jwt)
 # --env dev                                → Loads dev_values.yaml (base Kind development config)
-# --env-file deployments/envs/...         → Local images for kagenti-deps (SPIRE, Keycloak, etc.)
-# --env-file ../kagenti-extensions/...    → Federated-jwt + local images for kagenti-extensions
+# --env-file deployments/envs/...         → Local images for rossoctl-deps (SPIRE, Keycloak, etc.)
+# --env-file ../rossocortex/...    → Federated-jwt + local images for rossocortex
 deployments/ansible/run-install.sh --env dev \
   --env-file deployments/envs/dev_values_local_images.yaml \
   --env-file deployments/envs/dev_values_federated-jwt.yaml
@@ -136,11 +136,11 @@ deployments/ansible/run-install.sh --env dev \
 - The installer **merges all three files** in order, each overlay adding/overriding specific values
 
 This installation will:
-1. Detect and use the existing `kagenti-dev` Kind cluster
-2. Deploy kagenti-deps (Keycloak, SPIRE, etc.) via Helm
+1. Detect and use the existing `rossoctl-dev` Kind cluster
+2. Deploy rossoctl-deps (Keycloak, SPIRE, etc.) via Helm
 3. **Patch SPIRE ConfigMap** with `set_key_use: true` (workaround for SPIRE Helm chart bug)
 4. **Create SPIFFE IdP setup job** (configures Keycloak with SPIFFE Identity Provider)
-5. Deploy kagenti chart with `authBridge.clientAuthType=federated-jwt`
+5. Deploy rossoctl chart with `authBridge.clientAuthType=federated-jwt`
 6. Use `:local` image tags for all components (pulled from the cluster's local image cache)
 
 **How SPIFFE IdP setup works:**
@@ -158,7 +158,7 @@ This installation will:
 ## Step 3: Verify SPIRE and Keycloak
 
 ```bash
-cd kagenti-extensions
+cd rossocortex
 
 chmod +x verify-spire-keycloak.sh
 ./verify-spire-keycloak.sh
@@ -188,7 +188,7 @@ Deploy a pod with spiffe-helper and client-registration to automatically registe
 kubectl create namespace agent1
 
 # Create Keycloak admin secret
-# (Kagenti automatically creates this in agent namespaces listed in agentNamespaces,
+# (Rossoctl automatically creates this in agent namespaces listed in agentNamespaces,
 #  but agent1 is a manual test namespace not in that list)
 kubectl create secret generic keycloak-admin-secret -n agent1 \
   --from-literal=KEYCLOAK_ADMIN_USERNAME=admin \
@@ -210,7 +210,7 @@ data:
     svid_file_name = "svid.pem"
     svid_key_file_name = "svid_key.pem"
     svid_bundle_file_name = "svid_bundle.pem"
-    jwt_svids = [{jwt_audience = "http://keycloak.localtest.me:8080/realms/kagenti", jwt_svid_file_name = "jwt_svid.token"}]
+    jwt_svids = [{jwt_audience = "http://keycloak.localtest.me:8080/realms/rossoctl", jwt_svid_file_name = "jwt_svid.token"}]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -246,7 +246,7 @@ spec:
         - name: certs
           mountPath: /opt
       - name: client-registration
-        image: ghcr.io/kagenti/kagenti-extensions/client-registration:local
+        image: ghcr.io/rossoctl/rossocortex/client-registration:local
         imagePullPolicy: Never
         command:
           - /bin/sh
@@ -270,7 +270,7 @@ spec:
           - name: SPIFFE_IDP_ALIAS
             value: "spire-spiffe"
           - name: TOKEN_URL
-            value: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
+            value: "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token"
           - name: KEYCLOAK_ADMIN_USERNAME
             valueFrom:
               secretKeyRef:
@@ -356,7 +356,7 @@ Client registration complete, keeping container alive
 **What the JWT-SVID contains:**
 - **Issuer**: SPIRE OIDC discovery provider
 - **Subject**: `spiffe://localtest.me/ns/agent1/sa/default`
-- **Audience**: `http://keycloak.localtest.me:8080/realms/kagenti`
+- **Audience**: `http://keycloak.localtest.me:8080/realms/rossoctl`
 
 ### 4.3. Test Token Exchange (JWT-SVID → Access Token)
 
@@ -371,7 +371,7 @@ curl -s -X POST \
   -d "client_id=spiffe://localtest.me/ns/agent1/sa/default" \
   -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe" \
   -d "client_assertion=$JWT_SVID" \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token"
 '
 ```
 
@@ -397,7 +397,7 @@ If you see:
 **Troubleshoot:**
 1. Wrong `client_assertion_type` (must be `jwt-spiffe` not `jwt-bearer`)
 2. Client not configured with `federated-jwt` authenticator
-3. SPIFFE Identity Provider missing in kagenti realm
+3. SPIFFE Identity Provider missing in rossoctl realm
 4. JWT-SVID issuer doesn't match configured IdP alias
 
 ### 4.4. Validate Access Token Claims
@@ -413,7 +413,7 @@ curl -s -X POST \
   -d "client_id=spiffe://localtest.me/ns/agent1/sa/default" \
   -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe" \
   -d "client_assertion=$JWT_SVID" \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token"
 ' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
 # Decode token payload (requires base64 and Python)
@@ -430,13 +430,13 @@ print(json.dumps(decoded, indent=2))
 **Expected token claims:**
 ```json
 {
-  "iss": "http://keycloak.localtest.me:8080/realms/kagenti",
+  "iss": "http://keycloak.localtest.me:8080/realms/rossoctl",
   "azp": "spiffe://localtest.me/ns/agent1/sa/default",
   "client_id": "spiffe://localtest.me/ns/agent1/sa/default",
   "realm_access": {
     "roles": [
       "offline_access",
-      "default-roles-kagenti",
+      "default-roles-rossoctl",
       "uma_authorization"
     ]
   }
@@ -444,9 +444,9 @@ print(json.dumps(decoded, indent=2))
 ```
 
 **Key verification points:**
-- ✅ `iss` (issuer) contains `/realms/kagenti` (not `/realms/demo`)
+- ✅ `iss` (issuer) contains `/realms/rossoctl` (not `/realms/demo`)
 - ✅ `azp` and `client_id` match the SPIFFE ID
-- ✅ `realm_access.roles` contains `default-roles-kagenti`
+- ✅ `realm_access.roles` contains `default-roles-rossoctl`
 
 ### What This Test Verifies
 
@@ -454,10 +454,10 @@ print(json.dumps(decoded, indent=2))
 |-----------|-------------|
 | **SPIRE** | Issues JWT-SVIDs with correct audience and subject |
 | **spiffe-helper** | Fetches JWT-SVIDs from SPIRE agent via CSI driver |
-| **Keycloak IdP** | SPIFFE Identity Provider configured in kagenti realm |
+| **Keycloak IdP** | SPIFFE Identity Provider configured in rossoctl realm |
 | **Client Config** | Client uses `federated-jwt` authenticator with correct issuer/subject |
 | **Token Exchange** | JWT-SVID successfully exchanges for access token using `jwt-spiffe` assertion type |
-| **Access Token** | Contains correct realm (kagenti), client ID, and roles |
+| **Access Token** | Contains correct realm (rossoctl), client ID, and roles |
 
 ### Cleanup
 
@@ -477,13 +477,13 @@ For testing the complete AuthBridge flow with automatic sidecar injection:
 
 ## Appendix: Standalone Helm Install (Without Ansible)
 
-If you want to install kagenti-deps directly with Helm instead of using the Ansible installer, you must manually configure SPIFFE IdP support due to a bug in the SPIRE Helm chart that prevents `set_key_use` from being rendered correctly.
+If you want to install rossoctl-deps directly with Helm instead of using the Ansible installer, you must manually configure SPIFFE IdP support due to a bug in the SPIRE Helm chart that prevents `set_key_use` from being rendered correctly.
 
-### Step 1: Install kagenti-deps
+### Step 1: Install rossoctl-deps
 
 ```bash
-helm install kagenti-deps ./charts/kagenti-deps/ \
-  -n kagenti-system \
+helm install rossoctl-deps ./charts/rossoctl-deps/ \
+  -n rossoctl-system \
   --create-namespace \
   --set spire.enabled=true \
   --set keycloak.enabled=true \
@@ -520,13 +520,13 @@ kubectl apply -f - <<'EOF'
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kagenti-spiffe-idp-setup
-  namespace: kagenti-system
+  name: rossoctl-spiffe-idp-setup
+  namespace: rossoctl-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kagenti-spiffe-idp-reader
+  name: rossoctl-spiffe-idp-reader
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
@@ -536,27 +536,27 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: kagenti-spiffe-idp-keycloak-reader
+  name: rossoctl-spiffe-idp-keycloak-reader
   namespace: keycloak
 subjects:
   - kind: ServiceAccount
-    name: kagenti-spiffe-idp-setup
-    namespace: kagenti-system
+    name: rossoctl-spiffe-idp-setup
+    namespace: rossoctl-system
 roleRef:
   kind: ClusterRole
-  name: kagenti-spiffe-idp-reader
+  name: rossoctl-spiffe-idp-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: kagenti-spiffe-idp-setup-job
-  namespace: kagenti-system
+  name: rossoctl-spiffe-idp-setup-job
+  namespace: rossoctl-system
 spec:
   backoffLimit: 10
   template:
     spec:
-      serviceAccountName: kagenti-spiffe-idp-setup
+      serviceAccountName: rossoctl-spiffe-idp-setup
       restartPolicy: OnFailure
       initContainers:
         - name: wait-for-spire
@@ -574,12 +574,12 @@ spec:
                 -n zero-trust-workload-identity-manager --timeout=300s
       containers:
         - name: setup-spiffe-idp
-          image: ghcr.io/kagenti/kagenti/spiffe-idp-setup:latest
+          image: ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:latest
           env:
             - name: KEYCLOAK_BASE_URL
               value: "http://keycloak-service.keycloak.svc:8080"
             - name: KEYCLOAK_REALM
-              value: "kagenti"
+              value: "rossoctl"
             - name: KEYCLOAK_NAMESPACE
               value: "keycloak"
             - name: KEYCLOAK_ADMIN_SECRET_NAME
@@ -597,18 +597,18 @@ spec:
 EOF
 
 # Wait for job to complete
-kubectl wait --for=condition=complete job/kagenti-spiffe-idp-setup-job \
-  -n kagenti-system --timeout=5m
+kubectl wait --for=condition=complete job/rossoctl-spiffe-idp-setup-job \
+  -n rossoctl-system --timeout=5m
 
 # Check job logs
-kubectl logs job/kagenti-spiffe-idp-setup-job -n kagenti-system
+kubectl logs job/rossoctl-spiffe-idp-setup-job -n rossoctl-system
 ```
 
 ### Step 4: Verify
 
 ```bash
 # Check job status
-kubectl get job kagenti-spiffe-idp-setup-job -n kagenti-system
+kubectl get job rossoctl-spiffe-idp-setup-job -n rossoctl-system
 
 # Verify JWKS has "use" field
 kubectl run test-curl --rm -i --image=curlimages/curl --restart=Never -- \
@@ -632,7 +632,7 @@ kubectl run test-curl --rm -i --image=curlimages/curl --restart=Never -- \
 
 **Symptom:**
 ```
-kagenti-spiffe-idp-setup-job-xxxxx   0/1   ErrImageNeverPull   0   5m
+rossoctl-spiffe-idp-setup-job-xxxxx   0/1   ErrImageNeverPull   0   5m
 ```
 
 **Root Cause:** The `spiffe-idp-setup:local` image wasn't built or loaded into Kind.
@@ -641,59 +641,59 @@ kagenti-spiffe-idp-setup-job-xxxxx   0/1   ErrImageNeverPull   0   5m
 1. Verify you ran `./local-build-and-test.sh` (not individual docker build commands)
 2. Check if the image is loaded:
    ```bash
-   kind get images --name kagenti-dev | grep spiffe-idp-setup
+   kind get images --name rossoctl-dev | grep spiffe-idp-setup
    ```
 3. If missing, rebuild:
    ```bash
-   cd /Users/alan/Documents/Work/kagenti/kagenti/auth/spiffe-idp-setup
+   cd /Users/alan/Documents/Work/rossoctl/rossoctl/auth/spiffe-idp-setup
 
    # For Docker:
-   docker build -t ghcr.io/kagenti/kagenti/spiffe-idp-setup:local .
-   kind load docker-image ghcr.io/kagenti/kagenti/spiffe-idp-setup:local --name kagenti-dev
+   docker build -t ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local .
+   kind load docker-image ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local --name rossoctl-dev
 
    # For Podman:
-   podman build -t ghcr.io/kagenti/kagenti/spiffe-idp-setup:local .
-   podman save ghcr.io/kagenti/kagenti/spiffe-idp-setup:local -o /tmp/spiffe-idp.tar
-   kind load image-archive /tmp/spiffe-idp.tar --name kagenti-dev
+   podman build -t ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local .
+   podman save ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local -o /tmp/spiffe-idp.tar
+   kind load image-archive /tmp/spiffe-idp.tar --name rossoctl-dev
    rm /tmp/spiffe-idp.tar
    ```
 4. Delete the failing pod:
    ```bash
-   kubectl delete pod -n kagenti-system -l job-name=kagenti-spiffe-idp-setup-job
+   kubectl delete pod -n rossoctl-system -l job-name=rossoctl-spiffe-idp-setup-job
    ```
 
 ### Issue: SPIFFE IdP Job Init Container CrashLoopBackOff
 
 **Symptom:**
 ```
-kagenti-spiffe-idp-setup-job-xxxxx   0/1   Init:CrashLoopBackOff   3   2m
+rossoctl-spiffe-idp-setup-job-xxxxx   0/1   Init:CrashLoopBackOff   3   2m
 ```
 
 **Root Cause:** Missing RBAC permissions to list pods in keycloak or SPIRE namespaces.
 
 **Check:**
 ```bash
-kubectl logs -n kagenti-system -l job-name=kagenti-spiffe-idp-setup-job -c wait-for-spire
+kubectl logs -n rossoctl-system -l job-name=rossoctl-spiffe-idp-setup-job -c wait-for-spire
 ```
 
 **Expected error:**
 ```
-Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:kagenti-system:kagenti-spiffe-idp-setup"
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:rossoctl-system:rossoctl-spiffe-idp-setup"
 cannot list resource "pods" in API group "" in the namespace "keycloak"
 ```
 
 **Solution:** This should be automatically created by the Ansible installer. If missing, manually create RBAC:
 ```bash
 # For keycloak namespace
-kubectl create role kagenti-spiffe-idp-pod-reader \
+kubectl create role rossoctl-spiffe-idp-pod-reader \
   -n keycloak \
   --verb=get,list,watch \
   --resource=pods
 
-kubectl create rolebinding kagenti-spiffe-idp-pod-reader \
+kubectl create rolebinding rossoctl-spiffe-idp-pod-reader \
   -n keycloak \
-  --role=kagenti-spiffe-idp-pod-reader \
-  --serviceaccount=kagenti-system:kagenti-spiffe-idp-setup
+  --role=rossoctl-spiffe-idp-pod-reader \
+  --serviceaccount=rossoctl-system:rossoctl-spiffe-idp-setup
 ```
 
 ### Issue: Token Exchange Fails with "invalid_client"
@@ -714,7 +714,7 @@ kubectl create rolebinding kagenti-spiffe-idp-pod-reader \
      ```bash
      kubectl exec -n keycloak keycloak-0 -- sh -c \
        '/opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password admin && \
-        /opt/keycloak/bin/kcadm.sh get clients -r kagenti -q clientId="spiffe://localtest.me/ns/agent1/sa/default"' | \
+        /opt/keycloak/bin/kcadm.sh get clients -r rossoctl -q clientId="spiffe://localtest.me/ns/agent1/sa/default"' | \
        jq '.[] | {clientAuthenticatorType, attributes}'
      ```
    - Should show:
@@ -733,7 +733,7 @@ kubectl create rolebinding kagenti-spiffe-idp-pod-reader \
      ```bash
      kubectl exec -n keycloak keycloak-0 -- sh -c \
        '/opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password admin && \
-        /opt/keycloak/bin/kcadm.sh get identity-provider/instances -r kagenti'
+        /opt/keycloak/bin/kcadm.sh get identity-provider/instances -r rossoctl'
      ```
    - Should show IdP with alias "spire-spiffe"
 
@@ -746,10 +746,10 @@ kubectl create rolebinding kagenti-spiffe-idp-pod-reader \
    ```bash
    kubectl delete pod -n <namespace> <pod-name>
    ```
-2. For webhook changes, see [kagenti-operator](https://github.com/kagenti/kagenti-operator) for redeployment instructions.
+2. For webhook changes, see [operator](https://github.com/rossoctl/operator) for redeployment instructions.
 3. Verify new images are loaded:
    ```bash
-   kind get images --name kagenti-dev | grep :local
+   kind get images --name rossoctl-dev | grep :local
    ```
 
 ## Verify Federated-JWT Configuration
@@ -763,7 +763,7 @@ kubectl get configmap authbridge-config -n <namespace> -o jsonpath='{.data.CLIEN
 
 # 2. Deploy an agent and check client-registration logs
 # (After deploying an agent in Step 4)
-kubectl logs -n <namespace> deployment/<your-agent> -c kagenti-client-registration -f
+kubectl logs -n <namespace> deployment/<your-agent> -c rossoctl-client-registration -f
 # Expected: "Configuring client for JWT-SVID authentication (federated-jwt)"
 
 # 3. Verify Keycloak client uses federated-jwt authenticator
@@ -772,7 +772,7 @@ kubectl run test-curl --rm -i --image=curlimages/curl --restart=Never -- sh -c "
   ADMIN_TOKEN=\$(curl -s 'http://keycloak-service.keycloak.svc:8080/realms/master/protocol/openid-connect/token' \
     -d 'grant_type=password' -d 'client_id=admin-cli' -d 'username=admin' -d 'password=admin' | jq -r '.access_token')
   curl -s -H 'Authorization: Bearer \$ADMIN_TOKEN' \
-    'http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients' | \
+    'http://keycloak-service.keycloak.svc:8080/admin/realms/rossoctl/clients' | \
     jq '.[] | select(.clientId | contains(\"spiffe\")) | {clientId, clientAuthenticatorType}'
 "
 # Expected: "clientAuthenticatorType": "federated-jwt"

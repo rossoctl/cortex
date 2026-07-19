@@ -39,7 +39,7 @@ Environment variables (injected via Kubernetes Deployment manifest):
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `KEYCLOAK_URL` | Yes | Keycloak base URL, e.g. `http://keycloak-service.keycloak.svc:8080` |
-| `KEYCLOAK_REALM` | Yes | Realm name, e.g. `kagenti` |
+| `KEYCLOAK_REALM` | Yes | Realm name, e.g. `rossoctl` |
 | `KEYCLOAK_ADMIN_USERNAME` | Yes | Admin username (from `keycloak-admin-secret`) |
 | `KEYCLOAK_ADMIN_PASSWORD` | Yes | Admin password (from `keycloak-admin-secret`) |
 

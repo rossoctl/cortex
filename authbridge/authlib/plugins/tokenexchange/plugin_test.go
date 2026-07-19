@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	fwspiffe "github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // fakeJWTSource is a minimal fwspiffe.JWTSource for unit-testing the
@@ -48,13 +48,13 @@ func TestTokenExchange_Configure_DerivesTokenURL(t *testing.T) {
 	p := NewTokenExchange()
 	raw := []byte(`{
 	  "keycloak_url":"http://keycloak:8080",
-	  "keycloak_realm":"kagenti",
+	  "keycloak_realm":"rossoctl",
 	  "identity":{"type":"client-secret","client_id":"c","client_secret":"s"}
 	}`)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	want := "http://keycloak:8080/realms/kagenti/protocol/openid-connect/token"
+	want := "http://keycloak:8080/realms/rossoctl/protocol/openid-connect/token"
 	if p.cfg.TokenURL != want {
 		t.Errorf("token_url = %q, want %q", p.cfg.TokenURL, want)
 	}

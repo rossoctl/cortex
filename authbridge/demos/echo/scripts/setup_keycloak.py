@@ -32,7 +32,7 @@ Client Scopes created:
 Demo Users created:
 - alice: alice123
 - bob:   bob123
-  (both get the realm "admin" role so the kagenti UI lists agents/tools)
+  (both get the realm "admin" role so the rossoctl UI lists agents/tools)
 
 Usage:
   python setup_keycloak.py
@@ -52,7 +52,7 @@ from keycloak import KeycloakAdmin, KeycloakGetError, KeycloakPostError
 
 # Default configuration
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "rossoctl")
 KEYCLOAK_ADMIN_USERNAME = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 
@@ -66,7 +66,7 @@ if KEYCLOAK_ADMIN_USERNAME == "admin" and KEYCLOAK_ADMIN_PASSWORD == "admin":
 DEFAULT_NAMESPACE = "team1"
 DEFAULT_SERVICE_ACCOUNT = "echo-agent"
 SPIFFE_TRUST_DOMAIN = "localtest.me"
-UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "kagenti")
+UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "rossoctl")
 
 # The token-exchange target audience (the echo upstream). Mirrors the
 # `target_audience` / `token_scopes` in k8s/echo-patch.yaml's route.
@@ -329,7 +329,7 @@ def main():
         print(f"Note: Could not add '{ECHO_UPSTREAM_SCOPE}' as optional: {e}")
 
     # ---------------------------------------------------------------
-    # Add agent audience scope to the Kagenti UI client
+    # Add agent audience scope to the Rossoctl UI client
     # ---------------------------------------------------------------
     # Keycloak only auto-assigns realm default scopes to NEW clients.
     # The UI client was created during install (before this scope existed),
@@ -338,7 +338,7 @@ def main():
     # reject UI chat requests with "invalid audience".
     #
     # TODO: Remove this workaround once the client-registration sidecar
-    # handles this automatically (kagenti/kagenti-extensions#169).
+    # handles this automatically (rossoctl/rossocortex#169).
     print(f"\n--- Adding agent audience scope to UI client '{UI_CLIENT_ID}' ---")
     ui_client_internal_id = keycloak_admin.get_client_id(UI_CLIENT_ID)
     if ui_client_internal_id:
@@ -399,7 +399,7 @@ def main():
         print(f"\n  {user['username']}: {user['description']}")
         get_or_create_user(keycloak_admin, user)
 
-    # The Kagenti backend uses the "admin" realm role for RBAC. Without
+    # The Rossoctl backend uses the "admin" realm role for RBAC. Without
     # it, users can log in but see no agents or tools in the UI.
     print("\n--- Assigning 'admin' realm role to demo users ---")
     try:
@@ -417,7 +417,7 @@ def main():
     else:
         print(
             "Warning: 'admin' realm role not found. Demo users will not "
-            "be able to see agents/tools in the UI. Ensure the Kagenti "
+            "be able to see agents/tools in the UI. Ensure the Rossoctl "
             "platform is installed before running this script."
         )
 

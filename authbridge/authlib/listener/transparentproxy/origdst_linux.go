@@ -50,7 +50,7 @@ func getOrigDst(fd uintptr) (string, error) {
 	var buf [unix.SizeofSockaddrInet6]byte
 	size := uint32(len(buf))
 
-	// IPv4 (SOL_IP) first — the common case in kagenti clusters.
+	// IPv4 (SOL_IP) first — the common case in rossoctl clusters.
 	if errno := getsockopt(fd, unix.SOL_IP, soOriginalDst, &buf[0], &size); errno == 0 {
 		return parseSockaddr(buf[:size])
 	}

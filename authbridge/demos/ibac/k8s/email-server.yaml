@@ -2,7 +2,7 @@
 #
 # Returns 6 emails on GET /emails — the last one contains a prompt
 # injection that tells the agent to POST to evil-server. Plain HTTP
-# service in team1; not labelled as a kagenti agent or tool, so the
+# service in team1; not labelled as a rossoctl agent or tool, so the
 # operator's webhook leaves it alone.
 
 apiVersion: apps/v1

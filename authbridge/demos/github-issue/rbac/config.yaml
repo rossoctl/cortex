@@ -2,7 +2,7 @@
 # Each client can have multiple roles, each role gets its own audience scope
 # Optional 'secret' parameter: if not provided, Keycloak will auto-generate the client secret
 clients:
-  - client_id: "kagenti"
+  - client_id: "rossoctl"
     #secret: "demo-ui-secret-for-testing-do-not-use"
     direct_access_grants: true
     roles:
@@ -33,7 +33,7 @@ realm_roles:
 
 # Client audience targets
 client_audience_targets:
-  kagenti:
+  rossoctl:
     - spiffe://localtest.me/ns/team1/sa/git-issue-agent
   spiffe://localtest.me/ns/team1/sa/git-issue-agent:
     - github-tool

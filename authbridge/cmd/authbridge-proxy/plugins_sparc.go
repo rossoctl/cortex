@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/sparc"
+import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/sparc"

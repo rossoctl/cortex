@@ -16,8 +16,8 @@
 .DEFAULT_GOAL := help
 
 PROVIDER          ?= watsonx
-NAMESPACE         ?= kagenti-system
-IMAGE             ?= ghcr.io/kagenti/kagenti-extensions/sparc-service:latest
+NAMESPACE         ?= rossoctl-system
+IMAGE             ?= ghcr.io/rossoctl/rossocortex/sparc-service:latest
 TRACK             ?= fast_track
 LLM_TIMEOUT       ?= 120
 PORT              ?= 8090
@@ -27,7 +27,7 @@ OLLAMA_BASE_URL   ?= http://host.docker.internal:11434
 LLM_KWARGS_JSON   ?=
 LLM_REGISTRY_ID   ?=
 # Local build / kind (only used by `make image`).
-KIND_CLUSTER_NAME ?= kagenti
+KIND_CLUSTER_NAME ?= rossoctl
 KIND_NODE         := $(KIND_CLUSTER_NAME)-control-plane
 CONTAINER_RUNTIME ?= $(shell docker info >/dev/null 2>&1 && echo docker || (podman info >/dev/null 2>&1 && echo podman) || echo docker)
 

@@ -74,7 +74,7 @@ Before starting, ensure you have:
 
 - Python 3.9+ with `venv` support
 - Keycloak running and accessible
-- The kagenti-extensions repository cloned
+- The rossocortex repository cloned
 - Basic understanding of Keycloak concepts (realms, clients, roles)
 
 **Creating GitHub Personal Access Tokens**
@@ -93,16 +93,16 @@ The agent and tool container images must be built locally and loaded into the ki
 cd <path-to>/agent-examples
 
 # Build the GitHub tool image
-docker build -t ghcr.io/kagenti/agent-examples/github-tool:latest \
+docker build -t ghcr.io/rossoctl/examples/github-tool:latest \
   -f mcp/github_tool/Dockerfile mcp/github_tool/
 
 # Build the GitHub Issue Agent image
-docker build -t ghcr.io/kagenti/agent-examples/git-issue-agent:latest \
+docker build -t ghcr.io/rossoctl/examples/git-issue-agent:latest \
   -f a2a/git_issue_agent/Dockerfile a2a/git_issue_agent/
 
 # Load both images into the kind cluster
-kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/github-tool:latest
-kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/git-issue-agent:latest
+kind load docker-image --name rossoctl ghcr.io/rossoctl/examples/github-tool:latest
+kind load docker-image --name rossoctl ghcr.io/rossoctl/examples/git-issue-agent:latest
 ```
 
 ### Step 1: Environment Setup
@@ -110,7 +110,7 @@ kind load docker-image --name kagenti ghcr.io/kagenti/agent-examples/git-issue-a
 Create and activate a Python virtual environment:
 
 ```bash
-cd kagenti-extensions/
+cd rossocortex/
 
 # Create virtual environment
 uv sync
@@ -125,12 +125,12 @@ uv pip install -r requirements.txt
 
 ### Step 2: Apply Demo ConfigMaps
 
-The Kagenti installer creates default ConfigMaps.
+The Rossoctl installer creates default ConfigMaps.
 
 Apply the demo-specific ConfigMaps — the `authproxy-routes` ConfigMap configures per-route token exchange (target audience and scopes for the `github-tool` host), and `authbridge-config` sets the agent SPIFFE ID for inbound audience validation. Apply this **before** deploying the agent.
 
 ```bash
-cd kagenti-extensions/authbridge
+cd rossocortex/authbridge
 
 # Create namespace if it doesn't exist
 kubectl create namespace team1 --dry-run=client -o yaml | kubectl apply -f -
@@ -249,18 +249,18 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent \
   -o jsonpath='{.items[0].spec.volumes[?(@.secret)].secret.secretName}'
 ```
 
-Expected: A Secret name starting with `kagenti-keycloak-client-credentials-....`
+Expected: A Secret name starting with `rossoctl-keycloak-client-credentials-....`
 
 **Follow the operator-side registration:**
 
 ```bash
-kubectl logs deployment/kagenti-controller-manager -n kagenti-system \
+kubectl logs deployment/rossoctl-controller-manager -n rossoctl-system \
   | grep -iE "clientregistration|git-issue-agent" | tail -20
 ```
 
 Expected (operator log lines):
 ```
-{"level":"info","ts":"2026-06-16T18:14:20Z","msg":"operator client registration applied","controller":"clientregistration","controllerGroup":"apps","controllerKind":"Deployment","Deployment":{"name":"git-issue-agent","namespace":"team1"},"namespace":"team1","name":"git-issue-agent","reconcileID":"d4654c2c-7bcd-4596-8277-c643b550d70d","workload":"git-issue-agent","namespace":"team1","secret":"kagenti-keycloak-client-credentials-352ed374f36956bc"}
+{"level":"info","ts":"2026-06-16T18:14:20Z","msg":"operator client registration applied","controller":"clientregistration","controllerGroup":"apps","controllerKind":"Deployment","Deployment":{"name":"git-issue-agent","namespace":"team1"},"namespace":"team1","name":"git-issue-agent","reconcileID":"d4654c2c-7bcd-4596-8277-c643b550d70d","workload":"git-issue-agent","namespace":"team1","secret":"rossoctl-keycloak-client-credentials-352ed374f36956bc"}
 ```
 
 #### Check agent logs
@@ -365,7 +365,7 @@ update the required values e.g.:
 KEYCLOAK_URL=http://keycloak.localtest.me:8080
 KEYCLOAK_ADMIN_USERNAME=admin
 KEYCLOAK_ADMIN_PASSWORD=<admin password>
-REALM_NAME=kagenti
+REALM_NAME=rossoctl
 ```
 
 #### LLM Configuration
@@ -387,14 +387,14 @@ kubectl exec -it test-client -n team1 -- bash
 ```
 
 ⚠️ NOTE ⚠️
-Inside the test pod, verify the Keycloak users credentials are set properly before moving forward. If needed, fix credentials manually via the UI ONLY in kagenti realm:
+Inside the test pod, verify the Keycloak users credentials are set properly before moving forward. If needed, fix credentials manually via the UI ONLY in rossoctl realm:
 
 
 This creates:
 
 | Resource | Name | Purpose |
 |----------|------|---------|
-| **Realm** | `kagenti` | Keycloak realm for the demo |
+| **Realm** | `rossoctl` | Keycloak realm for the demo |
 | **Clients** | `git-issue-agent`, `github-tool` | Service clients with roles |
 | **Realm Roles** | `developer`, `sales`, `tech-support` | User roles |
 | **Users** | `alice`, `bob`, `charlie` | Demo users with different roles |
@@ -413,7 +413,7 @@ Authbridge outbound check will exchange the token, then deny the request since t
 
 ```bash
 
-REALM_NAME="kagenti"
+REALM_NAME="rossoctl"
 
 ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token \
   -d "grant_type=password" \
@@ -455,7 +455,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-alice-pub-1",
-        "parts": [{"type": "text", "text": "List one issue in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List one issue in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
@@ -494,7 +494,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-bob-pub-1",
-        "parts": [{"type": "text", "text": "List one issue in kagenti/kagenti repoo"}]
+        "parts": [{"type": "text", "text": "List one issue in rossoctl/rossoctl repoo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
@@ -509,7 +509,7 @@ Verify $ADMIN_TOKEN is not empty (Keycloak reachable?) and that setup_keycloak.p
 
 <sub><span style="color: gray; font-size: 0.9em;">
 You can also list all clients with: \
-`curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" | jq '.[].clientId'`
+`curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "http://keycloak-service.keycloak.svc:8080/admin/realms/rossoctl/clients" | jq '.[].clientId'`
 </span></sub>
 
 <sub><span style="color: gray; font-size: 0.9em;">
@@ -611,7 +611,7 @@ You can verify the applied policy in the Keycloak admin console:
 
 1. Open Keycloak admin console: `http://keycloak.localtest.me:8080/`
 2. Login with admin credentials
-3. Select the `kagenti` realm
+3. Select the `rossoctl` realm
 4. Navigate to **Realm roles**
 5. Click on a role (e.g., `developer` or `tech-support`)
 6. Go to the **Composite roles** tab
@@ -626,7 +626,7 @@ Test the policy by getting tokens for different users:
 
 ```bash
 
-REALM_NAME="kagenti"
+REALM_NAME="rossoctl"
 
 ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/${REALM_NAME}/protocol/openid-connect/token \
   -d "grant_type=password" \
@@ -647,7 +647,7 @@ echo "Client ID: $CLIENT_ID  Secret length: ${#CLIENT_SECRET}"
 # step 2 - run AIAC using regualr policy
 # python aiac_cli.py policies/regular_policy.txt
 # users will be configured acording to the 'regular' policy
-#ALICE (Developer) can list issues in kagenti/kagenti repo
+#ALICE (Developer) can list issues in rossoctl/rossoctl repo
 #ALICE can also list issues in omerboehm/intro2c repo (because she is a DEVELOPER and has full access)
 
 ALICE_TOKEN=$(curl -s -X POST \
@@ -671,7 +671,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-alice-pub-2",
-        "parts": [{"type": "text", "text": "List issues in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List issues in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
@@ -694,7 +694,7 @@ curl -s --max-time 300 \
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 
-#BOB (tech-support) can list issues in kagenti/kagenti repo
+#BOB (tech-support) can list issues in rossoctl/rossoctl repo
 #BOB can not list issues in omerboehm/intro2c repo (because he is a TechSupport and has public access)
 
 BOB_TOKEN=$(curl -s -X POST \
@@ -721,7 +721,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-bob-pub-2",
-        "parts": [{"type": "text", "text": "List one issue in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List one issue in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
@@ -745,7 +745,7 @@ curl -s --max-time 300 \
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
 
 
-#Charlie (Sales) still cannot list issues in kagenti/kagenti repo (Role Sales in policy doesnt allow)
+#Charlie (Sales) still cannot list issues in rossoctl/rossoctl repo (Role Sales in policy doesnt allow)
 
 
 CHARLIE_TOKEN=$(curl -s -X POST \
@@ -769,7 +769,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-charlie-pub-1",
-        "parts": [{"type": "text", "text": "List one issue in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List one issue in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5

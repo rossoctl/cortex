@@ -1,7 +1,7 @@
 # mTLS demo — caller pod.
 #
-# Operator-injected authbridge sidecar (kagenti.io/inject=enabled);
-# SPIRE enabled (kagenti.io/spire=enabled) so spiffe-helper writes
+# Operator-injected authbridge sidecar (rossoctl.io/inject=enabled);
+# SPIRE enabled (rossoctl.io/spire=enabled) so spiffe-helper writes
 # the X.509 SVID files authbridge consumes for mTLS. The "demo-app"
 # container is just curl in a sleep loop — the demo's verify scripts
 # kubectl-exec into it.
@@ -34,8 +34,8 @@ spec:
       labels:
         app.kubernetes.io/name: mtls-caller
         app.kubernetes.io/part-of: mtls-demo
-        kagenti.io/inject: enabled
-        kagenti.io/spire: enabled
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: enabled
     spec:
       serviceAccountName: mtls-caller
       securityContext:
@@ -96,9 +96,9 @@ spec:
 
 ---
 # AgentRuntime enrolls this workload with the operator. The operator
-# applies kagenti.io/type=agent to the Deployment and Pod template,
+# applies rossoctl.io/type=agent to the Deployment and Pod template,
 # which triggers webhook sidecar injection and Keycloak client registration.
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: mtls-caller

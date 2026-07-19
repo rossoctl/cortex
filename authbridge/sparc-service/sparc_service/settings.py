@@ -3,7 +3,7 @@
 Configuration is intentionally read from the environment (12-factor) so the
 service can be tuned via a Kubernetes ConfigMap/Secret without rebuilding the
 image. Watsonx credentials follow the same ``WX_*`` (with ``WATSONX_*``
-fallbacks) convention used elsewhere in Kagenti.
+fallbacks) convention used elsewhere in Rossoctl.
 """
 
 from __future__ import annotations

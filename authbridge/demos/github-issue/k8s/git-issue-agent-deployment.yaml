@@ -1,7 +1,7 @@
 # GitHub Issue Agent Deployment with AuthBridge
 #
-# This deployment uses the kagenti-operator webhook to automatically inject
-# a single combined AuthBridge sidecar (post-kagenti-extensions#411). The exact
+# This deployment uses the operator webhook to automatically inject
+# a single combined AuthBridge sidecar (post-rossocortex#411). The exact
 # container shape depends on the resolved AuthBridge mode:
 # - proxy-sidecar (default): one container "authbridge-proxy" from the
 #   "authbridge" image. spiffe-helper is bundled inside; gated per-workload
@@ -13,7 +13,7 @@
 # exchange (HTTP), and HTTPS passthrough.
 #
 # Keycloak client registration is operator-managed (no in-pod sidecar);
-# the operator creates a kagenti-keycloak-client-credentials-<hash> Secret
+# the operator creates a rossoctl-keycloak-client-credentials-<hash> Secret
 # and the webhook mounts it at /shared/client-{id,secret}.txt.
 #
 # The agent container:
@@ -22,10 +22,10 @@
 #   - Token exchange to the tool is handled transparently by the AuthBridge sidecar
 #
 # Labels (on Pod template):
-#   kagenti.io/inject: enabled  - Enables AuthBridge sidecar injection
-#   kagenti.io/spire: enabled   - Enables SPIRE-based identity (set to "disabled" if no SPIRE)
+#   rossoctl.io/inject: enabled  - Enables AuthBridge sidecar injection
+#   rossoctl.io/spire: enabled   - Enables SPIRE-based identity (set to "disabled" if no SPIRE)
 #
-# kagenti.io/type is applied automatically by the operator when the
+# rossoctl.io/type is applied automatically by the operator when the
 # AgentRuntime CR (at the end of this file) is created.
 #
 # Usage:
@@ -55,13 +55,13 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: git-issue-agent
-        kagenti.io/inject: enabled
-        kagenti.io/spire: enabled
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: enabled
     spec:
       serviceAccountName: git-issue-agent
       containers:
         - name: agent
-          image: ghcr.io/kagenti/agent-examples/git-issue-agent:latest
+          image: ghcr.io/rossoctl/examples/git-issue-agent:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
@@ -98,7 +98,7 @@ spec:
 
             # Agent service settings
             # PORT tells the agent where to listen for A2A traffic.
-            # The kagenti operator may override this via proxy-sidecar
+            # The rossoctl operator may override this via proxy-sidecar
             # port-stealing to relocate the agent to a free port.
             - name: PORT
               value: "8000"
@@ -112,7 +112,7 @@ spec:
 
             # JWKS URI for validating incoming tokens from Keycloak
             - name: JWKS_URI
-              value: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/certs"
+              value: "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/certs"
           resources:
             limits:
               cpu: 500m
@@ -144,11 +144,11 @@ spec:
 
 ---
 # AgentRuntime triggers operator-managed Keycloak client registration
-# (creates kagenti-keycloak-client-credentials-<hash> Secret with
+# (creates rossoctl-keycloak-client-credentials-<hash> Secret with
 # client-id.txt and client-secret.txt that the authbridge sidecar
-# mounts at /shared/). The operator also applies kagenti.io/type=agent
+# mounts at /shared/). The operator also applies rossoctl.io/type=agent
 # to the Deployment and Pod template, enabling webhook sidecar injection.
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: git-issue-agent

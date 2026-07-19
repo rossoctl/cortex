@@ -2,7 +2,7 @@
 
 ## Abstract
 
-AI-based Access Control (AIAC) is a Kagenti platform extension that automates RBAC/ABAC policy
+AI-based Access Control (AIAC) is a Rossoctl platform extension that automates RBAC/ABAC policy
 enforcement for AI agents running on Kubernetes. A LangGraph-based AI agent continuously translates
 a natural-language access control policy — stored in a vector knowledge base — into concrete
 permission configurations in the active Policy Decision Point (PDP), eliminating manual policy
@@ -14,7 +14,7 @@ management (subjects, roles, services).
 
 ## Problem Description
 
-Kagenti AI agents call services across a shared platform. Every call must carry a token scoped to
+Rossoctl AI agents call services across a shared platform. Every call must carry a token scoped to
 exactly the permissions the caller's role entitles on the target service. Without a dedicated
 policy management layer, access policy ends up scattered across per-deployment configuration,
 creating three compounding problems:
@@ -108,7 +108,7 @@ Eight components across five Kubernetes Pods plus a Python library layer, all im
                │                      |
     (𝘶𝘴𝘦𝘳𝘴, 𝘳𝘰𝘭𝘦𝘴, 𝘤𝘭𝘪𝘦𝘯𝘵𝘴)    (𝘈𝘶𝘵𝘩𝘰𝘳𝘪𝘻𝘢𝘵𝘪𝘰𝘯𝘗𝘰𝘭𝘪𝘤𝘺 𝘊𝘙)
 ┌──────────────┼──────────────────────┼───────────────────┐
-│  Kagenti Interface Pod              │                   │
+│  Rossoctl Interface Pod              │                   │
 │              │                      │                   │
 │      ┌───────┴──────┐      ┌────────┴───────┐           │
 │      │  IdP Config  │      │  PDP Policy    │           │
@@ -154,12 +154,12 @@ All inter-pod traffic is Kubernetes ClusterIP. External access is exclusively vi
 
 ---
 
-## Kagenti / Keycloak / OPA Interfaces
+## Rossoctl / Keycloak / OPA Interfaces
 
-**AIAC ↔ Kagenti platform**
+**AIAC ↔ Rossoctl platform**
 The AIAC Agent reads `AgentRuntime` and `AgentCard` custom resources from the Kubernetes API to
 extract service metadata during UC-1 service onboarding. The `aiac.idp.library` and
-`aiac.pdp.library` Python packages are the integration surface for other Kagenti components
+`aiac.pdp.library` Python packages are the integration surface for other Rossoctl components
 needing typed access to IdP configuration and PDP policy state.
 
 **AIAC ↔ Keycloak**

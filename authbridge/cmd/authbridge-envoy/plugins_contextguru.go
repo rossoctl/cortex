@@ -7,4 +7,4 @@
 // linked only when built with -tags include_plugin_contextguru.
 package main
 
-import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/contextguru"
+import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/contextguru"

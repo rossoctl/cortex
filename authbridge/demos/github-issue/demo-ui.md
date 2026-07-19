@@ -1,9 +1,9 @@
 # GitHub Issue Agent Demo with AuthBridge (UI Deployment)
 
 This guide walks through deploying the **GitHub Issue Agent** with **AuthBridge**
-using the **Kagenti UI** for agent and tool deployment. Infrastructure setup
+using the **Rossoctl UI** for agent and tool deployment. Infrastructure setup
 (webhook, Keycloak, ConfigMaps) is done via CLI, while the agent and tool are
-imported and deployed through the Kagenti dashboard.
+imported and deployed through the Rossoctl dashboard.
 
 For a fully manual deployment using only `kubectl`, see [demo-manual.md](demo-manual.md).
 
@@ -78,7 +78,7 @@ providing end-to-end security:
 │  │   SPIRE (namespace:  │          │ KEYCLOAK (namespace: │                      │
 │  │       spire)         │          │     keycloak)        │                      │
 │  │                      │          │                      │                      │
-│  │  Provides SPIFFE     │          │  - kagenti realm     │                      │
+│  │  Provides SPIFFE     │          │  - rossoctl realm     │                      │
 │  │  identities (SVIDs)  │          │  - token exchange    │                      │
 │  └──────────────────────┘          └──────────────────────┘                      │
 └──────────────────────────────────────────────────────────────────────────────────┘
@@ -86,17 +86,17 @@ providing end-to-end security:
 
 ## Prerequisites
 
-Ensure you have completed the Kagenti platform setup as described in the
-[Installation Guide](https://github.com/kagenti/kagenti/blob/main/docs/install.md),
-including the Kagenti UI.
+Ensure you have completed the Rossoctl platform setup as described in the
+[Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md),
+including the Rossoctl UI.
 
 You should also have:
-- The [kagenti-extensions](https://github.com/kagenti/kagenti-extensions) repo cloned
-- The Kagenti UI running at `http://kagenti-ui.localtest.me:8080`
+- The [rossocortex](https://github.com/rossoctl/rossocortex) repo cloned
+- The Rossoctl UI running at `http://rossoctl-ui.localtest.me:8080`
 - Python 3.10+ with `venv` support
 - An LLM provider — either **Ollama** with `ibm/granite4:latest` (or another model)
   or an **OpenAI API key** (recommended for reliable function calling;
-  see [agent-examples#173](https://github.com/kagenti/agent-examples/issues/173))
+  see [agent-examples#173](https://github.com/rossoctl/examples/issues/173))
 - Two GitHub Personal Access Tokens (PATs):
   - `<PUBLIC_ACCESS_PAT>` — access to public repositories only
   - `<PRIVILEGED_ACCESS_PAT>` — access to all repositories
@@ -113,22 +113,22 @@ This lets you demonstrate finer-grained authorization: a user with full access
 can see issues on all repositories, while a user with partial access can only
 see issues on public repositories.
 
-### Kagenti version notes (UI import and AuthBridge)
+### Rossoctl version notes (UI import and AuthBridge)
 
 - **Outbound routes from the UI (Step 5, item 12):** The API must write `authproxy-routes`
   `routes.yaml` as a **YAML list** of route objects (same shape as
-  [k8s/configmaps.yaml](k8s/configmaps.yaml)). Older Kagenti backends wrapped routes in a
+  [k8s/configmaps.yaml](k8s/configmaps.yaml)). Older Rossoctl backends wrapped routes in a
   top-level `routes:` **map**, which **authbridge cannot parse**, so ext_proc
   never starts, Envoy returns **500** through the Service, and the UI shows **Agent card not
-  available**. Use a build that includes [kagenti/kagenti#1194](https://github.com/kagenti/kagenti/pull/1194)
-  ([#1195](https://github.com/kagenti/kagenti/issues/1195)), or use **Step 2 Option B**
+  available**. Use a build that includes [rossoctl/rossoctl#1194](https://github.com/rossoctl/rossoctl/pull/1194)
+  ([#1195](https://github.com/rossoctl/rossoctl/issues/1195)), or use **Step 2 Option B**
   (`kubectl apply -f demos/github-issue/k8s/configmaps.yaml`) and skip adding duplicate
   routes in the UI.
 
 - **Finalize after Shipwright:** If the build succeeds but the agent **Deployment never
   appears** and backend logs show **403** on ConfigMaps, upgrade the Helm chart to a
-  release that includes [kagenti/kagenti#1192](https://github.com/kagenti/kagenti/pull/1192)
-  ([#1191](https://github.com/kagenti/kagenti/issues/1191)).
+  release that includes [rossoctl/rossoctl#1192](https://github.com/rossoctl/rossoctl/pull/1192)
+  ([#1191](https://github.com/rossoctl/rossoctl/issues/1191)).
 
 ---
 
@@ -166,7 +166,7 @@ This creates:
 
 | Resource | Name | Purpose |
 |----------|------|---------|
-| **Realm** | `kagenti` | Keycloak realm for the demo |
+| **Realm** | `rossoctl` | Keycloak realm for the demo |
 | **Client** | `github-tool` | Target audience for token exchange |
 | **Scope** | `agent-team1-git-issue-agent-aud` | Realm DEFAULT — auto-adds Agent's SPIFFE ID to all tokens |
 | **Scope** | `github-tool-aud` | Realm OPTIONAL — for exchanged tokens targeting the tool |
@@ -178,9 +178,9 @@ This creates:
 
 ## Step 2: Apply Demo ConfigMaps
 
-The Kagenti installer creates default ConfigMaps (`authbridge-config`,
+The Rossoctl installer creates default ConfigMaps (`authbridge-config`,
 `spiffe-helper-config`, `envoy-config`) and the `keycloak-admin-secret` Secret
-in the target namespace with the correct `kagenti` realm settings and 300s Envoy
+in the target namespace with the correct `rossoctl` realm settings and 300s Envoy
 timeouts. No manual secret creation is needed for this demo.
 
 > If your Keycloak admin credentials differ from the default (`admin`/`admin`),
@@ -195,10 +195,10 @@ timeouts. No manual secret creation is needed for this demo.
 The `authproxy-routes` ConfigMap (outbound routing rules for token exchange)
 can be configured in two ways:
 
-**Option A (recommended): Via the Kagenti UI** — configure outbound routing
+**Option A (recommended): Via the Rossoctl UI** — configure outbound routing
 rules directly during agent import in Step 5 (item 12). No manual ConfigMap
-creation needed. Requires a Kagenti backend that writes list-shaped `routes.yaml`
-(see [Kagenti version notes](#kagenti-version-notes-ui-import-and-authbridge) above);
+creation needed. Requires a Rossoctl backend that writes list-shaped `routes.yaml`
+(see [Rossoctl version notes](#rossoctl-version-notes-ui-import-and-authbridge) above);
 otherwise use Option B or upgrade.
 
 **Option B: Via kubectl** — apply the demo-specific ConfigMap that configures
@@ -234,17 +234,17 @@ kubectl create secret generic github-tool-secrets -n team1 \
 
 ---
 
-## Step 4: Import the GitHub Tool via Kagenti UI
+## Step 4: Import the GitHub Tool via Rossoctl UI
 
-1. Navigate to [Import Tool](http://kagenti-ui.localtest.me:8080/tools/import)
-   in the Kagenti UI.
+1. Navigate to [Import Tool](http://rossoctl-ui.localtest.me:8080/tools/import)
+   in the Rossoctl UI.
 
 2. In the **Namespace** drop-down, choose `team1`.
 
 3. Select **Build from Source** as the deployment method.
 
 4. Under **Source Code** select:
-   - **Git Repository URL**: `https://github.com/kagenti/agent-examples`
+   - **Git Repository URL**: `https://github.com/rossoctl/examples`
    - **Git Branch or Tag**: `main`
    - **Select Tool**: `GitHub Tool`
    - **Source Subfolder**: `mcp/github_tool`
@@ -270,7 +270,7 @@ kubectl create secret generic github-tool-secrets -n team1 \
 
 10. Under **Environment Variables**, click **Import from File/URL**,
     Select **From URL** and provide the `.env` file from this repo:
-    - **URL** `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/mcp/github_tool/.env.authbridge`
+    - **URL** `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/mcp/github_tool/.env.authbridge`
     - Click **Fetch & Parse** — this populates all environment variables, including
       Secret references for the PAT tokens and direct values for Keycloak settings.
     - Click **Import** to set all the env. variables.
@@ -303,17 +303,17 @@ Expected:
 
 ---
 
-## Step 5: Import the GitHub Issue Agent via Kagenti UI
+## Step 5: Import the GitHub Issue Agent via Rossoctl UI
 
-1. Navigate to [Import Agent](http://kagenti-ui.localtest.me:8080/agents/import)
-   in the Kagenti UI.
+1. Navigate to [Import Agent](http://rossoctl-ui.localtest.me:8080/agents/import)
+   in the Rossoctl UI.
 
 2. In the **Namespace** drop-down, choose `team1`.
 
 3. Select **Build from Source** as the deployment method.
 
 4. Under **Source Repository** select:
-   - **Git Repository URL**: `https://github.com/kagenti/agent-examples`
+   - **Git Repository URL**: `https://github.com/rossoctl/examples`
    - **Git Branch or Tag**: `main`
    - **Select Agent**: `Git Issue Agent`
    - **Source Subfolder**: `a2a/git_issue_agent`
@@ -334,8 +334,8 @@ Expected:
 
 11. Under **Environment Variables**, click **Import from File/URL**,
    Select **From URL** and provide the **URL** from this repo:
-    - For Ollama: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/git_issue_agent/.env.ollama`
-    - For OpenAI: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/git_issue_agent/.env.openai`
+    - For Ollama: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/git_issue_agent/.env.ollama`
+    - For OpenAI: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/git_issue_agent/.env.openai`
     - Click **Fetch & Parse** — this populates all environment variables including
      LLM settings, `MCP_URL`, and `JWKS_URI`. No manual editing is needed.
     - Click **Import** to set all the env. variables.
@@ -365,7 +365,7 @@ Expected:
     > you can skip this — the UI-created routes will merge with existing ones.
 
     > **Troubleshooting:** If **Outbound Routing Rules** is missing, stays collapsed,
-    > or does not respond when you click it, your Kagenti UI build may not include this
+    > or does not respond when you click it, your Rossoctl UI build may not include this
     > control yet. Use **Step 2, Option B** instead:
     > `kubectl apply -f demos/github-issue/k8s/configmaps.yaml` from the `authbridge`
     > directory (same host, audience, and scopes as the table above). Then continue
@@ -389,7 +389,7 @@ Wait for the Shipwright build to complete and the deployment to become ready.
 kubectl get pods -n team1
 ```
 
-Expected output (after kagenti-extensions#411 / kagenti-operator#361:
+Expected output (after rossocortex#411 / operator#361:
 one combined AuthBridge sidecar, registration is operator-managed):
 
 ```
@@ -425,20 +425,20 @@ agent envoy-proxy
 
 ### Check operator-managed client registration
 
-After kagenti-operator#361 client registration runs in the operator
+After operator#361 client registration runs in the operator
 (outside the workload pod). Verify the resulting Secret is mounted
 into the agent's sidecar:
 
 ```bash
 kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent \
   -o jsonpath='{.items[0].spec.volumes[?(@.secret)].secret.secretName}'
-# Expect a Secret name starting with: kagenti-keycloak-client-credentials-
+# Expect a Secret name starting with: rossoctl-keycloak-client-credentials-
 ```
 
 Follow the operator-side reconciler:
 
 ```bash
-kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+kubectl logs -n rossoctl-system deployment/rossoctl-controller-manager \
   | grep -iE "clientregistration|git-issue-agent" | tail -20
 ```
 
@@ -449,7 +449,7 @@ log format):
 ClientRegistrationReconciler: ensured Keycloak client
   spiffe://localtest.me/ns/team1/sa/git-issue-agent
 ClientRegistrationReconciler: wrote Secret
-  kagenti-keycloak-client-credentials-<hex8>
+  rossoctl-keycloak-client-credentials-<hex8>
 ```
 
 ### Check agent logs
@@ -471,7 +471,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```
 
-<!-- WORKAROUND: Remove this warning note once kagenti/agent-examples#129 is fixed. -->
+<!-- WORKAROUND: Remove this warning note once rossoctl/examples#129 is fixed. -->
 
 > **These warnings are expected and harmless.** The agent's built-in auth code
 > probes for SVID and client-secret files at startup. With AuthBridge, these files
@@ -481,7 +481,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 > correct behavior — AuthBridge handles inbound JWT validation and outbound
 > token exchange on behalf of the agent.
 > These warnings will be removed once the agent's built-in auth logic is cleaned up
-> ([kagenti/agent-examples#129](https://github.com/kagenti/agent-examples/issues/129)).
+> ([rossoctl/examples#129](https://github.com/rossoctl/examples/issues/129)).
 
 ### Check the service endpoint
 
@@ -507,7 +507,7 @@ provider.
 > **Recommendation:** OpenAI (`gpt-4o-mini` or similar) is recommended for the most
 > reliable function-calling experience. Local Ollama models may produce text-based
 > tool outputs instead of structured function calls with `crewai 1.10.1`
-> ([kagenti/agent-examples#173](https://github.com/kagenti/agent-examples/issues/173)).
+> ([rossoctl/examples#173](https://github.com/rossoctl/examples/issues/173)).
 
 ### Option A: Ollama (local models)
 
@@ -542,14 +542,14 @@ Otherwise, add the annotation after deployment:
 
 ```bash
 kubectl patch deployment git-issue-agent -n team1 --type=merge -p='
-{"spec":{"template":{"metadata":{"annotations":{"kagenti.io/outbound-ports-exclude":"11434"}}}}}'
+{"spec":{"template":{"metadata":{"annotations":{"rossoctl.io/outbound-ports-exclude":"11434"}}}}}'
 kubectl rollout status deployment/git-issue-agent -n team1 --timeout=120s
 ```
 
 ### Option B: OpenAI
 
 Verify the OpenAI secret exists (see the prerequisite note in
-[Step 5](#step-5-import-the-github-issue-agent-via-kagenti-ui)):
+[Step 5](#step-5-import-the-github-issue-agent-via-rossoctl-ui)):
 
 ```bash
 kubectl get secret openai-secret -n team1
@@ -575,28 +575,28 @@ OPENAI_API_KEY=sk-...
 
 ---
 
-## Step 8: Chat via Kagenti UI
+## Step 8: Chat via Rossoctl UI
 
-1. Navigate to the **Agent Catalog** in the Kagenti UI.
+1. Navigate to the **Agent Catalog** in the Rossoctl UI.
 2. Select the `team1` namespace.
 3. Under **Available Agents**, select `git-issue-agent` and click **View Details**.
 4. Verify the **Agent Card** is visible (this confirms the agent is running and
    the `/.well-known/*` bypass is working).
-5. Use the **Chat** panel to send a message, e.g. "List 10 open issues in kagenti/kagenti repo".
+5. Use the **Chat** panel to send a message, e.g. "List 10 open issues in rossoctl/rossoctl repo".
 6. The agent should respond with a list of GitHub issues.
 
 > **Intermittent short responses:** Sometimes the model returns only a CrewAI-style
 > planning line (e.g. `Thought: … Action: list_issues Action Input: …`) and stops
 > **before** the GitHub MCP tool runs, so you do not get a real issue list. This is
-> **not** Kagenti UI caching or streaming truncation—the same text can appear from
+> **not** Rossoctl UI caching or streaming truncation—the same text can appear from
 > `message/send` in [Step 9d](#9d-end-to-end-test-with-valid-token). **Workaround for
 > the demo:** send the same prompt again (in the UI or via `curl`) a few times until
 > you see a full answer. OpenAI models usually behave more consistently than local
-> Ollama for tool use; see [agent-examples#173](https://github.com/kagenti/agent-examples/issues/173).
+> Ollama for tool use; see [agent-examples#173](https://github.com/rossoctl/examples/issues/173).
 > Deeper diagnosis: [Partial response (Thought and Action only)](#partial-response-thought-and-action-only-no-issue-list).
 
 > **Troubleshooting:** If UI chat returns a `401`, verify that both the UI and
-> AuthBridge are configured against the same `kagenti` realm. You can also use
+> AuthBridge are configured against the same `rossoctl` realm. You can also use
 > [Step 9: Test via CLI](#step-9-test-via-cli) to test the full AuthBridge flow
 > independently.
 
@@ -605,7 +605,7 @@ OPENAI_API_KEY=sk-...
 ## Step 9: Test via CLI
 
 Test the AuthBridge flow from the command line to verify inbound validation and
-token exchange using a `kagenti`-realm token.
+token exchange using a `rossoctl`-realm token.
 
 ### Setup
 
@@ -618,7 +618,7 @@ kubectl wait --for=condition=ready pod/test-client -n team1 --timeout=30s
 ### 9a. Agent Card - Public Endpoint (No Token Required)
 
 The `/.well-known/agent.json` endpoint is publicly accessible — authbridge
-[bypasses JWT validation](https://github.com/kagenti/kagenti-extensions/pull/133)
+[bypasses JWT validation](https://github.com/rossoctl/rossocortex/pull/133)
 for `/.well-known/*`, `/healthz`, `/readyz`, and `/livez` by default:
 
 ```bash
@@ -674,8 +674,8 @@ kubectl exec -it test-client -n team1 -- sh
 Inside the pod, get credentials and send a request:
 
 ```bash
-# Get a Keycloak admin token from the kagenti realm
-ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
+# Get a Keycloak admin token from the rossoctl realm
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "client_id=admin-cli" \
   -d "username=admin" \
@@ -683,11 +683,11 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/p
 
 echo "Admin token length: ${#ADMIN_TOKEN}"
 
-# Look up the agent's client in the kagenti realm.
+# Look up the agent's client in the rossoctl realm.
 # The client ID is the SPIFFE ID (URL-encoded in the query parameter).
 SPIFFE_ID="spiffe://localtest.me/ns/team1/sa/git-issue-agent"
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/rossoctl/clients" \
   --data-urlencode "clientId=$SPIFFE_ID" --get)
 INTERNAL_ID=$(echo "$CLIENTS" | jq -r ".[0].id")
 CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
@@ -703,7 +703,7 @@ echo "Secret length: ${#CLIENT_SECRET}"
 
 # Get an OAuth token for the agent
 TOKEN=$(curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token" \
   -d "grant_type=client_credentials" \
   --data-urlencode "client_id=$CLIENT_ID" \
   --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
@@ -723,7 +723,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-001",
-        "parts": [{"type": "text", "text": "List 10 open issues in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List 10 open issues in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq
@@ -762,7 +762,7 @@ kubectl logs deployment/git-issue-agent -n team1 -c "$SIDECAR" 2>&1 | grep "\[In
 Expected:
 
 ```
-[Inbound] Token validated - issuer: http://keycloak.localtest.me:8080/realms/kagenti, audience: [spiffe://localtest.me/ns/team1/sa/git-issue-agent ...]
+[Inbound] Token validated - issuer: http://keycloak.localtest.me:8080/realms/rossoctl, audience: [spiffe://localtest.me/ns/team1/sa/git-issue-agent ...]
 [Inbound] JWT validation succeeded, forwarding request
 ```
 
@@ -775,7 +775,7 @@ kubectl logs deployment/git-issue-agent -n team1 -c "$SIDECAR" 2>&1 | grep "^202
 Expected:
 
 ```
-[Token Exchange] Token URL: http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token
+[Token Exchange] Token URL: http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token
 [Token Exchange] Client ID: spiffe://localtest.me/ns/team1/sa/git-issue-agent
 [Token Exchange] Audience: github-tool
 [Token Exchange] Scopes: openid github-tool-aud github-full-access
@@ -793,14 +793,14 @@ kubectl delete pod test-client -n team1 --ignore-not-found
 
 ## Step 10: Access Control — Alice vs Bob
 
-<!-- WORKAROUND: Remove this note once kagenti-extensions#139 is implemented.
+<!-- WORKAROUND: Remove this note once rossocortex#139 is implemented.
      The full scope-forwarding feature in authbridge is required for this step to work
      end-to-end. Until that lands, the exchanged token always includes github-full-access
      (from the static token_scopes in the authproxy-routes ConfigMap).
-     Track: https://github.com/kagenti/kagenti-extensions/issues/139 -->
+     Track: https://github.com/rossoctl/rossocortex/issues/139 -->
 
 > **Known limitation:** This step requires the authbridge scope forwarding feature
-> ([kagenti-extensions#139](https://github.com/kagenti/kagenti-extensions/issues/139)).
+> ([rossocortex#139](https://github.com/rossoctl/rossocortex/issues/139)).
 > Currently, `token_scopes` in the `authproxy-routes` ConfigMap is static per-route, so
 > all exchanged tokens include `github-full-access` regardless of the original user's
 > scopes. Once scope forwarding is implemented, Alice's exchanged token will omit
@@ -820,7 +820,7 @@ The flow:
    (`github-full-access` is a realm OPTIONAL scope — Keycloak only includes it when the
    token request contains `scope=openid github-full-access`)
 3. AuthBridge exchanges the token — once scope forwarding is implemented
-   ([#139](https://github.com/kagenti/kagenti-extensions/issues/139)), the exchanged
+   ([#139](https://github.com/rossoctl/rossocortex/issues/139)), the exchanged
    token will preserve the scope difference
 4. The GitHub tool checks for `REQUIRED_SCOPE` (`github-full-access`) in the exchanged token
 5. Tokens with the scope get the privileged PAT; tokens without get the public-only PAT
@@ -850,7 +850,7 @@ jwt_payload() {
   echo "$p" | base64 -d
 }
 
-ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "client_id=admin-cli" \
   -d "username=admin" \
@@ -858,7 +858,7 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/p
 
 SPIFFE_ID="spiffe://localtest.me/ns/team1/sa/git-issue-agent"
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/rossoctl/clients" \
   --data-urlencode "clientId=$SPIFFE_ID" --get)
 INTERNAL_ID=$(echo "$CLIENTS" | jq -r ".[0].id")
 CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
@@ -873,7 +873,7 @@ Alice authenticates with Keycloak using `password` grant **without** requesting 
 
 ```bash
 ALICE_TOKEN=$(curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token" \
   -d "grant_type=password" \
   -d "username=alice" \
   -d "password=alice123" \
@@ -899,7 +899,7 @@ curl -s --max-time 300 \
       "message": {
         "role": "user",
         "messageId": "msg-alice-1",
-        "parts": [{"type": "text", "text": "List 10 open issues in kagenti/kagenti repo"}]
+        "parts": [{"type": "text", "text": "List 10 open issues in rossoctl/rossoctl repo"}]
       }
     }
   }' | jq '.result.artifacts[0].parts[0].text' | head -5
@@ -936,7 +936,7 @@ the privileged scope:
 
 ```bash
 BOB_TOKEN=$(curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token" \
   -d "grant_type=password" \
   -d "username=bob" \
   -d "password=bob123" \
@@ -1030,22 +1030,22 @@ If logs mention `cannot unmarshal !!map into []resolver.yamlRoute`, the file sho
 kubectl rollout restart deployment/git-issue-agent -n team1
 ```
 
-Longer term, upgrade the Kagenti backend per [kagenti/kagenti#1194](https://github.com/kagenti/kagenti/pull/1194).
+Longer term, upgrade the Rossoctl backend per [rossoctl/rossoctl#1194](https://github.com/rossoctl/rossoctl/pull/1194).
 
 ### Partial response: Thought and Action only (no issue list)
 
 **Symptom:** Chat or `message/send` returns text like
-`Thought: … Action: list_issues Action Input: {"owner":"kagenti",…}` but no formatted
+`Thought: … Action: list_issues Action Input: {"owner":"rossoctl",…}` but no formatted
 issue list or `Final Answer:`.
 
-**Cause:** The [git issue agent](https://github.com/kagenti/agent-examples/tree/main/a2a/git_issue_agent)
+**Cause:** The [git issue agent](https://github.com/rossoctl/examples/tree/main/a2a/git_issue_agent)
 (CrewAI + MCP) occasionally completes a turn after the model emits a plan **without**
 successfully executing the GitHub tool. The GitHub tool log may show `tools/list` (and
 `initialize`) but **no** `tools/call` / `list_issues` for that attempt.
 
 **Demo workaround:** Repeat the same prompt or `curl` a few times until the artifact
 contains a full answer. Prefer OpenAI over Ollama for stable tool calling when possible
-([agent-examples#173](https://github.com/kagenti/agent-examples/issues/173)).
+([agent-examples#173](https://github.com/rossoctl/examples/issues/173)).
 
 **Optional check** (after a bad run, adjust time window as needed):
 
@@ -1068,7 +1068,7 @@ kubectl get secret keycloak-admin-secret -n team1
 
 # 2. Verify the authbridge-config ConfigMap has the correct realm
 kubectl get configmap authbridge-config -n team1 -o jsonpath='{.data.KEYCLOAK_REALM}'
-# Should show: kagenti
+# Should show: rossoctl
 
 # 3. Re-apply the demo ConfigMap and restart
 kubectl apply -f demos/github-issue/k8s/configmaps.yaml
@@ -1086,7 +1086,7 @@ kubectl rollout restart deployment/git-issue-agent -n team1
 ```bash
 kubectl set env deployment/git-issue-agent -n team1 -c agent \
   MCP_URL="http://github-tool-mcp:9090/mcp" \
-  JWKS_URI="http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/certs"
+  JWKS_URI="http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/certs"
 kubectl rollout status deployment/git-issue-agent -n team1 --timeout=180s
 ```
 
@@ -1104,7 +1104,7 @@ ConfigMap has the correct values:
 kubectl get configmap envoy-config -n team1 -o jsonpath='{.data.envoy\.yaml}' | grep "timeout:"
 ```
 
-If you see `30s` values instead of `300s`, reinstall Kagenti (the installer
+If you see `30s` values instead of `300s`, reinstall Rossoctl (the installer
 creates the correct defaults) and restart the agent:
 
 ```bash
@@ -1131,7 +1131,7 @@ kubectl logs deployment/git-issue-agent -n team1 -c agent
 kubectl logs deployment/git-issue-agent -n team1 -c proxy-init --previous 2>/dev/null
 
 # Operator-managed registration:
-kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+kubectl logs -n rossoctl-system deployment/rossoctl-controller-manager \
   | grep -iE "clientregistration|git-issue-agent" | tail -20
 ```
 
@@ -1163,14 +1163,14 @@ direct curl to the tool gets `Connection reset by peer`.
 **Symptom:** Tool rejects the exchanged token
 
 **Fix:** Verify the tool's environment variables match the Keycloak configuration:
-- `ISSUER` should be `http://keycloak.localtest.me:8080/realms/kagenti`
+- `ISSUER` should be `http://keycloak.localtest.me:8080/realms/rossoctl`
 - `AUDIENCE` should be `github-tool`
 
 ---
 
 ## Cleanup
 
-### Via Kagenti UI
+### Via Rossoctl UI
 
 1. Go to the **Agent Catalog**, find `git-issue-agent`, and click **Delete**.
 2. Go to the **Tool Catalog**, find `github-tool`, and click **Delete**.

@@ -36,7 +36,7 @@ verification query, adapted from `5.3`'s `probe.rego` to match against **full di
 
 A `@pytest.mark.integration` test that validates the **phase-1 deliverable**
 ([../../gh-issues/sub-issue-phase-1.md](../../gh-issues/sub-issue-phase-1.md)) and confirms the runnable
-demo: it deploys the real **`github-agent`** and a simplified **`github-tool`** to a live Kagenti/Kind
+demo: it deploys the real **`github-agent`** and a simplified **`github-tool`** to a live Rossoctl/Kind
 cluster, drives the **real UC-1 Service Onboarding agent** (`onboard_service` via the Controller's HTTP
 trigger) for each, and then **asserts** the generated Rego decides correctly by running the standalone
 `opa eval` binary as its verification oracle.
@@ -44,7 +44,7 @@ trigger) for each, and then **asserts** the generated Rego decides correctly by 
 Phase-1 is explicit that **live enforcement / live traffic is out of scope** — correctness is shown by
 **evaluating the generated rules**, not by routing real requests. So this test is *Deploy + discover +
 evaluate*: the agent and tool are really deployed and really discovered by UC-1 (classify from the
-`kagenti.io/type` label, read the AgentCard, read the MCP `tools/list`, provision roles/scopes into
+`rossoctl.io/type` label, read the AgentCard, read the MCP `tools/list`, provision roles/scopes into
 Keycloak, model access, emit Rego), but **no A2A message is ever sent through the agent**.
 
 The generated Rego is the **artifact under test** — the LLM/PCE that produced it might be wrong — so the
@@ -52,7 +52,7 @@ test never trusts it. Expected verdicts are **computed from** the `scenario_uc1.
 intended policy), and the real Rego is asserted to admit/deny each scenario-derived request as the truth
 table requires. A mismatch fails the test and names the exact cell.
 
-Because it needs a live Kagenti cluster + operator + Keycloak + a real LLM, it is `@pytest.mark.integration`
+Because it needs a live Rossoctl cluster + operator + Keycloak + a real LLM, it is `@pytest.mark.integration`
 and stays out of the default unit run (`-m "not integration"`); it additionally `pytest.skip`s when no
 `opa` binary is found.
 
@@ -80,9 +80,9 @@ asserts the truth table against **each** variant's Rego (step 7). Steps 1–6 de
 
 0. **Point the demo namespace at the dedicated realm (test fixture).** Before deploying workloads, set
    `KEYCLOAK_REALM=<AIAC_TEST_REALM>` in the demo namespace's **`authbridge-config`** ConfigMap. The
-   kagenti-operator reads the realm per-namespace from this key and **preserves an admin/CI-set value**
+   operator reads the realm per-namespace from this key and **preserves an admin/CI-set value**
    (operator issue #433), so the operator registers *this* namespace's clients into the test realm with
-   **no operator restart or cluster-wide change**. (Default without this is `kagenti`.)
+   **no operator restart or cluster-wide change**. (Default without this is `rossoctl`.)
 1. **Provision the realm's users + realm roles (test fixture).** UC-1 does **not** create users or realm
    roles, so the fixture provisions them via **`python-keycloak` `KeycloakAdmin`** into the dedicated test
    realm (`AIAC_TEST_REALM`), **before** onboarding (the Service Policy Builder reads the full realm-role
@@ -95,9 +95,9 @@ asserts the truth table against **each** variant's Rego (step 7). Steps 1–6 de
 2. **Deploy the demo workloads.** `kubectl apply` the simplified **`github-tool`**
    ([../demo/github-tool.md](../demo/github-tool.md)) and the real **`github-agent`**
    ([../demo/github-agent.md](../demo/github-agent.md)) into the demo namespace. Wait until: pods Ready;
-   the kagenti-operator has **registered a Keycloak client** for each (with `client.name =
-   "{namespace}/{workload}"`) and applied the `kagenti.io/type` pod label (`tool`/`agent`); the
-   `github-agent` **AgentCard CR** is present; the tool **Service** carries the `protocol.kagenti.io/mcp`
+   the operator has **registered a Keycloak client** for each (with `client.name =
+   "{namespace}/{workload}"`) and applied the `rossoctl.io/type` pod label (`tool`/`agent`); the
+   `github-agent` **AgentCard CR** is present; the tool **Service** carries the `protocol.rossoctl.io/mcp`
    label and answers `tools/list`.
 
 3. **Onboard the tool, then the agent (real UC-1), against each variant's AIAC stack.** Order matters —
@@ -254,7 +254,7 @@ with; the generic descriptions are not part of this triad):
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `KUBECONFIG` | Kubeconfig for the live Kagenti/Kind cluster | — (required) |
+| `KUBECONFIG` | Kubeconfig for the live Rossoctl/Kind cluster | — (required) |
 | `AIAC_DEMO_NAMESPACE` | Namespace the demo workloads deploy into | `team1` |
 | `KEYCLOAK_URL` | External Keycloak base URL | — (required) |
 | `KEYCLOAK_ADMIN_REALM` | Realm the admin creds live in | `master` |
@@ -275,7 +275,7 @@ with; the generic descriptions are not part of this triad):
 
 ## Runbook
 
-Runnable only against a live Kagenti/Kind cluster (operator + Keycloak + SPIRE) **configured to register
+Runnable only against a live Rossoctl/Kind cluster (operator + Keycloak + SPIRE) **configured to register
 clients into `AIAC_TEST_REALM`**, with the two AIAC variant stacks deployable, a real LLM, the demo agent
 (GA-1…9) and simplified tool images built + kind-loaded, and an `opa` binary on `PATH` (or `$OPA_BIN`).
 
@@ -297,7 +297,7 @@ optionally inspect the provisioned Keycloak realm and the discovered scopes.
 
 ## Testing Decisions
 
-- **Highest seam available, verified by a real oracle.** Real deployed workloads + real kagenti-operator
+- **Highest seam available, verified by a real oracle.** Real deployed workloads + real operator
   + real UC-1 onboarding + real PRB/PCE + real Keycloak + real LLM. The test drives the pipeline through
   its production trigger (`POST /apply/service/{id}`) and verifies the real filesystem Rego with the
   standalone `opa eval` binary. A good test here asserts only **external behavior** — the *decisions* the
@@ -306,7 +306,7 @@ optionally inspect the provisioned Keycloak realm and the discovered scopes.
   `scenario_uc1.py`, not from the Rego. A wrong role→scope mapping fails the test at the exact cell.
 - **Deploy + discover + evaluate, no live traffic.** Per phase-1, enforcement/token-exchange/live A2A is
   out of scope; correctness is shown by evaluating the generated rules. The agent pod need only exist
-  (labelled `kagenti.io/type=agent`, AgentCard present); the simplified tool need only answer `tools/list`
+  (labelled `rossoctl.io/type=agent`, AgentCard present); the simplified tool need only answer `tools/list`
   — neither is driven with real requests.
 - **In-cluster AIAC for MCP reachability.** UC-1's `analyze_tool` posts `tools/list` to a
   cluster-internal DNS name, so the pipeline runs in-cluster (triggered over HTTP) rather than in-process
@@ -383,16 +383,16 @@ Tracking issue for this test: `testing/5.4-uc1-onboarding-integration-test.md`.
 - Demo `github-agent` implementation — `demo/GA-1…GA-9` (deployable agent + AgentCard).
 - UC-1 Service Onboarding — `agent/service-onboarding/3.6-service-onboarding-orchestrator.md` (**done**).
 - The PRB / PCE / OPA-writer / Policy-Store prerequisites shared with `5.3`.
-- A live Kagenti/Kind cluster + operator (registers clients into `AIAC_TEST_REALM` via the demo
+- A live Rossoctl/Kind cluster + operator (registers clients into `AIAC_TEST_REALM` via the demo
   namespace's `authbridge-config` `KEYCLOAK_REALM`, set by the fixture — per-namespace, confirmed against
-  the operator source); the `protocol.kagenti.io/mcp` Service label applied at deploy time
-  (`../../gh-issues/kagenti-operator-mcp-label-stamping.md`); an `opa` binary at test time.
+  the operator source); the `protocol.rossoctl.io/mcp` Service label applied at deploy time
+  (`../../gh-issues/operator-mcp-label-stamping.md`); an `opa` binary at test time.
 
 ## Scenario inputs
 
 These are **functional** inputs — the PRB reads the descriptions and the `policy.md` to produce the
 role→scope mappings. The entity/role/scope descriptions are **generic and keyword-free**; client `type`
-is set by UC-1 from the `kagenti.io/type` label (not description prose).
+is set by UC-1 from the `rossoctl.io/type` label (not description prose).
 
 ### Discovered entities (what UC-1 provisions)
 

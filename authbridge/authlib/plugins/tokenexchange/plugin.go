@@ -12,15 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/cache"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/exchange"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
-	fwspiffe "github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/cache"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
+	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // tokenExchangeConfig is the plugin's local config schema. See
@@ -50,7 +50,7 @@ type tokenExchangeConfig struct {
 	ProviderURL string `json:"provider_url" description:"IdP base URL for endpoint derivation. Interpretation varies by provider."`
 
 	// ProviderRealm is the IdP-specific namespace/tenant:
-	//   keycloak: realm name (e.g. kagenti)
+	//   keycloak: realm name (e.g. rossoctl)
 	//   entra-id: tenant ID or domain (e.g. contoso.onmicrosoft.com)
 	//   okta:     authorization server ID (optional, omit for org-level)
 	ProviderRealm string `json:"provider_realm" description:"IdP-specific realm/tenant/auth-server. Keycloak: realm name. Entra ID: tenant ID. Okta: auth server ID (optional)."`
@@ -176,7 +176,7 @@ func (c *tokenExchangeConfig) applyDefaults() {
 	if c.NoTokenPolicy == "" {
 		c.NoTokenPolicy = auth.NoTokenPolicyDeny
 	}
-	// Kagenti file-system conventions for credential sources. Each
+	// Rossoctl file-system conventions for credential sources. Each
 	// default kicks in only when the matching inline value is also
 	// empty, so operators who supply inline credentials are never
 	// surprised by a file read.

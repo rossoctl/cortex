@@ -1,6 +1,6 @@
-# Contributing to Kagenti Extensions
+# Contributing to Rossoctl Extensions
 
-Greetings! We are grateful for your interest in joining the Kagenti community and making a positive impact. Whether you're raising issues, enhancing documentation, fixing bugs, or developing new features, your contributions are essential to our success.
+Greetings! We are grateful for your interest in joining the Rossoctl community and making a positive impact. Whether you're raising issues, enhancing documentation, fixing bugs, or developing new features, your contributions are essential to our success.
 
 To get started, kindly read through this document and familiarize yourself with our code of conduct.
 
@@ -8,7 +8,7 @@ We can't wait to collaborate with you!
 
 ## Contributing Code
 
-Please follow the [Contribution guide](https://github.com/kagenti/kagenti/blob/main/CONTRIBUTING.md#contributing-to-this-project) as found in the Kagenti Repository for instructions on how to contribute to our repositories.
+Please follow the [Contribution guide](https://github.com/rossoctl/rossoctl/blob/main/CONTRIBUTING.md#contributing-to-this-project) as found in the Rossoctl Repository for instructions on how to contribute to our repositories.
 
 ## Claiming an Issue
 
@@ -25,8 +25,8 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ```bash
 # Clone the repository
-git clone https://github.com/kagenti/kagenti-extensions.git
-cd kagenti-extensions
+git clone https://github.com/rossoctl/rossocortex.git
+cd rossocortex
 
 # Install pre-commit hooks
 pre-commit install
@@ -83,7 +83,7 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 
 ## Licensing
 
-Kagenti Extensions is [Apache 2.0 licensed](LICENSE) and we accept contributions via
+Rossoctl Extensions is [Apache 2.0 licensed](LICENSE) and we accept contributions via
 GitHub pull requests.
 
 ## Certificate of Origin

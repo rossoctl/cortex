@@ -3,7 +3,7 @@
 # Returns the request's Authorization header on GET /echo. Plain HTTP
 # service in team1.
 #
-# CRITICAL: this workload carries NO `kagenti.io/*` labels. That keeps
+# CRITICAL: this workload carries NO `rossoctl.io/*` labels. That keeps
 # the operator's injecting webhook from touching it — echo-upstream must
 # stay a plain, un-injected "external" upstream so the demo can show the
 # credential the agent's authbridge sidecar produced reaching it

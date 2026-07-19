@@ -19,15 +19,15 @@ the same namespace.
 
 ## Prerequisites
 
-- Beginner [demo-ui.md prerequisites](demo-ui.md#prerequisites) (Kagenti UI
+- Beginner [demo-ui.md prerequisites](demo-ui.md#prerequisites) (Rossoctl UI
   reachable, an LLM provider).
 - In **`team1`**: installer-provided `authbridge-config`,
   `authbridge-runtime-config`, `spiffe-helper-config`, `envoy-config`. No
   extra Secrets or ConfigMaps are required up front. **`keycloak-admin-secret`
-  is not in `team1`.** Operator 0.2+ keeps it in **`kagenti-system`** for
+  is not in `team1`.** Operator 0.2+ keeps it in **`rossoctl-system`** for
   client registration; `NotFound` in `team1` is expected:
   ```bash
-  kubectl get secret keycloak-admin-secret -n kagenti-system
+  kubectl get secret keycloak-admin-secret -n rossoctl-system
   ```
 - Python 3.10+ for the Keycloak setup script (Step 1).
 - For OpenAI: a `team1` Secret named `openai-secret` (created in Step 3).
@@ -69,7 +69,7 @@ the optional exchange scope. The script:
 
 ---
 
-## Step 2: Import the Weather Tool via Kagenti UI
+## Step 2: Import the Weather Tool via Rossoctl UI
 
 > ⚠️ **Use the `-advanced` names exactly.** **Tool Name** must be
 > `weather-tool-advanced` (not `weather-tool`). The Keycloak script in
@@ -78,10 +78,10 @@ the optional exchange scope. The script:
 > `weather-tool-mcp` instead of `weather-tool-advanced-mcp` and the
 > `MCP_URL` + outbound route in Step 3 won't resolve.
 
-1. Open [Import Tool](http://kagenti-ui.localtest.me:8080/tools/import).
+1. Open [Import Tool](http://rossoctl-ui.localtest.me:8080/tools/import).
 2. **Namespace**: `team1` · **Tool Name**: `weather-tool-advanced` (exact).
 3. **Deploy From Image** · **Container Image**:
-   `ghcr.io/kagenti/agent-examples/weather_tool` · **Image Tag**: `latest`.
+   `ghcr.io/rossoctl/examples/weather_tool` · **Image Tag**: `latest`.
 4. **MCP Transport Protocol**: `streamable HTTP`.
 5. **Enable AuthBridge sidecar injection**: ✅ **check** (advanced demo
    validates JWTs at the tool's ingress — this is the difference vs. the
@@ -100,7 +100,7 @@ kubectl get pods -n team1 -l app.kubernetes.io/name=weather-tool-advanced
 
 ---
 
-## Step 3: Import the Weather Agent via Kagenti UI
+## Step 3: Import the Weather Agent via Rossoctl UI
 
 (If you're using OpenAI, create the secret first — replace `<YOUR_OPENAI_API_KEY>`
 with your real key; the shell variable expansion shown is intentional and works
@@ -124,10 +124,10 @@ kubectl create secret generic openai-secret -n team1 \
 
 Now the UI flow (order matches the actual import form top-to-bottom):
 
-1. Open [Import Agent](http://kagenti-ui.localtest.me:8080/agents/import).
+1. Open [Import Agent](http://rossoctl-ui.localtest.me:8080/agents/import).
 2. **Namespace**: `team1` · **Agent Name**: `weather-service-advanced` (exact).
 3. **Build from Source**:
-   - Git Repository URL: `https://github.com/kagenti/agent-examples`
+   - Git Repository URL: `https://github.com/rossoctl/examples`
    - Git Branch or Tag: `main`
    - Select Agent: `Weather Service Agent`
    - Source Subfolder: `a2a/weather_service`
@@ -144,8 +144,8 @@ Now the UI flow (order matches the actual import form top-to-bottom):
    2. Target Audience: `spiffe://localtest.me/ns/team1/sa/weather-tool-advanced`
    3. Token Scopes: `openid weather-tool-exchange-aud`
 
-   > If **Outbound Routing Rules** is missing or unresponsive, your Kagenti
-   > backend may pre-date [kagenti#1194](https://github.com/kagenti/kagenti/pull/1194).
+   > If **Outbound Routing Rules** is missing or unresponsive, your Rossoctl
+   > backend may pre-date [rossoctl#1194](https://github.com/rossoctl/rossoctl/pull/1194).
    > Apply the equivalent ConfigMap with kubectl (
    > `kubectl apply -f authbridge/demos/weather-agent/k8s/configmaps-advanced.yaml`)
    > and skip this expander. Same content, list-shaped `routes.yaml`.
@@ -154,8 +154,8 @@ Now the UI flow (order matches the actual import form top-to-bottom):
 9. Under **Environment Variables**, click **Import from File/URL** → **From
    URL**, paste one of the beginner agent's env files, and click
    **Fetch & Parse**:
-   - OpenAI: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/weather_service/.env.openai`
-   - Ollama: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/weather_service/.env.ollama`
+   - OpenAI: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/weather_service/.env.openai`
+   - Ollama: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/weather_service/.env.ollama`
 
    The OpenAI variant adds `LLM_API_KEY` and `OPENAI_API_KEY` as **Secret**
    entries pointing at `openai-secret`.
@@ -179,12 +179,12 @@ python demos/weather-agent/setup_keycloak_weather_advanced.py -n team1
 
 ---
 
-## Step 4: Chat via Kagenti UI
+## Step 4: Chat via Rossoctl UI
 
 > **Expected catalog quirk.** The **Agent Catalog** shows **two** entries:
 > `weather-service-advanced` *and* `weather-tool-advanced`. The **Tool
 > Catalog** is empty. This is by design — the tool's AgentRuntime CR
-> uses `type: agent` so the operator applies `kagenti.io/type=agent`
+> uses `type: agent` so the operator applies `rossoctl.io/type=agent`
 > and AuthBridge gets injected (the `injectTools` feature gate is off
 > by default; see the [kubectl appendix](#operator-gotchas)). Pick
 > `weather-service-advanced` for chat.
@@ -250,14 +250,14 @@ Useful env knobs:
 |---------|--------------|-----|
 | UI returns `Error: LLM execution failed: Connection error.` | Agent can't reach its LLM. Ollama not running, or Outbound Ports to Exclude not set to `11434`. `deploy_and_verify_advanced.sh` doesn't catch this — it never calls the LLM. | Start Ollama (`ollama serve` + `ollama pull llama3.2:3b-instruct-fp16`), or re-import with the OpenAI `.env` URL. |
 | UI returns `Error: No LLM API key configured. Set the LLM_API_KEY environment variable.` | `openai-secret` is empty (often because `$OPENAI_API_KEY` wasn't exported when you ran `kubectl create secret`), or the agent wasn't restarted after fixing it. | Recreate with the literal value, then verify `kubectl get secret openai-secret -n team1 -o jsonpath='{.data.apikey}' \| base64 -d \| wc -c` is non-zero, then `kubectl rollout restart deploy/weather-service-advanced -n team1`. |
-| UI: **Outbound Routing Rules** expander missing | Kagenti backend pre-dates [kagenti#1194](https://github.com/kagenti/kagenti/pull/1194) | `kubectl apply -f authbridge/demos/weather-agent/k8s/configmaps-advanced.yaml` and skip the UI step. |
+| UI: **Outbound Routing Rules** expander missing | Rossoctl backend pre-dates [rossoctl#1194](https://github.com/rossoctl/rossoctl/pull/1194) | `kubectl apply -f authbridge/demos/weather-agent/k8s/configmaps-advanced.yaml` and skip the UI step. |
 | UI: agent card not available | AuthBridge failed to load `authproxy-routes` (invalid YAML shape) | See the same section in the [GitHub Issue UI demo](../github-issue/demo-ui.md#agent-card-not-available-in-the-ui). |
 | `401` on tool MCP from CLI verify | Wrong `target_audience` or scope mapper | `target_audience` must equal the tool SPIFFE; scope `weather-tool-exchange-aud` must map that audience. Re-run `setup_keycloak_weather_advanced.py`. |
 | `invalid_scope` / `503` from agent | Optional exchange scope not on agent client | Re-run `setup_keycloak_weather_advanced.py -n team1` **after** the agent is running. |
 | Token exchange denied | Tool client missing `standard.token.exchange.enabled` | Re-run setup with `--wait-tool-client` after the tool pod registers. |
-| Tool pod CrashLoopBackOff (`mcp` container) | The `weather_tool` image runs as UID 1001; a `securityContext` overriding the user breaks `uv run` | Use the manifests in `k8s/` as-is (they set `runAsUser/Group/fsGroup: 1001`). On OpenShift, see the [upstream Dockerfile](https://github.com/kagenti/agent-examples/blob/main/mcp/weather_tool/Dockerfile). |
+| Tool pod CrashLoopBackOff (`mcp` container) | The `weather_tool` image runs as UID 1001; a `securityContext` overriding the user breaks `uv run` | Use the manifests in `k8s/` as-is (they set `runAsUser/Group/fsGroup: 1001`). On OpenShift, see the [upstream Dockerfile](https://github.com/rossoctl/examples/blob/main/mcp/weather_tool/Dockerfile). |
 | Tool ingress logs missing `[Inbound]` | Combined sidecar uses different log text | Grep for `Token validated` instead, or increase log window. |
-| Deleted the agent or tool, but the Deployment + Service reappear within seconds | The Kagenti backend's reconciliation service finalizes "orphaned" Shipwright builds by re-creating workloads | Also delete the Shipwright `Build` and `BuildRun` (see the [Cleanup](#cleanup) snippet). |
+| Deleted the agent or tool, but the Deployment + Service reappear within seconds | The Rossoctl backend's reconciliation service finalizes "orphaned" Shipwright builds by re-creating workloads | Also delete the Shipwright `Build` and `BuildRun` (see the [Cleanup](#cleanup) snippet). |
 | Chat returns `Cannot connect to MCP weather service at http://weather-tool-advanced-mcp:8000/mcp` | UI import used the standard names (`weather-tool` / `weather-service`) instead of `-advanced`, so the actual Service is `weather-tool-mcp` and `MCP_URL` doesn't resolve | Re-import using the exact `-advanced` names. The Keycloak script from Step 1 also expects those names. |
 
 Tool ingress and agent outbound logs (container name varies by AuthBridge mode
@@ -272,7 +272,7 @@ kubectl logs deploy/weather-service-advanced -n team1 -c authbridge-proxy 2>&1 |
 
 ## Cleanup
 
-Delete via the Kagenti UI (Tool Catalog / Agent Catalog), or via CLI:
+Delete via the Rossoctl UI (Tool Catalog / Agent Catalog), or via CLI:
 
 ```bash
 kubectl delete deployment,svc,sa -n team1 \
@@ -280,7 +280,7 @@ kubectl delete deployment,svc,sa -n team1 \
 kubectl delete deployment,svc,sa -n team1 \
   -l app.kubernetes.io/name=weather-tool-advanced --ignore-not-found
 
-# Also delete the Shipwright Build/BuildRun, otherwise the Kagenti
+# Also delete the Shipwright Build/BuildRun, otherwise the Rossoctl
 # backend's reconciliation service treats them as "orphaned" and
 # recreates the Deployment + Service + ServiceAccount within seconds:
 kubectl delete build.shipwright.io,buildrun.shipwright.io -n team1 \
@@ -349,14 +349,14 @@ definitions exist and the secret wins, but it's noisy in `kubectl describe`.)
 If the demo silently produces unprotected pods, check these:
 
 - **`AgentRuntime` is required.** The mutating webhook **skips** AuthBridge
-  injection unless an `agent.kagenti.dev/v1alpha1` `AgentRuntime` matches the
+  injection unless an `agent.rossoctl.dev/v1alpha1` `AgentRuntime` matches the
   Deployment. The k8s manifests here include them; if you build by hand,
   add them and **restart the Deployment** so new pods are admitted.
 - **`spec.type: agent`, not `tool`.** With `spec.type: tool` the operator
   relabels the pod and the `injectTools` feature gate (off by default)
   controls injection — so the tool ends up with no AuthBridge. This demo
   uses `spec.type: agent` for the tool's runtime CR.
-- **Don't set `kagenti.io/client-registration-inject: "true"`** — that label
+- **Don't set `rossoctl.io/client-registration-inject: "true"`** — that label
   references a removed in-pod sidecar and disables operator-managed
   registration entirely (#411).
 

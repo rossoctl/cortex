@@ -35,10 +35,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 )
 
 // ibacConfig is the plugin's local config schema. See
@@ -132,7 +132,7 @@ type ibacConfig struct {
 }
 
 // ConfigSchema exposes the ibacConfig fields for schema-aware tooling
-// (abctl edit templates, future kagenti-UI forms, etc.). Implements
+// (abctl edit templates, future rossoctl-UI forms, etc.). Implements
 // pipeline.SchemaProvider; absence would simply make IBAC opaque to
 // such tooling without affecting runtime.
 func (p *IBAC) ConfigSchema() []pipeline.FieldSchema {

@@ -1,8 +1,8 @@
-module github.com/kagenti/kagenti-extensions/authbridge/cmd/authbridge-proxy
+module github.com/rossoctl/rossocortex/authbridge/cmd/authbridge-proxy
 
 go 1.26.4
 
-require github.com/kagenti/kagenti-extensions/authbridge/authlib v0.0.0-00010101000000-000000000000
+require github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -46,7 +46,7 @@ require (
 	github.com/huandu/go-sqlbuilder v1.41.0 // indirect
 	github.com/huandu/xstrings v1.4.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/kagenti/context-guru v0.0.0-20260713113308-b624f2c3d8c2 // indirect
+	github.com/rossoctl/context-guru v0.0.0-20260713113308-b624f2c3d8c2 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
@@ -118,4 +118,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/kagenti/kagenti-extensions/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib

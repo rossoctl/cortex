@@ -6,20 +6,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 	// Side-effect imports register the bundled plugins. Same pattern
 	// main.go uses — each plugin lives in its own subpackage and
 	// advertises itself via init(); importing here makes the name
 	// resolvable to plugins.Build in these tests.
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
-	jwtvalidation "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
-	_ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker"
-	tokenexchange "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange"
+	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
+	jwtvalidation "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
+	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/opa"
+	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker"
+	tokenexchange "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
 )
 
 // TestBuiltinsRegistered verifies every in-tree plugin is discoverable

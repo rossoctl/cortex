@@ -5,7 +5,7 @@ authentication for Kubernetes agent workloads. Each demo progressively introduce
 more AuthBridge capabilities.
 
 > **Note:** These demos use the operator-injected combined sidecar (after
-> kagenti-extensions#411 — `authbridge` for proxy-sidecar, `authbridge-envoy`
+> rossocortex#411 — `authbridge` for proxy-sidecar, `authbridge-envoy`
 > for envoy-sidecar, and `authbridge-lite`, the proxy image built auth-only
 > via `exclude_plugin_*` tags). The previous `authbridge-unified` image and the per-component
 > sidecars (`client-registration`, standalone `spiffe-helper`) have been
@@ -21,7 +21,7 @@ more AuthBridge capabilities.
 | **[Token-Exchange Routes](token-exchange-routes/README.md)** | Reference | How to write `authproxy-routes` for single- and multi-target token exchange | Configuration only |
 | **[MCP Parser Plugin](mcp-parser/README.md)** | Reference | Enable the `mcp-parser` plugin to surface tool calls / resource reads in session events | Configuration only |
 | **[abctl Walkthrough](weather-agent/demo-with-abctl.md)** | Reference | Watch the AuthBridge plugin pipeline live with the `abctl` TUI | Tooling only |
-| **[IBAC](ibac/README.md)** | Intermediate | Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's recorded intent. Reproduces the email-poison / prompt-injection attack from `huang195/ibac`; chat with the agent through the kagenti UI and see the exfiltration blocked, then `make show-result` for a pipeline-level forensic | UI + kubectl |
+| **[IBAC](ibac/README.md)** | Intermediate | Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's recorded intent. Reproduces the email-poison / prompt-injection attack from `huang195/ibac`; chat with the agent through the rossoctl UI and see the exfiltration blocked, then `make show-result` for a pipeline-level forensic | UI + kubectl |
 | **[SPARC (finance)](finance-sparc/README.md)** | Intermediate | SPARC pre-tool reflection: the `sparc` plugin blocks a hallucinated/ungrounded tool argument (an invented transaction id) before it executes and transparently asks the user to clarify, then approves the corrected call. Complements IBAC — SPARC verifies argument grounding, IBAC verifies intent alignment | UI + kubectl |
 | **[CPEX Bridge (HR)](hr-cpex/README.md)** | Advanced | CPEX/APL declarative policy: one route chains a coarse APL predicate, an embedded Cedar PDP, RFC 8693 token exchange with a post-check, PII redaction and audit plugins. Same request, different data per caller (Bob sees an SSN, Eve gets it redacted). Self-contained: its own kind cluster + namespace, deployed via `make` rather than operator injection | [kubectl (make)](hr-cpex/README.md#quick-start) |
 
@@ -30,7 +30,7 @@ more AuthBridge capabilities.
 **New to AuthBridge?** Start with the demos in this order:
 
 1. **[Weather Agent](weather-agent/demo-ui.md)** — Fastest way to see AuthBridge
-   in action. Deploys via the Kagenti UI with inbound JWT validation protecting
+   in action. Deploys via the Rossoctl UI with inbound JWT validation protecting
    the agent. No token exchange configuration needed; outbound traffic uses the
    default passthrough policy.
 
@@ -48,7 +48,7 @@ more AuthBridge capabilities.
 ## What Each Demo Covers
 
 ### Weather Agent (Getting Started)
-- Deploy agent + tool via **Kagenti UI**
+- Deploy agent + tool via **Rossoctl UI**
 - AuthBridge inbound JWT validation (signature, issuer, audience)
 - Automatic SPIFFE identity registration with Keycloak
 - Default outbound passthrough — agents work out-of-the-box with any tool or LLM
@@ -63,7 +63,7 @@ more AuthBridge capabilities.
   exchange + MCP `initialize` without requiring a working LLM)
 
 ### GitHub Issue Agent (Full AuthBridge Flow)
-- Deploy agent + tool via **Kagenti UI** or **kubectl**
+- Deploy agent + tool via **Rossoctl UI** or **kubectl**
 - Keycloak configuration for token exchange (realm, clients, scopes)
 - Inbound JWT validation protecting the agent
 - Outbound OAuth 2.0 token exchange (RFC 8693) — agent-scoped token exchanged
@@ -112,13 +112,13 @@ more AuthBridge capabilities.
 ## Prerequisites
 
 All demos require:
-- A Kubernetes cluster with the Kagenti platform installed
-  ([Installation Guide](https://github.com/kagenti/kagenti/blob/main/docs/install.md))
+- A Kubernetes cluster with the Rossoctl platform installed
+  ([Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md))
 - Keycloak deployed in the `keycloak` namespace
 - SPIRE deployed (for demos using SPIFFE identity)
 
 UI-based demos additionally require:
-- The Kagenti UI running at `http://kagenti-ui.localtest.me:8080`
+- The Rossoctl UI running at `http://rossoctl-ui.localtest.me:8080`
 
 ## Common Setup: Keycloak Port-Forward
 
@@ -147,4 +147,4 @@ pip install -r requirements.txt
 - [AuthBridge Overview](../README.md) — Architecture and design
 - [AuthBridge Binary](../cmd/authbridge/README.md) — Unified authbridge binary
   supporting ext_proc, ext_authz, and proxy modes
-- [Kagenti Operator](https://github.com/kagenti/kagenti-operator) — Admission webhook for sidecar injection (migrated from this repo)
+- [Rossoctl Operator](https://github.com/rossoctl/operator) — Admission webhook for sidecar injection (migrated from this repo)

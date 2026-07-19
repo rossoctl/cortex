@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
 )
 
 // editPhase tracks where the edit state machine currently sits.

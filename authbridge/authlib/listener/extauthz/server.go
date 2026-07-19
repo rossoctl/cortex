@@ -15,8 +15,8 @@ import (
 
 	rpcstatus "google.golang.org/genproto/googleapis/rpc/status"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // Server implements the Envoy ext_authz Authorization gRPC service.

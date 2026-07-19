@@ -11,17 +11,17 @@ help:
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-32s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: wait-operator-labels
-wait-operator-labels: ## Wait for the operator to apply kagenti.io/type from AgentRuntime CRs
+wait-operator-labels: ## Wait for the operator to apply rossoctl.io/type from AgentRuntime CRs
 	@for deploy in $(CALLER) $(CALLEE); do \
 	  echo "[*] Waiting for operator to label $$deploy ..."; \
 	  for i in $$(seq 1 60); do \
 	    val=$$(kubectl -n $(NAMESPACE) get deploy/$$deploy \
-	      -o jsonpath="{.spec.template.metadata.labels['kagenti.io/type']}" 2>/dev/null); \
+	      -o jsonpath="{.spec.template.metadata.labels['rossoctl.io/type']}" 2>/dev/null); \
 	    if [ "$$val" = "agent" ]; then echo "    ✓ $$deploy labeled"; break; fi; \
 	    sleep 2; \
 	  done; \
 	  val=$$(kubectl -n $(NAMESPACE) get deploy/$$deploy \
-	    -o jsonpath="{.spec.template.metadata.labels['kagenti.io/type']}" 2>/dev/null); \
+	    -o jsonpath="{.spec.template.metadata.labels['rossoctl.io/type']}" 2>/dev/null); \
 	  if [ "$$val" != "agent" ]; then \
 	    echo "ERROR: operator did not label $$deploy within 120s"; exit 1; \
 	  fi; \
@@ -63,7 +63,7 @@ undeploy: ## Tear down the demo's resources
 # envoy-sidecar variant
 #
 # Same contract as the proxy-sidecar targets above, but the demo pods
-# are fully hand-crafted (no kagenti.io/inject label — see the demo
+# are fully hand-crafted (no rossoctl.io/inject label — see the demo
 # README's "How the demo wires mTLS" section for why) and mTLS is
 # configured in the Envoy data plane (k8s/envoy-config-mtls.yaml)
 # rather than at the authbridge-runtime layer.

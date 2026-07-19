@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/tlsbridge"
 )
 
 // HandleTransparentConn processes one outbound connection captured by an

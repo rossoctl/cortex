@@ -1,5 +1,5 @@
 # A finance agent + a context-guru-enabled AuthBridge sidecar, deployed WITHOUT
-# the operator's mutating webhook (no kagenti.io/inject label) so the demo owns
+# the operator's mutating webhook (no rossoctl.io/inject label) so the demo owns
 # both containers and the /etc/authbridge/config.yaml.
 #
 # The agent's outbound LLM traffic (OpenAI /v1/chat/completions to Ollama) is
@@ -18,8 +18,8 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: cg-finance-agent
-        protocol.kagenti.io/a2a: ""
-        # deliberately NO kagenti.io/inject -> the operator webhook does not inject a sidecar
+        protocol.rossoctl.io/a2a: ""
+        # deliberately NO rossoctl.io/inject -> the operator webhook does not inject a sidecar
     spec:
       containers:
         - name: agent

@@ -1,5 +1,5 @@
 # AgentRuntime for the weather A2A agent (AuthBridge + SPIRE injection).
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: weather-service-advanced

@@ -1,14 +1,14 @@
 # Weather MCP tool with AuthBridge + SPIRE (inbound JWT at Envoy before the MCP server).
 #
-# Prerequisites: Kagenti platform, webhook, SPIRE, namespace team1, ConfigMaps
+# Prerequisites: Rossoctl platform, webhook, SPIRE, namespace team1, ConfigMaps
 # from the installer (authbridge-config, envoy-config, spiffe-helper-config).
 #
 # The MCP server listens on port 8000. AuthBridge ext_proc listens on 9090
 # inside the pod, so there is no port collision (unlike the GitHub tool on 9090).
 #
-# The kagenti-operator's AgentRuntime CR (agentruntime-weather-tool-advanced.yaml)
+# The operator's AgentRuntime CR (agentruntime-weather-tool-advanced.yaml)
 # enrolls this workload and triggers AuthBridge sidecar injection. The
-# AgentRuntime uses type "agent" so the operator applies kagenti.io/type=agent
+# AgentRuntime uses type "agent" so the operator applies rossoctl.io/type=agent
 # to the pod (the injectTools feature gate is off by default). This workload
 # is still the weather MCP tool by image and Deployment name; it is enrolled
 # as type "agent" so client-registration runs and registers the tool's
@@ -31,8 +31,8 @@ metadata:
   labels:
     app.kubernetes.io/name: weather-tool-advanced
     app.kubernetes.io/component: mcp-tool
-    protocol.kagenti.io/mcp: ""
-    kagenti.io/transport: streamable_http
+    protocol.rossoctl.io/mcp: ""
+    rossoctl.io/transport: streamable_http
 spec:
   # Default Deployment progress deadline is 600s; cold ghcr + webhook restart + many
   # sidecars in Kind can exceed that before the old ReplicaSet pod drains.
@@ -50,10 +50,10 @@ spec:
       labels:
         app.kubernetes.io/name: weather-tool-advanced
         app.kubernetes.io/component: mcp-tool
-        protocol.kagenti.io/mcp: ""
-        kagenti.io/transport: streamable_http
-        kagenti.io/inject: enabled
-        kagenti.io/spire: enabled
+        protocol.rossoctl.io/mcp: ""
+        rossoctl.io/transport: streamable_http
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: enabled
     spec:
       serviceAccountName: weather-tool-advanced
       # Must match the image (Dockerfile USER 1001). Pod-level runAsNonRoot alone can
@@ -68,7 +68,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: mcp
-          image: ghcr.io/kagenti/agent-examples/weather_tool:latest
+          image: ghcr.io/rossoctl/examples/weather_tool:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
@@ -117,7 +117,7 @@ metadata:
   namespace: team1
   labels:
     app.kubernetes.io/name: weather-tool-advanced
-    protocol.kagenti.io/mcp: ""
+    protocol.rossoctl.io/mcp: ""
 spec:
   type: ClusterIP
   selector:

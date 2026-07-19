@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/tlssniff"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/internal/tlssniff"
 )
 
 // TestPermissive_ServesTLS confirms that a TLS handshake byte (0x16)

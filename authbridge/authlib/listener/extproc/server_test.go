@@ -14,15 +14,15 @@ import (
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/cache"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/exchange"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/cache"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // mockStream implements ExternalProcessor_ProcessServer for testing.
@@ -1040,13 +1040,13 @@ func TestSnapshotIdentity(t *testing.T) {
 			name: "identity and agent both set",
 			identity: stubIdentity{
 				subject:  "alice",
-				clientID: "kagenti-ui",
+				clientID: "rossoctl-ui",
 				scopes:   []string{"openid", "weather-read"},
 			},
 			agent: &pipeline.AgentIdentity{WorkloadID: "spiffe://localtest.me/ns/team1/sa/weather-agent"},
 			want: &pipeline.EventIdentity{
 				Subject:  "alice",
-				ClientID: "kagenti-ui",
+				ClientID: "rossoctl-ui",
 				Scopes:   []string{"openid", "weather-read"},
 				AgentID:  "spiffe://localtest.me/ns/team1/sa/weather-agent",
 			},

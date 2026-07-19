@@ -2,7 +2,7 @@
 
 This file provides context for Claude (AI assistant) when working with the `AuthBridge` codebase.
 For repo-level context (CI/CD, cross-component relationships), see [`../CLAUDE.md`](../CLAUDE.md).
-The sidecar injection webhook lives in [kagenti-operator](https://github.com/kagenti/kagenti-operator).
+The sidecar injection webhook lives in [operator](https://github.com/rossoctl/operator).
 
 ## Binaries
 
@@ -140,7 +140,7 @@ wants to register.
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-combined.yaml` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
 - `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
-- Credential files: the **kagenti-operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any combined image, and the `SPIRE_ENABLED` env var no longer gates anything — presence/absence of the `spiffe:` block in YAML drives behavior. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `kagenti.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `kagenti-operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
+- Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any combined image, and the `SPIRE_ENABLED` env var no longer gates anything — presence/absence of the `spiffe:` block in YAML drives behavior. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
 - Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
 - Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-combined.yaml`).
 
@@ -201,14 +201,14 @@ Declarative Keycloak synchronization tool that maintains client scope mappings b
 
 ### Envoy Configuration
 
-Envoy config lives in the `envoy-config` ConfigMap rendered by the [kagenti Helm chart](https://github.com/kagenti/kagenti) at install time (template: `charts/kagenti/templates/agent-namespaces.yaml` / `authbridge-template-configmaps.yaml`). Key listeners: `outbound_listener` (15123), `inbound_listener` (15124). Inbound listener injects `x-authbridge-direction: inbound` header. Both use ext_proc cluster pointing to the authbridge binary on localhost:9090.
+Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Helm chart](https://github.com/rossoctl/rossoctl) at install time (template: `charts/rossoctl/templates/agent-namespaces.yaml` / `authbridge-template-configmaps.yaml`). Key listeners: `outbound_listener` (15123), `inbound_listener` (15124). Inbound listener injects `x-authbridge-direction: inbound` header. Both use ext_proc cluster pointing to the authbridge binary on localhost:9090.
 
 ## Demo Scenarios
 
 The `demos/` directory contains the following scenarios (see `demos/README.md` for a recommended learning path):
 
 - **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment). `demo-ui-advanced.md` extends this with outbound token exchange and tool-side AuthBridge; `demo-with-abctl.md` is a plugin-pipeline tooling walkthrough.
-- **webhook/** -- Shows how to use the webhook (now part of [kagenti-operator](https://github.com/kagenti/kagenti-operator)) to automatically inject AuthBridge sidecars. Recommended starting point for webhook-based deployments.
+- **webhook/** -- Shows how to use the webhook (now part of [operator](https://github.com/rossoctl/operator)) to automatically inject AuthBridge sidecars. Recommended starting point for webhook-based deployments.
 - **github-issue/** -- External API integration (GitHub) with inbound validation, outbound token exchange, and scope-based access control. Available as UI or manual deployment.
 - **token-exchange-routes/** -- Configuration reference for the `authproxy-routes` ConfigMap. Covers single-target (one route) and multi-target (one agent → many tools) patterns. Pairs with one of the deployment demos for a full stack.
 - **mcp-parser/** -- Configuration reference for enabling the outbound `mcp-parser` plugin.
@@ -224,19 +224,19 @@ There are **two** setup scripts for different demo scenarios:
 
 **Common Keycloak defaults across all scripts:**
 - URL: `http://keycloak.localtest.me:8080`
-- Realm: `kagenti`
+- Realm: `rossoctl`
 - Admin: `admin` / `admin`
 
 **Note:** All scripts share the same helper function patterns (`get_or_create_realm`, `get_or_create_client`, `get_or_create_client_scope`, etc.) and are idempotent.
 
 ## Required ConfigMaps for Webhook Injection
 
-When the webhook injects sidecars (via [kagenti-operator](https://github.com/kagenti/kagenti-operator)), these ConfigMaps must exist in the target namespace. The kagenti Helm chart's `agent-namespaces.yaml` and `authbridge-template-configmaps.yaml` templates render them; the operator copies them into agent namespaces that don't already have them:
+When the webhook injects sidecars (via [operator](https://github.com/rossoctl/operator)), these ConfigMaps must exist in the target namespace. The rossoctl Helm chart's `agent-namespaces.yaml` and `authbridge-template-configmaps.yaml` templates render them; the operator copies them into agent namespaces that don't already have them:
 
 | Resource | Kind | Consumer | Key Fields |
 |----------|------|----------|------------|
 | `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived), `ISSUER` (optional, derived or explicit), `DEFAULT_OUTBOUND_POLICY` (optional). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
-| `keycloak-admin-secret` | Secret | kagenti-operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
+| `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` with per-host token exchange rules |
 | `spiffe-helper-config` | ConfigMap (legacy, unused by authbridge) | (none — retained only for compatibility with older deployments) | Previously held `helper.conf` for the bundled `spiffe-helper` binary. Authbridge now drives SPIRE configuration via the top-level `spiffe:` block in `authbridge-runtime` and no longer reads this ConfigMap. |
 | `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
@@ -352,7 +352,7 @@ strict inbound rejects it). Mixed-mode deployments need both ends
 compatible — both strict, both permissive, or one strict + the
 other permissive on inbound only.
 
-The kagenti-operator's AgentRuntime CR's `Spec.MTLSMode` flows
+The operator's AgentRuntime CR's `Spec.MTLSMode` flows
 through to a per-agent rendered envoy-config with the matching TLS
 blocks (operator companion PR). The `authbridge/demos/mtls/`
 envoy-sidecar variant (`make demo-mtls-envoy*`) ships a hand-crafted
@@ -367,11 +367,11 @@ without needing a CR.
 # Build the proxy-init iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
 cd authbridge/proxy-init
 make docker-build-init
-make load-image                     # Uses KIND_CLUSTER_NAME env var (default: kagenti)
+make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
 
 # Build the combined sidecar images from the authbridge/ context.
 # Pick whichever you need; the operator selects the image per workload
-# from the resolved AuthBridge mode (see kagenti-operator#361).
+# from the resolved AuthBridge mode (see operator#361).
 cd ..
 podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
 podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
@@ -379,12 +379,12 @@ podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # e
 podman build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
   -t authbridge-lite:latest .
-kind load docker-image authbridge:latest       --name kagenti
-kind load docker-image authbridge-envoy:latest --name kagenti
-kind load docker-image authbridge-lite:latest  --name kagenti
+kind load docker-image authbridge:latest       --name rossoctl
+kind load docker-image authbridge-envoy:latest --name rossoctl
+kind load docker-image authbridge-lite:latest  --name rossoctl
 ```
 
-For the repo-level "build everything" path, the root `local-build-and-test.sh` orchestrates all four images plus the kagenti-side `spiffe-idp-setup`.
+For the repo-level "build everything" path, the root `local-build-and-test.sh` orchestrates all four images plus the rossoctl-side `spiffe-idp-setup`.
 
 ### Full demo with webhook injection
 
@@ -524,7 +524,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - `python-keycloak` library for all Keycloak admin API calls
 - `PyJWT` for JWT decoding (signature verification disabled -- uses `verify_signature: False`)
 - Idempotent: all `get_or_create_*` helper functions check existence before creating
-- UID/GID 1000 in Dockerfile **must match** the `runAsUser`/`runAsGroup` values set by the operator's webhook when injecting the client-registration container (see [kagenti-operator](https://github.com/kagenti/kagenti-operator))
+- UID/GID 1000 in Dockerfile **must match** the `runAsUser`/`runAsGroup` values set by the operator's webhook when injecting the client-registration container (see [operator](https://github.com/rossoctl/operator))
 
 ### Shell (init-iptables.sh)
 - `set -e` (exit on error)
@@ -539,7 +539,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - Test by rebuilding the affected combined image (e.g.,
   `cd authbridge && podman build -f cmd/authbridge-envoy/Dockerfile
   -t authbridge-envoy:latest .` then `kind load docker-image
-  authbridge-envoy:latest --name kagenti`).
+  authbridge-envoy:latest --name rossoctl`).
 
 ### Modifying Inbound JWT Validation
 - Edit `authlib/validation/` -- the JWKS-backed JWT verifier
@@ -564,8 +564,8 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - All scripts use `python-keycloak` library (KeycloakAdmin class)
 
 ### Changing Envoy Configuration
-- Edit the `envoy.yaml` template in the [kagenti Helm chart](https://github.com/kagenti/kagenti)
-  (`charts/kagenti/templates/agent-namespaces.yaml` or
+- Edit the `envoy.yaml` template in the [rossoctl Helm chart](https://github.com/rossoctl/rossoctl)
+  (`charts/rossoctl/templates/agent-namespaces.yaml` or
   `authbridge-template-configmaps.yaml`) and `helm upgrade`
 - Key listener/cluster names: `outbound_listener`, `inbound_listener`, `original_destination`, `ext_proc_cluster`
 - After changes, restart the affected pods so they pick up the new ConfigMap content
@@ -580,7 +580,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 4. **TLS passthrough is one-way**: Outbound HTTPS traffic passes through Envoy without token exchange via the TLS passthrough filter chain. Only plaintext HTTP outbound traffic reaches authbridge. With the default outbound policy of `"passthrough"`, even plaintext HTTP traffic is forwarded unchanged unless it matches an explicit route in `authproxy-routes`.
 
-5. **Admin credentials in ConfigMap**: the kagenti Helm chart's
+5. **Admin credentials in ConfigMap**: the rossoctl Helm chart's
    `agent-namespaces.yaml` template stores Keycloak admin credentials
    in `authbridge-config` (a ConfigMap, not a Secret). This is for
    demo / dev clusters only — production should use a Kubernetes

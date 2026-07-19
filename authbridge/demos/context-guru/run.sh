@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end context-guru demo on a real Kagenti (kind) cluster.
+# End-to-end context-guru demo on a real Rossoctl (kind) cluster.
 #
 #   ./run.sh setup            # build+load images, create the 12k-window model, deploy agent+sidecar
 #   ./run.sh drive <mode>     # mode = enforce | observe | off ; drives the audit, prints answer + gain
@@ -12,7 +12,7 @@
 # the anomaly, with context-guru it is compacted (~10K tokens), fits, and the
 # agent answers correctly.
 #
-# Prereqs: a running Kagenti kind cluster ("kagenti") with the finance-sparc
+# Prereqs: a running Rossoctl kind cluster ("rossoctl") with the finance-sparc
 # finance-agent:latest image, and a host Ollama (llama3.2:3b) reachable at
 # OLLAMA_URL. CG_MODEL_KEY must be a key for an OpenAI-compatible extract-code model.
 set -euo pipefail
@@ -27,7 +27,7 @@ CTX_MODEL="llama3.2-ctx12k"
 setup() {
   : "${CG_MODEL_KEY:?set CG_MODEL_KEY to the extract-code model API key}"
   : "${CG_MODEL_BASE:?set CG_MODEL_BASE to an OpenAI-compatible endpoint for the extract-code model, e.g. https://api.openai.com}"
-  local arch; arch=$(docker exec kagenti-control-plane uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')
+  local arch; arch=$(docker exec rossoctl-control-plane uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')
 
   echo "==> build authbridge-proxy WITH the context-guru plugin ($arch, pure-Go, -tags include_plugin_contextguru) + image"
   ( cd "$AB" && GOTOOLCHAIN=auto GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
@@ -40,11 +40,11 @@ COPY authbridge-proxy /usr/local/bin/authbridge-proxy
 ENTRYPOINT ["/usr/local/bin/authbridge-proxy"]
 DOCKER
   docker build -q -t authbridge-cg:latest "$d" >/dev/null
-  kind load docker-image authbridge-cg:latest --name kagenti
+  kind load docker-image authbridge-cg:latest --name rossoctl
 
   echo "==> build+load finance-mcp (large-output tools: get_transaction_audit, get_customer_ledger)"
   ( cd "$FS" && docker build -q -f finance-mcp/Dockerfile -t finance-mcp:latest . >/dev/null )
-  kind load docker-image finance-mcp:latest --name kagenti
+  kind load docker-image finance-mcp:latest --name rossoctl
   kubectl -n "$NS" rollout restart deploy/finance-mcp >/dev/null
   kubectl -n "$NS" rollout status deploy/finance-mcp --timeout=90s
 

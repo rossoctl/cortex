@@ -1,6 +1,6 @@
 // Finance assistant agent for the SPARC demo.
 //
-// A regular kagenti A2A agent (JSON-RPC over HTTP at /). It reasons with a
+// A regular rossoctl A2A agent (JSON-RPC over HTTP at /). It reasons with a
 // local Ollama model and acts through a finance MCP server. It DISCOVERS its
 // tools at runtime via MCP `tools/list` — nothing about the tools is hardcoded
 // — so it behaves like any normal agent. There is no demo-specific steering or
