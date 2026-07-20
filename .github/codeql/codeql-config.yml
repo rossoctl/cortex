@@ -1,4 +1,4 @@
-name: rossocortex CodeQL config
+name: cortex CodeQL config
 
 queries:
   - uses: security-extended

@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/internal/parsercommon"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 // A2AParser parses A2A JSON-RPC 2.0 request bodies and populates

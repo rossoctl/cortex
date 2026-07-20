@@ -175,7 +175,7 @@ Ensure you have completed the Rossoctl platform setup as described in the
 [Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md).
 
 You should also have:
-- The [rossocortex](https://github.com/rossoctl/rossocortex) repo cloned
+- The [cortex](https://github.com/rossoctl/cortex) repo cloned
 - The [agent-examples](https://github.com/rossoctl/examples) repo cloned
 - Python 3.9+ with `venv` support
 - **Ollama running** with the `ibm/granite4:latest` model (or another model of your choice)
@@ -411,7 +411,7 @@ github-tool-7f8c9d6b44-yyyyy      1/1     Running   0          3m
 
 ### Check operator-managed client registration
 
-After rossocortex#411 / operator#361, registration runs in
+After cortex#411 / operator#361, registration runs in
 the operator (outside the workload pod). Verify the resulting
 Secret was mounted into the agent's sidecar:
 
@@ -513,7 +513,7 @@ kubectl wait --for=condition=ready pod/test-client -n team1 --timeout=30s
 ### 8a. Agent Card - Public Endpoint (No Token Required)
 
 The `/.well-known/agent.json` endpoint is publicly accessible — authbridge
-[bypasses JWT validation](https://github.com/rossoctl/rossocortex/pull/133)
+[bypasses JWT validation](https://github.com/rossoctl/cortex/pull/133)
 for `/.well-known/*`, `/healthz`, `/readyz`, and `/livez` by default:
 
 ```bash
@@ -846,14 +846,14 @@ kubectl delete pod test-client -n team1 --ignore-not-found
 
 ## Step 10: Access Control — Alice vs Bob
 
-<!-- WORKAROUND: Remove this note once rossocortex#139 is implemented.
+<!-- WORKAROUND: Remove this note once cortex#139 is implemented.
      The full scope-forwarding feature in authbridge is required for this step to work
      end-to-end. Until that lands, the exchanged token always includes github-full-access
      (from the static token_scopes in the authproxy-routes ConfigMap).
-     Track: https://github.com/rossoctl/rossocortex/issues/139 -->
+     Track: https://github.com/rossoctl/cortex/issues/139 -->
 
 > **Known limitation:** This step requires the authbridge scope forwarding feature
-> ([rossocortex#139](https://github.com/rossoctl/rossocortex/issues/139)).
+> ([cortex#139](https://github.com/rossoctl/cortex/issues/139)).
 > Currently, `token_scopes` in the `authproxy-routes` ConfigMap is static per-route, so
 > all exchanged tokens include `github-full-access` regardless of the original user's
 > scopes. Once scope forwarding is implemented, Alice's exchanged token will omit
@@ -873,7 +873,7 @@ The flow:
    (`github-full-access` is a realm OPTIONAL scope — Keycloak only includes it when the
    token request contains `scope=openid github-full-access`)
 3. AuthBridge exchanges the token — once scope forwarding is implemented
-   ([#139](https://github.com/rossoctl/rossocortex/issues/139)), the exchanged
+   ([#139](https://github.com/rossoctl/cortex/issues/139)), the exchanged
    token will preserve the scope difference
 4. The GitHub tool checks for `REQUIRED_SCOPE` (`github-full-access`) in the exchanged token
 5. Tokens with the scope get the privileged PAT; tokens without get the public-only PAT

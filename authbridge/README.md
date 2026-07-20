@@ -26,7 +26,7 @@ The shared auth library at [`authlib/`](./authlib/) contains the building blocks
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After rossocortex#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
+The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
 
 ### What AuthBridge Does
 
@@ -149,7 +149,7 @@ flowchart TB
 
 ### Workload Pod
 
-After rossocortex#411 a workload pod has the application
+After cortex#411 a workload pod has the application
 container plus a single combined AuthBridge sidecar. In
 envoy-sidecar mode it also has a one-shot `proxy-init` init
 container; in proxy-sidecar mode (the cluster default) it does
@@ -432,7 +432,7 @@ To make a plugin excludable:
 
 package main
 
-import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/<name>"
+import _ "github.com/rossoctl/cortex/authbridge/authlib/plugins/<name>"
 ```
 
 2. Remove the corresponding `_ "...plugins/<name>"` import from that binary's `main.go`.

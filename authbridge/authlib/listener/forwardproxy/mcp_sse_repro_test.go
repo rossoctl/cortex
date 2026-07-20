@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/mcpparser"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 // TestForwardProxy_MCP_SSEResponse_RecordsObserve reproduces the live

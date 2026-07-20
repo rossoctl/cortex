@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // PluginFactory returns a fresh plugin instance. Plugins take no

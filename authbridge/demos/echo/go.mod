@@ -1,3 +1,3 @@
-module github.com/rossoctl/rossocortex/authbridge/demos/echo
+module github.com/rossoctl/cortex/authbridge/demos/echo
 
 go 1.24

@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
+import _ "github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"

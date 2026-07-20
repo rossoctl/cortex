@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 )
 
 type budgetTrackConfig struct {
@@ -73,7 +73,7 @@ func (p *BudgetTrack) OnRequest(_ context.Context, pctx *pipeline.Context) pipel
 
 	if spend >= p.cfg.MaxBudget {
 		return pipeline.DenyStatus(429, "budget.exceeded",
-			fmt.Sprintf("Rossocortex ExceededTokenBudget: daily spend $%.4f exceeds budget $%.2f. Reset at midnight UTC.", spend, p.cfg.MaxBudget))
+			fmt.Sprintf("Cortex ExceededTokenBudget: daily spend $%.4f exceeds budget $%.2f. Reset at midnight UTC.", spend, p.cfg.MaxBudget))
 	}
 	return pipeline.Action{Type: pipeline.Continue}
 }

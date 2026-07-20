@@ -1,4 +1,4 @@
-module github.com/rossoctl/rossocortex/authbridge/cmd/abctl
+module github.com/rossoctl/cortex/authbridge/cmd/abctl
 
 go 1.26.4
 
@@ -7,14 +7,14 @@ go 1.26.4
 // workspace will not resolve this path — if abctl is ever distributed as
 // a standalone binary, drop the replace and version authlib as a proper
 // dependency once it has a tagged release.
-replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/cortex/authbridge/authlib => ../../authlib
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.7
-	github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
+	github.com/rossoctl/cortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 	gopkg.in/yaml.v3 v3.0.1
 )
 

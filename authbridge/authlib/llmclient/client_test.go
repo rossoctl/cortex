@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/llmclient"
+	"github.com/rossoctl/cortex/authbridge/authlib/llmclient"
 )
 
 // Smallest possible response shape — the server always returns

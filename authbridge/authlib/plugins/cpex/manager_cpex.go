@@ -11,8 +11,8 @@ import (
 	"time"
 
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // cpexManager is the CPEX-backed Manager implementation. Wraps

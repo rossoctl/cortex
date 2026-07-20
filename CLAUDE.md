@@ -1,6 +1,6 @@
 # CLAUDE.md - Rossoctl Extensions
 
-This file provides context for Claude (AI assistant) when working with the `rossocortex` monorepo.
+This file provides context for Claude (AI assistant) when working with the `cortex` monorepo.
 
 ## AI Assistant Instructions
 
@@ -8,18 +8,18 @@ This file provides context for Claude (AI assistant) when working with the `ross
 
 ## Repository Overview
 
-**rossocortex** contains Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
+**cortex** contains Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
 
 The sidecar injection webhook lives in a separate repo: [rossoctl/operator](https://github.com/rossoctl/operator).
 
-**GitHub:** `github.com/rossoctl/rossocortex`
-**Container registry:** `ghcr.io/rossoctl/rossocortex/<image-name>`
+**GitHub:** `github.com/rossoctl/cortex`
+**Container registry:** `ghcr.io/rossoctl/cortex/<image-name>`
 **License:** Apache 2.0
 
 ## Top-Level Directory Structure
 
 ```
-rossocortex/
+cortex/
 ├── authbridge/               # Authentication bridge components
 │   ├── authlib/              #   Shared auth building blocks (Go module)
 │   │   ├── validation/       #     JWKS-backed JWT verifier
@@ -163,7 +163,7 @@ lowercase prefixes. Use `Fix:` / `Feat:` / `Docs:` in PR titles.
 
 ## Container Images
 
-All images are pushed to `ghcr.io/rossoctl/rossocortex/` from
+All images are pushed to `ghcr.io/rossoctl/cortex/` from
 `.github/workflows/build.yaml`:
 
 | Image | Source | Description |
@@ -271,7 +271,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 1. Add entry to `.github/workflows/build.yaml` matrix (`image_config` array)
 2. Provide `name`, `context`, and `dockerfile` fields
-3. Image will be pushed to `ghcr.io/rossoctl/rossocortex/<name>`
+3. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
 
 ## Code Style and Conventions
 

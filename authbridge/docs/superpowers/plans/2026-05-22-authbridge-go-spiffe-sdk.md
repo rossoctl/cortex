@@ -1382,7 +1382,7 @@ func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...p
 
 The existing `Build` function is unchanged; new wiring uses `BuildWithSPIFFE`.
 
-> Import for `spiffe` package: `import "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"`. Verify there's no cycle (spiffe should not import plugins; plugins importing spiffe is fine).
+> Import for `spiffe` package: `import "github.com/rossoctl/cortex/authbridge/authlib/spiffe"`. Verify there's no cycle (spiffe should not import plugins; plugins importing spiffe is fine).
 
 - [ ] **Step 4: Run tests**
 
@@ -1446,7 +1446,7 @@ In `authlib/plugins/tokenexchange/plugin.go`:
 
 ```go
 import (
-    fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+    fwspiffe "github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // Add field to TokenExchange struct:

@@ -31,32 +31,32 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/observe"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/reloader"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/sessionapi"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/observe"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/reloader"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/sessionapi"
+	"github.com/rossoctl/cortex/authbridge/authlib/shared"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 
 	// Only the ext_proc listener is compiled in (no ext_authz, no
 	// HTTP proxies).
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/extproc"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/skiphost"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/extproc"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/skiphost"
 
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/opa"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/sparc"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/mcpparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/opa"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/sparc"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenbroker"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange"
 )
 
 var logLevel = new(slog.LevelVar)

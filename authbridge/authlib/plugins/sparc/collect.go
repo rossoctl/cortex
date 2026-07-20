@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // correlateInferenceContext pulls the conversation (incl. system prompt) and

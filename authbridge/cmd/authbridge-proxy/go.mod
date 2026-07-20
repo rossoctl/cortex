@@ -1,8 +1,8 @@
-module github.com/rossoctl/rossocortex/authbridge/cmd/authbridge-proxy
+module github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy
 
 go 1.26.4
 
-require github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
+require github.com/rossoctl/cortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -118,4 +118,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/cortex/authbridge/authlib => ../../authlib

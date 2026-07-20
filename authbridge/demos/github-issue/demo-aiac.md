@@ -74,7 +74,7 @@ Before starting, ensure you have:
 
 - Python 3.9+ with `venv` support
 - Keycloak running and accessible
-- The rossocortex repository cloned
+- The cortex repository cloned
 - Basic understanding of Keycloak concepts (realms, clients, roles)
 
 **Creating GitHub Personal Access Tokens**
@@ -110,7 +110,7 @@ kind load docker-image --name rossoctl ghcr.io/rossoctl/examples/git-issue-agent
 Create and activate a Python virtual environment:
 
 ```bash
-cd rossocortex/
+cd cortex/
 
 # Create virtual environment
 uv sync
@@ -130,7 +130,7 @@ The Rossoctl installer creates default ConfigMaps.
 Apply the demo-specific ConfigMaps — the `authproxy-routes` ConfigMap configures per-route token exchange (target audience and scopes for the `github-tool` host), and `authbridge-config` sets the agent SPIFFE ID for inbound audience validation. Apply this **before** deploying the agent.
 
 ```bash
-cd rossocortex/authbridge
+cd cortex/authbridge
 
 # Create namespace if it doesn't exist
 kubectl create namespace team1 --dry-run=client -o yaml | kubectl apply -f -

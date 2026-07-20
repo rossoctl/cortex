@@ -6,20 +6,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 	// Side-effect imports register the bundled plugins. Same pattern
 	// main.go uses — each plugin lives in its own subpackage and
 	// advertises itself via init(); importing here makes the name
 	// resolvable to plugins.Build in these tests.
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
-	jwtvalidation "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/opa"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker"
-	tokenexchange "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	jwtvalidation "github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/mcpparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/opa"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenbroker"
+	tokenexchange "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange"
 )
 
 // TestBuiltinsRegistered verifies every in-tree plugin is discoverable

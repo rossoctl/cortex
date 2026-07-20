@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/httpx"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/internal/sseframe"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/internal/tlssniff"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
-	authtls "github.com/rossoctl/rossocortex/authbridge/authlib/tls"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/httpx"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/internal/sseframe"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/internal/tlssniff"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
+	authtls "github.com/rossoctl/cortex/authbridge/authlib/tls"
 )
 
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes

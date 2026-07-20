@@ -338,7 +338,7 @@ def main():
     # reject UI chat requests with "invalid audience".
     #
     # TODO: Remove this workaround once the client-registration sidecar
-    # handles this automatically (rossoctl/rossocortex#169).
+    # handles this automatically (rossoctl/cortex#169).
     print(f"\n--- Adding agent audience scope to UI client '{UI_CLIENT_ID}' ---")
     ui_client_internal_id = keycloak_admin.get_client_id(UI_CLIENT_ID)
     if ui_client_internal_id:

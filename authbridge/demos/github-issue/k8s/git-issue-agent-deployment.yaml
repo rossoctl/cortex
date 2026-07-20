@@ -1,7 +1,7 @@
 # GitHub Issue Agent Deployment with AuthBridge
 #
 # This deployment uses the operator webhook to automatically inject
-# a single combined AuthBridge sidecar (post-rossocortex#411). The exact
+# a single combined AuthBridge sidecar (post-cortex#411). The exact
 # container shape depends on the resolved AuthBridge mode:
 # - proxy-sidecar (default): one container "authbridge-proxy" from the
 #   "authbridge" image. spiffe-helper is bundled inside; gated per-workload

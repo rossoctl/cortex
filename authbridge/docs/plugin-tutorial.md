@@ -33,7 +33,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 type HelloLog struct{}
@@ -255,8 +255,8 @@ imports the registry instead of sharing its package:
 package myplugin
 
 import (
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 )
 
 type MyPlugin struct{}
@@ -279,7 +279,7 @@ package main
 import _ "github.com/acme/my-plugin"
 ```
 
-No fork of rossocortex required.
+No fork of cortex required.
 
 ## Step 7 — Test your plugin
 
@@ -330,7 +330,7 @@ Minimal example for an Inference-like parser whose extension stores
 `Messages []struct{ Role, Content string }`:
 
 ```go
-import "github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
+import "github.com/rossoctl/cortex/authbridge/authlib/contracts"
 
 // Compile-time assertion — catches interface drift at build time.
 var _ contracts.ContentSource = (*MyExtension)(nil)

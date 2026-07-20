@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // depCheck describes whether one declared dependency is satisfied by

@@ -31,34 +31,34 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/observe"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/reloader"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/sessionapi"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
-	authtls "github.com/rossoctl/rossocortex/authbridge/authlib/tls"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/observe"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/reloader"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/sessionapi"
+	"github.com/rossoctl/cortex/authbridge/authlib/shared"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
+	authtls "github.com/rossoctl/cortex/authbridge/authlib/tls"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/forwardproxy"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/reverseproxy"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/forwardproxy"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/reverseproxy"
 
 	// Plugins — same set as authbridge-proxy, plus the cpex plugin
 	// which lives behind //go:build cpex. The cpex import only fires
 	// in this binary's build; pure-Go binaries (authbridge-proxy,
 	// authbridge-envoy, authbridge-lite) don't import it.
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/a2aparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/cpex"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/ibac"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/sparc"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker"
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/a2aparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/cpex"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/ibac"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/mcpparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/sparc"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenbroker"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange"
 )
 
 var logLevel = new(slog.LevelVar)

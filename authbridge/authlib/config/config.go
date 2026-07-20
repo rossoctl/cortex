@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"gopkg.in/yaml.v3"
 )
 

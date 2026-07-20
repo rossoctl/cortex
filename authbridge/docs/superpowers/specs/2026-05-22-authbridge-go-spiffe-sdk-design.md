@@ -2,7 +2,7 @@
 
 **Status:** Design — pending user review
 **Date:** 2026-05-22
-**Issue:** [rossocortex#332](https://github.com/rossoctl/rossocortex/issues/332)
+**Issue:** [cortex#332](https://github.com/rossoctl/cortex/issues/332)
 **Reference:** [klaviger's SDK usage](https://github.com/grs/klaviger/blob/main/internal/spiffe/jwt_source.go)
 
 ## Goal
@@ -399,4 +399,4 @@ the old image's loader rejects.
 | `rossoctl/charts/rossoctl/templates/` | Add `spiffe.jwt_audience` rendering. **Must precede this PR.** Later: remove `spiffe-helper-config` ConfigMap, stop emitting old fields. |
 | `rossoctl/operator` | Webhook injector: stop creating `spiffe-helper-config` Volume; surface `JWT_AUDIENCE` into authbridge YAML's `spiffe.jwt_audience`. Update e2e fixtures. |
 | `rossoctl/rossoctl/backend` | Delete `DEFAULT_SPIFFE_HELPER_CONF`; stop creating spiffe-helper-config ConfigMap on agent runtime creation. |
-| `rossocortex/authbridge` (envoy-sidecar mTLS) | When envoy-sidecar mode adds mTLS, Envoy's filesystem SDS can read the same `/opt/svid*.pem` paths the mirror writes. No additional auth bridge change needed — payoff of this design's option-B choice. |
+| `cortex/authbridge` (envoy-sidecar mTLS) | When envoy-sidecar mode adds mTLS, Envoy's filesystem SDS can read the same `/opt/svid*.pem` paths the mirror writes. No additional auth bridge change needed — payoff of this design's option-B choice. |

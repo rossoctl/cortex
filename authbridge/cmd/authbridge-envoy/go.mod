@@ -1,12 +1,12 @@
-module github.com/rossoctl/rossocortex/authbridge/cmd/authbridge-envoy
+module github.com/rossoctl/cortex/authbridge/cmd/authbridge-envoy
 
 go 1.26.4
 
-replace github.com/rossoctl/rossocortex/authbridge/authlib => ../../authlib
+replace github.com/rossoctl/cortex/authbridge/authlib => ../../authlib
 
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
-	github.com/rossoctl/rossocortex/authbridge/authlib v0.0.0-00010101000000-000000000000
+	github.com/rossoctl/cortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 	google.golang.org/grpc v1.82.0
 )
 

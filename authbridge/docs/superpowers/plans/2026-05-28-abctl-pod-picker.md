@@ -800,7 +800,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
 )
 
 // fakeLister returns a fixed []AgentNamespace.
@@ -933,7 +933,7 @@ Find the `model` struct definition. Add these fields at the end (preserve existi
 Add the import for `cluster` to the import block:
 
 ```go
-"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
+"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
 ```
 
 Add tea messages near the other tea-message types:
@@ -957,7 +957,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
 )
 
 // newNamespacesTable builds an empty namespaces picker table.
@@ -1179,7 +1179,7 @@ package tui
 import (
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
 )
 
 // newPodsTable builds an empty pods picker table.
@@ -1684,8 +1684,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
 )
 
 func main() {

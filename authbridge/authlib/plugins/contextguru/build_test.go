@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 
 	// Register inference-parser so context-guru's RequiresAny is satisfiable.
-	_ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
+	_ "github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
 )
 
 // TestBuild_InChainAfterInferenceParser confirms the plugin assembles on the

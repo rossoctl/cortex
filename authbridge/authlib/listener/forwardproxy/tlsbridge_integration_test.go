@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/tlsbridge"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 )
 
 // bridgeProbePlugin records the decrypted request method/path/headers it sees.

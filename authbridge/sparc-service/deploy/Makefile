@@ -17,7 +17,7 @@
 
 PROVIDER          ?= watsonx
 NAMESPACE         ?= rossoctl-system
-IMAGE             ?= ghcr.io/rossoctl/rossocortex/sparc-service:latest
+IMAGE             ?= ghcr.io/rossoctl/cortex/sparc-service:latest
 TRACK             ?= fast_track
 LLM_TIMEOUT       ?= 120
 PORT              ?= 8090

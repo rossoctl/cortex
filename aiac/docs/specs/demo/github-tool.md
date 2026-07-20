@@ -68,7 +68,7 @@ Phase 1 only discovers and evaluates them.
 - Scenario fixture (`TOOL_SCOPES`): [`../../../test/integration/scenario.py`](../../../test/integration/scenario.py)
 - Scenario spec: [`../integration-test/policy-pipeline.md`](../integration-test/policy-pipeline.md)
 - Sibling agent spec: [`github-agent.md`](github-agent.md)
-- Reference deployment: `rossocortex/authbridge/demos/github-issue/k8s/`
+- Reference deployment: `cortex/authbridge/demos/github-issue/k8s/`
 
 ---
 

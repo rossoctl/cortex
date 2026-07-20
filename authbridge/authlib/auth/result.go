@@ -3,7 +3,7 @@
 package auth
 
 import (
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 // Inbound actions.

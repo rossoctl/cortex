@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/redact"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/redact"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 // defaultHeartbeatInterval is how often the SSE stream sends a keep-alive

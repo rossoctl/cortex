@@ -1,4 +1,4 @@
-module github.com/rossoctl/rossocortex/authbridge/authlib
+module github.com/rossoctl/cortex/authbridge/authlib
 
 go 1.26.4
 

@@ -53,7 +53,7 @@ spec:
             requests: { cpu:  10m, memory: 32Mi }
 
         - name: envoy-proxy
-          image: ghcr.io/rossoctl/rossocortex/authbridge-envoy:latest
+          image: ghcr.io/rossoctl/cortex/authbridge-envoy:latest
           imagePullPolicy: IfNotPresent
           args: ["--config", "/etc/authbridge/config.yaml"]
           ports:

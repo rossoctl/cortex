@@ -433,7 +433,7 @@ import (
     "errors"
     "fmt"
 
-    "github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+    "github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // myPluginConfig is the plugin's private config schema. Fields are JSON-
@@ -889,7 +889,7 @@ the types in [`authlib/pipeline/content.go`](../authlib/pipeline/content.go).
 ### Consuming content in a guardrail
 
 ```go
-import "github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
+import "github.com/rossoctl/cortex/authbridge/authlib/contracts"
 
 func (p *JailbreakDetector) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
     for _, src := range pctx.ContentSources() {

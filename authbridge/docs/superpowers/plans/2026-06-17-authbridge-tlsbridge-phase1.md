@@ -10,7 +10,7 @@
 
 **Scope (Phase 1 is test-only):** This PR is AuthBridge-only and proves the decrypt→pipeline→re-originate loop via **in-process integration tests** (a client configured to trust the ephemeral CA). It does **not** make a real operator-deployed agent trust the CA — that is Phase 2 (operator) work. On a real cluster, a live agent's egress will safely **tunnel** (the no-broken-calls guarantee), because it does not yet trust the minted leaf. See "Phase 2 compatibility" below — Phase 1 is built so the cert-manager path (2c) drops in with a one-line `main.go` swap and no changes to the bridge core.
 
-**Tech Stack:** Go 1.25, stdlib `crypto/tls` + `crypto/x509` (hand-rolled cert minting), `golang.org/x/net/http2` for h2. Module: `github.com/rossoctl/rossocortex/authbridge/authlib` (`go.mod` already has `golang.org/x/net v0.51.0` as an indirect dep — Task 5 promotes it to direct). Tests are package-internal `_test.go`, table-driven, loopback listeners; run with `go test ./...` from `authbridge/authlib`.
+**Tech Stack:** Go 1.25, stdlib `crypto/tls` + `crypto/x509` (hand-rolled cert minting), `golang.org/x/net/http2` for h2. Module: `github.com/rossoctl/cortex/authbridge/authlib` (`go.mod` already has `golang.org/x/net v0.51.0` as an indirect dep — Task 5 promotes it to direct). Tests are package-internal `_test.go`, table-driven, loopback listeners; run with `go test ./...` from `authbridge/authlib`.
 
 **Spec:** `authbridge/docs/superpowers/specs/2026-06-12-authbridge-tlsbridge-design.md`
 
@@ -62,7 +62,7 @@
 - [ ] **Step 1: Create the implementation branch from current upstream main**
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
+cd /Users/haihuang/works/go/src/github.com/rossoctl/cortex
 git fetch upstream main
 git checkout -b feat/tlsbridge-phase1 upstream/main
 ```
@@ -1042,7 +1042,7 @@ Add the field to the `Server` struct (after `SkipHosts`):
 	TLSBridge *tlsbridge.Engine // nil = disabled
 ```
 
-Add the import `"github.com/rossoctl/rossocortex/authbridge/authlib/tlsbridge"` and `"strconv"`.
+Add the import `"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"` and `"strconv"`.
 
 Add helpers (bottom of `server.go`):
 

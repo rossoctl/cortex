@@ -35,10 +35,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/cortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 )
 
 // ibacConfig is the plugin's local config schema. See

@@ -4,8 +4,8 @@ This skill captures knowledge from building, debugging, and running AuthBridge d
 
 ## Repository Context
 
-- **Repo:** `rossoctl/rossocortex` (monorepo)
-- **Container registry:** `ghcr.io/rossoctl/rossocortex/<image-name>`
+- **Repo:** `rossoctl/cortex` (monorepo)
+- **Container registry:** `ghcr.io/rossoctl/cortex/<image-name>`
 - **Agent examples repo:** `rossoctl/examples` (separate repo, images NOT published to GHCR)
 - **Demo guides:** `authbridge/demos/<demo-name>/demo-manual.md` (manual kubectl) and `demo-ui.md` (UI-driven)
 
@@ -35,9 +35,9 @@ docker build -t ghcr.io/rossoctl/examples/<agent>:latest ./a2a/<agent>/
 docker build -t ghcr.io/rossoctl/examples/<tool>:latest ./mcp/<tool>/
 
 # Build AuthBridge sidecar images
-cd rossocortex/authbridge/authproxy
-docker build -f Dockerfile.init -t ghcr.io/rossoctl/rossocortex/proxy-init:latest .
-docker build -f Dockerfile.envoy -t ghcr.io/rossoctl/rossocortex/envoy-with-processor:latest .
+cd cortex/authbridge/authproxy
+docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
+docker build -f Dockerfile.envoy -t ghcr.io/rossoctl/cortex/envoy-with-processor:latest .
 
 # Load into Kind
 kind load docker-image <image> --name rossoctl

@@ -175,7 +175,7 @@ Ensure you have completed the Rossoctl platform setup as described in the
 [Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md).
 
 You should also have:
-- The [rossocortex](https://github.com/rossoctl/rossocortex) repo cloned
+- The [cortex](https://github.com/rossoctl/cortex) repo cloned
 - The [agent-examples](https://github.com/rossoctl/examples) repo cloned
 - Python 3.9+ with `venv` support
 - **Ollama running** with the `ibm/granite4:latest` model (or another model of your choice)
@@ -411,7 +411,7 @@ github-tool-7f8c9d6b44-yyyyy      1/1     Running   0          3m
 
 ### Check operator-managed client registration
 
-After rossocortex#411 / operator#361, registration runs in
+After cortex#411 / operator#361, registration runs in
 the operator (outside the workload pod). Verify the resulting
 Secret was mounted into the agent's sidecar:
 
@@ -513,7 +513,7 @@ kubectl wait --for=condition=ready pod/test-client -n team1 --timeout=30s
 ### 8a. Agent Card - Public Endpoint (No Token Required)
 
 The `/.well-known/agent.json` endpoint is publicly accessible — authbridge
-[bypasses JWT validation](https://github.com/rossoctl/rossocortex/pull/133)
+[bypasses JWT validation](https://github.com/rossoctl/cortex/pull/133)
 for `/.well-known/*`, `/healthz`, `/readyz`, and `/livez` by default:
 
 ```bash

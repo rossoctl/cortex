@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/cache"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
+	"github.com/rossoctl/cortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/cache"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	"github.com/rossoctl/cortex/authbridge/authlib/routing"
 )
 
 // mockVerifier captures the audiences arg and returns configured claims/error.
