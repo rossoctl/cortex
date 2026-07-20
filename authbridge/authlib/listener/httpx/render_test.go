@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // mcpAction matches what mcp-parser populates plus what ibac (or any

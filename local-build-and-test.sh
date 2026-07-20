@@ -5,12 +5,12 @@ set -euo pipefail
 # This script builds all necessary images locally and loads them into Kind
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KAGENTI_DIR="${KAGENTI_DIR:-$(cd "$SCRIPT_DIR/../kagenti" 2>/dev/null && pwd || echo "")}"
-if [ -z "$KAGENTI_DIR" ] || [ ! -d "$KAGENTI_DIR" ]; then
-    echo "ERROR: Set KAGENTI_DIR to point to your kagenti repo clone"
+ROSSOCTL_DIR="${ROSSOCTL_DIR:-$(cd "$SCRIPT_DIR/../rossoctl" 2>/dev/null && pwd || echo "")}"
+if [ -z "$ROSSOCTL_DIR" ] || [ ! -d "$ROSSOCTL_DIR" ]; then
+    echo "ERROR: Set ROSSOCTL_DIR to point to your rossoctl repo clone"
     exit 1
 fi
-CLUSTER_NAME="${CLUSTER_NAME:-kagenti-dev}"
+CLUSTER_NAME="${CLUSTER_NAME:-rossoctl-dev}"
 
 # Auto-detect container runtime (Podman or Docker)
 # If KIND_EXPERIMENTAL_PROVIDER is set to podman, use it regardless of what's installed
@@ -56,26 +56,26 @@ fi
 echo "✅ Found Kind cluster: ${CLUSTER_NAME}"
 echo ""
 
-# Build spiffe-idp-setup (NEW - from kagenti repo)
+# Build spiffe-idp-setup (NEW - from rossoctl repo)
 echo "=========================================="
 echo "Building spiffe-idp-setup"
 echo "=========================================="
-cd "${KAGENTI_DIR}/kagenti/auth/spiffe-idp-setup"
-${CONTAINER_RUNTIME} build -t ghcr.io/kagenti/kagenti/spiffe-idp-setup:local .
-load_image_to_kind ghcr.io/kagenti/kagenti/spiffe-idp-setup:local
+cd "${ROSSOCTL_DIR}/rossoctl/auth/spiffe-idp-setup"
+${CONTAINER_RUNTIME} build -t ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local .
+load_image_to_kind ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local
 echo "✅ Built and loaded: spiffe-idp-setup:local"
 echo ""
 
 # Build authbridge (proxy-sidecar combined: authbridge-proxy + spiffe-helper)
 # Default deployment shape — used when the workload's mode is proxy-sidecar.
-# After kagenti-extensions#411 the unified binary was split into three
+# After rossocortex#411 the unified binary was split into three
 # mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile -t ghcr.io/kagenti/kagenti-extensions/authbridge:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge:local
+${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile -t ghcr.io/rossoctl/rossocortex/authbridge:local .
+load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge:local
 echo "✅ Built and loaded: authbridge:local"
 echo ""
 
@@ -84,8 +84,8 @@ echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile -t ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local
+${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile -t ghcr.io/rossoctl/rossocortex/authbridge-envoy:local .
+load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge-envoy:local
 echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
@@ -98,8 +98,8 @@ echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
-  -t ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local
+  -t ghcr.io/rossoctl/rossocortex/authbridge-lite:local .
+load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge-lite:local
 echo "✅ Built and loaded: authbridge-lite:local"
 echo ""
 
@@ -108,8 +108,8 @@ echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge/proxy-init"
-${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/kagenti/kagenti-extensions/proxy-init:local .
-load_image_to_kind ghcr.io/kagenti/kagenti-extensions/proxy-init:local
+${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/rossocortex/proxy-init:local .
+load_image_to_kind ghcr.io/rossoctl/rossocortex/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"
 echo ""
 
@@ -118,15 +118,15 @@ echo "✅ All images built and loaded successfully!"
 echo "=========================================="
 echo ""
 echo "Images loaded into cluster '${CLUSTER_NAME}':"
-echo "  - ghcr.io/kagenti/kagenti/spiffe-idp-setup:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge-envoy:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/authbridge-lite:local"
-echo "  - ghcr.io/kagenti/kagenti-extensions/proxy-init:local"
+echo "  - ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local"
+echo "  - ghcr.io/rossoctl/rossocortex/authbridge:local"
+echo "  - ghcr.io/rossoctl/rossocortex/authbridge-envoy:local"
+echo "  - ghcr.io/rossoctl/rossocortex/authbridge-lite:local"
+echo "  - ghcr.io/rossoctl/rossocortex/proxy-init:local"
 echo ""
 echo "Next steps:"
 echo "  1. Update values files to use :local tag"
-echo "  2. Run: cd ${KAGENTI_DIR} && deployments/ansible/run-install.sh --env dev"
+echo "  2. Run: cd ${ROSSOCTL_DIR} && deployments/ansible/run-install.sh --env dev"
 echo "  3. Verify SPIRE and Keycloak are running"
 echo "  4. Run the AuthBridge demo"
 echo ""

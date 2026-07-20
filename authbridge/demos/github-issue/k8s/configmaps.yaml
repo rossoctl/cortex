@@ -1,7 +1,7 @@
 # Demo-specific ConfigMap overrides for GitHub Issue Agent + AuthBridge
 #
-# The Kagenti installer already creates correct defaults for authbridge-config,
-# spiffe-helper-config, and envoy-config (with the kagenti realm). This file
+# The Rossoctl installer already creates correct defaults for authbridge-config,
+# spiffe-helper-config, and envoy-config (with the rossoctl realm). This file
 # overrides:
 # - authbridge-config: Keycloak connection, inbound validation, and outbound exchange settings
 # - authproxy-routes: per-target token exchange routes
@@ -24,7 +24,7 @@
 #   2. INBOUND validation: Validates JWT tokens on incoming requests to the agent
 #   3. OUTBOUND exchange:  Exchanges tokens when the agent calls the GitHub tool
 #
-# KEYCLOAK_URL and KEYCLOAK_REALM match the installer defaults (kagenti realm)
+# KEYCLOAK_URL and KEYCLOAK_REALM match the installer defaults (rossoctl realm)
 # and are included because kubectl apply replaces the entire ConfigMap.
 # TOKEN_URL and ISSUER are auto-derived from KEYCLOAK_URL + KEYCLOAK_REALM.
 apiVersion: v1
@@ -34,12 +34,12 @@ metadata:
   namespace: team1
 data:
   KEYCLOAK_URL: "http://keycloak-service.keycloak.svc:8080"
-  KEYCLOAK_REALM: "kagenti"
+  KEYCLOAK_REALM: "rossoctl"
   # TOKEN_URL: Auto-derived from KEYCLOAK_URL + KEYCLOAK_REALM. Only set explicitly
   # when the token endpoint differs from the standard Keycloak path.
-  # TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token"
+  # TOKEN_URL: "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token"
   # ISSUER: Set explicitly because the internal KEYCLOAK_URL differs from the frontend URL.
-  ISSUER: "http://keycloak.localtest.me:8080/realms/kagenti"
+  ISSUER: "http://keycloak.localtest.me:8080/realms/rossoctl"
   # Audience validation is automatic — uses CLIENT_ID from /shared/client-id.txt
   # (written by client-registration or operator). No manual configuration needed.
 

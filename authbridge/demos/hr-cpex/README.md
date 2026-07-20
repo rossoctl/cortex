@@ -2,7 +2,7 @@
 
 An LLM **agent** runs as a container exposing **A2A** (`message/send`),
 with an **authbridge-cpex sidecar enforcing CPEX/APL on the agent's
-outbound tool calls** to an MCP backend, on a Kagenti kind cluster. CPEX
+outbound tool calls** to an MCP backend, on a Rossoctl kind cluster. CPEX
 is a transparent **egress guardrail on the agent**: identity, Cedar PDP,
 RFC 8693 delegation, redaction, PII scanning, session taint, and audit
 all fire when the agent calls a tool — not at a gateway in front of it.
@@ -61,11 +61,11 @@ compose three things a plain PDP does not:
 
 ## Prerequisites
 
-The demo runs inside an existing Kagenti environment. It does not
-install Kagenti or create a cluster. You need:
+The demo runs inside an existing Rossoctl environment. It does not
+install Rossoctl or create a cluster. You need:
 
-- A Kagenti kind cluster named `kagenti`. Install it from the
-  [Kagenti repository][kagenti]. Override `KIND_CLUSTER` in the
+- A Rossoctl kind cluster named `rossoctl`. Install it from the
+  [Rossoctl repository][rossoctl]. Override `KIND_CLUSTER` in the
   Makefile if yours has a different name.
 - Docker, to build the three local images (`hr-cpex-agent`,
   `authbridge-cpex`, `hr-mcp`). They load into kind and are never pushed
@@ -86,7 +86,7 @@ checkouts needed.
 The demo creates one namespace, `cpex-demo`. `make undeploy` removes it
 cleanly and leaves the rest of the cluster untouched.
 
-[kagenti]: https://github.com/kagenti/kagenti
+[rossoctl]: https://github.com/rossoctl/rossoctl
 
 ## Quick start
 
@@ -434,7 +434,7 @@ make undeploy   # deletes the cpex-demo namespace
 
 ## Not covered yet
 
-- **Kagenti operator injection.** Pods deploy via plain `kubectl apply`,
+- **Rossoctl operator injection.** Pods deploy via plain `kubectl apply`,
   not the operator's sidecar-injection path. Promoting cpex into the
   operator's sidecar list is a separate change.
 - **abctl TUI.** Would render each Invocation chain visually, including

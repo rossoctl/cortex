@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-12 (revised after adversarial review; renamed 2026-06-17)
 **Status:** Converged design — ready for implementation plan.
-**Repos touched:** `kagenti-extensions/AuthBridge` (proxy), `kagenti-operator` (CA coordination)
+**Repos touched:** `rossocortex/AuthBridge` (proxy), `operator` (CA coordination)
 
 > **Terminology:** this feature was originally called "MITM". It is now the
 > **TLS bridge** — terminate one TLS connection, run the pipeline on plaintext,

@@ -1,6 +1,6 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the mode-specific binaries (proxy-sidecar default, envoy-sidecar, lite) live under [`cmd/`](./cmd/). Keycloak client registration is handled by the [kagenti-operator](https://github.com/kagenti/kagenti-operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the mode-specific binaries (proxy-sidecar default, envoy-sidecar, lite) live under [`cmd/`](./cmd/). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
 > **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](./demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
 
@@ -20,13 +20,13 @@ The [`cmd/authbridge/`](./cmd/authbridge/) directory contains a unified binary t
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
 | `lite` | `authbridge-lite` | The `authbridge-proxy` binary built with `exclude_plugin_*` tags (auth-only: jwt-validation + token-exchange) | For size-constrained deployments that don't need protocol-aware session events |
 
-The kagenti-operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `kagenti.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See kagenti-operator#361.
+The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
 The shared auth library at [`authlib/`](./authlib/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`authlib/README.md`](./authlib/README.md) for package reference.
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After kagenti-extensions#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
+The following describes the operator-injected sidecar deployment. After rossocortex#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
 
 ### What AuthBridge Does
 
@@ -77,8 +77,8 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │  └─────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────┘
    ▲
-   │ Out-of-band: kagenti-operator's ClientRegistrationReconciler
-   │ creates the Keycloak client + a kagenti-keycloak-client-credentials
+   │ Out-of-band: operator's ClientRegistrationReconciler
+   │ creates the Keycloak client + a rossoctl-keycloak-client-credentials
    │ Secret. The webhook mounts that Secret into the AuthBridge sidecar
    │ at /shared/client-{id,secret}.txt — no in-pod registration sidecar.
                         │
@@ -108,7 +108,7 @@ flowchart TB
         end
     end
 
-    subgraph Operator["kagenti-operator (kagenti-system)"]
+    subgraph Operator["operator (rossoctl-system)"]
         ClientReg["ClientRegistration<br/>Reconciler"]
     end
 
@@ -149,7 +149,7 @@ flowchart TB
 
 ### Workload Pod
 
-After kagenti-extensions#411 a workload pod has the application
+After rossocortex#411 a workload pod has the application
 container plus a single combined AuthBridge sidecar. In
 envoy-sidecar mode it also has a one-shot `proxy-init` init
 container; in proxy-sidecar mode (the cluster default) it does
@@ -344,16 +344,16 @@ sequenceDiagram
 
 ### Quick Setup
 
-The easiest way to get all prerequisites is to use the [Kagenti Ansible installer](https://github.com/kagenti/kagenti/blob/main/docs/install.md#ansible-based-installer-recommended).
+The easiest way to get all prerequisites is to use the [Rossoctl Ansible installer](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md#ansible-based-installer-recommended).
 
 ## Getting Started
 
 ### Demos
 
-- **[Weather Agent Demo](./demos/weather-agent/demo-ui.md)** - Recommended starting demo: shows how the [kagenti-operator](https://github.com/kagenti/kagenti-operator) webhook automatically injects the combined AuthBridge sidecar, with inbound JWT validation and outbound passthrough
+- **[Weather Agent Demo](./demos/weather-agent/demo-ui.md)** - Recommended starting demo: shows how the [operator](https://github.com/rossoctl/operator) webhook automatically injects the combined AuthBridge sidecar, with inbound JWT validation and outbound passthrough
 - **[GitHub Issue Agent Demo](./demos/github-issue/demo.md)** - End-to-end demo with the real GitHub Issue Agent and GitHub MCP Tool, showing transparent token exchange via AuthBridge
   - [Manual deployment](./demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
-  - [UI deployment](./demos/github-issue/demo-ui.md) — import agent and tool via the Kagenti dashboard
+  - [UI deployment](./demos/github-issue/demo-ui.md) — import agent and tool via the Rossoctl dashboard
 - **[Token-Exchange Routes](./demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
 
 All demos cover configuring Keycloak, deploying, and testing.
@@ -432,7 +432,7 @@ To make a plugin excludable:
 
 package main
 
-import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/<name>"
+import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/<name>"
 ```
 
 2. Remove the corresponding `_ "...plugins/<name>"` import from that binary's `main.go`.
@@ -452,10 +452,10 @@ plugin package from being imported and compiled into the binary.
 - [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](docs/) — framework architecture and plugin author references
 
-Keycloak client registration is handled by the [kagenti-operator](https://github.com/kagenti/kagenti-operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.
+Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.
 
 ## References
 
-- [Kagenti Installation](https://github.com/kagenti/kagenti/blob/main/docs/install.md)
+- [Rossoctl Installation](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md)
 - [SPIRE Documentation](https://spiffe.io/docs/latest/)
 - [OAuth 2.0 Token Exchange (RFC 8693)](https://www.rfc-editor.org/rfc/rfc8693)

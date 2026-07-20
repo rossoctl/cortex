@@ -9,7 +9,7 @@
 #   make undeploy      # delete the cpex-demo namespace
 #
 # Prerequisites:
-#   - kind cluster (we target `kagenti`; override KIND_CLUSTER)
+#   - kind cluster (we target `rossoctl`; override KIND_CLUSTER)
 #   - docker / podman
 #   - kubectl
 #   - (chat only) host Ollama on 0.0.0.0 + the right LLM_API_BASE — see the
@@ -18,7 +18,7 @@
 # All source needed for the demo lives in this directory tree
 # (hr-mcp-server/, k8s/, agent/).
 
-KIND_CLUSTER ?= kagenti
+KIND_CLUSTER ?= rossoctl
 # Fixed, not overridable: the k8s/*.yaml manifests hardcode the
 # `cpex-demo` namespace (00-namespace.yaml plus metadata.namespace on
 # every object), so an override here would create the ConfigMaps in one
@@ -62,7 +62,7 @@ MODEL        ?= ollama/llama3:latest
 .DEFAULT_GOAL := help
 
 help:  ## Show this menu (default)
-	@printf "\nCPEX demo — runs CPEX/APL policy on the kagenti AuthBridge\n"
+	@printf "\nCPEX demo — runs CPEX/APL policy on the rossoctl AuthBridge\n"
 	@printf "platform. Self-contained namespace: $(NAMESPACE).\n\n"
 	@printf "Typical run:\n"
 	@printf "  \033[1mmake deploy\033[0m\n"

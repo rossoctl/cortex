@@ -210,7 +210,7 @@ for broad terms
 
 2. CLIENT ROLES (Permissions):
    - Only validate roles that exist in "AVAILABLE CLIENT ROLES" above
-   - Call-chain/infrastructure roles (kagenti, spiffe) are ALWAYS required - ignore them in validation
+   - Call-chain/infrastructure roles (rossoctl, spiffe) are ALWAYS required - ignore them in validation
    - Focus ONLY on the final target client roles (e.g., github-tool roles)
    - CRITICAL: Roles are COMPLETELY INDEPENDENT - one role does NOT include another
    - Role names are misleading - "full-access" does NOT automatically include other roles
@@ -229,7 +229,7 @@ Q1: Are the realm roles (user groups) correctly identified?
 - Answer: YES or NO
 
 Q2: Are the client roles correctly mapped for the final target?
-- Ignore call-chain roles (kagenti, spiffe) - they're infrastructure
+- Ignore call-chain roles (rossoctl, spiffe) - they're infrastructure
 - Check ONLY the final target roles (e.g., github-tool roles) against the description
 - If description says "both X and Y", check that BOTH roles appear in the comma-separated list
 - If description says "only X", check that ONLY X appears (not Y)

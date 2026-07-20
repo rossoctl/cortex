@@ -11,14 +11,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/bypass"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
 )
 
 // jwtValidationConfig is the plugin's local config schema. See
@@ -125,7 +125,7 @@ func (c *jwtValidationConfig) applyDefaults() {
 		c.AudienceMode = "static"
 	}
 	// When neither Audience nor AudienceFile is set, fall back to the
-	// Kagenti convention: client-registration writes the agent's client
+	// Rossoctl convention: client-registration writes the agent's client
 	// ID (which doubles as the inbound audience) to this path.
 	// Deployments that don't run client-registration should set
 	// Audience explicitly — the Configure-time read is best-effort and
@@ -248,7 +248,7 @@ func (p *JWTValidation) Configure(raw json.RawMessage) error {
 	}
 	// Capture whether audience_file arrived explicitly so the boot-time
 	// WARN can distinguish "operator pointed at the wrong path" from
-	// "defaulted to the Kagenti convention and you might not have
+	// "defaulted to the Rossoctl convention and you might not have
 	// noticed." applyDefaults fills AudienceFile in when both audience
 	// and audience_file are empty, erasing the signal.
 	audienceFileExplicit := c.AudienceFile != ""
@@ -271,15 +271,15 @@ func (p *JWTValidation) Configure(raw json.RawMessage) error {
 			// of the initial pod instead of chasing 503s from traffic
 			// that arrived before Init's poll filled the audience in.
 			// When the path was defaulted (not written in the YAML),
-			// spell that out so non-Kagenti deployers don't wonder why
+			// spell that out so non-Rossoctl deployers don't wonder why
 			// the plugin is asking for /shared/client-id.txt.
 			if audienceFileExplicit {
 				slog.Warn("jwt-validation: audience_file not yet readable; Init will poll in background",
 					"path", c.AudienceFile, "error", err)
 			} else {
-				slog.Warn("jwt-validation: audience_file defaulted to Kagenti convention and not yet readable; "+
+				slog.Warn("jwt-validation: audience_file defaulted to Rossoctl convention and not yet readable; "+
 					"Init will poll in background. Set audience (literal value) or audience_file (explicit path) "+
-					"if you are not running under Kagenti.",
+					"if you are not running under Rossoctl.",
 					"path", c.AudienceFile, "error", err)
 			}
 		}

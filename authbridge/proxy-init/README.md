@@ -120,7 +120,7 @@ whichever the host kernel exposes. Override with `IPTABLES_CMD` (and
 ## Required Kubernetes capabilities
 
 The container needs `NET_ADMIN` and `NET_RAW` capabilities and runs as
-UID 0 — but **not** privileged mode. The kagenti-operator's webhook
+UID 0 — but **not** privileged mode. The operator's webhook
 sets up the SecurityContext correctly when injecting the init
 container.
 
@@ -132,7 +132,7 @@ make load-image          # load into a kind cluster
 ```
 
 The image is published from CI as
-`ghcr.io/kagenti/kagenti-extensions/proxy-init:<tag>` (build defined
+`ghcr.io/rossoctl/rossocortex/proxy-init:<tag>` (build defined
 in [`.github/workflows/build.yaml`](../../.github/workflows/build.yaml)).
 
 ## Testing
@@ -151,7 +151,7 @@ sudo ./test-enforce-redirect.sh
 
 ## Where it gets injected
 
-The kagenti-operator's mutating webhook injects the proxy-init
+The operator's mutating webhook injects the proxy-init
 container automatically:
 
 - `redirect` mode (`MODE` unset) when the resolved AuthBridge mode is

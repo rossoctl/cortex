@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/llmclient"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/llmclient"
 )
 
 // Smallest possible response shape — the server always returns

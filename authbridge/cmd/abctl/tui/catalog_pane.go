@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
 )
 
 // newCatalogTable builds the registered-plugin catalog table. Same

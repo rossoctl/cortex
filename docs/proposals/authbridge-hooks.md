@@ -946,7 +946,7 @@ Until then, protocol-semantic hook names are reserved (namespace `mcp.*`, `a2a.*
 
 2. **Async fire-and-forget for audit.** Fire-and-forget hooks (I5, O6, A1) use Rust's tokio runtime for background execution. Should AuthBridge expose a Go-side async mechanism as well, or is the Rust background task system sufficient?
 
-3. **ext_proc body auto-configuration via operator.** When a body-accessing plugin is detected, should the operator automatically reconfigure Envoy's `processing_mode`? This crosses the boundary between AuthBridge and kagenti-operator.
+3. **ext_proc body auto-configuration via operator.** When a body-accessing plugin is detected, should the operator automatically reconfigure Envoy's `processing_mode`? This crosses the boundary between AuthBridge and operator.
 
 4. **Cross-request plugin state (sessions).** CPEX's `ContextTable` is per-request. A rate-limiting plugin needs cross-request state. Should this be supported via a persistence layer on top of the context table, or should stateful plugins use external storage (Redis, etc.)?
 

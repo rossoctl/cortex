@@ -2,7 +2,7 @@
 
 Design document for the `litellm-budget-track` AuthBridge inbound pipeline plugin.
 
-**Issue:** https://github.com/kagenti/kagenti/issues/2177
+**Issue:** https://github.com/rossoctl/rossoctl/issues/2177
 
 ## Overview
 
@@ -112,7 +112,7 @@ The registration file uses the standard build-tag pattern:
 
 package main
 
-import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/litellm_budgettrack"
+import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/litellm_budgettrack"
 ```
 
 ## Integration with RossoCortex

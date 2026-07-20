@@ -1,4 +1,4 @@
-"""Shared fixtures for kagenti-extensions tests."""
+"""Shared fixtures for rossocortex tests."""
 
 from unittest.mock import MagicMock
 

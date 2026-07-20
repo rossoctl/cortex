@@ -1,4 +1,4 @@
-# IBAC demo Makefile — kagenti-UI flow.
+# IBAC demo Makefile — rossoctl-UI flow.
 #
 # End-to-end:
 #
@@ -6,11 +6,11 @@
 #   make show-result   # render pipeline forensic of last session
 #   make undeploy      # remove the demo's resources from team1
 #
-# IBAC ships in the default authbridge image pulled by the kagenti chart,
+# IBAC ships in the default authbridge image pulled by the rossoctl chart,
 # so this demo only needs to enable the plugin in the rendered ConfigMap.
 #
 # Prerequisites:
-#   - kagenti installed on a kind cluster (this is the operator-flow
+#   - rossoctl installed on a kind cluster (this is the operator-flow
 #     demo; for plain-kind testing of the IBAC plugin, see commit history
 #     for the standalone variant)
 #   - ollama on the host with llama3.2:3b pulled
@@ -25,10 +25,10 @@
 .DEFAULT_GOAL := help
 
 help:  ## Show this menu (default)
-	@printf "\nIBAC demo — operator-injected agent in kagenti's team1 namespace.\n\n"
+	@printf "\nIBAC demo — operator-injected agent in rossoctl's team1 namespace.\n\n"
 	@printf "Typical run:\n"
 	@printf "  \033[1mmake demo-ibac\033[0m\n"
-	@printf "  ... chat with email-agent in the kagenti UI ...\n"
+	@printf "  ... chat with email-agent in the rossoctl UI ...\n"
 	@printf "  \033[1mmake show-result\033[0m\n"
 	@printf "  \033[1mmake undeploy\033[0m\n\n"
 	@printf "Targets:\n"
@@ -36,14 +36,14 @@ help:  ## Show this menu (default)
 	     /^[a-zA-Z_-]+:.*## / { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' \
 	     $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
-	@printf "  \033[36m%-18s\033[0m %s\n" "KIND_CLUSTER_NAME" "kind cluster to load images into (default: kagenti)"
+	@printf "  \033[36m%-18s\033[0m %s\n" "KIND_CLUSTER_NAME" "kind cluster to load images into (default: rossoctl)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "NAMESPACE"         "agent namespace (default: team1)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "AGENT_NAME"        "deployment name (default: email-agent)"
 	@printf "  \033[36m%-18s\033[0m %s\n" "CONTAINER_RUNTIME" "podman or docker (auto-detected)"
-	@printf "\nPrerequisites: kagenti install on a kind cluster, ollama on the host\n"
+	@printf "\nPrerequisites: rossoctl install on a kind cluster, ollama on the host\n"
 	@printf "with llama3.2:3b, kubectl/kind/podman, python3 + PyYAML.\n\n"
 
-KIND_CLUSTER_NAME ?= kagenti
+KIND_CLUSTER_NAME ?= rossoctl
 KIND_NODE         ?= $(KIND_CLUSTER_NAME)-control-plane
 NAMESPACE         ?= team1
 AGENT_NAME        ?= email-agent
@@ -66,16 +66,16 @@ LOAD_MARKER := $(STAMP_DIR)/.loaded-this-run
 
 # ---------- Pre-flight ----------
 
-preflight:  ## Verify kagenti is installed + tools are available
+preflight:  ## Verify rossoctl is installed + tools are available
 
-	@kubectl get ns kagenti-system >/dev/null 2>&1 || { \
-	  echo "ERROR: namespace 'kagenti-system' not found — kagenti doesn't appear to be installed."; \
-	  echo "       Install kagenti first (see https://github.com/kagenti/kagenti/blob/main/docs/install.md)"; \
+	@kubectl get ns rossoctl-system >/dev/null 2>&1 || { \
+	  echo "ERROR: namespace 'rossoctl-system' not found — rossoctl doesn't appear to be installed."; \
+	  echo "       Install rossoctl first (see https://github.com/rossoctl/rossoctl/blob/main/docs/install.md)"; \
 	  exit 1; \
 	}
 	@kubectl get ns $(NAMESPACE) >/dev/null 2>&1 || { \
-	  echo "ERROR: namespace '$(NAMESPACE)' not found — kagenti's agent namespace is missing."; \
-	  echo "       Did the kagenti install complete? Try: kubectl get ns | grep team"; \
+	  echo "ERROR: namespace '$(NAMESPACE)' not found — rossoctl's agent namespace is missing."; \
+	  echo "       Did the rossoctl install complete? Try: kubectl get ns | grep team"; \
 	  exit 1; \
 	}
 	@command -v kind >/dev/null 2>&1 || { echo "ERROR: kind not installed"; exit 1; }
@@ -198,8 +198,8 @@ demo-ibac: preflight build-images load-images deploy patch-config  ## Build, loa
 	@echo "╔══════════════════════════════════════════════════════════╗"
 	@echo "║ ✅ IBAC demo agent ready                                 ║"
 	@echo "║                                                          ║"
-	@echo "║ Open the kagenti UI:                                     ║"
-	@echo "║   http://kagenti-ui.localtest.me:8080                    ║"
+	@echo "║ Open the rossoctl UI:                                     ║"
+	@echo "║   http://rossoctl-ui.localtest.me:8080                    ║"
 	@echo "║                                                          ║"
 	@echo "║ Pick email-agent from the Agents list, then chat:        ║"
 	@echo "║                                                          ║"
@@ -222,15 +222,15 @@ show-result: build-abctl  ## Launch abctl against the agent's session API (inter
 
 # ---------- Cleanup ----------
 
-undeploy:  ## Remove demo resources from team1 (kagenti install untouched)
+undeploy:  ## Remove demo resources from team1 (rossoctl install untouched)
 	-kubectl -n $(NAMESPACE) delete -f k8s/agent.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/email-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/evil-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(AGENT_NAME) --ignore-not-found
-	-kubectl -n $(NAMESPACE) delete secret -l kagenti.io/client-name=$(AGENT_NAME) --ignore-not-found
+	-kubectl -n $(NAMESPACE) delete secret -l rossoctl.io/client-name=$(AGENT_NAME) --ignore-not-found
 	@rm -rf $(STAMP_DIR)
 	@echo "[*] Demo resources removed from $(NAMESPACE)."
-	@echo "    The kagenti install + the namespace itself are untouched."
+	@echo "    The rossoctl install + the namespace itself are untouched."
 
 # ---------- Diagnostics ----------
 

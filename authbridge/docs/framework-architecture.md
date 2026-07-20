@@ -385,7 +385,7 @@ Returning `Reject` from `OnRequest` halts the request pipeline; from `OnResponse
   "message":     "Bearer token required",
   "description": "No Authorization header present",
   "plugin":      "jwt-validation",
-  "details":     { "realm": "kagenti" }
+  "details":     { "realm": "rossoctl" }
 }
 ```
 
@@ -397,7 +397,7 @@ pipeline.DenyStatus(451, "policy.forbidden", "unavailable for legal reasons")
 pipeline.DenyWithDetails("policy.rate-limited", "quota hit", map[string]any{
     "remaining": 0, "window": "1h",
 })
-pipeline.Challenge("kagenti", "Authorization required")   // 401 + WWW-Authenticate
+pipeline.Challenge("rossoctl", "Authorization required")   // 401 + WWW-Authenticate
 pipeline.RateLimited(30*time.Second, "", "slow down")     // 429 + Retry-After
 ```
 
@@ -664,7 +664,7 @@ The pipeline **does not own**:
 |---|---|---|
 | HTTP wire protocol (ext_proc gRPC, ext_authz, reverse/forward proxy) | `cmd/authbridge/listener/` | Each mode speaks a different wire; pipeline stays protocol-free |
 | Body buffering negotiation (`ProcessingMode: BUFFERED`) | Listener reads `Pipeline.NeedsBody()` | Only listener can respond to the ext_proc handshake |
-| JWT issuance, client registration, Keycloak admin calls | Outside the pipeline (agent sidecars / kagenti-operator) | Async concerns happening before/after any request flow |
+| JWT issuance, client registration, Keycloak admin calls | Outside the pipeline (agent sidecars / operator) | Async concerns happening before/after any request flow |
 | Session store writes (`Store.Append`) | Listener, called after each phase | Plugins see only the read-only `SessionView` |
 | SSE streaming of events to abctl | `authlib/sessionapi` | Observability API, not a plugin concern |
 | **mTLS handshake + peer-cert verification** | **`authlib/listener/...` (proxy-sidecar) using `authlib/tls` + `authlib/spiffe`** | **Transport-level concern; happens before any plugin sees a decrypted HTTP message** |

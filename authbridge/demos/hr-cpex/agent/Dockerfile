@@ -4,7 +4,7 @@
 #
 # Built locally and loaded into kind:
 #   docker build -t hr-cpex-agent:dev .
-#   kind load docker-image hr-cpex-agent:dev --name kagenti
+#   kind load docker-image hr-cpex-agent:dev --name rossoctl
 # The Deployment uses imagePullPolicy: Never so the kubelet takes the
 # locally-loaded image rather than pulling from a registry.
 

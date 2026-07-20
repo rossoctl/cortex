@@ -6,10 +6,10 @@ reads, and prompt invocations.
 
 ## Prerequisites
 
-- A running Kagenti cluster (Kind or OpenShift) with the Ansible installer
+- A running Rossoctl cluster (Kind or OpenShift) with the Ansible installer
   completed. The mcp-parser plugin works in `envoy-sidecar` and
   `proxy-sidecar` modes on any cluster type.
-- A namespace (e.g., `team1`) labeled with `kagenti-enabled: "true"` for
+- A namespace (e.g., `team1`) labeled with `rossoctl-enabled: "true"` for
   AuthBridge sidecar injection
 - An MCP-based agent already deployed (e.g., the weather agent from
   [demo-ui-advanced](../weather-agent/demo-ui-advanced.md))
@@ -57,7 +57,7 @@ for dynamic body buffering to work. Without it, Envoy ignores the
       response_body_mode: NONE
 ```
 
-If you are using the kagenti-operator v0.5.0-alpha.8+, this is already
+If you are using the operator v0.5.0-alpha.8+, this is already
 set in the default `envoy-config` ConfigMap. For earlier versions, patch
 the ConfigMap manually.
 
@@ -82,13 +82,13 @@ data:
         plugins:
           - name: jwt-validation
             config:
-              issuer: "http://keycloak.localtest.me:8080/realms/kagenti"
+              issuer: "http://keycloak.localtest.me:8080/realms/rossoctl"
       outbound:
         plugins:
           - name: token-exchange
             config:
               keycloak_url: "http://keycloak-service.keycloak.svc:8080"
-              keycloak_realm: "kagenti"
+              keycloak_realm: "rossoctl"
               identity:
                 type: "spiffe"
           - mcp-parser
@@ -147,12 +147,12 @@ kubectl rollout status deploy/<agent-name> -n team1
 
 ## Step 4: Send a Request Through the Agent
 
-Use the Kagenti UI or curl to trigger a tool call through the agent.
+Use the Rossoctl UI or curl to trigger a tool call through the agent.
 For the weather agent, simply ask it a weather question — the agent
 will call the weather-tool-mcp service over MCP (outbound):
 
 ```bash
-# Via the Kagenti UI:
+# Via the Rossoctl UI:
 # Navigate to the weather agent, type "What's the weather in NYC?"
 ```
 

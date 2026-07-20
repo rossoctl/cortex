@@ -31,10 +31,10 @@ From `analyze_tool` (`../components/aiac-agent/uc1-service-onboarding.md`):
 
 1. **`classify_service`** resolves identity from the Keycloak client's `client.name` (the operator sets
    it to `"{namespace}/{workload_name}"`), splits on the first `/` → `namespace` + `workload_name`,
-   LISTs pods in the namespace, finds the pod owned by `workload_name`, and reads the `kagenti.io/type`
+   LISTs pods in the namespace, finds the pod owned by `workload_name`, and reads the `rossoctl.io/type`
    pod label. It **must be `tool`** → routes to `analyze_tool`.
 2. **`analyze_tool`** does `read_service(workload_name, namespace)` (the K8s Service named
-   `workload_name`), **requires the `protocol.kagenti.io/mcp` label** on that Service (a deploy-time
+   `workload_name`), **requires the `protocol.rossoctl.io/mcp` label** on that Service (a deploy-time
    prerequisite — the operator does **not** stamp it), takes the Service's **first port**, and POSTs
    JSON-RPC `tools/list` to
    `http://{workload_name}.{namespace}.svc.cluster.local:{port}/mcp`.
@@ -68,7 +68,7 @@ Phase 1 only discovers and evaluates them.
 - Scenario fixture (`TOOL_SCOPES`): [`../../../test/integration/scenario.py`](../../../test/integration/scenario.py)
 - Scenario spec: [`../integration-test/policy-pipeline.md`](../integration-test/policy-pipeline.md)
 - Sibling agent spec: [`github-agent.md`](github-agent.md)
-- Reference deployment: `kagenti-extensions/authbridge/demos/github-issue/k8s/`
+- Reference deployment: `rossocortex/authbridge/demos/github-issue/k8s/`
 
 ---
 
@@ -207,33 +207,33 @@ ConfigMaps/secrets assumed present), consistent with the agent spec.
   - **`Deployment`** named `github-tool`. Container port serves `/mcp` (default `9090`). Env `PORT`,
     `LOG_LEVEL`. Image `github-tool:latest`, `imagePullPolicy: IfNotPresent` (kind-load; name is a
     documented knob). No GitHub PAT / issuer / JWKS / audience env (unlike the github-issue tool).
-  - **Pod label `kagenti.io/type: tool`** — this is what `classify_service` reads. Applied by the
+  - **Pod label `rossoctl.io/type: tool`** — this is what `classify_service` reads. Applied by the
     operator via the `AgentRuntime` (see below); relying on the operator to stamp it, rather than
     hand-setting it, keeps it consistent with the operator's own discriminator.
   - **`Service`** named `github-tool` (ClusterIP), selecting the Deployment's pods. Its **first port**
     maps to the container's `/mcp` port (e.g. `port: 9090 → targetPort: 9090`). `analyze_tool` uses the
     Service's **first** port, so keep `/mcp`'s port first.
-  - **Service label `protocol.kagenti.io/mcp` MUST be present** — a **deploy-time prerequisite** for
+  - **Service label `protocol.rossoctl.io/mcp` MUST be present** — a **deploy-time prerequisite** for
     `analyze_tool` (the operator does **not** stamp it; `analyze_tool` returns `502` if absent). Set it
-    explicitly on the Service metadata (e.g. `protocol.kagenti.io/mcp: "true"`).
+    explicitly on the Service metadata (e.g. `protocol.rossoctl.io/mcp: "true"`).
   - **`AgentRuntime{ type: tool, targetRef: { apiVersion: apps/v1, kind: Deployment, name: github-tool } }`**
-    — enrolls the workload so the kagenti-operator applies `kagenti.io/type=tool` to the pod and
+    — enrolls the workload so the operator applies `rossoctl.io/type=tool` to the pod and
     registers a Keycloak client with `client.name = "team1/github-tool"`. Unlike the github-issue demo
-    (which omits `kagenti.io/type` to skip AuthBridge entirely), this demo **needs** `type: tool` so the
-    pod carries `kagenti.io/type=tool` for UC-1 `classify_service`.
+    (which omits `rossoctl.io/type` to skip AuthBridge entirely), this demo **needs** `type: tool` so the
+    pod carries `rossoctl.io/type=tool` for UC-1 `classify_service`.
 
 - **No `configmaps.yaml` needed here** — the tool has no `authbridge-config` / `authproxy-routes`
   dependency (it neither validates inbound JWTs nor does outbound token exchange in phase 1). The agent
   spec's `authproxy-routes` still targets the **production** `github-tool-mcp` host and is unrelated to
   this stand-in.
 
-- **Prerequisite (reused, not created here):** a running Kagenti cluster with the kagenti-operator
+- **Prerequisite (reused, not created here):** a running Rossoctl cluster with the operator
   (Keycloak realm as configured by the installer, namespace `team1`), so the `AgentRuntime` is
   reconciled into a Keycloak client + pod label.
 
 **Wiring invariant:** `AgentRuntime.targetRef.name` == `Deployment` name == `Service` name ==
-`github-tool`; the `Service` carries the `protocol.kagenti.io/mcp` label and exposes `/mcp` as its first
-port; the operator-applied pod label is `kagenti.io/type=tool`; the operator-registered Keycloak
+`github-tool`; the `Service` carries the `protocol.rossoctl.io/mcp` label and exposes `/mcp` as its first
+port; the operator-applied pod label is `rossoctl.io/type=tool`; the operator-registered Keycloak
 `client.name` is `team1/github-tool`.
 
 ---
@@ -254,13 +254,13 @@ port; the operator-applied pod label is `kagenti.io/type=tool`; the operator-reg
 3. Confirm each returned tool's `description` is byte-identical to the matching `TOOL_SCOPES` entry in
    `scenario.py` (e.g. `jq '.result.tools[] | {name, description}'`).
 
-**Cluster (HITL — live Kagenti + Keycloak + operator):**
-4. `kind load docker-image github-tool:latest --name kagenti`.
+**Cluster (HITL — live Rossoctl + Keycloak + operator):**
+4. `kind load docker-image github-tool:latest --name rossoctl`.
 5. `kubectl apply -f k8s/github-tool-deployment.yaml`.
 6. Confirm the operator applied the pod label: `kubectl get pod -l app=github-tool -n team1
-   -o jsonpath='{.items[0].metadata.labels.kagenti\.io/type}'` → `tool`.
+   -o jsonpath='{.items[0].metadata.labels.rossoctl\.io/type}'` → `tool`.
 7. Confirm the Service carries the MCP label: `kubectl get svc github-tool -n team1
-   -o jsonpath='{.metadata.labels.protocol\.kagenti\.io/mcp}'` → present.
+   -o jsonpath='{.metadata.labels.protocol\.rossoctl\.io/mcp}'` → present.
 8. Confirm the operator registered a Keycloak client with `client.name = "team1/github-tool"` (via the
    Keycloak admin API / IdP `Configuration` library).
 9. From inside the cluster (or via `kubectl port-forward svc/github-tool 9090:9090 -n team1`), POST

@@ -6,7 +6,7 @@ still arrives at the upstream carrying a correctly **exchanged** token.
 
 ## What it proves
 
-When you chat `echo` with the agent in the kagenti UI, the reply shows two
+When you chat `echo` with the agent in the rossoctl UI, the reply shows two
 lines:
 
 ```
@@ -24,13 +24,13 @@ outbound: eyJhbGciOi…          <- what ECHO-UPSTREAM received (aud=echo-upstre
   `aud=echo-upstream`. `echo-upstream` simply returns the `Authorization`
   header it received, giving you ground truth.
 
-`echo-upstream` carries **no** `kagenti.io/*` labels, so the operator's webhook
+`echo-upstream` carries **no** `rossoctl.io/*` labels, so the operator's webhook
 leaves it un-injected — what it logs is exactly what left the agent's sidecar.
 
 ## Prerequisites
 
-- A running kagenti **kind** cluster (`kagenti-system` + `team1` namespaces).
-  See the [install guide](https://github.com/kagenti/kagenti/blob/main/docs/install.md).
+- A running rossoctl **kind** cluster (`rossoctl-system` + `team1` namespaces).
+  See the [install guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md).
 - `kubectl`, `kind`, `podman` or `docker`.
 - `python3` + PyYAML (config merge) and `python-keycloak` (Keycloak setup):
   `pip install pyyaml python-keycloak`.
@@ -52,12 +52,12 @@ preflight → build-sidecar → load-sidecar → override-sidecar-image
 
 The placeholder-swap capability is new, so the demo builds the AuthBridge
 sidecar from the repo root (`build-sidecar`), loads it into kind, and points
-the kagenti platform config's `images.authbridge` at the local tag
+the rossoctl platform config's `images.authbridge` at the local tag
 (`override-sidecar-image`) before deploying the agent.
 
 ## Use it from the UI
 
-1. Open <http://kagenti-ui.localtest.me:8080>.
+1. Open <http://rossoctl-ui.localtest.me:8080>.
 2. Log in as **alice / alice123**. If you were already signed in, **log out
    and back in** — the demo adds a new audience scope to the UI client and
    tokens only pick it up on a fresh login.
@@ -88,12 +88,12 @@ ext_proc + proxy-init iptables). To exercise it:
    `build-sidecar`/`override-sidecar-image`, but for `images.envoyProxy`):
    ```bash
    podman build -f ../../cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:placeholder-dev ../..
-   kind load docker-image authbridge-envoy:placeholder-dev --name kagenti
-   podman exec kagenti-control-plane ctr -n k8s.io images tag \
+   kind load docker-image authbridge-envoy:placeholder-dev --name rossoctl
+   podman exec rossoctl-control-plane ctr -n k8s.io images tag \
      localhost/authbridge-envoy:placeholder-dev docker.io/library/authbridge-envoy:placeholder-dev
-   # set images.envoyProxy in kagenti-system/kagenti-platform-config to
+   # set images.envoyProxy in rossoctl-system/rossoctl-platform-config to
    # authbridge-envoy:placeholder-dev, then restart the operator:
-   kubectl -n kagenti-system rollout restart deploy/kagenti-controller-manager
+   kubectl -n rossoctl-system rollout restart deploy/rossoctl-controller-manager
    ```
 2. Put echo-agent in envoy mode and restart so the operator re-injects Envoy +
    ext_proc + proxy-init:

@@ -11,13 +11,13 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"google.golang.org/grpc/codes"
 
-	authpkg "github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/cache"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenexchange/exchange"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
+	authpkg "github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/cache"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
 )
 
 type mockVerifier struct {

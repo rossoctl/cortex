@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
 )
 
 // fakeLister returns a fixed []AgentNamespace and counts ListAgents calls.

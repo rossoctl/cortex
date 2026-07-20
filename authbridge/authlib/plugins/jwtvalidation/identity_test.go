@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 func TestClaimsIdentity_BasicAccessors(t *testing.T) {
@@ -30,7 +30,7 @@ func TestClaimsIdentity_ClaimsCarrier(t *testing.T) {
 	// Compile-time + runtime: the adapter is a ClaimsCarrier.
 	var cc contracts.ClaimsCarrier = claimsIdentity{c: &validation.Claims{
 		Subject:   "alice",
-		Issuer:    "https://kc/realms/kagenti",
+		Issuer:    "https://kc/realms/rossoctl",
 		Audience:  []string{"hr-agent", "github-tool"},
 		ExpiresAt: time.Unix(1893456000, 0),
 	}}
@@ -38,7 +38,7 @@ func TestClaimsIdentity_ClaimsCarrier(t *testing.T) {
 	if cc.AuthMethod() != "jwt" {
 		t.Errorf("AuthMethod = %q, want jwt", cc.AuthMethod())
 	}
-	if cc.Issuer() != "https://kc/realms/kagenti" {
+	if cc.Issuer() != "https://kc/realms/rossoctl" {
 		t.Errorf("Issuer = %q", cc.Issuer())
 	}
 	if !reflect.DeepEqual(cc.Audience(), []string{"hr-agent", "github-tool"}) {
@@ -47,7 +47,7 @@ func TestClaimsIdentity_ClaimsCarrier(t *testing.T) {
 
 	claims := cc.Claims()
 	want := map[string]string{
-		"issuer":   "https://kc/realms/kagenti",
+		"issuer":   "https://kc/realms/rossoctl",
 		"audience": "hr-agent,github-tool",
 		"exp":      "1893456000",
 	}

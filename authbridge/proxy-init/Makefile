@@ -1,6 +1,6 @@
 .PHONY: docker-build-init load-image
 
-KIND_CLUSTER_NAME ?= kagenti
+KIND_CLUSTER_NAME ?= rossoctl
 
 # Container runtime — defaults to podman (the repo's primary toolchain)
 # but auto-falls-through to docker if podman isn't installed. Override

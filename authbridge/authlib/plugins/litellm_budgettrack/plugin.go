@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
 )
 
 type budgetTrackConfig struct {

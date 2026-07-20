@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/contracts"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 // claimsIdentity adapts a *validation.Claims to the pipeline.Identity

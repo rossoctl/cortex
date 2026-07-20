@@ -34,8 +34,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // PipelineBuilder loads the config file, validates it, and returns the

@@ -4,9 +4,9 @@ This skill captures knowledge from building, debugging, and running AuthBridge d
 
 ## Repository Context
 
-- **Repo:** `kagenti/kagenti-extensions` (monorepo)
-- **Container registry:** `ghcr.io/kagenti/kagenti-extensions/<image-name>`
-- **Agent examples repo:** `kagenti/agent-examples` (separate repo, images NOT published to GHCR)
+- **Repo:** `rossoctl/rossocortex` (monorepo)
+- **Container registry:** `ghcr.io/rossoctl/rossocortex/<image-name>`
+- **Agent examples repo:** `rossoctl/examples` (separate repo, images NOT published to GHCR)
 - **Demo guides:** `authbridge/demos/<demo-name>/demo-manual.md` (manual kubectl) and `demo-ui.md` (UI-driven)
 
 ## Demo Directory Convention
@@ -27,20 +27,20 @@ demos/<demo-name>/
 
 ## Building and Loading Images for Kind
 
-Agent/tool images from `kagenti/agent-examples` must be built locally and loaded into Kind:
+Agent/tool images from `rossoctl/examples` must be built locally and loaded into Kind:
 
 ```bash
 # Build from agent-examples repo
-docker build -t ghcr.io/kagenti/agent-examples/<agent>:latest ./a2a/<agent>/
-docker build -t ghcr.io/kagenti/agent-examples/<tool>:latest ./mcp/<tool>/
+docker build -t ghcr.io/rossoctl/examples/<agent>:latest ./a2a/<agent>/
+docker build -t ghcr.io/rossoctl/examples/<tool>:latest ./mcp/<tool>/
 
 # Build AuthBridge sidecar images
-cd kagenti-extensions/authbridge/authproxy
-docker build -f Dockerfile.init -t ghcr.io/kagenti/kagenti-extensions/proxy-init:latest .
-docker build -f Dockerfile.envoy -t ghcr.io/kagenti/kagenti-extensions/envoy-with-processor:latest .
+cd rossocortex/authbridge/authproxy
+docker build -f Dockerfile.init -t ghcr.io/rossoctl/rossocortex/proxy-init:latest .
+docker build -f Dockerfile.envoy -t ghcr.io/rossoctl/rossocortex/envoy-with-processor:latest .
 
 # Load into Kind
-kind load docker-image <image> --name kagenti
+kind load docker-image <image> --name rossoctl
 ```
 
 Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.24.9-bookworm`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
@@ -150,12 +150,12 @@ kubectl logs deployment/<agent> -n <ns> -c envoy-proxy 2>&1 | grep "\[Token Exch
 ### Client Registration
 
 ```bash
-kubectl logs deployment/<agent> -n <ns> -c kagenti-client-registration
+kubectl logs deployment/<agent> -n <ns> -c rossoctl-client-registration
 
 # Query Keycloak (use --data-urlencode for SPIFFE IDs)
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   --data-urlencode "clientId=spiffe://localtest.me/ns/<ns>/sa/<sa>" \
-  --get "http://keycloak.localtest.me:8080/admin/realms/kagenti/clients" | jq '.[0].clientId'
+  --get "http://keycloak.localtest.me:8080/admin/realms/rossoctl/clients" | jq '.[0].clientId'
 ```
 
 ## Demo Deployment Checklist

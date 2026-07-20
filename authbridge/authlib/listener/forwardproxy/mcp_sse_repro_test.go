@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/inferenceparser"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/mcpparser"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/inferenceparser"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // TestForwardProxy_MCP_SSEResponse_RecordsObserve reproduces the live

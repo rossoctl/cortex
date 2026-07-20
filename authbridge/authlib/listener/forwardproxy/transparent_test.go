@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/plugintesting"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // TestRecordTunnelOpened_SetsTunnelMarker locks the explicit producer marker:

@@ -16,9 +16,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/routing"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
 )
 
 // JWTValidationStub mimics the jwt-validation plugin's OnRequest

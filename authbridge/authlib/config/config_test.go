@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // --- Preset Tests ---
@@ -266,7 +266,7 @@ pipeline:
       - name: jwt-validation
         id: jwt-validation
         config:
-          issuer: "http://keycloak.example/realms/kagenti"
+          issuer: "http://keycloak.example/realms/rossoctl"
           bypass_paths:
             - /healthz
             - /.well-known/*
@@ -293,7 +293,7 @@ pipeline:
 	if err := json.Unmarshal(e.Config, &decoded); err != nil {
 		t.Fatalf("config JSON parse: %v\nbytes: %s", err, e.Config)
 	}
-	if decoded["issuer"] != "http://keycloak.example/realms/kagenti" {
+	if decoded["issuer"] != "http://keycloak.example/realms/rossoctl" {
 		t.Errorf("issuer round-trip lost: %v", decoded["issuer"])
 	}
 	paths, ok := decoded["bypass_paths"].([]any)

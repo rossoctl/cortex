@@ -2,7 +2,7 @@
 //
 // Modeled on the IBAC demo agent (authbridge/demos/ibac/agent/main.go),
 // keeping all the A2A / agent-card / Task scaffolding verbatim so the
-// agent stays discoverable and chat-able in the kagenti UI. The IBAC
+// agent stays discoverable and chat-able in the rossoctl UI. The IBAC
 // demo's Ollama/LLM/tool/email machinery is removed — this agent does
 // exactly one thing on each message/send:
 //
@@ -156,7 +156,7 @@ type jsonRPCResponse struct {
 // REQUEST text on response events, which makes the agent's reply
 // invisible in the platform observability layer.
 //
-// kagenti's backend chat handler accepts both shapes (chat.py:211
+// rossoctl's backend chat handler accepts both shapes (chat.py:211
 // handles Task, chat.py:219 handles Message), so emitting a Task
 // here doesn't break the UI.
 type a2aTask struct {
@@ -189,9 +189,9 @@ type jsonRPCError struct {
 }
 
 // handleAgentCard serves the A2A agent card at
-// /.well-known/agent-card.json. The kagenti operator's
+// /.well-known/agent-card.json. The rossoctl operator's
 // AgentCardReconciler fetches this URL through the agent's Service
-// and stuffs the result into an AgentCard CR; the kagenti UI's agent
+// and stuffs the result into an AgentCard CR; the rossoctl UI's agent
 // detail page renders that. Without the endpoint the UI shows
 // "Agent card not available."
 //
@@ -205,7 +205,7 @@ func handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	}
 	// AGENT_PUBLIC_URL is what the UI displays as the agent's
 	// callable address. Defaults to the in-cluster Service URL,
-	// which is what kagenti UI actually uses for the chat call.
+	// which is what rossoctl UI actually uses for the chat call.
 	publicURL := envOr("AGENT_PUBLIC_URL", "http://echo-agent.team1.svc.cluster.local:8080/")
 	card := map[string]any{
 		"name":               "Echo",
@@ -285,7 +285,7 @@ func handleA2A(w http.ResponseWriter, r *http.Request) {
 	}
 	if sessionID == "" {
 		// A2A spec §6.6: when the client omits a contextId, the server
-		// SHOULD assign one and return it. The kagenti UI currently
+		// SHOULD assign one and return it. The rossoctl UI currently
 		// sends bare message/send calls without any contextId field;
 		// returning a fresh UUID restores per-conversation bucketing
 		// while staying backward-compatible.
@@ -322,11 +322,11 @@ func runEcho(inboundAuth string) string {
 }
 
 // writeRPCSuccess emits an A2A v0.3.0 Task response. Both
-// status.message AND artifacts carry the agent's reply: the kagenti
+// status.message AND artifacts carry the agent's reply: the rossoctl
 // backend's chat handler reads from status.message (chat.py:211),
 // while the authbridge a2a-parser's response-side artifact extractor
 // reads from artifacts[].parts[].text (plugin.go:188-195). Carrying
-// the text in both keeps the kagenti UI working AND gets the reply
+// the text in both keeps the rossoctl UI working AND gets the reply
 // into the session-event JSON for abctl / show-result.
 func writeRPCSuccess(w http.ResponseWriter, id any, sessionID, text string) {
 	taskID := newUUID()

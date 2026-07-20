@@ -10,7 +10,7 @@
 # pipeline, configures Keycloak, and drives the two-turn scenario through REAL
 # inbound auth (no jwt bypass), printing SPARC's verdicts.
 #
-# Prereqs: a kagenti kind cluster, Ollama on the host with the model, and
+# Prereqs: a rossoctl kind cluster, Ollama on the host with the model, and
 # kubectl / kind / docker(or podman) / python3 / uv. For PROVIDER=watsonx also
 # export WX_API_KEY and WX_PROJECT_ID (e.g. `set -a; . /path/.env; set +a`).
 
@@ -21,17 +21,17 @@
 .DEFAULT_GOAL := help
 
 PROVIDER          ?= watsonx
-KIND_CLUSTER_NAME ?= kagenti
+KIND_CLUSTER_NAME ?= rossoctl
 KIND_NODE         := $(KIND_CLUSTER_NAME)-control-plane
 # NS / AGENT / PLATFORM_NS are fixed: the k8s/ manifests hardcode these names
-# (team1 / finance-agent / kagenti-system), so they are not override knobs —
+# (team1 / finance-agent / rossoctl-system), so they are not override knobs —
 # changing them here alone would target resources the manifests never create.
 NS                := team1
 AGENT             := finance-agent
-PLATFORM_NS       := kagenti-system
+PLATFORM_NS       := rossoctl-system
 # Prefer whichever runtime's daemon is actually reachable (docker first).
 CONTAINER_RUNTIME ?= $(shell docker info >/dev/null 2>&1 && echo docker || (podman info >/dev/null 2>&1 && echo podman) || echo docker)
-AUTHBRIDGE_IMAGE  ?= ghcr.io/kagenti/kagenti-extensions/authbridge:v0.6.0-alpha.4
+AUTHBRIDGE_IMAGE  ?= ghcr.io/rossoctl/rossocortex/authbridge:v0.6.0-alpha.4
 
 AGENT_IMAGE := finance-agent:latest
 MCP_IMAGE   := finance-mcp:latest
@@ -79,8 +79,8 @@ help:  ## Show this menu
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-16s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 	@printf "\nVars: PROVIDER(=%s) KIND_CLUSTER_NAME AUTHBRIDGE_IMAGE SPARC_MODEL HOST_OLLAMA_URL\n\n" "$(PROVIDER)"
 
-preflight:  ## Verify kagenti + tools (+ watsonx creds when PROVIDER=watsonx)
-	@kubectl get ns $(PLATFORM_NS) >/dev/null 2>&1 || { echo "ERROR: '$(PLATFORM_NS)' not found — install kagenti first."; exit 1; }
+preflight:  ## Verify rossoctl + tools (+ watsonx creds when PROVIDER=watsonx)
+	@kubectl get ns $(PLATFORM_NS) >/dev/null 2>&1 || { echo "ERROR: '$(PLATFORM_NS)' not found — install rossoctl first."; exit 1; }
 	@kubectl get ns $(NS) >/dev/null 2>&1 || { echo "ERROR: agent namespace '$(NS)' not found."; exit 1; }
 	@for t in kubectl kind python3 uv; do command -v $$t >/dev/null 2>&1 || { echo "ERROR: $$t not installed"; exit 1; }; done
 	@if [ "$(PROVIDER)" = "watsonx" ]; then \
@@ -172,7 +172,7 @@ drive:  ## Drive the two-turn scenario through real auth and print SPARC verdict
 
 demo: preflight host-setup load-images ollama-up deploy patch-config setup-keycloak drive  ## Full end-to-end demo
 	@echo
-	@echo "Demo complete. UI: http://kagenti-ui.localtest.me:8080  |  forensic: make show-result"
+	@echo "Demo complete. UI: http://rossoctl-ui.localtest.me:8080  |  forensic: make show-result"
 
 build-abctl:  ## Build abctl into /tmp (for show-result)
 	cd ../../cmd/abctl && go build -o /tmp/abctl-finance-sparc-demo .
@@ -180,13 +180,13 @@ build-abctl:  ## Build abctl into /tmp (for show-result)
 show-result: build-abctl  ## Launch abctl against the agent's session API
 	bash scripts/launch-abctl.sh $(NS) $(AGENT)
 
-undeploy:  ## Remove demo resources (kagenti install untouched)
+undeploy:  ## Remove demo resources (rossoctl install untouched)
 	-kubectl -n $(NS) delete -f k8s/agent.yaml --ignore-not-found
 	-kubectl -n $(NS) delete -f k8s/finance-mcp.yaml --ignore-not-found
 	-kubectl -n $(NS) delete -f k8s/ollama.yaml --ignore-not-found
 	-$(MAKE) -C $(SPARC_DEPLOY) uninstall NAMESPACE=$(PLATFORM_NS)
 	-kubectl -n $(NS) delete configmap authbridge-config-$(AGENT) --ignore-not-found
-	-kubectl -n $(NS) delete secret -l kagenti.io/client-name=$(AGENT) --ignore-not-found
+	-kubectl -n $(NS) delete secret -l rossoctl.io/client-name=$(AGENT) --ignore-not-found
 	@echo "[*] demo resources removed."
 
 logs-agent:  ## Tail agent + authbridge sidecar logs

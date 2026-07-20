@@ -1,4 +1,4 @@
-# Kagenti SPARC reflection service.
+# Rossoctl SPARC reflection service.
 # Depends on the agent-lifecycle-toolkit (ALTK) package straight from PyPI — no vendoring.
 FROM python:3.12-slim AS base
 

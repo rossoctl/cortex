@@ -1,13 +1,13 @@
 # opa
 
 OPA (Open Policy Agent) plugin for AuthBridge. Downloads policy bundles from a
-Kagenti Bundle Server based on the agent's identity and evaluates requests and
+Rossoctl Bundle Server based on the agent's identity and evaluates requests and
 responses against the loaded policy using four fixed decision paths.
 
 ## How it works
 
 1. At startup the plugin reads the agent's client ID from `/shared/client-id.txt`
-   (mounted by the kagenti-operator from a Keycloak-credentials Secret).
+   (mounted by the operator from a Keycloak-credentials Secret).
 2. It creates an embedded OPA engine via the OPA Go SDK and configures it to
    fetch `bundles?spiffe=<url-encoded-spiffe-id>` from the bundle server.
 3. The SDK downloads the bundle, activates the policy, and begins periodic
@@ -52,12 +52,12 @@ pipeline:
         config: { ... }
       - name: opa
         config:
-          bundle_url: "http://bundle-server.kagenti.svc:8080"
+          bundle_url: "http://bundle-server.rossoctl.svc:8080"
   outbound:
     plugins:
       - name: opa
         config:
-          bundle_url: "http://bundle-server.kagenti.svc:8080"
+          bundle_url: "http://bundle-server.rossoctl.svc:8080"
       - name: token-exchange
         config: { ... }
 ```
@@ -74,7 +74,7 @@ containing sensitive keywords), extend the input with `a2a.content`:
 ```yaml
 - name: opa
   config:
-    bundle_url: "http://bundle-server.kagenti.svc:8080"
+    bundle_url: "http://bundle-server.rossoctl.svc:8080"
     include:
       - "a2a.content"
 ```
@@ -90,7 +90,7 @@ the full conversation history:
 ```yaml
 - name: opa
   config:
-    bundle_url: "http://bundle-server.kagenti.svc:8080"
+    bundle_url: "http://bundle-server.rossoctl.svc:8080"
     include:
       - "mcp.params"            # full tool arguments (not just name/uri)
       - "mcp.result"            # tool response data (response path)
@@ -110,7 +110,7 @@ Additionally a future enhancement will add TLS with service account token.
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `bundle_url` | yes | | Base URL of the Kagenti Bundle Server (HTTP, in-cluster) |
+| `bundle_url` | yes | | Base URL of the Rossoctl Bundle Server (HTTP, in-cluster) |
 | `agent_id_file` | no | `/shared/client-id.txt` | Path to the file containing the agent's client ID |
 | `agent_id` | no | | Inline agent ID; when set, `agent_id_file` is ignored |
 | `polling_min_delay` | no | `10` | Minimum bundle polling interval in seconds |

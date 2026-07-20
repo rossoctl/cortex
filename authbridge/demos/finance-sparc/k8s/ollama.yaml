@@ -21,7 +21,7 @@ spec:
       labels:
         app.kubernetes.io/name: ollama
         app.kubernetes.io/part-of: finance-sparc-demo
-        kagenti.io/inject: disabled
+        rossoctl.io/inject: disabled
     spec:
       securityContext:
         runAsNonRoot: true

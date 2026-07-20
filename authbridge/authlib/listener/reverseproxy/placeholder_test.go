@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // rewritePlugin sets a new Authorization on the inbound context, simulating

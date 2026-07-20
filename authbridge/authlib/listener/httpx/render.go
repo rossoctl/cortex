@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // WriteRejection renders a pipeline.Reject Action onto an HTTP

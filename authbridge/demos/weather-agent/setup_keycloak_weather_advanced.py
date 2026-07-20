@@ -25,12 +25,12 @@ import time
 from keycloak import KeycloakAdmin, KeycloakGetError, KeycloakPostError
 
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "rossoctl")
 KEYCLOAK_ADMIN_USERNAME = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 
 SPIFFE_TRUST_DOMAIN = "localtest.me"
-UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "kagenti")
+UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "rossoctl")
 
 # Public client for automated tests (ROPC / direct access) — the UI client often
 # has direct access grants disabled.

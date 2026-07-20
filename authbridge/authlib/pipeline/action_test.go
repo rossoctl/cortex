@@ -35,7 +35,7 @@ func TestViolation_Render_DefaultBody(t *testing.T) {
 		Code:        "auth.missing-token",
 		Reason:      "Bearer required",
 		Description: "No Authorization header present",
-		Details:     map[string]any{"realm": "kagenti"},
+		Details:     map[string]any{"realm": "rossoctl"},
 		PluginName:  "jwt-validation",
 	}
 	status, headers, body := v.Render()
@@ -67,7 +67,7 @@ func TestViolation_Render_DefaultBody(t *testing.T) {
 	if !ok {
 		t.Fatalf("details not a map: %v", got["details"])
 	}
-	if details["realm"] != "kagenti" {
+	if details["realm"] != "rossoctl" {
 		t.Errorf("details.realm = %v", details["realm"])
 	}
 }
@@ -113,14 +113,14 @@ func TestViolation_Render_PreservesAndClonesHeaders(t *testing.T) {
 	// Use http.Header.Set so the key is canonicalized by the stdlib — this
 	// mirrors what a real plugin would do via the Challenge() helper.
 	origHeaders := http.Header{}
-	origHeaders.Set("WWW-Authenticate", `Bearer realm="kagenti"`)
+	origHeaders.Set("WWW-Authenticate", `Bearer realm="rossoctl"`)
 	v := &Violation{
 		Code:    "auth.missing-token",
 		Reason:  "bearer required",
 		Headers: origHeaders,
 	}
 	_, h, _ := v.Render()
-	if got := h.Get("WWW-Authenticate"); got != `Bearer realm="kagenti"` {
+	if got := h.Get("WWW-Authenticate"); got != `Bearer realm="rossoctl"` {
 		t.Errorf("WWW-Authenticate = %q", got)
 	}
 	if h.Get("Content-Type") == "" {
@@ -194,12 +194,12 @@ func TestDenyWithDetails(t *testing.T) {
 }
 
 func TestChallenge(t *testing.T) {
-	a := Challenge("kagenti", "Authorization required")
+	a := Challenge("rossoctl", "Authorization required")
 	status, h, _ := a.Violation.Render()
 	if status != 401 {
 		t.Errorf("status = %d", status)
 	}
-	if got := h.Get("WWW-Authenticate"); got != `Bearer realm="kagenti"` {
+	if got := h.Get("WWW-Authenticate"); got != `Bearer realm="rossoctl"` {
 		t.Errorf("WWW-Authenticate = %q", got)
 	}
 }

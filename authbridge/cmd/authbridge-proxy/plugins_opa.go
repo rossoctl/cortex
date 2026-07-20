@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/opa"
+import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/opa"

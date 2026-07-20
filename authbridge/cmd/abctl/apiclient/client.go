@@ -12,8 +12,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
 )
 
 // Client is a handle to a session API endpoint. Safe for concurrent use.

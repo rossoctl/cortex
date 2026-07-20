@@ -1,9 +1,9 @@
 # Weather Agent Demo with AuthBridge
 
 This guide walks through deploying the **Weather Service Agent** with **AuthBridge**
-using the **Kagenti UI** for agent and tool deployment. Infrastructure setup
+using the **Rossoctl UI** for agent and tool deployment. Infrastructure setup
 (webhook, Keycloak, ConfigMaps) is done via CLI, while the agent and tool are
-imported and deployed through the Kagenti dashboard.
+imported and deployed through the Rossoctl dashboard.
 
 This is the recommended **getting-started** demo for AuthBridge. It demonstrates
 inbound JWT validation and automatic identity registration with a simple agent
@@ -78,7 +78,7 @@ plugin pipeline in real time while chatting with the agent, see
 │  │   SPIRE (namespace:  │          │ KEYCLOAK (namespace: │                      │
 │  │       spire)         │          │     keycloak)        │                      │
 │  │                      │          │                      │                      │
-│  │  Provides SPIFFE     │          │  - kagenti realm     │                      │
+│  │  Provides SPIFFE     │          │  - rossoctl realm     │                      │
 │  │  identities (SVIDs)  │          │  - JWKS for inbound  │                      │
 │  │                      │          │    JWT validation    │                      │
 │  └──────────────────────┘          └──────────────────────┘                      │
@@ -87,16 +87,16 @@ plugin pipeline in real time while chatting with the agent, see
 
 ## Prerequisites
 
-Ensure you have completed the Kagenti platform setup as described in the
-[Installation Guide](https://github.com/kagenti/kagenti/blob/main/docs/install.md),
-including the Kagenti UI.
+Ensure you have completed the Rossoctl platform setup as described in the
+[Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md),
+including the Rossoctl UI.
 
 You should also have:
-- The Kagenti UI running at `http://kagenti-ui.localtest.me:8080`
+- The Rossoctl UI running at `http://rossoctl-ui.localtest.me:8080`
 - An LLM provider — either:
   - **Ollama** running locally with a model (e.g. `llama3.2:3b-instruct-fp16`), or
   - **OpenAI API key** (recommended for most reliable results; see
-    [agent-examples#173](https://github.com/kagenti/agent-examples/issues/173) for
+    [agent-examples#173](https://github.com/rossoctl/examples/issues/173) for
     known Ollama + crewai compatibility issues)
 
 ---
@@ -108,27 +108,27 @@ In **`team1`**: `authbridge-config`, `authbridge-runtime-config`, `spiffe-helper
 passthrough; inbound JWT uses issuer/signature checks).
 
 **`keycloak-admin-secret` is not in `team1`.** Operator 0.2+ keeps it in
-**`kagenti-system`** for client registration. `NotFound` in `team1` is expected:
+**`rossoctl-system`** for client registration. `NotFound` in `team1` is expected:
 
 ```bash
-kubectl get secret keycloak-admin-secret -n kagenti-system
+kubectl get secret keycloak-admin-secret -n rossoctl-system
 ```
 
-UI login: secret **`kagenti-test-user`** in namespace **`keycloak`** (`admin` + password).
-Realm **`kagenti`** is created by the platform installer.
+UI login: secret **`rossoctl-test-user`** in namespace **`keycloak`** (`admin` + password).
+Realm **`rossoctl`** is created by the platform installer.
 
 ---
 
-## Step 1: Import the Weather Tool via Kagenti UI
+## Step 1: Import the Weather Tool via Rossoctl UI
 
-1. Navigate to [Import Tool](http://kagenti-ui.localtest.me:8080/tools/import)
-   in the Kagenti UI.
+1. Navigate to [Import Tool](http://rossoctl-ui.localtest.me:8080/tools/import)
+   in the Rossoctl UI.
 
 2. In the **Namespace** drop-down, choose `team1`, fill *Tool Name* with `weather-tool` (do not use uppercase)
 
 3. Select **Deploy From Image** as the deployment method.
 
-4. For **Container Image**, use `ghcr.io/kagenti/agent-examples/weather_tool`.
+4. For **Container Image**, use `ghcr.io/rossoctl/examples/weather_tool`.
 
 5. Pick a corresponding **Image Tag**, replace the default `v0.0.1` with `latest`.
 
@@ -153,17 +153,17 @@ kubectl get pods -n team1 | grep weather-tool
 
 ---
 
-## Step 2: Import the Weather Agent via Kagenti UI
+## Step 2: Import the Weather Agent via Rossoctl UI
 
-1. Navigate to [Import Agent](http://kagenti-ui.localtest.me:8080/agents/import)
-   in the Kagenti UI.
+1. Navigate to [Import Agent](http://rossoctl-ui.localtest.me:8080/agents/import)
+   in the Rossoctl UI.
 
 2. In the **Namespace** drop-down, choose `team1`.
 
 3. Select **Build from Source** as the deployment method.
 
 4. Under **Source Repository** select:
-   - **Git Repository URL**: `https://github.com/kagenti/agent-examples`
+   - **Git Repository URL**: `https://github.com/rossoctl/examples`
    - **Git Branch or Tag**: `main`
    - **Select Agent**: `Weather Service Agent`
    - **Source Subfolder**: `a2a/weather_service`
@@ -184,8 +184,8 @@ kubectl get pods -n team1 | grep weather-tool
 
 11. Under **Environment Variables**, click **Import from File/URL**,
     Select **From URL** and provide the **URL** from this repo:
-    - For Ollama: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/weather_service/.env.ollama`
-    - For OpenAI: `https://raw.githubusercontent.com/kagenti/agent-examples/refs/heads/main/a2a/weather_service/.env.openai`
+    - For Ollama: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/weather_service/.env.ollama`
+    - For OpenAI: `https://raw.githubusercontent.com/rossoctl/examples/refs/heads/main/a2a/weather_service/.env.openai`
     - Click **Fetch & Parse** — this populates all environment variables including
       LLM settings and `MCP_URL`. No manual editing is needed.
     - Click **Import** to set all the env. variables.
@@ -236,14 +236,14 @@ weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 ```
 
 > **Note:** AuthBridge ships as a single combined sidecar image (since
-> kagenti-extensions#411). `weather-service` runs `agent` + the combined
+> rossocortex#411). `weather-service` runs `agent` + the combined
 > AuthBridge sidecar — `2/2` — regardless of whether SPIRE identity is
 > enabled. The `spiffe-helper` is bundled inside the combined image and
 > activated per workload via `SPIRE_ENABLED` (driven by the
-> `kagenti.io/spire: enabled` label); it is not a separate container. In
+> `rossoctl.io/spire: enabled` label); it is not a separate container. In
 > `envoy-sidecar` mode the pod is still `2/2` (`agent` + the combined
 > sidecar) plus a `proxy-init` init container for iptables setup. See the
-> [AuthBridge deployment guide](https://github.com/kagenti/kagenti/blob/main/docs/authbridge/deployment-guide.md)
+> [AuthBridge deployment guide](https://github.com/rossoctl/rossoctl/blob/main/docs/authbridge/deployment-guide.md)
 > for the full mode/label reference.
 
 ### Verify injected containers
@@ -269,14 +269,14 @@ the combined sidecar, not as a separate container.
 
 ### Check operator-managed client registration
 
-After kagenti-extensions#411 / kagenti-operator#361, client registration runs
-in the kagenti-operator (outside the workload pod). Verify the resulting
+After rossocortex#411 / operator#361, client registration runs
+in the operator (outside the workload pod). Verify the resulting
 Secret is mounted into the agent's sidecar:
 
 ```bash
 kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service \
   -o jsonpath='{.items[0].spec.volumes[?(@.secret)].secret.secretName}'
-# Expect a Secret name starting with: kagenti-keycloak-client-credentials-
+# Expect a Secret name starting with: rossoctl-keycloak-client-credentials-
 ```
 
 Inspect the actual SPIFFE-derived client ID written to /shared/client-id.txt:
@@ -289,8 +289,8 @@ kubectl exec deploy/weather-service -n team1 -c "$SIDECAR" -- cat /shared/client
 ```
 
 Expected — just the SPIFFE ID (the `Created Keycloak client …` log line
-now lives in the kagenti-operator's `kagenti-controller-manager`
-deployment in `kagenti-system`, not the workload pod):
+now lives in the operator's `rossoctl-controller-manager`
+deployment in `rossoctl-system`, not the workload pod):
 
 ```
 spiffe://localtest.me/ns/team1/sa/weather-service
@@ -299,7 +299,7 @@ spiffe://localtest.me/ns/team1/sa/weather-service
 To follow the operator-side registration:
 
 ```bash
-kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+kubectl logs -n rossoctl-system deployment/rossoctl-controller-manager \
   | grep -i clientregistration | tail -20
 ```
 
@@ -372,14 +372,14 @@ Otherwise, add the annotation after deployment:
 
 ```bash
 kubectl patch deployment weather-service -n team1 --type=merge -p='
-{"spec":{"template":{"metadata":{"annotations":{"kagenti.io/outbound-ports-exclude":"11434"}}}}}'
+{"spec":{"template":{"metadata":{"annotations":{"rossoctl.io/outbound-ports-exclude":"11434"}}}}}'
 kubectl rollout status deployment/weather-service -n team1 --timeout=120s
 ```
 
 ### Option B: OpenAI
 
 Verify the OpenAI secret exists (see the prerequisite note in
-[Step 2](#step-2-import-the-weather-agent-via-kagenti-ui)):
+[Step 2](#step-2-import-the-weather-agent-via-rossoctl-ui)):
 
 ```bash
 kubectl get secret openai-secret -n team1
@@ -405,9 +405,9 @@ OPENAI_API_KEY=sk-...
 
 ---
 
-## Step 5: Chat via Kagenti UI
+## Step 5: Chat via Rossoctl UI
 
-1. Navigate to the **Agent Catalog** in the Kagenti UI.
+1. Navigate to the **Agent Catalog** in the Rossoctl UI.
 2. Select the `team1` namespace.
 3. Under **Available Agents**, select `weather-service` and click **View Details**.
 4. Verify the **Agent Card** is visible (this confirms the agent is running and
@@ -416,7 +416,7 @@ OPENAI_API_KEY=sk-...
 6. The agent should respond with current weather information.
 
 > **Troubleshooting:** If UI chat returns a `401`, verify that both the UI and
-> AuthBridge are configured against the same `kagenti` realm. You can also use
+> AuthBridge are configured against the same `rossoctl` realm. You can also use
 > [Step 6: Test via CLI](#step-6-test-via-cli) to test the AuthBridge flow
 > independently.
 
@@ -478,8 +478,8 @@ kubectl exec -it test-client -n team1 -- sh
 Inside the pod, get credentials and send a request:
 
 ```bash
-# Get a Keycloak admin token from the kagenti realm
-ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token \
+# Get a Keycloak admin token from the rossoctl realm
+ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "client_id=admin-cli" \
   -d "username=admin" \
@@ -487,10 +487,10 @@ ADMIN_TOKEN=$(curl -s http://keycloak-service.keycloak.svc:8080/realms/kagenti/p
 
 echo "Admin token length: ${#ADMIN_TOKEN}"
 
-# Look up the agent's client in the kagenti realm
+# Look up the agent's client in the rossoctl realm
 SPIFFE_ID="spiffe://localtest.me/ns/team1/sa/weather-service"
 CLIENTS=$(curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
-  "http://keycloak-service.keycloak.svc:8080/admin/realms/kagenti/clients" \
+  "http://keycloak-service.keycloak.svc:8080/admin/realms/rossoctl/clients" \
   --data-urlencode "clientId=$SPIFFE_ID" --get)
 CLIENT_ID=$(echo "$CLIENTS" | jq -r ".[0].clientId")
 CLIENT_SECRET=$(echo "$CLIENTS" | jq -r ".[0].secret")
@@ -500,7 +500,7 @@ echo "Secret length: ${#CLIENT_SECRET}"
 
 # Get an OAuth token for the agent
 TOKEN=$(curl -s -X POST \
-  "http://keycloak-service.keycloak.svc:8080/realms/kagenti/protocol/openid-connect/token" \
+  "http://keycloak-service.keycloak.svc:8080/realms/rossoctl/protocol/openid-connect/token" \
   -d "grant_type=client_credentials" \
   --data-urlencode "client_id=$CLIENT_ID" \
   --data-urlencode "client_secret=$CLIENT_SECRET" | jq -r ".access_token")
@@ -547,7 +547,7 @@ kubectl logs deployment/weather-service -n team1 -c authbridge-proxy 2>&1 | grep
 Expected:
 
 ```
-level=INFO msg="inbound authorized" subject=... clientID=kagenti
+level=INFO msg="inbound authorized" subject=... clientID=rossoctl
 ```
 
 > **Tip:** For detailed debug logs (audience, scopes, request path), enable debug
@@ -574,12 +574,12 @@ Keycloak to register the client.
 **Fix:**
 
 ```bash
-# 1. Verify the keycloak-admin-secret exists (operator 0.2+ keeps it in kagenti-system)
-kubectl get secret keycloak-admin-secret -n kagenti-system
+# 1. Verify the keycloak-admin-secret exists (operator 0.2+ keeps it in rossoctl-system)
+kubectl get secret keycloak-admin-secret -n rossoctl-system
 
 # 2. Verify the authbridge-config ConfigMap has the correct realm
 kubectl get configmap authbridge-config -n team1 -o jsonpath='{.data.KEYCLOAK_REALM}'
-# Should show: kagenti
+# Should show: rossoctl
 
 # 3. Restart the agent to retry registration
 kubectl rollout restart deployment/weather-service -n team1
@@ -613,7 +613,7 @@ ConfigMap has the correct values:
 kubectl get configmap envoy-config -n team1 -o jsonpath='{.data.envoy\.yaml}' | grep "timeout:"
 ```
 
-If you see `30s` values instead of `300s`, reinstall Kagenti (the installer
+If you see `30s` values instead of `300s`, reinstall Rossoctl (the installer
 creates the correct defaults) and restart the agent:
 
 ```bash
@@ -646,7 +646,7 @@ kubectl logs deployment/weather-service -n team1 -c agent
 
 # If the issue is operator-managed client registration not finishing,
 # the workload pod waits on /shared/client-{id,secret}.txt. Inspect:
-kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
+kubectl logs -n rossoctl-system deployment/rossoctl-controller-manager \
   | grep -iE "clientregistration|weather-service" | tail -20
 ```
 
@@ -654,13 +654,13 @@ kubectl logs -n kagenti-system deployment/kagenti-controller-manager \
 
 ## Switching modes
 
-After kagenti-operator#361 the cluster default is **proxy-sidecar**
+After operator#361 the cluster default is **proxy-sidecar**
 (forward + reverse HTTP proxies, no Envoy, no iptables, no init container).
 The operator resolves mode per workload from this chain:
 
 1. `AgentRuntime.Spec.AuthBridgeMode` on the workload's CR (canonical).
 2. `mode:` field on the namespace-level `authbridge-runtime-config` ConfigMap.
-3. Deprecated `kagenti.io/authbridge-mode` pod annotation (still honored).
+3. Deprecated `rossoctl.io/authbridge-mode` pod annotation (still honored).
 4. Cluster default — `proxy-sidecar`.
 
 ### Switch to envoy-sidecar mode
@@ -678,7 +678,7 @@ Or, on workloads without an AgentRuntime CR, the deprecated annotation:
 
 ```bash
 kubectl patch deployment weather-service -n team1 --type=merge \
-  -p '{"spec":{"template":{"metadata":{"annotations":{"kagenti.io/authbridge-mode":"envoy-sidecar"}}}}}'
+  -p '{"spec":{"template":{"metadata":{"annotations":{"rossoctl.io/authbridge-mode":"envoy-sidecar"}}}}}'
 kubectl rollout status deployment weather-service -n team1 --timeout=120s
 ```
 
@@ -713,7 +713,7 @@ kubectl rollout restart deployment weather-service -n team1
 | Ollama port exclusion | Not needed | Required (annotation) |
 
 > **Note:** Proxy-sidecar mode requires the agent to read the `PORT` env var.
-> All agents in [kagenti/agent-examples](https://github.com/kagenti/agent-examples)
+> All agents in [rossoctl/examples](https://github.com/rossoctl/examples)
 > support this since v0.1.0-alpha.11.
 
 ---
@@ -753,7 +753,7 @@ Example (Info lines are always visible; Debug lines appear after SIGUSR1 toggle)
 
 ```
 level=DEBUG msg="validating inbound JWT" path=/ expectedAudience=spiffe://localtest.me/ns/team1/sa/weather-service
-level=INFO  msg="inbound authorized" subject=... clientID=kagenti
+level=INFO  msg="inbound authorized" subject=... clientID=rossoctl
 level=DEBUG msg="inbound authorized details" path=/ audience="[spiffe://...]" scopes="[openid ...]"
 level=INFO  msg="outbound passthrough" host=weather-tool-mcp.team1.svc.cluster.local:8000 reason="no matching route"
 ```
@@ -762,7 +762,7 @@ level=INFO  msg="outbound passthrough" host=weather-tool-mcp.team1.svc.cluster.l
 
 ## Cleanup
 
-### Via Kagenti UI
+### Via Rossoctl UI
 
 1. Go to the **Agent Catalog**, find `weather-service`, and click **Delete**.
 2. Go to the **Tool Catalog**, find `weather-tool`, and click **Delete**.

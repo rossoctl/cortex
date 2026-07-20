@@ -93,7 +93,7 @@ func New(patterns []string) (*Matcher, error) {
 
 // Match reports whether host matches any configured pattern. Strips
 // the port (everything from the first colon) before comparing so
-// operators can write "otel-collector.kagenti-system.svc.cluster.local"
+// operators can write "otel-collector.rossoctl-system.svc.cluster.local"
 // without worrying which port the upstream listens on. Returns false
 // for the nil Matcher and for the empty host.
 //

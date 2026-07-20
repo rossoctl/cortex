@@ -1,4 +1,4 @@
-# Echo demo Makefile — credential placeholder-swap, kagenti-UI flow.
+# Echo demo Makefile — credential placeholder-swap, rossoctl-UI flow.
 #
 # End-to-end:
 #
@@ -8,11 +8,11 @@
 #
 # Unlike the IBAC demo, this demo needs a freshly-built authbridge sidecar
 # image: credential placeholder swap is a new authbridge capability, so we
-# build the proxy from the repo root and point the kagenti platform config
+# build the proxy from the repo root and point the rossoctl platform config
 # at the local tag before deploying the agent.
 #
 # Prerequisites:
-#   - kagenti installed on a kind cluster (this is the operator-flow demo)
+#   - rossoctl installed on a kind cluster (this is the operator-flow demo)
 #   - kubectl, kind, podman/docker, python3 + PyYAML
 #   - python-keycloak (for setup-keycloak; pip3 install --user python-keycloak)
 
@@ -29,7 +29,7 @@ help:  ## Show this menu (default)
 	@printf "\nEcho demo — credential placeholder-swap, operator-injected agent in team1.\n\n"
 	@printf "Typical run:\n"
 	@printf "  \033[1mmake demo-echo\033[0m\n"
-	@printf "  ... chat with echo-agent in the kagenti UI ...\n"
+	@printf "  ... chat with echo-agent in the rossoctl UI ...\n"
 	@printf "  \033[1mmake show-result\033[0m\n"
 	@printf "  \033[1mmake undeploy\033[0m\n\n"
 	@printf "Targets:\n"
@@ -37,15 +37,15 @@ help:  ## Show this menu (default)
 	     /^[a-zA-Z_-]+:.*## / { printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2 }' \
 	     $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
-	@printf "  \033[36m%-22s\033[0m %s\n" "KIND_CLUSTER_NAME" "kind cluster to load images into (default: kagenti)"
+	@printf "  \033[36m%-22s\033[0m %s\n" "KIND_CLUSTER_NAME" "kind cluster to load images into (default: rossoctl)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "NAMESPACE"         "agent namespace (default: team1)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "AGENT_NAME"        "deployment name (default: echo-agent)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "SIDECAR_IMAGE"     "authbridge sidecar tag (default: authbridge:placeholder-dev)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "CONTAINER_RUNTIME" "podman or docker (auto-detected)"
-	@printf "\nPrerequisites: kagenti install on a kind cluster, kubectl/kind/podman,\n"
+	@printf "\nPrerequisites: rossoctl install on a kind cluster, kubectl/kind/podman,\n"
 	@printf "python3 + PyYAML, and python-keycloak for setup-keycloak.\n\n"
 
-KIND_CLUSTER_NAME ?= kagenti
+KIND_CLUSTER_NAME ?= rossoctl
 KIND_NODE         ?= $(KIND_CLUSTER_NAME)-control-plane
 NAMESPACE         ?= team1
 AGENT_NAME        ?= echo-agent
@@ -77,15 +77,15 @@ LOAD_MARKER := $(STAMP_DIR)/.loaded-this-run
 
 # ---------- Pre-flight ----------
 
-preflight:  ## Verify kagenti is installed + tools are available
-	@kubectl get ns kagenti-system >/dev/null 2>&1 || { \
-	  echo "ERROR: namespace 'kagenti-system' not found — kagenti doesn't appear to be installed."; \
-	  echo "       Install kagenti first (see https://github.com/kagenti/kagenti/blob/main/docs/install.md)"; \
+preflight:  ## Verify rossoctl is installed + tools are available
+	@kubectl get ns rossoctl-system >/dev/null 2>&1 || { \
+	  echo "ERROR: namespace 'rossoctl-system' not found — rossoctl doesn't appear to be installed."; \
+	  echo "       Install rossoctl first (see https://github.com/rossoctl/rossoctl/blob/main/docs/install.md)"; \
 	  exit 1; \
 	}
 	@kubectl get ns $(NAMESPACE) >/dev/null 2>&1 || { \
-	  echo "ERROR: namespace '$(NAMESPACE)' not found — kagenti's agent namespace is missing."; \
-	  echo "       Did the kagenti install complete? Try: kubectl get ns | grep team"; \
+	  echo "ERROR: namespace '$(NAMESPACE)' not found — rossoctl's agent namespace is missing."; \
+	  echo "       Did the rossoctl install complete? Try: kubectl get ns | grep team"; \
 	  exit 1; \
 	}
 	@command -v kind >/dev/null 2>&1 || { echo "ERROR: kind not installed"; exit 1; }
@@ -117,18 +117,18 @@ load-sidecar:  ## Load the sidecar image into the kind cluster
 	@$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images tag \
 	    localhost/$(SIDECAR_IMAGE) docker.io/library/$(SIDECAR_IMAGE) >/dev/null 2>&1 || true
 
-# Point the kagenti platform config at our locally-built sidecar tag so
+# Point the rossoctl platform config at our locally-built sidecar tag so
 # the operator's injecting webhook uses it for echo-agent. We edit the
 # `images.authbridge` key inside the config.yaml of the
-# `kagenti-platform-config` ConfigMap (kagenti-system), re-apply it, and
+# `rossoctl-platform-config` ConfigMap (rossoctl-system), re-apply it, and
 # roll the controller so the new value is picked up.
-override-sidecar-image:  ## Point kagenti's platform config at the local sidecar image
-	@echo "[*] Overriding images.authbridge -> $(SIDECAR_IMAGE) in kagenti-platform-config ..."
-	@CURRENT=$$(kubectl -n kagenti-system get configmap kagenti-platform-config \
+override-sidecar-image:  ## Point rossoctl's platform config at the local sidecar image
+	@echo "[*] Overriding images.authbridge -> $(SIDECAR_IMAGE) in rossoctl-platform-config ..."
+	@CURRENT=$$(kubectl -n rossoctl-system get configmap rossoctl-platform-config \
 	    -o jsonpath='{.data.config\.yaml}'); \
 	if [ -z "$$CURRENT" ]; then \
-	  echo "ERROR: could not read config.yaml from kagenti-platform-config (kagenti-system)."; \
-	  echo "       Is kagenti installed? kubectl -n kagenti-system get cm kagenti-platform-config"; \
+	  echo "ERROR: could not read config.yaml from rossoctl-platform-config (rossoctl-system)."; \
+	  echo "       Is rossoctl installed? kubectl -n rossoctl-system get cm rossoctl-platform-config"; \
 	  exit 1; \
 	fi; \
 	MERGED=$$(printf '%s' "$$CURRENT" | SIDECAR_IMAGE='$(SIDECAR_IMAGE)' python3 -c 'import os, sys, yaml; \
@@ -136,12 +136,12 @@ c = yaml.safe_load(sys.stdin) or {}; \
 c.setdefault("images", {})["authbridge"] = os.environ["SIDECAR_IMAGE"]; \
 sys.stdout.write(yaml.safe_dump(c, default_flow_style=False, sort_keys=False))'); \
 	TMP=$$(mktemp); printf '%s' "$$MERGED" >"$$TMP"; \
-	kubectl -n kagenti-system create configmap kagenti-platform-config \
+	kubectl -n rossoctl-system create configmap rossoctl-platform-config \
 	    --from-file=config.yaml="$$TMP" --dry-run=client -o yaml | kubectl apply -f -; \
 	rm -f "$$TMP"
-	@echo "[*] Restarting the kagenti controller to pick up the new sidecar image ..."
-	kubectl -n kagenti-system rollout restart deploy/kagenti-controller-manager
-	kubectl -n kagenti-system rollout status deploy/kagenti-controller-manager --timeout=120s
+	@echo "[*] Restarting the rossoctl controller to pick up the new sidecar image ..."
+	kubectl -n rossoctl-system rollout restart deploy/rossoctl-controller-manager
+	kubectl -n rossoctl-system rollout status deploy/rossoctl-controller-manager --timeout=120s
 
 # ---------- Build demo images ----------
 
@@ -251,8 +251,8 @@ demo-echo: preflight build-sidecar load-sidecar override-sidecar-image build-ima
 	@echo "╔══════════════════════════════════════════════════════════╗"
 	@echo "║ ✅ Echo placeholder-swap demo agent ready                ║"
 	@echo "║                                                          ║"
-	@echo "║ Open the kagenti UI:                                     ║"
-	@echo "║   http://kagenti-ui.localtest.me:8080                    ║"
+	@echo "║ Open the rossoctl UI:                                     ║"
+	@echo "║   http://rossoctl-ui.localtest.me:8080                    ║"
 	@echo "║                                                          ║"
 	@echo "║ Log in as alice / alice123 (log out + back in if you    ║"
 	@echo "║ were already signed in — new audience scope).            ║"
@@ -277,7 +277,7 @@ show-result:  ## Tail echo-upstream logs (the exchanged credential it received)
 
 # ---------- Cleanup ----------
 
-undeploy:  ## Remove demo resources from team1 (kagenti install untouched)
+undeploy:  ## Remove demo resources from team1 (rossoctl install untouched)
 	-kubectl -n $(NAMESPACE) delete -f k8s/agent.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/upstream.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete agentruntime echo-agent --ignore-not-found
@@ -286,7 +286,7 @@ undeploy:  ## Remove demo resources from team1 (kagenti install untouched)
 	@echo "      kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(AGENT_NAME)"
 	@rm -rf $(STAMP_DIR)
 	@echo "[*] Demo resources removed from $(NAMESPACE)."
-	@echo "    The kagenti install + the namespace itself are untouched."
+	@echo "    The rossoctl install + the namespace itself are untouched."
 
 # ---------- Diagnostics ----------
 

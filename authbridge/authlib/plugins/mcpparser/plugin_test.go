@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // configured returns an MCPParser with paths configured. Most existing

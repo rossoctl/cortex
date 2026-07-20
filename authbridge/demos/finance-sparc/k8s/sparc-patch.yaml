@@ -24,7 +24,7 @@ outbound_append:
       reflector_endpoint: "${SPARC_REFLECTOR_ENDPOINT}"
 
       # Gate the MCP tools/call and return the clarification as an MCP tool
-      # result (the kagenti norm). Use "inference" for non-MCP agents.
+      # result (the rossoctl norm). Use "inference" for non-MCP agents.
       enforcement: "mcp"
 
       # fast_track = hallucination + function-selection checks.

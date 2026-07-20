@@ -35,7 +35,7 @@ off), the plugin **skips** (`no_inference_context`) rather than reflect on parti
 
 The verdict is returned to the agent in the shape it expects, selected by `enforcement`:
 
-- **`mcp` (default — the kagenti norm).** Gate the outbound MCP `tools/call`. The tool call
+- **`mcp` (default — the rossoctl norm).** Gate the outbound MCP `tools/call`. The tool call
   comes from the MCP request; conversation + tool specs are correlated from the session's most
   recent inference request (robust to LLM streaming). On a reflected reject, return SPARC's
   clarification as a **JSON-RPC MCP tool result** (`Reject` + `Violation{Status:200, Body}`);
@@ -76,7 +76,7 @@ hits an unreachable reflector (and falls back to `fail_policy`). It's one comman
 ```bash
 cd authbridge/sparc-service/deploy
 export WX_API_KEY=... WX_PROJECT_ID=...   # or PROVIDER=ollama, openai, ...
-make install                              # deploys into kagenti-system by default
+make install                              # deploys into rossoctl-system by default
 ```
 
 See [`sparc-service/deploy/README.md`](../sparc-service/deploy/README.md) for providers, the
@@ -91,7 +91,7 @@ pipeline:
     plugins:
       - name: sparc
         config:
-          reflector_endpoint: "http://sparc-service.kagenti-system.svc:8090"
+          reflector_endpoint: "http://sparc-service.rossoctl-system.svc:8090"
           enforcement: "mcp"             # mcp | inference
           track: "fast_track"            # fast_track|slow_track|syntax|spec_free|transformations_only
           on_reject_action: "reflect"    # observe | reflect | deny
@@ -156,7 +156,7 @@ explanations/corrections.
 
 The reflection service is an **in-cluster backend** — same trust model as the authbridge session
 API (`:9094`): no ingress, never exposed publicly. Its `/reflect` endpoint is unauthenticated by
-default and runs outside the agent-side ambient mesh (`kagenti.io/inject: disabled`), so it makes
+default and runs outside the agent-side ambient mesh (`rossoctl.io/inject: disabled`), so it makes
 its own egress to the LLM provider. Treat the cluster network boundary as the control: restrict
 who can reach it with a `NetworkPolicy` (allow only the authbridge sidecars), since any pod that
 can POST to `/reflect` can trigger LLM calls billed to the configured credentials. For an extra

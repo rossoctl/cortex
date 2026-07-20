@@ -1,9 +1,9 @@
-# finance-sparc demo agent — operator-injected, kagenti-UI-discoverable.
+# finance-sparc demo agent — operator-injected, rossoctl-UI-discoverable.
 #
 # Required labels (same contract as demos/ibac/k8s/agent.yaml):
-#   kagenti.io/inject: enabled   — operator's webhook injects authbridge
-#   kagenti.io/spire: disabled   — demo doesn't depend on SPIRE identity
-#   protocol.kagenti.io/a2a: ""  — declares A2A for the chat flow
+#   rossoctl.io/inject: enabled   — operator's webhook injects authbridge
+#   rossoctl.io/spire: disabled   — demo doesn't depend on SPIRE identity
+#   protocol.rossoctl.io/a2a: ""  — declares A2A for the chat flow
 #
 # The operator port-steals (containerPort 8000 → agent on 8001, PORT and
 # HTTP_PROXY set so outbound flows through the injected sidecar's forward
@@ -24,7 +24,7 @@ metadata:
   labels:
     app.kubernetes.io/name: finance-agent
     app.kubernetes.io/part-of: finance-sparc-demo
-    protocol.kagenti.io/a2a: ""
+    protocol.rossoctl.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -35,9 +35,9 @@ spec:
       labels:
         app.kubernetes.io/name: finance-agent
         app.kubernetes.io/part-of: finance-sparc-demo
-        kagenti.io/inject: enabled
-        kagenti.io/spire: disabled
-        protocol.kagenti.io/a2a: ""
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: disabled
+        protocol.rossoctl.io/a2a: ""
     spec:
       serviceAccountName: finance-agent
       securityContext:
@@ -105,7 +105,7 @@ spec:
 # AgentRuntime triggers operator-managed Keycloak client registration
 # (the Secret the authbridge sidecar mounts at /shared/) and auto-creation
 # of an AgentCard CR for the agent deployment.
-apiVersion: agent.kagenti.dev/v1alpha1
+apiVersion: agent.rossoctl.dev/v1alpha1
 kind: AgentRuntime
 metadata:
   name: finance-agent

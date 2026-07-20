@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
 )
 
 func mintTestContext(store pipeline.SharedStore) *pipeline.Context {

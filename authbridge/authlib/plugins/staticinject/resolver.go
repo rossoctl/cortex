@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"path/filepath"
 
-	credconfig "github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
+	credconfig "github.com/rossoctl/rossocortex/authbridge/authlib/config"
 )
 
 // Resolver looks up a credential value by key. ok=false means the key is

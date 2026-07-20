@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/llmclient"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/llmclient"
 )
 
 // These tests cover the IBAC-specific layer on top of llmclient:

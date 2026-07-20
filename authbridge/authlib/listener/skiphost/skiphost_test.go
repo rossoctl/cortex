@@ -85,8 +85,8 @@ func TestNew_AcceptsLeadingStar(t *testing.T) {
 }
 
 func TestMatch_StripsPort(t *testing.T) {
-	m, _ := New([]string{"otel-collector.kagenti-system.svc.cluster.local"})
-	if !m.Match("otel-collector.kagenti-system.svc.cluster.local:8335") {
+	m, _ := New([]string{"otel-collector.rossoctl-system.svc.cluster.local"})
+	if !m.Match("otel-collector.rossoctl-system.svc.cluster.local:8335") {
 		t.Error("port-stripping failed: pattern without :port should match host with :port")
 	}
 }
@@ -100,7 +100,7 @@ func TestMatch_GlobSingleLabel(t *testing.T) {
 	}{
 		{"otel-collector", true},
 		{"otel-collector-v2", true},
-		{"otel-collector.kagenti-system.svc.cluster.local", false}, // separator stops at .
+		{"otel-collector.rossoctl-system.svc.cluster.local", false}, // separator stops at .
 		{"foo-otel-collector", false},
 	}
 	for _, tc := range cases {
@@ -112,11 +112,11 @@ func TestMatch_GlobSingleLabel(t *testing.T) {
 
 func TestMatch_GlobLeadingWildcard(t *testing.T) {
 	// `*.svc.cluster.local` → single-label prefix on a fixed suffix.
-	m, _ := New([]string{"*.kagenti-system.svc.cluster.local"})
-	if !m.Match("otel-collector.kagenti-system.svc.cluster.local") {
+	m, _ := New([]string{"*.rossoctl-system.svc.cluster.local"})
+	if !m.Match("otel-collector.rossoctl-system.svc.cluster.local") {
 		t.Error("leading-* should match a single-label prefix on the FQDN")
 	}
-	if m.Match("a.b.kagenti-system.svc.cluster.local") {
+	if m.Match("a.b.rossoctl-system.svc.cluster.local") {
 		t.Error("leading-* must NOT match a two-label prefix (separator semantics)")
 	}
 }

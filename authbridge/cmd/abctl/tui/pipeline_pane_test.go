@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
 )
 
 // TestRebuildPipelineTable_AllRowsMatchColumnCount is a regression guard:

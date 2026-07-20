@@ -1,17 +1,17 @@
 # Weather Agent Walkthrough with `abctl`
 
-This demo extends the standard [Weather Agent demo](./demo-ui.md) with a live view of AuthBridge's plugin pipeline using **`abctl`**, the terminal UI that reads AuthBridge's session API. You'll send chat messages from the Kagenti UI, then watch the request flow through inbound JWT validation → protocol parsers → outbound MCP calls → LLM inference → response — all with token counts, caller identity, request/response pairing, and request-scoped pipeline state visible in real time.
+This demo extends the standard [Weather Agent demo](./demo-ui.md) with a live view of AuthBridge's plugin pipeline using **`abctl`**, the terminal UI that reads AuthBridge's session API. You'll send chat messages from the Rossoctl UI, then watch the request flow through inbound JWT validation → protocol parsers → outbound MCP calls → LLM inference → response — all with token counts, caller identity, request/response pairing, and request-scoped pipeline state visible in real time.
 
 ## Prerequisites
 
 Before starting, complete these in order:
 
-1. **Install Kagenti** (operator + Keycloak + UI + SPIFFE/SPIRE): [Kagenti Installation Guide](https://github.com/kagenti/kagenti/blob/main/docs/install.md). Works on Kind (local) or OpenShift.
-2. **Deploy the Weather Agent + Tool** through the Kagenti UI: [Weather Agent Demo with AuthBridge](./demo-ui.md). At the end of that demo you'll have:
+1. **Install Rossoctl** (operator + Keycloak + UI + SPIFFE/SPIRE): [Rossoctl Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md). Works on Kind (local) or OpenShift.
+2. **Deploy the Weather Agent + Tool** through the Rossoctl UI: [Weather Agent Demo with AuthBridge](./demo-ui.md). At the end of that demo you'll have:
    - `weather-service` agent running in the `team1` namespace (with AuthBridge sidecars).
    - `weather-tool-mcp` MCP tool running in `team1`.
    - Keycloak configured with the agent's `agent-team1-weather-service-aud` scope.
-   - The Kagenti UI reachable at its route, with a working chat tab for the weather agent.
+   - The Rossoctl UI reachable at its route, with a working chat tab for the weather agent.
 
 Verify by sending one chat message and getting a weather response. Once that works, you're ready for this walkthrough.
 
@@ -39,11 +39,11 @@ Verify by sending one chat message and getting a weather response. Once that wor
 
 ## 1. Build `abctl`
 
-`abctl` lives in the `kagenti-extensions` repo. Build it once:
+`abctl` lives in the `rossocortex` repo. Build it once:
 
 ```sh
-git clone https://github.com/kagenti/kagenti-extensions.git
-cd kagenti-extensions/authbridge/cmd/abctl
+git clone https://github.com/rossoctl/rossocortex.git
+cd rossocortex/authbridge/cmd/abctl
 go build .
 ```
 
@@ -74,11 +74,11 @@ Esc backs you out to the Pods pane (and tears down the port-forward) so
 you can switch pods without quitting. `--endpoint http://...` skips the
 picker entirely if you already have a port-forward running yourself.
 
-## 3. Send a chat message from the Kagenti UI
+## 3. Send a chat message from the Rossoctl UI
 
 In a browser:
 
-1. Open the Kagenti UI (route from `kubectl get route kagenti-ui -n kagenti-system` or port-forward).
+1. Open the Rossoctl UI (route from `kubectl get route rossoctl-ui -n rossoctl-system` or port-forward).
 2. Navigate to the Weather Service agent's chat.
 3. Type a question: *"What's the weather in New York?"*
 4. Wait for the agent to reply.
@@ -104,7 +104,7 @@ Select the row with `↑`/`↓` (or `j`/`k`) and press `Enter` to open the **Eve
 ╭─ abctl · 4647e888-db99-4739-926e-8bcceeb237c6 ─────────────────────────╮
 │ ┌─ IDENTITY ─────────────────────────────────────────────────────────┐ │
 │ │ subject  alice                                                      │ │
-│ │ client   kagenti                                                    │ │
+│ │ client   rossoctl                                                    │ │
 │ │ scopes   openid, email, profile +1 more                             │ │
 │ └─────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
@@ -127,7 +127,7 @@ Select the row with `↑`/`↓` (or `j`/`k`) and press `Enter` to open the **Eve
 
 What to notice:
 
-- **IDENTITY banner** at the top of the pane — the caller subject (`alice` from Keycloak), the OAuth client (`kagenti`, the UI), and the scopes their token carried. This is per-session, extracted from the inbound JWT.
+- **IDENTITY banner** at the top of the pane — the caller subject (`alice` from Keycloak), the OAuth client (`rossoctl`, the UI), and the scopes their token carried. This is per-session, extracted from the inbound JWT.
 - **Event rows**:
   - `DIR` — `in` = inbound (caller → agent), `out` = outbound (agent → tool or LLM).
   - `PHASE` — `req` for request, `└resp` for the matching response (the `└` visually connects a response row back to its paired request).
@@ -257,7 +257,7 @@ Press `p` to pause stream rendering. The SSE connection stays open (events don't
 | Footer shows `✗ failed: …` | `/v1/sessions` fetch failed — check the port-forward is still up and the pod is Ready. |
 | Sessions appear and disappear | The pod restarted (session store is in-memory). |
 | `TOKENS` shows `—` on a session | No inference events in that bucket yet, or the server is older than the token-aggregation change (client-side fallback sums from streamed events). |
-| Multiple session buckets for one conversation | The UI backend isn't forwarding the A2A `contextId` on subsequent turns. See [kagenti#1481](https://github.com/kagenti/kagenti/pull/1481) for the fix. |
+| Multiple session buckets for one conversation | The UI backend isn't forwarding the A2A `contextId` on subsequent turns. See [rossoctl#1481](https://github.com/rossoctl/rossoctl/pull/1481) for the fix. |
 | Events missing identity | `jwt-validation` didn't run on this code path (e.g. bypass path) or the caller didn't send a Bearer token. |
 | IDENTITY banner reports `subject  —` | The JWT had no `sub` claim (common for Keycloak public-client tokens). Field is still extracted from `azp` / scopes. |
 

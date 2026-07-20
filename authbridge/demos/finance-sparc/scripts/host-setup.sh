@@ -16,7 +16,7 @@
 # so no host-Ollama reachability or host networking is required.
 set -euo pipefail
 
-CLUSTER=${KIND_CLUSTER_NAME:-kagenti}
+CLUSTER=${KIND_CLUSTER_NAME:-rossoctl}
 NODE="${CLUSTER}-control-plane"
 PROBE_URL=${EGRESS_PROBE_URL:-https://us-south.ml.cloud.ibm.com}
 say() { printf '\033[1m%s\033[0m\n' "$*"; }

@@ -345,8 +345,8 @@ package pipeline_test
 import (
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
 )
 
 // shared.Store must satisfy pipeline.SharedStore so listeners can inject it.
@@ -426,9 +426,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
 )
 
 // fakeAuth lets us drive OnRequest's allow path without real JWKS.
@@ -543,7 +543,7 @@ At the end of `Configure`, immediately before `return nil` (line 293), add:
 	}
 ```
 
-Ensure `time` is imported in plugin.go (it is used elsewhere; if not, add to the import block). Add `"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"` and confirm `"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"` are imported (auth is already used for `p.inner`).
+Ensure `time` is imported in plugin.go (it is used elsewhere; if not, add to the import block). Add `"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"` and confirm `"github.com/rossoctl/rossocortex/authbridge/authlib/auth"` are imported (auth is already used for `p.inner`).
 
 - [ ] **Step 5: Add the `mint` helper**
 
@@ -629,9 +629,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
 )
 
 func resolveTestPlugin(t *testing.T, exchangeURL string) *TokenExchange {
@@ -745,7 +745,7 @@ In `authlib/plugins/tokenexchange/plugin.go`, add to `tokenExchangeConfig` (afte
 
 - [ ] **Step 4: Add the resolve step to `OnRequest`**
 
-Add the placeholder import: `"github.com/kagenti/kagenti-extensions/authbridge/authlib/placeholder"`.
+Add the placeholder import: `"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"`.
 
 In `OnRequest`, replace the opening lines:
 
@@ -791,7 +791,7 @@ func resolvePlaceholder(pctx *pipeline.Context, handle string) (string, bool) {
 }
 ```
 
-(`auth` is already imported — `auth.ExtractBearer` is used in the listeners and `p.inner` is `*auth.Auth`. Confirm the import is present in plugin.go; if not, add `"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"`.)
+(`auth` is already imported — `auth.ExtractBearer` is used in the listeners and `p.inner` is `*auth.Auth`. Confirm the import is present in plugin.go; if not, add `"github.com/rossoctl/rossocortex/authbridge/authlib/auth"`.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -826,7 +826,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // rewritePlugin sets a new Authorization on the inbound context, simulating
@@ -970,7 +970,7 @@ import (
 	"testing"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 type mintPlugin struct{}
@@ -1088,7 +1088,7 @@ In `cmd/authbridge-proxy/main.go`, immediately after the `rpSrv, err := reversep
 	fpSrv.Shared = sharedStore
 ```
 
-Add the import `"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"`.
+Add the import `"github.com/rossoctl/rossocortex/authbridge/authlib/shared"`.
 
 - [ ] **Step 2: authbridge-lite — same injection**
 
@@ -1121,7 +1121,7 @@ Update the call site (line ~216):
 	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, shared.New(), cfg.Listener.ExtProcAddr))
 ```
 
-Add the imports `"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"` and (if not present) `"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"`.
+Add the imports `"github.com/rossoctl/rossocortex/authbridge/authlib/shared"` and (if not present) `"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"`.
 
 - [ ] **Step 4: Build everything**
 

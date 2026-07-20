@@ -13,10 +13,10 @@ import (
 	"strings"
 
 	"github.com/gobwas/glob"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/tokenbroker/client"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker/client"
 	"gopkg.in/yaml.v3"
 )
 

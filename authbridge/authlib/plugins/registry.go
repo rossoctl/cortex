@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
 )
 
 // PluginFactory returns a fresh plugin instance. Plugins take no
@@ -41,7 +41,7 @@ var (
 // registration, log/slog handler registration): plugins live in their
 // own package and advertise themselves by side-effect import:
 //
-//	import _ "github.com/acme/kagenti-rate-limiter/ratelimit"
+//	import _ "github.com/acme/rossoctl-rate-limiter/ratelimit"
 //
 // Double-registration under the same name panics. Silent last-write-
 // wins would let a version mismatch or deployment bug poison the

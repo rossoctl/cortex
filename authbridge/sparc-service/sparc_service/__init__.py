@@ -1,4 +1,4 @@
-"""Kagenti SPARC reflection service.
+"""Rossoctl SPARC reflection service.
 
 A thin, in-process HTTP wrapper around the SPARC pre-tool reflection component
 (`altk.pre_tool.sparc.SPARCReflectionComponent`) shipped in the

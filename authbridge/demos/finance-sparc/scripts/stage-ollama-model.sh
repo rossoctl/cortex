@@ -8,7 +8,7 @@
 set -euo pipefail
 
 MODEL=${1:-${OLLAMA_MODEL:-llama3.2:3b}}
-CLUSTER=${KIND_CLUSTER_NAME:-kagenti}
+CLUSTER=${KIND_CLUSTER_NAME:-rossoctl}
 NODE="${CLUSTER}-control-plane"
 STORE="${OLLAMA_MODELS_DIR:-$HOME/.ollama/models}"
 REPO="${MODEL%%:*}"; TAG="${MODEL##*:}"

@@ -17,7 +17,7 @@ import (
 // `global:` / `plugin_settings:` YAML that CPEX itself parses) is
 // supplied either inline via `config` or by path via `config_file`.
 // Operators read CPEX docs verbatim and the YAML format is what they
-// would write for CPEX directly — no kagenti-side re-shaping.
+// would write for CPEX directly — no rossoctl-side re-shaping.
 //
 // A cpex plugin with no `hooks`, no `config`, and no `config_file` is
 // installed but inert — Configure succeeds; OnRequest/OnResponse
@@ -75,7 +75,7 @@ type cpexConfig struct {
 	// BypassPaths is a list of URL path glob patterns (path.Match
 	// syntax) whose requests skip CPEX entirely. Defaults to liveness/
 	// readiness probes + .well-known discovery; operators add their
-	// own. Uses kagenti's shared bypass package so semantics match
+	// own. Uses rossoctl's shared bypass package so semantics match
 	// jwt-validation, ibac, etc.
 	BypassPaths []string `json:"bypass_paths" description:"URL path globs whose requests skip CPEX. Defaults to /healthz, /readyz, /livez, /.well-known/*."`
 }

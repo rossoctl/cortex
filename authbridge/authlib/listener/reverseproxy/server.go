@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/httpx"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/sseframe"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/internal/tlssniff"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
-	authtls "github.com/kagenti/kagenti-extensions/authbridge/authlib/tls"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/httpx"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/internal/sseframe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/internal/tlssniff"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	authtls "github.com/rossoctl/rossocortex/authbridge/authlib/tls"
 )
 
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes

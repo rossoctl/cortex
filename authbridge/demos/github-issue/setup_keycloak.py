@@ -50,7 +50,7 @@ This script supports two modes:
     Before provisioning, existing artifacts declared in the config (clients,
     client roles, realm roles, and client scopes) are deleted so re-running
     the script starts from a clean slate. Operator-registered scopes (e.g.
-    agent-*-aud created by the kagenti-operator's ClientRegistrationReconciler)
+    agent-*-aud created by the operator's ClientRegistrationReconciler)
     are intentionally left alone.
 
     Usage:
@@ -97,7 +97,7 @@ from keycloak import KeycloakAdmin, KeycloakGetError, KeycloakPostError
 
 # Default configuration
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://keycloak.localtest.me:8080")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "kagenti")
+KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "rossoctl")
 KEYCLOAK_ADMIN_USERNAME = os.environ.get("KEYCLOAK_ADMIN_USERNAME", "admin")
 KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "admin")
 
@@ -111,7 +111,7 @@ if KEYCLOAK_ADMIN_USERNAME == "admin" and KEYCLOAK_ADMIN_PASSWORD == "admin":
 DEFAULT_NAMESPACE = "team1"
 DEFAULT_SERVICE_ACCOUNT = "git-issue-agent"
 SPIFFE_TRUST_DOMAIN = "localtest.me"
-UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "kagenti")
+UI_CLIENT_ID = os.environ.get("UI_CLIENT_ID", "rossoctl")
 
 DEMO_USERS = [
     {
@@ -300,7 +300,7 @@ def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAU
         user_realm_name="master",
     )
 
-    # Ensure admin user exists in the kagenti realm so direct token requests succeed
+    # Ensure admin user exists in the rossoctl realm so direct token requests succeed
     ensure_admin_in_realm(keycloak_admin, KEYCLOAK_ADMIN_USERNAME, KEYCLOAK_ADMIN_PASSWORD)
 
     # ---------------------------------------------------------------
@@ -400,7 +400,7 @@ def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAU
         print(f"Note: Could not add 'github-full-access' as optional: {e}")
 
     # ---------------------------------------------------------------
-    # Add agent audience scope to the Kagenti UI client
+    # Add agent audience scope to the Rossoctl UI client
     # ---------------------------------------------------------------
     # Keycloak only auto-assigns realm default scopes to NEW clients.
     # The UI client was created during install (before this scope existed),
@@ -409,7 +409,7 @@ def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAU
     # reject UI chat requests with "invalid audience".
     #
     # TODO: Remove this workaround once the client-registration sidecar
-    # handles this automatically (kagenti/kagenti-extensions#169).
+    # handles this automatically (rossoctl/rossocortex#169).
     print(f"\n--- Adding agent audience scope to UI client '{UI_CLIENT_ID}' ---")
     ui_client_internal_id = keycloak_admin.get_client_id(UI_CLIENT_ID)
     if ui_client_internal_id:
@@ -475,7 +475,7 @@ def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAU
         print(f"\n  {user['username']}: {user['description']}")
         get_or_create_user(keycloak_admin, user)
 
-    # The Kagenti backend uses the "admin" realm role for RBAC. Without
+    # The Rossoctl backend uses the "admin" realm role for RBAC. Without
     # it, users can log in but see no agents or tools in the UI.
     print("\n--- Assigning 'admin' realm role to demo users ---")
     try:
@@ -493,7 +493,7 @@ def main_manual(namespace: str = DEFAULT_NAMESPACE, service_account: str = DEFAU
     else:
         print(
             "Warning: 'admin' realm role not found. Demo users will not "
-            "be able to see agents/tools in the UI. Ensure the Kagenti "
+            "be able to see agents/tools in the UI. Ensure the Rossoctl "
             "platform is installed before running this script."
         )
 
@@ -530,7 +530,7 @@ Token flow:
   6. GitHub tool validates exchanged token and uses appropriate PAT
 
 Next steps:
-  1. Deploy operator:    See https://github.com/kagenti/kagenti-operator for webhook setup
+  1. Deploy operator:    See https://github.com/rossoctl/operator for webhook setup
   2. Apply ConfigMaps:   kubectl apply -f demos/github-issue/k8s/configmaps.yaml
   3. Create PAT secret:  kubectl create secret generic github-tool-secrets -n {namespace} \\
                            --from-literal=INIT_AUTH_HEADER="Bearer <PRIVILEGED_PAT>" \\

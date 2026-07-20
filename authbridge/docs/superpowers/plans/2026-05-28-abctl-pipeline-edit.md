@@ -205,7 +205,7 @@ Expected: all tests pass, vet clean. The new `TestKubectlPortForward_StatusEndpo
 ### Step 6: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/cluster/portforward.go \
         authbridge/cmd/abctl/cluster/portforward_test.go \
         authbridge/cmd/abctl/tui/picker_test.go
@@ -458,7 +458,7 @@ Expected: all 4 tests PASS, vet clean.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/configmap.go \
         authbridge/cmd/abctl/edit/configmap_test.go \
         authbridge/cmd/abctl/go.mod \
@@ -678,7 +678,7 @@ Expected: all 6 tests PASS, vet clean.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/configmap.go \
         authbridge/cmd/abctl/edit/configmap_test.go
 git commit -s -m "feat(abctl): Add Splice and BuildManifest helpers
@@ -940,7 +940,7 @@ Expected: all 9 tests pass, vet clean.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/configmap.go \
         authbridge/cmd/abctl/edit/configmap_test.go
 git commit -s -m "feat(abctl): Add Fetch and Apply for the edit flow
@@ -1192,7 +1192,7 @@ Expected: all 13 tests pass.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/diff.go \
         authbridge/cmd/abctl/edit/diff_test.go
 git commit -s -m "feat(abctl): Add line-diff renderer for edit confirmation
@@ -1444,7 +1444,7 @@ Expected: all 17 tests pass, vet clean.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/status.go \
         authbridge/cmd/abctl/edit/status_test.go
 git commit -s -m "feat(abctl): Poll /reload/status to detect framework reload
@@ -1550,7 +1550,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
 )
 
 // editPhase tracks where the edit state machine currently sits.
@@ -1648,7 +1648,7 @@ Expected: 5 new tests pass, all existing TUI tests still pass.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/tui/edit_overlay.go \
         authbridge/cmd/abctl/tui/edit_overlay_test.go
 git commit -s -m "feat(abctl): Add edit overlay state + render
@@ -1862,7 +1862,7 @@ Expected: all tests pass, vet clean.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/edit/edit.go \
         authbridge/cmd/abctl/edit/edit_test.go
 git commit -s -m "feat(abctl): Add tea.Cmd factories for the edit phases
@@ -1910,7 +1910,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
 )
 
 const fixtureCMYAML = `apiVersion: v1
@@ -2124,7 +2124,7 @@ editRunner edit.Runner
 
 Add to the imports:
 ```go
-"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/edit"
+"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
 ```
 
 Add new `tea.Msg` types near the others:
@@ -2331,7 +2331,7 @@ Expected: all tests pass, vet clean, binary builds.
 ### Step 5: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/tui/app.go \
         authbridge/cmd/abctl/tui/keys.go \
         authbridge/cmd/abctl/tui/edit_e2e_test.go \
@@ -2431,7 +2431,7 @@ Confirm the new section reads cleanly.
 ### Step 3: Commit
 
 ```bash
-cd /Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions
+cd /Users/haihuang/works/go/src/github.com/rossoctl/rossocortex
 git add authbridge/cmd/abctl/README.md
 git commit -s -m "docs(abctl): Document the e keybind for pipeline editing
 

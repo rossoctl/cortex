@@ -42,7 +42,7 @@ spec:
     spec:
       containers:
         - name: github-tool
-          image: ghcr.io/kagenti/agent-examples/github-tool:latest
+          image: ghcr.io/rossoctl/examples/github-tool:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 9090
@@ -70,9 +70,9 @@ spec:
               value: "github-full-access"
             # Keycloak validation settings for incoming tokens
             - name: ISSUER
-              value: "http://keycloak.localtest.me:8080/realms/kagenti"
+              value: "http://keycloak.localtest.me:8080/realms/rossoctl"
             - name: JWKS_URL
-              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/kagenti/protocol/openid-connect/certs"
+              value: "http://keycloak-service.keycloak.svc.cluster.local:8080/realms/rossoctl/protocol/openid-connect/certs"
             - name: AUDIENCE
               value: "github-tool"
           resources:

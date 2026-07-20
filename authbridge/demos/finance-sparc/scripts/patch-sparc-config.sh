@@ -5,7 +5,7 @@
 #
 # Usage: patch-sparc-config.sh <namespace> <agent-name>
 #
-# The kagenti operator creates `authbridge-config-<agent>` when the agent
+# The rossoctl operator creates `authbridge-config-<agent>` when the agent
 # pod is admitted (default pipeline: jwt-validation inbound, token-exchange
 # outbound). This script extracts that config, merges k8s/sparc-patch.yaml
 # via scripts/pipeline-merge.py, re-applies it, and blocks until the
@@ -33,7 +33,7 @@ fi
 # Render ${...} placeholders in the patch fragment (provider-tunable knobs).
 # Defaults keep watsonx behavior identical to before.
 SPARC_TIMEOUT_MS=${SPARC_TIMEOUT_MS:-30000}
-SPARC_REFLECTOR_ENDPOINT=${SPARC_REFLECTOR_ENDPOINT:-http://sparc-service.kagenti-system.svc.cluster.local:8090}
+SPARC_REFLECTOR_ENDPOINT=${SPARC_REFLECTOR_ENDPOINT:-http://sparc-service.rossoctl-system.svc.cluster.local:8090}
 RENDERED_PATCH=$(mktemp)
 trap 'rm -f "$RENDERED_PATCH"' EXIT
 sed -e "s|\${SPARC_TIMEOUT_MS}|${SPARC_TIMEOUT_MS}|g" \

@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/internal/parsercommon"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 // A2AParser parses A2A JSON-RPC 2.0 request bodies and populates
@@ -57,7 +57,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// Extract message fields generically — any method with params.message
 	// gets full extraction (forward-compatible with future A2A methods).
 	// A2A spec uses "contextId" (current) or "sessionId" (older drafts).
-	// Some A2A clients (notably the Python SDK used by the kagenti backend)
+	// Some A2A clients (notably the Python SDK used by the rossoctl backend)
 	// place contextId INSIDE params.message rather than at the top-level
 	// params, so fall through to params.message.contextId when neither
 	// top-level slot is set. Without this fallback every inbound turn of

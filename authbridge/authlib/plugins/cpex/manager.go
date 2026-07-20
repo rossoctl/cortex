@@ -3,7 +3,7 @@ package cpex
 import (
 	"context"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // Manager is the surface plugin.go uses to talk to CPEX. It is a

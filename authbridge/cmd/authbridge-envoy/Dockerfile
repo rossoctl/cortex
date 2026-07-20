@@ -10,7 +10,7 @@
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to
 # shave ~30% off the binary. Go's runtime keeps `pclntab` separately,
 # so panic stack traces still show function names.
-# authlib embeds github.com/kagenti/context-guru (a published module, fetched via
+# authlib embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY). It is pure-Go (skeleton cgo is behind the cg_skeleton tag), so
 # CGO_ENABLED=0 stays correct.
 FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder

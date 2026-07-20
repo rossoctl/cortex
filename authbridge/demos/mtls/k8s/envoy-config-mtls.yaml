@@ -43,7 +43,7 @@ metadata:
   namespace: team1
   labels:
     app.kubernetes.io/part-of: mtls-demo
-    kagenti.io/mtls-mode: permissive
+    rossoctl.io/mtls-mode: permissive
 data:
   envoy.yaml: |
     admin:
@@ -194,7 +194,7 @@ metadata:
   namespace: team1
   labels:
     app.kubernetes.io/part-of: mtls-demo
-    kagenti.io/mtls-mode: strict
+    rossoctl.io/mtls-mode: strict
 data:
   envoy.yaml: |
     admin:

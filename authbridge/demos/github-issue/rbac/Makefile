@@ -14,7 +14,7 @@
 # Prerequisites:
 #   - uv (https://docs.astral.sh/uv/)
 #   - kubectl pointing at the Kind cluster
-#   - Kind cluster accessible (default name: kagenti)
+#   - Kind cluster accessible (default name: rossoctl)
 #   - Keycloak running at http://keycloak.localtest.me:8080
 #   - AGENT_EXAMPLES_DIR set to the agent-examples repo clone (for build-images)
 #   - PRIVILEGED_ACCESS_PAT and PUBLIC_ACCESS_PAT set for the deploy target
@@ -41,19 +41,19 @@ help:  ## Show this menu (default)
 	     $(MAKEFILE_LIST)
 	@printf "\nVariables:\n"
 	@printf "  \033[36m%-22s\033[0m %s\n" "NAMESPACE"             "target namespace (default: team1)"
-	@printf "  \033[36m%-22s\033[0m %s\n" "KIND_CLUSTER_NAME"     "Kind cluster name (default: kagenti)"
+	@printf "  \033[36m%-22s\033[0m %s\n" "KIND_CLUSTER_NAME"     "Kind cluster name (default: rossoctl)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "AGENT_EXAMPLES_DIR"    "path to agent-examples repo clone (required for build-images)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "PRIVILEGED_ACCESS_PAT" "GitHub PAT with all-repo access (required for deploy)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "PUBLIC_ACCESS_PAT"     "GitHub PAT with public-repo access (required for deploy)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "RBAC_CONFIG"           "RBAC config file (default: rbac/config.yaml)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "RBAC_POLICY"           "RBAC policy file (default: rbac/policy.yaml)"
-	@printf "  \033[36m%-22s\033[0m %s\n" "PYTHON"                "Python interpreter (default: kagenti-extensions/.venv/bin/python)"
+	@printf "  \033[36m%-22s\033[0m %s\n" "PYTHON"                "Python interpreter (default: rossocortex/.venv/bin/python)"
 	@printf "\nPrerequisites: uv, kubectl, kind, docker, Keycloak running.\n\n"
 
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
 NAMESPACE             ?= team1
-KIND_CLUSTER_NAME     ?= kagenti
+KIND_CLUSTER_NAME     ?= rossoctl
 RBAC_CONFIG           ?= rbac/config.yaml
 RBAC_POLICY           ?= rbac/policy.yaml
 AGENT_EXAMPLES_DIR    ?= $(MAKEFILE_DIR)../../../../../agent-examples
@@ -101,18 +101,18 @@ build-images:  ## Build + load agent and tool container images into Kind (requir
 	  exit 1; \
 	}
 	@echo "[*] Building github-tool image ..."
-	docker build -t ghcr.io/kagenti/agent-examples/github-tool:latest \
+	docker build -t ghcr.io/rossoctl/examples/github-tool:latest \
 	  -f $(AGENT_EXAMPLES_DIR)/mcp/github_tool/Dockerfile \
 	  $(AGENT_EXAMPLES_DIR)/mcp/github_tool/
 	@echo "[*] Building git-issue-agent image ..."
-	docker build -t ghcr.io/kagenti/agent-examples/git-issue-agent:latest \
+	docker build -t ghcr.io/rossoctl/examples/git-issue-agent:latest \
 	  -f $(AGENT_EXAMPLES_DIR)/a2a/git_issue_agent/Dockerfile \
 	  $(AGENT_EXAMPLES_DIR)/a2a/git_issue_agent/
 	@echo "[*] Loading images into Kind cluster '$(KIND_CLUSTER_NAME)' ..."
 	kind load docker-image --name $(KIND_CLUSTER_NAME) \
-	  ghcr.io/kagenti/agent-examples/github-tool:latest
+	  ghcr.io/rossoctl/examples/github-tool:latest
 	kind load docker-image --name $(KIND_CLUSTER_NAME) \
-	  ghcr.io/kagenti/agent-examples/git-issue-agent:latest
+	  ghcr.io/rossoctl/examples/git-issue-agent:latest
 	@echo "[✓] Images built and loaded."
 
 # ---------- Setup ----------
@@ -123,7 +123,7 @@ setup-namespace:  ## Create namespace and apply webhook ConfigMaps
 	@test -f k8s/configmaps-webhook.yaml && { \
 	  echo "[*] Applying webhook ConfigMaps ..."; \
 	  kubectl apply -f k8s/configmaps-webhook.yaml -n $(NAMESPACE); \
-	} || echo "[!] k8s/configmaps-webhook.yaml not found — skipping (Kagenti installer creates these)."
+	} || echo "[!] k8s/configmaps-webhook.yaml not found — skipping (Rossoctl installer creates these)."
 	@echo "[✓] Namespace ready."
 
 setup-keycloak: preflight  ## Configure Keycloak: realm, clients, RBAC roles, and users
@@ -202,7 +202,7 @@ validate:  ## Verify pod readiness and operator-managed client registration
 	  && echo "" || echo "(pod not found)"
 	@echo ""
 	@echo "[*] Operator client-registration logs (last 10 relevant lines):"
-	@kubectl logs -n kagenti-system deployment/kagenti-controller-manager 2>/dev/null \
+	@kubectl logs -n rossoctl-system deployment/rossoctl-controller-manager 2>/dev/null \
 	  | grep -iE "clientregistration|git-issue-agent" | tail -10 || echo "(operator not reachable)"
 	@echo ""
 	@echo "[✓] Validation complete — check output above."

@@ -13,7 +13,7 @@ For a simpler getting-started demo without token exchange, see the
 | Guide | Description | Best For |
 |-------|-------------|----------|
 | **[Manual Deployment](demo-manual.md)** | Deploy everything via `kubectl` and YAML manifests | Full control, debugging, understanding internals |
-| **[UI Deployment](demo-ui.md)** | Import agent and tool via the Kagenti dashboard | Quick start, UI-driven workflow |
+| **[UI Deployment](demo-ui.md)** | Import agent and tool via the Rossoctl dashboard | Quick start, UI-driven workflow |
 
 Both guides share the same infrastructure setup (webhook, Keycloak, ConfigMaps) and
 produce identical AuthBridge security behavior.
@@ -25,7 +25,7 @@ produce identical AuthBridge security behavior.
 3. **Transparent token exchange** — When the agent calls the GitHub tool, AuthBridge exchanges the token automatically
 4. **Subject preservation** — The end user's identity (`sub` claim) is preserved through the exchange
 5. **Scope-based access** — The tool uses token scopes to determine public or privileged GitHub API access
-6. **Access control (Alice vs Bob)** — Two users with different scopes get different GitHub API access levels: Alice (public only) cannot access private repos, while Bob (privileged) can access both (requires scope forwarding: [kagenti-extensions#139](https://github.com/kagenti/kagenti-extensions/issues/139))
+6. **Access control (Alice vs Bob)** — Two users with different scopes get different GitHub API access levels: Alice (public only) cannot access private repos, while Bob (privileged) can access both (requires scope forwarding: [rossocortex#139](https://github.com/rossoctl/rossocortex/issues/139))
 
 ## Architecture Overview
 
@@ -39,7 +39,7 @@ produce identical AuthBridge security behavior.
                   └──── Keycloak (token exchange) ─────────┘
 ```
 
-The agent pod has two containers (after kagenti-extensions#411):
+The agent pod has two containers (after rossocortex#411):
 - **agent** — the A2A agent (port 8000)
 - **AuthBridge sidecar** — combined image; container name depends on
   the resolved AuthBridge mode:
@@ -51,7 +51,7 @@ The agent pod has two containers (after kagenti-extensions#411):
 per-workload by `SPIRE_ENABLED`. Keycloak client registration is
 operator-managed (no in-pod sidecar); the operator's
 `ClientRegistrationReconciler` creates a
-`kagenti-keycloak-client-credentials-<hash>` Secret that the
+`rossoctl-keycloak-client-credentials-<hash>` Secret that the
 webhook mounts at `/shared/client-{id,secret}.txt`.
 
 ## Key Differences Between Deployment Methods
@@ -61,10 +61,10 @@ names, and labels). The only difference is *how* you deploy:
 
 | Aspect | Manual | UI |
 |--------|--------|----|
-| **Agent deployment** | `kubectl apply -f` YAML | Kagenti UI "Import New Agent" |
-| **Tool deployment** | `kubectl apply -f` YAML | Kagenti UI "Import New Tool" |
-| **Image source** | Pre-built (`ghcr.io/kagenti/...`) | Built from source via Shipwright |
-| **Primary interaction** | CLI (`curl` via test-client pod) | Kagenti UI chat |
+| **Agent deployment** | `kubectl apply -f` YAML | Rossoctl UI "Import New Agent" |
+| **Tool deployment** | `kubectl apply -f` YAML | Rossoctl UI "Import New Tool" |
+| **Image source** | Pre-built (`ghcr.io/rossoctl/...`) | Built from source via Shipwright |
+| **Primary interaction** | CLI (`curl` via test-client pod) | Rossoctl UI chat |
 | **Env var configuration** | In YAML manifests | UI form + optional `kubectl patch` |
 
 Common names used by both:

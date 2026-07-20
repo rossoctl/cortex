@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 func TestA2AParser_Capabilities(t *testing.T) {
@@ -85,7 +85,7 @@ func TestA2AParser_MessageStream(t *testing.T) {
 	}
 }
 
-// The A2A Python SDK (and the kagenti backend that wraps it) places contextId
+// The A2A Python SDK (and the rossoctl backend that wraps it) places contextId
 // inside params.message on established-conversation turns — not at the
 // top-level params that the earlier extraction path looked at. Without this
 // fallback, the listener's request-phase session lookup sees an empty

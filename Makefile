@@ -1,4 +1,4 @@
-# Root Makefile for kagenti-extensions monorepo
+# Root Makefile for rossocortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
 .PHONY: lint fmt pre-commit build-proxy-init help

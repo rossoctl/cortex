@@ -3,7 +3,7 @@
 package auth
 
 import (
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 // Inbound actions.

@@ -1,4 +1,4 @@
-name: kagenti-extensions CodeQL config
+name: rossocortex CodeQL config
 
 queries:
   - uses: security-extended

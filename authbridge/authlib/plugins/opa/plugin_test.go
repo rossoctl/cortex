@@ -9,7 +9,7 @@ import (
 
 	"github.com/open-policy-agent/opa/sdk"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 )
 
 // mockDecider implements the decider interface for testing.
@@ -1144,9 +1144,9 @@ func TestBuildOPAConfig(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 	services := cfg["services"].(map[string]any)
-	kagenti := services["kagenti"].(map[string]any)
-	if kagenti["url"] != "http://bundle-server:8080" {
-		t.Errorf("expected bundle URL, got %v", kagenti["url"])
+	rossoctl := services["rossoctl"].(map[string]any)
+	if rossoctl["url"] != "http://bundle-server:8080" {
+		t.Errorf("expected bundle URL, got %v", rossoctl["url"])
 	}
 	bundles := cfg["bundles"].(map[string]any)
 	authz := bundles["authz"].(map[string]any)

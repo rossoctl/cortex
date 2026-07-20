@@ -119,7 +119,7 @@ subtree in `$EDITOR` (or `vi` if unset). On save, abctl shows a diff
 and asks `apply this change? (y/N)`. Confirming runs
 `kubectl apply --server-side` against the per-agent ConfigMap with
 `--field-manager=abctl --force-conflicts=true` (taking ownership of
-`data.config.yaml` from the kagenti-operator's webhook on first
+`data.config.yaml` from the operator's webhook on first
 edit), then polls the framework's `/reload/status` until the reload
 completes (success or failure).
 
@@ -161,7 +161,7 @@ populate it for the rest of the session.
 
 The per-agent ConfigMap is named `authbridge-config-<agent>`. abctl
 resolves `<agent>` from the selected pod's `app.kubernetes.io/name`
-label (kagenti-operator sets this). If the label is absent, abctl
+label (operator sets this). If the label is absent, abctl
 falls back to stripping the last two dash-separated segments of the
 pod name (the ReplicaSet hash + pod suffix).
 

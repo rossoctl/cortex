@@ -4,7 +4,7 @@
 #
 # Image is built locally: `docker build -t hr-mcp:dev .` from the
 # hr-mcp-server source dir, then `kind load docker-image hr-mcp:dev
-# --name kagenti`. The imagePullPolicy: Never below tells the
+# --name rossoctl`. The imagePullPolicy: Never below tells the
 # kubelet to use the locally-loaded image rather than pull from a
 # registry.
 

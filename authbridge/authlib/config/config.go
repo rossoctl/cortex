@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -397,7 +397,7 @@ type ListenerConfig struct {
 	//
 	// Patterns use `.`-delimited glob semantics (same library as
 	// `authproxy-routes`): "otel-collector*" matches the short
-	// service name, "otel-collector.kagenti-system.svc.cluster.local"
+	// service name, "otel-collector.rossoctl-system.svc.cluster.local"
 	// matches the FQDN, "*-collector" matches any single-label name
 	// ending in -collector. Port is stripped before matching, so
 	// patterns must NOT include `:port`.
@@ -477,7 +477,7 @@ func Load(path string) (*Config, error) {
 	// Default stats server address
 	if cfg.Stats.StatsAddress == "" {
 		// Note that we default to an open port, not localhost 127.0.0.1:9093,
-		// because the Kagenti UI needs to see this.  (If there are concerns
+		// because the Rossoctl UI needs to see this.  (If there are concerns
 		// about the data exposed, use TLS or redact fields.)
 		cfg.Stats.StatsAddress = ":9093"
 	}

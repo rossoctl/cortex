@@ -113,7 +113,7 @@ func TestSnapshotIdentity_FromIdentity(t *testing.T) {
 	pctx := &Context{
 		Identity: stubIdentity{
 			subject:  "alice",
-			clientID: "kagenti-ui",
+			clientID: "rossoctl-ui",
 			scopes:   []string{"openid", "agent-aud"},
 		},
 	}
@@ -121,8 +121,8 @@ func TestSnapshotIdentity_FromIdentity(t *testing.T) {
 	if got == nil {
 		t.Fatal("SnapshotIdentity returned nil despite populated Identity")
 	}
-	if got.Subject != "alice" || got.ClientID != "kagenti-ui" {
-		t.Errorf("Subject/ClientID = %q/%q, want alice/kagenti-ui", got.Subject, got.ClientID)
+	if got.Subject != "alice" || got.ClientID != "rossoctl-ui" {
+		t.Errorf("Subject/ClientID = %q/%q, want alice/rossoctl-ui", got.Subject, got.ClientID)
 	}
 	if len(got.Scopes) != 2 || got.Scopes[0] != "openid" {
 		t.Errorf("Scopes = %v, want [openid agent-aud]", got.Scopes)

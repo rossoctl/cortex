@@ -1,4 +1,4 @@
-# IBAC demo — Intent-Based Access Control via the kagenti UI
+# IBAC demo — Intent-Based Access Control via the rossoctl UI
 
 > Conceptual overview (threat model, configuration reference, operator deployment guidance): [`authbridge/docs/ibac-plugin.md`](../../docs/ibac-plugin.md).
 
@@ -6,7 +6,7 @@ An email-summarization agent receives a prompt-injection inside one of its email
 
 ## Prerequisites
 
-- A [kagenti install](https://github.com/kagenti/kagenti/blob/main/docs/install.md) on a kind cluster (operator + Keycloak + UI).
+- A [rossoctl install](https://github.com/rossoctl/rossoctl/blob/main/docs/install.md) on a kind cluster (operator + Keycloak + UI).
 - ollama on the host with `llama3.2:3b` pulled, reachable from cluster pods at `host.docker.internal:11434`.
 - `kubectl`, `kind`, `podman` (or `docker`), `python3` with `PyYAML` (`pip3 install --user pyyaml`).
 
@@ -17,7 +17,7 @@ cd authbridge/demos/ibac
 
 make demo-ibac          # build + load demo images, deploy, patch CM, ready-to-chat banner
 
-# Open http://kagenti-ui.localtest.me:8080, find `email-agent`, chat:
+# Open http://rossoctl-ui.localtest.me:8080, find `email-agent`, chat:
 #   "Summarize my emails."
 
 make show-result        # forensic of the most recent session
@@ -37,7 +37,7 @@ Tool call blocked by platform:
 ## Architecture
 
 ```
-            kagenti UI (browser)            Agent Pod (team1, operator-injected sidecar)
+            rossoctl UI (browser)            Agent Pod (team1, operator-injected sidecar)
        ┌────────────────────────┐         ┌──────────────────────────────────────────────┐
        │ user types             │         │                                              │
        │ "Summarize my emails." │ A2A POST│  authbridge-proxy :8000 ──▶ agent :8001      │

@@ -2,7 +2,7 @@
 
 **Status:** Design — pending user review
 **Date:** 2026-05-22
-**Issue:** [kagenti-extensions#332](https://github.com/kagenti/kagenti-extensions/issues/332)
+**Issue:** [rossocortex#332](https://github.com/rossoctl/rossocortex/issues/332)
 **Reference:** [klaviger's SDK usage](https://github.com/grs/klaviger/blob/main/internal/spiffe/jwt_source.go)
 
 ## Goal
@@ -19,7 +19,7 @@ debugging shells) keep finding fresh files.
 - Operator changes (webhook, CRDs, e2e fixtures). Follow-up PR.
 - Helm chart changes (`spiffe-helper-config` ConfigMap, helper.conf
   templates). Follow-up PR.
-- Backend (`kagenti/backend`) changes (DEFAULT_SPIFFE_HELPER_CONF). Follow-up.
+- Backend (`rossoctl/backend`) changes (DEFAULT_SPIFFE_HELPER_CONF). Follow-up.
 - Implementing gRPC SDS for envoy-sidecar mode mTLS. Future PR; this design
   preserves the file-mirror so that work can use filesystem SDS instead.
 - Changing the `X509Source` / `JWTSource` interfaces consumed by `authlib/tls`
@@ -110,7 +110,7 @@ just constructs an implementation that satisfies it.
 - `authlib/spiffe/x509source.go` (FileX509Source) + `x509source_test.go`
 - `authlib/plugins/tokenexchange/spiffe/file.go` (FileJWTSource) + `file_test.go`
 
-Per kagenti CLAUDE.md "delete completely if unused" — no runtime caller, no
+Per rossoctl CLAUDE.md "delete completely if unused" — no runtime caller, no
 need to keep dead code in-tree.
 
 ### Files modified
@@ -164,7 +164,7 @@ mtls:
 
 spiffe:
   socket: unix:///spiffe-workload-api/spire-agent.sock   # default
-  jwt_audience: "http://keycloak.localtest.me:8080/realms/kagenti"
+  jwt_audience: "http://keycloak.localtest.me:8080/realms/rossoctl"
   mirror_files: true                                     # default
   mirror_dir: /opt                                       # default
 
@@ -323,7 +323,7 @@ mechanically rewritten to use a fake or the new SDK source.
 
 ### End-to-end
 
-`kagenti/tests/e2e/token_exchange/test_token_exchange.py` does
+`rossoctl/tests/e2e/token_exchange/test_token_exchange.py` does
 `kubectl exec ... cat /opt/jwt_svid.token`. With `mirror_files=true`
 default, this **continues to work** — the file still exists and contains a
 valid token. No e2e edits required.
@@ -369,7 +369,7 @@ follow-ups. **One concrete failure mode:** chart sets
 `tokenexchange.identity.type: spiffe` but doesn't yet render
 `spiffe.jwt_audience` → authbridge fails Validate at startup.
 
-**Mitigation:** before this PR merges, the kagenti chart PR that adds
+**Mitigation:** before this PR merges, the rossoctl chart PR that adds
 `spiffe.jwt_audience` rendering must merge first. Realistic order:
 
 1. Chart PR (adds `spiffe.jwt_audience` rendering, leaves
@@ -396,7 +396,7 @@ the old image's loader rejects.
 
 | Repo | What |
 |---|---|
-| `kagenti/charts/kagenti/templates/` | Add `spiffe.jwt_audience` rendering. **Must precede this PR.** Later: remove `spiffe-helper-config` ConfigMap, stop emitting old fields. |
-| `kagenti/kagenti-operator` | Webhook injector: stop creating `spiffe-helper-config` Volume; surface `JWT_AUDIENCE` into authbridge YAML's `spiffe.jwt_audience`. Update e2e fixtures. |
-| `kagenti/kagenti/backend` | Delete `DEFAULT_SPIFFE_HELPER_CONF`; stop creating spiffe-helper-config ConfigMap on agent runtime creation. |
-| `kagenti-extensions/authbridge` (envoy-sidecar mTLS) | When envoy-sidecar mode adds mTLS, Envoy's filesystem SDS can read the same `/opt/svid*.pem` paths the mirror writes. No additional auth bridge change needed — payoff of this design's option-B choice. |
+| `rossoctl/charts/rossoctl/templates/` | Add `spiffe.jwt_audience` rendering. **Must precede this PR.** Later: remove `spiffe-helper-config` ConfigMap, stop emitting old fields. |
+| `rossoctl/operator` | Webhook injector: stop creating `spiffe-helper-config` Volume; surface `JWT_AUDIENCE` into authbridge YAML's `spiffe.jwt_audience`. Update e2e fixtures. |
+| `rossoctl/rossoctl/backend` | Delete `DEFAULT_SPIFFE_HELPER_CONF`; stop creating spiffe-helper-config ConfigMap on agent runtime creation. |
+| `rossocortex/authbridge` (envoy-sidecar mTLS) | When envoy-sidecar mode adds mTLS, Envoy's filesystem SDS can read the same `/opt/svid*.pem` paths the mirror writes. No additional auth bridge change needed — payoff of this design's option-B choice. |

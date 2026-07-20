@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
 )
 
 func TestRenderTemplates_EmptyCatalog(t *testing.T) {

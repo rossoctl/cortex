@@ -11,9 +11,9 @@ image is a build variant of the proxy binary (proxy Dockerfile +
 
 | Directory | Mode | Listeners | Plugins | Image (CI) |
 |---|---|---|---|---|
-| [`authbridge-proxy/`](authbridge-proxy/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/kagenti/kagenti-extensions/authbridge` |
-| [`authbridge-envoy/`](authbridge-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/kagenti/kagenti-extensions/authbridge-envoy` |
-| `authbridge-lite` _(build variant of `authbridge-proxy`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `authbridge-proxy` built with `exclude_plugin_*` tags (jwt-validation + token-exchange only; OPA + parsers dropped) | `ghcr.io/kagenti/kagenti-extensions/authbridge-lite` |
+| [`authbridge-proxy/`](authbridge-proxy/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/rossoctl/rossocortex/authbridge` |
+| [`authbridge-envoy/`](authbridge-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/rossocortex/authbridge-envoy` |
+| `authbridge-lite` _(build variant of `authbridge-proxy`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `authbridge-proxy` built with `exclude_plugin_*` tags (jwt-validation + token-exchange only; OPA + parsers dropped) | `ghcr.io/rossoctl/rossocortex/authbridge-lite` |
 | [`abctl/`](abctl/) | n/a | n/a | n/a | not published — local TUI for the Session Events API |
 
 Each binary directory contains `main.go`, `go.mod`/`go.sum`,

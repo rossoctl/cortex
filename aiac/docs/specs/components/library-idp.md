@@ -90,9 +90,9 @@ Represents a service (Keycloak: `client`).
 2. Otherwise the Keycloak client attribute **`client.type`** ∈ {`Agent`, `Tool`} — a **plain string**. Client attribute values are plain strings; a **list** value (e.g. `["Agent"]`, the shape realm-role attributes use) fails the check and resolves to `None`. Capitalization matches the `ServiceType` values.
 3. Otherwise `None`.
 
-The attribute is set via `Configuration.set_service_type` (below); its authoritative origin is UC1 Service Onboarding — `classify_service` **discovers** the type from the operator's `kagenti.io/type` label and `provision_service` **persists** it onto the client via `set_service_type` (see the aiac-agent UC1 spec). There is **no** `spiffe://` clientId fallback and **no** description-keyword inference — typing is `client.type`-attribute-only. (The former `spiffe:// ⇒ Agent` fallback was **removed**: a `spiffe://` clientId indicates a SPIRE-enabled workload, **not** necessarily an agent — it could mis-type a SPIRE-enabled tool — so clients without a `client.type` attribute now resolve to `None`.)
+The attribute is set via `Configuration.set_service_type` (below); its authoritative origin is UC1 Service Onboarding — `classify_service` **discovers** the type from the operator's `rossoctl.io/type` label and `provision_service` **persists** it onto the client via `set_service_type` (see the aiac-agent UC1 spec). There is **no** `spiffe://` clientId fallback and **no** description-keyword inference — typing is `client.type`-attribute-only. (The former `spiffe:// ⇒ Agent` fallback was **removed**: a `spiffe://` clientId indicates a SPIRE-enabled workload, **not** necessarily an agent — it could mis-type a SPIRE-enabled tool — so clients without a `client.type` attribute now resolve to `None`.)
 
-> **`ServiceType`** (`aiac.idp.configuration.models`) is a `str` enum — `AGENT = "Agent"`, `TOOL = "Tool"` — shared by `Service.type`, `set_service_type`, and the aiac-agent sub-agents (one vocabulary, no duplication). Values are capitalized to match the `client.type` attribute; because it subclasses `str`, `ServiceType.AGENT == "Agent"`, so it is a drop-in for the former `Literal["Agent", "Tool"]`. The operator's lowercase `kagenti.io/type` pod label is normalized to a member via `ServiceType(label.capitalize())` in UC1 `classify_service`.
+> **`ServiceType`** (`aiac.idp.configuration.models`) is a `str` enum — `AGENT = "Agent"`, `TOOL = "Tool"` — shared by `Service.type`, `set_service_type`, and the aiac-agent sub-agents (one vocabulary, no duplication). Values are capitalized to match the `client.type` attribute; because it subclasses `str`, `ServiceType.AGENT == "Agent"`, so it is a drop-in for the former `Literal["Agent", "Tool"]`. The operator's lowercase `rossoctl.io/type` pod label is normalized to a member via `ServiceType(label.capitalize())` in UC1 `classify_service`.
 
 #### `Scope`
 
@@ -282,7 +282,7 @@ Read from a `.env` file co-located with `api.py` (`aiac/src/aiac/idp/configurati
 ```python
 from aiac.idp.configuration.api import Configuration
 
-cfg = Configuration.for_realm("kagenti")
+cfg = Configuration.for_realm("rossoctl")
 subjects = cfg.get_subjects()
 for s in subjects:
     print(s.username, s.email)

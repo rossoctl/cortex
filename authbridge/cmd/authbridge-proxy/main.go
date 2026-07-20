@@ -30,25 +30,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/auth"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/config"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/observe"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/pipeline"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/plugins"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/reloader"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/session"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/sessionapi"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/shared"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/spiffe"
-	authtls "github.com/kagenti/kagenti-extensions/authbridge/authlib/tls"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/tlsbridge"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/observe"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/reloader"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/sessionapi"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	authtls "github.com/rossoctl/rossocortex/authbridge/authlib/tls"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/tlsbridge"
 
 	// Only HTTP listeners are compiled in: no extproc/extauthz
 	// (no gRPC, no envoy types).
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/forwardproxy"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/reverseproxy"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/skiphost"
-	"github.com/kagenti/kagenti-extensions/authbridge/authlib/listener/transparentproxy"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/forwardproxy"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/reverseproxy"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/skiphost"
+	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/transparentproxy"
 	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
 	// by `//go:build !exclude_plugin_<name>`. main.go imports no plugin
 	// package directly, so every plugin can be dropped at build time. The
