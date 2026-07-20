@@ -6,7 +6,7 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // mintPlugin rewrites the inbound Authorization header to a minted

@@ -7,8 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/edit"
 )
 
 // catalogPlugins extracts the plugin slice from a (possibly nil)

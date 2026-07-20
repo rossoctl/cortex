@@ -47,7 +47,7 @@ help:  ## Show this menu (default)
 	@printf "  \033[36m%-22s\033[0m %s\n" "PUBLIC_ACCESS_PAT"     "GitHub PAT with public-repo access (required for deploy)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "RBAC_CONFIG"           "RBAC config file (default: rbac/config.yaml)"
 	@printf "  \033[36m%-22s\033[0m %s\n" "RBAC_POLICY"           "RBAC policy file (default: rbac/policy.yaml)"
-	@printf "  \033[36m%-22s\033[0m %s\n" "PYTHON"                "Python interpreter (default: rossocortex/.venv/bin/python)"
+	@printf "  \033[36m%-22s\033[0m %s\n" "PYTHON"                "Python interpreter (default: cortex/.venv/bin/python)"
 	@printf "\nPrerequisites: uv, kubectl, kind, docker, Keycloak running.\n\n"
 
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))

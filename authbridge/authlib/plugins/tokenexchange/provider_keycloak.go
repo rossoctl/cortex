@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
-	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	fwspiffe "github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // keycloakProvider derives endpoints and builds client auth from

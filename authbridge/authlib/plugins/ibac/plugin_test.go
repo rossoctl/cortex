@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // fakeJudge records what it was asked and returns the configured

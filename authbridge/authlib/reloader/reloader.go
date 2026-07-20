@@ -34,8 +34,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // PipelineBuilder loads the config file, validates it, and returns the

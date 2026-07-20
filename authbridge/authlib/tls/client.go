@@ -5,7 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // ClientConfig builds an mTLS *tls.Config for the forward-proxy

@@ -236,7 +236,7 @@ weather-tool-7f8c9d6b44-yyyyy     1/1     Running   0          5m
 ```
 
 > **Note:** AuthBridge ships as a single combined sidecar image (since
-> rossocortex#411). `weather-service` runs `agent` + the combined
+> cortex#411). `weather-service` runs `agent` + the combined
 > AuthBridge sidecar — `2/2` — regardless of whether SPIRE identity is
 > enabled. The `spiffe-helper` is bundled inside the combined image and
 > activated per workload via `SPIRE_ENABLED` (driven by the
@@ -269,7 +269,7 @@ the combined sidecar, not as a separate container.
 
 ### Check operator-managed client registration
 
-After rossocortex#411 / operator#361, client registration runs
+After cortex#411 / operator#361, client registration runs
 in the operator (outside the workload pod). Verify the resulting
 Secret is mounted into the agent's sidecar:
 

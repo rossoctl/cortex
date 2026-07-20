@@ -8,10 +8,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/bypass"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 // invokeOnRequest mirrors what Pipeline.Run does around each plugin

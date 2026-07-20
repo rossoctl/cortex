@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 func TestStore_AppendAndView(t *testing.T) {

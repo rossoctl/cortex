@@ -25,7 +25,7 @@ produce identical AuthBridge security behavior.
 3. **Transparent token exchange** — When the agent calls the GitHub tool, AuthBridge exchanges the token automatically
 4. **Subject preservation** — The end user's identity (`sub` claim) is preserved through the exchange
 5. **Scope-based access** — The tool uses token scopes to determine public or privileged GitHub API access
-6. **Access control (Alice vs Bob)** — Two users with different scopes get different GitHub API access levels: Alice (public only) cannot access private repos, while Bob (privileged) can access both (requires scope forwarding: [rossocortex#139](https://github.com/rossoctl/rossocortex/issues/139))
+6. **Access control (Alice vs Bob)** — Two users with different scopes get different GitHub API access levels: Alice (public only) cannot access private repos, while Bob (privileged) can access both (requires scope forwarding: [cortex#139](https://github.com/rossoctl/cortex/issues/139))
 
 ## Architecture Overview
 
@@ -39,7 +39,7 @@ produce identical AuthBridge security behavior.
                   └──── Keycloak (token exchange) ─────────┘
 ```
 
-The agent pod has two containers (after rossocortex#411):
+The agent pod has two containers (after cortex#411):
 - **agent** — the A2A agent (port 8000)
 - **AuthBridge sidecar** — combined image; container name depends on
   the resolved AuthBridge mode:

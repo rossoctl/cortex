@@ -68,14 +68,14 @@ echo ""
 
 # Build authbridge (proxy-sidecar combined: authbridge-proxy + spiffe-helper)
 # Default deployment shape — used when the workload's mode is proxy-sidecar.
-# After rossocortex#411 the unified binary was split into three
+# After cortex#411 the unified binary was split into three
 # mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile -t ghcr.io/rossoctl/rossocortex/authbridge:local .
-load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge:local
+${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile -t ghcr.io/rossoctl/cortex/authbridge:local .
+load_image_to_kind ghcr.io/rossoctl/cortex/authbridge:local
 echo "✅ Built and loaded: authbridge:local"
 echo ""
 
@@ -84,8 +84,8 @@ echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile -t ghcr.io/rossoctl/rossocortex/authbridge-envoy:local .
-load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge-envoy:local
+${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile -t ghcr.io/rossoctl/cortex/authbridge-envoy:local .
+load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-envoy:local
 echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
@@ -98,8 +98,8 @@ echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
-  -t ghcr.io/rossoctl/rossocortex/authbridge-lite:local .
-load_image_to_kind ghcr.io/rossoctl/rossocortex/authbridge-lite:local
+  -t ghcr.io/rossoctl/cortex/authbridge-lite:local .
+load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-lite:local
 echo "✅ Built and loaded: authbridge-lite:local"
 echo ""
 
@@ -108,8 +108,8 @@ echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
 cd "${SCRIPT_DIR}/authbridge/proxy-init"
-${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/rossocortex/proxy-init:local .
-load_image_to_kind ghcr.io/rossoctl/rossocortex/proxy-init:local
+${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:local .
+load_image_to_kind ghcr.io/rossoctl/cortex/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"
 echo ""
 
@@ -119,10 +119,10 @@ echo "=========================================="
 echo ""
 echo "Images loaded into cluster '${CLUSTER_NAME}':"
 echo "  - ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local"
-echo "  - ghcr.io/rossoctl/rossocortex/authbridge:local"
-echo "  - ghcr.io/rossoctl/rossocortex/authbridge-envoy:local"
-echo "  - ghcr.io/rossoctl/rossocortex/authbridge-lite:local"
-echo "  - ghcr.io/rossoctl/rossocortex/proxy-init:local"
+echo "  - ghcr.io/rossoctl/cortex/authbridge:local"
+echo "  - ghcr.io/rossoctl/cortex/authbridge-envoy:local"
+echo "  - ghcr.io/rossoctl/cortex/authbridge-lite:local"
+echo "  - ghcr.io/rossoctl/cortex/proxy-init:local"
 echo ""
 echo "Next steps:"
 echo "  1. Update values files to use :local tag"

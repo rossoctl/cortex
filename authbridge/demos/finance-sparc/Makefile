@@ -31,7 +31,7 @@ AGENT             := finance-agent
 PLATFORM_NS       := rossoctl-system
 # Prefer whichever runtime's daemon is actually reachable (docker first).
 CONTAINER_RUNTIME ?= $(shell docker info >/dev/null 2>&1 && echo docker || (podman info >/dev/null 2>&1 && echo podman) || echo docker)
-AUTHBRIDGE_IMAGE  ?= ghcr.io/rossoctl/rossocortex/authbridge:v0.6.0-alpha.4
+AUTHBRIDGE_IMAGE  ?= ghcr.io/rossoctl/cortex/authbridge:v0.6.0-alpha.4
 
 AGENT_IMAGE := finance-agent:latest
 MCP_IMAGE   := finance-mcp:latest

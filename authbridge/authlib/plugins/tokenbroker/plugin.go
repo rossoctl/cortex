@@ -13,10 +13,10 @@ import (
 	"strings"
 
 	"github.com/gobwas/glob"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenbroker/client"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenbroker/client"
 	"gopkg.in/yaml.v3"
 )
 

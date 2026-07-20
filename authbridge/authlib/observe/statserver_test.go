@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
 )
 
 func newTestConfig() *config.Config {

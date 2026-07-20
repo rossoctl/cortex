@@ -37,7 +37,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sparc-service
-          image: ghcr.io/rossoctl/rossocortex/sparc-service:latest
+          image: ghcr.io/rossoctl/cortex/sparc-service:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090

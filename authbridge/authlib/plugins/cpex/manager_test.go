@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // FakeManager is a programmable Manager for unit tests. Set Hooks,

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/cortex/authbridge/authlib/shared"
 )
 
 func mintTestContext(store pipeline.SharedStore) *pipeline.Context {

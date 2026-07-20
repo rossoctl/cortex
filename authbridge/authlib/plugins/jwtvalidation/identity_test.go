@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/contracts"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation/validation"
+	"github.com/rossoctl/cortex/authbridge/authlib/contracts"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation/validation"
 )
 
 func TestClaimsIdentity_BasicAccessors(t *testing.T) {

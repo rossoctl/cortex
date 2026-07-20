@@ -29,7 +29,7 @@ That orchestration allows you to see the full scope of your authorization flow (
 
 ## How it works
 
-AuthBridge parses traffic into a typed pipeline context ([inspired by CPEX's specification](https://github.com/rossoctl/rossocortex/commit/4c53164d02809ddb19f3b79b3abf9c288a8bc4fb)).
+AuthBridge parses traffic into a typed pipeline context ([inspired by CPEX's specification](https://github.com/rossoctl/cortex/commit/4c53164d02809ddb19f3b79b3abf9c288a8bc4fb)).
 The cpex plugin projects that context into CMF (a normalized, typed policy context), invokes the
 CPEX hooks the operator configured, applies any modifications CPEX returns
 (redacted bodies, mutated headers, session labels), and maps the CPEX outcome

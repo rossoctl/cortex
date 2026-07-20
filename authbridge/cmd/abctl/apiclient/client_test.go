@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 func TestListSessions(t *testing.T) {

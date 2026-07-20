@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
-	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	fwspiffe "github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // Identity type constants.

@@ -12,8 +12,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 // Client is a handle to a session API endpoint. Safe for concurrent use.

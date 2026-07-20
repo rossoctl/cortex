@@ -25,8 +25,8 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ```bash
 # Clone the repository
-git clone https://github.com/rossoctl/rossocortex.git
-cd rossocortex
+git clone https://github.com/rossoctl/cortex.git
+cd cortex
 
 # Install pre-commit hooks
 pre-commit install

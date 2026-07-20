@@ -8,10 +8,10 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/skiphost"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/plugintesting"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/skiphost"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/plugintesting"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 // markerPlugin records one Invocation per OnRequest call so tests can

@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/mcpparser"
+import _ "github.com/rossoctl/cortex/authbridge/authlib/plugins/mcpparser"

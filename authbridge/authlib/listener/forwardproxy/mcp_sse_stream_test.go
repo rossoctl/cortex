@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
 // TestForwardProxy_SSE_StreamsWithoutResponder is the regression test for

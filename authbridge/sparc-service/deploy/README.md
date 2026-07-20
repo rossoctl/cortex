@@ -30,7 +30,7 @@ When it's up, enable the plugin on an agent — see
 
 ## Image
 
-The default image is `ghcr.io/rossoctl/rossocortex/sparc-service:latest` (published by CI).
+The default image is `ghcr.io/rossoctl/cortex/sparc-service:latest` (published by CI).
 On a **kind** dev cluster, build and load a local image first:
 
 ```bash

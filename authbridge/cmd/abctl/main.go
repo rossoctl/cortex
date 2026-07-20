@@ -15,9 +15,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
 )
 
 func main() {

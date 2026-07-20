@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // newPipelineTable builds the plugins table shown on the Pipeline top-level

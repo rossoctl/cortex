@@ -1,4 +1,4 @@
-module github.com/rossoctl/rossocortex/authbridge/authlib
+module github.com/rossoctl/cortex/authbridge/authlib
 
 go 1.26.4
 
@@ -7,10 +7,10 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gobwas/glob v0.2.3
-	github.com/rossoctl/context-guru v0.0.0-20260713113308-b624f2c3d8c2
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/maximhq/bifrost/core v1.7.0
 	github.com/open-policy-agent/opa v1.18.2
+	github.com/rossoctl/context-guru v0.0.0-20260720181432-8fc7c7b36563
 	github.com/spiffe/go-spiffe/v2 v2.8.1
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0

@@ -1,8 +1,8 @@
 package sessionapi
 
 import (
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 )
 
 // PluginsCatalog adapts plugins.Catalog() into the wire-shaped

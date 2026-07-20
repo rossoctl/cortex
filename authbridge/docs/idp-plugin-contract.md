@@ -1,6 +1,6 @@
 # IdP-Agnostic Token Exchange Plugin Contract
 
-> **Status:** Implemented — RHAIENG-5681 / rossocortex#481
+> **Status:** Implemented — RHAIENG-5681 / cortex#481
 >
 > This document defines the contract that an Identity Provider (IdP)
 > plugin must satisfy for the AuthBridge token exchange pipeline.
@@ -50,8 +50,8 @@ Create a single file — no changes to core plugin code required:
 package tokenexchange
 
 import (
-    "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
-    fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+    "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/exchange"
+    fwspiffe "github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 type oktaProvider struct{}

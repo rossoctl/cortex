@@ -9,7 +9,7 @@ import (
 
 	"github.com/open-policy-agent/opa/sdk"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // mockDecider implements the decider interface for testing.

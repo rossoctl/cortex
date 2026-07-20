@@ -8,10 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/sessionapi"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/sessionapi"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // startStack spins up a real session store + sessionapi.Server on a random

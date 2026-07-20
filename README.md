@@ -20,8 +20,8 @@ See the [AuthBridge README](./authbridge/README.md) for architecture details and
 
 ## Container Images
 
-All images are published to `ghcr.io/rossoctl/rossocortex/`. After
-rossocortex#411 the unified binary was split into three
+All images are published to `ghcr.io/rossoctl/cortex/`. After
+cortex#411 the unified binary was split into three
 mode-specific combined images, and the per-component sidecars
 (`client-registration`, standalone `spiffe-helper`) were retired:
 

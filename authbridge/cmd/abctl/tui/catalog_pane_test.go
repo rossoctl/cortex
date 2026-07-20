@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 func TestRebuildCatalogTable_RendersEntries(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
-	authtls "github.com/rossoctl/rossocortex/authbridge/authlib/tls"
+	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
+	authtls "github.com/rossoctl/cortex/authbridge/authlib/tls"
 )
 
 // fakeSource lets tests drive Certificate / TrustBundle results

@@ -18,11 +18,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"gopkg.in/yaml.v3"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/session"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/cluster"
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/edit"
 )
 
 // Pane identifiers.

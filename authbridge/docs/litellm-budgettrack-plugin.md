@@ -13,7 +13,7 @@ with HTTP 429 when the configured daily budget is exceeded.
 
 ## Use Case
 
-When running AI agents through RossoCortex (local budget proxy), each agent needs
+When running AI agents through Cortex (local budget proxy), each agent needs
 a spending cap. LiteLLM returns the cost of each completion in the
 `x-litellm-response-cost` response header. This plugin reads that header in the
 AuthBridge inbound pipeline, tracks cumulative daily spend in a JSON ledger file,
@@ -22,7 +22,7 @@ and blocks further requests once the budget is exhausted.
 ## Architecture
 
 ```
-Agent → rossocortex.py → AuthBridge (litellm-budget-track) → LiteLLM upstream
+Agent → cortex.py → AuthBridge (litellm-budget-track) → LiteLLM upstream
                                     │
                                     ├── OnRequest: check if budget exceeded → 429
                                     └── OnResponse: read x-litellm-response-cost, accumulate
@@ -51,7 +51,7 @@ pipeline:
     plugins:
       - name: litellm-budget-track
         config:
-          spend_file: /etc/rossocortex/spend-authbridge.json
+          spend_file: /etc/cortex/spend-authbridge.json
           max_budget: 5.00
 ```
 
@@ -84,7 +84,7 @@ The spend file (`spend-authbridge.json`) is a simple JSON object:
 2. If `date` != today UTC → reset ledger to zero
 3. If `total_spend >= max_budget` → return HTTP 429 with body:
    ```
-   Rossocortex ExceededTokenBudget: daily spend $X.XXXX exceeds budget $Y.YY. Reset at midnight UTC.
+   Cortex ExceededTokenBudget: daily spend $X.XXXX exceeds budget $Y.YY. Reset at midnight UTC.
    ```
 4. Otherwise → continue pipeline
 
@@ -112,23 +112,23 @@ The registration file uses the standard build-tag pattern:
 
 package main
 
-import _ "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/litellm_budgettrack"
+import _ "github.com/rossoctl/cortex/authbridge/authlib/plugins/litellm_budgettrack"
 ```
 
-## Integration with RossoCortex
+## Integration with Cortex
 
-RossoCortex generates the AuthBridge config on startup, embedding the plugin
+Cortex generates the AuthBridge config on startup, embedding the plugin
 in the inbound pipeline with the correct `spend_file` path and `max_budget`
 from the CLI flags:
 
 ```bash
 # rossoctlx.py start --budget 5.00
 # → generates config.yaml with litellm-budget-track plugin
-#   spend_file = ~/.config/rossocortex/spend-authbridge.json
+#   spend_file = ~/.config/cortex/spend-authbridge.json
 #   max_budget = 5.00
 ```
 
-The plugin complements rossocortex.py's own budget tracking (which reads
+The plugin complements cortex.py's own budget tracking (which reads
 the same `x-litellm-response-cost` header on direct HTTP requests). For
 CONNECT-tunneled traffic that flows through AuthBridge's TLS bridge,
 the plugin is the only cost-tracking mechanism.
@@ -153,4 +153,4 @@ go build ./cmd/authbridge-proxy/
 - Per-agent budget tracking (separate ledger files per agent identity)
 - Budget alerts at configurable thresholds (e.g., 80% warning)
 - Weekly/monthly budget periods (not just daily)
-- Integration with rossocortex control API for real-time budget queries
+- Integration with cortex control API for real-time budget queries

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // showPluginDetail loads the focused plugin into the detail viewport.

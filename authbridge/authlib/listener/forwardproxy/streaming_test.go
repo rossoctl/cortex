@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 // streamingProbe is a minimal Plugin + StreamingResponder used to

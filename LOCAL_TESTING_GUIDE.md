@@ -1,6 +1,6 @@
 # Local Testing Guide for JWT-SVID Authentication
 
-> **⚠️ This guide is stale after rossocortex#411.** It was written
+> **⚠️ This guide is stale after cortex#411.** It was written
 > for the pre-#411 multi-sidecar shape (separate `client-registration`,
 > `envoy-with-processor`, and standalone `spiffe-helper` containers) and
 > several of its YAML examples reference images that no longer publish.
@@ -26,7 +26,7 @@ This guide walks you through testing JWT-SVID authentication using local images 
 **CRITICAL**: You MUST run the `./local-build-and-test.sh` script to build all required images. Do NOT build images individually with `docker build` or `podman build` commands, as this will miss critical images like `spiffe-idp-setup:local` (located in the rossoctl repo).
 
 The script:
-- Builds images from **both** rossoctl and rossocortex repositories
+- Builds images from **both** rossoctl and cortex repositories
 - Automatically detects Docker vs Podman
 - Loads all images into your Kind cluster
 - Ensures consistent image tags and pull policies
@@ -35,7 +35,7 @@ The script:
 
 - Docker or Podman running
 - Kind CLI installed
-- Both `rossoctl` and `rossocortex` repositories cloned
+- Both `rossoctl` and `cortex` repositories cloned
 
 ## Step 0: Create Kind Cluster
 
@@ -68,7 +68,7 @@ kubectl cluster-info --context kind-rossoctl-dev
 The `local-build-and-test.sh` script is the **only supported way** to build local images for testing. It builds images from both repositories and ensures everything is loaded correctly.
 
 ```bash
-cd rossocortex
+cd cortex
 
 # Make the script executable (first time only)
 chmod +x local-build-and-test.sh
@@ -87,10 +87,10 @@ export KIND_EXPERIMENTAL_PROVIDER=podman  # Only needed for Podman
 **From rossoctl repo** (critical - often missed!):
 - `ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local` - Configures SPIFFE Identity Provider in Keycloak
 
-**From rossocortex repo**:
-- `ghcr.io/rossoctl/rossocortex/client-registration:local` - Registers agents as Keycloak clients
-- `ghcr.io/rossoctl/rossocortex/envoy-with-processor:local` - Envoy proxy with token exchange
-- `ghcr.io/rossoctl/rossocortex/proxy-init:local` - iptables initialization
+**From cortex repo**:
+- `ghcr.io/rossoctl/cortex/client-registration:local` - Registers agents as Keycloak clients
+- `ghcr.io/rossoctl/cortex/envoy-with-processor:local` - Envoy proxy with token exchange
+- `ghcr.io/rossoctl/cortex/proxy-init:local` - iptables initialization
 
 ### Common Mistakes to Avoid:
 
@@ -105,7 +105,7 @@ export KIND_EXPERIMENTAL_PROVIDER=podman  # Only needed for Podman
 
 ## Step 2: Install Rossoctl with Ansible
 
-**IMPORTANT:** For federated-JWT testing with local images, use the unified `federated-jwt-values.yaml` overlay file from rossocortex.
+**IMPORTANT:** For federated-JWT testing with local images, use the unified `federated-jwt-values.yaml` overlay file from cortex.
 
 The ansible installer will detect the existing `rossoctl-dev` cluster and install into it:
 
@@ -116,7 +116,7 @@ cd rossoctl
 # Install with dev base values + TWO overlays (deps local images + extensions federated-jwt)
 # --env dev                                → Loads dev_values.yaml (base Kind development config)
 # --env-file deployments/envs/...         → Local images for rossoctl-deps (SPIRE, Keycloak, etc.)
-# --env-file ../rossocortex/...    → Federated-jwt + local images for rossocortex
+# --env-file ../cortex/...    → Federated-jwt + local images for cortex
 deployments/ansible/run-install.sh --env dev \
   --env-file deployments/envs/dev_values_local_images.yaml \
   --env-file deployments/envs/dev_values_federated-jwt.yaml
@@ -158,7 +158,7 @@ This installation will:
 ## Step 3: Verify SPIRE and Keycloak
 
 ```bash
-cd rossocortex
+cd cortex
 
 chmod +x verify-spire-keycloak.sh
 ./verify-spire-keycloak.sh
@@ -246,7 +246,7 @@ spec:
         - name: certs
           mountPath: /opt
       - name: client-registration
-        image: ghcr.io/rossoctl/rossocortex/client-registration:local
+        image: ghcr.io/rossoctl/cortex/client-registration:local
         imagePullPolicy: Never
         command:
           - /bin/sh

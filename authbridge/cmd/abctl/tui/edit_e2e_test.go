@@ -12,7 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/rossocortex/authbridge/cmd/abctl/edit"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/edit"
 )
 
 const editFixtureCMYAML = `apiVersion: v1

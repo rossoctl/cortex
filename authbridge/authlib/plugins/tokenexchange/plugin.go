@@ -12,15 +12,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/cache"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange/exchange"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/routing"
-	fwspiffe "github.com/rossoctl/rossocortex/authbridge/authlib/spiffe"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/placeholder"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/cache"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange/exchange"
+	"github.com/rossoctl/cortex/authbridge/authlib/routing"
+	fwspiffe "github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 )
 
 // tokenExchangeConfig is the plugin's local config schema. See

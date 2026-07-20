@@ -42,7 +42,7 @@ RFC-8693 token exchange, and the `github-tool` MitM swaps the exchanged token fo
 - Existing (issue-only) agent card: [`../../analysis/github-agent-card.json`](../../analysis/github-agent-card.json)
 - `github-tool` MCP tool catalog (44 tools): [`../../analysis/github-mcp-tools-summary.json`](../../analysis/github-mcp-tools-summary.json)
 - Reference agent: `agent-examples/a2a/git_issue_agent/`
-- Reference deployment: `rossocortex/authbridge/demos/github-issue/k8s/`
+- Reference deployment: `cortex/authbridge/demos/github-issue/k8s/`
 - **Sibling tool spec (UC-1 onboarding fixture):** [`github-tool.md`](github-tool.md) — a simplified
   4-tool stub (`source-read`, `source-write`, `issues-read`, `issues-write`) deployed as Service
   `github-tool`. **This is not the tool this agent connects to.** The agent connects to the production

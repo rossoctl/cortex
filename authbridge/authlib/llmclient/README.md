@@ -7,7 +7,7 @@ The package exists so plugin authors don't rewrite ~150 LOC of HTTP plumbing, JS
 ## Quick start
 
 ```go
-import "github.com/rossoctl/rossocortex/authbridge/authlib/llmclient"
+import "github.com/rossoctl/cortex/authbridge/authlib/llmclient"
 
 c := llmclient.New(llmclient.Options{
     Endpoint:           "http://host.docker.internal:11434",

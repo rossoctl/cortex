@@ -32,7 +32,7 @@ help:  ## Show this menu (default)
 	@printf "\nVariables:\n"
 	@printf "  \033[36m%-20s\033[0m %s\n" "POLICY" "policy file to apply (default: policies/regular_policy.txt)"
 	@printf "  \033[36m%-20s\033[0m %s\n" "RBAC_CONFIG" "RBAC config file (default: rbac/config.yaml)"
-	@printf "  \033[36m%-20s\033[0m %s\n" "PYTHON"  "Python interpreter (default: rossocortex/.venv/bin/python)"
+	@printf "  \033[36m%-20s\033[0m %s\n" "PYTHON"  "Python interpreter (default: cortex/.venv/bin/python)"
 	@printf "\nPrerequisites: uv, Keycloak running, aiac.env and llm_conf.yaml configured.\n\n"
 
 POLICY ?= policies/regular_policy.txt

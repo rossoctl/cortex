@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/auth"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/redact"
+	"github.com/rossoctl/cortex/authbridge/authlib/auth"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/redact"
 )
 
 type StatServer struct {

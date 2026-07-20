@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/config"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange"
 )
 
 func identityConfig(idType string) json.RawMessage {

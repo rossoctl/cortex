@@ -20,13 +20,13 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/forwardproxy"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/listener/reverseproxy"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/placeholder"
-	jwtvalidation "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/jwtvalidation"
-	tokenexchange "github.com/rossoctl/rossocortex/authbridge/authlib/plugins/tokenexchange"
-	"github.com/rossoctl/rossocortex/authbridge/authlib/shared"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/forwardproxy"
+	"github.com/rossoctl/cortex/authbridge/authlib/listener/reverseproxy"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/placeholder"
+	jwtvalidation "github.com/rossoctl/cortex/authbridge/authlib/plugins/jwtvalidation"
+	tokenexchange "github.com/rossoctl/cortex/authbridge/authlib/plugins/tokenexchange"
+	"github.com/rossoctl/cortex/authbridge/authlib/shared"
 )
 
 // startJWKS mints an RSA keypair, serves its public half as a JWKS, and

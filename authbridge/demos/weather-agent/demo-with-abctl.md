@@ -39,11 +39,11 @@ Verify by sending one chat message and getting a weather response. Once that wor
 
 ## 1. Build `abctl`
 
-`abctl` lives in the `rossocortex` repo. Build it once:
+`abctl` lives in the `cortex` repo. Build it once:
 
 ```sh
-git clone https://github.com/rossoctl/rossocortex.git
-cd rossocortex/authbridge/cmd/abctl
+git clone https://github.com/rossoctl/cortex.git
+cd cortex/authbridge/cmd/abctl
 go build .
 ```
 

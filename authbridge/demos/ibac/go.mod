@@ -1,3 +1,3 @@
-module github.com/rossoctl/rossocortex/authbridge/demos/ibac
+module github.com/rossoctl/cortex/authbridge/demos/ibac
 
 go 1.24
