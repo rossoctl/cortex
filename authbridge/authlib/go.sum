@@ -162,8 +162,8 @@ github.com/mark3labs/mcp-go v0.43.2 h1:21PUSlWWiSbUPQwXIJ5WKlETixpFpq+WBpbMGDSVy
 github.com/mark3labs/mcp-go v0.43.2/go.mod h1:YnJfOL382MIWDx1kMY+2zsRHU/q78dBg9aFb8W6Thdw=
 github.com/mattn/go-pointer v0.0.1 h1:n+XhsuGeVO6MEAp7xyEukFINEa+Quek5psIR/ylA6o0=
 github.com/mattn/go-pointer v0.0.1/go.mod h1:2zXcozF6qYGgmsG+SeTZz3oAbFLdD3OWqnUbNvJZAlc=
-github.com/maximhq/bifrost/core v1.7.0 h1:iUmSfqXwVdDbyJXWIO+S8AYz6JOTWoyhGON4Z4a/p7Q=
-github.com/maximhq/bifrost/core v1.7.0/go.mod h1:jjdqJc0+fCNl3irgUGfSDzgZupMSRLNm4E/2Q7KZKks=
+github.com/maximhq/bifrost/core v1.7.2 h1:yl2k+uWjjcz4fG9jDfIXXbXrwGHlkM56fcno+SX9EbY=
+github.com/maximhq/bifrost/core v1.7.2/go.mod h1:jjdqJc0+fCNl3irgUGfSDzgZupMSRLNm4E/2Q7KZKks=
 github.com/miekg/dns v1.1.57 h1:Jzi7ApEIzwEPLHWRcafCN9LZSBbqQpxjt/wpgvg7wcM=
 github.com/miekg/dns v1.1.57/go.mod h1:uqRjCRUuEAA6qsOiJvDd+CFo/vW+y5WR6SNmHE55hZk=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
