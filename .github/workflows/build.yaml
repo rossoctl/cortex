@@ -146,9 +146,15 @@ jobs:
         with:
           context: ${{ matrix.image_config.context }}
           file: ${{ matrix.image_config.context }}/${{ matrix.image_config.dockerfile }}
-          build-args: ${{ matrix.image_config.build_args }}
+          # Merge both build-arg sources into a single key: static per-image
+          # args from the matrix (e.g. authbridge-lite GO_BUILD_TAGS) plus the
+          # dynamically resolved args (authbridge-cpex CPEX_FFI_*). A duplicate
+          # `build-args:` key is invalid YAML and fails the whole workflow; only
+          # one image sets each source, so concatenating them is safe.
+          build-args: |
+            ${{ matrix.image_config.build_args }}
+            ${{ steps.buildargs.outputs.args }}
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ steps.buildargs.outputs.args }}
