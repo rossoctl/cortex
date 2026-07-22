@@ -58,6 +58,10 @@ type TLSBridgeConfig struct {
 	// UpstreamCABundle is an extra-roots PEM file for re-origination (private-CA
 	// origins the agent trusts); empty == system roots only.
 	UpstreamCABundle string `yaml:"upstream_ca_bundle" json:"upstream_ca_bundle"`
+	// UpstreamInsecure disables origin cert verification on re-origination
+	// (InsecureSkipVerify). For internal/self-signed upstreams when the origin CA
+	// is unavailable. Prefer UpstreamCABundle when possible.
+	UpstreamInsecure bool `yaml:"upstream_insecure" json:"upstream_insecure"`
 	// PassthroughHosts are hosts to tunnel (never intercept). Distinct from
 	// listener.skip_hosts, which bypasses the whole pipeline; these still run the
 	// egress gate, they just aren't TLS-terminated.
