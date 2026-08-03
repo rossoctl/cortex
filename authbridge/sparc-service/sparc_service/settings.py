@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 # For full control you can also set SPARC_LLM_REGISTRY_ID to any ALTK registry id.
 PROVIDER_REGISTRY_IDS: dict[str, str] = {
     "watsonx": "litellm.watsonx.output_val",
+    "litellm.watsonx": "litellm.watsonx.output_val",
     "ollama": "litellm.ollama.output_val",
     "openai": "litellm.output_val",
     "azure": "litellm.output_val",
@@ -35,6 +36,7 @@ PROVIDER_REGISTRY_IDS: dict[str, str] = {
 # Per-provider default model id (empty → SPARC_MODEL is required).
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "watsonx": "mistral-large-2512",
+    "litellm.watsonx": "mistral-large-2512",
     "ollama": "llama3.2:3b",
     "openai": "gpt-4o-mini",
     "azure": "",
@@ -143,8 +145,8 @@ class Settings:
                 errors.append(f"SPARC_LLM_KWARGS_JSON is not valid JSON: {exc}")
 
         # Provider-specific credential / config validation.
-        if provider == "watsonx" and (not wx_api_key or not wx_project_id):
-            errors.append("provider=watsonx requires WX_API_KEY and WX_PROJECT_ID")
+        if provider in ("watsonx", "litellm.watsonx") and (not wx_api_key or not wx_project_id):
+            errors.append(f"provider={provider} requires WX_API_KEY and WX_PROJECT_ID")
         if provider == "openai" and not (os.getenv("OPENAI_API_KEY") or "api_key" in llm_kwargs):
             errors.append("provider=openai requires OPENAI_API_KEY (or api_key in SPARC_LLM_KWARGS_JSON)")
         if provider in ("azure", "litellm") and not model:
