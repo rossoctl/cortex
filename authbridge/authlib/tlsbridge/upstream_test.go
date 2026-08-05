@@ -15,7 +15,7 @@ func TestUpstreamClient_InjectedRootVerifies(t *testing.T) {
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
 
 	// With the origin's CA injected → verifies.
-	good, err := NewUpstreamClient(caPEM)
+	good, err := NewUpstreamClient(caPEM, false)
 	if err != nil {
 		t.Fatalf("NewUpstreamClient: %v", err)
 	}
@@ -26,8 +26,14 @@ func TestUpstreamClient_InjectedRootVerifies(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// Without it (system roots only) → the self-signed httptest cert is rejected.
-	bare, _ := NewUpstreamClient(nil)
+	bare, _ := NewUpstreamClient(nil, false)
 	if _, err := bare.Get(srv.URL); err == nil {
 		t.Errorf("expected verification failure with system roots only")
+	}
+
+	// insecure=true → self-signed origin is accepted without any injected root.
+	insecure, _ := NewUpstreamClient(nil, true)
+	if _, err := insecure.Get(srv.URL); err != nil {
+		t.Errorf("expected success with insecure=true, got %v", err)
 	}
 }
