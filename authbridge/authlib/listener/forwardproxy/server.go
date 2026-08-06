@@ -607,7 +607,12 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	// leaves inference/a2a stuck in an unfinalized state and emits no
 	// SessionResponse row to abctl.
 	defer func() {
-		finalAction := s.OutboundPipeline.RunResponseFrame(r.Context(), pctx, nil, true)
+		// Use a detached context for finalization: the client may have
+		// cancelled the request context after reading the full stream,
+		// but aggregating plugins (inference-parser, token-budget) still
+		// need their last=true dispatch to finalize state.
+		finalCtx := context.WithoutCancel(r.Context())
+		finalAction := s.OutboundPipeline.RunResponseFrame(finalCtx, pctx, nil, true)
 		if finalAction.Type == pipeline.Reject {
 			// Headers already sent; we can't promote to 502, but
 			// surface the policy violation so operators see it.

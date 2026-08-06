@@ -72,6 +72,7 @@ var codeToStatus = map[string]int{
 	"upstream.token-exchange-failed": http.StatusServiceUnavailable,
 	"upstream.timeout":               http.StatusGatewayTimeout,
 	"pipeline.cancelled":             499, // client-closed request (nginx convention)
+	"budget.exceeded":                http.StatusForbidden,
 }
 
 // StatusFromCode returns the HTTP status a Violation maps to when its

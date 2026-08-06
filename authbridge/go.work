@@ -6,4 +6,5 @@ use (
 	./cmd/authbridge-cpex
 	./cmd/authbridge-envoy
 	./cmd/authbridge-proxy
+	./storage/redis
 )

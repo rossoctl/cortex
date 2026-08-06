@@ -2,7 +2,10 @@ module github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy
 
 go 1.26.4
 
-require github.com/rossoctl/cortex/authbridge/authlib v0.0.0-00010101000000-000000000000
+require (
+	github.com/rossoctl/cortex/authbridge/authlib v0.0.0
+	github.com/rossoctl/cortex/authbridge/storage/redis v0.0.0
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -33,6 +36,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -72,6 +76,7 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
+	github.com/redis/go-redis/v9 v9.9.0 // indirect
 	github.com/rossoctl/context-guru v0.0.0-20260720181432-8fc7c7b36563 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
@@ -118,4 +123,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/rossoctl/cortex/authbridge/authlib => ../../authlib
+replace (
+	github.com/rossoctl/cortex/authbridge/authlib => ../../authlib
+	github.com/rossoctl/cortex/authbridge/storage/redis => ../../storage/redis
+)

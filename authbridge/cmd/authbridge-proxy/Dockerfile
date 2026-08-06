@@ -28,6 +28,7 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 COPY authlib/ authlib/
+COPY storage/ storage/
 COPY cmd/authbridge-proxy/ cmd/authbridge-proxy/
 
 ARG GO_BUILD_TAGS=""
