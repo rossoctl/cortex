@@ -15,7 +15,7 @@ COPY sparc_service ./sparc_service
 RUN pip install --upgrade pip && pip install .
 
 # Drop privileges.
-RUN useradd --create-home --uid 10001 sparc
+RUN useradd --create-home --uid 10001 sparc && chown -R sparc:sparc /app
 USER sparc
 
 EXPOSE 8090

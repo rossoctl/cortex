@@ -51,7 +51,12 @@ image:  ## Build the sparc-service image locally and load it into kind
 	@echo "[*] building $(IMAGE)"
 	$(CONTAINER_RUNTIME) build -t $(IMAGE) ..
 	@echo "[*] kind load $(IMAGE) into $(KIND_CLUSTER_NAME)"
-	kind load docker-image $(IMAGE) --name $(KIND_CLUSTER_NAME)
+	@# kind load docker-image fails on Linux with rootful Podman — use image-archive instead.
+	if kind load docker-image $(IMAGE) --name $(KIND_CLUSTER_NAME) 2>/dev/null; then \
+	  true; \
+	else \
+	  $(CONTAINER_RUNTIME) save $(IMAGE) | kind load image-archive /dev/stdin --name $(KIND_CLUSTER_NAME); \
+	fi
 	@# Let containerd resolve the bare docker.io/library/<img> ref kubelet uses.
 	-$(CONTAINER_RUNTIME) exec $(KIND_NODE) ctr -n k8s.io images tag localhost/$(IMAGE) docker.io/library/$(IMAGE) >/dev/null 2>&1 || true
 
