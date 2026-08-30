@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
+
+// defaultOTelEndpoint is the OTLP gRPC target used when otel_endpoint is unset:
+// an in-pod collector reached over plaintext loopback.
+const defaultOTelEndpoint = "localhost:4317"
 
 // Config holds the per-plugin configuration decoded from the pipeline YAML.
 type Config struct {
@@ -50,7 +55,7 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		OTelEndpoint: "localhost:4317",
+		OTelEndpoint: defaultOTelEndpoint,
 		BypassPaths:  []string{"/.well-known/", "/healthz", "/readyz", "/health"},
 		BypassHosts:  []string{"otel-collector", "jaeger", "zipkin", "prometheus"},
 		SelfIDFile:   "/shared/client-id.txt",
@@ -70,10 +75,17 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, fmt.Errorf("lineage-telemetry config: %w", err)
 	}
 	if cfg.OTelEndpoint == "" {
-		cfg.OTelEndpoint = "localhost:4317"
+		cfg.OTelEndpoint = defaultOTelEndpoint
 	}
-	// Strip http:// or https:// prefix — gRPC NewClient expects host:port only.
-	cfg.OTelEndpoint = strings.TrimPrefix(cfg.OTelEndpoint, "https://")
-	cfg.OTelEndpoint = strings.TrimPrefix(cfg.OTelEndpoint, "http://")
+	// gRPC NewClient expects host:port only, so reduce a URL form (e.g.
+	// http://collector:4317/v1/traces) to its host — TrimPrefix left any path
+	// behind and produced an invalid dial target.
+	if strings.Contains(cfg.OTelEndpoint, "://") {
+		u, err := url.Parse(cfg.OTelEndpoint)
+		if err != nil || u.Host == "" {
+			return Config{}, fmt.Errorf("lineage-telemetry config: invalid otel_endpoint %q", cfg.OTelEndpoint)
+		}
+		cfg.OTelEndpoint = u.Host
+	}
 	return cfg, nil
 }

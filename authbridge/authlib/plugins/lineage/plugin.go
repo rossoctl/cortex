@@ -154,6 +154,32 @@ func (p *LineageTelemetry) Configure(raw json.RawMessage) error {
 }
 
 func (p *LineageTelemetry) Init(ctx context.Context) error {
+	// Resolve self identity for the lineage.self.id fact FIRST, before any
+	// exporter or tracer resource is allocated. Every span this plugin emits is
+	// a claim of the form "X did Y"; with no X there is no claim to make, so an
+	// unresolvable identity refuses to start rather than serving traffic under a
+	// plausible-but-wrong label ("no mechanism may guess", contract v1.3). Note
+	// the asymmetry with this file's other unknowns: a missing status, payload
+	// or parent anchor is a missing PART of a fact and degrades honestly
+	// (abandoned / NULL / parent.source=wire). Identity is the fact's subject —
+	// it has no degraded form, and a shared placeholder would collapse every
+	// unidentified pod onto one entity row (entity id = uuid5("{kind}:{self.id}"),
+	// and entities is upsert-only). Resolving it up front also means a refused
+	// identity leaks nothing: the gRPC client and batch-span-processor goroutine
+	// below are never created on that path.
+	if p.cfg.SelfID != "" {
+		p.selfID = p.cfg.SelfID
+	} else if p.cfg.SelfIDFile != "" {
+		raw, err := os.ReadFile(p.cfg.SelfIDFile)
+		if err != nil {
+			return fmt.Errorf("lineage-telemetry: no inline self_id and self_id_file unreadable: %w", err)
+		}
+		p.selfID = strings.TrimSpace(string(raw))
+	}
+	if p.selfID == "" {
+		return fmt.Errorf("lineage-telemetry: self identity unresolved (empty self_id and self_id_file %q)", p.cfg.SelfIDFile)
+	}
+
 	endpoint := p.cfg.OTelEndpoint
 	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -166,6 +192,9 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		otlptracegrpc.WithGRPCConn(conn),
 	)
 	if err != nil {
+		// The dial succeeded but the exporter did not adopt the conn, so close
+		// it here rather than leaking the gRPC client on this error path.
+		_ = conn.Close()
 		return fmt.Errorf("lineage-telemetry: OTLP exporter: %w", err)
 	}
 
@@ -185,29 +214,6 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		sdktrace.WithResource(res),
 	)
 	p.tracer = p.tp.Tracer("authbridge/" + pluginName)
-
-	// Resolve self identity for the lineage.self.id fact. Every span this
-	// plugin emits is a claim of the form "X did Y"; with no X there is no
-	// claim to make, so an unresolvable identity refuses to start rather
-	// than serving traffic under a plausible-but-wrong label ("no mechanism
-	// may guess", contract v1.3). Note the asymmetry with this file's other
-	// unknowns: a missing status, payload or parent anchor is a missing PART
-	// of a fact and degrades honestly (abandoned / NULL / parent.source=wire).
-	// Identity is the fact's subject — it has no degraded form, and a shared
-	// placeholder would collapse every unidentified pod onto one entity row
-	// (entity id = uuid5("{kind}:{self.id}"), and entities is upsert-only).
-	if p.cfg.SelfID != "" {
-		p.selfID = p.cfg.SelfID
-	} else if p.cfg.SelfIDFile != "" {
-		raw, err := os.ReadFile(p.cfg.SelfIDFile)
-		if err != nil {
-			return fmt.Errorf("lineage-telemetry: no inline self_id and self_id_file unreadable: %w", err)
-		}
-		p.selfID = strings.TrimSpace(string(raw))
-	}
-	if p.selfID == "" {
-		return fmt.Errorf("lineage-telemetry: self identity unresolved (empty self_id and self_id_file %q)", p.cfg.SelfIDFile)
-	}
 
 	p.ready.Store(true)
 	slog.Info("lineage-telemetry: initialized", "endpoint", endpoint, "self_id", p.selfID)
@@ -677,8 +683,15 @@ func isA2AProtocolEvent(s string) bool {
 	if raw, ok := obj["kind"]; ok {
 		_ = json.Unmarshal(raw, &kind)
 	}
-	return strings.Contains(kind, "status") || strings.Contains(kind, "artifact-update") ||
-		strings.Contains(kind, "Status") || kind == "working" || kind == "canceled"
+	// A2A protocol event kinds are enumerated and stable, so match exactly:
+	// a substring test would suppress a legitimate agent-defined artifact whose
+	// kind merely contains one of these words (e.g. "final-status-report").
+	switch kind {
+	case "status-update", "task-status-update", "artifact-update", "working", "canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 // ioOutputValue returns the output.value for a response span: the parsed

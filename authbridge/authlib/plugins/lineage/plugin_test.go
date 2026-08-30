@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -579,14 +580,14 @@ func TestCaptureIO_A2ANeverFallsThroughToCoPopulatedMCP(t *testing.T) {
 
 	checkAttr(t, req, "lineage.protocol", "a2a")
 	if v, ok := findAttr(req, "input.value"); ok {
-		t.Errorf("input.value = %q on an a2a hop with no a2a parts — leaked from the co-populated MCP parse", v.Emit())
+		t.Errorf("input.value = %q on an a2a hop with no a2a parts — leaked from the co-populated MCP parse", v.String())
 	}
 	if v, ok := findAttr(resp, "output.value"); ok {
-		t.Errorf("output.value = %q on an a2a hop whose artifact is a protocol event — leaked from the co-populated MCP parse", v.Emit())
+		t.Errorf("output.value = %q on an a2a hop whose artifact is a protocol event — leaked from the co-populated MCP parse", v.String())
 	}
 	// mcp.* facts belong to mcp hops only; the a2a label must keep them off.
 	if v, ok := findAttr(req, "mcp.method"); ok {
-		t.Errorf("mcp.method = %q emitted on an a2a hop", v.Emit())
+		t.Errorf("mcp.method = %q emitted on an a2a hop", v.String())
 	}
 }
 
@@ -772,21 +773,7 @@ func checkAttr(t *testing.T, span tracetest.SpanStub, key, want string) {
 }
 
 func headersEqual(a, b http.Header) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := range av {
-			if av[i] != bv[i] {
-				return false
-			}
-		}
-	}
-	return true
+	return maps.EqualFunc(a, b, slices.Equal[[]string])
 }
 
 // TestInit_RefusesToStartWithoutIdentity locks the v1.3 rule at the identity
