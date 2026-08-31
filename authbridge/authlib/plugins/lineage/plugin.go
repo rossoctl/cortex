@@ -26,16 +26,29 @@
 // so an exchange denied by a gate BEFORE OnRequest ran emits NO spans at all —
 // it is invisible to lineage. Moving lineage ahead of the gates (spans for
 // denied traffic too) is a named follow-up, not current behavior.
+//
+// Read-only variant ("Option 4"). This producer writes one tracestate member
+// (tracestateStampKey) onto forwarded requests so a downstream sidecar can
+// parent its exchange on this one. A deployment that wants a pure observer —
+// no header written, parenting on the wire context alone — is obtained by
+// deleting exactly the selectParent and restampTracestate calls in OnRequest
+// (and the lineage.parent.source fact); the span emit itself stays. The
+// trade-off: without the stamp, two sidecarred pods can only be joined through
+// the app's own propagation, so cross-pod parenting degrades to whatever the
+// wire parent carries. The call site is marked so the choice stays locatable;
+// the variant is not built here.
 package lineage
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -45,6 +58,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
@@ -83,6 +97,9 @@ const pluginName = "lineage-telemetry"
 // A visibly missing edge is recoverable; a silently wrong one is not.
 const tracestateStampKey = "dg-parent"
 
+// truncatedSuffix marks a captured payload that MaxPayloadBytes cut short.
+const truncatedSuffix = "…[truncated]"
+
 func init() {
 	plugins.RegisterPlugin(pluginName, func() pipeline.Plugin { return NewLineageTelemetry() })
 }
@@ -112,6 +129,7 @@ type LineageTelemetry struct {
 	cfg        Config
 	tp         *sdktrace.TracerProvider
 	tracer     trace.Tracer
+	conn       *grpc.ClientConn // OTLP gRPC connection; owned by us, closed on Shutdown
 	ready      atomic.Bool
 	propagator propagation.TextMapPropagator
 	selfID     string // agent's own client ID for the lineage.self.id fact
@@ -181,8 +199,18 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	}
 
 	endpoint := p.cfg.OTelEndpoint
+	// Transport credentials: plaintext by default (the loopback in-pod
+	// collector), TLS when otel_tls is set — an https:// endpoint sets it in
+	// decodeConfig. Spans carry principal facts on every inbound request and,
+	// under capture_io, user messages and model output, so a remote collector
+	// must not receive them in cleartext.
+	creds := insecure.NewCredentials()
+	if p.cfg.OTelTLS {
+		// nil cert pool = system roots; empty serverName = derive from endpoint.
+		creds = credentials.NewClientTLSFromCert(nil, "")
+	}
 	conn, err := grpc.NewClient(endpoint,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {
 		return fmt.Errorf("lineage-telemetry: gRPC dial %s: %w", endpoint, err)
@@ -197,6 +225,10 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		_ = conn.Close()
 		return fmt.Errorf("lineage-telemetry: OTLP exporter: %w", err)
 	}
+	// WithGRPCConn leaves connection ownership with the caller: the exporter's
+	// Shutdown will not close conn, so we retain it and close it ourselves in
+	// Shutdown. Store it only now, past the error path above.
+	p.conn = conn
 
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
@@ -220,11 +252,20 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	return nil
 }
 
+// Shutdown flushes and stops the tracer provider and then closes the OTLP gRPC
+// connection. The exporter created with WithGRPCConn does not own conn, so
+// closing it here is what actually releases the socket; both errors are joined
+// so neither is lost. Safe to call after a failed Init (tp/conn may be nil).
 func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
-	if p.tp == nil {
-		return nil
+	var tpErr error
+	if p.tp != nil {
+		tpErr = p.tp.Shutdown(ctx)
 	}
-	return p.tp.Shutdown(ctx)
+	var connErr error
+	if p.conn != nil {
+		connErr = p.conn.Close()
+	}
+	return errors.Join(tpErr, connErr)
 }
 
 func (p *LineageTelemetry) Ready() bool { return p.ready.Load() }
@@ -273,15 +314,9 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 	reqAttrs = p.appendRequestFacts(reqAttrs, pctx, protocol)
 
 	// (3) parent · (4) emit · (5) re-stamp — wire contract v1.5. The emit is
-	// unconditional; the two calls around it are the stamp machinery.
-	//
-	// >>> OPTION-4 DELETION POINT <<<
-	// A pure read-only sidecar deletes exactly the selectParent and
-	// restampTracestate calls below (and the parent.source fact), parenting on
-	// remoteCtx alone — wire-parent-only propagation. The emit stays. The
-	// trade-off to weigh first: without the stamp, two sidecarred pods can
-	// only be joined through the app's own propagation, so cross-pod
-	// parenting degrades to whatever the wire parent happens to carry.
+	// unconditional; the two calls around it are the stamp machinery. The
+	// read-only "Option 4" variant deletes exactly these two calls (and the
+	// parent.source fact) — see the package doc for the trade-off.
 	parent, parentSource := selectParent(ctx, remoteCtx)
 	reqAttrs = append(reqAttrs, attribute.String("lineage.parent.source", parentSource))
 	reqCtx := p.emitRequestSpan(parent, spanName, spanKind, reqAttrs)
@@ -421,6 +456,12 @@ func (p *LineageTelemetry) OnFinish(ctx context.Context, pctx *pipeline.Context)
 	attrs = append(attrs, state.common...)
 	attrs = append(attrs, attribute.String("lineage.outcome", outcome))
 	if hasStatus {
+		// "http.status_code" (like "http.method" on the request span) is the
+		// pre-v1.21 OTel semconv key, kept deliberately: this producer's
+		// contract vocabulary is lineage.* + these two well-known HTTP keys,
+		// pinned to the wire contract, not the stable OTel names
+		// (http.response.status_code / http.request.method). Interop with
+		// generic OTel tooling is a non-goal here.
 		attrs = append(attrs, attribute.Int("http.status_code", status))
 	}
 	if deniedBy != "" {
@@ -428,7 +469,7 @@ func (p *LineageTelemetry) OnFinish(ctx context.Context, pctx *pipeline.Context)
 	}
 	if p.cfg.CaptureIO {
 		if v := ioOutputValue(pctx, state.protocol); v != "" {
-			attrs = append(attrs, attribute.String("output.value", v))
+			attrs = append(attrs, attribute.String("output.value", truncate(v, p.cfg.MaxPayloadBytes)))
 		}
 	}
 
@@ -509,6 +550,8 @@ func baseAttrs(pctx *pipeline.Context, self, protocol string) []attribute.KeyVal
 // extension pointer is non-nil.
 func (p *LineageTelemetry) appendRequestFacts(attrs []attribute.KeyValue, pctx *pipeline.Context, protocol string) []attribute.KeyValue {
 	if pctx.Method != "" {
+		// "http.method" is the pre-v1.21 OTel semconv key, kept deliberately —
+		// see the http.status_code note on the response span.
 		attrs = append(attrs, attribute.String("http.method", pctx.Method))
 	}
 	if pctx.Path != "" {
@@ -551,10 +594,32 @@ func (p *LineageTelemetry) appendRequestFacts(attrs []attribute.KeyValue, pctx *
 	}
 	if p.cfg.CaptureIO {
 		if v := ioInputValue(pctx, protocol); v != "" {
-			attrs = append(attrs, attribute.String("input.value", v))
+			attrs = append(attrs, attribute.String("input.value", truncate(v, p.cfg.MaxPayloadBytes)))
 		}
 	}
 	return attrs
+}
+
+// truncate bounds a captured payload to max bytes, cutting on a UTF-8
+// rune boundary and appending truncatedSuffix so the loss is explicit in the
+// span rather than a silent drop at the OTLP exporter's attribute-length limit.
+// A non-positive max disables the cap (the caller's explicit opt-out). The
+// returned string, suffix included, never exceeds max bytes.
+func truncate(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	// Reserve room for the marker; if the marker alone would not fit, fall back
+	// to a hard byte cut so we still never exceed max.
+	budget := max - len(truncatedSuffix)
+	if budget <= 0 {
+		return s[:max]
+	}
+	// Back up to a rune boundary so we never split a multi-byte character.
+	for budget > 0 && !utf8.RuneStart(s[budget]) {
+		budget--
+	}
+	return s[:budget] + truncatedSuffix
 }
 
 // requestSpanName builds "{self} {protocol} {op}", dropping the trailing op

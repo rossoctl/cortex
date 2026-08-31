@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -895,5 +896,136 @@ func TestBypassHosts_SubstringMatchEmitsNothing(t *testing.T) {
 				t.Fatalf("host %q: got %d spans, want %d", tc.host, got, tc.spans)
 			}
 		})
+	}
+}
+
+// ---- lifecycle: gRPC connection ownership ----
+// WithGRPCConn leaves the conn for the caller to close; the exporter's Shutdown
+// does not. A real Init dials a (never-answered) localhost target, stores the
+// conn, and Shutdown must both stop the provider and close that conn without
+// error. We assert the observable contract — conn stored after Init, Shutdown
+// returns nil — since the closed socket itself is not introspectable here.
+func TestShutdown_ClosesConn(t *testing.T) {
+	p := NewLineageTelemetry()
+	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if p.conn == nil {
+		t.Fatal("Init did not store the gRPC conn for Shutdown to close")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown returned an error: %v", err)
+	}
+	// A second Shutdown after conn is already closed must not panic; it may
+	// return an error from re-closing, which the caller can ignore.
+	_ = p.Shutdown(ctx)
+}
+
+// TestShutdown_NoInitIsSafe: Shutdown on a plugin that never Init'd (tp and
+// conn both nil) is a no-op, not a nil-deref — the host may call it after a
+// failed Init.
+func TestShutdown_NoInitIsSafe(t *testing.T) {
+	p := NewLineageTelemetry()
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown on an uninitialized plugin: %v", err)
+	}
+}
+
+// ---- OTLP transport selection ----
+// The export defaults to plaintext (in-pod loopback) but must honour a request
+// for TLS rather than silently downgrading it: an https:// endpoint turns TLS
+// on, and the one contradiction (https:// with an explicit otel_tls:false)
+// fails closed rather than sending principal facts / payloads in the clear.
+func TestConfig_TLSFromScheme(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		wantErr  bool
+		wantTLS  bool
+		wantHost string
+	}{
+		{"bare host:port stays insecure", `{"otel_endpoint":"collector:4317","self_id":"x"}`, false, false, "collector:4317"},
+		{"http:// stays insecure, host reduced", `{"otel_endpoint":"http://collector:4317/v1/traces","self_id":"x"}`, false, false, "collector:4317"},
+		{"https:// turns TLS on, host reduced", `{"otel_endpoint":"https://collector.example.com:4317","self_id":"x"}`, false, true, "collector.example.com:4317"},
+		{"explicit otel_tls on a plaintext host is honoured", `{"otel_endpoint":"collector:4317","otel_tls":true,"self_id":"x"}`, false, true, "collector:4317"},
+		{"https:// with otel_tls:false is a rejected contradiction", `{"otel_endpoint":"https://collector:4317","otel_tls":false,"self_id":"x"}`, true, false, ""},
+		{"https:// with otel_tls:true is consistent", `{"otel_endpoint":"https://collector:4317","otel_tls":true,"self_id":"x"}`, false, true, "collector:4317"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := decodeConfig([]byte(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected a config error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeConfig: %v", err)
+			}
+			if cfg.OTelTLS != tc.wantTLS {
+				t.Errorf("OTelTLS = %v, want %v", cfg.OTelTLS, tc.wantTLS)
+			}
+			if cfg.OTelEndpoint != tc.wantHost {
+				t.Errorf("OTelEndpoint = %q, want %q", cfg.OTelEndpoint, tc.wantHost)
+			}
+		})
+	}
+}
+
+// ---- payload truncation ----
+// With capture_io on, a payload larger than max_payload_bytes must be cut at
+// the producer with an explicit marker, not left whole to be silently dropped
+// by the OTLP exporter's attribute-length limit. The cut is byte-bounded and
+// UTF-8-safe.
+func TestCaptureIO_TruncatesOversizePayload(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	p.cfg.MaxPayloadBytes = 64
+	big := strings.Repeat("x", 500)
+	pctx := fakeContext(pipeline.Outbound, http.Header{})
+	pctx.Extensions.A2A = &pipeline.A2AExtension{
+		Method: "message/send",
+		Parts:  []pipeline.A2APart{{Kind: "text", Content: big}},
+	}
+	run(t, p, pctx, allow(200))
+	req, _ := roleSplit(t, exp.GetSpans())
+	v, ok := findAttr(req, "input.value")
+	if !ok {
+		t.Fatal("input.value absent on a captured a2a hop with text parts")
+	}
+	got := v.AsString()
+	if len(got) > p.cfg.MaxPayloadBytes {
+		t.Errorf("input.value is %d bytes, exceeds cap %d", len(got), p.cfg.MaxPayloadBytes)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("truncated input.value %q missing %q suffix", got, truncatedSuffix)
+	}
+}
+
+// TestTruncate covers the helper's boundaries directly: within-cap passthrough,
+// the opt-out, and a UTF-8-safe cut that never splits a multi-byte rune.
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 64); got != "short" {
+		t.Errorf("within cap mutated: %q", got)
+	}
+	if got := truncate("anything", -1); got != "anything" {
+		t.Errorf("negative cap should disable truncation, got %q", got)
+	}
+	// A run of 3-byte runes ("世") cut to a byte budget that lands mid-rune:
+	// the result must be valid UTF-8 and within the cap.
+	s := strings.Repeat("世", 100) // 300 bytes
+	got := truncate(s, 40)
+	if len(got) > 40 {
+		t.Errorf("truncated to %d bytes, exceeds cap 40", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("truncation split a multi-byte rune: %q is not valid UTF-8", got)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("missing truncation marker: %q", got)
 	}
 }
