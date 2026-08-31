@@ -256,7 +256,13 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 // connection. The exporter created with WithGRPCConn does not own conn, so
 // closing it here is what actually releases the socket; both errors are joined
 // so neither is lost. Safe to call after a failed Init (tp/conn may be nil).
+//
+// Readiness is cleared first, unconditionally: after Shutdown the plugin is no
+// longer ready even if tp/conn are nil (post-failed-Init) or their shutdown
+// errors, so a pipeline orchestrator checking Ready() before routing sees the
+// lifecycle transition. This mirrors the p.ready.Store(true) in Init.
 func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
+	p.ready.Store(false)
 	var tpErr error
 	if p.tp != nil {
 		tpErr = p.tp.Shutdown(ctx)

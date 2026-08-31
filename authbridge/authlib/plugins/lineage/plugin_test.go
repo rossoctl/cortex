@@ -934,6 +934,45 @@ func TestShutdown_NoInitIsSafe(t *testing.T) {
 	}
 }
 
+// TestShutdown_ClearsReady: a successful Init makes the plugin ready; Shutdown
+// clears readiness, so a pipeline orchestrator polling Ready() before routing
+// sees the plugin fall out of rotation rather than keep receiving traffic into
+// a torn-down tracer provider.
+func TestShutdown_ClearsReady(t *testing.T) {
+	p := NewLineageTelemetry()
+	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !p.Ready() {
+		t.Fatal("Ready() is false after a successful Init")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown returned an error: %v", err)
+	}
+	if p.Ready() {
+		t.Fatal("Ready() is still true after Shutdown")
+	}
+}
+
+// TestShutdown_ClearsReadyAfterFailedInit: readiness is cleared unconditionally,
+// even when Init never set it — Shutdown flips it false regardless of whether
+// tp/conn were ever built, keeping the false→false transition idempotent.
+func TestShutdown_ClearsReadyAfterFailedInit(t *testing.T) {
+	p := NewLineageTelemetry()
+	if p.Ready() {
+		t.Fatal("a freshly constructed plugin should not be ready")
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown on an uninitialized plugin: %v", err)
+	}
+	if p.Ready() {
+		t.Fatal("Ready() is true after Shutdown on an uninitialized plugin")
+	}
+}
+
 // ---- OTLP transport selection ----
 // The export defaults to plaintext (in-pod loopback) but must honour a request
 // for TLS rather than silently downgrading it: an https:// endpoint turns TLS
