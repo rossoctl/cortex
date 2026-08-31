@@ -609,11 +609,16 @@ func truncate(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
-	// Reserve room for the marker; if the marker alone would not fit, fall back
-	// to a hard byte cut so we still never exceed max.
+	// Reserve room for the marker; if the marker alone would not fit, drop it
+	// and return the prefix. Still back up to a rune boundary so the fallback
+	// never emits invalid UTF-8, and never exceed max.
 	budget := max - len(truncatedSuffix)
 	if budget <= 0 {
-		return s[:max]
+		budget = max
+		for budget > 0 && !utf8.RuneStart(s[budget]) {
+			budget--
+		}
+		return s[:budget]
 	}
 	// Back up to a rune boundary so we never split a multi-byte character.
 	for budget > 0 && !utf8.RuneStart(s[budget]) {

@@ -938,7 +938,9 @@ func TestShutdown_NoInitIsSafe(t *testing.T) {
 // The export defaults to plaintext (in-pod loopback) but must honour a request
 // for TLS rather than silently downgrading it: an https:// endpoint turns TLS
 // on, and the one contradiction (https:// with an explicit otel_tls:false)
-// fails closed rather than sending principal facts / payloads in the clear.
+// fails closed rather than sending principal facts / payloads in the clear. A
+// non-http(s) scheme (ftp://, ftps://) is rejected outright, not stripped and
+// dialed insecure.
 func TestConfig_TLSFromScheme(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -953,6 +955,8 @@ func TestConfig_TLSFromScheme(t *testing.T) {
 		{"explicit otel_tls on a plaintext host is honoured", `{"otel_endpoint":"collector:4317","otel_tls":true,"self_id":"x"}`, false, true, "collector:4317"},
 		{"https:// with otel_tls:false is a rejected contradiction", `{"otel_endpoint":"https://collector:4317","otel_tls":false,"self_id":"x"}`, true, false, ""},
 		{"https:// with otel_tls:true is consistent", `{"otel_endpoint":"https://collector:4317","otel_tls":true,"self_id":"x"}`, false, true, "collector:4317"},
+		{"ftp:// scheme is rejected", `{"otel_endpoint":"ftp://collector:4317","self_id":"x"}`, true, false, ""},
+		{"ftps:// scheme is rejected", `{"otel_endpoint":"ftps://collector:4317","self_id":"x"}`, true, false, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1027,5 +1031,16 @@ func TestTruncate(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, truncatedSuffix) {
 		t.Errorf("missing truncation marker: %q", got)
+	}
+	// The suffix-can't-fit fallback: max below len(truncatedSuffix) with a
+	// multi-byte payload must still return valid UTF-8 within the cap (the
+	// marker is dropped, but a mid-rune byte cut is not). Guards the budget<=0
+	// branch, which previously did a hard s[:max] byte cut.
+	tiny := truncate(strings.Repeat("世", 100), 4) // 4 < len(truncatedSuffix)
+	if len(tiny) > 4 {
+		t.Errorf("suffix-can't-fit cut to %d bytes, exceeds cap 4", len(tiny))
+	}
+	if !utf8.ValidString(tiny) {
+		t.Errorf("suffix-can't-fit cut split a rune: %q is not valid UTF-8", tiny)
 	}
 }

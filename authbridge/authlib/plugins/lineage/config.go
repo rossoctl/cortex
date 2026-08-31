@@ -12,17 +12,20 @@ import (
 // an in-pod collector reached over plaintext loopback.
 const defaultOTelEndpoint = "localhost:4317"
 
-// defaultMaxPayloadBytes bounds a captured input.value / output.value. It
-// matches the OTLP SDK's default span-attribute-value length limit, so a
-// payload that fits here also fits the exporter and rides the wire intact;
-// anything longer is truncated with an explicit marker rather than silently
-// dropped downstream.
+// defaultMaxPayloadBytes bounds a captured input.value / output.value as a
+// deliberate producer-side cap. It is NOT a mirror of any SDK limit: the OTel
+// SDK's default attribute-value length limit is unlimited (-1) and Init sets no
+// SpanLimits, so an oversized value is not dropped or truncated downstream. This
+// bound is our own guard against unbounded spans (and against any backend value
+// limit); anything longer is cut here with an explicit marker so the loss is
+// visible in the span. 4096 is a conservative default, not a hard requirement.
 const defaultMaxPayloadBytes = 4096
 
 // Config holds the per-plugin configuration decoded from the pipeline YAML.
 type Config struct {
 	// OTelEndpoint is the OTLP gRPC endpoint (host:port, http://host:port, or
-	// https://host:port). An https:// scheme implies OTelTLS=true.
+	// https://host:port). An https:// scheme implies OTelTLS=true. Any other
+	// URL scheme is rejected at decode (see decodeConfig).
 	// Default: "localhost:4317"
 	OTelEndpoint string `json:"otel_endpoint"`
 
@@ -51,13 +54,13 @@ type Config struct {
 
 	// MaxPayloadBytes caps the size of the input.value / output.value
 	// attributes attached under CaptureIO. A payload longer than this is cut on
-	// a UTF-8 boundary and suffixed with a truncation marker, making the loss
-	// explicit at the producer rather than silent at the exporter: the OTLP SDK
-	// drops an attribute value that exceeds its own span-attribute-value limit
-	// (4096 bytes by default), so an uncapped large payload would simply vanish
-	// from the span with no marker. Zero (or unset) uses defaultMaxPayloadBytes;
-	// a negative value disables the cap (attach whole — the exporter limit then
-	// governs). Ignored when CaptureIO is false.
+	// a UTF-8 boundary and suffixed with a truncation marker, so the loss is
+	// explicit in the span. This is a deliberate producer-side bound; the OTel
+	// SDK does not itself drop or truncate an oversized value (its default
+	// attribute-value limit is unlimited and Init sets no SpanLimits), so
+	// without this cap the whole payload would be emitted. Zero (or unset) uses
+	// defaultMaxPayloadBytes; a negative value disables the cap (attach whole).
+	// Ignored when CaptureIO is false.
 	// Default: 4096
 	MaxPayloadBytes int `json:"max_payload_bytes"`
 
@@ -123,6 +126,14 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 		u, err := url.Parse(cfg.OTelEndpoint)
 		if err != nil || u.Host == "" {
 			return Config{}, fmt.Errorf("lineage-telemetry config: invalid otel_endpoint %q", cfg.OTelEndpoint)
+		}
+		// Only http/https carry a meaningful OTLP transport intent. Reject any
+		// other scheme (ftp://, ftps://, …) rather than strip it and dial the
+		// bare host:port insecurely — that would silently send principal facts
+		// and payloads in cleartext. Fail closed, matching this package's
+		// DisallowUnknownFields / https+otel_tls:false posture.
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return Config{}, fmt.Errorf("lineage-telemetry config: unsupported otel_endpoint scheme %q (want http or https)", u.Scheme)
 		}
 		if u.Scheme == "https" {
 			// An explicit otel_tls:false alongside an https:// endpoint is a
