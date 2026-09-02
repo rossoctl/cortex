@@ -3,6 +3,7 @@ package lineage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"os"
@@ -317,30 +318,70 @@ func TestMint_Disabled(t *testing.T) {
 	}
 }
 
-// TestMint_NeverRewritesPresentTraceparent: minting is additive only. A
-// traceparent that is present but unparseable extracts as no context — the
-// exact situation minting exists for — and is still left untouched, with no
-// stamp: the plugin never modifies a header the caller sent.
-func TestMint_NeverRewritesPresentTraceparent(t *testing.T) {
+// TestMint_RestartsInvalidTraceparent: W3C's processing model for an
+// unparseable traceparent is to restart the trace — a new traceparent, the
+// tracestate dropped. The propagator's verdict decides: a malformed value, an
+// empty one, and a version-ff one all extract as no context, so all three are
+// restarted exactly like an absent header, and a foreign tracestate that rode
+// in with them does not survive. (A VALID traceparent is never touched:
+// TestStamp_InboundHeadersUntouchedExceptStamp.)
+func TestMint_RestartsInvalidTraceparent(t *testing.T) {
+	for _, sent := range []string{"not-a-traceparent", "", "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"} {
+		t.Run(fmt.Sprintf("traceparent=%q", sent), func(t *testing.T) {
+			p, exp := newTestPlugin(t)
+			h := http.Header{}
+			h.Set("traceparent", sent)
+			h.Set("tracestate", "vendor=abc")
+			pctx := fakeContext(pipeline.Inbound, h)
+
+			run(t, p, pctx, allow(200))
+
+			req, _ := roleSplit(t, exp.GetSpans())
+			if req.Parent.IsValid() {
+				t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
+			}
+			if got := attrStr(req, "lineage.parent.source"); got != "none" {
+				t.Errorf("lineage.parent.source = %q, want none", got)
+			}
+			want := "00-" + req.SpanContext.TraceID().String() + "-" + req.SpanContext.SpanID().String() + "-01"
+			if got := pctx.Headers.Values("traceparent"); len(got) != 1 || got[0] != want {
+				t.Errorf("forwarded traceparent = %v, want restarted %q", got, want)
+			}
+			wantStamp := tracestateStampKey + "=" + req.SpanContext.SpanID().String()
+			if got := pctx.Headers.Get("tracestate"); got != wantStamp {
+				t.Errorf("tracestate = %q, want the stamp alone (caller's dropped on restart) %q", got, wantStamp)
+			}
+		})
+	}
+}
+
+// TestMint_OutboundChainsIntoPeerInbound is the cross-pod twin of
+// TestMint_ChainsThroughEntry: an app with no context of its own calls out
+// bare, this pod's outbound mints and stamps, and the peer's inbound —
+// receiving exactly the forwarded headers — parents on that outbound via the
+// stamp, in the outbound's trace. Same code path, both directions, proven
+// rather than assumed.
+func TestMint_OutboundChainsIntoPeerInbound(t *testing.T) {
 	p, exp := newTestPlugin(t)
-	h := http.Header{}
-	h.Set("traceparent", "not-a-traceparent")
-	pctx := fakeContext(pipeline.Inbound, h)
+	out := fakeContext(pipeline.Outbound, http.Header{})
+	run(t, p, out, allow(200))
+	outReq, _ := roleSplit(t, exp.GetSpans())
+	exp.Reset()
 
-	run(t, p, pctx, allow(200))
+	peer, peerExp := newTestPlugin(t)
+	peer.selfID = "weather-tool"
+	in := fakeContext(pipeline.Inbound, out.Headers.Clone())
+	run(t, peer, in, allow(200))
+	inReq, _ := roleSplit(t, peerExp.GetSpans())
 
-	if got := pctx.Headers.Get("traceparent"); got != "not-a-traceparent" {
-		t.Errorf("malformed traceparent rewritten to %q", got)
+	if inReq.SpanContext.TraceID() != outReq.SpanContext.TraceID() {
+		t.Errorf("peer inbound trace %s, want the outbound's %s", inReq.SpanContext.TraceID(), outReq.SpanContext.TraceID())
 	}
-	if got := pctx.Headers.Get("tracestate"); got != "" {
-		t.Errorf("tracestate stamped onto a malformed traceparent: %q", got)
+	if inReq.Parent.SpanID() != outReq.SpanContext.SpanID() {
+		t.Errorf("peer inbound parent %s, want the outbound request span %s", inReq.Parent.SpanID(), outReq.SpanContext.SpanID())
 	}
-	req, _ := roleSplit(t, exp.GetSpans())
-	if req.Parent.IsValid() {
-		t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
-	}
-	if got := attrStr(req, "lineage.parent.source"); got != "none" {
-		t.Errorf("lineage.parent.source = %q, want none", got)
+	if got := attrStr(inReq, "lineage.parent.source"); got != "tracestate" {
+		t.Errorf("lineage.parent.source = %q, want tracestate", got)
 	}
 }
 

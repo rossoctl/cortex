@@ -33,7 +33,8 @@
 // carried no traceparent at all: a traceparent naming this request span
 // (mintTraceparent, config mint_traceparent, default on), because without one
 // the next element has nothing to extract and the stamp has nothing to ride
-// on. A traceparent that is present is never modified.
+// on. A valid traceparent is never modified; an invalid one is replaced, which
+// is W3C's processing model for it (restart the trace, drop tracestate).
 //
 // Read-only variant ("Option 4"). A deployment that wants a pure observer —
 // no header written, parenting on the wire context alone — sets
@@ -88,10 +89,10 @@ const pluginName = "lineage-telemetry"
 // own spans keeps an intact traceparent chain toward its own backend while
 // the sidecar chain stays self-consistent in ours. (Until v1.4 the outbound
 // instead rewrote the forwarded traceparent — the splice; v1.5 removed it.)
-// The one additive exception: a request that arrived with no traceparent at
-// all is forwarded with one naming this request span (mintTraceparent), so
-// this member has a header to ride on — W3C reads tracestate only alongside
-// a valid traceparent.
+// The one exception: a request that arrived with no valid traceparent is
+// forwarded with one naming this request span (mintTraceparent), so this
+// member has a header to ride on — W3C reads tracestate only alongside a
+// valid traceparent.
 //
 // The key names the consuming data-governance system (W3C convention: the key
 // identifies the owner of the entry) and is deliberately platform-neutral —
@@ -252,6 +253,11 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		res = resource.Default()
 	}
 
+	// No sampler is set, so the SDK default applies: ParentBased(AlwaysSample),
+	// overridable through OTEL_TRACES_SAMPLER. The sampling flag of a root
+	// span is what a minted traceparent carries downstream (mintTraceparent),
+	// and every peer sidecar is ParentBased too — a ratio sampler here would
+	// silently un-sample whole chains, not just this pod's spans.
 	p.tp = sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
@@ -401,19 +407,22 @@ func (p *LineageTelemetry) emitRequestSpan(
 }
 
 // mintTraceparent is step (4b), both directions: when the request arrived
-// with NO traceparent header, forward one naming this request span, and
-// return that context for the re-stamp to build on. Without it the next
-// element has nothing to extract — an app's propagate-only shim roots a fresh
-// trace of its own and the tracestate stamp never leaves this pod, because
-// W3C reads tracestate only alongside a valid traceparent — so the entry
-// exchange lands alone in its own trace and every call it caused derives as
-// a parentless root (measured live 2026-09-02: one traceparent-less turn, 32
-// spans, 9 derived roots instead of 1). Strictly additive: a traceparent that
-// is present, valid or malformed, is left exactly as it arrived (a malformed
-// one still fragments visibly — parent.source=none, no stamp). Disabled by
-// mint_traceparent: false, for a pure observer.
+// with NO VALID traceparent, forward one naming this request span, and return
+// that context for the re-stamp to build on. Without it the next element has
+// nothing to extract — an app's propagate-only shim roots a fresh trace of
+// its own and the tracestate stamp never leaves this pod, because W3C reads
+// tracestate only alongside a valid traceparent — so the entry exchange lands
+// alone in its own trace and every call it caused derives as a parentless
+// root (measured live 2026-09-02: one traceparent-less turn, 32 spans, 9
+// derived roots instead of 1). Validity is the propagator's verdict, the same
+// one selectParent used to record parent.source=none: absent, empty and
+// malformed all extract as no context, and all three are restarted here —
+// exactly W3C's processing model for an unparseable traceparent (new
+// traceparent, tracestate dropped; the re-stamp then writes ours alone). A
+// valid traceparent is never modified. Disabled by mint_traceparent: false,
+// for a pure observer.
 func (p *LineageTelemetry) mintTraceparent(ctx context.Context, pctx *pipeline.Context, remoteCtx context.Context, reqCtx trace.SpanContext) context.Context {
-	if !p.cfg.MintTraceparent || trace.SpanContextFromContext(remoteCtx).IsValid() || pctx.Headers.Get("traceparent") != "" {
+	if !p.cfg.MintTraceparent || trace.SpanContextFromContext(remoteCtx).IsValid() {
 		return remoteCtx
 	}
 	minted := trace.ContextWithRemoteSpanContext(ctx, reqCtx)
@@ -429,9 +438,11 @@ func (p *LineageTelemetry) mintTraceparent(ctx context.Context, pctx *pipeline.C
 // caused. Outbound: the peer sidecar's inbound reads it as its parent. The
 // forwarded traceparent is never modified (see tracestateStampKey). A valid
 // traceparent to ride on is required — the wire's, or the one mintTraceparent
-// just forwarded; with neither (mint_traceparent off, or a malformed
-// traceparent left untouched) the shim would root a fresh trace and drop the
-// tracestate anyway, so there is nothing to stamp. The listener is
+// just forwarded; with neither (mint_traceparent off) the shim would root a
+// fresh trace and drop the tracestate anyway, so there is nothing to stamp. On
+// a minted context the base TraceState is empty, so the caller's tracestate,
+// if any rode in with an invalid traceparent, is dropped — W3C's restart
+// semantics, not an accident. The listener is
 // responsible for propagating these header mutations (ext_proc emits a
 // SetHeaders diff).
 func restampTracestate(pctx *pipeline.Context, remoteCtx context.Context, exchangeID string) {
