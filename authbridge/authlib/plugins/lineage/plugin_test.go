@@ -29,6 +29,7 @@ func newTestPlugin(t *testing.T) (*LineageTelemetry, *tracetest.InMemoryExporter
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
 	p := NewLineageTelemetry()
+	p.cfg = defaultConfig() // the shipped defaults, so a test sees what a deployment sees
 	p.tp = tp
 	p.tracer = tp.Tracer("test")
 	p.selfID = "weather-service"
@@ -266,14 +267,127 @@ func TestStamp_PreservesForeignTracestateMembers(t *testing.T) {
 	}
 }
 
-func TestStamp_NoWireTraceparentNoStamp(t *testing.T) {
+// TestMint_NoTraceparentForwardsOwn is the traceparent-less entry, both
+// directions: the request span roots a fresh trace, and the forwarded request
+// now carries a traceparent naming that span PLUS the tracestate stamp — so
+// the next element (the app's shim inbound, the peer's sidecar outbound) has
+// a context to extract and the stamp has a header to ride on.
+func TestMint_NoTraceparentForwardsOwn(t *testing.T) {
+	for _, dir := range []pipeline.Direction{pipeline.Inbound, pipeline.Outbound} {
+		t.Run(dir.String(), func(t *testing.T) {
+			p, exp := newTestPlugin(t)
+			pctx := fakeContext(dir, http.Header{})
+
+			run(t, p, pctx, allow(200))
+
+			req, _ := roleSplit(t, exp.GetSpans())
+			if req.Parent.IsValid() {
+				t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
+			}
+			if got := attrStr(req, "lineage.parent.source"); got != "wire" {
+				t.Errorf("lineage.parent.source = %q, want wire", got)
+			}
+			want := "00-" + req.SpanContext.TraceID().String() + "-" + req.SpanContext.SpanID().String() + "-01"
+			if got := pctx.Headers.Get("traceparent"); got != want {
+				t.Errorf("forwarded traceparent = %q, want minted %q", got, want)
+			}
+			wantStamp := tracestateStampKey + "=" + req.SpanContext.SpanID().String()
+			if got := pctx.Headers.Get("tracestate"); got != wantStamp {
+				t.Errorf("tracestate = %q, want stamp %q", got, wantStamp)
+			}
+		})
+	}
+}
+
+// TestMint_Disabled is the pure-observer posture: with mint_traceparent off a
+// traceparent-less request is forwarded exactly as it arrived — no
+// traceparent, and therefore no stamp either.
+func TestMint_Disabled(t *testing.T) {
 	p, _ := newTestPlugin(t)
+	p.cfg.MintTraceparent = false
 	pctx := fakeContext(pipeline.Inbound, http.Header{})
 
 	run(t, p, pctx, allow(200))
 
+	if got := pctx.Headers.Get("traceparent"); got != "" {
+		t.Errorf("traceparent minted with mint_traceparent off: %q", got)
+	}
 	if got := pctx.Headers.Get("tracestate"); got != "" {
 		t.Errorf("tracestate stamped without a wire traceparent: %q", got)
+	}
+}
+
+// TestMint_NeverRewritesPresentTraceparent: minting is additive only. A
+// traceparent that is present but unparseable extracts as no context — the
+// exact situation minting exists for — and is still left untouched, with no
+// stamp: the plugin never modifies a header the caller sent.
+func TestMint_NeverRewritesPresentTraceparent(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	h := http.Header{}
+	h.Set("traceparent", "not-a-traceparent")
+	pctx := fakeContext(pipeline.Inbound, h)
+
+	run(t, p, pctx, allow(200))
+
+	if got := pctx.Headers.Get("traceparent"); got != "not-a-traceparent" {
+		t.Errorf("malformed traceparent rewritten to %q", got)
+	}
+	if got := pctx.Headers.Get("tracestate"); got != "" {
+		t.Errorf("tracestate stamped onto a malformed traceparent: %q", got)
+	}
+	req, _ := roleSplit(t, exp.GetSpans())
+	if req.Parent.IsValid() {
+		t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
+	}
+}
+
+// TestMint_ChainsThroughEntry is the whole entry mechanism end to end in
+// miniature: a traceparent-less inbound (the entry), then an outbound that
+// arrives carrying exactly the headers the inbound forwarded — as a
+// propagate-only shim would courier them — parents on the entry's request
+// span via the stamp, in the entry's own trace. One tree, one root.
+func TestMint_ChainsThroughEntry(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	entry := fakeContext(pipeline.Inbound, http.Header{})
+	run(t, p, entry, allow(200))
+	entryReq, _ := roleSplit(t, exp.GetSpans())
+	exp.Reset()
+
+	out := fakeContext(pipeline.Outbound, entry.Headers.Clone())
+	run(t, p, out, allow(200))
+	outReq, _ := roleSplit(t, exp.GetSpans())
+
+	if outReq.SpanContext.TraceID() != entryReq.SpanContext.TraceID() {
+		t.Errorf("outbound trace %s, want the entry's %s", outReq.SpanContext.TraceID(), entryReq.SpanContext.TraceID())
+	}
+	if outReq.Parent.SpanID() != entryReq.SpanContext.SpanID() {
+		t.Errorf("outbound parent %s, want the entry request span %s", outReq.Parent.SpanID(), entryReq.SpanContext.SpanID())
+	}
+	if got := attrStr(outReq, "lineage.parent.source"); got != "tracestate" {
+		t.Errorf("lineage.parent.source = %q, want tracestate", got)
+	}
+}
+
+func TestConfig_MintTraceparent(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"default on", `{"self_id":"x"}`, true},
+		{"explicit true", `{"mint_traceparent":true,"self_id":"x"}`, true},
+		{"explicit false", `{"mint_traceparent":false,"self_id":"x"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := decodeConfig([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("decodeConfig: %v", err)
+			}
+			if cfg.MintTraceparent != tc.want {
+				t.Errorf("MintTraceparent = %v, want %v", cfg.MintTraceparent, tc.want)
+			}
+		})
 	}
 }
 

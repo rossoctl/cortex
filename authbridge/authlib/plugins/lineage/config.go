@@ -64,6 +64,20 @@ type Config struct {
 	// Default: 4096
 	MaxPayloadBytes int `json:"max_payload_bytes"`
 
+	// MintTraceparent — both directions — forwards a W3C traceparent naming
+	// this exchange's request span when the request arrived with NO
+	// traceparent header at all. Without one the next element has nothing to
+	// extract: an app's propagate-only shim roots a fresh trace of its own,
+	// and the tracestate stamp (which W3C reads only alongside a valid
+	// traceparent) never leaves this pod — so the entry exchange lands alone
+	// in its own trace and every call it caused derives as a parentless root.
+	// This is the one place the plugin ADDS a header the caller did not send;
+	// a traceparent that is present, valid or malformed, is never modified.
+	// Set false for a pure observer that must not add a header the
+	// application would see (the exchange then fragments, visibly).
+	// Default: true
+	MintTraceparent bool `json:"mint_traceparent"`
+
 	// BypassPaths lists URL path prefixes that should not generate lineage
 	// hops. Useful for suppressing infrastructure polling (agent-card
 	// discovery, health checks) that would otherwise flood the lineage graph.
@@ -91,6 +105,7 @@ func defaultConfig() Config {
 	return Config{
 		OTelEndpoint:    defaultOTelEndpoint,
 		MaxPayloadBytes: defaultMaxPayloadBytes,
+		MintTraceparent: true,
 		BypassPaths:     []string{"/.well-known/", "/healthz", "/readyz", "/health"},
 		BypassHosts:     []string{"otel-collector", "jaeger", "zipkin", "prometheus"},
 		SelfIDFile:      "/shared/client-id.txt",

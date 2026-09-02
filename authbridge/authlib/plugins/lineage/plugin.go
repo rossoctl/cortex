@@ -27,16 +27,22 @@
 // it is invisible to lineage. Moving lineage ahead of the gates (spans for
 // denied traffic too) is a named follow-up, not current behavior.
 //
-// Read-only variant ("Option 4"). This producer writes one tracestate member
-// (tracestateStampKey) onto forwarded requests so a downstream sidecar can
-// parent its exchange on this one. A deployment that wants a pure observer —
-// no header written, parenting on the wire context alone — is obtained by
-// deleting exactly the selectParent and restampTracestate calls in OnRequest
-// (and the lineage.parent.source fact); the span emit itself stays. The
-// trade-off: without the stamp, two sidecarred pods can only be joined through
-// the app's own propagation, so cross-pod parenting degrades to whatever the
-// wire parent carries. The call site is marked so the choice stays locatable;
-// the variant is not built here.
+// What this producer writes onto forwarded requests — two things, both
+// directions. Always: one tracestate member (tracestateStampKey) so the next
+// lineage element can parent its exchange on this one. Only when the request
+// carried no traceparent at all: a traceparent naming this request span
+// (mintTraceparent, config mint_traceparent, default on), because without one
+// the next element has nothing to extract and the stamp has nothing to ride
+// on. A traceparent that is present is never modified.
+//
+// Read-only variant ("Option 4"). A deployment that wants a pure observer —
+// no header written, parenting on the wire context alone — sets
+// mint_traceparent: false and deletes exactly the selectParent and
+// restampTracestate calls in OnRequest (and the lineage.parent.source fact);
+// the span emit itself stays. The trade-off: without the stamp, two sidecarred
+// pods can only be joined through the app's own propagation, so cross-pod
+// parenting degrades to whatever the wire parent carries. The call site is
+// marked so the choice stays locatable; the variant is not built here.
 package lineage
 
 import (
@@ -81,6 +87,10 @@ const pluginName = "lineage-telemetry"
 // own spans keeps an intact traceparent chain toward its own backend while
 // the sidecar chain stays self-consistent in ours. (Until v1.4 the outbound
 // instead rewrote the forwarded traceparent — the splice; v1.5 removed it.)
+// The one additive exception: a request that arrived with no traceparent at
+// all is forwarded with one naming this request span (mintTraceparent), so
+// this member has a header to ride on — W3C reads tracestate only alongside
+// a valid traceparent.
 //
 // The key names the consuming data-governance system (W3C convention: the key
 // identifies the owner of the entry) and is deliberately platform-neutral —
@@ -319,14 +329,17 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 	reqAttrs = append(reqAttrs, base...)
 	reqAttrs = p.appendRequestFacts(reqAttrs, pctx, protocol)
 
-	// (3) parent · (4) emit · (5) re-stamp — wire contract v1.5. The emit is
-	// unconditional; the two calls around it are the stamp machinery. The
-	// read-only "Option 4" variant deletes exactly these two calls (and the
-	// parent.source fact) — see the package doc for the trade-off.
+	// (3) parent · (4) emit · (4b) mint · (5) re-stamp — wire contract v1.5.
+	// The emit is unconditional; the calls around it are the header
+	// machinery, and (4b) only acts when no traceparent arrived at all. The
+	// read-only "Option 4" variant deletes selectParent and restampTracestate
+	// (and the parent.source fact) and sets mint_traceparent: false — see the
+	// package doc for the trade-off.
 	parent, parentSource := selectParent(ctx, remoteCtx)
 	reqAttrs = append(reqAttrs, attribute.String("lineage.parent.source", parentSource))
 	reqCtx := p.emitRequestSpan(parent, spanName, spanKind, reqAttrs)
 	exchangeID := reqCtx.SpanID().String()
+	remoteCtx = p.mintTraceparent(ctx, pctx, remoteCtx, reqCtx)
 	restampTracestate(pctx, remoteCtx, exchangeID)
 
 	common := make([]attribute.KeyValue, 0, len(base)+1)
@@ -382,15 +395,40 @@ func (p *LineageTelemetry) emitRequestSpan(
 	return sc
 }
 
+// mintTraceparent is step (4b), both directions: when the request arrived
+// with NO traceparent header, forward one naming this request span, and
+// return that context for the re-stamp to build on. Without it the next
+// element has nothing to extract — an app's propagate-only shim roots a fresh
+// trace of its own and the tracestate stamp never leaves this pod, because
+// W3C reads tracestate only alongside a valid traceparent — so the entry
+// exchange lands alone in its own trace and every call it caused derives as
+// a parentless root (measured live 2026-09-02: one traceparent-less turn, 32
+// spans, 9 derived roots instead of 1). Strictly additive: a traceparent that
+// is present, valid or malformed, is left exactly as it arrived (a malformed
+// one still fragments visibly — parent.source=wire, no stamp). Disabled by
+// mint_traceparent: false, for a pure observer.
+func (p *LineageTelemetry) mintTraceparent(ctx context.Context, pctx *pipeline.Context, remoteCtx context.Context, reqCtx trace.SpanContext) context.Context {
+	if !p.cfg.MintTraceparent || trace.SpanContextFromContext(remoteCtx).IsValid() || pctx.Headers.Get("traceparent") != "" {
+		return remoteCtx
+	}
+	minted := trace.ContextWithRemoteSpanContext(ctx, reqCtx)
+	// TraceContext.Inject writes traceparent only; tracestate follows in
+	// restampTracestate (reqCtx carries an empty TraceState).
+	p.propagator.Inject(minted, propagation.HeaderCarrier(pctx.Headers))
+	return minted
+}
+
 // restampTracestate is step (5): rewrite the forwarded request's tracestate
 // member with this exchange id — both directions. Inbound: the app's
 // propagate-only shim couriers it to exactly the outbound calls this inbound
 // caused. Outbound: the peer sidecar's inbound reads it as its parent. The
 // forwarded traceparent is never modified (see tracestateStampKey). A valid
-// wire traceparent is required — without one the app's shim starts a fresh
-// root trace and drops the tracestate anyway, so there is nothing to stamp.
-// The listener is responsible for propagating this header mutation (ext_proc
-// emits a SetHeaders diff).
+// traceparent to ride on is required — the wire's, or the one mintTraceparent
+// just forwarded; with neither (mint_traceparent off, or a malformed
+// traceparent left untouched) the shim would root a fresh trace and drop the
+// tracestate anyway, so there is nothing to stamp. The listener is
+// responsible for propagating these header mutations (ext_proc emits a
+// SetHeaders diff).
 func restampTracestate(pctx *pipeline.Context, remoteCtx context.Context, exchangeID string) {
 	rsc := trace.SpanContextFromContext(remoteCtx)
 	if !rsc.IsValid() {
