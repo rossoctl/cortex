@@ -284,8 +284,8 @@ func TestMint_NoTraceparentForwardsOwn(t *testing.T) {
 			if req.Parent.IsValid() {
 				t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
 			}
-			if got := attrStr(req, "lineage.parent.source"); got != "wire" {
-				t.Errorf("lineage.parent.source = %q, want wire", got)
+			if got := attrStr(req, "lineage.parent.source"); got != "none" {
+				t.Errorf("lineage.parent.source = %q, want none", got)
 			}
 			want := "00-" + req.SpanContext.TraceID().String() + "-" + req.SpanContext.SpanID().String() + "-01"
 			if got := pctx.Headers.Get("traceparent"); got != want {
@@ -338,6 +338,9 @@ func TestMint_NeverRewritesPresentTraceparent(t *testing.T) {
 	req, _ := roleSplit(t, exp.GetSpans())
 	if req.Parent.IsValid() {
 		t.Errorf("request span has parent %s, want a root", req.Parent.SpanID())
+	}
+	if got := attrStr(req, "lineage.parent.source"); got != "none" {
+		t.Errorf("lineage.parent.source = %q, want none", got)
 	}
 }
 

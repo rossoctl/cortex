@@ -80,8 +80,9 @@ const pluginName = "lineage-telemetry"
 // carries tracestate through its per-request causal chain (contextvars), so
 // the member surfaces on exactly the outbound calls that inbound caused.
 // Outbound re-stamps the request it forwards to the peer, whose inbound
-// sidecar reads it as its parent. Parent precedence is stamp > wire parent in
-// BOTH directions, and the chosen source is recorded as the
+// sidecar reads it as its parent. Parent precedence is stamp > wire parent >
+// none (nothing valid on the wire: the span roots a trace) in BOTH
+// directions, and the chosen source is recorded as the
 // lineage.parent.source fact. The forwarded traceparent is never modified:
 // the sidecar chain lives entirely in this member, so an app that emits its
 // own spans keeps an intact traceparent chain toward its own backend while
@@ -168,7 +169,7 @@ func (p *LineageTelemetry) Capabilities() pipeline.PluginCapabilities {
 		// The contract is cited major.minor only, deliberately: patch
 		// revisions (v1.5.x) clarify prose and never change span semantics,
 		// so a patch bump must not imply a producer change.
-		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.5).",
+		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.6).",
 	}
 }
 
@@ -189,7 +190,7 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// plausible-but-wrong label ("no mechanism may guess", contract v1.3). Note
 	// the asymmetry with this file's other unknowns: a missing status, payload
 	// or parent anchor is a missing PART of a fact and degrades honestly
-	// (abandoned / NULL / parent.source=wire). Identity is the fact's subject —
+	// (abandoned / NULL / parent.source=wire or none). Identity is the fact's subject —
 	// it has no degraded form, and a shared placeholder would collapse every
 	// unidentified pod onto one entity row (entity id = uuid5("{kind}:{self.id}"),
 	// and entities is upsert-only). Resolving it up front also means a refused
@@ -329,7 +330,7 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 	reqAttrs = append(reqAttrs, base...)
 	reqAttrs = p.appendRequestFacts(reqAttrs, pctx, protocol)
 
-	// (3) parent · (4) emit · (4b) mint · (5) re-stamp — wire contract v1.5.
+	// (3) parent · (4) emit · (4b) mint · (5) re-stamp — wire contract v1.6.
 	// The emit is unconditional; the calls around it are the header
 	// machinery, and (4b) only acts when no traceparent arrived at all. The
 	// read-only "Option 4" variant deletes selectParent and restampTracestate
@@ -358,18 +359,22 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 }
 
 // selectParent is step (3) of the single-channel parenting mechanism (wire
-// contract v1.5): the parent is the tracestate stamp — the previous sidecar
+// contract v1.6): the parent is the tracestate stamp — the previous sidecar
 // element in the chain (the caller's outbound for an inbound, this pod's
-// inbound for an outbound) — else the wire parent. Same precedence in both
-// directions. There is deliberately no third option: guessing an attribution
-// is worse than declining to give one. Returns the parent context and the
-// source label the caller emits as the lineage.parent.source fact.
+// inbound for an outbound) — else the wire parent; and when nothing valid is
+// on the wire at all, no parent: the request span roots a trace and the fact
+// says so ("none") rather than claiming a wire parent that was never there.
+// Same precedence in both directions. Guessing an attribution is deliberately
+// not among the options: it is worse than declining to give one. Returns the
+// parent context and the source label the caller emits as the
+// lineage.parent.source fact.
 func selectParent(ctx, remoteCtx context.Context) (context.Context, string) {
 	rsc := trace.SpanContextFromContext(remoteCtx)
-	if rsc.IsValid() {
-		if psc, ok := stampedParent(rsc); ok {
-			return trace.ContextWithRemoteSpanContext(ctx, psc), "tracestate"
-		}
+	if !rsc.IsValid() {
+		return remoteCtx, "none"
+	}
+	if psc, ok := stampedParent(rsc); ok {
+		return trace.ContextWithRemoteSpanContext(ctx, psc), "tracestate"
 	}
 	return remoteCtx, "wire"
 }
@@ -405,7 +410,7 @@ func (p *LineageTelemetry) emitRequestSpan(
 // a parentless root (measured live 2026-09-02: one traceparent-less turn, 32
 // spans, 9 derived roots instead of 1). Strictly additive: a traceparent that
 // is present, valid or malformed, is left exactly as it arrived (a malformed
-// one still fragments visibly — parent.source=wire, no stamp). Disabled by
+// one still fragments visibly — parent.source=none, no stamp). Disabled by
 // mint_traceparent: false, for a pure observer.
 func (p *LineageTelemetry) mintTraceparent(ctx context.Context, pctx *pipeline.Context, remoteCtx context.Context, reqCtx trace.SpanContext) context.Context {
 	if !p.cfg.MintTraceparent || trace.SpanContextFromContext(remoteCtx).IsValid() || pctx.Headers.Get("traceparent") != "" {
