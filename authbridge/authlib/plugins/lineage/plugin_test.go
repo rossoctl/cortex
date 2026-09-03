@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"maps"
 	"math/big"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -1350,5 +1352,56 @@ func TestInit_CAFile(t *testing.T) {
 			defer cancel()
 			_ = p.Shutdown(ctx)
 		})
+	}
+}
+
+// ---- export failure visibility ----
+
+type failingExporter struct{ calls atomic.Int32 }
+
+func (f *failingExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	f.calls.Add(1)
+	return errors.New("collector unreachable")
+}
+func (f *failingExporter) Shutdown(context.Context) error { return nil }
+
+// TestExportObserver_CountsFailures: a refused batch is counted (and logged
+// under the plugin's name) and the error still reaches the SDK unchanged, so
+// the batch processor's own handling is not altered.
+func TestExportObserver_CountsFailures(t *testing.T) {
+	fe := &failingExporter{}
+	p := NewLineageTelemetry()
+	obs := &exportObserver{SpanExporter: fe, failures: &p.exportFailures}
+	if err := obs.ExportSpans(context.Background(), nil); err == nil {
+		t.Fatal("observer swallowed the export error")
+	}
+	if got := p.exportFailures.Load(); got != 1 {
+		t.Fatalf("exportFailures = %d after one refused batch, want 1", got)
+	}
+	// Reachable through the SDK: a span ended on a provider that exports
+	// through the observer increments the counter again.
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(obs))
+	_, span := tp.Tracer("t").Start(context.Background(), "s")
+	span.End()
+	_ = tp.Shutdown(context.Background())
+	if got := p.exportFailures.Load(); got != 2 {
+		t.Errorf("exportFailures = %d after a span through the SDK, want 2", got)
+	}
+	if fe.calls.Load() != 2 {
+		t.Errorf("underlying exporter called %d times, want 2", fe.calls.Load())
+	}
+}
+
+// TestLogExportFailure pins the throttle: powers of two are logged, nothing
+// else is, so a long outage costs log lines in proportion to log2(length).
+func TestLogExportFailure(t *testing.T) {
+	var logged []uint64
+	for n := uint64(1); n <= 40; n++ {
+		if logExportFailure(n) {
+			logged = append(logged, n)
+		}
+	}
+	if !slices.Equal(logged, []uint64{1, 2, 4, 8, 16, 32}) {
+		t.Errorf("logged failures = %v, want the powers of two up to 32", logged)
 	}
 }

@@ -151,6 +151,12 @@ type LineageTelemetry struct {
 	ready      atomic.Bool
 	propagator propagation.TextMapPropagator
 	selfID     string // agent's own client ID for the lineage.self.id fact
+	// exportFailures counts batches the collector refused or never received.
+	// Export is asynchronous and the dial is lazy, so this — with the WARN
+	// exportObserver logs — is how an unreachable collector or a TLS chain
+	// that does not verify becomes visible; see Ready for why readiness
+	// deliberately does not follow it.
+	exportFailures atomic.Uint64
 }
 
 // NewLineageTelemetry constructs an unconfigured plugin. Configure + Init must
@@ -282,7 +288,7 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// and every peer sidecar is ParentBased too — a ratio sampler here would
 	// silently un-sample whole chains, not just this pod's spans.
 	p.tp = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(&exportObserver{SpanExporter: exporter, failures: &p.exportFailures}),
 		sdktrace.WithResource(res),
 	)
 	p.tracer = p.tp.Tracer("authbridge/" + pluginName)
@@ -314,7 +320,45 @@ func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
 	return errors.Join(tpErr, connErr)
 }
 
+// Ready reports that the plugin is configured, has an identity and can
+// record spans — not that the collector is reachable. grpc.NewClient dials
+// lazily and the batch processor exports asynchronously, so no point in Init
+// can prove the collector or its TLS chain; and readiness must not follow the
+// collector anyway: an unready plugin skips OnRequest, which is where the
+// tracestate stamp and the minted traceparent are written, so a collector
+// outage would fragment every trace on the wire instead of merely delaying
+// its export. A collector that cannot be reached surfaces through
+// exportObserver instead: a plugin-namespaced WARN and the exportFailures
+// counter.
 func (p *LineageTelemetry) Ready() bool { return p.ready.Load() }
+
+// exportObserver wraps the OTLP exporter so a failed export is visible from
+// this plugin — a plugin-namespaced WARN and a counter — instead of only
+// through the OTel SDK's default error handler on stderr. The error is
+// returned unchanged; the batch processor's retry/drop behaviour is untouched.
+// The WARN is throttled to the 1st, 2nd, 4th, 8th… failure: a dead collector
+// fails a batch every export interval, and one line per failure would bury
+// the logs exactly when they matter. The running total is in every line.
+type exportObserver struct {
+	sdktrace.SpanExporter
+	failures *atomic.Uint64
+}
+
+func (e *exportObserver) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	err := e.SpanExporter.ExportSpans(ctx, spans)
+	if err != nil {
+		if n := e.failures.Add(1); logExportFailure(n) {
+			slog.Warn("lineage-telemetry: span export failed; the collector is unreachable or refused the batch",
+				"spans", len(spans), "failures", n, "error", err)
+		}
+	}
+	return err
+}
+
+// logExportFailure reports whether the n-th consecutive-count failure is one
+// of the logged ones: powers of two, so the volume grows with the log of the
+// outage length rather than with the outage length.
+func logExportFailure(n uint64) bool { return n&(n-1) == 0 }
 
 func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
 	if !p.ready.Load() {
