@@ -52,10 +52,10 @@ One HTTP exchange through the sidecar produces two OTLP spans.
 - The response span is emitted at stream end **even when no response was produced** — client
   disconnect, upstream reset, plugin denial. It then carries `lineage.outcome` and whatever status
   exists, so the row completes as failed instead of dangling.
-- A lone request span means one of three things: the sidecar died mid-exchange; the plugin
-  recovered a panic while emitting the response span (a WARN is logged); or the response span was
-  emitted but lost — the two halves enter a batching exporter an exchange apart, so a response can
-  be lost after its request has flushed. The consumer renders it as in-flight, never as a wrong
+- A lone request span means one of three things: the sidecar died mid-exchange; a panic while
+  emitting the response span was recovered by the pipeline (a WARN is logged); or the response span
+  was emitted but lost — the two halves enter a batching exporter an exchange apart, so a response
+  can be lost after its request has flushed. The consumer renders it as in-flight, never as a wrong
   pairing. A response span whose `lineage.outcome` is absent derives with `error` NULL (honest
   unknown), never `false`.
 - **Scope of `denied`.** The lineage plugin runs after the gate plugins and the pipeline

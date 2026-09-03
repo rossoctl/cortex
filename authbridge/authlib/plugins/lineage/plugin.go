@@ -599,15 +599,11 @@ func (p *LineageTelemetry) OnResponse(_ context.Context, _ *pipeline.Context) pi
 // OnFinish emits the response span — the twin of the request span, parented
 // under it and echoing the same exchange.id — carrying outcome/status/output.
 // Always fires at stream end, so a bodyless or failed exchange still completes
-// as a first-class pair. Runs under a recover so an unexpected state never
-// crashes the pipeline.
+// as a first-class pair. No recover here: the Finisher contract states that
+// OnFinish runs best-effort and that panics are recovered and logged, and
+// dispatchFinish scopes that recover to one plugin, so a second net would only
+// hide the same panic under a different logger.
 func (p *LineageTelemetry) OnFinish(ctx context.Context, pctx *pipeline.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Warn("lineage-telemetry: OnFinish panic recovered", "recover", r)
-		}
-	}()
-
 	state := pipeline.GetState[exchangeState](pctx, pluginName)
 	if state == nil || !state.reqCtx.IsValid() {
 		return
