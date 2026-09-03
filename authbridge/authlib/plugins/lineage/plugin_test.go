@@ -2,9 +2,16 @@ package lineage
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"maps"
+	"math/big"
 	"net/http"
 	"os"
 	"slices"
@@ -1239,5 +1246,109 @@ func TestTruncate(t *testing.T) {
 	}
 	if !utf8.ValidString(tiny) {
 		t.Errorf("suffix-can't-fit cut split a rune: %q is not valid UTF-8", tiny)
+	}
+}
+
+// ---- otel_ca_file: a private CA for the collector ----
+
+// TestConfig_CAFileImpliesTLS: a CA bundle is only meaningful for a TLS dial,
+// so otel_ca_file turns otel_tls on. The contradictions are refused at decode
+// like https:// + otel_tls:false: an explicit otel_tls:false beside the file,
+// and an http:// endpoint beside either TLS knob.
+func TestConfig_CAFileImpliesTLS(t *testing.T) {
+	cfg, err := decodeConfig([]byte(`{"self_id":"x","otel_endpoint":"collector.ns:4317","otel_ca_file":"/etc/lineage/ca.pem"}`))
+	if err != nil {
+		t.Fatalf("decodeConfig: %v", err)
+	}
+	if !cfg.OTelTLS {
+		t.Error("otel_ca_file did not imply otel_tls")
+	}
+	if cfg.OTelCAFile != "/etc/lineage/ca.pem" {
+		t.Errorf("OTelCAFile = %q", cfg.OTelCAFile)
+	}
+	for name, raw := range map[string]string{
+		"otel_ca_file with an explicit otel_tls:false": `{"self_id":"x","otel_ca_file":"/etc/lineage/ca.pem","otel_tls":false}`,
+		"http:// endpoint with otel_ca_file":           `{"self_id":"x","otel_endpoint":"http://collector:4317","otel_ca_file":"/etc/lineage/ca.pem"}`,
+		"http:// endpoint with otel_tls:true":          `{"self_id":"x","otel_endpoint":"http://collector:4317","otel_tls":true}`,
+	} {
+		if _, err := decodeConfig([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted, want a refused contradiction", name)
+		}
+	}
+}
+
+// selfSignedCAPEM returns a PEM-encoded self-signed CA certificate, enough
+// for Init to build a cert pool from.
+func selfSignedCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "lineage-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestInit_CAFile: a private-CA bundle is loaded at Init and a bad one refuses
+// to start (fail closed — never a silent fallback to the system roots). The
+// dial is lazy, so a valid bundle lets Init succeed without a collector. The
+// Config is built directly, with OTelTLS left false, to pin that Init keys
+// on the file alone.
+func TestInit_CAFile(t *testing.T) {
+	dir := t.TempDir()
+	good := dir + "/ca.pem"
+	if err := os.WriteFile(good, selfSignedCAPEM(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	garbage := dir + "/garbage.pem"
+	if err := os.WriteFile(garbage, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		caFile  string
+		wantErr bool
+	}{
+		{"valid bundle starts", good, false},
+		{"missing file refuses", dir + "/absent.pem", true},
+		{"file with no certificate refuses", garbage, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewLineageTelemetry()
+			p.cfg = Config{OTelEndpoint: "collector.ns:4317", OTelCAFile: tc.caFile, SelfID: "x"}
+			err := p.Init(context.Background())
+			if tc.wantErr {
+				if err == nil {
+					_ = p.Shutdown(context.Background())
+					t.Fatal("Init succeeded with an unusable otel_ca_file")
+				}
+				if p.Ready() {
+					t.Error("plugin ready after a refused Init")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if !p.Ready() {
+				t.Error("plugin not ready after a successful Init")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = p.Shutdown(ctx)
+		})
 	}
 }

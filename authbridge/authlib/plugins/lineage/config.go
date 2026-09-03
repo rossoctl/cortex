@@ -33,12 +33,26 @@ type Config struct {
 	// which is correct for the in-pod loopback collector but sends spans —
 	// including lineage.principal.* on every inbound request, and full payloads
 	// under CaptureIO — in cleartext. Set true for any collector off-pod: it
-	// dials with TLS against the system root CAs. An https:// otel_endpoint
-	// turns this on automatically; a plaintext otel_endpoint with otel_tls:true
-	// is honoured (TLS to a host:port). The one rejected combination is an
-	// https:// endpoint with an explicit otel_tls:false (see decodeConfig): a
-	// contradiction that would otherwise silently downgrade to cleartext.
+	// dials with TLS and verifies the collector against the system root CAs,
+	// or against OTelCAFile when set. An https:// otel_endpoint turns this on
+	// automatically; a bare host:port with otel_tls:true is honoured (TLS to
+	// that host:port). Two combinations are refused at decode as
+	// contradictions rather than silently resolved: an https:// endpoint with
+	// an explicit otel_tls:false, and an http:// endpoint with otel_tls:true
+	// or OTelCAFile — the scheme states a transport intent, and the knobs
+	// must agree with it.
 	OTelTLS bool `json:"otel_tls"`
+
+	// OTelCAFile is a PEM bundle of CA certificates to verify the collector's
+	// serving certificate against, for a collector whose certificate is not
+	// signed by a system root — an in-cluster collector with a cert-manager
+	// issued certificate, typically (mount its TLS Secret's ca.crt). Setting it
+	// implies OTelTLS=true; an explicit otel_tls:false alongside it, or an
+	// http:// endpoint, is a refused contradiction. Read at Init into the cert
+	// pool the dial verifies against: an unreadable file, or one with no
+	// certificate in it, refuses to start rather than falling back to the
+	// system roots. Empty (the default) verifies against the system roots.
+	OTelCAFile string `json:"otel_ca_file"`
 
 	// CaptureIO when true attaches parsed request/response content as
 	// input.value (request span) and output.value (response span)
@@ -164,7 +178,21 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 			}
 			cfg.OTelTLS = true
 		}
+		// The mirror image: an http:// endpoint asks for cleartext, so a TLS
+		// knob beside it is the same contradiction the other way round.
+		if u.Scheme == "http" && (cfg.OTelTLS || cfg.OTelCAFile != "") {
+			return Config{}, fmt.Errorf("lineage-telemetry config: otel_endpoint %q is http but otel_tls or otel_ca_file asks for TLS", cfg.OTelEndpoint)
+		}
 		cfg.OTelEndpoint = u.Host
+	}
+	// A CA file is only meaningful for a TLS dial: it implies otel_tls, and
+	// pairing it with an explicit otel_tls:false is the same contradiction as
+	// https:// + otel_tls:false above.
+	if cfg.OTelCAFile != "" {
+		if tlsExplicitlyFalse(raw) {
+			return Config{}, fmt.Errorf("lineage-telemetry config: otel_ca_file is set but otel_tls is false")
+		}
+		cfg.OTelTLS = true
 	}
 	return cfg, nil
 }

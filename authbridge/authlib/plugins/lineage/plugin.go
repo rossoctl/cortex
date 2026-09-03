@@ -51,6 +51,7 @@ package lineage
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,12 +218,29 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 
 	endpoint := p.cfg.OTelEndpoint
 	// Transport credentials: plaintext by default (the loopback in-pod
-	// collector), TLS when otel_tls is set — an https:// endpoint sets it in
-	// decodeConfig. Spans carry principal facts on every inbound request and,
-	// under capture_io, user messages and model output, so a remote collector
-	// must not receive them in cleartext.
+	// collector), TLS when otel_tls is set — an https:// endpoint or an
+	// otel_ca_file sets it in decodeConfig. Spans carry principal facts on
+	// every inbound request and, under capture_io, user messages and model
+	// output, so a remote collector must not receive them in cleartext.
 	creds := insecure.NewCredentials()
-	if p.cfg.OTelTLS {
+	switch {
+	case p.cfg.OTelCAFile != "":
+		// A private CA (a cert-manager issued in-cluster collector, typically):
+		// the dial verifies against this bundle only. Keyed on the file alone,
+		// not on OTelTLS, so a Config built without the decoder still cannot
+		// dial cleartext with a CA configured. Fails closed — an unreadable
+		// file or one with no certificate refuses to start rather than falling
+		// back to the system roots. Empty serverName = derive from endpoint.
+		pemBytes, err := os.ReadFile(p.cfg.OTelCAFile)
+		if err != nil {
+			return fmt.Errorf("lineage-telemetry: otel_ca_file %q: %w", p.cfg.OTelCAFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return fmt.Errorf("lineage-telemetry: otel_ca_file %q: no CA certificate found in PEM", p.cfg.OTelCAFile)
+		}
+		creds = credentials.NewClientTLSFromCert(pool, "")
+	case p.cfg.OTelTLS:
 		// nil cert pool = system roots; empty serverName = derive from endpoint.
 		creds = credentials.NewClientTLSFromCert(nil, "")
 	}

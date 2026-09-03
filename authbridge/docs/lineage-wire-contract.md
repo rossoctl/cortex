@@ -203,7 +203,8 @@ response = the request name + ` response`.
 | key | default | meaning |
 |---|---|---|
 | `otel_endpoint` | `localhost:4317` | OTLP gRPC target; `host:port`, `http://host:port` or `https://host:port`; any other scheme is refused |
-| `otel_tls` | `false` | TLS with system roots to the collector; an `https://` endpoint implies it, and `https://` with `otel_tls: false` is refused |
+| `otel_tls` | `false` | TLS to the collector, verified against the system roots or `otel_ca_file`; an `https://` endpoint implies it. Refused contradictions: `https://` with `otel_tls: false`, `http://` with `otel_tls: true` or `otel_ca_file` |
+| `otel_ca_file` | — | PEM bundle to verify the collector's certificate against, for a private CA; implies `otel_tls`, and `otel_ca_file` with `otel_tls: false` is refused. An unreadable file, or one with no certificate, refuses to start |
 | `capture_io` | `false` | attach `input.value` / `output.value` |
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `-1` attaches whole |
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
@@ -259,8 +260,9 @@ The producer must not emit these, and the consumer reads nothing from them.
 Version ladder, newest first. Each line is what changed on the wire or in the vocabulary; the
 mechanisms named as removed are not to be reintroduced.
 
-- **v1.6.1** — prose only; spans and wire unchanged. `lineage.self.id` is documented as reduced to its
-  last `/`-segment before emission, which the producer has always done.
+- **v1.6.1** — prose and configuration only; spans and wire unchanged. `lineage.self.id` is documented
+  as reduced to its last `/`-segment before emission, which the producer has always done;
+  `otel_ca_file` added for a collector under a private CA.
 - **v1.6** — an invalid or absent `traceparent` is restarted per W3C (`mint_traceparent`);
   `lineage.parent.source` gains `none`; the stamp key becomes `lineage-parent`; `otel_tls` and
   `max_payload_bytes` added; the document is vendored into the producer repository. Motivation:

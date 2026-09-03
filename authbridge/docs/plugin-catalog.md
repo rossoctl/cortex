@@ -131,7 +131,8 @@ the protocol parsers (declared in `RequiresAny`) and after
 denial by a plugin ordered before it emits no spans.
 
 - `otel_endpoint` (string) — OTLP gRPC target: `host:port`, `http://host:port` or `https://host:port`; any other scheme is refused. Default `localhost:4317`.
-- `otel_tls` (bool) — dial the collector with TLS against the system roots. An `https://` endpoint implies it; `https://` with `otel_tls: false` is refused. Default `false`.
+- `otel_tls` (bool) — dial the collector with TLS, verified against the system roots or `otel_ca_file`. An `https://` endpoint implies it; `https://` with `otel_tls: false`, and `http://` with `otel_tls: true` or `otel_ca_file`, are refused. Default `false`.
+- `otel_ca_file` (string) — PEM bundle to verify the collector's certificate against (a private CA, e.g. cert-manager issued). Implies `otel_tls`; with an explicit `otel_tls: false` it is refused; an unreadable file or one with no certificate refuses to start. Default: system roots.
 - `capture_io` (bool) — attach the parsed request/response content as `input.value` / `output.value`. Default `false`.
 - `max_payload_bytes` (int) — cap on those two values, cut on a UTF-8 boundary with a `…[truncated]` marker; `-1` attaches whole. Default `4096`.
 - `mint_traceparent` (bool) — forward a `traceparent` naming this request span when the request carried no valid one; `false` = a pure observer that writes no `traceparent`. Default `true`.
