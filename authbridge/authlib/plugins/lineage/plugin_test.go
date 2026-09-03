@@ -883,6 +883,42 @@ func TestForbiddenKeysNeverEmitted(t *testing.T) {
 	}
 }
 
+// TestConfig_MaxPayloadBytes pins the decode boundary: the cap was only ever
+// set straight onto the struct, so the remap that makes an explicit 0 mean
+// "unset" - the only thing between max_payload_bytes: 0 and uncapped payloads,
+// since truncate treats every non-positive max as unbounded - went untested.
+func TestConfig_MaxPayloadBytes(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    int
+		wantErr bool
+	}{
+		{raw: `{}`, want: defaultMaxPayloadBytes},
+		{raw: `{"max_payload_bytes": 0}`, want: defaultMaxPayloadBytes},
+		{raw: `{"max_payload_bytes": 128}`, want: 128},
+		{raw: `{"max_payload_bytes": -1}`, want: unboundedPayload},
+		{raw: `{"max_payload_bytes": -2}`, wantErr: true},
+		{raw: `{"max_payload_bytes": -4096}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			cfg, err := decodeConfig([]byte(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("accepted; it removes the cap silently")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if cfg.MaxPayloadBytes != tc.want {
+				t.Fatalf("max_payload_bytes = %d, want %d", cfg.MaxPayloadBytes, tc.want)
+			}
+		})
+	}
+}
+
 // ---- robustness ----
 
 func TestOnFinish_NoStateDoesNotPanicOrEmit(t *testing.T) {

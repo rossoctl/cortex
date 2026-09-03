@@ -767,7 +767,7 @@ func (p *LineageTelemetry) appendRequestFacts(attrs []attribute.KeyValue, pctx *
 // truncate bounds a captured payload to max bytes, cutting on a UTF-8
 // rune boundary and appending truncatedSuffix so the loss is explicit in the
 // span rather than a silent drop at the OTLP exporter's attribute-length limit.
-// A non-positive max disables the cap (the caller's explicit opt-out). The
+// A non-positive max disables the cap; decode narrows that to exactly -1. The
 // returned string, suffix included, never exceeds max bytes.
 func truncate(s string, max int) string {
 	if max <= 0 || len(s) <= max {

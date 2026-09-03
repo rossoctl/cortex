@@ -22,6 +22,10 @@ const defaultOTelEndpoint = "localhost:4317"
 // visible in the span. 4096 is a conservative default, not a hard requirement.
 const defaultMaxPayloadBytes = 4096
 
+// unboundedPayload is the sole opt-out from the cap. Any other negative is
+// refused at decode, so a typo cannot quietly attach whole payloads.
+const unboundedPayload = -1
+
 // Config holds the per-plugin configuration decoded from the pipeline YAML.
 type Config struct {
 	// OTelEndpoint is the OTLP gRPC endpoint (host:port, http://host:port, or
@@ -74,7 +78,8 @@ type Config struct {
 	// SDK does not itself drop or truncate an oversized value (its default
 	// attribute-value limit is unlimited and Init sets no SpanLimits), so
 	// without this cap the whole payload would be emitted. Zero (or unset) uses
-	// defaultMaxPayloadBytes; a negative value disables the cap (attach whole).
+	// defaultMaxPayloadBytes; unboundedPayload (-1) attaches the whole value,
+	// and any other negative is refused at decode.
 	// Ignored when CaptureIO is false.
 	// Default: 4096
 	MaxPayloadBytes int `json:"max_payload_bytes"`
@@ -176,6 +181,9 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 	// opt-out (no cap). This keeps an omitted key and an explicit 0 identical.
 	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = defaultMaxPayloadBytes
+	}
+	if cfg.MaxPayloadBytes < unboundedPayload {
+		return Config{}, fmt.Errorf("lineage-telemetry config: max_payload_bytes %d is invalid; use -1 to attach whole values or a positive byte cap", cfg.MaxPayloadBytes)
 	}
 	// gRPC NewClient expects host:port only, so reduce a URL form (e.g.
 	// http://collector:4317/v1/traces) to its host — TrimPrefix left any path
