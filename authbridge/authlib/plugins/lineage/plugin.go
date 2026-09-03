@@ -32,7 +32,8 @@
 // What this producer writes onto forwarded requests — two things, both
 // directions. Always: one tracestate member (tracestateStampKey) so the next
 // lineage element can parent its exchange on this one. Only when the request
-// carried no traceparent at all: a traceparent naming this request span
+// carried no VALID traceparent — absent, empty or malformed, as the W3C
+// propagator judges it: a traceparent naming this request span
 // (mintTraceparent, config mint_traceparent, default on), because without one
 // the next element has nothing to extract and the stamp has nothing to ride
 // on. A valid traceparent is never modified; an invalid one is replaced, which
@@ -342,7 +343,7 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 
 	// (3) parent · (4) emit · (4b) mint · (5) re-stamp — wire contract v1.6.
 	// The emit is unconditional; the calls around it are the header
-	// machinery, and (4b) only acts when no traceparent arrived at all. The
+	// machinery, and (4b) only acts when no valid traceparent arrived. The
 	// read-only "Option 4" variant deletes selectParent and restampTracestate
 	// (and the parent.source fact) and sets mint_traceparent: false — see the
 	// package doc for the trade-off.
