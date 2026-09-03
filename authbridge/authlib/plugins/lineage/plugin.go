@@ -94,10 +94,12 @@ const pluginName = "lineage-telemetry"
 // member has a header to ride on — W3C reads tracestate only alongside a
 // valid traceparent.
 //
-// The key names the consuming data-governance system (W3C convention: the key
-// identifies the owner of the entry) and is deliberately platform-neutral —
-// it was `kglin` until 2026-08-04; the name never lands in stored data, so
-// renaming is wire-only.
+// The key is producer-owned and names the lineage domain (W3C convention: the
+// key identifies the owner of the entry): the member carries the sidecar
+// chain's own parent link and names no consumer. It was `kglin` until
+// 2026-08-04 and `dg-parent` until 2026-09-03; the name never lands in stored
+// data, so renaming is wire-only — but every sidecar on a hop must run the
+// same key, so it changes in one release.
 //
 // A trace-keyed map (one entry per trace, "the last inbound seen") used to sit
 // between the two. It was removed: its answer is correct only while exactly one
@@ -107,7 +109,7 @@ const pluginName = "lineage-telemetry"
 // parent, which is an app-internal span this pipeline never exported: the
 // interaction still derives in full, but as a trace entry rather than a child.
 // A visibly missing edge is recoverable; a silently wrong one is not.
-const tracestateStampKey = "dg-parent"
+const tracestateStampKey = "lineage-parent"
 
 // truncatedSuffix marks a captured payload that MaxPayloadBytes cut short.
 const truncatedSuffix = "…[truncated]"
