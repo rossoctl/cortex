@@ -1,4 +1,4 @@
-# Lineage wire contract — two-span sidecar lineage (v1.6.0)
+# Lineage wire contract — two-span sidecar lineage (v1.6.1)
 
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
@@ -155,7 +155,7 @@ Resource attributes: `service.name=authbridge`, `authbridge.component=lineage-te
 | `lineage.exchange.id` | both | `00f067aa0ba902b7` | the request span id, hex |
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
-| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`; the producer refuses to start without one |
+| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`, **reduced to its last non-empty `/`-segment**: a SPIFFE ID `spiffe://td/ns/team1/sa/agent` emits `agent`, and two identities that differ only above that segment emit the same value — the consumer keys entity identity on it (§7). The producer refuses to start without an identity |
 | `lineage.peer.host` | both, when present | `weather-tool-mcp.team1.svc:8000` | the Host/authority header. Outbound: the service being called. Inbound: the address this workload was reached on |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched; `http` = none |
 | `lineage.parent.source` | request | `tracestate` \| `wire` \| `none` | which precedence in §3.2 chose the parent. An audit fact; the consumer derives nothing from it |
@@ -209,7 +209,7 @@ response = the request name + ` response`.
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
 | `bypass_paths` | `/.well-known/`, `/healthz`, `/readyz`, `/health` | path prefixes that produce no spans |
 | `bypass_hosts` | `otel-collector`, `jaeger`, `zipkin`, `prometheus` | host substrings that produce no spans |
-| `self_id` | — | this workload's identity |
+| `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment) |
 | `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty; the producer refuses to start if neither yields an identity |
 
 Unknown keys are a boot error.
@@ -259,6 +259,8 @@ The producer must not emit these, and the consumer reads nothing from them.
 Version ladder, newest first. Each line is what changed on the wire or in the vocabulary; the
 mechanisms named as removed are not to be reintroduced.
 
+- **v1.6.1** — prose only; spans and wire unchanged. `lineage.self.id` is documented as reduced to its
+  last `/`-segment before emission, which the producer has always done.
 - **v1.6** — an invalid or absent `traceparent` is restarted per W3C (`mint_traceparent`);
   `lineage.parent.source` gains `none`; the stamp key becomes `lineage-parent`; `otel_tls` and
   `max_payload_bytes` added; the document is vendored into the producer repository. Motivation:

@@ -93,7 +93,10 @@ type Config struct {
 
 	// SelfID is the agent's own stable identifier, emitted as the
 	// lineage.self.id fact on every span. Typically the Keycloak client ID
-	// of this workload. If empty, SelfIDFile is consulted instead.
+	// of this workload. If empty, SelfIDFile is consulted instead. A value
+	// containing "/" (a SPIFFE ID) is reduced to its last non-empty path
+	// segment before emission — see serviceLabel — so two identities that
+	// differ only above that segment emit the same lineage.self.id.
 	SelfID string `json:"self_id"`
 
 	// SelfIDFile is the path to a file containing the agent's own client ID.
