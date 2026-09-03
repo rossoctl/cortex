@@ -28,6 +28,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`ibac`](#ibac) | LLM-judge intent-based access control for outbound tool calls. | Alpha | Outbound | No |
 | [`inference-parser`](#inference-parser) | Parses LLM completions into `pctx.Extensions.Inference`. | Alpha | Outbound | No |
 | [`jwt-validation`](#jwt-validation) | Inbound JWT validation (signature, issuer, audience) against JWKS. | Ready | Inbound | YES |
+| [`lineage-telemetry`](#lineage-telemetry) | Emits two facts-only OTel lineage spans per HTTP exchange, parented across pods through one `tracestate` member. | Alpha | Both | No |
 | [`litellm-budget-track`](#litellm-budget-track) | Tracks `x-litellm-response-cost` and enforces a daily budget limit. | Alpha | Inbound | No |
 | [`mcp-parser`](#mcp-parser) | Parses MCP tool calls/results into `pctx.Extensions.MCP`. | Beta | Outbound | No |
 | [`opa`](#opa) | [OPA](https://www.openpolicyagent.org/docs) policy enforcement for inbound and outbound requests. | Alpha | Both | No |
@@ -126,6 +127,30 @@ Validates inbound JWTs: signature via JWKS, issuer, and audience.
 - `bypass_paths` (`[]string`) — path globs skipped. Default `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*`.
 - `placeholder_mode` (bool) — replace the validated inbound token with an opaque placeholder before forwarding, for later outbound resolution. Default `false`.
 - `placeholder_ttl` (string) — how long the real token is retained. Default `1h`.
+
+## `lineage-telemetry`
+
+Emits two facts-only OpenTelemetry spans per HTTP exchange — a request
+span on sight and a response span at stream end, paired by
+`lineage.exchange.id` — carrying direction, protocol, endpoints, outcome
+and, optionally, the parsed payload. Cross-pod parenting rides one
+`tracestate` member, `lineage-parent`; a request that arrives with no
+valid `traceparent` is forwarded with one naming the request span, and a
+valid one is never modified. The wire format is
+[lineage-wire-contract.md](./lineage-wire-contract.md). Place it after
+the protocol parsers (declared in `RequiresAny`) and after
+`jwt-validation` when the principal facts are wanted; a request-phase
+denial by a plugin ordered before it emits no spans.
+
+- `otel_endpoint` (string) — OTLP gRPC target: `host:port`, `http://host:port` or `https://host:port`; any other scheme is refused. Default `localhost:4317`.
+- `otel_tls` (bool) — dial the collector with TLS against the system roots. An `https://` endpoint implies it; `https://` with `otel_tls: false` is refused. Default `false`.
+- `capture_io` (bool) — attach the parsed request/response content as `input.value` / `output.value`. Default `false`.
+- `max_payload_bytes` (int) — cap on those two values, cut on a UTF-8 boundary with a `…[truncated]` marker; `-1` attaches whole. Default `4096`.
+- `mint_traceparent` (bool) — forward a `traceparent` naming this request span when the request carried no valid one; `false` = a pure observer that writes no `traceparent`. Default `true`.
+- `bypass_paths` (`[]string`) — path prefixes that produce no spans. Default `/.well-known/`, `/healthz`, `/readyz`, `/health`.
+- `bypass_hosts` (`[]string`) — host substrings that produce no spans. Default `otel-collector`, `jaeger`, `zipkin`, `prometheus`.
+- `self_id` (string) — this workload's identity, emitted as `lineage.self.id`.
+- `self_id_file` (string) — read when `self_id` is empty; the plugin refuses to start if neither yields an identity. Default `/shared/client-id.txt`.
 
 ## `litellm-budget-track`
 
