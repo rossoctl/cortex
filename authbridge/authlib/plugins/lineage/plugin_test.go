@@ -1042,20 +1042,29 @@ func TestBypassPaths_PrefixMatchEmitsNothing(t *testing.T) {
 	}
 }
 
-func TestBypassHosts_SubstringMatchEmitsNothing(t *testing.T) {
+// TestBypassHosts_GlobMatchEmitsNothing pins the anchored matcher. The
+// unanchored strings.Contains it replaced skipped every host in the third and
+// fourth rows: a real workload leaving the graph, and a tenant opting out of
+// being graphed by choosing its own name.
+func TestBypassHosts_GlobMatchEmitsNothing(t *testing.T) {
 	cases := []struct {
 		name  string
 		host  string
 		spans int
 	}{
-		{"substring match skipped", "otel-collector.rossoctl-system:4317", 0},
-		{"bare name match skipped", "otel-collector:4317", 0},
+		{"bare name skipped", "otel-collector:4317", 0},
+		{"fqdn skipped by the .* form", "otel-collector.rossoctl-system.svc:4317", 0},
+		{"prefixed workload is NOT skipped", "prometheus-metrics-agent.team1.svc:9090", 2},
+		{"suffixed workload is NOT skipped", "my-otel-collector:4317", 2},
 		{"unrelated host emits", "weather-tool:8000", 2},
+		{"case is folded", "OTel-Collector:4317", 0},
+		{"port is optional", "otel-collector", 0},
+		{"ipv6 literal keeps its host", "[::1]:4317", 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p, exp := newTestPlugin(t)
-			p.cfg.BypassHosts = []string{"otel-collector"}
+			p.cfg = defaultConfig()
 			pctx := fakeContext(pipeline.Outbound, http.Header{})
 			pctx.Host = tc.host
 			run(t, p, pctx, allow(200))
@@ -1063,6 +1072,74 @@ func TestBypassHosts_SubstringMatchEmitsNothing(t *testing.T) {
 				t.Fatalf("host %q: got %d spans, want %d", tc.host, got, tc.spans)
 			}
 		})
+	}
+}
+
+// TestBypassHosts_InboundIgnoresHost: an inbound Host is the caller's own
+// header. Honouring bypass_hosts there would let any caller suppress the
+// record of its own request by naming the target it claims to be calling.
+func TestBypassHosts_InboundIgnoresHost(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.BypassHosts = []string{"otel-collector"}
+	pctx := fakeContext(pipeline.Inbound, http.Header{})
+	pctx.Host = "otel-collector:4317"
+	run(t, p, pctx, allow(200))
+	if got := len(exp.GetSpans()); got != 2 {
+		t.Fatalf("inbound Host bypass honoured: got %d spans, want 2", got)
+	}
+}
+
+// TestConfig_BypassEntriesValidated: an entry that matches everything turns
+// the plugin off with no signal at all — Ready() stays true and no span is
+// ever emitted — so it has to fail at boot.
+func TestConfig_BypassEntriesValidated(t *testing.T) {
+	refused := []struct {
+		name string
+		raw  string
+	}{
+		{"empty path", `{"bypass_paths": ["/healthz", ""]}`},
+		{"whitespace-only path", `{"bypass_paths": ["  "]}`},
+		{"root path", `{"bypass_paths": ["/"]}`},
+		{"empty host", `{"bypass_hosts": ["jaeger", ""]}`},
+		{"whitespace-only host", `{"bypass_hosts": [" "]}`},
+		{"star host", `{"bypass_hosts": ["*"]}`},
+		{"invalid glob", `{"bypass_hosts": ["[unclosed"]}`},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeConfig([]byte(tc.raw)); err == nil {
+				t.Fatalf("%s accepted; it disables the plugin silently", tc.raw)
+			}
+		})
+	}
+
+	cfg, err := decodeConfig([]byte(`{"bypass_hosts": [" jaeger.* "], "bypass_paths": [" /healthz "]}`))
+	if err != nil {
+		t.Fatalf("valid bypass config rejected: %v", err)
+	}
+	// Surrounding whitespace is trimmed rather than silently never matching.
+	if got := cfg.BypassHosts; len(got) != 1 || got[0] != "jaeger.*" {
+		t.Fatalf("bypass_hosts = %q, want [\"jaeger.*\"]", got)
+	}
+	if got := cfg.BypassPaths; len(got) != 1 || got[0] != "/healthz" {
+		t.Fatalf("bypass_paths = %q, want [\"/healthz\"]", got)
+	}
+}
+
+// TestConfig_BypassReplacesDefaults: setting either key replaces the default
+// list rather than extending it — the convention ibac, sparc and cpex share.
+// Undocumented until now, and the reason it is now stated on both keys.
+func TestConfig_BypassReplacesDefaults(t *testing.T) {
+	cfg, err := decodeConfig([]byte(`{"bypass_hosts": ["my-metrics-thing"]}`))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cfg.BypassHosts) != 1 || cfg.BypassHosts[0] != "my-metrics-thing" {
+		t.Fatalf("bypass_hosts = %q, want the operator list alone", cfg.BypassHosts)
+	}
+	// The untouched key keeps its defaults.
+	if len(cfg.BypassPaths) != len(defaultConfig().BypassPaths) {
+		t.Fatalf("bypass_paths = %q, want the defaults", cfg.BypassPaths)
 	}
 }
 

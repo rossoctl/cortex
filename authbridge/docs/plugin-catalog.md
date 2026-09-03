@@ -136,8 +136,8 @@ denial by a plugin ordered before it emits no spans.
 - `capture_io` (bool) — attach the parsed request/response content as `input.value` / `output.value`. Default `false`.
 - `max_payload_bytes` (int) — cap on those two values, cut on a UTF-8 boundary with a `…[truncated]` marker; `-1` attaches whole. Default `4096`.
 - `mint_traceparent` (bool) — forward a `traceparent` naming this request span when the request carried no valid one; `false` = a pure observer that writes no `traceparent`. Default `true`.
-- `bypass_paths` (`[]string`) — path prefixes that produce no spans. Default `/.well-known/`, `/healthz`, `/readyz`, `/health`.
-- `bypass_hosts` (`[]string`) — host substrings that produce no spans. Default `otel-collector`, `jaeger`, `zipkin`, `prometheus`.
+- `bypass_paths` (`[]string`) — path prefixes that produce no spans. Default `/.well-known/`, `/healthz`, `/readyz`, `/health`. Setting either bypass key replaces its default list rather than extending it, as in `ibac` / `sparc` / `cpex`; an entry matching everything is refused at start.
+- `bypass_hosts` (`[]string`) — outbound host globs (`path.Match`, port stripped, case folded) that produce no spans; ignored inbound, where `Host` is caller-controlled. Default `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*`.
 - `self_id` (string) — this workload's identity, emitted as `lineage.self.id`.
 - `self_id_file` (string) — read when `self_id` is empty; the plugin refuses to start if neither yields an identity. Default `/shared/client-id.txt`.
 

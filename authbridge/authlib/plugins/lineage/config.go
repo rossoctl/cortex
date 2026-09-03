@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 )
 
@@ -96,13 +97,34 @@ type Config struct {
 	// BypassPaths lists URL path prefixes that should not generate lineage
 	// hops. Useful for suppressing infrastructure polling (agent-card
 	// discovery, health checks) that would otherwise flood the lineage graph.
+	// Prefixes, not globs — a path is bypassed when it starts with an entry.
+	//
+	// Setting the key REPLACES this list rather than extending it, the same
+	// convention ibac, sparc and cpex use for their bypass keys: an operator
+	// who adds one prefix must restate the defaults they want to keep.
+	// Entries are trimmed of surrounding whitespace; one that is empty, or
+	// "/", is refused at decode because it would match every path and
+	// silently turn the plugin off.
 	// Default: ["/.well-known/", "/healthz", "/readyz", "/health"]
 	BypassPaths []string `json:"bypass_paths"`
 
-	// BypassHosts lists target host substrings (matched against pctx.Host)
-	// that should not generate lineage hops. Useful for suppressing
-	// infrastructure outbound calls such as OTel trace exports.
-	// Default: ["otel-collector", "jaeger", "zipkin", "prometheus"]
+	// BypassHosts lists host globs whose exchanges should not generate lineage
+	// hops. Useful for suppressing infrastructure outbound calls such as OTel
+	// trace exports. Matched with path.Match against the request Host with the
+	// port stripped and case folded — see matchesAnyHost — so "otel-collector"
+	// matches only that exact name and "otel-collector.*" matches
+	// otel-collector.rossoctl-system.svc. This is the glob convention ibac,
+	// sparc and cpex already use for the key of the same name; the defaults
+	// carry both forms because in-cluster short-name calls are ordinary.
+	//
+	// Honoured on the outbound phase only: an inbound Host is the caller's own
+	// header, and a bypass driven by it would be an opt-out from being graphed.
+	//
+	// Setting the key REPLACES this list rather than extending it, as with
+	// BypassPaths. Entries are trimmed of surrounding whitespace; one that is
+	// empty, "*", or not valid path.Match syntax is refused at decode.
+	// Default: ["otel-collector", "otel-collector.*", "jaeger", "jaeger.*",
+	// "zipkin", "zipkin.*", "prometheus", "prometheus.*"]
 	BypassHosts []string `json:"bypass_hosts"`
 
 	// SelfID is the agent's own stable identifier, emitted as the
@@ -125,8 +147,13 @@ func defaultConfig() Config {
 		MaxPayloadBytes: defaultMaxPayloadBytes,
 		MintTraceparent: true,
 		BypassPaths:     []string{"/.well-known/", "/healthz", "/readyz", "/health"},
-		BypassHosts:     []string{"otel-collector", "jaeger", "zipkin", "prometheus"},
-		SelfIDFile:      "/shared/client-id.txt",
+		BypassHosts: []string{
+			"otel-collector", "otel-collector.*",
+			"jaeger", "jaeger.*",
+			"zipkin", "zipkin.*",
+			"prometheus", "prometheus.*",
+		},
+		SelfIDFile: "/shared/client-id.txt",
 	}
 }
 
@@ -194,7 +221,40 @@ func decodeConfig(raw json.RawMessage) (Config, error) {
 		}
 		cfg.OTelTLS = true
 	}
+	if err := validateBypass(&cfg); err != nil {
+		return Config{}, fmt.Errorf("lineage-telemetry config: %w", err)
+	}
 	return cfg, nil
+}
+
+// validateBypass trims and checks both bypass lists in place. An entry that
+// matches everything disables the plugin silently — every exchange takes the
+// skip, no span is ever emitted, and Ready() still reports true — so it is a
+// boot error rather than a runtime surprise. ibac, sparc and cpex each refuse
+// the same shapes with the same reasoning; the wording of the error mirrors
+// theirs, including the advice to remove the plugin from the pipeline if
+// disabling it is what was meant.
+func validateBypass(cfg *Config) error {
+	for i, entry := range cfg.BypassPaths {
+		entry = strings.TrimSpace(entry)
+		if entry == "" || entry == "/" {
+			return fmt.Errorf("bypass_paths entry %q matches every path; "+
+				"to disable lineage-telemetry, remove it from the pipeline instead", cfg.BypassPaths[i])
+		}
+		cfg.BypassPaths[i] = entry
+	}
+	for i, entry := range cfg.BypassHosts {
+		entry = strings.TrimSpace(entry)
+		if _, err := path.Match(entry, ""); err != nil {
+			return fmt.Errorf("invalid bypass_hosts glob %q: %w", cfg.BypassHosts[i], err)
+		}
+		if entry == "" || entry == "*" {
+			return fmt.Errorf("bypass_hosts entry %q matches every host; "+
+				"to disable lineage-telemetry, remove it from the pipeline instead", cfg.BypassHosts[i])
+		}
+		cfg.BypassHosts[i] = entry
+	}
+	return nil
 }
 
 // tlsExplicitlyFalse reports whether the raw config carries otel_tls set to a

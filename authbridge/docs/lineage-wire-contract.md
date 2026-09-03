@@ -63,8 +63,10 @@ One HTTP exchange through the sidecar produces two OTLP spans.
   span exists emits **no spans at all** and is invisible to lineage. `denied` appears only for
   denials after the request span exists: response-phase denials, or gates ordered after lineage.
   Spans for gate-denied traffic are a named follow-up, not current behaviour.
-- **Bypass.** Requests whose path starts with a `bypass_paths` prefix, or whose host contains a
-  `bypass_hosts` substring, produce no spans (defaults in §6).
+- **Bypass.** Requests whose path starts with a `bypass_paths` prefix, and outbound requests whose
+  host matches a `bypass_hosts` glob (`path.Match`, port stripped, case folded), produce no spans
+  (defaults in §6). `bypass_hosts` is outbound-only: an inbound `Host` is the caller's own header,
+  so honouring it there would let a caller suppress the record of its own request.
 
 ## 3. Trace context on the wire
 
@@ -209,9 +211,15 @@ response = the request name + ` response`.
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `-1` attaches whole |
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
 | `bypass_paths` | `/.well-known/`, `/healthz`, `/readyz`, `/health` | path prefixes that produce no spans |
-| `bypass_hosts` | `otel-collector`, `jaeger`, `zipkin`, `prometheus` | host substrings that produce no spans |
+| `bypass_hosts` | `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*` | outbound host globs that produce no spans |
 | `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment) |
 | `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty; the producer refuses to start if neither yields an identity |
+
+Setting `bypass_paths` or `bypass_hosts` **replaces** the default list rather than extending it —
+the convention the `ibac`, `sparc` and `cpex` plugins use for their keys of the same name. An
+operator who adds one entry must restate the defaults they want kept. An entry that would match
+everything (empty, whitespace-only, `/` for a path, `*` for a host) is refused at start, as is a
+host entry that is not valid `path.Match` syntax.
 
 Unknown keys are a boot error.
 
@@ -262,7 +270,9 @@ mechanisms named as removed are not to be reintroduced.
 
 - **v1.6.1** — prose and configuration only; spans and wire unchanged. `lineage.self.id` is documented
   as reduced to its last `/`-segment before emission, which the producer has always done;
-  `otel_ca_file` added for a collector under a private CA.
+  `otel_ca_file` added for a collector under a private CA; `bypass_hosts` becomes an outbound-only
+  `path.Match` glob list (it was an unanchored substring match on both directions) and both bypass
+  lists are validated at start.
 - **v1.6** — an invalid or absent `traceparent` is restarted per W3C (`mint_traceparent`);
   `lineage.parent.source` gains `none`; the stamp key becomes `lineage-parent`; `otel_tls` and
   `max_payload_bytes` added; the document is vendored into the producer repository. Motivation:
