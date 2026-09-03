@@ -602,13 +602,56 @@ func TestBodyless_UnparsedNoCaptureStillEmitsBothSpans(t *testing.T) {
 	if got := attrStr(resp, "lineage.outcome"); got != "ok" {
 		t.Errorf("outcome = %q, want ok", got)
 	}
-	// No payloads captured.
-	if _, ok := findAttr(req, "input.value"); ok {
-		t.Error("input.value present with capture_io off")
+	// Deliberately no capture_io assertion here: protocol http has no payload
+	// extractor (ioInputValue/ioOutputValue dispatch on a2a/mcp/inference
+	// only), so this fixture yields "" whatever the flag says. The default is
+	// proven in TestCaptureIO_OffByDefaultEmitsNoPayload, on a fixture where
+	// the flag is the only thing that can suppress the payload.
+}
+
+// TestCaptureIO_OffByDefaultEmitsNoPayload proves the privacy default: with
+// capture_io unset, no parsed content leaves the pod. It runs on an MCP
+// tools/call fixture whose arguments and result both yield a non-empty value,
+// so the absence of input.value/output.value can only be the flag — the same
+// assertion on an http fixture cannot fail. The second half flips the flag on
+// and asserts both appear, which is what makes the first half non-vacuous.
+//
+// The two halves need separate fixtures: a pipeline.Context carries its own
+// finished state, so a second RunFinish on the same one is dropped.
+func TestCaptureIO_OffByDefaultEmitsNoPayload(t *testing.T) {
+	mcpContext := func() *pipeline.Context {
+		pctx := fakeContext(pipeline.Outbound, http.Header{})
+		pctx.Host = "weather-tool-mcp.team1.svc:8000"
+		pctx.Path = "/mcp"
+		pctx.Extensions.MCP = &pipeline.MCPExtension{
+			Method: "tools/call",
+			Params: map[string]any{"name": "get_weather", "arguments": map[string]any{"city": "Tokyo"}},
+			Result: map[string]any{"content": []any{map[string]any{"type": "text", "text": "sunny"}}},
+		}
+		return pctx
 	}
-	if _, ok := findAttr(resp, "output.value"); ok {
-		t.Error("output.value present with capture_io off")
+
+	off, offExp := newTestPlugin(t)
+	if off.cfg.CaptureIO {
+		t.Fatal("capture_io must default to false")
 	}
+	run(t, off, mcpContext(), allow(200))
+	req, resp := roleSplit(t, offExp.GetSpans())
+	if v, ok := findAttr(req, "input.value"); ok {
+		t.Errorf("input.value = %v present with capture_io off", v)
+	}
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %v present with capture_io off", v)
+	}
+
+	// Same fixture, flag on: both values appear, so the assertions above are
+	// measuring the flag rather than an absent extractor.
+	on, onExp := newTestPlugin(t)
+	on.cfg.CaptureIO = true
+	run(t, on, mcpContext(), allow(200))
+	req, resp = roleSplit(t, onExp.GetSpans())
+	checkAttr(t, req, "input.value", `{"city":"Tokyo"}`)
+	checkAttr(t, resp, "output.value", "sunny")
 }
 
 // ---- outcomes ----
