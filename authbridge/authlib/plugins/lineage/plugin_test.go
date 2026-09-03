@@ -866,7 +866,11 @@ func TestForbiddenKeysNeverEmitted(t *testing.T) {
 		p, exp := newTestPlugin(t)
 		p.cfg.CaptureIO = true
 		run(t, p, mk(), allow(200))
-		for _, s := range exp.GetSpans() {
+		// roleSplit fatals unless the exchange produced exactly one request
+		// and one response span, so the scan below can never run on an empty
+		// set and report green on a plugin that emitted nothing.
+		req, resp := roleSplit(t, exp.GetSpans())
+		for _, s := range []tracetest.SpanStub{req, resp} {
 			for _, kv := range s.Attributes {
 				key := string(kv.Key)
 				for _, bad := range forbidden {
