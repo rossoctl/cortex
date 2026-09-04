@@ -150,7 +150,12 @@ instead of being welded by a guess. The consequences per case:
 
 ## 4. Attributes
 
-Resource attributes: `service.name=authbridge`, `authbridge.component=lineage-telemetry`.
+Resource attributes: `service.name=authbridge`, `authbridge.component=lineage-telemetry`. Both are
+constant on every pod, deliberately: the resource says what produced the span, and the span says
+which workload it was beside (`lineage.self.id`). A backend that groups by `service.name` —
+Phoenix and Jaeger both do — therefore shows one merged service. Operators wanting per-workload
+grouping map `lineage.self.id` onto `service.name` in a collector transform, the same way §8
+handles `openinference.span.kind`.
 
 | key | on | example | notes |
 |---|---|---|---|
