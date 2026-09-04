@@ -919,6 +919,33 @@ func TestConfig_MaxPayloadBytes(t *testing.T) {
 	}
 }
 
+// TestIsLoopback pins which endpoints earn the cleartext WARN. Only traffic
+// that never leaves the pod's network namespace is exempt; an in-cluster
+// service name is indistinguishable from a collector across the internet, so
+// both are warned about.
+func TestIsLoopback(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     bool
+	}{
+		{"localhost:4317", true},
+		{"LocalHost:4317", true},
+		{"127.0.0.1:4317", true},
+		{"127.9.9.9:4317", true},
+		{"[::1]:4317", true},
+		{"localhost", true},
+		{"otel-collector.rossoctl-system.svc.cluster.local:4317", false},
+		{"collector.vendor.example.com:4317", false},
+		{"10.0.0.7:4317", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopback(tc.endpoint); got != tc.want {
+			t.Errorf("isLoopback(%q) = %v, want %v", tc.endpoint, got, tc.want)
+		}
+	}
+}
+
 // ---- robustness ----
 
 func TestOnFinish_NoStateDoesNotPanicOrEmit(t *testing.T) {

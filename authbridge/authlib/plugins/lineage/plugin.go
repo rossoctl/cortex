@@ -230,7 +230,7 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// otel_ca_file sets it in decodeConfig. Spans carry principal facts on
 	// every inbound request and, under capture_io, user messages and model
 	// output, so a remote collector must not receive them in cleartext.
-	creds := insecure.NewCredentials()
+	creds, plaintext := insecure.NewCredentials(), true
 	switch {
 	case p.cfg.OTelCAFile != "":
 		// A private CA (a cert-manager issued in-cluster collector, typically):
@@ -247,11 +247,23 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		if !pool.AppendCertsFromPEM(pemBytes) {
 			return fmt.Errorf("lineage-telemetry: otel_ca_file %q: no CA certificate found in PEM", p.cfg.OTelCAFile)
 		}
-		creds = credentials.NewClientTLSFromCert(pool, "")
+		creds, plaintext = credentials.NewClientTLSFromCert(pool, ""), false
 	case p.cfg.OTelTLS:
 		// nil cert pool = system roots; empty serverName = derive from endpoint.
-		creds = credentials.NewClientTLSFromCert(nil, "")
+		creds, plaintext = credentials.NewClientTLSFromCert(nil, ""), false
 	}
+	// A plaintext dial to anything but loopback puts principal facts, and under
+	// capture_io whole prompts and tool output, on the network in the clear.
+	// Whether that hop leaves the cluster is not knowable from a host:port, and
+	// the platform's own collector is plaintext gRPC, so this is the operator's
+	// call to make rather than ours to refuse — but they get told at the one
+	// moment they can act on it.
+	if plaintext && !isLoopback(endpoint) {
+		slog.Warn("lineage-telemetry: exporting spans in cleartext to a non-loopback collector; "+
+			"set otel_tls (or otel_ca_file for a private CA) to encrypt them",
+			"endpoint", endpoint)
+	}
+
 	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(creds),
 	)
@@ -298,6 +310,21 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	p.ready.Store(true)
 	slog.Info("lineage-telemetry: initialized", "endpoint", endpoint, "self_id", p.selfID)
 	return nil
+}
+
+// isLoopback reports whether endpoint (host:port, already reduced from any URL
+// form by decodeConfig) names this pod. Loopback traffic never leaves the
+// network namespace, so cleartext there carries no exposure and earns no WARN.
+func isLoopback(endpoint string) bool {
+	host := endpoint
+	if h, _, err := net.SplitHostPort(endpoint); err == nil {
+		host = h
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Shutdown flushes and stops the tracer provider and then closes the OTLP gRPC

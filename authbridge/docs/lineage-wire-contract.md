@@ -210,7 +210,7 @@ response = the request name + ` response`.
 | key | default | meaning |
 |---|---|---|
 | `otel_endpoint` | `localhost:4317` | OTLP gRPC target; `host:port`, `http://host:port` or `https://host:port`; any other scheme is refused |
-| `otel_tls` | `false` | TLS to the collector, verified against the system roots or `otel_ca_file`; an `https://` endpoint implies it. Refused contradictions: `https://` with `otel_tls: false`, `http://` with `otel_tls: true` or `otel_ca_file` |
+| `otel_tls` | `false` | TLS to the collector, verified against the system roots or `otel_ca_file`; an `https://` endpoint implies it. Refused contradictions: `https://` with `otel_tls: false`, `http://` with `otel_tls: true` or `otel_ca_file`. Plaintext to a non-loopback collector is allowed and logged as a WARN at start — spans carry principal facts, and payloads under `capture_io` |
 | `otel_ca_file` | — | PEM bundle to verify the collector's certificate against, for a private CA; implies `otel_tls`, and `otel_ca_file` with `otel_tls: false` is refused. An unreadable file, or one with no certificate, refuses to start |
 | `capture_io` | `false` | attach `input.value` / `output.value` |
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `0` or unset takes the default, `-1` attaches whole, any other negative is refused at start |
