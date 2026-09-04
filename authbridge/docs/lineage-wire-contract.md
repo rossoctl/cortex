@@ -171,7 +171,7 @@ Resource attributes: `service.name=authbridge`, `authbridge.component=lineage-te
 | `input.value` | request, with `capture_io` | `{"city":"Tokyo"}` | see §5 |
 | `output.value` | response, with `capture_io` | `{...}` | see §5; absent when unparsed or streamed |
 | `http.status_code` | response, when a status was produced | `200` | |
-| `lineage.outcome` | response | `ok` \| `denied` \| `error` \| `abandoned` | how the exchange ended as the proxy saw it; `abandoned` = no status was ever produced |
+| `lineage.outcome` | response | `ok` \| `denied` \| `error` \| `abandoned` | how the exchange ended as the proxy saw it; `ok` and `denied` are the pipeline's verdicts, with or without a status; `abandoned` is a nil outcome, or an error that never produced a status |
 | `lineage.denied_by` | response, denials | `jwt-validation` | the plugin that denied |
 
 `http.method` and `http.status_code` are the pre-1.21 OpenTelemetry semantic-convention keys, kept

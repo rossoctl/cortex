@@ -643,9 +643,11 @@ func (p *LineageTelemetry) OnFinish(ctx context.Context, pctx *pipeline.Context)
 
 // lineageOutcome maps the pipeline's 3-value Outcome (allow/deny/error, nil
 // outside OnFinish) onto the contract's lineage.outcome vocabulary
-// (ok|denied|error|abandoned) plus the http.status_code fact. A terminal state
-// with no status written (upstream reset, client disconnect, listener death)
-// is "abandoned" — the row completes as in-flight-turned-failed rather than
+// (ok|denied|error|abandoned) plus the http.status_code fact. "ok" and "denied"
+// are the pipeline's own verdicts and carry a status only if one was written —
+// an allow that produced none is still an allow. "abandoned" is a nil Outcome,
+// or an error that never wrote a status (upstream reset, client disconnect,
+// listener death) — the row completes as in-flight-turned-failed rather than
 // dangling. hasStatus is false when no status code was produced.
 func lineageOutcome(o *pipeline.Outcome) (outcome string, status int, hasStatus bool, deniedBy string) {
 	if o == nil {
