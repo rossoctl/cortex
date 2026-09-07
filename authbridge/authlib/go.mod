@@ -12,7 +12,7 @@ require (
 	github.com/open-policy-agent/opa v1.20.1
 	github.com/rossoctl/context-guru v0.1.0
 	github.com/spiffe/go-spiffe/v2 v2.8.1
-	github.com/tidwall/gjson v1.18.0
+	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	golang.org/x/net v0.58.0
 	golang.org/x/sync v0.22.0
