@@ -847,3 +847,117 @@ func TestComputeEventPairs_FieldTrace(t *testing.T) {
 		}
 	}
 }
+
+// An unbridged CONNECT must name itself in the ACTION column. It carries TLS
+// bytes, so no plugin ran, no protocol was parsed and there is no status — left
+// blank the row reads as a request that failed or that the pipeline ignored, which
+// is how a routine egress tunnel (git, gh, an SDK that does not trust the bridge
+// CA) came to look like a bug.
+func TestRowAction_UnbridgedTunnelIsNamed(t *testing.T) {
+	er := eventRow{event: &pipeline.SessionEvent{
+		Direction: pipeline.Outbound,
+		Phase:     pipeline.SessionRequest,
+		Host:      "api.github.com:443",
+		Tunnel:    true,
+	}}
+	action, plugin := rowAction(er)
+	if action != tunnelAction {
+		t.Errorf("ACTION = %q, want %q", action, tunnelAction)
+	}
+	if plugin != "—" {
+		t.Errorf("PLUGIN = %q, want an em dash: no plugin ran", plugin)
+	}
+}
+
+// A gate can deny a CONNECT on the tunnel-open itself. That deny is the whole
+// point of the row and must keep the headline.
+func TestRowAction_DeniedTunnelKeepsTheDeny(t *testing.T) {
+	er := eventRow{event: &pipeline.SessionEvent{
+		Direction: pipeline.Outbound,
+		Phase:     pipeline.SessionRequest,
+		Host:      "blocked.example:443",
+		Tunnel:    true,
+		Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+			{Plugin: "egress-gate", Action: pipeline.ActionDeny},
+		}},
+	}}
+	action, plugin := rowAction(er)
+	if action != string(pipeline.ActionDeny) {
+		t.Errorf("ACTION = %q, want deny — the label must not mask a gate decision", action)
+	}
+	if plugin != "egress-gate" {
+		t.Errorf("PLUGIN = %q, want egress-gate", plugin)
+	}
+}
+
+// A bridged tunnel is folded into its decrypted inner request, so the row shows
+// the inner request's action. The tunnel label must not override it.
+func TestRowAction_BridgedTunnelShowsInnerAction(t *testing.T) {
+	tunnel := &pipeline.SessionEvent{
+		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "ete-litellm.example:443", Tunnel: true,
+	}
+	inner := &pipeline.SessionEvent{
+		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "ete-litellm.example",
+		Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+			{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+		}},
+	}
+	er := eventRow{event: inner, tunnel: tunnel}
+	action, plugin := rowAction(er)
+	if action != string(pipeline.ActionObserve) {
+		t.Errorf("ACTION = %q, want observe from the decrypted inner request", action)
+	}
+	if plugin != "inference-parser" {
+		t.Errorf("PLUGIN = %q, want inference-parser", plugin)
+	}
+}
+
+// An ordinary request that no plugin touched keeps its em dash: only a tunnel
+// earns the label, or every passthrough row would claim to be one.
+func TestRowAction_PlainPassthroughIsUnchanged(t *testing.T) {
+	er := eventRow{event: &pipeline.SessionEvent{
+		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "example.com",
+	}}
+	if action, _ := rowAction(er); action != "—" {
+		t.Errorf("ACTION = %q for a non-tunnel passthrough, want an em dash", action)
+	}
+}
+
+// The label must fit the column, or the table shifts.
+func TestTunnelAction_FitsTheActionColumn(t *testing.T) {
+	const actionColWidth = 8 // {Title: "ACTION", Width: 8}
+	if got := len([]rune(tunnelAction)); got > actionColWidth {
+		t.Errorf("%q is %d columns, ACTION is %d wide", tunnelAction, got, actionColWidth)
+	}
+}
+
+// End to end through buildEventRows, using the event shapes a live server records:
+// an unbridged CONNECT stands alone and is named; a bridged pair folds to one row
+// showing the inner action.
+func TestBuildEventRows_TunnelRowsAreLabelled(t *testing.T) {
+	base := time.Now()
+	events := []pipeline.SessionEvent{
+		{At: base, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			RequestID: "40", Host: "api.github.com:443", Tunnel: true},
+		{At: base.Add(time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			RequestID: "41", Host: "ete-litellm.example:443", Tunnel: true},
+		{At: base.Add(time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			RequestID: "41", Host: "ete-litellm.example",
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+			}}},
+	}
+	rows := buildEventRows(events)
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2 (the bridged pair folds)", len(rows))
+	}
+	if a, _ := rowAction(rows[0]); a != tunnelAction {
+		t.Errorf("unbridged tunnel row ACTION = %q, want %q", a, tunnelAction)
+	}
+	if a, _ := rowAction(rows[1]); a != string(pipeline.ActionObserve) {
+		t.Errorf("bridged row ACTION = %q, want observe", a)
+	}
+}

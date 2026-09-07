@@ -115,7 +115,7 @@ func (m *model) rebuildEventsTable() {
 			continue
 		}
 
-		action, plugin := eventAction(invs)
+		action, plugin := rowAction(er)
 		var idCell string
 		if id, ok := ids[ev]; ok {
 			idCell = strconv.Itoa(id)
@@ -314,6 +314,28 @@ func shadowFlagged(invs []pipeline.Invocation) bool {
 		}
 	}
 	return false
+}
+
+// tunnelAction is the ACTION cell for an opaque CONNECT that no plugin acted on.
+const tunnelAction = "tunnel"
+
+// rowAction is the ACTION + PLUGIN pair for one display row.
+//
+// It wraps eventAction to name an unbridged CONNECT. Such a row carries TLS bytes,
+// so no plugin ran, no protocol was parsed and there is no status — left as "— —"
+// it reads as a request that failed or that the pipeline ignored, which is how a
+// routine egress tunnel came to look like a bug.
+//
+// The label applies only when nothing acted: a gate CAN deny a CONNECT on the
+// tunnel-open itself, and that deny must keep the headline. A BRIDGED tunnel never
+// reaches this branch — buildEventRows folds it into the decrypted inner request,
+// whose own action is the interesting one.
+func rowAction(er eventRow) (action, plugin string) {
+	action, plugin = eventAction(er.invocations())
+	if er.event != nil && er.event.Tunnel && action == "—" {
+		return tunnelAction, "—"
+	}
+	return action, plugin
 }
 
 // eventAction folds a message's per-plugin invocations into the single ACTION +
