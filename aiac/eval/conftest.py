@@ -1,19 +1,21 @@
 """Per-run pass/fail/skip report for the policy-eval-scenarios, policy-eval-robustness,
-policy-eval-consistency, and policy-eval-correctness-prb suites (spec: ``docs/specs/eval/
-policy-eval-scenarios.md``, ``docs/specs/eval/policy-eval-robustness-consistency.md``, and
-``docs/specs/eval/policy-eval-correctness-prb.md``).
+policy-eval-consistency, policy-eval-correctness-prb, and policy-eval-correctness-e2e suites
+(spec: ``docs/specs/eval/policy-eval-scenarios.md``, ``docs/specs/eval/
+policy-eval-robustness-consistency.md``, ``docs/specs/eval/policy-eval-correctness-prb.md``, and
+``docs/specs/eval/policy-eval-correctness-e2e.md``).
 
 Every run of ``test_policy_pipeline_eval.py`` (``@pytest.mark.eval_extended``),
 ``test_policy_pipeline_consistency.py`` (``@pytest.mark.eval_consistency``),
-``test_policy_pipeline_robustness.py`` (``@pytest.mark.eval_robustness``), or
-``test_policy_pipeline_correctness_prb.py`` (``@pytest.mark.eval_correctness_prb``) writes a
+``test_policy_pipeline_robustness.py`` (``@pytest.mark.eval_robustness``),
+``test_policy_pipeline_correctness_prb.py`` (``@pytest.mark.eval_correctness_prb``), or
+``test_policy_pipeline_correctness_e2e.py`` (``@pytest.mark.eval_correctness_e2e``) writes a
 Markdown report to ``reports/`` listing every collected test's outcome — passed, failed, skipped,
 xfailed, xpassed, or a setup/collection error. All six sections are always present (even empty) so
 a reader can see at a glance that nothing was silently omitted. Failed/error entries carry the
 assertion's crash message (pytest's own computed diff, e.g. "assert True == False" or a custom
 mismatch message with expected/actual sets); skipped/xfailed entries carry the skip reason; every
 entry carries the test function's docstring so a reader doesn't have to open the source file to
-know what was actually being checked. The report is scoped to these four markers (not just "any
+know what was actually being checked. The report is scoped to these five markers (not just "any
 test collected while this conftest happens to be loaded"), so running the whole repo's test suite
 from a parent directory does not pull unrelated tests into this suite's report.
 
@@ -28,10 +30,13 @@ an expected/actual boolean and explanation -- read back here via ``report.user_p
 rendered as "What it tests" / "Expected output" / "Output" instead of the generic docstring +
 crash-message fallback used by every other test in this suite (see ``_render_entry``).
 
-``test_prb_correctness`` (the correctness-prb suite) similarly ``record_property``s
-precision/recall/denial-precision plus the over-grants/under-grants/incorrectly-denied pair
-breakdown per scenario -- rendered as its own metrics + detail block, always (pass or fail), since
-the tracked-but-non-gating under-grant/denial detail is otherwise invisible on a passing run.
+``test_prb_correctness`` (the correctness-prb suite) and ``test_e2e_correctness`` (the
+correctness-e2e suite) similarly ``record_property``s precision/recall/denial-precision plus the
+over-grants/under-grants/incorrectly-denied pair breakdown per scenario -- rendered as its own
+metrics + detail block, always (pass or fail), since the tracked-but-non-gating under-grant/denial
+detail is otherwise invisible on a passing run. The render branch dispatches generically on the
+presence of ``precision``/``recall`` properties, so it covers both suites with no per-suite
+special-casing.
 """
 
 from __future__ import annotations
@@ -47,7 +52,13 @@ from dotenv import load_dotenv
 HERE = Path(__file__).resolve().parent
 REPORTS_DIR = HERE / "reports"
 REPORT_TZ = ZoneInfo(os.environ.get("EVAL_REPORT_TZ", "UTC"))
-MARKERS = {"eval_extended", "eval_consistency", "eval_robustness", "eval_correctness_prb"}
+MARKERS = {
+    "eval_extended",
+    "eval_consistency",
+    "eval_robustness",
+    "eval_correctness_prb",
+    "eval_correctness_e2e",
+}
 
 # Auto-load eval/.env so LLM_BASE_URL/KEYCLOAK_URL/etc. are set without having to
 # `set -a; . eval/.env; set +a` before invoking pytest. Existing environment

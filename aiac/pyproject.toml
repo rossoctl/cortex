@@ -47,7 +47,7 @@ pythonpath = ["src"]
 # Bare `pytest` runs unit tests only — every live-infra marker is excluded by
 # default. `-m` on the command line overrides this (last `-m` wins), so
 # `pytest eval/ -m eval_extended` etc. still works to opt back in.
-addopts = ["-m", "not integration and not eval_extended and not eval_consistency and not eval_robustness and not eval_correctness_prb"]
+addopts = ["-m", "not integration and not eval_extended and not eval_consistency and not eval_robustness and not eval_correctness_prb and not eval_correctness_e2e"]
 markers = [
     "integration: tests that call real LLM endpoints",
     "llm: tests that call the real LLM but mock descriptions/policy (no cluster)",
@@ -55,4 +55,5 @@ markers = [
     "eval_consistency: PRB run-to-run consistency (same scenario, N repeats, exact grant-set equality) — needs LLM_BASE_URL/LLM_MODEL/LLM_API_KEY only, no Keycloak/opa (see eval/test_policy_pipeline_consistency.py)",
     "eval_robustness: PRB robustness to mechanical + semantic input perturbation against the truth-table oracle — needs LLM_BASE_URL/LLM_MODEL/LLM_API_KEY only, no Keycloak/opa (see eval/test_policy_pipeline_robustness.py)",
     "eval_correctness_prb: PRB-level correctness — precision/recall + a denial-precision figure against the primary corpus's hand-authored truth tables, zero-tolerance over-grant gate — needs LLM_BASE_URL/LLM_MODEL/LLM_API_KEY only, no Keycloak/opa (see eval/test_policy_pipeline_correctness_prb.py)",
+    "eval_correctness_e2e: end-to-end correctness — same precision/recall + denial-precision scorer as eval_correctness_prb, but through the full Keycloak+PCE+OPA pipeline via opa eval — needs KEYCLOAK_URL + admin creds + LLM_BASE_URL/LLM_MODEL/LLM_API_KEY, plus opa on PATH (see eval/test_policy_pipeline_correctness_e2e.py)",
 ]
