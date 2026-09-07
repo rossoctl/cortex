@@ -1,7 +1,7 @@
-# Integration Test: policy-eval-scenarios — `test_policy_pipeline_eval.py` + guardrail tests
+# Eval Spec: policy-eval-scenarios — `test_policy_pipeline_eval.py` + guardrail tests
 
 > **One spec among several.** This document specifies a **family** of integration tests.
-> Integration-test specs live **one spec per test** under `docs/specs/integration-test/`
+> Eval specs live **one spec per test** under `docs/specs/eval/`
 > (a sibling of `components/`), and the master PRD's *Integration test specifications* section
 > ([../PRD.md](../PRD.md)) is the index of them. This is the **policy-eval-scenarios** family — a
 > generalized, multi-scenario evaluation of the identity→policy pipeline — not the definition of

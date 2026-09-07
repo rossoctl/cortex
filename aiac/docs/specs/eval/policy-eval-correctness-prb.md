@@ -1,7 +1,7 @@
-# Integration Test: policy-eval-correctness-prb — `test_policy_pipeline_correctness_prb.py`
+# Eval Spec: policy-eval-correctness-prb — `test_policy_pipeline_correctness_prb.py`
 
 > **One spec among several.** This document specifies **one** integration test.
-> Integration-test specs live **one spec per test** under `docs/specs/integration-test/`
+> Eval specs live **one spec per test** under `docs/specs/eval/`
 > (a sibling of `components/`), and the master PRD's *Integration test specifications* section
 > ([../PRD.md](../PRD.md)) is the index of them. This is a **companion to**, not a replacement
 > for, [policy-eval-scenarios.md](policy-eval-scenarios.md) and
@@ -110,7 +110,7 @@ over-grants) given a well-behaved LLM endpoint. Each test case `record_property`
 `recall`, `denial_precision`, `over_grants`, `under_grants`, and `incorrectly_denied` (each of the
 latter three as `{gate: sorted(pairs)}`), and prints a one-line summary:
 
-```
+```text
 [correctness] wildcard_grant: precision=1.000 recall=1.000 denial_precision=1.000
 ```
 

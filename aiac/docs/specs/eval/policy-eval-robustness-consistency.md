@@ -1,7 +1,7 @@
-# Integration Test: policy-eval-robustness-consistency — `test_policy_pipeline_consistency.py` + `test_policy_pipeline_robustness.py`
+# Eval Spec: policy-eval-robustness-consistency — `test_policy_pipeline_consistency.py` + `test_policy_pipeline_robustness.py`
 
 > **One spec among several.** This document specifies a **family** of integration tests.
-> Integration-test specs live **one spec per test** under `docs/specs/integration-test/`
+> Eval specs live **one spec per test** under `docs/specs/eval/`
 > (a sibling of `components/`), and the master PRD's *Integration test specifications* section
 > ([../PRD.md](../PRD.md)) is the index of them. This is the **policy-eval-robustness-consistency**
 > family — it is a **companion to**, not a replacement for,
