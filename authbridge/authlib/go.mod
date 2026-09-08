@@ -10,7 +10,7 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.20.2
-	github.com/rossoctl/context-guru v0.1.0
+	github.com/rossoctl/context-guru v0.1.1
 	github.com/spiffe/go-spiffe/v2 v2.8.1
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
