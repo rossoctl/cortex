@@ -37,6 +37,14 @@ metrics + detail block, always (pass or fail), since the tracked-but-non-gating 
 detail is otherwise invisible on a passing run. The render branch dispatches generically on the
 presence of ``precision``/``recall`` properties, so it covers both suites with no per-suite
 special-casing.
+
+A scenario whose own *setup* fails (a Keycloak/PRB/PCE error before ``score_scenario`` ever runs --
+these two suites isolate a failing scenario's setup per-scenario, so this is common, not
+exceptional) never gets those properties recorded at all. Such an entry still gets the crash detail
+*and* the same six-field metrics block, values marked ``unavailable`` with why -- identified by
+nodeid (``::test_prb_correctness[``/``::test_e2e_correctness[``, see ``_CORRECTNESS_TEST_MARKERS``)
+since there are no properties to dispatch on -- rather than silently falling back to the generic
+docstring + crash-message rendering every other test in this suite gets.
 """
 
 from __future__ import annotations
@@ -146,12 +154,39 @@ def _format_pairs_dict(pairs_by_gate: dict) -> str:
     )
 
 
+# Nodeid substrings identifying the two correctness suites' single test function each (parametrized
+# by scenario name) — used to give a scenario whose *setup* failed (before score_scenario ever ran,
+# so none of precision/recall/etc got record_property'd) the same six-field metrics shape every
+# other entry gets, instead of silently omitting it. See `_render_entry`'s middle branch.
+_CORRECTNESS_TEST_MARKERS = ("::test_prb_correctness[", "::test_e2e_correctness[")
+
+
+def _render_metrics_block(lines: list[str], props: dict, *, unavailable_reason: str | None = None) -> None:
+    """Render the precision/recall/denial-precision + over-/under-grant/incorrect-denial breakdown
+    ``test_prb_correctness``/``test_e2e_correctness`` record. When ``unavailable_reason`` is given
+    (the scenario's own setup failed before scoring could run, so ``props`` has none of this),
+    render the same six fields with a uniform placeholder instead — so a reader always sees the
+    same shape, pass or fail, setup-failed or scored."""
+    if unavailable_reason is not None:
+        for label in ("Precision", "Recall", "Denial precision", "Over-grants", "Under-grants", "Incorrectly denied"):
+            lines.append(f"- **{label}:** unavailable — {unavailable_reason}")
+        return
+    lines.append(f"- **Precision:** {props['precision']:.3f}")
+    lines.append(f"- **Recall:** {props['recall']:.3f}")
+    lines.append(f"- **Denial precision:** {props['denial_precision']:.3f}")
+    _render_field(lines, "Over-grants", _format_pairs_dict(props.get("over_grants", {})))
+    _render_field(lines, "Under-grants", _format_pairs_dict(props.get("under_grants", {})))
+    _render_field(lines, "Incorrectly denied", _format_pairs_dict(props.get("incorrectly_denied", {})))
+
+
 def _render_entry(lines: list[str], nodeid: str, report: pytest.TestReport, category: str) -> None:
     """Per-cell tests (``test_inbound``/``test_outbound``) ``record_property`` a concrete
     description + expected/actual boolean + explanation; ``test_prb_correctness`` (correctness-prb)
     ``record_property``s precision/recall/denial-precision + the over-/under-grant/incorrect-denial
     pair breakdown; render each instead of the generic docstring + crash/skip-reason fallback every
-    other test in this suite gets."""
+    other test in this suite gets. A correctness-suite scenario whose *setup* failed (a pipeline
+    error before ``score_scenario`` ever ran) gets the crash detail *and* the same six-field metrics
+    block, marked unavailable with why — not silently dropped to the generic fallback."""
     lines.append(f"### `{nodeid}`")
     props = dict(report.user_properties)
     if "expected" in props and "output" in props:
@@ -166,12 +201,15 @@ def _render_entry(lines: list[str], nodeid: str, report: pytest.TestReport, cate
         description = _docstrings.get(nodeid)
         if description:
             lines.append(f"- **What it tests:** {description}")
-        lines.append(f"- **Precision:** {props['precision']:.3f}")
-        lines.append(f"- **Recall:** {props['recall']:.3f}")
-        lines.append(f"- **Denial precision:** {props['denial_precision']:.3f}")
-        _render_field(lines, "Over-grants", _format_pairs_dict(props.get("over_grants", {})))
-        _render_field(lines, "Under-grants", _format_pairs_dict(props.get("under_grants", {})))
-        _render_field(lines, "Incorrectly denied", _format_pairs_dict(props.get("incorrectly_denied", {})))
+        _render_metrics_block(lines, props)
+    elif any(marker in nodeid for marker in _CORRECTNESS_TEST_MARKERS):
+        doc = _docstrings.get(nodeid)
+        if doc:
+            lines.append(f"- **What it tests:** {doc}")
+        detail = _detail(report, category)
+        if detail:
+            _render_field(lines, "Failure", detail)
+        _render_metrics_block(lines, props, unavailable_reason="scenario setup failed before scoring could run")
     else:
         doc = _docstrings.get(nodeid)
         if doc:
