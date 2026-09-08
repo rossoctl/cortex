@@ -247,7 +247,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not _reports:
         return  # this session collected none of this suite's tests -- nothing to report
 
-    order = ["failed", "error", "xpassed", "xfailed", "skipped", "passed"]
+    order = ["failed", "passed", "error", "xpassed", "xfailed", "skipped"]
     buckets: dict[str, list[tuple[str, pytest.TestReport]]] = {cat: [] for cat in order}
     for nodeid, report in _reports.items():
         buckets[_categorize(report)].append((nodeid, report))
