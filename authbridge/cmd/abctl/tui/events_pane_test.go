@@ -860,7 +860,7 @@ func TestRowAction_UnbridgedTunnelIsNamed(t *testing.T) {
 		Host:      "api.github.com:443",
 		Tunnel:    true,
 	}}
-	action, plugin := rowAction(er)
+	action, plugin := rowAction(er, er.invocations())
 	if action != tunnelAction {
 		t.Errorf("ACTION = %q, want %q", action, tunnelAction)
 	}
@@ -881,7 +881,7 @@ func TestRowAction_DeniedTunnelKeepsTheDeny(t *testing.T) {
 			{Plugin: "egress-gate", Action: pipeline.ActionDeny},
 		}},
 	}}
-	action, plugin := rowAction(er)
+	action, plugin := rowAction(er, er.invocations())
 	if action != string(pipeline.ActionDeny) {
 		t.Errorf("ACTION = %q, want deny — the label must not mask a gate decision", action)
 	}
@@ -905,7 +905,7 @@ func TestRowAction_BridgedTunnelShowsInnerAction(t *testing.T) {
 		}},
 	}
 	er := eventRow{event: inner, tunnel: tunnel}
-	action, plugin := rowAction(er)
+	action, plugin := rowAction(er, er.invocations())
 	if action != string(pipeline.ActionObserve) {
 		t.Errorf("ACTION = %q, want observe from the decrypted inner request", action)
 	}
@@ -921,14 +921,13 @@ func TestRowAction_PlainPassthroughIsUnchanged(t *testing.T) {
 		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
 		Host: "example.com",
 	}}
-	if action, _ := rowAction(er); action != "—" {
+	if action, _ := rowAction(er, er.invocations()); action != "—" {
 		t.Errorf("ACTION = %q for a non-tunnel passthrough, want an em dash", action)
 	}
 }
 
 // The label must fit the column, or the table shifts.
 func TestTunnelAction_FitsTheActionColumn(t *testing.T) {
-	const actionColWidth = 8 // {Title: "ACTION", Width: 8}
 	if got := len([]rune(tunnelAction)); got > actionColWidth {
 		t.Errorf("%q is %d columns, ACTION is %d wide", tunnelAction, got, actionColWidth)
 	}
@@ -954,10 +953,10 @@ func TestBuildEventRows_TunnelRowsAreLabelled(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("got %d rows, want 2 (the bridged pair folds)", len(rows))
 	}
-	if a, _ := rowAction(rows[0]); a != tunnelAction {
+	if a, _ := rowAction(rows[0], rows[0].invocations()); a != tunnelAction {
 		t.Errorf("unbridged tunnel row ACTION = %q, want %q", a, tunnelAction)
 	}
-	if a, _ := rowAction(rows[1]); a != string(pipeline.ActionObserve) {
+	if a, _ := rowAction(rows[1], rows[1].invocations()); a != string(pipeline.ActionObserve) {
 		t.Errorf("bridged row ACTION = %q, want observe", a)
 	}
 }

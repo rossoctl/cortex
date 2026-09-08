@@ -516,6 +516,8 @@ Every plugin emits one of these 5 action values per invocation, so operators can
 
 Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
 
+**abctl's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran, no protocol was parsed and there is no status, so METHOD and STATUS are blank too and the label is the only thing identifying it. Neither is ever emitted by a plugin, and neither is a verdict on the request.
+
 > **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
 
 ### Gotcha: denied requests
