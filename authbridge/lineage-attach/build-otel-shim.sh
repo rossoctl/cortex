@@ -62,6 +62,28 @@ parse_args() {
     echo "  (a podman build of my-agent:latest is localhost/my-agent:latest)." >&2
     exit 3
   fi
+  # The wrapper tag must not be the base image: building FROM base_ref and then
+  # tagging the result onto the same ref leaves the un-shimmed original dangling
+  # and unrecoverable, and refuse_already_instrumented then blocks re-baking it.
+  # The same local image has three spellings — a bare `foo`, podman's
+  # `localhost/foo`, docker's `docker.io/library/foo` — so compare on a
+  # normalized `repo:tag` with those prefixes stripped and `:latest` implied.
+  if [ "$(norm_ref "$WRAPPER_TAG")" = "$(norm_ref "$base_ref")" ] \
+     || [ "$(norm_ref "$WRAPPER_TAG")" = "$(norm_ref "$BASE_IMAGE")" ]; then
+    echo "REFUSING to bake ${base_ref}: the wrapper tag (${WRAPPER_TAG}) is the base image itself." >&2
+    echo "  Baking FROM it and tagging onto it would leave the un-shimmed original dangling." >&2
+    echo "  -> give a distinct wrapper tag as arg 2 (default is <base name>-otel:latest)." >&2
+    exit 3
+  fi
+}
+
+# Normalize an image ref for identity comparison: strip the local-build registry
+# prefixes (podman's localhost/, docker's docker.io/library/) and imply :latest.
+norm_ref() {
+  local r="${1#localhost/}"
+  r="${r#docker.io/library/}"
+  case "${r##*/}" in *:*) ;; *) r="${r}:latest" ;; esac
+  printf '%s' "$r"
 }
 
 # The two per-image build inputs are IN the image — probe it, never transcribe.
@@ -69,16 +91,28 @@ runs_python() {  # $1 = candidate interpreter path/name
   "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$1" "$base_ref" -c 'import sys' >/dev/null 2>&1
 }
 
+# VENV_PYTHON reaches two shell-form RUN lines in Dockerfile.otel-shim as an
+# unquoted ARG, and one of its sources — the image's own VIRTUAL_ENV — is
+# attacker-controlled. A Linux path may hold ';', '$( )', backticks and spaces,
+# so a hostile base could run commands inside the (networked) build. Refuse any
+# ref outside a safe character set here, before it is ever used; the Dockerfile
+# also quotes the ARG. The set keeps both an absolute path and the bare
+# `python3` PATH fallback while rejecting every shell metacharacter.
+safe_interpreter_ref() { [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]]; }
+
 detect_python() {  # sets VENV_PYTHON (validates it when given explicitly)
   if [ -z "$VENV_PYTHON" ]; then
     # The env the image declares, then the common venv layouts, then PATH.
     local candidates virtual_env c
     candidates=()
-    virtual_env="$("$CONTAINER_TOOL" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$base_ref" \
+    virtual_env="$("$CONTAINER_TOOL" image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$base_ref" \
       | sed -n 's/^VIRTUAL_ENV=//p' | head -1)"
     [ -n "$virtual_env" ] && candidates+=("${virtual_env}/bin/python")
     candidates+=(/app/.venv/bin/python /opt/venv/bin/python python3)
     for c in "${candidates[@]}"; do
+      # A candidate with shell metacharacters (only the image-derived one can
+      # carry them) is skipped, not run — the fallbacks below are all literal.
+      safe_interpreter_ref "$c" || continue
       if runs_python "$c"; then VENV_PYTHON="$c"; break; fi
     done
     if [ -z "$VENV_PYTHON" ]; then
@@ -91,9 +125,16 @@ detect_python() {  # sets VENV_PYTHON (validates it when given explicitly)
       exit 3
     fi
     echo ">> detected app python: ${VENV_PYTHON}"
-  elif ! runs_python "$VENV_PYTHON"; then
-    echo "REFUSING to bake ${base_ref}: no runnable Python at ${VENV_PYTHON} (explicit arg)." >&2
-    exit 3
+  else
+    if ! safe_interpreter_ref "$VENV_PYTHON"; then
+      echo "REFUSING to bake ${base_ref}: interpreter '${VENV_PYTHON}' has characters outside [A-Za-z0-9._/-]" >&2
+      echo "  (it reaches a shell-form RUN in the Dockerfile) — pass a plain path as arg 3." >&2
+      exit 3
+    fi
+    if ! runs_python "$VENV_PYTHON"; then
+      echo "REFUSING to bake ${base_ref}: no runnable Python at ${VENV_PYTHON} (explicit arg)." >&2
+      exit 3
+    fi
   fi
 }
 
@@ -103,7 +144,7 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
     # Exactly the user the base declared (root when empty); a named user is
     # resolved to its uid inside the image.
     local config_user
-    config_user_full="$("$CONTAINER_TOOL" inspect --format '{{.Config.User}}' "$base_ref")"
+    config_user_full="$("$CONTAINER_TOOL" image inspect --format '{{.Config.User}}' "$base_ref")"
     config_user="${config_user_full%%:*}"
     case "$config_user" in
       "")       APP_UID=0 ;;
@@ -125,6 +166,15 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
     esac
     echo ">> detected app group: gid=${APP_GID}"
   fi
+  # Both reach the Dockerfile's USER and a --build-arg; a non-numeric value —
+  # an odd Config.User, or a hostile image's `id` — has no place there. Validate
+  # detected and explicit alike, the same rigor VENV_PYTHON gets.
+  case "$APP_UID" in ''|*[!0-9]*)
+    echo "REFUSING to bake ${base_ref}: app uid '${APP_UID}' is not a number — pass it explicitly as arg 4." >&2; exit 3 ;;
+  esac
+  case "$APP_GID" in ''|*[!0-9]*)
+    echo "REFUSING to bake ${base_ref}: app gid '${APP_GID}' is not a number — pass it explicitly as arg 4 (uid:gid)." >&2; exit 3 ;;
+  esac
 }
 
 # The interlock asks exactly "would wrapping DOUBLE-instrument?": is any of the
@@ -133,33 +183,58 @@ detect_user() {  # sets APP_UID and APP_GID (either may be given explicitly)
 # OTel-adjacent, no library instrumentation in it) and not a dormant SDK
 # (a2a-sdk ships one on every stock agent) — neither is a refusal signal. An
 # app that activates its SDK in code is not statically detectable.
+# One probe, one verdict: "instrumented:<mods>" / "hook" / "clean", printed on
+# stdout, exit 0 whenever the probe actually RAN inside the image. find_spec is
+# wrapped per-module so a missing opentelemetry.instrumentation namespace reads
+# as "not found", not an abort — the clean answer is then deliberate, not the
+# accident of an uncaught ModuleNotFoundError. (Mods keep in sync with
+# Dockerfile.otel-shim's install RUN, all but -distro.)
+probe_instrumentation() {
+  "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$base_ref" -c '
+import importlib.util as u
+def has(m):
+    try: return u.find_spec(m) is not None
+    except ModuleNotFoundError: return False
+mods = ["starlette", "asgi", "fastapi", "httpx", "requests", "aiohttp_client", "urllib3", "threading"]
+found = [m for m in mods if has("opentelemetry.instrumentation." + m)]
+if found: print("instrumented:" + ",".join(found))
+elif has("_lineage_propagate"): print("hook")
+else: print("clean")'
+}
+
+# The interlock asks exactly "would wrapping DOUBLE-instrument?". A guard whose
+# whole job is to refuse must tell "the probe says no" from "the probe did not
+# run": the probe above exits non-zero ONLY when it could not run at all (a bad
+# interpreter, OOM, a read-only rootfs), its error left on stderr — that is a
+# refusal, never a silent "safe to bake".
 refuse_already_instrumented() {
   [ "$FORCE_BAKE" = "1" ] && return 0
-  # keep in sync with Dockerfile.otel-shim's install RUN (all but -distro)
-  local already
-  if already=$("$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$base_ref" -c '
-import importlib.util as u
-mods = ["starlette", "asgi", "fastapi", "httpx", "requests", "aiohttp_client", "urllib3", "threading"]
-found = [m for m in mods if u.find_spec("opentelemetry.instrumentation." + m)]
-print(",".join(found))
-raise SystemExit(0 if found else 1)' 2>/dev/null); then
-    echo "REFUSING to bake ${base_ref}: it already instruments ${already}" >&2
-    echo "  Those are instrumentors this shim installs, so wrapping would stack a" >&2
-    echo "  second one on the same library (an -otel image, or an app that bundles" >&2
-    echo "  its own instrumentation)." >&2
-    echo "  -> if this is a stock app image, point me at the un-shimmed base." >&2
-    echo "  -> FORCE_BAKE=1 overrides if you know the wrap is safe." >&2
+  local verdict
+  if ! verdict="$(probe_instrumentation)"; then
+    echo "REFUSING to bake ${base_ref}: the instrumentation probe could not run (see the error above)." >&2
+    echo "  A probe that did not run is not evidence the image is clean." >&2
+    echo "  -> check the interpreter (arg 3); FORCE_BAKE=1 bakes without the check." >&2
     exit 3
   fi
-  # An already-baked -otel image carries the hook; refuse to bake it twice.
-  if "$CONTAINER_TOOL" run --rm --network=none --entrypoint "$VENV_PYTHON" "$base_ref" -c '
-import importlib.util as u
-raise SystemExit(0 if u.find_spec("_lineage_propagate") else 1)' >/dev/null 2>&1; then
-    echo "REFUSING to bake ${base_ref}: it already carries the lineage propagate hook" >&2
-    echo "  (an already-baked -otel image). -> point me at the un-shimmed base." >&2
-    echo "  -> FORCE_BAKE=1 overrides if you know the wrap is safe." >&2
-    exit 3
-  fi
+  case "$verdict" in
+    instrumented:*)
+      echo "REFUSING to bake ${base_ref}: it already instruments ${verdict#instrumented:}" >&2
+      echo "  Those are instrumentors this shim installs, so wrapping would stack a" >&2
+      echo "  second one on the same library (an -otel image, or an app that bundles" >&2
+      echo "  its own instrumentation)." >&2
+      echo "  -> if this is a stock app image, point me at the un-shimmed base." >&2
+      echo "  -> FORCE_BAKE=1 overrides if you know the wrap is safe." >&2
+      exit 3 ;;
+    hook)
+      echo "REFUSING to bake ${base_ref}: it already carries the lineage propagate hook" >&2
+      echo "  (an already-baked -otel image). -> point me at the un-shimmed base." >&2
+      echo "  -> FORCE_BAKE=1 overrides if you know the wrap is safe." >&2
+      exit 3 ;;
+    clean) ;;
+    *)
+      echo "REFUSING to bake ${base_ref}: unexpected probe output '${verdict}'" >&2
+      exit 3 ;;
+  esac
 }
 
 build_image() {

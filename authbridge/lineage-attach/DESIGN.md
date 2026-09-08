@@ -81,11 +81,24 @@ of the image checks one variable at startup and either initializes stock
 auto-instrumentation (`LINEAGE_PROPAGATE=1`) or does nothing at all. The
 image's ENTRYPOINT/CMD is never rewritten, there is no launcher process, and
 an unactivated `-otel` image runs the app exactly as its base does, with no
-OpenTelemetry module loaded —
-`build-otel-shim.sh` attests both halves of that claim on every bake, before
-the image is ever loaded. It is the same attach shape as the Java agent
+OpenTelemetry module loaded. `build-otel-shim.sh` attests this on every bake,
+before the image is ever loaded: `verify_inert` starts a bare interpreter with
+the gate off and asserts no `opentelemetry` module loads, and
+`verify_propagates` starts one with the gate on and asserts the hook ran and a
+`traceparent` is injected. (Both run the interpreter directly, not the image's
+ENTRYPOINT/CMD — they prove the hook's behaviour, not that the app's own
+command is unchanged; that half rests on the Dockerfile never touching
+ENTRYPOINT/CMD.) It is the same attach shape as the Java agent
 (`JAVA_TOOL_OPTIONS`) and Node (`NODE_OPTIONS`): the switch lives in the
 Deployment, next to the image reference, and nowhere in the app.
+
+One thing the bake *does* rewrite is `USER`: the final stage resets it to
+`${APP_UID}:${APP_GID}` (the detected values), so a base image that named its
+user — `USER app` — comes out numeric, which drops that user's supplementary
+groups. The primary uid/gid are preserved; only supplementary group
+memberships are lost. Detected automatically by `build-otel-shim.sh`; a direct
+Dockerfile build must pass both build-args (they have no default) or the build
+fails rather than silently running as `1001:0`.
 
 A hook failure cannot take the app down: the module catches everything and
 logs; propagation is then off and the trace shows it (`none` on the pod's

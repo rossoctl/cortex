@@ -6,8 +6,19 @@
 
 # Podman is checked FIRST: on podman hosts `docker` is often a compat client,
 # and `kind load docker-image` through it is exactly the breakage to avoid.
+# An explicit CONTAINER_TOOL is validated against the engines kind_load knows:
+# the override is advertised generally, but kind_load_${CONTAINER_TOOL} only
+# resolves to podman/docker — anything else ran the whole bake and then died
+# with "command not found" AFTER both attestations. Fail it here instead.
 container_tool() {
-  [ -n "${CONTAINER_TOOL:-}" ] && return 0
+  if [ -n "${CONTAINER_TOOL:-}" ]; then
+    case "$CONTAINER_TOOL" in
+      podman|docker) return 0 ;;
+      *) echo "error: CONTAINER_TOOL='$CONTAINER_TOOL' is not supported — use podman or docker" >&2
+         echo "  (the kind-load step is engine-specific and only implements those two)" >&2
+         return 1 ;;
+    esac
+  fi
   if command -v podman >/dev/null 2>&1; then CONTAINER_TOOL=podman
   elif command -v docker >/dev/null 2>&1; then CONTAINER_TOOL=docker
   else
@@ -17,13 +28,24 @@ container_tool() {
 }
 
 # `kind load docker-image` misbehaves under podman v5; save + image-archive.
+# The archive is this file's only temp file; a trap removes it on normal exit
+# AND on Ctrl-C / SIGTERM during `podman save`, which for an app image is
+# easily multiple GB under TMPDIR.
 kind_load_podman() {
   local ref="$1" tar rc=0
   tar="$(mktemp "${TMPDIR:-/tmp}/kind-load.XXXXXX")"
+  # Clean up on Ctrl-C / SIGTERM during `podman save` (a multi-GB archive),
+  # then re-raise the default so the interrupt still aborts. The trap is on
+  # INT/TERM only and is cleared before return — a RETURN trap would linger
+  # and fire again when the one-line kind_load() wrapper returns, where $tar
+  # is out of scope and `set -u` would abort. The normal and failed-save paths
+  # remove the archive explicitly below.
+  trap 'rm -f "${tar:-}"; trap - INT TERM; kill -s INT $$' INT TERM
   podman save -o "$tar" "$ref" \
     && KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "$tar" --name "$KIND_CLUSTER_NAME" \
     || rc=$?
-  rm -f "$tar"   # on success and failure alike
+  rm -f "$tar"
+  trap - INT TERM
   return "$rc"
 }
 
