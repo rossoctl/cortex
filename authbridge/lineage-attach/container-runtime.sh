@@ -28,9 +28,9 @@ container_tool() {
 }
 
 # `kind load docker-image` misbehaves under podman v5; save + image-archive.
-# The archive is this file's only temp file; a trap removes it on normal exit
-# AND on Ctrl-C / SIGTERM during `podman save`, which for an app image is
-# easily multiple GB under TMPDIR.
+# The archive is this file's only temp file (an app image is easily multiple GB
+# under TMPDIR); it is removed explicitly on the normal and failed-save paths,
+# and by a signal trap on Ctrl-C / SIGTERM during `podman save`.
 kind_load_podman() {
   local ref="$1" tar rc=0
   tar="$(mktemp "${TMPDIR:-/tmp}/kind-load.XXXXXX")"
@@ -40,7 +40,8 @@ kind_load_podman() {
   # and fire again when the one-line kind_load() wrapper returns, where $tar
   # is out of scope and `set -u` would abort. The normal and failed-save paths
   # remove the archive explicitly below.
-  trap 'rm -f "${tar:-}"; trap - INT TERM; kill -s INT $$' INT TERM
+  trap 'rm -f "${tar:-}"; trap - INT; kill -s INT $$' INT
+  trap 'rm -f "${tar:-}"; trap - TERM; kill -s TERM $$' TERM
   podman save -o "$tar" "$ref" \
     && KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive "$tar" --name "$KIND_CLUSTER_NAME" \
     || rc=$?

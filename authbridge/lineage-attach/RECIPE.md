@@ -14,7 +14,7 @@ the name of its app container (`kubectl -n $NS get deploy/$DEPLOY -o jsonpath='{
 
 | check | command | pass |
 |---|---|---|
-| the Deployment exists and is not platform-enrolled | `kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.spec.template.spec.initContainers[*].name} {.spec.template.spec.containers[*].name}'` | prints the app container(s) only — no `proxy-init`, no `envoy-proxy` |
+| the Deployment exists and is not platform-enrolled | `kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.spec.template.spec.initContainers[*].name} {.spec.template.spec.containers[*].name}'` | no `proxy-init`, no `envoy-proxy` (the target's own app/init containers are fine — the sidecar attaches as a native initContainer ahead of them) |
 | no volume-name collision (volumes merge by name too) | `kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.spec.template.spec.volumes[*].name}'` | no `envoy-config`, no `authbridge-runtime` |
 | the platform rendered the sidecar's config here | `kubectl -n $NS get cm envoy-config` | found |
 | the app's image is local (for the bake) | `podman image exists $IMAGE` (docker: `docker image inspect $IMAGE >/dev/null`) | exit 0 |
@@ -74,7 +74,7 @@ deployment "<deploy>" successfully rolled out
 (preceded by `configmap/authbridge-lineage-config-<deploy> created` and `deployment.apps/<deploy> patched`;
 the back-out line is printed before the rollout wait so it is there even when the wait fails).
 Add `CAPTURE_IO=true` to attach the parsed content — prompts, tool arguments, messages — to the spans (off by default; PII).
-Fail `already has a container named` / `already declares containerPort` → enrolled or colliding workload (README "How to attach").
+Fail `already has a container named` / `already declares containerPort` / `already has a volume named` → enrolled or colliding workload (README "How to attach").
 Fail `has no container named` → wrong `APP_CONTAINER`; nothing was applied.
 Rollout stuck → the Deployment is left patched on purpose (Kubernetes keeps the old pod serving);
 run the back-out line printed above, then read the sidecar log (step 4).

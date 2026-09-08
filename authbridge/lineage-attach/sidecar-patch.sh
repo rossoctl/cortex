@@ -82,7 +82,8 @@ refuse_name_collision() {
   # not added beside. Init containers included — that is where proxy-init
   # lands. (A native sidecar, an initContainer with restartPolicy Always, is
   # checked here only under these two names; the port check below ranges
-  # initContainers too, and refuse_own_init_containers refuses the rest.)
+  # initContainers too. envoy-proxy is itself emitted as a native-sidecar
+  # initContainer, so a re-attach is caught here by name.)
   local names n
   names="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
     -o jsonpath='{range .spec.template.spec.initContainers[*]}{.name}{" "}{end}{range .spec.template.spec.containers[*]}{.name}{" "}{end}')"
@@ -100,7 +101,8 @@ refuse_port_collision() {
   # An existing sidecar or the app on a sidecar port — see the header. Ports are
   # what a Deployment declares; an undeclared app port cannot be seen from here.
   # initContainers included: a native sidecar (restartPolicy Always) holds its
-  # ports at runtime, and ALLOW_INIT_CONTAINERS=1 can let one through.
+  # ports at runtime (envoy-proxy, the kit's own, is one — so a re-attach or a
+  # foreign native sidecar on these ports is caught here).
   local declared_ports p
   declared_ports="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
     -o jsonpath='{range .spec.template.spec.initContainers[*].ports[*]}{.containerPort}{" "}{end}{range .spec.template.spec.containers[*].ports[*]}{.containerPort}{" "}{end}')"
@@ -169,7 +171,7 @@ apply() {
   # All three objects — ConfigMap, patch, and its reverse — are generated
   # before the first write, so a generator refusal stops the script with
   # nothing applied. ConfigMap first — the patch's volume names it.
-  local cm patch undo restored_image cm_existed
+  local cm patch undo restored_image cm_existed dryrun_err
   cm="$(gen cm)"
   patch="$(gen patch)"
   # The image is the one piece the patch REPLACES rather than adds, so the
@@ -188,12 +190,22 @@ apply() {
           APP_IMAGE= RESTORE_IMAGE="$restored_image" "${SCRIPT_DIR}/attach-lineage.sh")"
   # The server validates the FULLY MERGED object without persisting it, so
   # every rejection class — an invalid merged field, an admission webhook,
-  # RBAC missing deployments/patch — fails here, before the first write.
-  kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic --patch "$patch" \
-      --dry-run=server -o name >/dev/null || {
-    echo "error: the server rejected the merged patch (above) — nothing was applied" >&2
+  # RBAC missing deployments/patch, and a cluster too old for native sidecars —
+  # fails here, before the first write. This is the version guard too: on k8s
+  # < 1.29 the server rejects the native-sidecar fields (startupProbe/
+  # restartPolicy on an init container), so no version parsing is needed.
+  local dryrun_err
+  if ! dryrun_err="$(kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic \
+        --patch "$patch" --dry-run=server -o name 2>&1)"; then
+    echo "error: the server rejected the merged patch — nothing was applied:" >&2
+    printf '%s\n' "$dryrun_err" >&2
+    case "$dryrun_err" in
+      *startupProbe*|*restartPolicy*|*"init container"*)
+        echo "  hint: rejection of the native-sidecar fields (startupProbe / restartPolicy on an init" >&2
+        echo "        container) means the cluster is older than k8s 1.29, which the kit requires." >&2 ;;
+    esac
     exit 1
-  }
+  fi
   # On a re-attach the ConfigMap already exists and running pods project it:
   # the failure compensation below may delete only what THIS run created.
   cm_existed=0

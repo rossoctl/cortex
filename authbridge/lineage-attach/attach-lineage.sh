@@ -4,15 +4,18 @@
 # image), print ONE of the two objects that attach lineage to it:
 #
 #   EMIT=patch (default)  strategic-merge patch adding the sidecar pieces —
-#                         proxy-init initContainer, envoy-proxy container, two
-#                         config volumes — and, with APP_CONTAINER, the
+#                         proxy-init + envoy-proxy as initContainers (envoy a
+#                         NATIVE sidecar: restartPolicy Always, so it is up
+#                         before the app container starts — needs k8s >= 1.29),
+#                         two config volumes — and, with APP_CONTAINER, the
 #                         propagation switch on the app's own container.
 #   EMIT=cm               the per-app plugin ConfigMap the sidecar mounts
 #                         (parser chain + lineage-telemetry entry).
 #   EMIT=undo             the reverse of the patch: one line of strategic-merge
 #                         JSON (JSON is YAML) deleting, by name, exactly what
 #                         the patch adds — `$patch: delete` on the merge-by-name
-#                         lists, null on the default-container annotation key.
+#                         lists (proxy-init + envoy-proxy initContainers, the
+#                         volumes, the app's LINEAGE_PROPAGATE env).
 #                         The image is restored via RESTORE_IMAGE (a replaced
 #                         image has no delete directive, only another value);
 #                         APP_IMAGE is refused in this mode — it is the ref to
@@ -233,7 +236,10 @@ build_app_patch() {
   # The propagation switch. `containers` and `env` both merge by name, so this
   # sets exactly LINEAGE_PROPAGATE (and the image, if given) on the owner's
   # container and nothing else. One env var is enough: it wakes the baked hook,
-  # which sets the propagate-only posture itself as env defaults.
+  # which sets the propagate-only posture itself as env defaults. This is the
+  # ONLY thing the patch adds under `containers:` — the sidecar is a native
+  # initContainer now, so the app stays the pod's sole regular container (and
+  # its default for `kubectl logs/exec`); no default-container annotation.
   app_patch=""
   if [ -n "$APP_CONTAINER" ]; then
     app_patch="
@@ -250,15 +256,22 @@ build_app_patch() {
 
 # ---- the sidecar fragments (the single source of every sidecar YAML byte) ----
 
-sidecar_container() {  # the envoy-proxy container (8-space list-item indent)
+sidecar_container() {  # the envoy-proxy NATIVE sidecar (8-space list-item indent)
   cat <<EOF
         # Envoy + authbridge-envoy (ext_proc + the lineage plugin). MUST run as
         # UID 1337: proxy-init exempts that uid from the outbound redirect.
-        # Readiness = the inbound listener accepting (without it a Service endpoint
-        # goes Ready before the sidecar can take the redirect); admin binds loopback.
+        # A NATIVE sidecar: an initContainer with restartPolicy Always, so the
+        # kubelet holds the app container until this one's startupProbe passes —
+        # proxy-init has already redirected egress, and without this the app can
+        # boot and make its first outbound call before the proxy is listening
+        # (connection refused). The startupProbe watches the OUTBOUND listener
+        # (15123), which is the one an app's startup egress actually hits.
+        # readinessProbe stays on the inbound listener: it gates the pod into
+        # Service endpoints, a separate concern. Admin binds loopback.
         - name: envoy-proxy
           image: "${SIDECAR_IMAGE}"
           imagePullPolicy: IfNotPresent
+          restartPolicy: Always
           args: ["--config", "/etc/authbridge/config.yaml"]
           securityContext:
             runAsNonRoot: true
@@ -272,9 +285,12 @@ sidecar_container() {  # the envoy-proxy container (8-space list-item indent)
             - { containerPort: 15123, name: envoy-out }
             - { containerPort: 15124, name: envoy-in }
             - { containerPort: 9090,  name: ext-proc }
+          startupProbe:
+            tcpSocket: { port: 15123 }
+            periodSeconds: 1
+            failureThreshold: 60
           readinessProbe:
             tcpSocket: { port: 15124 }
-            initialDelaySeconds: 2
             periodSeconds: 5
           resources:
             requests: { cpu: 50m, memory: 64Mi }
@@ -288,7 +304,9 @@ EOF
 proxy_init_container() {  # the iptables init container
   cat <<EOF
         # Programs the pod's iptables once and exits. Root + exactly
-        # NET_ADMIN/NET_RAW, nothing else.
+        # NET_ADMIN/NET_RAW, nothing else. POD_IP + POD_IPS (Downward API):
+        # proxy-init prefers the plural for full dual-stack redirect and falls
+        # back to the singular otherwise.
         - name: proxy-init
           image: "${PROXY_INIT_IMAGE}"
           imagePullPolicy: IfNotPresent
@@ -307,7 +325,11 @@ proxy_init_container() {  # the iptables init container
             - name: POD_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: status.podIP${exclude_env}
+                  fieldPath: status.podIP
+            - name: POD_IPS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIPs${exclude_env}
 EOF
 }
 
@@ -359,6 +381,14 @@ EOF
 emit_patch() {  # strategic merge: lists merge by name — the owner's spec is untouched
   # apiVersion/kind/metadata make it a complete resource, which kustomize
   # requires of a patch file; kubectl patch merges them harmlessly.
+  # proxy-init (to completion) then envoy-proxy (native sidecar) are both
+  # initContainers; the app container is touched only to switch propagation on.
+  # Emit `containers:` ONLY when there is an app fragment — a bare `containers:`
+  # key is `containers: null` in a strategic merge and would clobber the owner's
+  # container list.
+  local containers_block=""
+  [ -z "$app_patch" ] || containers_block="      containers:${app_patch}
+"
   cat <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -370,9 +400,8 @@ spec:
     spec:
       initContainers:
 $(proxy_init_container)
-      containers:
-$(sidecar_container)${app_patch}
-      volumes:
+$(sidecar_container)
+${containers_block}      volumes:
 $(sidecar_volumes)
 EOF
 }
@@ -383,22 +412,21 @@ emit_undo() {
   # merge by name un-merge by name: `$patch: delete` removes exactly the items
   # the patch added and touches nothing else, at ANY later time — unlike a
   # `rollout undo`, which restores a whole earlier pod template and silently
-  # takes with it whatever the owner changed since the attach. The
-  # default-container annotation deletes via null (strategic merge on maps);
-  # an owner value of that key the attach overwrote is deleted, not restored —
-  # the same one-key limitation the attach documents. The image is the one
-  # non-additive field — a replaced value has no delete, only another value —
-  # so RESTORE_IMAGE is the pre-attach ref to restore, captured by the caller
-  # (APP_IMAGE is refused in this mode; see parse_inputs).
-  local meta="" app=""
+  # takes with it whatever the owner changed since the attach. proxy-init AND
+  # envoy-proxy are both initContainers now (the native sidecar), so both are
+  # deleted from that list. The image is the one non-additive field — a replaced
+  # value has no delete, only another value — so RESTORE_IMAGE is the pre-attach
+  # ref to restore, captured by the caller (APP_IMAGE is refused in this mode;
+  # see parse_inputs). `containers` appears only when the attach touched one.
+  local app_containers=""
   if [ -n "$APP_CONTAINER" ]; then
-    meta='"metadata":{"annotations":{"kubectl.kubernetes.io/default-container":null}},'
-    app=',{"name":"'"${APP_CONTAINER}"'"'
+    local app='{"name":"'"${APP_CONTAINER}"'"'
     [ -z "$RESTORE_IMAGE" ] || app="${app},\"image\":\"${RESTORE_IMAGE}\""
     app="${app},\"env\":[{\"name\":\"LINEAGE_PROPAGATE\",\"\$patch\":\"delete\"}]}"
+    app_containers=',"containers":['"${app}"']'
   fi
-  printf '{"spec":{"template":{%s"spec":{"initContainers":[{"name":"proxy-init","$patch":"delete"}],"containers":[{"name":"envoy-proxy","$patch":"delete"}%s],"volumes":[{"name":"envoy-config","$patch":"delete"},{"name":"authbridge-runtime","$patch":"delete"}]}}}}\n' \
-    "$meta" "$app"
+  printf '{"spec":{"template":{"spec":{"initContainers":[{"name":"proxy-init","$patch":"delete"},{"name":"envoy-proxy","$patch":"delete"}]%s,"volumes":[{"name":"envoy-config","$patch":"delete"},{"name":"authbridge-runtime","$patch":"delete"}]}}}}\n' \
+    "$app_containers"
 }
 
 emit() {

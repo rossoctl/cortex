@@ -22,10 +22,14 @@ for every workload in the fleet — an agent, a tool, a relay, a service nobody
 remembers writing.
 
 > **Until a release carries the plugin, build the sidecar yourself.** The
-> published `ghcr.io/rossoctl/cortex/authbridge-envoy` image boots without
-> `lineage-telemetry` and logs `unknown plugin`. The plugin is cortex #761;
+> published `ghcr.io/rossoctl/cortex/authbridge-envoy` image does not carry
+> `lineage-telemetry`, and the sidecar *crashloops* on the unknown plugin name
+> (`plugins.Build` fails closed) — and because `proxy-init` has already
+> redirected the pod's egress, the workload is **down**, not merely
+> un-instrumented, until you back out. The plugin is cortex #761;
 > [RECIPE.md](RECIPE.md) step 1 builds and loads `authbridge-envoy` + `proxy-init`
-> from a tree that carries it.
+> from a tree that carries it. To run on a stock image meanwhile, `NO_EMIT=1`
+> gives a graceful parsers-only sidecar (the parsers predate the plugin).
 
 **Start here:** [RECIPE.md](RECIPE.md) — six steps, expected output, back
 out. **Why it works and where it stops:** [DESIGN.md](DESIGN.md).
@@ -50,6 +54,8 @@ pair is joined by `lineage.exchange.id` (the request span's own id):
 
 The attributes are the plugin's: [`plugin-catalog.md`](../docs/plugin-catalog.md#lineage-telemetry)
 lists its knobs, [`lineage-wire-contract.md`](../docs/lineage-wire-contract.md) the wire format.
+(Both docs arrive with the `lineage-telemetry` plugin in cortex #761; the links
+resolve once it lands.)
 
 A well-propagated trace has exactly one unstamped hop, at the entry: `wire`
 when the caller sent a `traceparent`, `none` when it sent nothing. Every other
@@ -78,10 +84,12 @@ DEPLOY=<deployment> [APP_CONTAINER=<container> APP_IMAGE=docker.io/library/<app>
 platform-rendered `envoy-config` ConfigMap is in the namespace, no container
 already named `envoy-proxy`/`proxy-init`, no port collision, no volume
 already named `envoy-config`/`authbridge-runtime` — volumes merge by name
-too, so an existing one would have its source silently repointed —
+too, so an existing one would have its source silently repointed — and
 `APP_CONTAINER` names a real container), applies the ConfigMap,
-patches the Deployment, and waits for the rollout. The patch only *adds*:
-lists merge by name, so everything the owner wrote stays as written. To back
+patches the Deployment, and waits for the rollout. The patch only *adds* —
+lists merge by name, so everything the owner wrote stays as written — except
+the app container's `image`, which it replaces when `APP_IMAGE` is given (the
+back-out restores the original). To back
 out, run the reverse-patch line the script printed — a strategic merge that
 `$patch: delete`s exactly what the attach added and restores the app image it
 replaced, leaving every later change of the owner's in place — then delete
@@ -106,10 +114,16 @@ If you own the app's manifests, make lineage part of them instead — the
 attachment then survives every re-deploy:
 
 ```sh
-NAME=my-agent EMIT=cm    ./attach-lineage.sh > lineage-cm.yaml
-NAME=my-agent EMIT=patch APP_CONTAINER=agent APP_IMAGE=docker.io/library/my-agent-otel:latest \
+NAME=my-agent NAMESPACE=my-ns EMIT=cm    ./attach-lineage.sh > lineage-cm.yaml
+NAME=my-agent NAMESPACE=my-ns EMIT=patch APP_CONTAINER=agent APP_IMAGE=docker.io/library/my-agent-otel:latest \
   ./attach-lineage.sh > lineage-patch.yaml
 ```
+
+`NAMESPACE` defaults to `team1` and is written into the generated ConfigMap —
+set it to your app's namespace. Omit it and the ConfigMap is stamped
+`namespace: team1` while kustomize still places the Deployment in its own
+namespace: the patched pod then mounts a ConfigMap that is not there and hangs
+in `ContainerCreating`.
 
 ```yaml
 # kustomization.yaml
@@ -132,13 +146,17 @@ the trace of the inbound that caused them — the app must forward
 then hand the patch the container to switch on: `APP_CONTAINER=<name>` adds
 `LINEAGE_PROPAGATE=1` to that container's env (merged by name — nothing else
 in the container changes) and `APP_IMAGE=…-otel:latest` points it at the baked
-image. Without `APP_CONTAINER` the app container is not touched at all.
+image. Without `APP_CONTAINER` the app container is not touched at all. The
+sidecar is a native initContainer, not a regular one, so the app stays the
+pod's sole regular container — `kubectl logs`/`exec` without `-c` keep hitting
+it, unchanged.
 
 The `-otel` image must be resolvable the way the base is: the patch swaps
 `image` and leaves `imagePullPolicy` alone, so a kind-loaded image needs
 `IfNotPresent` and a registry-pulled base needs the `-otel` tag pushed beside
 it. A Deployment whose env you cannot touch at all has one lever left, the
-image reference: `SELF_ACTIVATE=1 ./build-otel-shim.sh` bakes the switch in.
+image reference: `SELF_ACTIVATE=1 ./build-otel-shim.sh <your-app>:latest` bakes
+the switch in (the image argument is required).
 
 ### Enrolled workloads: the namespace-ConfigMap route
 
@@ -171,8 +189,31 @@ turn, unstamped only at the entry.
 
 ## Prerequisites and configuration
 
+On the host running the scripts:
+
+- **`kubectl`** (the attach path) and **`kind`** (the bake's image load) on
+  `PATH`; a container engine, **podman** or **docker** (`CONTAINER_TOOL`
+  selects, nothing else is supported); **`python3`** for the verify step.
+- **Network egress at bake time** to `ghcr.io/astral-sh/uv` and PyPI — the
+  shim build pulls `uv` and the OpenTelemetry packages. `NO_KIND_LOAD=1` skips
+  only the cluster load, not the build, so the bake is not offline-capable;
+  the image *probes* run `--network=none`, the build does not.
+- **RBAC** in the target namespace: get/patch/watch `deployments` (the rollout
+  wait watches) and get/create/patch/delete `configmaps` (a re-attach `apply`s —
+  i.e. patches — over an existing ConfigMap); the verify step also needs `create pods` in
+  the namespace and `get deployments` + `get pods/log` in `rossoctl-system`.
+
+In the cluster:
+
 - A cluster with the platform installed and the platform-rendered
   **`envoy-config` ConfigMap** in the target namespace (the sidecar mounts it).
+- **Kubernetes ≥ 1.29** — the sidecar is attached as a *native sidecar* (an
+  `initContainers` entry with `restartPolicy: Always`), on by default since 1.29
+  (GA in 1.33). On an older cluster the apiserver rejects the native-sidecar
+  fields (`startupProbe: Forbidden: may not be set for init containers without
+  restartPolicy=Always`) — loud, before any write, on **both** routes: the adopt
+  path hits it at `sidecar-patch.sh`'s server-side dry-run (which adds a
+  needs-1.29 hint), the manifests route at your own `kubectl apply`.
 - Sidecar images resolvable from the cluster: `SIDECAR_IMAGE` /
   `PROXY_INIT_IMAGE`, defaulting to the published
   `ghcr.io/rossoctl/cortex/{authbridge-envoy,proxy-init}:latest` — see the
@@ -206,7 +247,7 @@ a port out of the iptables redirect: an app's own telemetry export port, or a
 — the outbound listener's HTTP codec would close them; DESIGN "What the
 sidecar can and cannot see"). Never exclude LLM, tool, peer or S3 ports.
 `NO_EMIT=1` keeps the sidecar as a pure proxy — a clean A/B baseline.
-Script knobs: `NAME`/`DEPLOY`, `NAMESPACE`, `SELF_ID`, `OTEL_ENDPOINT`,
+Script knobs: `NAME`/`DEPLOY`, `NAMESPACE` (default `team1`), `SELF_ID`, `OTEL_ENDPOINT`,
 `CAPTURE_IO`, `MAX_PAYLOAD_BYTES`, `APP_CONTAINER`, `APP_IMAGE`, `OUTBOUND_PORTS_EXCLUDE`, `SIDECAR_IMAGE`,
 `PROXY_INIT_IMAGE`, `NO_EMIT`, `EMIT`; each script's header documents its own.
 
@@ -214,7 +255,7 @@ Script knobs: `NAME`/`DEPLOY`, `NAMESPACE`, `SELF_ID`, `OTEL_ENDPOINT`,
 
 ## Files
 
-Two moments, eight files. The bake happens once per image, on a laptop; the
+Two moments, nine files. The bake happens once per image, on a laptop; the
 attach once per Deployment, against the cluster. The only thing that crosses
 between them is an image reference.
 

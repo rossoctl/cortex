@@ -192,6 +192,11 @@ the bake *upgrades* it (observed: `opentelemetry-sdk 1.42.1 → 1.44.0`, semconv
 an older SDK can be affected by being wrapped. Check the build output if your
 app is sensitive to those versions.
 
+The static `uv` used to install the shim is copied into the image and left
+there — a `rm` in a later layer would not reclaim the copy layer's space, so
+removing it cleanly would need a build-stage split the kit does not do. It is a
+small self-contained binary and inert at runtime; noted here rather than hidden.
+
 ### Refuse rather than guess
 
 `build-otel-shim.sh` probes the image and stops if it finds no runnable Python,
@@ -200,8 +205,41 @@ or if any of the eight instrumentors the shim installs is already present
 image already carries the shim's own hook. It does **not** refuse on the mere
 presence of the `opentelemetry.instrumentation` namespace or of a dormant SDK
 — an image can carry those as transitive dependencies and still need the shim.
-`FORCE_BAKE=1` overrides, which makes the human judgment explicit and
-greppable.
+`FORCE_BAKE=1` overrides the **instrumentation interlock only** — the
+already-instrumented and already-has-hook refusals — and makes that human
+judgment explicit and greppable. The no-runnable-Python refusal is not
+overridable by it: pass the interpreter explicitly (arg 3) instead.
+
+## Why the sidecar is a native sidecar
+
+`proxy-init` programs the pod's iptables and exits; from that instant every
+non-1337 outbound TCP connection is redirected to the envoy outbound listener.
+If `envoy-proxy` were a plain container, the kubelet would start it and the app
+container together and wait for neither — and an app that makes its first
+outbound call *at process start* (peer discovery, a config fetch, a license
+ping) would reach the redirect before envoy is listening: connection refused,
+surfaced as an app error, the pod "running" and the failure silent. Observed
+live on an agent mesh resolving its A2A peers at boot — every agent came up
+with `0 peers` and delegations quietly no-oped.
+
+So `envoy-proxy` is emitted as a **native sidecar**: an `initContainers` entry
+with `restartPolicy: Always` and a `startupProbe` on the outbound listener. The
+merge prepends it (with `proxy-init`) ahead of the owner's own init containers,
+and the kubelet holds every later container — the owner's inits included — until
+its startupProbe passes, keeping it running for the pod's life. The app
+container therefore *cannot* start before its proxy is accepting, with no
+cooperation from the app.
+
+This needs **Kubernetes ≥ 1.29** (native sidecars are on by default from 1.29,
+GA in 1.33), and an older cluster fails loud before any write: with the
+SidecarContainers gate off, the apiserver drops `restartPolicy: Always` and
+then rejects the now-orphaned `startupProbe` on the init container
+(`startupProbe: Forbidden: may not be set for init containers without
+restartPolicy=Always`) — verified on a real 1.28 cluster. So there is no
+version parsing and no silent wedge: the adopt route hits that rejection at
+`sidecar-patch.sh`'s server-side dry-run (which recognises the native-sidecar
+error and adds a needs-1.29 hint), and the bring-your-own-manifests route hits
+it at the operator's own `kubectl apply` — both before anything is persisted.
 
 ## What the sidecar can and cannot see
 
