@@ -16,6 +16,9 @@ import (
 // recognize both dialects.
 const anthropicMessagesPath = "/v1/messages"
 
+// bobMessagesPath is the IBM Bob API endpoint.
+const bobMessagesPath = "/inference/v1/chat/completions"
+
 // --- request ---
 
 // anthropicRequest is the subset of the Anthropic Messages request we surface.

@@ -56,6 +56,8 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		ext = parseOpenAIRequest(pctx.Body)
 	case anthropicMessagesPath:
 		ext = parseAnthropicRequest(pctx.Body)
+	case bobMessagesPath:
+		ext = parseOpenAIRequest(pctx.Body)
 	default:
 		return pipeline.Action{Type: pipeline.Continue}
 	}
