@@ -45,6 +45,13 @@ exceptional) never gets those properties recorded at all. Such an entry still ge
 nodeid (``::test_prb_correctness[``/``::test_e2e_correctness[``, see ``_CORRECTNESS_TEST_MARKERS``)
 since there are no properties to dispatch on -- rather than silently falling back to the generic
 docstring + crash-message rendering every other test in this suite gets.
+
+Both suites also ``record_property("best_effort_notes", ...)`` -- a ``{scope_or_role_name:
+reason}`` dict naming every decision that fell back to a never-approved PRB proposal instead of
+aborting the scenario (``eval.test_policy_pipeline_eval.orchestrate_prb``'s ``best_effort=True``,
+by explicit user request so a scenario the auditor partly rejects still scores). When non-empty,
+``_render_metrics_block`` appends one more field listing them, with an explicit caveat that those
+pairs don't represent real production behavior.
 """
 
 from __future__ import annotations
@@ -161,6 +168,14 @@ def _format_pairs_dict(pairs_by_gate: dict) -> str:
 _CORRECTNESS_TEST_MARKERS = ("::test_prb_correctness[", "::test_e2e_correctness[")
 
 
+def _format_best_effort_notes(notes: dict[str, str]) -> str:
+    """Render a ``{scope_or_role_name: reason}`` dict (``orchestrate_prb``'s ``best_effort_notes``)
+    as one line per entry, or ``"none"``."""
+    if not notes:
+        return "none"
+    return "\n".join(f"{name}: {reason}" for name, reason in sorted(notes.items()))
+
+
 def _render_metrics_block(lines: list[str], props: dict, *, unavailable_reason: str | None = None) -> None:
     """Render the precision/recall/denial-precision + over-/under-grant/incorrect-denial breakdown
     ``test_prb_correctness``/``test_e2e_correctness`` record. When ``unavailable_reason`` is given
@@ -177,6 +192,13 @@ def _render_metrics_block(lines: list[str], props: dict, *, unavailable_reason: 
     _render_field(lines, "Over-grants", _format_pairs_dict(props.get("over_grants", {})))
     _render_field(lines, "Under-grants", _format_pairs_dict(props.get("under_grants", {})))
     _render_field(lines, "Incorrectly denied", _format_pairs_dict(props.get("incorrectly_denied", {})))
+    best_effort_notes = props.get("best_effort_notes", {})
+    if best_effort_notes:
+        _render_field(
+            lines,
+            "Best-effort proposals used (not real production behavior — the auditor never approved these)",
+            _format_best_effort_notes(best_effort_notes),
+        )
 
 
 def _render_entry(lines: list[str], nodeid: str, report: pytest.TestReport, category: str) -> None:

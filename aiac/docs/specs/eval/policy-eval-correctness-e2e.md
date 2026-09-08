@@ -21,6 +21,9 @@
   `eval/correctness_scorer.py`/`eval/test_correctness_scorer.py`'s logic-module/test-module split.
 - `aiac/eval/test_policy_pipeline_correctness_e2e.py` — the suite itself,
   `@pytest.mark.eval_correctness_e2e`.
+- `aiac/eval/best_effort_rules.py` — the best-effort fallback's own pure-logic helper
+  (`_best_effort_rules`); `aiac/eval/test_best_effort_rules.py` — its unmarked unit tests. See
+  [Best-effort proposals](#best-effort-proposals).
 - Reuses, unmodified, from `eval.test_policy_pipeline_eval`: `SCENARIOS`, the `pipeline` fixture
   (re-exported by import — see [Runbook](#runbook)), `_require_scenario`, `_rego_path`, `opa_bin`,
   `opa_eval`, `truth`.
@@ -110,6 +113,31 @@ This benefits every suite that shares the `pipeline` fixture (`eval_extended` pr
 suite), not just `eval_correctness_e2e` — see [Relationship to other integration
 tests](#relationship-to-other-integration-tests).
 
+## Best-effort proposals
+
+The PRB's generate→audit loop (`aiac.agent.policy_rules_builder.graph`'s `_audit`) can reject a
+scope/role decision outright — a genuine contradiction (`PolicyContradictionError`) or an
+exhausted retry budget (`PolicyRulesBuilderError`, after `MAX_AUDIT_RETRIES=3`). By default this
+aborts `orchestrate_prb()` entirely for that scenario — `compute_and_apply` never runs, so there's
+no Rego to score at all, and the scenario's report entry shows "setup failed" with nothing else.
+
+The shared `pipeline` fixture instead calls `orchestrate_prb(..., best_effort=True)` (see
+[Parallelization](#parallelization) — same fixture, applies to both its consumers, confirmed with
+the user): a rejected decision falls back to whatever was last proposed before the auditor
+rejected it, built the same way the PRB's own `build` node would have
+(`eval.best_effort_rules._best_effort_rules`, unit-tested unmarked). That best-effort rule flows
+into `compute_and_apply` and gets rendered into real Rego like any other rule — every other
+decision in the scenario proceeds normally, and the scenario as a whole now completes and scores.
+
+**This is an explicit, user-requested tradeoff**: the rendered Rego for a scenario with a
+best-effort decision can contain a rule a real deployment never would (the auditor rejected it —
+a real pipeline run aborts instead). `record_property("best_effort_notes", ...)` — a
+`{scope_or_role_name: reason}` dict — and the printed summary line name exactly which decisions
+this applies to; the report renders it as an extra field with an explicit caveat whenever
+non-empty. See [`policy-eval-correctness-prb.md` §Best-effort
+proposals](policy-eval-correctness-prb.md#best-effort-proposals) for the sibling suite's identical
+mechanism (same underlying `orchestrate_prb` parameter).
+
 ## Runbook
 
 ```bash
@@ -130,24 +158,27 @@ suite — this suite never false-passes when its infra isn't available.
 ## Expected output
 
 Parametrized over all 8 scenario names (`sorted(SCENARIOS)`); expects all 8 to pass (zero
-over-grants) given a healthy Keycloak instance and a well-behaved LLM endpoint. In practice, a real
-run against the rossoctl kind cluster currently shows 6/8 passing and 2/8 failing at the *setup*
-stage (`PolicyContradictionError`/`PolicyRulesBuilderError` from the PRB's own audit/retry loop,
-`aiac.agent.policy_rules_builder.graph._audit`) — this is the **pre-existing, already-deferred**
-audit/retry-convergence bug (the auditor rejects the generator's proposal identically on all 3
-retries for `agent_delegation` and, in this run, `unreachable_resources`), confirmed to reproduce
-identically in the PRB-direct `test_policy_pipeline_correctness_prb.py` suite (no Keycloak/PCE/OPA
-involved at all), so it is unrelated to this suite, to the pipeline fixture's parallelization, or
-to anything else changed here. Not fixed as part of this ticket — see [Out of
-Scope](#out-of-scope). Each test case
-`record_property`s `precision`, `recall`, `denial_precision`, `over_grants`, `under_grants`, and
-`incorrectly_denied` (the latter three as `{gate: sorted(pairs)}`), and prints:
+over-grants) given a healthy Keycloak instance and a well-behaved LLM endpoint. Before
+`best_effort=True` was wired in (see [Best-effort proposals](#best-effort-proposals)), a real run
+against the rossoctl kind cluster showed 6/8 passing and 2/8 failing at the *setup* stage
+(`PolicyContradictionError`/`PolicyRulesBuilderError` from the PRB's own audit/retry loop,
+`aiac.agent.policy_rules_builder.graph._audit`) — the **pre-existing, already-deferred**
+audit/retry-convergence bug (confirmed to reproduce identically in the PRB-direct
+`test_policy_pipeline_correctness_prb.py` suite, no Keycloak/PCE/OPA involved at all — unrelated
+to this suite or its parallelization). `best_effort=True` doesn't fix that bug (still not this
+ticket's job — see [Out of Scope](#out-of-scope)), it changes what a rejected scenario reports:
+instead of "setup failed" with nothing else, it now scores (real, possibly imperfect
+precision/recall) with `best_effort_notes` naming exactly which decisions weren't auditor-approved.
+Each test case `record_property`s `precision`, `recall`, `denial_precision`, `over_grants`,
+`under_grants`, `incorrectly_denied` (the latter three as `{gate: sorted(pairs)}`), and
+`best_effort_notes`, and prints:
 
 ```text
 [correctness-e2e] wildcard_grant: precision=1.000 recall=1.000 denial_precision=1.000
   over_grants={}
   under_grants={}
   incorrectly_denied={}
+  best_effort_notes={}
 ```
 
 A failing case's assertion message names the scenario and the exact over-granted `(role, scope)`
@@ -175,7 +206,14 @@ This is **one** integration-test spec among several indexed by the master PRD
   Rego-rendering bug.
 - **Shares the `pipeline` fixture with `eval_extended`** (`test_policy_pipeline_eval.py`) — the
   parallelization work described above (see [Parallelization](#parallelization)) speeds up both
-  suites, since it lives in the shared fixture, not in this suite's own file.
+  suites, since it lives in the shared fixture, not in this suite's own file. The
+  [best-effort fallback](#best-effort-proposals) is the same story: it's a property of the shared
+  fixture, so `eval_extended`'s own per-cell tests (`test_inbound`/`test_outbound`/
+  `test_grant_set_matches_truth_table`) are affected too, not just `test_e2e_correctness` — a
+  scenario whose PRB rejects a decision no longer gets a clean scenario-level skip; it runs
+  through with a best-effort fallback for *that* decision only, so those specific per-cell
+  assertions can show a real (and possibly wrong) result instead of a skip. Confirmed as the
+  accepted tradeoff with the user, not treated as a regression to fix.
 - **New marker, registered in `pyproject.toml`** (`eval_correctness_e2e`), distinct from
   `eval_extended`/`eval_consistency`/`eval_robustness`/`eval_correctness_prb`.
 
@@ -184,10 +222,13 @@ This is **one** integration-test spec among several indexed by the master PRD
 - **Fixing the PRB audit/retry-convergence bug** (`aiac.agent.policy_rules_builder.graph._audit`,
   around line 200-220) that causes `agent_delegation`/`unreachable_resources` (or, on other runs,
   `confusable_agents` — which scenario(s) hit it varies with LLM sampling, but at least one of
-  `agent_delegation`/`confusable_agents` reproduces consistently) to fail at setup with
-  `PolicyContradictionError`/`PolicyRulesBuilderError`. Confirmed pre-existing and unrelated to
-  this suite (reproduces identically in the PRB-direct `eval_correctness_prb` suite). The user has
-  already deferred fixing `graph.py` itself as a separate follow-up — not this ticket's job.
+  `agent_delegation`/`confusable_agents` reproduces consistently) to reject a scope/role decision
+  with `PolicyContradictionError`/`PolicyRulesBuilderError`. Confirmed pre-existing and unrelated
+  to this suite (reproduces identically in the PRB-direct `eval_correctness_prb` suite).
+  `best_effort=True` (see [Best-effort proposals](#best-effort-proposals)) changes how a rejection
+  is *reported* (scored with a caveat instead of "setup failed") — it does not fix the underlying
+  bug. The user has already deferred fixing `graph.py` itself as a separate follow-up — not this
+  ticket's job.
 - **Fixing the `outbound_target` denial-rendering gap** in
   `aiac.pdp.service.policy.opa.rego.generate_outbound_rego` — see
   [Known gap](#known-gap-outbound_target-denial-is-unrenderable-not-just-untested). This is

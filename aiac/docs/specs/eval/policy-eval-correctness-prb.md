@@ -24,6 +24,10 @@
   synthetic-`Role`/`Scope` builder `policy-eval-robustness-consistency.md`'s two suites use) and
   imports `SCENARIOS`, `orchestrate_prb`, `grant_sets`, `truth` from
   `eval.test_policy_pipeline_eval` unmodified.
+- `aiac/eval/best_effort_rules.py` — the best-effort fallback's own pure-logic helper
+  (`_best_effort_rules`, called from `orchestrate_prb`/`_invoke_graph`); `aiac/eval/
+  test_best_effort_rules.py` — its unmarked unit tests. See [Best-effort
+  proposals](#best-effort-proposals).
 
 ## Description
 
@@ -103,12 +107,46 @@ more precisely diagnosed under-grant, not a new failure class). `denial_precisio
 scenario and per gate via `record_property`, never blended into grant precision/recall, and never
 gates the test.
 
+## Best-effort proposals
+
+The PRB's generate→audit loop (`aiac.agent.policy_rules_builder.graph`'s `_audit`) can reject a
+scope/role decision outright — a genuine contradiction (`PolicyContradictionError`, fails closed
+immediately) or an exhausted retry budget (`PolicyRulesBuilderError`, after `MAX_AUDIT_RETRIES=3`).
+By default this aborts `orchestrate_prb()` entirely, discarding every other decision's
+already-approved rules along with it — one bad scope used to mean the whole scenario showed
+"setup failed" with no precision/recall at all.
+
+This suite calls `orchestrate_prb(..., best_effort=True)`: a rejected decision instead falls back
+to whatever was last proposed (before the auditor rejected it) — a real, if never-approved, guess
+at the grant/deny set for that one scope/role, built the same way the PRB's own `build` node would
+have (`aiac.agent.policy_rules_builder.graph._denied_names` reused; see
+`eval.best_effort_rules._best_effort_rules`, unit-tested unmarked in
+`eval/test_best_effort_rules.py`). Every other decision in the scenario proceeds normally.
+
+**This is an explicit, user-requested tradeoff, not free lunch**: a best-effort pair may not
+represent what a real deployment would ever contain — the auditor rejected it for a reason, and a
+real pipeline run would never emit it. `record_property("best_effort_notes", ...)` — a
+`{scope_or_role_name: reason}` dict — and the printed summary line name exactly which decisions
+this applies to, so a reader can tell which numbers are "real" and which are best-effort. The
+report (`eval/conftest.py`) renders this as an extra field with an explicit caveat whenever
+non-empty. `eval_consistency`/`eval_robustness` keep `best_effort=False` (the default, at their
+own direct `orchestrate_prb` call sites) — a rejected decision still aborts their scenario/repeat
+as before. `eval_extended` is the one exception: it shares the same session-scoped `pipeline`
+fixture `test_e2e_correctness` uses, and that fixture's `orchestrate_prb` call hardcodes
+`best_effort=True` unconditionally (confirmed with the user — see
+[policy-eval-correctness-e2e.md § Best-effort
+proposals](policy-eval-correctness-e2e.md#best-effort-proposals) and
+`eval.test_policy_pipeline_eval`'s module docstring for why this couldn't cleanly be made
+e2e-only), so `eval_extended`'s own per-cell tests are affected too, not just this suite or
+`test_e2e_correctness`.
+
 ## Expected output
 
 Parametrized over all 8 scenario names (`sorted(SCENARIOS)`); expects **all 8 to pass** (zero
 over-grants) given a well-behaved LLM endpoint. Each test case `record_property`s `precision`,
-`recall`, `denial_precision`, `over_grants`, `under_grants`, and `incorrectly_denied` (each of the
-latter three as `{gate: sorted(pairs)}`), and prints a one-line summary:
+`recall`, `denial_precision`, `over_grants`, `under_grants`, `incorrectly_denied` (each of the
+latter three as `{gate: sorted(pairs)}`), and `best_effort_notes` (see [Best-effort
+proposals](#best-effort-proposals)), and prints a one-line summary:
 
 ```text
 [correctness] wildcard_grant: precision=1.000 recall=1.000 denial_precision=1.000
@@ -255,6 +293,11 @@ This is **one** integration-test spec among several indexed by the master PRD
   tracked/reported via `record_property` and the printed summary line, never gated.
 - **New scenarios.** The taxonomy cross-check above confirms the existing 8-scenario corpus
   already covers every taxonomy theme; none is needed.
+- **Fixing the PRB audit/retry-convergence bug** that causes the auditor to reject a scope/role
+  decision (`PolicyContradictionError`/`PolicyRulesBuilderError`) for a variable subset of
+  scenarios depending on LLM sampling — see [Best-effort proposals](#best-effort-proposals), which
+  changes how a rejection is *reported*, not the underlying bug. Already deferred by the user as a
+  separate follow-up to `aiac.agent.policy_rules_builder.graph._audit` — not this ticket's job.
 
 ## Blocked-by
 

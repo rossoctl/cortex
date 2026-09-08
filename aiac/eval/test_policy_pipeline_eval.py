@@ -65,6 +65,24 @@ collision on this fixture's side). Everything after that per scenario — the LL
 ``orchestrate_prb`` calls and the idp/store/opa subprocesses — still runs fully concurrently, since
 realm provisioning is a small fraction of one scenario's wall-clock next to the PRB's several
 sequential LLM calls.
+
+``_provision_scenario`` calls ``orchestrate_prb(..., best_effort=True)`` — a scope/role decision
+the PRB's auditor rejects contributes a best-effort (never-approved) fallback rule instead of
+aborting the whole scenario (see ``orchestrate_prb``/``_invoke_graph``'s docstrings), by explicit
+user request so every scenario's real Rego/OPA output completes and scores instead of showing
+"setup failed" with nothing to show. This is one shared, session-scoped fixture serving both this
+file's own tests and ``test_e2e_correctness`` (``eval/test_policy_pipeline_correctness_e2e.py``),
+so it applies uniformly to both — there is no way to make it e2e-only without either duplicating
+the whole Keycloak+LLM provisioning pass (rejected: expensive, and the two suites would then score
+against two *different* PRB runs of the same scenario) or parametrizing the fixture (rejected:
+defeats the sharing this fixture exists for). Confirmed with the user (2026-09-08): this file's
+own per-cell tests (``test_inbound``/``test_outbound``/``test_grant_set_matches_truth_table``) are
+affected too, not just ``test_e2e_correctness`` — a scenario whose PRB hits a rejection no longer
+gets a clean scenario-level skip via ``_require_scenario``'s ``pytest.fail``; it now runs through
+with a best-effort fallback for the rejected decision only, so *those specific* per-cell
+assertions can show a real (and possibly wrong) result instead. This is the accepted tradeoff, not
+a bug — a real run after wiring this in showed 17 such failures, all traceable to the same
+scope/role names ``test_e2e_correctness``'s ``best_effort_notes`` names for the same scenarios.
 """
 
 from __future__ import annotations
@@ -123,11 +141,17 @@ os.environ.setdefault("KEYCLOAK_ADMIN_REALM", "master")  # inherited by the IdP 
 from keycloak import KeycloakAdmin  # noqa: E402
 from keycloak.exceptions import KeycloakError  # noqa: E402
 
-from aiac.agent.policy_rules_builder.graph import ROLE_GRAPH, SCOPE_GRAPH  # noqa: E402
+from aiac.agent.policy_rules_builder.graph import (  # noqa: E402
+    ROLE_GRAPH,
+    SCOPE_GRAPH,
+    PolicyContradictionError,
+    PolicyRulesBuilderError,
+)
 from aiac.idp.configuration.api import Configuration  # noqa: E402
 from aiac.idp.configuration.models import Role, Scope  # noqa: E402
 from aiac.policy.computation.engine import compute_and_apply  # noqa: E402
 from aiac.policy.model.models import PolicyRule  # noqa: E402
+from eval.best_effort_rules import _best_effort_rules  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -266,12 +290,35 @@ def _read_back(config: Configuration) -> tuple[dict[str, Role], dict[str, Scope]
     return roles, scopes
 
 
-def _invoke_graph(graph: Any, **entity: object) -> tuple[list[PolicyRule], str]:
+def _invoke_graph(
+    graph: Any, *, best_effort: bool = False, **entity: object
+) -> tuple[list[PolicyRule], str, str | None]:
     """Same state shape ``build_scope_rules``/``build_role_rules`` build internally, invoked
     directly so the final state's ``reasoning`` string (discarded by the wrapper) comes back too.
 
     ``entity`` carries the one field that differs between the two graphs: ``roles``+``scope`` for
     ``SCOPE_GRAPH``, ``role``+``scopes`` for ``ROLE_GRAPH``.
+
+    Returns ``(rules, reasoning, best_effort_note)`` — the third element is ``None`` for a normal,
+    auditor-approved decision.
+
+    ``best_effort=False`` (default): unchanged from before this parameter existed — a plain
+    ``graph.invoke(state)``, still letting ``PolicyContradictionError``/``PolicyRulesBuilderError``
+    propagate on a rejection. Every caller that doesn't opt in (``eval_extended``'s own tests via
+    the shared ``pipeline`` fixture, ``eval_consistency``, ``eval_robustness``) keeps today's exact
+    behavior — one rejected decision still aborts the whole scenario for them.
+
+    ``best_effort=True`` (the two correctness suites only): drives the graph via
+    ``graph.stream(state, stream_mode="values")`` instead of ``.invoke()`` so that if ``audit``
+    raises, the last state snapshot from immediately before the raise (i.e. right after
+    ``precheck`` — the node just before ``audit`` in ``fetch -> propose -> precheck -> audit ->
+    build``) is still available, even though ``ROLE_GRAPH``/``SCOPE_GRAPH`` attach no
+    checkpointer. On catching, falls back to ``_best_effort_rules`` built from that last-proposed
+    (never-approved) state, and returns a short string describing why — the correctness suites
+    record this per scope/role so their report can flag it: this fallback path scores something
+    that would never actually reach a real deployment (the auditor rejected it), by explicit user
+    request, to get full precision/recall coverage even for a scenario an ordinary run would
+    abort entirely.
     """
     state = {
         **entity,
@@ -286,13 +333,23 @@ def _invoke_graph(graph: Any, **entity: object) -> tuple[list[PolicyRule], str]:
         "retry_count": 0,
         "rules": [],
     }
-    out = graph.invoke(state)
-    return out["rules"], out["reasoning"]
+    if not best_effort:
+        out = graph.invoke(state)
+        return out["rules"], out["reasoning"], None
+
+    last_state = state
+    try:
+        for chunk in graph.stream(state, stream_mode="values"):
+            last_state = chunk
+    except (PolicyContradictionError, PolicyRulesBuilderError) as exc:
+        rules = _best_effort_rules(entity, last_state)
+        return rules, last_state.get("reasoning", ""), f"{type(exc).__name__}: {exc}"
+    return last_state["rules"], last_state["reasoning"], None
 
 
 def orchestrate_prb(
-    roles: dict[str, Role], scopes: dict[str, Scope], scenario: ModuleType
-) -> tuple[list[PolicyRule], dict[str, str], dict[str, str]]:
+    roles: dict[str, Role], scopes: dict[str, Scope], scenario: ModuleType, *, best_effort: bool = False
+) -> tuple[list[PolicyRule], dict[str, str], dict[str, str], dict[str, str]]:
     """Run the three PRB mappings against the real LLM and concatenate the rules, generalized over
     every agent's inbound/target scopes and every tool's scopes.
 
@@ -309,6 +366,11 @@ def orchestrate_prb(
     instead of ``build_role_rules``/``build_scope_rules`` purely to get that reasoning back —
     those wrapper functions discard it, and are shared production code used elsewhere, so they are
     not modified.
+
+    ``best_effort`` (default ``False``) is threaded into every ``_invoke_graph`` call — see its
+    docstring. The 4th return value, ``best_effort_notes``, maps a scope/role name to a short
+    reason string for every decision that fell back to an unapproved proposal; empty when
+    ``best_effort=False`` (the default) or when every decision was cleanly approved.
     """
     user_roles = [roles[name] for name in scenario.USER_ROLES]
 
@@ -324,19 +386,32 @@ def orchestrate_prb(
     rules: list[PolicyRule] = []
     reasoning_by_scope: dict[str, str] = {}
     reasoning_by_agent_role: dict[str, str] = {}
+    best_effort_notes: dict[str, str] = {}
     for agent_scope in inbound_scopes:  # (a) user role -> agent inbound scope
-        scope_rules, reasoning = _invoke_graph(SCOPE_GRAPH, roles=user_roles, scope=agent_scope)
+        scope_rules, reasoning, note = _invoke_graph(
+            SCOPE_GRAPH, roles=user_roles, scope=agent_scope, best_effort=best_effort
+        )
         rules += scope_rules
         reasoning_by_scope[agent_scope.name] = reasoning
+        if note is not None:
+            best_effort_notes[agent_scope.name] = note
     for target_scope in target_scopes:  # (b) user role -> tool/agent-target scope
-        scope_rules, reasoning = _invoke_graph(SCOPE_GRAPH, roles=user_roles, scope=target_scope)
+        scope_rules, reasoning, note = _invoke_graph(
+            SCOPE_GRAPH, roles=user_roles, scope=target_scope, best_effort=best_effort
+        )
         rules += scope_rules
         reasoning_by_scope[target_scope.name] = reasoning
+        if note is not None:
+            best_effort_notes[target_scope.name] = note
     for agent_role in agent_roles:  # (c) agent role -> all tool/agent-target scopes
-        role_rules, reasoning = _invoke_graph(ROLE_GRAPH, role=agent_role, scopes=target_scopes)
+        role_rules, reasoning, note = _invoke_graph(
+            ROLE_GRAPH, role=agent_role, scopes=target_scopes, best_effort=best_effort
+        )
         rules += role_rules
         reasoning_by_agent_role[agent_role.name] = reasoning
-    return rules, reasoning_by_scope, reasoning_by_agent_role
+        if note is not None:
+            best_effort_notes[agent_role.name] = note
+    return rules, reasoning_by_scope, reasoning_by_agent_role, best_effort_notes
 
 
 # ======================================================================================
@@ -554,8 +629,10 @@ def _provision_scenario(name: str, idp_port: int, store_port: int, opa_port: int
     """Provision one scenario's realm and run the real PRB+PCE pipeline, leaving ``.rego`` on disk
     under ``rego_out/policy_pipeline_eval/<scenario>/``. Returns ``{"rego_dir": Path, "rules":
     list[PolicyRule], "reasoning_by_scope": dict[str, str], "reasoning_by_agent_role": dict[str,
-    str]}`` (the two reasoning dicts feed the eval report's per-cell "Output" field, see
-    ``conftest.py``), or ``{"error": <str>}`` on failure.
+    str], "best_effort_notes": dict[str, str]}`` (the two reasoning dicts feed the eval report's
+    per-cell "Output" field, see ``conftest.py``; ``best_effort_notes`` names every scope/role
+    decision — if any — that fell back to a never-approved proposal rather than aborting the
+    scenario, see ``orchestrate_prb``), or ``{"error": <str>}`` on failure.
 
     Fully self-contained — own ``KeycloakAdmin`` connection, own env-var writes, own
     idp/store/opa ports — so it can run as an independent ``ProcessPoolExecutor`` worker (see the
@@ -628,7 +705,15 @@ def _provision_scenario(name: str, idp_port: int, store_port: int, opa_port: int
             config = Configuration.for_realm(scenario.REALM_DEFAULT)
             provision_via_config(config, scenario)  # exactly once — not idempotent
             roles, scopes = _read_back(config)
-            rules, reasoning_by_scope, reasoning_by_agent_role = orchestrate_prb(roles, scopes, scenario)
+            # best_effort=True: a scope/role decision the auditor rejects contributes a best-effort
+            # (never-approved) fallback rule instead of aborting the whole scenario — see
+            # orchestrate_prb's docstring. This means the Rego rendered below can include a rule a
+            # real deployment never would; deliberate, by explicit user request, so every scenario's
+            # pipeline completes and scores instead of showing "setup failed" with no metrics at
+            # all. `best_effort_notes` names exactly which scope/role decisions this applies to.
+            rules, reasoning_by_scope, reasoning_by_agent_role, best_effort_notes = orchestrate_prb(
+                roles, scopes, scenario, best_effort=True
+            )
             compute_and_apply(rules, override=False)
 
         # Assert every agent's rego actually landed here at setup — EXCEPT agents the scenario
@@ -653,6 +738,7 @@ def _provision_scenario(name: str, idp_port: int, store_port: int, opa_port: int
             "rules": rules,
             "reasoning_by_scope": reasoning_by_scope,
             "reasoning_by_agent_role": reasoning_by_agent_role,
+            "best_effort_notes": best_effort_notes,
         }
     except Exception as exc:  # noqa: BLE001 - isolate one scenario's setup failure from the rest
         log.exception("scenario %s: setup failed, isolating from the rest of the session", name)

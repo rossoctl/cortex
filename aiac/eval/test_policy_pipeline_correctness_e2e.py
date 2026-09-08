@@ -18,6 +18,17 @@ Gate: zero-tolerance on over-grants (any over-granted pair in any gate fails the
 Under-grants and incorrectly-denied pairs are reported via ``record_property`` and a printed
 summary line, never gating — same philosophy as the PRB-level suite.
 
+The shared ``pipeline`` fixture provisions each scenario with ``orchestrate_prb(...,
+best_effort=True)`` — a scope/role decision the PRB's auditor rejects contributes a best-effort,
+never-approved fallback rule instead of aborting the whole scenario, by explicit user request, so
+every scenario's real Rego/OPA output completes and scores instead of the whole thing showing
+"setup failed" with nothing to show. This means a scored pair may not represent what a real
+deployment would ever contain; ``best_effort_notes`` (``record_property``'d, printed) names
+exactly which scope/role decisions this applies to. See
+``eval.test_policy_pipeline_eval.orchestrate_prb``/``_invoke_graph``'s docstrings for the
+mechanism, and its module docstring for why this applies uniformly to the shared fixture's other
+consumer (``eval_extended``) too.
+
 Known gap: the ``outbound_target`` gate's denial side (``AgentPolicyModel.outbound_target_deny_rules``)
 is computed by the PCE but never rendered into the outbound Rego by
 ``aiac.pdp.service.policy.opa.rego.generate_outbound_rego`` — only the ALLOW side
@@ -149,6 +160,13 @@ def test_e2e_correctness(pipeline: dict[str, dict], scenario_name: str, record_p
     over_grants = {g: sorted(p) for g, p in score.over_grants.items()}
     under_grants = {g: sorted(p) for g, p in score.under_grants.items()}
     incorrectly_denied = {g: sorted(p) for g, p in score.incorrectly_denied.items()}
+    # A scope/role decision the PRB's auditor rejected during this scenario's pipeline setup (see
+    # eval.test_policy_pipeline_eval.orchestrate_prb's best_effort=True) contributed a best-effort,
+    # never-approved fallback rule instead of aborting the whole scenario — flowed all the way
+    # through compute_and_apply/OPA like any other rule, by explicit user request, so this
+    # scenario scores instead of showing "setup failed" with nothing to show. Named here so a
+    # reader knows which of this scenario's numbers don't represent real production behavior.
+    best_effort_notes = scenario_result.get("best_effort_notes", {})
 
     record_property("precision", score.precision)
     record_property("recall", score.recall)
@@ -156,12 +174,14 @@ def test_e2e_correctness(pipeline: dict[str, dict], scenario_name: str, record_p
     record_property("over_grants", over_grants)
     record_property("under_grants", under_grants)
     record_property("incorrectly_denied", incorrectly_denied)
+    record_property("best_effort_notes", best_effort_notes)
     print(
         f"[correctness-e2e] {scenario_name}: precision={score.precision:.3f} "
         f"recall={score.recall:.3f} denial_precision={score.denial_precision:.3f}\n"
         f"  over_grants={over_grants or '{}'}\n"
         f"  under_grants={under_grants or '{}'}\n"
-        f"  incorrectly_denied={incorrectly_denied or '{}'}"
+        f"  incorrectly_denied={incorrectly_denied or '{}'}\n"
+        f"  best_effort_notes={best_effort_notes or '{}'}"
     )
 
     assert score.passed, (

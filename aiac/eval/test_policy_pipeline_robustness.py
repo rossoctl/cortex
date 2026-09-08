@@ -152,7 +152,7 @@ def test_prb_robust_to_perturbation(
     mech_policy_path = tmp_path / f"{scenario_name}.mechanical.md"
     mech_policy_path.write_text(_mangle_text(policy_path.read_text(encoding="utf-8")))
     monkeypatch.setenv("AIAC_POLICY_FILE", str(mech_policy_path))
-    mech_rules, _, _ = orchestrate_prb(mech_roles, mech_scopes, _reordered(scenario))
+    mech_rules, _, _, _ = orchestrate_prb(mech_roles, mech_scopes, _reordered(scenario))
     mech_got = grant_sets(scenario, mech_rules)
     for gate in ("inbound", "outbound_subject", "outbound_target"):
         diff = want[gate] ^ mech_got[gate]
@@ -164,7 +164,7 @@ def test_prb_robust_to_perturbation(
     p_roles, p_scopes = build_roles_and_scopes(perturbed)
     p_policy_path = Path(perturbed.__file__).resolve().parent / perturbed.POLICY_FILE
     monkeypatch.setenv("AIAC_POLICY_FILE", str(p_policy_path))
-    sem_rules, _, _ = orchestrate_prb(p_roles, p_scopes, perturbed)
+    sem_rules, _, _, _ = orchestrate_prb(p_roles, p_scopes, perturbed)
     sem_got = grant_sets(scenario, sem_rules)
     for gate in ("inbound", "outbound_subject", "outbound_target"):
         diff = want[gate] ^ sem_got[gate]

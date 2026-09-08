@@ -24,6 +24,7 @@ dependencies = [
 # Test/dev tooling — install with: uv pip install -e ".[test]"
 test = [
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.uv]

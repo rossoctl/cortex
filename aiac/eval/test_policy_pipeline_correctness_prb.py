@@ -21,16 +21,22 @@ Gate: zero-tolerance on over-grants (any over-granted pair in any gate fails the
 Under-grants and incorrectly-denied pairs are reported via ``record_property`` and a printed
 summary line, never gating (spec: under-grant threshold TBD, deferred).
 
-Run (needs LLM_BASE_URL/LLM_MODEL/LLM_API_KEY exported; no Keycloak/opa needed):
-    .venv/bin/pytest eval/test_policy_pipeline_correctness_prb.py \
-        -m eval_correctness_prb -v -s
+Calls ``orchestrate_prb(..., best_effort=True)``: a scope/role decision the PRB's auditor rejects
+(``PolicyContradictionError``/exhausted-retry ``PolicyRulesBuilderError``) contributes a
+best-effort, never-approved fallback rule instead of aborting the whole scenario — by explicit
+user request, so every scenario scores instead of one rejected decision hiding the rest. This
+means a scored pair may not represent what a real deployment would ever contain;
+``best_effort_notes`` (``record_property``'d, printed) names exactly which scope/role decisions
+this applies to. See ``eval.test_policy_pipeline_eval.orchestrate_prb``'s docstring for the
+mechanism.
 
-The 8 scenarios are fully independent (separate synthetic Role/Scope, separate
-AIAC_POLICY_FILE), so they can run concurrently for a near-linear wall-clock speedup —
-``orchestrate_prb()`` makes ~5-8 sequential LLM calls per scenario, so the suite is otherwise
-dominated by LLM round-trip latency. Requires ``pip install pytest-xdist`` first (not a repo
-dependency, opt-in for local speed):
-    .venv/bin/pip install pytest-xdist
+Run (needs LLM_BASE_URL/LLM_MODEL/LLM_API_KEY exported; no Keycloak/opa needed). The 8 scenarios
+are fully independent (separate synthetic Role/Scope, separate AIAC_POLICY_FILE), so always run
+with ``-n 8`` for a near-linear wall-clock speedup — ``orchestrate_prb()`` makes ~5-8 sequential
+LLM calls per scenario, so a plain sequential run is dominated by LLM round-trip latency (a real
+run took ~36 minutes; with ``-n 8`` it's close to 1/8th that). ``pytest-xdist`` is a declared
+`test`-extra dependency (``aiac/pyproject.toml``'s ``[project.optional-dependencies].test``)
+picked up by a normal ``uv sync``/``pip install -e ".[test]"`` — no separate install step needed:
     .venv/bin/pytest eval/test_policy_pipeline_correctness_prb.py \
         -m eval_correctness_prb -n 8 -v -s
 """
@@ -73,7 +79,13 @@ def test_prb_correctness(scenario_name: str, monkeypatch: pytest.MonkeyPatch, re
     policy_path = Path(scenario.__file__).resolve().parent / scenario.POLICY_FILE
     monkeypatch.setenv("AIAC_POLICY_FILE", str(policy_path))
 
-    rules, _, _ = orchestrate_prb(roles, scopes, scenario)
+    # best_effort=True: a scope/role decision the auditor rejects contributes a best-effort
+    # (never-approved) fallback rule instead of aborting the whole scenario — see
+    # orchestrate_prb's docstring. Deliberate, by explicit user request, so every scenario scores
+    # instead of the whole thing showing "setup failed"; best_effort_notes names exactly which
+    # scope/role decisions this applies to, reported below so a reader knows which of this
+    # scenario's numbers don't represent real production behavior.
+    rules, _, _, best_effort_notes = orchestrate_prb(roles, scopes, scenario, best_effort=True)
     granted = grant_sets(scenario, [r for r in rules if r.effect == RuleEffect.ALLOW])
     denied = grant_sets(scenario, [r for r in rules if r.effect == RuleEffect.DENY])
     expected = truth(scenario)
@@ -89,12 +101,14 @@ def test_prb_correctness(scenario_name: str, monkeypatch: pytest.MonkeyPatch, re
     record_property("over_grants", over_grants)
     record_property("under_grants", under_grants)
     record_property("incorrectly_denied", incorrectly_denied)
+    record_property("best_effort_notes", best_effort_notes)
     print(
         f"[correctness] {scenario_name}: precision={score.precision:.3f} "
         f"recall={score.recall:.3f} denial_precision={score.denial_precision:.3f}\n"
         f"  over_grants={over_grants or '{}'}\n"
         f"  under_grants={under_grants or '{}'}\n"
-        f"  incorrectly_denied={incorrectly_denied or '{}'}"
+        f"  incorrectly_denied={incorrectly_denied or '{}'}\n"
+        f"  best_effort_notes={best_effort_notes or '{}'}"
     )
 
     assert score.passed, f"PRB over-granted for scenario '{scenario_name}' — zero-tolerance gate: {over_grants}"

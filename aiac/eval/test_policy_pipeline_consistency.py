@@ -62,7 +62,7 @@ def test_prb_consistent_across_repeats(scenario_name: str, monkeypatch: pytest.M
 
     runs = []
     for _ in range(N):
-        rules, _, _ = orchestrate_prb(roles, scopes, scenario)
+        rules, _, _, _ = orchestrate_prb(roles, scopes, scenario)
         runs.append(grant_sets(scenario, rules))
 
     baseline = runs[0]
