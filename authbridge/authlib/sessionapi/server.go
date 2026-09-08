@@ -138,6 +138,7 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /v1/plugins", s.handlePluginCatalog)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /{$}", s.handleIndex)
 
 	s.server = &http.Server{
 		Addr:              addr,
@@ -159,6 +160,41 @@ func (s *Server) ListenAndServe() error { return s.server.ListenAndServe() }
 func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(ctx) }
 
 // --- handlers -------------------------------------------------------------
+
+// indexBody is the plain-text index served at /. Kept as a const rather than
+// built per request: it is the same bytes every time, and a static string cannot
+// drift from itself under concurrent reads.
+//
+// Plain text, not HTML: the reader is someone who just ran curl against a port
+// they are not sure about, and one line per endpoint answers that. Anything
+// richer would need styling nobody asked for, and this listener has no other
+// HTML to be consistent with.
+const indexBody = `Cortex / AuthBridge Session API
+
+  GET /v1/sessions        list active sessions
+  GET /v1/sessions/{id}   one session's events
+  GET /v1/events          SSE stream of new events (?session=<id> to filter)
+  GET /v1/pipeline        active plugin pipeline
+  GET /v1/plugins         catalog of registered plugins
+  GET /v1/usage           time-bucketed usage aggregates
+  GET /healthz            liveness probe
+
+Unauthenticated: payloads may contain request and response bodies.
+`
+
+// handleIndex answers GET / with a one-line-per-endpoint index.
+//
+// It exists because a 404 on / gives no way to tell "wrong port" from "right port,
+// no route" — and the port is often assigned dynamically, so an operator running
+// curl against it has nothing to confirm they found the session API at all.
+//
+// Registered as "/{$}" so it matches ONLY the root. Go's "/" pattern is a
+// catch-all, which would turn every genuine 404 into this page and hide typos
+// like /v1/session.
+func (s *Server) handleIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(indexBody))
+}
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
