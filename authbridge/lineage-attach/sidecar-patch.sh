@@ -12,15 +12,21 @@
 # operator reconcile, a UI redeploy) silently drops the patch — observed live
 # when an operator reconciled a patched Deployment. Re-run after any
 # platform-side change, or keep the attachment in your own manifests instead
-# (README.md "Bring your own manifests"). To back out: the `rollout undo
-# --to-revision` line this script prints last (a bare undo is right only
-# until the Deployment rolls again for another reason), then delete the CM.
+# (README.md "Bring your own manifests"). To back out: the reverse-patch line
+# this script prints last — a strategic merge that deletes, by name, exactly
+# what the attach added and restores the app image it replaced, so it is right
+# at ANY later time, whatever else rolled the Deployment since — then delete
+# the CM. (A `rollout undo` is NOT the back-out: it restores a whole earlier
+# pod template, silently taking the owner's later changes with it.)
 #
 # Refused: a target that already carries a container named `envoy-proxy` or an
 # init container named `proxy-init` (the operator's sidecar, another mesh's
 # init, a leftover of an earlier attach — the merge would silently take it
-# over rather than sit beside it), or one that declares 9090, 15123 or 15124
-# (an undeclared sidecar, or the app itself on a port the sidecar binds).
+# over rather than sit beside it), one that declares 9090, 15123 or 15124
+# (an undeclared sidecar, or the app itself on a port the sidecar binds), or
+# one that already has a volume named `envoy-config` or `authbridge-runtime`
+# (volumes merge by name too — the merge would repoint the volume's source
+# while the owner's volumeMounts keep serving it).
 #
 # Propagation: an uninstrumented app also needs the shim — bake it with
 # build-otel-shim.sh, then pass APP_CONTAINER (+ APP_IMAGE) so the patch
@@ -47,7 +53,7 @@
 # Requires in the namespace: the platform's `envoy-config` ConfigMap; the
 # sidecar + proxy-init images resolvable from the cluster (README "Prerequisites and configuration").
 #
-# Structure: read_inputs → preconditions (five, read-only; each returns or exits) →
+# Structure: read_inputs → preconditions (six, read-only; each returns or exits) →
 # note_capture_only → apply (the only cluster writes). gen() is the one bridge
 # to the generator.
 set -euo pipefail
@@ -75,7 +81,8 @@ refuse_name_collision() {
   # Lists merge by NAME: a target already carrying either name is merged over,
   # not added beside. Init containers included — that is where proxy-init
   # lands. (A native sidecar, an initContainer with restartPolicy Always, is
-  # covered by name here but not by the port check below.)
+  # checked here only under these two names; the port check below ranges
+  # initContainers too, and refuse_own_init_containers refuses the rest.)
   local names n
   names="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
     -o jsonpath='{range .spec.template.spec.initContainers[*]}{.name}{" "}{end}{range .spec.template.spec.containers[*]}{.name}{" "}{end}')"
@@ -92,14 +99,35 @@ refuse_name_collision() {
 refuse_port_collision() {
   # An existing sidecar or the app on a sidecar port — see the header. Ports are
   # what a Deployment declares; an undeclared app port cannot be seen from here.
+  # initContainers included: a native sidecar (restartPolicy Always) holds its
+  # ports at runtime, and ALLOW_INIT_CONTAINERS=1 can let one through.
   local declared_ports p
   declared_ports="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
-    -o jsonpath='{range .spec.template.spec.containers[*].ports[*]}{.containerPort}{" "}{end}')"
+    -o jsonpath='{range .spec.template.spec.initContainers[*].ports[*]}{.containerPort}{" "}{end}{range .spec.template.spec.containers[*].ports[*]}{.containerPort}{" "}{end}')"
   for p in 15124 15123 9090; do
     case " $declared_ports " in
       *" $p "*)
         echo "error: $DEPLOY already declares containerPort $p, which the lineage sidecar binds" >&2
         echo "  (an operator-injected sidecar, or the app itself on that port) — refusing to patch over it" >&2
+        exit 1 ;;
+    esac
+  done
+}
+
+refuse_volume_collision() {
+  # Volumes merge by NAME too: an existing volume by either name would have
+  # its source silently repointed at our ConfigMap (and a different-type
+  # volume would make the API server reject the merged object). The owner's
+  # volumeMounts keep referencing the name, so the damage would surface only
+  # at the next pod start, with nothing in a diff.
+  local volumes v
+  volumes="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
+    -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{" "}{end}')"
+  for v in envoy-config authbridge-runtime; do
+    case " $volumes " in
+      *" $v "*)
+        echo "error: $DEPLOY already has a volume named $v — the patch would repoint its source, not add beside it" >&2
+        echo "  (the owner mounts that volume somewhere; the merge would silently change what the mount serves) — refusing" >&2
         exit 1 ;;
     esac
   done
@@ -138,23 +166,60 @@ gen() {  # $1 = EMIT mode; the other knobs reach the generator through the envir
 }
 
 apply() {
-  # Both objects are generated before the first write, so a generator refusal
-  # stops the script with nothing applied. ConfigMap first — the patch's
-  # volume names it.
-  local cm patch before
+  # All three objects — ConfigMap, patch, and its reverse — are generated
+  # before the first write, so a generator refusal stops the script with
+  # nothing applied. ConfigMap first — the patch's volume names it.
+  local cm patch undo restored_image cm_existed
   cm="$(gen cm)"
   patch="$(gen patch)"
-  # The revision to return to. A bare `rollout undo` goes one step back, which
-  # is this one only until the Deployment rolls again for any other reason.
-  before="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
-    -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}')"
+  # The image is the one piece the patch REPLACES rather than adds, so the
+  # reverse patch needs a value, not a delete: capture the ref the owner runs
+  # now, before the patch swaps it. Every other added piece un-merges by name.
+  restored_image=""
+  if [ -n "${APP_IMAGE:-}" ]; then
+    restored_image="$(kubectl get deploy -n "$NAMESPACE" "$DEPLOY" \
+      -o jsonpath="{.spec.template.spec.containers[?(@.name=='$APP_CONTAINER')].image}")"
+    [ -n "$restored_image" ] || {
+      echo "error: could not read the current image of container '$APP_CONTAINER' — nothing was applied" >&2
+      exit 1
+    }
+  fi
+  undo="$(EMIT=undo NAME="$DEPLOY" NAMESPACE="$NAMESPACE" \
+          APP_IMAGE= RESTORE_IMAGE="$restored_image" "${SCRIPT_DIR}/attach-lineage.sh")"
+  # The server validates the FULLY MERGED object without persisting it, so
+  # every rejection class — an invalid merged field, an admission webhook,
+  # RBAC missing deployments/patch — fails here, before the first write.
+  kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic --patch "$patch" \
+      --dry-run=server -o name >/dev/null || {
+    echo "error: the server rejected the merged patch (above) — nothing was applied" >&2
+    exit 1
+  }
+  # On a re-attach the ConfigMap already exists and running pods project it:
+  # the failure compensation below may delete only what THIS run created.
+  cm_existed=0
+  if kubectl get cm -n "$NAMESPACE" "authbridge-lineage-config-$DEPLOY" >/dev/null 2>&1; then
+    cm_existed=1
+  fi
   kubectl apply -f - <<<"$cm"
   kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic --patch "$patch" || {
-    kubectl delete cm -n "$NAMESPACE" "authbridge-lineage-config-$DEPLOY"   # nothing else was written
+    # Only a failure the dry-run could not predict lands here (e.g. a 409
+    # from a concurrent write). Nothing else was written this run except,
+    # possibly, the ConfigMap — remove it only if this run created it.
+    [ "$cm_existed" = "1" ] || kubectl delete cm -n "$NAMESPACE" "authbridge-lineage-config-$DEPLOY"
     exit 1
   }
   # Said before the wait: a rollout that never completes still needs this line.
-  echo ">> back out: kubectl -n $NAMESPACE rollout undo deploy/$DEPLOY --to-revision=${before:-?} && kubectl -n $NAMESPACE delete cm authbridge-lineage-config-$DEPLOY"
+  # CM after the patch: pods of a revision that still mounts it cannot start.
+  echo ">> back out: kubectl -n $NAMESPACE patch deploy/$DEPLOY --type strategic -p '$undo' && kubectl -n $NAMESPACE delete cm authbridge-lineage-config-$DEPLOY"
+  [ -z "$restored_image" ] || \
+    echo ">>   (the patch restores image $restored_image — drop its \"image\" field if the app is re-imaged after this attach)"
+  # A rollout that times out is deliberately left patched (unlike the patch-
+  # apply failure above, which auto-cleans): Kubernetes holds the blast —
+  # maxUnavailable keeps the old pod serving — and the back-out line printed
+  # just above is the clean way out. Undoing here would fight a slow-but-
+  # healthy rollout, and the likely cause (an image absent from the node, an
+  # SCC/PodSecurity denial creating pods) wants the operator's eyes, not a
+  # silent revert.
   kubectl rollout status -n "$NAMESPACE" "deploy/$DEPLOY" --timeout=180s
   echo ">> lineage sidecar attached to deploy/$DEPLOY (self_id=$SELF_ID, ns=$NAMESPACE)"
 }
@@ -164,12 +229,13 @@ preconditions() {  # read-only: each returns or exits — nothing is applied yet
   require_envoy_config
   refuse_name_collision
   refuse_port_collision
+  refuse_volume_collision
   require_app_container
 }
 
 main() {
   read_inputs        # DEPLOY required; the rest defaulted or inherited
-  preconditions      # five checks that can only stop the script
+  preconditions      # six checks that can only stop the script
   note_capture_only  # no APP_CONTAINER → say what that means, once
   apply              # generate both, then the only cluster writes: cm → patch → rollout
 }

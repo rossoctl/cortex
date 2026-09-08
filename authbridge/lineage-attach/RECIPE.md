@@ -15,6 +15,7 @@ the name of its app container (`kubectl -n $NS get deploy/$DEPLOY -o jsonpath='{
 | check | command | pass |
 |---|---|---|
 | the Deployment exists and is not platform-enrolled | `kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.spec.template.spec.initContainers[*].name} {.spec.template.spec.containers[*].name}'` | prints the app container(s) only — no `proxy-init`, no `envoy-proxy` |
+| no volume-name collision (volumes merge by name too) | `kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.spec.template.spec.volumes[*].name}'` | no `envoy-config`, no `authbridge-runtime` |
 | the platform rendered the sidecar's config here | `kubectl -n $NS get cm envoy-config` | found |
 | the app's image is local (for the bake) | `podman image exists $IMAGE` (docker: `docker image inspect $IMAGE >/dev/null`) | exit 0 |
 | an OTLP/gRPC collector is reachable in-cluster | `kubectl -n rossoctl-system get deploy otel-collector` | found (else set `OTEL_ENDPOINT` in step 3) |
@@ -65,7 +66,8 @@ Set `OTEL_ENDPOINT=host:port` for a collector other than the platform's.
 
 Pass — the output ends with:
 ```
->> back out: kubectl -n <ns> rollout undo deploy/<deploy> --to-revision=<n> && kubectl -n <ns> delete cm authbridge-lineage-config-<deploy>
+>> back out: kubectl -n <ns> patch deploy/<deploy> --type strategic -p '<the reverse patch>' && kubectl -n <ns> delete cm authbridge-lineage-config-<deploy>
+>>   (the patch restores image <pre-attach ref> — drop its "image" field if the app is re-imaged after this attach)
 deployment "<deploy>" successfully rolled out
 >> lineage sidecar attached to deploy/<deploy> (self_id=<deploy>, ns=<ns>)
 ```
@@ -74,7 +76,8 @@ the back-out line is printed before the rollout wait so it is there even when th
 Add `CAPTURE_IO=true` to attach the parsed content — prompts, tool arguments, messages — to the spans (off by default; PII).
 Fail `already has a container named` / `already declares containerPort` → enrolled or colliding workload (README "How to attach").
 Fail `has no container named` → wrong `APP_CONTAINER`; nothing was applied.
-Rollout stuck → run the back-out line printed above, then read the sidecar log (step 4).
+Rollout stuck → the Deployment is left patched on purpose (Kubernetes keeps the old pod serving);
+run the back-out line printed above, then read the sidecar log (step 4).
 
 ## 4. Verify
 
@@ -97,13 +100,23 @@ Attribution check, when the app calls out: every hop after the entry must show
 
 ## 5. Back out
 
+Run the line step 3 printed: a strategic-merge **reverse patch** that deletes, by name, exactly
+what the attach added — and restores the app image it replaced — then deletes the ConfigMap:
+
 ```sh
-kubectl -n $NS rollout undo deploy/$DEPLOY --to-revision=<n> && kubectl -n $NS delete cm authbridge-lineage-config-$DEPLOY
+kubectl -n $NS patch deploy/$DEPLOY --type strategic -p '<the printed reverse patch>' \
+  && kubectl -n $NS delete cm authbridge-lineage-config-$DEPLOY
 ```
-`<n>` is the revision step 3 printed in its last line — the spec as it was before the attach. A bare
-`rollout undo` goes one step back, which is that spec only if nothing rolled the Deployment since;
-`kubectl -n $NS rollout history deploy/$DEPLOY` lists the revisions if the line is gone. Delete the
-ConfigMap after the undo, not before: a revision that still mounts it cannot start without it.
+
+It is right at any later time: whatever the owner rolled since the attach stays in place. (A
+`rollout undo` is not a back-out — it restores a whole earlier pod template, taking the owner's
+later changes with it.) Two caveats. The patch restores the pre-attach image ref — drop its
+`"image"` field if the app was re-imaged after the attach. And if the printed line is gone,
+regenerate the patch with the attach's own knobs:
+`EMIT=undo NAME=$DEPLOY NAMESPACE=$NS APP_CONTAINER=$CONTAINER RESTORE_IMAGE=<pre-attach ref> ./attach-lineage.sh`
+(leave `APP_CONTAINER`/`RESTORE_IMAGE` off for a capture-only attach; `APP_IMAGE` is the ref to
+INSTALL and `EMIT=undo` refuses it — reusing the attach line verbatim would "restore" the -otel image). Delete the ConfigMap after the
+patch, not before: pods of a revision that still mounts it cannot start without it.
 
 ## A fleet
 

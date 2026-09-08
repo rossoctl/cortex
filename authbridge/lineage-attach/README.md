@@ -17,8 +17,8 @@ The app's source, command and manifests stay as its owner wrote them.
 
 That is the whole attachment: a ConfigMap and a strategic-merge patch on the
 cluster side, an image reference and one variable on the app side. It is
-additive, it is reversible with one `rollout undo`, and it is the same for
-every workload in the fleet — an agent, a tool, a relay, a service nobody
+additive, it is reversible with one printed reverse patch, and it is the same
+for every workload in the fleet — an agent, a tool, a relay, a service nobody
 remembers writing.
 
 > **Until a release carries the plugin, build the sidecar yourself.** The
@@ -76,13 +76,21 @@ DEPLOY=<deployment> [APP_CONTAINER=<container> APP_IMAGE=docker.io/library/<app>
 
 `sidecar-patch.sh` checks the preconditions (the Deployment exists, the
 platform-rendered `envoy-config` ConfigMap is in the namespace, no container
-already named `envoy-proxy`/`proxy-init`, no port collision, `APP_CONTAINER`
-names a real container), applies the ConfigMap,
+already named `envoy-proxy`/`proxy-init`, no port collision, no volume
+already named `envoy-config`/`authbridge-runtime` — volumes merge by name
+too, so an existing one would have its source silently repointed —
+`APP_CONTAINER` names a real container), applies the ConfigMap,
 patches the Deployment, and waits for the rollout. The patch only *adds*:
 lists merge by name, so everything the owner wrote stays as written. To back
-out, `kubectl rollout undo deploy/<name> --to-revision=<n>` with the revision
-the script printed (the patch is one revision), then delete
-`authbridge-lineage-config-<name>`.
+out, run the reverse-patch line the script printed — a strategic merge that
+`$patch: delete`s exactly what the attach added and restores the app image it
+replaced, leaving every later change of the owner's in place — then delete
+`authbridge-lineage-config-<name>`. (A `rollout undo` is not a back-out: it
+restores a whole earlier pod template, silently taking with it anything the
+owner changed since the attach.) The line is reconstructible without
+scrollback: `EMIT=undo` with the attach's `NAME`/`NAMESPACE`/`APP_CONTAINER`
+plus `RESTORE_IMAGE=<pre-attach ref>` regenerates the patch — not `APP_IMAGE`,
+which is the ref to *install* and is refused in undo mode (RECIPE step 5).
 
 Two limits. **The target must not already carry an AuthBridge sidecar** — a
 platform-enrolled workload (an `AgentRuntime` CR) has an injected one, also
@@ -153,7 +161,7 @@ two commands and no YAML:
 | step | command | per | done for you |
 |---|---|---|---|
 | bake | `./build-otel-shim.sh <image>` | image | interpreter and uid detection, the interlock, the attestation, the kind load |
-| attach | `DEPLOY=<name> APP_CONTAINER=<c> APP_IMAGE=…-otel:latest ./sidecar-patch.sh` | Deployment | the ConfigMap, the patch, five preconditions, the rollout wait |
+| attach | `DEPLOY=<name> APP_CONTAINER=<c> APP_IMAGE=…-otel:latest ./sidecar-patch.sh` | Deployment | the ConfigMap, the patch, six preconditions, the rollout wait |
 
 Capture only is one command, the attach without `APP_CONTAINER`. A fleet is
 two loops (RECIPE "A fleet"). Then read the *shape* of one trace: one root per
@@ -236,16 +244,17 @@ BAKE — once per app image                 ATTACH — once per Deployment
 | symptom | cause |
 |---|---|
 | No spans at all | Wrong `OTEL_ENDPOINT`, or the sidecar image predates the plugin — read the `envoy-proxy` container's log. |
-| `envoy-proxy` restarts with `unknown plugin "lineage-telemetry"` | The published image, until a release carries the plugin. Build from this repo (RECIPE step 1); `rollout undo` meanwhile. The patch pulls `IfNotPresent`, so a node that cached an older `:latest` keeps it. |
+| `envoy-proxy` restarts with `unknown plugin "lineage-telemetry"` | The published image, until a release carries the plugin. Build from this repo (RECIPE step 1); the printed back-out line meanwhile. The patch pulls `IfNotPresent`, so a node that cached an older `:latest` keeps it. |
 | Only inbound hops, never outbound | `proxy-init` did not install its iptables rules — its log. |
 | Outbound hops fragment (`lineage.parent.source=none` on the pod's outbound hops) | `traceparent` not propagating: the app container lacks `LINEAGE_PROPAGATE=1` (the patch sets it with `APP_CONTAINER`; an operator-owned Deployment needs `SELF_ACTIVATE=1`), or the call runs in a worker thread (the `threading` instrumentor is bundled), or the client library is outside the envelope. Only the entry hop dangling is expected. |
 | The app cannot reach its database / mail server after the patch | A plaintext non-HTTP port went through the outbound HTTP codec — `OUTBOUND_PORTS_EXCLUDE` it. |
-| A non-HTTP port the app *serves* stops answering after the patch | Inbound is redirected too, and there is no inbound exclusion knob; the app cannot be adopted as is (DESIGN "What the sidecar can and cannot see"). `rollout undo`. |
+| A non-HTTP port the app *serves* stops answering after the patch | Inbound is redirected too, and there is no inbound exclusion knob; the app cannot be adopted as is (DESIGN "What the sidecar can and cannot see"). Run the printed back-out line. |
 | Nothing captured when testing | `kubectl port-forward` reaches the app on loopback and bypasses the sidecar. Drive from inside the cluster. |
 | `kind load` fails under podman | `container-runtime.sh` saves + loads an archive for podman v5; `CONTAINER_TOOL` forces a runtime, `KIND_CLUSTER_NAME` the cluster. |
 | Sidecar `ImagePullBackOff` | `SIDECAR_IMAGE` / `PROXY_INIT_IMAGE` unresolvable from the cluster. |
-| App container `ErrImagePull` after the patch | `APP_IMAGE` unresolvable under the container's own `imagePullPolicy` ("The propagation half"). `rollout undo`. |
+| App container `ErrImagePull` after the patch | `APP_IMAGE` unresolvable under the container's own `imagePullPolicy` ("The propagation half"). Run the printed back-out line. |
 | Pod stuck `ContainerCreating`, `configmap "envoy-config" not found` | Not a platform-set-up namespace (`sidecar-patch.sh` checks; the manifests route cannot). |
-| `sidecar-patch.sh` refuses: "already has a container named …" | The target carries an `envoy-proxy` container or a `proxy-init` init container — enrolled workload, another mesh, or an earlier attach. Namespace route for the first; `rollout undo` the last. |
+| `sidecar-patch.sh` refuses: "already has a container named …" | The target carries an `envoy-proxy` container or a `proxy-init` init container — enrolled workload, another mesh, or an earlier attach. Namespace route for the first; the printed back-out line for the last. |
 | `sidecar-patch.sh` refuses: "already declares containerPort …" | An undeclared sidecar, or the app itself listens on 9090/15123/15124; the latter cannot be adopted. |
+| `sidecar-patch.sh` refuses: "already has a volume named …" | The target owns a volume named `envoy-config` or `authbridge-runtime`. Volumes merge by name, so the patch would silently repoint that volume's source under the owner's own mounts; the target cannot be adopted until the owner renames their volume. |
 | `sidecar-patch.sh` refuses: "has no container named …" | `APP_CONTAINER` matches nothing; a strategic merge would otherwise *add* a stub container by that name. |

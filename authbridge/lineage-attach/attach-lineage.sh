@@ -9,6 +9,15 @@
 #                         propagation switch on the app's own container.
 #   EMIT=cm               the per-app plugin ConfigMap the sidecar mounts
 #                         (parser chain + lineage-telemetry entry).
+#   EMIT=undo             the reverse of the patch: one line of strategic-merge
+#                         JSON (JSON is YAML) deleting, by name, exactly what
+#                         the patch adds — `$patch: delete` on the merge-by-name
+#                         lists, null on the default-container annotation key.
+#                         The image is restored via RESTORE_IMAGE (a replaced
+#                         image has no delete directive, only another value);
+#                         APP_IMAGE is refused in this mode — it is the ref to
+#                         INSTALL, and reusing the attach line verbatim would
+#                         otherwise "restore" the -otel image.
 #
 # Apply both and the app's traffic flows through the lineage plugin. The app
 # itself is never described: no Deployment, no Service, no app config — lists
@@ -44,6 +53,9 @@
 #                   an existing container: a strategic merge ADDS a stub for an
 #                   unknown name. Checked by sidecar-patch.sh, not here.
 #   APP_IMAGE       needs APP_CONTAINER: the -otel image to set on it
+#                   (EMIT=patch only; EMIT=undo refuses it — see RESTORE_IMAGE)
+#   RESTORE_IMAGE   EMIT=undo only, needs APP_CONTAINER: the pre-attach image
+#                   ref the reverse patch sets back on the app container
 #   OTEL_ENDPOINT   OTLP/gRPC target for the plugin's spans (default: the
 #                   platform collector). Any OTLP consumer works. Plain gRPC
 #                   unless it starts with https://.
@@ -63,20 +75,22 @@
 #   PROXY_INIT_IMAGE  default ghcr.io/rossoctl/cortex/proxy-init:latest
 #   NO_EMIT=1       omit the plugin entry: the sidecar proxies, emits nothing
 #                   (parsers alone are legal). The A/B baseline.
-#   EMIT            patch (default) | cm
+#   EMIT            patch (default) | cm | undo
 #
 # Structure: parse_inputs validates EVERY knob (all refusals live there);
 # build_* each assemble one optional YAML fragment into a global; the three
 # fragment functions are the single source of the sidecar YAML; emit()
-# dispatches to the two emitters.
+# dispatches to the emitters.
 set -euo pipefail
 
-# Every free-form value lands in a double-quoted YAML scalar, where only '"'
-# and '\' are special — refusing those two is exactly sufficient. Whitespace
-# and control characters are refused as well: never part of an endpoint or
-# image ref, and a control character is illegal in YAML even inside quotes.
+# Every free-form value lands in a double-quoted YAML or JSON scalar, where
+# only '"' and '\' are special, and — via EMIT=undo — inside the single-quoted
+# shell line sidecar-patch.sh prints, where "'" is. Refusing those three is
+# exactly sufficient. Whitespace and control characters are refused as well:
+# never part of an endpoint or image ref, and a control character is illegal
+# in YAML even inside quotes.
 yaml_safe() {  # $1 = what it is (for the error), $2 = the value
-  local unsafe=$'"\\'
+  local unsafe=$'"\'\\'
   case "$2" in
     *["$unsafe"]*|*[[:space:][:cntrl:]]*)
       printf "error: %s '%s' contains whitespace, a control character or one of %s, which this script cannot quote safely\n" "$1" "$2" "$unsafe" >&2
@@ -112,12 +126,25 @@ parse_inputs() {
     echo "error: NAMESPACE='$NAMESPACE' is not a DNS label (lowercase alphanumerics and '-', max 63)" >&2; exit 2
   fi
   case "$EMIT" in
-    patch|cm) ;;
-    *) echo "error: EMIT must be patch|cm (got '$EMIT')" >&2; exit 2 ;;
+    patch|cm|undo) ;;
+    *) echo "error: EMIT must be patch|cm|undo (got '$EMIT')" >&2; exit 2 ;;
   esac
   SELF_ID="${SELF_ID:-$NAME}"
   APP_CONTAINER="${APP_CONTAINER:-}"
   APP_IMAGE="${APP_IMAGE:-}"
+  RESTORE_IMAGE="${RESTORE_IMAGE:-}"
+  # The two image knobs are mode-bound, and confusing them is destructive:
+  # regenerating an undo with the attach line's APP_IMAGE would "restore" the
+  # -otel image. Refuse the wrong knob loudly rather than reinterpret it.
+  if [ "$EMIT" = "undo" ] && [ -n "$APP_IMAGE" ]; then
+    echo "error: APP_IMAGE is the image to INSTALL (EMIT=patch) — under EMIT=undo pass the" >&2
+    echo "       pre-attach ref to restore as RESTORE_IMAGE instead" >&2
+    exit 2
+  fi
+  if [ "$EMIT" != "undo" ] && [ -n "$RESTORE_IMAGE" ]; then
+    echo "error: RESTORE_IMAGE is an EMIT=undo knob (the pre-attach ref the reverse patch restores)" >&2
+    exit 2
+  fi
   OUTBOUND_PORTS_EXCLUDE="${OUTBOUND_PORTS_EXCLUDE:-}"
   OTEL_ENDPOINT="${OTEL_ENDPOINT:-otel-collector.rossoctl-system.svc.cluster.local:4317}"
   CAPTURE_IO="${CAPTURE_IO:-false}"
@@ -125,6 +152,17 @@ parse_inputs() {
     true|false) ;;
     *) echo "error: CAPTURE_IO must be true|false (got '$CAPTURE_IO')" >&2; exit 2 ;;
   esac
+  # Capture carries PII (prompts, tool arguments, messages). The plugin sends
+  # it plain gRPC unless OTEL_ENDPOINT starts with https://. In-cluster to the
+  # platform collector that is the norm, so this warns rather than refuses —
+  # but say it, once, on stderr (the YAML on stdout is unaffected).
+  if [ "$CAPTURE_IO" = "true" ]; then
+    case "$OTEL_ENDPOINT" in
+      https://*) ;;
+      *) echo "NOTE: CAPTURE_IO=true sends parsed content (PII) to ${OTEL_ENDPOINT} over plain gRPC." >&2
+         echo "      Use an https:// OTEL_ENDPOINT for TLS if that endpoint leaves the cluster." >&2 ;;
+    esac
+  fi
   MAX_PAYLOAD_BYTES="${MAX_PAYLOAD_BYTES:-}"
   [[ "$MAX_PAYLOAD_BYTES" =~ ^(-1|[1-9][0-9]*)?$ ]] \
     || { echo "error: MAX_PAYLOAD_BYTES must be a positive integer or -1 (got '$MAX_PAYLOAD_BYTES')" >&2; exit 2; }
@@ -138,7 +176,7 @@ parse_inputs() {
   esac
 
   local v
-  for v in SELF_ID OTEL_ENDPOINT APP_IMAGE SIDECAR_IMAGE PROXY_INIT_IMAGE; do
+  for v in SELF_ID OTEL_ENDPOINT APP_IMAGE RESTORE_IMAGE SIDECAR_IMAGE PROXY_INIT_IMAGE; do
     yaml_safe "$v" "${!v}"
   done
   # A container name is a DNS label; it is interpolated bare.
@@ -147,6 +185,9 @@ parse_inputs() {
   fi
   if [ -n "$APP_IMAGE" ] && [ -z "$APP_CONTAINER" ]; then
     echo "error: APP_IMAGE needs APP_CONTAINER — the image lands on a container the patch must name" >&2; exit 2
+  fi
+  if [ -n "$RESTORE_IMAGE" ] && [ -z "$APP_CONTAINER" ]; then
+    echo "error: RESTORE_IMAGE needs APP_CONTAINER — the ref lands on a container the patch must name" >&2; exit 2
   fi
   # Ports exactly as proxy-init hands them to iptables: no leading zero (iptables
   # reads `010` as octal and refuses `0080`), at most five digits (a longer
@@ -224,6 +265,7 @@ sidecar_container() {  # the envoy-proxy container (8-space list-item indent)
             runAsUser: 1337
             runAsGroup: 1337
             allowPrivilegeEscalation: false
+            seccompProfile: { type: RuntimeDefault }
             capabilities:
               drop: ["ALL"]
           ports:
@@ -254,6 +296,7 @@ proxy_init_container() {  # the iptables init container
             runAsNonRoot: false
             runAsUser: 0
             allowPrivilegeEscalation: false
+            seccompProfile: { type: RuntimeDefault }
             capabilities:
               drop: ["ALL"]
               add: ["NET_ADMIN", "NET_RAW"]
@@ -334,10 +377,35 @@ $(sidecar_volumes)
 EOF
 }
 
+emit_undo() {
+  # The exact inverse of emit_patch, in one line of compact JSON so it can ride
+  # inside the single-quoted back-out line sidecar-patch.sh prints. Lists that
+  # merge by name un-merge by name: `$patch: delete` removes exactly the items
+  # the patch added and touches nothing else, at ANY later time — unlike a
+  # `rollout undo`, which restores a whole earlier pod template and silently
+  # takes with it whatever the owner changed since the attach. The
+  # default-container annotation deletes via null (strategic merge on maps);
+  # an owner value of that key the attach overwrote is deleted, not restored —
+  # the same one-key limitation the attach documents. The image is the one
+  # non-additive field — a replaced value has no delete, only another value —
+  # so RESTORE_IMAGE is the pre-attach ref to restore, captured by the caller
+  # (APP_IMAGE is refused in this mode; see parse_inputs).
+  local meta="" app=""
+  if [ -n "$APP_CONTAINER" ]; then
+    meta='"metadata":{"annotations":{"kubectl.kubernetes.io/default-container":null}},'
+    app=',{"name":"'"${APP_CONTAINER}"'"'
+    [ -z "$RESTORE_IMAGE" ] || app="${app},\"image\":\"${RESTORE_IMAGE}\""
+    app="${app},\"env\":[{\"name\":\"LINEAGE_PROPAGATE\",\"\$patch\":\"delete\"}]}"
+  fi
+  printf '{"spec":{"template":{%s"spec":{"initContainers":[{"name":"proxy-init","$patch":"delete"}],"containers":[{"name":"envoy-proxy","$patch":"delete"}%s],"volumes":[{"name":"envoy-config","$patch":"delete"},{"name":"authbridge-runtime","$patch":"delete"}]}}}}\n' \
+    "$meta" "$app"
+}
+
 emit() {
   case "$EMIT" in
     cm)    emit_configmap ;;
     patch) emit_patch ;;
+    undo)  emit_undo ;;
   esac
 }
 
