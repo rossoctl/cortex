@@ -23,10 +23,13 @@ remembers writing.
 
 > **Until a release carries the plugin, build the sidecar yourself.** The
 > published `ghcr.io/rossoctl/cortex/authbridge-envoy` image does not carry
-> `lineage-telemetry`, and the sidecar *crashloops* on the unknown plugin name
-> (`plugins.Build` fails closed) — and because `proxy-init` has already
-> redirected the pod's egress, the workload is **down**, not merely
-> un-instrumented, until you back out. The plugin is cortex #761;
+> `lineage-telemetry`, so the generator **refuses** to emit a patch that pins
+> it (set `SIDECAR_IMAGE`, or `NO_EMIT=1`). What the refusal prevents: the
+> sidecar crashloops on the unknown plugin name (`plugins.Build` fails
+> closed), its startupProbe never passes, the app container never starts, and
+> a rolling update stalls with the **old pods still serving** — contained,
+> but nothing attaches. (Under `strategy: Recreate` the old pods are deleted
+> first, so there the workload would be down.) The plugin is cortex #761;
 > [RECIPE.md](RECIPE.md) step 1 builds and loads `authbridge-envoy` + `proxy-init`
 > from a tree that carries it. To run on a stock image meanwhile, `NO_EMIT=1`
 > gives a graceful parsers-only sidecar (the parsers predate the plugin).
@@ -238,12 +241,19 @@ The generated ConfigMap's plugin entry:
   config:
     otel_endpoint: "otel-collector.rossoctl-system.svc.cluster.local:4317"   # host:port; https:// prefix turns on TLS
     capture_io: false     # the plugin's default; CAPTURE_IO=true attaches the parsed content — PII lives in it
-    self_id: "<deploy>"   # falls back to self_id_file (the operator-mounted credential)
-    # max_payload_bytes: 4096 — the plugin's default cap on a captured value (MAX_PAYLOAD_BYTES); bypass_paths / bypass_hosts as below
+    self_id: "<deploy>"   # ALWAYS set (SELF_ID, default: the Deployment name) — see below
+    # max_payload_bytes: 4096 — the plugin's default cap on a captured value (MAX_PAYLOAD_BYTES)
 ```
 
-`bypass_paths` / `bypass_hosts` keep infrastructure noise out (agent-card
-discovery, health probes, telemetry backends). `OUTBOUND_PORTS_EXCLUDE` keeps
+`self_id` is always emitted: the plugin's `self_id_file` fallback (the
+operator-mounted credential, which can race its own Secret and fail the
+sidecar's boot) is deliberately never used on a ConfigMap this kit generates.
+The plugin's `bypass_paths` / `bypass_hosts` keep infrastructure noise out
+(agent-card discovery, health probes, telemetry backends) at their **plugin
+defaults** — they are not adjustable from this kit: setting either key
+*replaces* the default list rather than extending it, and a hand-edit of the
+generated ConfigMap only lasts until the next attach or back-out rewrites it.
+`OUTBOUND_PORTS_EXCLUDE` keeps
 a port out of the iptables redirect: an app's own telemetry export port, or a
 **plaintext non-HTTP store** it talks to (Postgres 5432, SMTP 1025, Redis 6379
 — the outbound listener's HTTP codec would close them; DESIGN "What the

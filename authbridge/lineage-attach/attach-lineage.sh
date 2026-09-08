@@ -72,14 +72,17 @@
 #                   store (Postgres 5432, SMTP 1025: the outbound HTTP codec
 #                   would close them). Never LLM/tool/S3 ports.
 #   SIDECAR_IMAGE   default ghcr.io/rossoctl/cortex/authbridge-envoy:latest —
-#                   UNTIL A RELEASE CARRIES lineage-telemetry (cortex #761) the
-#                   sidecar CRASHLOOPS on this default: plugins.Build fails
-#                   closed on the unknown name, and because proxy-init has
-#                   already redirected the pod's egress, the workload is down,
-#                   not merely un-instrumented. Build from a tree that has the
-#                   plugin and point this at your tag (RECIPE.md step 1); or
-#                   NO_EMIT=1 for a graceful parsers-only sidecar on a stock
-#                   image (the parsers predate the plugin)
+#                   UNTIL A RELEASE CARRIES lineage-telemetry (cortex #761),
+#                   EMIT=patch REFUSES this default: the sidecar crashloops on
+#                   the unknown plugin name (plugins.Build fails closed), the
+#                   startupProbe never passes, the app container never starts,
+#                   and a rolling update stalls with the OLD pods still serving
+#                   — contained, but nothing attaches. (Under strategy:
+#                   Recreate the old pods are deleted first, so there the
+#                   workload IS down.) Build from a tree that has the plugin
+#                   and point this at your tag (RECIPE.md step 1); or NO_EMIT=1
+#                   for a graceful parsers-only sidecar on a stock image (the
+#                   parsers predate the plugin)
 #   PROXY_INIT_IMAGE  default ghcr.io/rossoctl/cortex/proxy-init:latest
 #   NO_EMIT=1       omit the plugin entry: the sidecar proxies, emits nothing
 #                   (parsers alone are legal). The A/B baseline.
@@ -184,6 +187,20 @@ parse_inputs() {
     0|1) ;;
     *) echo "error: NO_EMIT must be 0|1 (got '$NO_EMIT')" >&2; exit 2 ;;
   esac
+  # The published default image predates the plugin (cortex #761): plugins.Build
+  # fails closed on the unknown name and the sidecar crashloops (see the
+  # SIDECAR_IMAGE note above). Emitting a patch that pins it is a foreseeable
+  # misuse like any other — refuse it. EMIT=patch only: the ConfigMap and the
+  # reverse patch carry no image, and a back-out must never be blocked. Delete
+  # this guard when a release image carries lineage-telemetry.
+  if [ "$EMIT" = "patch" ] && [ "$NO_EMIT" != "1" ] \
+     && [ "$SIDECAR_IMAGE" = "ghcr.io/rossoctl/cortex/authbridge-envoy:latest" ]; then
+    echo "error: SIDECAR_IMAGE is the published default, which does not carry lineage-telemetry" >&2
+    echo "  yet (cortex #761) — the sidecar would crashloop on it. Build one from a tree that has" >&2
+    echo "  the plugin and set SIDECAR_IMAGE (RECIPE.md step 1), or NO_EMIT=1 for a parsers-only" >&2
+    echo "  sidecar on the stock image." >&2
+    exit 2
+  fi
 
   local v
   for v in SELF_ID OTEL_ENDPOINT APP_IMAGE RESTORE_IMAGE SIDECAR_IMAGE PROXY_INIT_IMAGE; do

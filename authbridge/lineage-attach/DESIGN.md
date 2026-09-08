@@ -223,12 +223,22 @@ live on an agent mesh resolving its A2A peers at boot — every agent came up
 with `0 peers` and delegations quietly no-oped.
 
 So `envoy-proxy` is emitted as a **native sidecar**: an `initContainers` entry
-with `restartPolicy: Always` and a `startupProbe` on the outbound listener. The
-merge prepends it (with `proxy-init`) ahead of the owner's own init containers,
-and the kubelet holds every later container — the owner's inits included — until
-its startupProbe passes, keeping it running for the pod's life. The app
-container therefore *cannot* start before its proxy is accepting, with no
-cooperation from the app.
+with `restartPolicy: Always` and a `startupProbe` on the outbound listener,
+and the kubelet holds every container that starts after it until that probe
+passes, keeping it running for the pod's life. The app container therefore
+*cannot* start before its proxy is accepting, with no cooperation from the app.
+
+Where the pair lands among the owner's own init containers is strategic-merge
+placement behaviour the patch does not pin (no `$setElementOrder`), and the
+safety of the owner's inits deliberately does not rest on it. What the kit
+does control is that **`proxy-init` and `envoy-proxy` travel adjacent in one
+patch**, and both possible placements are safe: prepended (what the apiserver
+does today), the owner's inits run after the proxy is up, against a working
+redirect; appended, they run before any redirect exists, on ordinary pod
+networking. The only arrangement that breaks — an owner init container landing
+*between* the two — cannot arise from a merge, because getting there would
+need the target to already own one of those two names, which the
+`refuse_name_collision` precondition refuses outright.
 
 This needs **Kubernetes ≥ 1.29** (native sidecars are on by default from 1.29,
 GA in 1.33), and an older cluster fails loud: with the SidecarContainers gate

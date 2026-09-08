@@ -68,6 +68,13 @@ RUN uv pip install --no-cache --python "${VENV_PYTHON}" --system --break-system-
       "opentelemetry-instrumentation-aiohttp-client==${OTEL_CONTRIB_VERSION}" \
       "opentelemetry-instrumentation-urllib3==${OTEL_CONTRIB_VERSION}" \
       "opentelemetry-instrumentation-threading==${OTEL_CONTRIB_VERSION}"
+# The install resolves into the app's OWN environment, so it may move a package
+# an app dependency pins (wrapt, deprecated, typing-extensions are the usual
+# suspects) — and the attestations import only OpenTelemetry, never the app.
+# Verify the resolved environment is still consistent, so a conflict the bake
+# introduced fails the BUILD instead of surfacing as an ImportError in the
+# cluster after the attach, where it would look like the sidecar's fault.
+RUN uv pip check --python "${VENV_PYTHON}" --system
 # The hook, into the same environment: `site` imports every .pth at
 # interpreter start; the module no-ops unless LINEAGE_PROPAGATE=1.
 COPY lineage-propagate-hook.py /tmp/lineage-propagate-hook.py
