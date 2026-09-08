@@ -27,9 +27,11 @@ unaffected (they depend only on ``granted``/``expected``). See
 ``docs/specs/eval/policy-eval-correctness-e2e.md`` for the full writeup — this is a pre-existing
 production Rego-generator gap, not something this suite introduces or is scoped to fix.
 
-Run (needs KEYCLOAK_URL + admin creds + LLM_* exported, ``opa`` on PATH; unlike the PRB-level
-suite, this one is NOT `-n`-parallelizable — all 8 scenarios share one session-scoped ``pipeline``
-fixture that provisions Keycloak sequentially in-process):
+Run (needs KEYCLOAK_URL + admin creds + LLM_* exported, ``opa`` on PATH). Unlike the PRB-level
+suite, this one is NOT `-n`-parallelizable (all 8 scenarios share one session-scoped ``pipeline``
+fixture) — but that fixture now parallelizes its own scenario provisioning internally via
+``ProcessPoolExecutor`` (see ``eval/test_policy_pipeline_eval.py``'s module docstring), so `-n`
+was never needed for wall-clock gains here:
     .venv/bin/pytest eval/test_policy_pipeline_correctness_e2e.py \
         -m eval_correctness_e2e -v -s
 """
@@ -50,11 +52,13 @@ SRC = REPO_ROOT / "src"
 sys.path.insert(0, str(REPO_ROOT))  # so ``import test.integration.*``/``eval.*`` resolves
 sys.path.insert(0, str(SRC))  # so ``import aiac.*`` resolves
 
+from eval.correctness_e2e_helpers import _accumulate_agent_gates, _user_role_rows  # noqa: E402
 from eval.correctness_scorer import score_scenario  # noqa: E402
 from eval.test_policy_pipeline_eval import (  # noqa: E402
     SCENARIOS,
     _rego_path,
     _require_scenario,
+    _user_role_names,
     opa_bin,
     opa_eval,
     truth,
@@ -63,96 +67,6 @@ from eval.test_policy_pipeline_eval import pipeline as pipeline  # noqa: E402,F4
 from test.integration.launcher import require_env  # noqa: E402
 
 Pair = tuple[str, str]
-
-
-def _pairs_from_map(role_to_scopes: dict[str, list[str]]) -> set[Pair]:
-    """Flatten a rendered Rego ``{role_name: [scope_name, ...]}`` map (e.g.
-    ``subject_role_allow_scopes``) into a set of ``(role, scope)`` pairs."""
-    return {(role, scope) for role, scopes in role_to_scopes.items() for scope in scopes}
-
-
-def test_pairs_from_map_flattens_role_scope_map() -> None:
-    got = _pairs_from_map({"role-a": ["scope-x", "scope-y"], "role-b": ["scope-x"]})
-    assert got == {("role-a", "scope-x"), ("role-a", "scope-y"), ("role-b", "scope-x")}
-
-
-def test_pairs_from_map_empty_map_yields_no_pairs() -> None:
-    assert _pairs_from_map({}) == set()
-
-
-def _accumulate_agent_gates(
-    granted: dict[str, set[Pair]],
-    denied: dict[str, set[Pair]],
-    *,
-    inbound_allow: dict[str, list[str]],
-    inbound_deny: dict[str, list[str]],
-    outbound_subject_allow: dict[str, list[str]],
-    outbound_subject_deny: dict[str, list[str]],
-    outbound_target_allow: dict[str, list[str]],
-) -> None:
-    """Union one agent's rendered Rego maps into the three top-level gate buckets
-    (``inbound``/``outbound_subject``/``outbound_target``), in place. No ``outbound_target_deny``
-    parameter — the outbound Rego generator never renders that map (see module docstring)."""
-    granted.setdefault("inbound", set()).update(_pairs_from_map(inbound_allow))
-    denied.setdefault("inbound", set()).update(_pairs_from_map(inbound_deny))
-    granted.setdefault("outbound_subject", set()).update(_pairs_from_map(outbound_subject_allow))
-    denied.setdefault("outbound_subject", set()).update(_pairs_from_map(outbound_subject_deny))
-    granted.setdefault("outbound_target", set()).update(_pairs_from_map(outbound_target_allow))
-
-
-def test_accumulate_agent_gates_classifies_into_three_buckets() -> None:
-    granted: dict[str, set[Pair]] = {}
-    denied: dict[str, set[Pair]] = {}
-
-    _accumulate_agent_gates(
-        granted,
-        denied,
-        inbound_allow={"user-role-developer": ["agent-scope-repo-access"]},
-        inbound_deny={"user-role-devops": ["agent-scope-repo-access"]},
-        outbound_subject_allow={"user-role-developer": ["tool-scope-repo-read"]},
-        outbound_subject_deny={},
-        outbound_target_allow={"agent-role-repo-operations": ["tool-scope-repo-read"]},
-    )
-
-    assert granted == {
-        "inbound": {("user-role-developer", "agent-scope-repo-access")},
-        "outbound_subject": {("user-role-developer", "tool-scope-repo-read")},
-        "outbound_target": {("agent-role-repo-operations", "tool-scope-repo-read")},
-    }
-    assert denied == {
-        "inbound": {("user-role-devops", "agent-scope-repo-access")},
-        "outbound_subject": set(),
-    }
-    assert "outbound_target" not in denied  # never rendered — see module docstring
-
-
-def test_accumulate_agent_gates_unions_across_multiple_agents() -> None:
-    granted: dict[str, set[Pair]] = {}
-    denied: dict[str, set[Pair]] = {}
-
-    _accumulate_agent_gates(
-        granted,
-        denied,
-        inbound_allow={"user-role-developer": ["agent-scope-repo-access"]},
-        inbound_deny={},
-        outbound_subject_allow={},
-        outbound_subject_deny={},
-        outbound_target_allow={},
-    )
-    _accumulate_agent_gates(
-        granted,
-        denied,
-        inbound_allow={"user-role-tester": ["agent-scope-tracker-access"]},
-        inbound_deny={},
-        outbound_subject_allow={},
-        outbound_subject_deny={},
-        outbound_target_allow={},
-    )
-
-    assert granted["inbound"] == {
-        ("user-role-developer", "agent-scope-repo-access"),
-        ("user-role-tester", "agent-scope-tracker-access"),
-    }
 
 
 # ======================================================================================
@@ -178,6 +92,7 @@ def _e2e_grant_sets(pipeline_result: dict, scenario: ModuleType) -> tuple[dict[s
     denial gap. Agents with no rego on disk (declared/emergent ``EXPECT_NO_REGO``) contribute
     nothing, same as ``test_inbound``/``test_outbound`` already handle it."""
     rego_dir = pipeline_result["rego_dir"]
+    user_roles = _user_role_names(scenario)
     granted: dict[str, set[Pair]] = {}
     denied: dict[str, set[Pair]] = {}
 
@@ -187,10 +102,18 @@ def _e2e_grant_sets(pipeline_result: dict, scenario: ModuleType) -> tuple[dict[s
         _accumulate_agent_gates(
             granted,
             denied,
-            inbound_allow=_rego_map(inbound_rego, "inbound.request.subject_role_allow_scopes"),
-            inbound_deny=_rego_map(inbound_rego, "inbound.request.subject_role_deny_scopes"),
-            outbound_subject_allow=_rego_map(outbound_rego, "outbound.request.subject_role_allow_scopes"),
-            outbound_subject_deny=_rego_map(outbound_rego, "outbound.request.subject_role_deny_scopes"),
+            inbound_allow=_user_role_rows(
+                _rego_map(inbound_rego, "inbound.request.subject_role_allow_scopes"), user_roles
+            ),
+            inbound_deny=_user_role_rows(
+                _rego_map(inbound_rego, "inbound.request.subject_role_deny_scopes"), user_roles
+            ),
+            outbound_subject_allow=_user_role_rows(
+                _rego_map(outbound_rego, "outbound.request.subject_role_allow_scopes"), user_roles
+            ),
+            outbound_subject_deny=_user_role_rows(
+                _rego_map(outbound_rego, "outbound.request.subject_role_deny_scopes"), user_roles
+            ),
             outbound_target_allow=_rego_map(outbound_rego, "outbound.request.agent_role_scopes"),
         )
     return granted, denied

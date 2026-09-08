@@ -45,17 +45,39 @@ Run (needs KEYCLOAK_URL + admin creds + LLM_* exported, ``opa`` on PATH):
 Without ``-m eval_extended`` the suite is skipped; without ``opa`` each node skips at
 runtime. This suite is heavier than ``test_policy_pipeline.py`` (eight full pipeline runs, more
 PRB/LLM calls) hence the separate marker.
+
+The ``pipeline`` fixture provisions all 8 scenarios in parallel via ``ProcessPoolExecutor``
+(``EVAL_PIPELINE_PARALLELISM``, default = scenario count) — separate OS processes, not threads:
+each scenario mutates process-global state while it runs (``os.environ["KEYCLOAK_REALM"]``/
+``["AIAC_POLICY_FILE"]``, consumed at call time by ``compute_and_apply``/
+``FilePolicySource.fetch()``; a ``KeycloakAdmin`` connection's ``change_current_realm``), which
+two threads sharing one process would race on but separate processes don't. Each worker also gets
+its own idp/store/opa port triple (offset from the module defaults by scenario index) since fixed
+ports collide regardless of thread vs. process. This is *not* the same thing as pytest-xdist's
+``-n`` (still not supported/needed here — the parallelism is inside the fixture, not across
+pytest workers).
+
+A shared ``multiprocessing.Lock()`` serializes just the ``provision_keycloak_admin`` step (realm +
+role/user/client creation) across workers — concurrent ``admin.create_realm(...)`` calls against a
+real Keycloak instance were observed to 409 with ``"Duplicate resource error"`` even across
+*distinct* realm names (an internal Keycloak race on concurrent realm creation, not a naming
+collision on this fixture's side). Everything after that per scenario — the LLM-heavy
+``orchestrate_prb`` calls and the idp/store/opa subprocesses — still runs fully concurrently, since
+realm provisioning is a small fraction of one scenario's wall-clock next to the PRB's several
+sequential LLM calls.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -330,9 +352,11 @@ def opa_bin() -> str:
     return found
 
 
-def opa_eval(rego_paths: list[Path], query: str, input_doc: dict) -> bool:
+def opa_eval(rego_paths: list[Path], query: str, input_doc: dict) -> Any:
     """Evaluate ``query`` against the given Rego file(s) with ``input_doc`` on stdin; return the
-    boolean result. Raises (via ``check=True``) if OPA rejects the Rego or the query errors."""
+    decoded JSON result — a ``bool`` for a decision query (e.g. ``...request.allow``), or a data
+    document (e.g. a ``{role: [scope, ...]}`` map) for a plain declaration. Raises (via
+    ``check=True``) if OPA rejects the Rego or the query errors."""
     cmd = [
         opa_bin(),
         "eval",
@@ -505,22 +529,147 @@ def truth(scenario: ModuleType) -> dict[str, set[tuple[str, str]]]:
 
 
 # ======================================================================================
+# ProcessPoolExecutor worker init — a multiprocessing.Lock() can only reach a worker via the
+# pool's initializer/initargs ("inheritance" at process-start time), not as a regular per-task
+# submit() argument — passing one through the ongoing call queue instead raises "Lock objects
+# should only be shared between processes through inheritance" under the forkserver/spawn start
+# methods (this Python's default is forkserver; plain fork wouldn't need this, but forkserver
+# does). See ``_provision_scenario`` for why the lock exists at all.
+# ======================================================================================
+
+_REALM_LOCK: Any = None
+
+
+def _init_worker(realm_lock: Any) -> None:
+    global _REALM_LOCK
+    _REALM_LOCK = realm_lock
+
+
+# ======================================================================================
 # Session fixture — one pipeline run per scenario
 # ======================================================================================
 
 
+def _provision_scenario(name: str, idp_port: int, store_port: int, opa_port: int) -> dict:
+    """Provision one scenario's realm and run the real PRB+PCE pipeline, leaving ``.rego`` on disk
+    under ``rego_out/policy_pipeline_eval/<scenario>/``. Returns ``{"rego_dir": Path, "rules":
+    list[PolicyRule], "reasoning_by_scope": dict[str, str], "reasoning_by_agent_role": dict[str,
+    str]}`` (the two reasoning dicts feed the eval report's per-cell "Output" field, see
+    ``conftest.py``), or ``{"error": <str>}`` on failure.
+
+    Fully self-contained — own ``KeycloakAdmin`` connection, own env-var writes, own
+    idp/store/opa ports — so it can run as an independent ``ProcessPoolExecutor`` worker (see the
+    module docstring for why a *shared* admin object / shared ``os.environ`` would race under
+    threads). Takes ``name`` and looks ``SCENARIOS[name]`` up itself rather than receiving the
+    scenario ``ModuleType`` as a parameter — module objects aren't picklable, and every argument
+    here has to survive being pickled across the process boundary to the worker. The error return
+    is stringified for the same reason: not every exception type is guaranteed picklable back.
+
+    ``_REALM_LOCK`` (a ``multiprocessing.Lock()`` set once per worker by ``_init_worker``, see
+    above) serializes just ``provision_keycloak_admin`` — concurrent ``admin.create_realm(...)``
+    calls against this Keycloak instance were observed to 409 with ``"Duplicate resource error"``
+    even across *distinct* realm names, i.e. an internal Keycloak race on concurrent realm
+    creation, not a bug in this fixture's realm naming. Everything after that (the LLM-heavy
+    ``orchestrate_prb`` calls, the idp/store/opa subprocesses) stays fully concurrent — realm
+    provisioning is a small fraction of one scenario's wall-clock next to the PRB's several
+    sequential LLM calls.
+    """
+    try:
+        scenario = SCENARIOS[name]
+        idp_host, _ = _host_port(os.environ["AIAC_PDP_CONFIG_URL"], DEFAULT_IDP_PORT)
+        store_host, _ = _host_port(os.environ["AIAC_POLICY_STORE_URL"], DEFAULT_STORE_PORT)
+        opa_host, _ = _host_port(os.environ["AIAC_PDP_POLICY_URL"], DEFAULT_OPA_PORT)
+
+        admin = _connect_admin()
+        os.environ["KEYCLOAK_REALM"] = scenario.REALM_DEFAULT  # PCE reads this back
+        with _REALM_LOCK:
+            provision_keycloak_admin(admin, scenario.REALM_DEFAULT, scenario)
+
+        rego_dir = HERE / "rego_out" / "policy_pipeline_eval" / name
+        if rego_dir.exists():
+            shutil.rmtree(rego_dir)
+        rego_dir.mkdir(parents=True)
+        db_path = Path(tempfile.mkdtemp(prefix=f"aiac-store-eval-{name}-")) / "policy_model.db"
+        scenario_dir = Path(scenario.__file__).resolve().parent
+        os.environ["AIAC_POLICY_FILE"] = str(scenario_dir / scenario.POLICY_FILE)
+        os.environ["AIAC_PDP_CONFIG_URL"] = f"http://{idp_host}:{idp_port}"
+        os.environ["AIAC_POLICY_STORE_URL"] = f"http://{store_host}:{store_port}"
+        # The model-store client actually reads AIAC_POLICY_MODEL_STORE_URL, not
+        # AIAC_POLICY_STORE_URL (which nothing consumes) — set both so this worker's PCE calls
+        # land on its own store subprocess instead of every worker colliding on the hardcoded
+        # 127.0.0.1:7074 default once ports diverge per worker.
+        os.environ["AIAC_POLICY_MODEL_STORE_URL"] = f"http://{store_host}:{store_port}"
+        os.environ["AIAC_PDP_POLICY_URL"] = f"http://{opa_host}:{opa_port}"
+        log.info(
+            "scenario %s: realm=%s policy=%s rego_dir=%s ports=(idp=%d store=%d opa=%d)",
+            name,
+            scenario.REALM_DEFAULT,
+            os.environ["AIAC_POLICY_FILE"],
+            rego_dir,
+            idp_port,
+            store_port,
+            opa_port,
+        )
+
+        idp = Service("aiac.idp.service.configuration.keycloak.main:app", port=idp_port, host=idp_host)
+        store = Service(
+            "aiac.policy.model_store.service.main:app",
+            port=store_port,
+            host=store_host,
+            env={"SERVICEPOLICY_DB_PATH": str(db_path)},
+        )
+        opa = Service(
+            "aiac.pdp.service.policy.opa.main:app",
+            port=opa_port,
+            host=opa_host,
+            env={"REGO_OUTPUT_DIR": str(rego_dir), "POLICY_WRITER_DUMP_REGO": "true"},
+        )
+        with running_services([idp, store, opa], src=SRC):
+            config = Configuration.for_realm(scenario.REALM_DEFAULT)
+            provision_via_config(config, scenario)  # exactly once — not idempotent
+            roles, scopes = _read_back(config)
+            rules, reasoning_by_scope, reasoning_by_agent_role = orchestrate_prb(roles, scopes, scenario)
+            compute_and_apply(rules, override=False)
+
+        # Assert every agent's rego actually landed here at setup — EXCEPT agents the scenario
+        # itself declares as deliberately/emergently unreachable (Scenario 4), so a real
+        # pipeline failure still surfaces as one clear error instead of cryptic per-test skips.
+        allow_missing = set(getattr(scenario, "EXPECT_NO_REGO", frozenset()))
+        expected = [
+            _rego_path(rego_dir, agent_id, direction)
+            for agent_id in scenario.AGENTS
+            for direction in ("inbound", "outbound")
+            if agent_id not in allow_missing
+        ]
+        missing = [str(p.relative_to(rego_dir)) for p in expected if not p.is_file()]
+        if missing:
+            raise RuntimeError(
+                f"scenario {name!r}: compute_and_apply produced no {missing} in {rego_dir} "
+                f"(PRB returned {len(rules)} rule(s)); the pipeline failed silently — "
+                f"check the compute_and_apply logs above for a swallowed exception."
+            )
+        return {
+            "rego_dir": rego_dir,
+            "rules": rules,
+            "reasoning_by_scope": reasoning_by_scope,
+            "reasoning_by_agent_role": reasoning_by_agent_role,
+        }
+    except Exception as exc:  # noqa: BLE001 - isolate one scenario's setup failure from the rest
+        log.exception("scenario %s: setup failed, isolating from the rest of the session", name)
+        return {"error": f"{exc!r}"}
+
+
 @pytest.fixture(scope="session")
 def pipeline() -> dict[str, dict]:
-    """Provision Keycloak and run the real PRB+PCE pipeline once per scenario, leaving ``.rego`` on
-    disk under ``rego_out/policy_pipeline_eval/<scenario>/``. Returns ``{scenario_name: {"rego_dir":
-    Path, "rules": list[PolicyRule], "reasoning_by_scope": dict[str, str],
-    "reasoning_by_agent_role": dict[str, str]}}`` — the two reasoning dicts feed the eval report's
-    per-cell "Output" field (see ``conftest.py``).
+    """Provision Keycloak and run the real PRB+PCE pipeline once per scenario — in parallel, one
+    ``ProcessPoolExecutor`` worker per scenario (see the module docstring) — leaving ``.rego`` on
+    disk under ``rego_out/policy_pipeline_eval/<scenario>/``. Returns ``{scenario_name:
+    _provision_scenario(...)}`` for every scenario.
 
-    Each scenario gets its own realm (``scenario.REALM_DEFAULT``) and its own fresh IdP/Store/OPA
-    subprocess trio — unlike ``test_policy_pipeline.py``'s two variants (which share one realm and
-    reuse a single IdP process), these scenarios' realms differ, so nothing can safely be kept warm
-    across them.
+    Each scenario gets its own realm (``scenario.REALM_DEFAULT``), its own fresh IdP/Store/OPA
+    subprocess trio, and its own port triple (offset from the module defaults by scenario index) —
+    unlike ``test_policy_pipeline.py``'s two variants (which share one realm and reuse a single IdP
+    process), these scenarios' realms differ, so nothing can safely be kept warm across them.
     """
     require_env(
         "KEYCLOAK_URL",
@@ -531,76 +680,27 @@ def pipeline() -> dict[str, dict]:
         "LLM_API_KEY",
     )
 
-    admin = _connect_admin()
-
-    idp_host, idp_port = _host_port(os.environ["AIAC_PDP_CONFIG_URL"], DEFAULT_IDP_PORT)
-    store_host, store_port = _host_port(os.environ["AIAC_POLICY_STORE_URL"], DEFAULT_STORE_PORT)
-    opa_host, opa_port = _host_port(os.environ["AIAC_PDP_POLICY_URL"], DEFAULT_OPA_PORT)
-
+    max_workers = int(os.environ.get("EVAL_PIPELINE_PARALLELISM", str(len(SCENARIOS))))
+    realm_lock = multiprocessing.Lock()  # serializes admin.create_realm — see _provision_scenario
     results: dict[str, dict] = {}
-    for name, scenario in SCENARIOS.items():
-        try:
-            os.environ["KEYCLOAK_REALM"] = scenario.REALM_DEFAULT  # PCE reads this back
-            provision_keycloak_admin(admin, scenario.REALM_DEFAULT, scenario)
-
-            rego_dir = HERE / "rego_out" / "policy_pipeline_eval" / name
-            if rego_dir.exists():
-                shutil.rmtree(rego_dir)
-            rego_dir.mkdir(parents=True)
-            db_path = Path(tempfile.mkdtemp(prefix=f"aiac-store-eval-{name}-")) / "policy_model.db"
-            scenario_dir = Path(scenario.__file__).resolve().parent
-            os.environ["AIAC_POLICY_FILE"] = str(scenario_dir / scenario.POLICY_FILE)
-            log.info(
-                "scenario %s: realm=%s policy=%s rego_dir=%s",
-                name, scenario.REALM_DEFAULT, os.environ["AIAC_POLICY_FILE"], rego_dir,
-            )
-
-            idp = Service("aiac.idp.service.configuration.keycloak.main:app", port=idp_port, host=idp_host)
-            store = Service(
-                "aiac.policy.model_store.service.main:app",
-                port=store_port,
-                host=store_host,
-                env={"SERVICEPOLICY_DB_PATH": str(db_path)},
-            )
-            opa = Service(
-                "aiac.pdp.service.policy.opa.main:app",
-                port=opa_port,
-                host=opa_host,
-                env={"REGO_OUTPUT_DIR": str(rego_dir), "POLICY_WRITER_DUMP_REGO": "true"},
-            )
-            with running_services([idp, store, opa], src=SRC):
-                config = Configuration.for_realm(scenario.REALM_DEFAULT)
-                provision_via_config(config, scenario)  # exactly once — not idempotent
-                roles, scopes = _read_back(config)
-                rules, reasoning_by_scope, reasoning_by_agent_role = orchestrate_prb(roles, scopes, scenario)
-                compute_and_apply(rules, override=False)
-
-            # Assert every agent's rego actually landed here at setup — EXCEPT agents the scenario
-            # itself declares as deliberately/emergently unreachable (Scenario 4), so a real
-            # pipeline failure still surfaces as one clear error instead of cryptic per-test skips.
-            allow_missing = set(getattr(scenario, "EXPECT_NO_REGO", frozenset()))
-            expected = [
-                _rego_path(rego_dir, agent_id, direction)
-                for agent_id in scenario.AGENTS
-                for direction in ("inbound", "outbound")
-                if agent_id not in allow_missing
-            ]
-            missing = [str(p.relative_to(rego_dir)) for p in expected if not p.is_file()]
-            if missing:
-                raise RuntimeError(
-                    f"scenario {name!r}: compute_and_apply produced no {missing} in {rego_dir} "
-                    f"(PRB returned {len(rules)} rule(s)); the pipeline failed silently — "
-                    f"check the compute_and_apply logs above for a swallowed exception."
-                )
-            results[name] = {
-                "rego_dir": rego_dir,
-                "rules": rules,
-                "reasoning_by_scope": reasoning_by_scope,
-                "reasoning_by_agent_role": reasoning_by_agent_role,
-            }
-        except Exception as exc:  # noqa: BLE001 - isolate one scenario's setup failure from the rest
-            log.exception("scenario %s: setup failed, isolating from the rest of the session", name)
-            results[name] = {"error": exc}
+    with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker, initargs=(realm_lock,)) as executor:
+        futures = {
+            executor.submit(
+                _provision_scenario,
+                name,
+                DEFAULT_IDP_PORT + i * 10,
+                DEFAULT_STORE_PORT + i * 10,
+                DEFAULT_OPA_PORT + i * 10,
+            ): name
+            for i, name in enumerate(SCENARIOS)
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception as exc:  # noqa: BLE001 - isolate one scenario's worker crash from the rest
+                log.exception("scenario %s: worker crashed, isolating from the rest of the session", name)
+                results[name] = {"error": f"{exc!r}"}
 
     yield results
 
