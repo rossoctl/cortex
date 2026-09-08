@@ -17,7 +17,6 @@ func usageText(t *testing.T) string {
 	// Mirror the flags runObserve registers, so PrintDefaults has something to
 	// print and the block is shaped as it is in practice.
 	fs.String("endpoint", "", "endpoint")
-	fs.Bool("version", false, "version")
 	writeRootUsage(fs)
 	return buf.String()
 }
@@ -98,5 +97,43 @@ func TestWantsInfoFlagOnly(t *testing.T) {
 		if got := wantsInfoFlagOnly(tc.args); got != tc.want {
 			t.Errorf("wantsInfoFlagOnly(%v) = %v, want %v", tc.args, got, tc.want)
 		}
+	}
+}
+
+// --version describes the binary, not the viewer, so it is answered at the root
+// and is not a flag on the subcommand. `abctl observe --version` is now the
+// unknown flag it should be.
+func TestIsVersionFlag(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"--version"}, true},
+		{[]string{"-version"}, true},
+		{nil, false},
+		{[]string{"observe"}, false},
+		// Exactly a version request, not merely containing one: printing a version
+		// while silently discarding the rest would hide a confused invocation.
+		{[]string{"--endpoint", "http://x", "--version"}, false},
+		{[]string{"--version", "--endpoint"}, false},
+	} {
+		if got := isVersionFlag(tc.args); got != tc.want {
+			t.Errorf("isVersionFlag(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
+// The root usage must document --version, since it is a root flag with no
+// FlagSet entry to print it — removing it from the viewer's flag set took it out
+// of PrintDefaults, so the usage text is now its only home.
+func TestRootUsage_DocumentsVersion(t *testing.T) {
+	out := usageText(t)
+	if !strings.Contains(out, "--version") {
+		t.Errorf("usage does not document --version:\n%s", out)
+	}
+	// And the flag list is labelled as the viewer's, not the binary's, so a
+	// reader does not expect --version to appear among them.
+	if !strings.Contains(out, "abctl observe") || !strings.Contains(out, "Viewer flags") {
+		t.Errorf("usage does not scope the flag list to the viewer:\n%s", out)
 	}
 }

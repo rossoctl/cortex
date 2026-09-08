@@ -61,9 +61,11 @@ Usage:
   abctl                      deprecated: same as "abctl observe". Bare abctl
                              will stop opening the viewer in a future release.
 
+  abctl --version            print the version and exit
+
 Run a subcommand with no action, or with --help, for its own usage.
 
-Flags:
+Viewer flags (abctl observe):
 `)
 	fs.PrintDefaults()
 }
@@ -88,6 +90,16 @@ func main() {
 		}
 	}
 
+	// --version belongs to the binary, not to any subcommand, so it is answered
+	// here rather than inside runObserve. Handled before the flag set exists
+	// because a bare `abctl --version` must not carry the viewer's flags into its
+	// output, and `abctl observe --version` must be rejected as the unknown flag it
+	// now is.
+	if isVersionFlag(os.Args[1:]) {
+		fmt.Println("abctl", version)
+		return
+	}
+
 	// Bare `abctl` still opens the viewer, but is no longer the documented way in.
 	// Subcommands were reachable only by name, so a user who never typed --help saw
 	// a TUI and reasonably concluded that was all abctl did — the service commands
@@ -102,6 +114,23 @@ func main() {
 			"bare `abctl` will stop doing this in a future release. See `abctl --help`.")
 	}
 	os.Exit(runObserve(os.Args[1:]))
+}
+
+// isVersionFlag reports whether args are exactly a request for the version.
+//
+// Exactly, not merely containing one: `abctl --endpoint x --version` is a
+// confused invocation, and printing a version while silently discarding the rest
+// would hide that. Anything else falls through to the viewer, whose flag set
+// rejects what it does not know.
+func isVersionFlag(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	switch args[0] {
+	case "-version", "--version":
+		return true
+	}
+	return false
 }
 
 // wantsInfoFlagOnly reports whether args ask only for help or version output.
@@ -138,14 +167,8 @@ func runObserve(args []string) int {
 
 	endpoint := fs.String("endpoint", "",
 		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker.")
-	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
-	}
-
-	if *showVersion {
-		fmt.Println("abctl", version)
-		return 0
 	}
 
 	// Best-effort sweep of edit-tempfiles older than 24h. Tempfiles are
