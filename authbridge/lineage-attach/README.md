@@ -211,9 +211,11 @@ In the cluster:
   `initContainers` entry with `restartPolicy: Always`), on by default since 1.29
   (GA in 1.33). On an older cluster the apiserver rejects the native-sidecar
   fields (`startupProbe: Forbidden: may not be set for init containers without
-  restartPolicy=Always`) — loud, before any write, on **both** routes: the adopt
-  path hits it at `sidecar-patch.sh`'s server-side dry-run (which adds a
-  needs-1.29 hint), the manifests route at your own `kubectl apply`.
+  restartPolicy=Always`) — loud, on **both** routes: the adopt path at
+  `sidecar-patch.sh`'s server-side dry-run, before any write (with a needs-1.29
+  hint); the manifests route at your own `kubectl apply` of the Deployment —
+  the ConfigMap from that same apply does persist, inert on its own (no pod
+  references it), so delete it if you back off.
 - Sidecar images resolvable from the cluster: `SIDECAR_IMAGE` /
   `PROXY_INIT_IMAGE`, defaulting to the published
   `ghcr.io/rossoctl/cortex/{authbridge-envoy,proxy-init}:latest` — see the

@@ -13,7 +13,7 @@
 # when an operator reconciled a patched Deployment. Re-run after any
 # platform-side change, or keep the attachment in your own manifests instead
 # (README.md "Bring your own manifests"). To back out: the reverse-patch line
-# this script prints last — a strategic merge that deletes, by name, exactly
+# this script prints before the rollout wait — a strategic merge that deletes, by name, exactly
 # what the attach added and restores the app image it replaced, so it is right
 # at ANY later time, whatever else rolled the Deployment since — then delete
 # the CM. (A `rollout undo` is NOT the back-out: it restores a whole earlier
@@ -171,7 +171,7 @@ apply() {
   # All three objects — ConfigMap, patch, and its reverse — are generated
   # before the first write, so a generator refusal stops the script with
   # nothing applied. ConfigMap first — the patch's volume names it.
-  local cm patch undo restored_image cm_existed dryrun_err
+  local cm patch undo restored_image cm_existed
   cm="$(gen cm)"
   patch="$(gen patch)"
   # The image is the one piece the patch REPLACES rather than adds, so the
@@ -202,7 +202,7 @@ apply() {
     case "$dryrun_err" in
       *startupProbe*|*restartPolicy*|*"init container"*)
         echo "  hint: rejection of the native-sidecar fields (startupProbe / restartPolicy on an init" >&2
-        echo "        container) means the cluster is older than k8s 1.29, which the kit requires." >&2 ;;
+        echo "        container) likely means the cluster is older than k8s 1.29, which the kit requires." >&2 ;;
     esac
     exit 1
   fi

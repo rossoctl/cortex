@@ -72,9 +72,14 @@
 #                   store (Postgres 5432, SMTP 1025: the outbound HTTP codec
 #                   would close them). Never LLM/tool/S3 ports.
 #   SIDECAR_IMAGE   default ghcr.io/rossoctl/cortex/authbridge-envoy:latest —
-#                   UNTIL A RELEASE CARRIES lineage-telemetry (cortex #761) it
-#                   boots without the plugin; build from a tree that has it and
-#                   point this at your tag (RECIPE.md step 1)
+#                   UNTIL A RELEASE CARRIES lineage-telemetry (cortex #761) the
+#                   sidecar CRASHLOOPS on this default: plugins.Build fails
+#                   closed on the unknown name, and because proxy-init has
+#                   already redirected the pod's egress, the workload is down,
+#                   not merely un-instrumented. Build from a tree that has the
+#                   plugin and point this at your tag (RECIPE.md step 1); or
+#                   NO_EMIT=1 for a graceful parsers-only sidecar on a stock
+#                   image (the parsers predate the plugin)
 #   PROXY_INIT_IMAGE  default ghcr.io/rossoctl/cortex/proxy-init:latest
 #   NO_EMIT=1       omit the plugin entry: the sidecar proxies, emits nothing
 #                   (parsers alone are legal). The A/B baseline.
@@ -157,9 +162,11 @@ parse_inputs() {
   esac
   # Capture carries PII (prompts, tool arguments, messages). The plugin sends
   # it plain gRPC unless OTEL_ENDPOINT starts with https://. In-cluster to the
-  # platform collector that is the norm, so this warns rather than refuses —
-  # but say it, once, on stderr (the YAML on stdout is unaffected).
-  if [ "$CAPTURE_IO" = "true" ]; then
+  # platform collector that is the norm, so this warns rather than refuses — on
+  # stderr (the YAML on stdout is unaffected). Gated to EMIT=cm, where capture_io
+  # actually lives, so sidecar-patch.sh (which runs the generator once per
+  # object: cm, patch, undo) prints it once, not three times.
+  if [ "$EMIT" = "cm" ] && [ "$CAPTURE_IO" = "true" ]; then
     case "$OTEL_ENDPOINT" in
       https://*) ;;
       *) echo "NOTE: CAPTURE_IO=true sends parsed content (PII) to ${OTEL_ENDPOINT} over plain gRPC." >&2
@@ -443,6 +450,6 @@ main() {
   build_proxy_env     # optional OUTBOUND_PORTS_EXCLUDE env for proxy-init
   build_plugin_entry  # the lineage-telemetry pipeline entry (empty under NO_EMIT=1)
   build_app_patch     # optional propagation switch on the app's own container
-  emit                # dispatch: patch | cm
+  emit                # dispatch: patch | cm | undo
 }
 main "$@"

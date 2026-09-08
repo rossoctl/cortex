@@ -45,10 +45,13 @@ the symptom of skipping it too early is the sidecar crash-looping with `unknown 
 
 ```sh
 KIND_CLUSTER_NAME=rossoctl ./build-otel-shim.sh $IMAGE
+# positional: ./build-otel-shim.sh <base> [wrapper-tag] [venv-python] [app-uid[:gid]]
+# NO_KIND_LOAD=1 builds and attests only (skips the cluster load)
 ```
 
-Pass: last line `>> loaded docker.io/library/<name>-otel:latest into kind cluster rossoctl`
-(exit 0; the attestation runs before the load and prints nothing when it passes).
+Pass (exit 0): `>> loaded docker.io/library/<name>-otel:latest into kind cluster rossoctl`
+(a `>> NOTE:` block follows it, so this is not the literal last line; the
+attestation runs before the load and prints nothing when it passes).
 Fail `REFUSING to bake … already instruments …` (exit 3): the app instruments itself — go to step 3 **without** `APP_CONTAINER`/`APP_IMAGE` (capture only).
 Fail `REFUSING to bake … no runnable Python found` (exit 3): outside the shim's envelope (DESIGN "The envelope") — same, capture only; or pass the interpreter as arg 3 if you know it.
 Fail `REFUSING to bake … is not present locally` (exit 3): wrong `IMAGE` — see Inputs; nothing was built.
@@ -110,8 +113,13 @@ kubectl -n $NS patch deploy/$DEPLOY --type strategic -p '<the printed reverse pa
 
 It is right at any later time: whatever the owner rolled since the attach stays in place. (A
 `rollout undo` is not a back-out — it restores a whole earlier pod template, taking the owner's
-later changes with it.) Two caveats. The patch restores the pre-attach image ref — drop its
-`"image"` field if the app was re-imaged after the attach. And if the printed line is gone,
+later changes with it.) A few caveats. The patch restores the pre-attach image ref — drop its
+`"image"` field if the app was re-imaged after the attach. The `$patch: delete` on
+`LINEAGE_PROPAGATE` *removes* that env var — if the app owner set it themselves before the attach
+(unusual — it is the shim's activation), edit the line to restore their value instead. And unlike
+the attach, the printed line is raw `kubectl patch` with no precondition check, so if the app
+container was **renamed** after the attach, the `containers` entry would add a stub by the old
+name — regenerate with the current name. If the printed line is gone,
 regenerate the patch with the attach's own knobs:
 `EMIT=undo NAME=$DEPLOY NAMESPACE=$NS APP_CONTAINER=$CONTAINER RESTORE_IMAGE=<pre-attach ref> ./attach-lineage.sh`
 (leave `APP_CONTAINER`/`RESTORE_IMAGE` off for a capture-only attach; `APP_IMAGE` is the ref to

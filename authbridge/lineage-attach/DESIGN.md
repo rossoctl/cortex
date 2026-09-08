@@ -231,15 +231,16 @@ container therefore *cannot* start before its proxy is accepting, with no
 cooperation from the app.
 
 This needs **Kubernetes ≥ 1.29** (native sidecars are on by default from 1.29,
-GA in 1.33), and an older cluster fails loud before any write: with the
-SidecarContainers gate off, the apiserver drops `restartPolicy: Always` and
-then rejects the now-orphaned `startupProbe` on the init container
-(`startupProbe: Forbidden: may not be set for init containers without
-restartPolicy=Always`) — verified on a real 1.28 cluster. So there is no
-version parsing and no silent wedge: the adopt route hits that rejection at
-`sidecar-patch.sh`'s server-side dry-run (which recognises the native-sidecar
-error and adds a needs-1.29 hint), and the bring-your-own-manifests route hits
-it at the operator's own `kubectl apply` — both before anything is persisted.
+GA in 1.33), and an older cluster fails loud: with the SidecarContainers gate
+off, the apiserver drops `restartPolicy: Always` and then rejects the
+now-orphaned `startupProbe` on the init container (`startupProbe: Forbidden:
+may not be set for init containers without restartPolicy=Always`) — verified
+on a real 1.28 cluster. So there is no version parsing and no silent wedge:
+the adopt route hits that rejection at `sidecar-patch.sh`'s server-side
+dry-run (which recognises the native-sidecar error and adds a needs-1.29
+hint), before anything is persisted; the bring-your-own-manifests route hits
+it at the operator's own `kubectl apply` of the Deployment — the ConfigMap
+from that same apply does persist, inert on its own (no pod references it).
 
 ## What the sidecar can and cannot see
 
