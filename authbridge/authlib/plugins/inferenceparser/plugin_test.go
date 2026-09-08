@@ -333,6 +333,98 @@ func TestInferenceParser_VlessPath_Completions(t *testing.T) {
 	}
 }
 
+// TestInferenceParser_BobPath covers IBM Bob, which mounts an OpenAI-dialect
+// inference API under an /inference prefix. The dispatch switch is exact-match, so
+// without the path the parser falls to the default arm and records no telemetry at
+// all — the body is never even looked at.
+func TestInferenceParser_BobPath_ChatCompletions(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: bobPath,
+		Body: []byte(`{"model":"granite-3-8b-instruct","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+	}
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.Inference
+	if ext == nil {
+		t.Fatalf("Extensions.Inference is nil for %s", bobPath)
+	}
+	if ext.Model != "granite-3-8b-instruct" {
+		t.Errorf("Model = %q, want granite-3-8b-instruct", ext.Model)
+	}
+	if len(ext.Messages) != 1 || ext.Messages[0].Content != "hi" {
+		t.Errorf("Messages = %+v, want one user message \"hi\"", ext.Messages)
+	}
+	if !ext.IsAction {
+		t.Error("IsAction should be true: an outbound LLM call is an agent action")
+	}
+}
+
+// A query string must not defeat the match. endpointPath cuts at "?", and this is
+// the failure mode that made /v1/messages?beta=true invisible on the extproc path.
+func TestInferenceParser_BobPath_WithQueryString(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: bobPath + "?api-version=2024-02-01",
+		Body: []byte(`{"model":"granite-3-8b-instruct","messages":[{"role":"user","content":"hi"}]}`),
+	}
+	p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.Inference == nil {
+		t.Fatalf("Extensions.Inference is nil for %s with a query string", bobPath)
+	}
+}
+
+// Bob's responses must parse too. The response side branches on "is this
+// Anthropic", so an OpenAI-dialect path falls through to parseInferenceJSON — this
+// pins that, since a request-only path would give an operator a model name and no
+// token counts.
+func TestInferenceParser_BobPath_Response(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: bobPath}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{
+		Model: "granite-3-8b-instruct", IsAction: true,
+	}
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},` +
+		`"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`)
+
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.Completion != "hello" {
+		t.Errorf("Completion = %q, want hello", ext.Completion)
+	}
+	if ext.PromptTokens != 11 || ext.CompletionTokens != 3 {
+		t.Errorf("tokens = %d/%d, want 11/3", ext.PromptTokens, ext.CompletionTokens)
+	}
+	if ext.FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want stop", ext.FinishReason)
+	}
+}
+
+// The sibling Bob endpoints seen alongside the inference one are NOT inference and
+// must stay unmatched — an exact-match switch is what keeps /admin/v1/profile from
+// being mistaken for a chat completion.
+func TestInferenceParser_BobNonInferencePathsAreIgnored(t *testing.T) {
+	for _, path := range []string{
+		"/admin/v1/profile",
+		"/inference/v1/model/info",
+		"/inference/v1/chat",              // prefix of the real path
+		"/inference/v1/chat/completions/", // trailing slash
+	} {
+		p := NewInferenceParser()
+		pctx := &pipeline.Context{
+			Path: path,
+			Body: []byte(`{"model":"granite-3-8b-instruct","messages":[{"role":"user","content":"hi"}]}`),
+		}
+		p.OnRequest(context.Background(), pctx)
+		if pctx.Extensions.Inference != nil {
+			t.Errorf("%s matched as inference; only %s should", path, bobPath)
+		}
+	}
+}
+
 func TestInferenceParser_NonMatchingPath(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{

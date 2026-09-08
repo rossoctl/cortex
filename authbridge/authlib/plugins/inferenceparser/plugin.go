@@ -45,6 +45,17 @@ func endpointPath(pctx *pipeline.Context) string {
 	return path
 }
 
+// bobPath is IBM Bob's inference endpoint. It speaks the OPENAI dialect — the
+// body is {model, messages, ...} — despite the path not matching any of the
+// OpenAI spellings above, because Bob mounts the API under an /inference prefix.
+//
+// A named const rather than another string in the switch: the prefix is what
+// makes it non-obvious that this is OpenAI-shaped, and the name is where that
+// gets said. It lives here, beside parseOpenAIRequest, rather than in
+// anthropic.go — routing an Anthropic-file const to the OpenAI parser reads as a
+// mistake even when it is not.
+const bobPath = "/inference/v1/chat/completions"
+
 func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	// Dispatch by endpoint dialect: OpenAI chat/completions vs Anthropic
 	// Messages. No Invocation is recorded when the parser doesn't apply
@@ -52,12 +63,10 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// "inference-parser is in this pipeline" from config, not per-event rows.
 	var ext *pipeline.InferenceExtension
 	switch endpointPath(pctx) {
-	case "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions":
+	case "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", bobPath:
 		ext = parseOpenAIRequest(pctx.Body)
 	case anthropicMessagesPath:
 		ext = parseAnthropicRequest(pctx.Body)
-	case bobMessagesPath:
-		ext = parseOpenAIRequest(pctx.Body)
 	default:
 		return pipeline.Action{Type: pipeline.Continue}
 	}
