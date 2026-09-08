@@ -57,7 +57,7 @@ Either way you get a single `abctl` binary. See [the abctl README](../../cmd/abc
 ## 2. Launch `abctl`
 
 ```sh
-./abctl
+./abctl observe
 ```
 
 `abctl` discovers AuthBridge agents in your current `kubectl` context

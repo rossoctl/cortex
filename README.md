@@ -21,8 +21,8 @@ service that survives crashes and logins.
 Then open two terminals:
 
 ```sh
-abctl      # the viewer
-claude     # as usual — no environment variables to set
+abctl observe   # the viewer
+claude          # as usual — no environment variables to set
 ```
 
 Your agent's calls stream into `abctl`. Cortex only reads them; nothing is rewritten.

@@ -158,7 +158,6 @@ func wantsInfoFlagOnly(args []string) bool {
 // This is the behaviour bare `abctl` has always had, extracted so the subcommand
 // and the deprecated bare invocation cannot drift apart.
 func runObserve(args []string) int {
-
 	// Without this, `abctl --help` printed only -endpoint and -version, so the
 	// subcommands were invisible to anyone who asked the tool what it could do — the
 	// service commands most of all, since those are what you need when Cortex is down.
@@ -167,9 +166,11 @@ func runObserve(args []string) int {
 
 	endpoint := fs.String("endpoint", "",
 		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker.")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
+	// ExitOnError, so Parse exits 2 itself (0 for -h) rather than returning — there
+	// is no error branch to write here. Chosen over ContinueOnError because a bad
+	// flag has nothing useful to fall back to: the alternative is printing usage and
+	// then opening the viewer anyway.
+	fs.Parse(args) //nolint:errcheck // ExitOnError never returns
 
 	// Best-effort sweep of edit-tempfiles older than 24h. Tempfiles are
 	// intentionally left in place on every exit path (success / abort /
