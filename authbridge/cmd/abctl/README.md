@@ -36,12 +36,19 @@ Either way you get a single binary (~10 MB; the linux build is fully static).
 
 ## Run
 
-`abctl` discovers AuthBridge agents in your current `kubectl` context
-and lets you pick one:
+`abctl observe` discovers AuthBridge agents in your current `kubectl`
+context and lets you pick one:
 
 ```sh
-./abctl
+./abctl observe
 ```
+
+Bare `./abctl` does the same thing, but is **deprecated** and will stop
+opening the viewer in a future release. It printed no hint that the
+other subcommands existed, so anyone who never ran `--help` reasonably
+concluded the TUI was all abctl did — `abctl service` least visible of
+all, and that is what you need when Cortex is not running. Run
+`abctl --help` for the full list.
 
 You'll see a Namespaces pane listing each namespace that contains an
 AuthBridge agent. Enter drills into the Pods pane for that namespace;
@@ -74,7 +81,7 @@ Pass `--endpoint` to skip the picker entirely:
 
 ```sh
 kubectl port-forward -n team1 pod/weather-agent-xxxx 9094:9094 &
-./abctl --endpoint http://localhost:9094
+./abctl observe --endpoint http://localhost:9094
 ```
 
 This preserves the pre-picker behavior for scripts, CI, or remote

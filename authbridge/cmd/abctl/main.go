@@ -1,9 +1,14 @@
-// Command abctl is an interactive terminal UI for inspecting AuthBridge's
-// in-memory session store.
+// Command abctl inspects and runs Cortex: a terminal UI over AuthBridge's
+// in-memory session store, plus subcommands for running Cortex as a service,
+// pointing Claude Code at it, and costing tool definitions.
 //
-// Default mode opens a Namespaces → Pods picker, port-forwards the
-// selected pod, and renders the session-events view. Pass --endpoint
-// to skip the picker and connect directly (the pre-picker behavior).
+// `abctl observe` opens the viewer — a Namespaces → Pods picker, then the
+// session-events view for the pod it port-forwards. Pass --endpoint to skip the
+// picker and connect directly.
+//
+// Bare `abctl` still opens the viewer for compatibility, but is deprecated: with
+// subcommands reachable only by name, it left users thinking the TUI was all
+// abctl did.
 package main
 
 import (
@@ -25,6 +30,44 @@ import (
 // -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
+// dispatchableSubcommands are the names main routes on, in the order the usage
+// block lists them.
+//
+// One list rather than two: the unknown-subcommand error used to hardcode its own
+// copy, so adding a subcommand meant editing both and forgetting one left a typo
+// getting an incomplete list. A test holds the usage block to this slice.
+var dispatchableSubcommands = []string{"observe", "service", "claude-code", "tools"}
+
+// unknownSubcommandMessage is the error for an unrecognised first argument.
+func unknownSubcommandMessage(name string) string {
+	return fmt.Sprintf("abctl: unknown subcommand %q (known: %s)",
+		name, strings.Join(dispatchableSubcommands, ", "))
+}
+
+// writeRootUsage prints the root usage block to fs's output.
+//
+// Takes the FlagSet so the flag list underneath comes from the same set that
+// parsed the arguments, and so a test can render it into a buffer.
+func writeRootUsage(fs *flag.FlagSet) {
+	fmt.Fprint(fs.Output(), `abctl — inspect and run Cortex
+
+Usage:
+  abctl observe              open the traffic viewer (TUI)
+  abctl service <action>     run Cortex as a service: install, uninstall,
+                             status, stop, start, restart
+  abctl claude-code <action> point Claude Code at Cortex: enable, disable, status
+  abctl tools <action>       tool-definition costs: scan
+
+  abctl                      deprecated: same as "abctl observe". Bare abctl
+                             will stop opening the viewer in a future release.
+
+Run a subcommand with no action, or with --help, for its own usage.
+
+Flags:
+`)
+	fs.PrintDefaults()
+}
+
 func main() {
 	// Subcommand dispatch happens before flag.Parse: a non-flag first
 	// argument selects a subcommand, and anything else falls through to the
@@ -37,40 +80,72 @@ func main() {
 			os.Exit(runClaudeCode(os.Args[2:], os.Stdout, os.Stderr))
 		case "service":
 			os.Exit(runService(os.Args[2:], os.Stdout, os.Stderr))
+		case "observe":
+			os.Exit(runObserve(os.Args[2:]))
 		default:
-			fmt.Fprintf(os.Stderr, "abctl: unknown subcommand %q (known: tools, claude-code, service)\n", os.Args[1])
+			fmt.Fprintln(os.Stderr, unknownSubcommandMessage(os.Args[1]))
 			os.Exit(2)
 		}
 	}
 
+	// Bare `abctl` still opens the viewer, but is no longer the documented way in.
+	// Subcommands were reachable only by name, so a user who never typed --help saw
+	// a TUI and reasonably concluded that was all abctl did — the service commands
+	// least discoverable of all, and those are what you need when Cortex is down.
+	//
+	// Warned on stderr rather than stdout, and not fatal: this path has to keep
+	// working for anyone with it in a script or in muscle memory. Suppressed when
+	// the caller only wants --help or --version, where a deprecation notice would
+	// be noise ahead of the very text that explains the replacement.
+	if !wantsInfoFlagOnly(os.Args[1:]) {
+		fmt.Fprintln(os.Stderr, "abctl: opening the traffic viewer — use `abctl observe` instead; "+
+			"bare `abctl` will stop doing this in a future release. See `abctl --help`.")
+	}
+	os.Exit(runObserve(os.Args[1:]))
+}
+
+// wantsInfoFlagOnly reports whether args ask only for help or version output.
+//
+// Those two make the deprecation notice counterproductive: --help is where the
+// replacement is documented, so printing a warning above it just pushes the
+// answer further up the scrollback.
+func wantsInfoFlagOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, a := range args {
+		switch a {
+		case "-h", "--help", "-help", "-version", "--version":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// runObserve opens the traffic viewer: the Namespaces → Pods picker, or a direct
+// connection when --endpoint is given or a local Cortex is answering.
+//
+// This is the behaviour bare `abctl` has always had, extracted so the subcommand
+// and the deprecated bare invocation cannot drift apart.
+func runObserve(args []string) int {
+
 	// Without this, `abctl --help` printed only -endpoint and -version, so the
 	// subcommands were invisible to anyone who asked the tool what it could do — the
 	// service commands most of all, since those are what you need when Cortex is down.
-	flag.Usage = func() {
-		fmt.Fprint(flag.CommandLine.Output(), `abctl — inspect and run Cortex
+	fs := flag.NewFlagSet("abctl", flag.ExitOnError)
+	fs.Usage = func() { writeRootUsage(fs) }
 
-Usage:
-  abctl                      open the traffic viewer (TUI)
-  abctl service <action>     run Cortex as a service: install, uninstall,
-                             status, stop, start, restart
-  abctl claude-code <action> point Claude Code at Cortex: enable, disable, status
-  abctl tools <action>       tool-definition costs: scan
-
-Run a subcommand with no action, or with --help, for its own usage.
-
-Flags:
-`)
-		flag.PrintDefaults()
-	}
-
-	endpoint := flag.String("endpoint", "",
+	endpoint := fs.String("endpoint", "",
 		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker.")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Parse()
+	showVersion := fs.Bool("version", false, "print version and exit")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	if *showVersion {
 		fmt.Println("abctl", version)
-		return
+		return 0
 	}
 
 	// Best-effort sweep of edit-tempfiles older than 24h. Tempfiles are
@@ -107,7 +182,7 @@ Flags:
 					"  Or pass --endpoint http://... , or install kubectl to browse a cluster."
 			}
 			fmt.Fprintln(os.Stderr, msg)
-			os.Exit(1)
+			return 1
 		}
 	}
 
@@ -134,6 +209,7 @@ Flags:
 	}
 	if err := tui.Run(ctx, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "abctl: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
