@@ -164,7 +164,11 @@ def _format_pairs_dict(pairs_by_gate: dict) -> str:
 # Nodeid substrings identifying the two correctness suites' single test function each (parametrized
 # by scenario name) — used to give a scenario whose *setup* failed (before score_scenario ever ran,
 # so none of precision/recall/etc got record_property'd) the same six-field metrics shape every
-# other entry gets, instead of silently omitting it. See `_render_entry`'s middle branch.
+# other entry gets, instead of silently omitting it. See `_render_entry`'s middle branch. Gated on
+# `category in ("failed", "error")` there too, not just this nodeid check — a *skipped*/xfailed
+# correctness entry (e.g. `opa` missing from PATH) also matches this nodeid substring but never
+# reached score_scenario for an unrelated, non-failure reason, so it must fall through to the
+# generic branch and render its actual skip reason instead of a misleading "setup failed".
 _CORRECTNESS_TEST_MARKERS = ("::test_prb_correctness[", "::test_e2e_correctness[")
 
 
@@ -224,7 +228,7 @@ def _render_entry(lines: list[str], nodeid: str, report: pytest.TestReport, cate
         if description:
             lines.append(f"- **What it tests:** {description}")
         _render_metrics_block(lines, props)
-    elif any(marker in nodeid for marker in _CORRECTNESS_TEST_MARKERS):
+    elif category in ("failed", "error") and any(marker in nodeid for marker in _CORRECTNESS_TEST_MARKERS):
         doc = _docstrings.get(nodeid)
         if doc:
             lines.append(f"- **What it tests:** {doc}")

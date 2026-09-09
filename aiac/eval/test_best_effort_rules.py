@@ -78,3 +78,36 @@ def test_empty_proposal_yields_no_rules() -> None:
     scopes = [_scope("tool-scope-a")]
     state = {"selected_names": [], "denied_names": [], "exclusive": False}
     assert _best_effort_rules({"role": role, "scopes": scopes}, state) == []
+
+
+def test_scope_focal_exclusive_denies_the_unselected_complement() -> None:
+    scope = _scope("agent-scope-tracker-access")
+    roles = [_role("user-role-developer"), _role("user-role-tester"), _role("user-role-manager")]
+    state = {"selected_names": ["user-role-tester"], "denied_names": [], "exclusive": True}
+    rules = _best_effort_rules({"scope": scope, "roles": roles}, state)
+
+    denied_role_names = {r.role.name for r in rules if r.effect == RuleEffect.DENY}
+    assert denied_role_names == {"user-role-developer", "user-role-manager"}
+
+
+def test_scope_focal_exclusive_with_explicit_denied_names_is_the_same_complement() -> None:
+    """A partially-approved multi-scope proposal can leave `exclusive=True` set alongside an
+    explicit `denied_names` the auditor approved before rejecting the rest — exercises the
+    combination `_denied_names` is designed for (explicit denials unioned with the derived
+    complement), not just each independently (see `test_role_focal_exclusive_denies_the_unselected_
+    complement`/`test_scope_focal_allows_selected_and_denies_explicit`, which each cover only one
+    side)."""
+    scope = _scope("agent-scope-tracker-access")
+    roles = [_role("user-role-developer"), _role("user-role-tester"), _role("user-role-manager")]
+    state = {
+        "selected_names": ["user-role-tester"],
+        "denied_names": ["user-role-developer"],  # explicit — already part of the complement too
+        "exclusive": True,
+    }
+    rules = _best_effort_rules({"scope": scope, "roles": roles}, state)
+
+    allow_role_names = {r.role.name for r in rules if r.effect == RuleEffect.ALLOW}
+    denied_role_names = {r.role.name for r in rules if r.effect == RuleEffect.DENY}
+    assert allow_role_names == {"user-role-tester"}
+    assert denied_role_names == {"user-role-developer", "user-role-manager"}
+    assert len(rules) == 3  # no duplicate DENY rule for the role in both the explicit set and the complement

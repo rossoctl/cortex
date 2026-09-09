@@ -66,6 +66,16 @@ collision on this fixture's side). Everything after that per scenario — the LL
 realm provisioning is a small fraction of one scenario's wall-clock next to the PRB's several
 sequential LLM calls.
 
+Two known limits of this isolation, both low-likelihood for this workload and left as-is rather
+than engineered around: an ordinary Python exception in one worker is caught and isolated to that
+scenario alone (see the per-future ``except Exception`` below), but an *abnormal* worker death
+(OOM-kill, segfault) raises ``concurrent.futures.process.BrokenProcessPool`` for every other
+pending/in-flight future in the same pool too, not just the one that crashed — a wider blast radius
+than "isolate one scenario's worker crash from the rest" implies. And each worker's own
+``running_services(...)`` context manager tears down its idp/store/opa subprocess trio on a normal
+Python-level exception, but there's no top-level safety net if the worker *process* itself is
+killed externally — those subprocesses would be orphaned rather than cleaned up.
+
 ``_provision_scenario`` calls ``orchestrate_prb(..., best_effort=True)`` — a scope/role decision
 the PRB's auditor rejects contributes a best-effort (never-approved) fallback rule instead of
 aborting the whole scenario (see ``orchestrate_prb``/``_invoke_graph``'s docstrings), by explicit
@@ -766,7 +776,10 @@ def pipeline() -> dict[str, dict]:
         "LLM_API_KEY",
     )
 
-    max_workers = int(os.environ.get("EVAL_PIPELINE_PARALLELISM", str(len(SCENARIOS))))
+    # max(1, ...): ProcessPoolExecutor raises a bare ValueError("max_workers must be greater than
+    # 0") for 0 or negative — clearer to floor it here than to let a maintainer's typo in this
+    # escape-hatch env var surface as an opaque crash deep inside the executor.
+    max_workers = max(1, int(os.environ.get("EVAL_PIPELINE_PARALLELISM", str(len(SCENARIOS)))))
     realm_lock = multiprocessing.Lock()  # serializes admin.create_realm — see _provision_scenario
     results: dict[str, dict] = {}
     with ProcessPoolExecutor(max_workers=max_workers, initializer=_init_worker, initargs=(realm_lock,)) as executor:

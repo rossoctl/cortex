@@ -26,7 +26,14 @@ def _user_role_rows(role_to_scopes: dict[str, list[str]], user_roles: set[str]) 
     even though it's already correctly counted under ``outbound_target`` — confirmed empirically:
     a real run's every over-grant was exactly its scenario's ``outbound_target`` true positives,
     reappearing here. Mirrors the ``role.name in user_role_names`` discrimination
-    ``eval.test_policy_pipeline_eval.grant_sets`` already applies to the PRB's raw rules."""
+    ``eval.test_policy_pipeline_eval.grant_sets`` already applies to the PRB's raw rules.
+
+    Also applied to the inbound maps (``subject_role_allow/deny_scopes`` from the *inbound* Rego)
+    for the same reason, though it's a no-op there in practice: the inbound Rego has no
+    agent-calling-agent concept to begin with, so its ``subject_role`` rows are user roles only —
+    nothing gets filtered out. Applying the same call uniformly to both directions, rather than
+    conditionally skipping it for inbound, avoids two different call shapes for what is
+    conceptually the same "keep user rows only" step."""
     return {role: scopes for role, scopes in role_to_scopes.items() if role in user_roles}
 
 
