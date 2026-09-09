@@ -720,20 +720,69 @@ func TestRunExec_PreservesArgv0AsTyped(t *testing.T) {
 	}
 }
 
-// TestRunExec_PrintWithCommandSaysSo: silently discarding the command is the same
-// discourtesy the strict pre-delimiter check exists to avoid.
-func TestRunExec_PrintWithCommandSaysSo(t *testing.T) {
+// --print and a command are mutually exclusive. The two modes disagree about how
+// long their output is meant to last: --print emits paths for a shell to keep —
+// the same ca.crt `claude-code enable` writes into settings.json, plus the
+// trust-bundle.pem beside it — while a command gets them for one process. So this
+// is a contradiction about intent, refused rather than half-honoured with a note.
+func TestRunExec_PrintWithCommandIsAUsageError(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
 	code := runExec([]string{"--config", cfgPath, "--print", "--", "curl", "https://x"}, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0", code)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage)", code)
 	}
-	if !strings.Contains(stdout.String(), "export HTTPS_PROXY=") {
-		t.Error("--print should still print the exports")
+	// Nothing printed: a caller doing `eval "$(...)"` must not get a half-answer.
+	if stdout.Len() != 0 {
+		t.Errorf("--print with a command emitted exports anyway:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "was not run") {
-		t.Errorf("expected a note that the command was ignored:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Errorf("error should say the two are mutually exclusive:\n%s", stderr.String())
+	}
+	// The message names the command, so the user can see which half to keep.
+	if !strings.Contains(stderr.String(), "curl https://x") {
+		t.Errorf("error should echo the command:\n%s", stderr.String())
+	}
+}
+
+// A usage error must not touch the filesystem. The check is placed with the other
+// argument validation, before the config is read, so a rejected invocation does not
+// leave a trust-bundle.pem behind as a side effect of being wrong.
+func TestRunExec_PrintWithCommandWritesNothing(t *testing.T) {
+	cfgPath, caPath := execCfg(t)
+	bundle := filepath.Join(filepath.Dir(caPath), "trust-bundle.pem")
+
+	var stdout, stderr bytes.Buffer
+	if code := runExec([]string{"--config", cfgPath, "--print", "--", "curl"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if _, err := os.Stat(bundle); err == nil {
+		t.Errorf("a rejected invocation wrote %s", bundle)
+	}
+}
+
+// Each mode alone still works: this is exclusivity, not a new restriction on
+// either form.
+func TestRunExec_PrintAloneAndCommandAloneBothWork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	cfgPath, _ := execCfg(t)
+
+	var pout, perr bytes.Buffer
+	if code := runExec([]string{"--config", cfgPath, "--print", "--"}, &pout, &perr); code != 0 {
+		t.Errorf("--print alone: exit %d: %s", code, perr.String())
+	}
+	if !strings.Contains(pout.String(), "export HTTPS_PROXY=") {
+		t.Errorf("--print alone printed nothing useful:\n%s", pout.String())
+	}
+
+	var cout, cerr bytes.Buffer
+	if code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", "echo ran"}, &cout, &cerr); code != 0 {
+		t.Errorf("command alone: exit %d: %s", code, cerr.String())
+	}
+	if strings.TrimSpace(cout.String()) != "ran" {
+		t.Errorf("command alone did not run: %q", cout.String())
 	}
 }
 

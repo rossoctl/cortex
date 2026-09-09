@@ -91,7 +91,8 @@ var systemRootFiles = []string{
 const execUsage = `abctl exec — run a command with Cortex's proxy and CA in its environment
 
 Usage:
-  abctl exec [--config PATH] [--print] -- COMMAND [ARG...]
+  abctl exec [--config PATH] -- COMMAND [ARG...]
+  abctl exec [--config PATH] --print --
 
 Everything after -- is passed to COMMAND exactly as given; abctl does not
 interpret it, so the command's own flags need no escaping:
@@ -123,6 +124,9 @@ Flags:
   --config PATH  Cortex config to read addresses from (default ~/.cortex/config.yaml)
   --print        print the variables that would be set and exit, without running
                  anything. Shell-quoted, so: eval "$(abctl exec --print --)"
+                 Mutually exclusive with a command: --print emits settings for a
+                 shell to keep (paths under the CA directory, which outlive this
+                 process), whereas a command gets them for its own lifetime only.
 
 Exit status: the child's, or 1 if the command could not be started (127 if it
 was not found on PATH), or 2 for a usage error.
@@ -165,6 +169,27 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// saying so.
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "abctl: unexpected argument %q before --; the command goes after --\n", fs.Arg(0))
+		return 2
+	}
+
+	// A command or --print, never both.
+	//
+	// Not merely "the command would be ignored": the two modes disagree about how
+	// long their output is meant to last. --print emits paths for a shell to keep —
+	// the same ca.crt that `claude-code enable` writes into settings.json, plus a
+	// trust-bundle.pem beside it — and those are expected to outlive any single
+	// invocation. Running a command is the opposite: one process, one lifetime.
+	// Asking for both in one breath is a contradiction about intent, not a spare
+	// argument, so it is refused the way an argument in the wrong place is rather
+	// than warned about and half-honoured.
+	if *printOnly && len(cmdArgs) > 0 {
+		fmt.Fprintf(stderr, "abctl: --print and a command are mutually exclusive.\n"+
+			"  --print emits environment settings to keep (paths under the CA directory,\n"+
+			"  which outlive this process); running a command applies them to that one\n"+
+			"  child. Pick one:\n"+
+			"    abctl exec --print --          # print the settings\n"+
+			"    abctl exec -- %s\n",
+			strings.Join(cmdArgs, " "))
 		return 2
 	}
 
@@ -217,15 +242,6 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *printOnly {
-		// Say so rather than silently discard it. Refusing outright would break
-		// `abctl exec --print --`, the documented form, and rejecting only the
-		// with-a-command form is a usage error for something harmless — but staying
-		// silent about an ignored command is the same discourtesy the strict check
-		// above exists to avoid.
-		if len(cmdArgs) > 0 {
-			fmt.Fprintf(stderr, "abctl: --print only prints the variables; %q was not run.\n",
-				strings.Join(cmdArgs, " "))
-		}
 		printExecEnv(inject, stdout)
 		if b := inject[execCAReplaceVars[0]]; b != "" {
 			fmt.Fprintf(stderr, "abctl: wrote the trust bundle to %s (system roots + Cortex's bridge CA).\n"+

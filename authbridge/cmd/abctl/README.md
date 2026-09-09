@@ -162,6 +162,13 @@ replacing variables at it, rewriting it each time so a rotated CA is picked up.
 That is what makes the `eval` form usable: the exported paths still resolve after
 abctl has exited.
 
+`--print` and a command are mutually exclusive — `abctl exec --print -- curl …`
+is a usage error, not a command that runs. The paths `--print` hands out are
+meant to be kept, and are the same ones `abctl claude-code enable` writes into
+`settings.json`; running a command is the opposite, applying them to one process
+for its lifetime. Asking for both in one invocation is a contradiction about
+which you want, so abctl says so rather than picking one.
+
 Requires an enabled TLS bridge — both `tls_bridge.mode: enabled` and
 `tls_bridge.ca_dir`. `mode: disabled` with a `ca_dir` set is a valid config,
 but the bridge then terminates nothing, so a CA would buy the child nothing
