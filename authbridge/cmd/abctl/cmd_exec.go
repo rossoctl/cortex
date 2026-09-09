@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -205,9 +206,11 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// Node and curl both refuse to start with a CA file they cannot read — so it
 	// is worth naming the cause before the child dies of it.
 	//
-	// Checked on the ADDITIVE var, which is the bridge CA itself; the replacing
-	// vars name the generated bundle, which by construction exists.
-	if ca := inject[execCAExtraVars[0]]; ca != "" {
+	// Checked on the additive name, which is the bridge CA itself; the replacing
+	// vars name the generated bundle, which by construction exists. Named
+	// explicitly rather than by list position, so this warning does not depend on
+	// the declaration order of a slice it does not own.
+	if ca := inject[envCACerts]; ca != "" {
 		if _, serr := os.Stat(ca); serr != nil {
 			fmt.Fprintf(stderr, "abctl: note: %s does not exist yet — Cortex writes it on first start.\n"+
 				"  TLS verification against the bridge will fail until then (abctl service start).\n", ca)
@@ -215,6 +218,15 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *printOnly {
+		// Say so rather than silently discard it. Refusing outright would break
+		// `abctl exec --print --`, the documented form, and rejecting only the
+		// with-a-command form is a usage error for something harmless — but staying
+		// silent about an ignored command is the same discourtesy the strict check
+		// above exists to avoid.
+		if len(cmdArgs) > 0 {
+			fmt.Fprintf(stderr, "abctl: --print only prints the variables; %q was not run.\n",
+				strings.Join(cmdArgs, " "))
+		}
 		printExecEnv(inject, stdout)
 		return 0
 	}
@@ -242,6 +254,11 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	}
 
 	cmd := exec.Command(path, argv[1:]...) //nolint:gosec // the command is the user's, given after --
+	// argv[0] as the user typed it, not the absolute path LookPath resolved.
+	// exec.Command would pass "/usr/bin/foo", but a shell passes "foo": multi-call
+	// binaries dispatch on argv[0], and tools echo it in their own usage and errors.
+	// cmd.Path keeps the resolved path, so the 127-on-not-found behaviour is intact.
+	cmd.Args[0] = argv[0]
 	cmd.Env = mergeEnv(os.Environ(), inject)
 	// The child gets this process's real stdio, not a pipe: it may be interactive
 	// (`abctl exec -- claude`), and a pipe would cost it the terminal, so it would
@@ -252,13 +269,46 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// No signal forwarding, deliberately. The child is in this process's process
-	// group and shares the terminal, so a Ctrl-C at the keyboard is delivered by
-	// the tty driver to the whole group — the child included — and re-sending it
-	// would double the signal. Interactive children (claude, a REPL) rely on
-	// receiving SIGINT themselves; abctl dying first would orphan them mid-write.
-	// abctl has nothing of its own to clean up, so it just waits and reports.
-	if err := cmd.Run(); err != nil {
+	// Signal handling splits by how the signal arrives.
+	//
+	// tty-generated signals (SIGINT/SIGQUIT/SIGTSTP from a keystroke) are delivered
+	// by the tty driver to the whole foreground process group, so the child already
+	// gets them and relaying would double the signal. Those are left alone —
+	// interactive children rely on handling their own Ctrl-C.
+	//
+	// A signal aimed at abctl's PID is different: `timeout 30 abctl exec -- …`, a CI
+	// runner, or systemd sends SIGTERM to abctl alone. Go's default disposition then
+	// kills abctl and leaves the child running, orphaned, with the injected
+	// environment — and `timeout` in a Makefile is exactly what "safe in a pipeline
+	// or a Makefile" claims to support. So SIGTERM and SIGHUP are relayed, then abctl
+	// keeps waiting and still reports the child's real status.
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(stderr, "abctl: %s: %v\n", argv[0], err)
+		return 1
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
+	relayDone := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case sig := <-sigs:
+				if p := cmd.Process; p != nil {
+					// Best-effort: the child may have exited between the signal and here,
+					// which is a benign race, not an error worth reporting.
+					_ = p.Signal(sig)
+				}
+			case <-relayDone:
+				return
+			}
+		}
+	}()
+	defer func() {
+		signal.Stop(sigs)
+		close(relayDone)
+	}()
+
+	if err := cmd.Wait(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			// A child killed by a signal has no exit code; ExitCode() returns -1.

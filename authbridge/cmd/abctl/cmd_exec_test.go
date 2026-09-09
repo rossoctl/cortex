@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // execCfg writes a Cortex config and returns its path plus the CA path it names.
@@ -627,5 +630,133 @@ func TestRunExec_BeforeFirstStart_StillRuns(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "does not exist yet") {
 		t.Errorf("expected a note about the missing CA:\n%s", stderr.String())
+	}
+}
+
+// TestRunExec_RelaysSIGTERM. A signal aimed at abctl's own PID — `timeout 30
+// abctl exec -- …`, a CI runner, systemd — killed abctl under Go's default
+// disposition and left the child running with the injected environment. The
+// README claims this is safe in a pipeline or a Makefile, and `timeout` is
+// exactly that case.
+func TestRunExec_RelaysSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX signals")
+	}
+	cfgPath, _ := execCfg(t)
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	// The child records that it caught SIGTERM. Without relaying it never runs the
+	// trap, and the file stays absent.
+	caught := filepath.Join(dir, "caught")
+	script := "trap 'touch " + caught + "; exit 0' TERM; touch " + started +
+		"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done"
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", script}, &stdout, &stderr)
+	}()
+
+	// Wait for the child to install its trap.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Signal THIS process, the way `timeout` signals abctl. runExec's relay must
+	// pass it to the child.
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("runExec did not return after SIGTERM; the child was not signalled")
+	}
+	if _, err := os.Stat(caught); err != nil {
+		t.Error("the child never received SIGTERM, so it would have been orphaned")
+	}
+}
+
+// TestRunExec_PreservesArgv0AsTyped. exec.Command sets Args[0] to the resolved
+// absolute path; a shell passes the name as typed. Multi-call binaries dispatch
+// on argv[0], and tools echo it in their usage and errors.
+func TestRunExec_PreservesArgv0AsTyped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	cfgPath, _ := execCfg(t)
+	dir := t.TempDir()
+	// A compiled probe, not a shell script: /bin/sh reports $0 from its shebang
+	// invocation rather than the argv[0] it was handed, so a script cannot observe
+	// what is under test here.
+	src := filepath.Join(dir, "argvprobe.go")
+	if err := os.WriteFile(src, []byte(
+		"package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() { fmt.Printf(\"argv0=%s\\n\", os.Args[0]) }\n"),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "argvprobe")
+	build := exec.Command("go", "build", "-o", bin, src)
+	build.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("cannot build the probe here: %v\n%s", err, out)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var stdout, stderr bytes.Buffer
+	if code := runExec([]string{"--config", cfgPath, "--", "argvprobe"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "argv0=argvprobe" {
+		t.Errorf("got %q, want argv0 as typed (%q), not the resolved path", got, "argv0=argvprobe")
+	}
+}
+
+// TestRunExec_PrintWithCommandSaysSo: silently discarding the command is the same
+// discourtesy the strict pre-delimiter check exists to avoid.
+func TestRunExec_PrintWithCommandSaysSo(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", cfgPath, "--print", "--", "curl", "https://x"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "export HTTPS_PROXY=") {
+		t.Error("--print should still print the exports")
+	}
+	if !strings.Contains(stderr.String(), "was not run") {
+		t.Errorf("expected a note that the command was ignored:\n%s", stderr.String())
+	}
+}
+
+// TestRunExec_PreservesInheritedNoProxy. NO_PROXY is not ours to touch: a host
+// listed there bypasses Cortex, and with the replacing CA vars now carrying the
+// system roots, such a request still verifies against public trust.
+func TestRunExec_PreservesInheritedNoProxy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	cfgPath, _ := execCfg(t)
+	t.Setenv("NO_PROXY", "internal.example.com,.corp")
+	t.Setenv("no_proxy", "internal.example.com")
+
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", cfgPath, "--",
+		"/bin/sh", "-c", `printf 'NO_PROXY=%s\nno_proxy=%s\n' "$NO_PROXY" "$no_proxy"`}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "NO_PROXY=internal.example.com,.corp") ||
+		!strings.Contains(got, "no_proxy=internal.example.com") {
+		t.Errorf("NO_PROXY was not preserved:\n%s", got)
 	}
 }

@@ -139,10 +139,14 @@ to the proxy itself and fail the handshake.
 
 The values come from `~/.cortex/config.yaml` — the same derivation
 `claude-code enable` uses, so the two cannot drift apart. Nothing is
-exported to your shell and no file is modified. Signals reach the child
-through the shared process group, and abctl exits with the child's
-status (127 if the command was not found, 128+signum if it was killed),
-so it is safe in a pipeline or a Makefile.
+exported to your shell and no file is modified.
+
+abctl exits with the child's status (127 if the command was not found,
+128+signum if it was killed), so it is safe in a pipeline or a Makefile.
+Keyboard signals (Ctrl-C) reach the child directly through the shared
+process group; a signal aimed at abctl itself — `timeout 30 abctl exec
+-- …`, a CI runner, systemd — is relayed to the child, so it is not left
+orphaned with the injected environment.
 
 To see the variables without running anything:
 
