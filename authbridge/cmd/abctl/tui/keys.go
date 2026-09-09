@@ -131,15 +131,20 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// same reason the help overlay is.
 	if m.colPicker && !m.filtering {
 		switch msg.String() {
+		case "q", "ctrl+c":
+			// Quit stays live. A modal that traps the user until they find its exit
+			// is worse than one that closes on the key they already reach for, and
+			// `q` means quit everywhere else in abctl. Falls through to the global
+			// handler rather than being reimplemented here.
 		case "c", "esc", "enter":
 			m.colPicker = false
 			return nil
-		case "left", "h":
+		case "up", "k":
 			if m.colCursor > 0 {
 				m.colCursor--
 			}
 			return nil
-		case "right", "l":
+		case "down", "j":
 			if m.colCursor < len(eventColumns)-1 {
 				m.colCursor++
 			}
@@ -156,8 +161,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.eventColumns = defaultColumnSelection()
 			m.rebuildEventsTable()
 			return nil
+		default:
+			// Everything else is swallowed: the popup is modal, so a stray key must
+			// not move the table cursor underneath it.
+			return nil
 		}
-		return nil
 	}
 
 	// `c` opens the column picker from the events timeline. Suppressed while
@@ -638,12 +646,6 @@ func (m *model) helpView() string {
 		skipHint := "[s] hide passthru/skip"
 		if m.hideInactive {
 			skipHint = "[s] show all"
-		}
-		// While the picker is up it replaces the footer: it owns the keyboard, so
-		// advertising the timeline's keys would list bindings that do nothing.
-		if m.colPicker {
-			return columnPickerLine(m.eventColumns, m.colCursor) +
-				"   [←→] move  [space] toggle  [r] reset  [c/esc] done"
 		}
 		base := "[↑↓] nav  [b/f] page  [↵] detail  [u] usage  [c] columns  [esc] back  [/] filter  " + skipHint + "  [p] pause  [?] keys  [q] quit"
 		// Surface the hidden-message count so a filtered timeline doesn't

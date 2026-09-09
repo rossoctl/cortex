@@ -80,7 +80,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↵ / → / l", "event detail"},
 			{"/", "filter"},
 			{"s", "toggle passthru/skip rows"},
-			{"c", "choose which columns to show"},
+			{"c", "column picker (checkboxes + descriptions)"},
 			{"u", "usage charts (this session)"},
 			{"esc / ← / h", "back to sessions"},
 		},

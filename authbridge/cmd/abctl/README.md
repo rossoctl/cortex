@@ -94,12 +94,16 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
   active marker.
-- **Events**: per-session event table, with `c` to choose columns. Twelve are
-  defined and all of them together need ~135 terminal columns, so the table
-  drops what does not fit and the footer says how many (`→ N more columns`).
-  HOST is defined but off by default for that reason — turn it on with `c`, and
-  a column you enable explicitly outranks the ones that are merely on by
-  default, so it is not the first thing dropped again.
+- **Events**: per-session event table. `c` opens a column picker — a popup with
+  a checkbox and a one-line description per column, since twelve abbreviated
+  headers are not self-describing.
+
+  All twelve together need ~156 terminal columns, so the table drops what does
+  not fit and the footer says how many (`→ N more columns`). Columns carry a
+  keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
+  give way first, while `#` and HOST survive longest. That is what makes HOST
+  usable at 80 columns despite being last in display order — it is the column
+  most people open this pane for.
 
   Default columns: time, direction (in/out),
   phase (req/resp), protocol (a2a/mcp/inf), method or model, HTTP status,
@@ -182,7 +186,7 @@ Layered on top of all of them:
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
-| `c` | events | choose which columns to show (`←→` move, `space` toggle, `r` reset, `c`/`Esc` done) |
+| `c` | events | open the column picker (`↑↓` move, `space` toggle, `r` reset, `Esc` close) |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `/tmp` |
 | `g` / `G` | lists | jump to top / bottom |

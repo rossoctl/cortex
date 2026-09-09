@@ -1103,6 +1103,11 @@ func (m *model) View() string {
 	if m.helpVisible {
 		return overlayCenter(base, renderHelpOverlay(m.helpVp, m.width, m.height), m.width, m.height)
 	}
+	if m.colPicker {
+		return overlayCenter(base,
+			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height),
+			m.width, m.height)
+	}
 	return base
 }
 

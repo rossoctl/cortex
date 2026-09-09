@@ -1,6 +1,8 @@
 package tui
 
 import (
+	tea "github.com/charmbracelet/bubbletea"
+
 	"strings"
 	"testing"
 	"time"
@@ -164,24 +166,57 @@ func TestEventColumns_AllHaveCellFuncs(t *testing.T) {
 	}
 }
 
-// The picker names every column, marks which are on, and shows the cursor —
-// otherwise a user cannot tell what pressing space would do.
-func TestColumnPickerLine(t *testing.T) {
+// The popup must name every column, describe it, show a checkbox, and mark the
+// cursor — a one-line list of twelve abbreviated headers asked the user to guess
+// what DIR or METHOD meant.
+func TestRenderColumnPicker(t *testing.T) {
 	sel := defaultColumnSelection()
-	line := stripANSI(columnPickerLine(sel, 0))
+	out := stripANSI(renderColumnPicker(sel, 0, 160, 40))
 
 	for _, c := range eventColumns {
-		if !strings.Contains(line, string(c.id)) {
-			t.Errorf("picker omits %s: %q", c.id, line)
+		if !strings.Contains(out, string(c.id)) {
+			t.Errorf("popup omits the %s column: %q", c.id, out)
+		}
+		if c.desc == "" {
+			t.Errorf("column %s has no description", c.id)
+		} else if !strings.Contains(out, c.desc) {
+			t.Errorf("popup omits %s's description %q", c.id, c.desc)
 		}
 	}
-	// The cursor is bracketed, so the highlighted column is identifiable without
-	// colour — a terminal without it, or a screenshot, still reads.
-	if !strings.Contains(line, "["+string(eventColumns[0].id)+"]") {
-		t.Errorf("picker does not bracket the cursor column: %q", line)
+	if !strings.Contains(out, "[x]") {
+		t.Errorf("no checked box for a default-on column: %q", out)
 	}
-	if strings.Contains(stripANSI(columnPickerLine(sel, 3)), "["+string(eventColumns[0].id)+"]") {
-		t.Error("bracket did not move with the cursor")
+	// Cursor marked with a glyph, not only a colour, so it reads without colour.
+	if !strings.Contains(out, "\u25b8") {
+		t.Errorf("popup does not mark the cursor row: %q", out)
+	}
+	// Quit is advertised: the popup is modal, so the key a user reaches for has to
+	// be listed.
+	if !strings.Contains(out, "[q] quit") {
+		t.Errorf("popup does not advertise quit: %q", out)
+	}
+}
+
+// An unchecked column shows an empty box, so on and off are distinguishable.
+func TestRenderColumnPicker_ShowsUncheckedBoxes(t *testing.T) {
+	sel := defaultColumnSelection()
+	sel[colHost] = false
+	out := stripANSI(renderColumnPicker(sel, 0, 160, 40))
+	if !strings.Contains(out, "[ ]") {
+		t.Errorf("no empty box for a disabled column: %q", out)
+	}
+}
+
+// A selected column that cannot fit is marked in place. Without it, ticking HOST in
+// an 80-column window looks like the checkbox did nothing.
+func TestRenderColumnPicker_MarksColumnsThatDoNotFit(t *testing.T) {
+	narrow := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 80, 40))
+	if !strings.Contains(narrow, "no room") {
+		t.Errorf("narrow terminal does not flag unfittable columns: %q", narrow)
+	}
+	wide := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 200, 40))
+	if strings.Contains(wide, "no room") {
+		t.Errorf("wide terminal wrongly flags a column as unfittable: %q", wide)
 	}
 }
 
@@ -315,5 +350,75 @@ func TestColumnPicker_OwnsTheKeyboard(t *testing.T) {
 
 	if got := m.eventsTbl.Cursor(); got != 2 {
 		t.Errorf("table cursor moved to %d while the picker was open", got)
+	}
+}
+
+// `q` must quit while the picker is open. A modal that traps the user until they
+// find its exit is worse than one that honours the key they already reach for, and
+// `q` means quit everywhere else in abctl.
+func TestColumnPicker_QuitStaysLive(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+	if !m.colPicker {
+		t.Fatal("picker did not open")
+	}
+	// The general handler calls m.cancel, which a bare test model does not have.
+	// Supplying it also proves the key reached that handler rather than being
+	// swallowed by the picker's switch.
+	cancelled := false
+	m.cancel = func() { cancelled = true }
+
+	cmd := m.handleKey(keyRune('q'))
+	if !cancelled {
+		t.Error("`q` was swallowed by the picker; it must reach the quit handler")
+	}
+	if cmd == nil {
+		t.Error("`q` returned no command; expected tea.Quit")
+	}
+}
+
+// esc closes the picker without quitting, so the two exits are distinguishable.
+func TestColumnPicker_EscClosesWithoutQuitting(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.colPicker {
+		t.Error("esc did not close the picker")
+	}
+}
+
+// Up and down move the cursor and stop at the ends rather than wrapping or
+// indexing out of range.
+func TestColumnPicker_CursorStaysInRange(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+
+	for i := 0; i < len(eventColumns)*2; i++ {
+		m.handleKey(keyRune('j'))
+	}
+	if m.colCursor != len(eventColumns)-1 {
+		t.Errorf("cursor = %d after over-scrolling down, want %d", m.colCursor, len(eventColumns)-1)
+	}
+	for i := 0; i < len(eventColumns)*2; i++ {
+		m.handleKey(keyRune('k'))
+	}
+	if m.colCursor != 0 {
+		t.Errorf("cursor = %d after over-scrolling up, want 0", m.colCursor)
+	}
+}
+
+// HOST is on by default and survives a narrow terminal. It is the column #866 was
+// filed about: declared but never visible, because it is last in display order and
+// nothing ranked it above the columns it competed with.
+func TestDefaultColumns_HostIsOnAndSurvivesNarrowTerminals(t *testing.T) {
+	sel := defaultColumnSelection()
+	if !sel[colHost] {
+		t.Error("HOST is not a default column")
+	}
+	for _, width := range []int{80, 100, 120, 140, 160} {
+		fitted, _ := fitColumns(selectedColumns(sel), width)
+		if !has(fitted, colHost) {
+			t.Errorf("width %d: HOST dropped; got %v", width, colNames(fitted))
+		}
 	}
 }

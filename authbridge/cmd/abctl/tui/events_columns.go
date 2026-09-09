@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -57,49 +58,77 @@ type eventColumn struct {
 	// cell renders this column for one row.
 	cell func(cellContext) string
 	// defaultOn is whether the column shows without the user asking.
-	//
-	// HOST is off by default despite being the column issue #866 was filed about:
-	// with everything on, the table needs ~151 columns, so HOST was never visible
-	// anyway. Off-by-default plus a picker means it is reachable, rather than
-	// present-but-clipped.
 	defaultOn bool
+	// desc is the one-line explanation shown beside the name in the picker. Twelve
+	// abbreviated headers are not self-describing — DIR, PHASE and METHOD least of
+	// all — and a picker that only lists names asks the user to guess.
+	desc string
+	// keep ranks a column against being dropped when the terminal is too narrow.
+	// Higher survives longer.
+	//
+	// Separate from defaultOn because the two are different questions: HOST is now
+	// shown by default AND must outlive the columns it competes with, since it is
+	// the one the user came for (#866). Ranking by defaultOn alone made every
+	// default equally expendable and HOST — last in display order — the first to go.
+	keep int
 }
+
+// Keep ranks. Only the ordering matters, not the values.
+const (
+	keepLow    = 0 // give these up first
+	keepNormal = 1
+	keepHigh   = 2 // give these up last
+)
 
 // eventColumns is the single definition every events-table column comes from, in
 // display order.
 var eventColumns = []eventColumn{
-	{id: colIndex, width: 4, defaultOn: true,
+	{id: colIndex, width: 4, defaultOn: true, keep: keepHigh,
+		desc: "exchange number; a request and its response share one",
 		cell: func(c cellContext) string {
 			if id, ok := c.ids[c.row.event]; ok {
 				return strconv.Itoa(id)
 			}
 			return ""
 		}},
-	{id: colTime, width: 12, defaultOn: true,
+	{id: colTime, width: 12, defaultOn: true, keep: keepNormal,
+		desc: "wall-clock time the message was recorded",
 		cell: func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") }},
-	{id: colDir, width: 4, defaultOn: true,
+	{id: colDir, width: 4, defaultOn: true, keep: keepLow,
+		desc: "in = toward your agent, out = toward an upstream",
 		cell: func(c cellContext) string { return shortDirection(c.row.event.Direction) }},
-	{id: colPhase, width: 7, defaultOn: true,
+	{id: colPhase, width: 7, defaultOn: true, keep: keepNormal,
+		desc: "req, resp, or denied",
 		cell: func(c cellContext) string { return shortPhase(c.row.event.Phase) }},
-	{id: colAction, width: actionColWidth, defaultOn: true,
+	{id: colAction, width: actionColWidth, defaultOn: true, keep: keepNormal,
+		desc: "what took effect: deny, modify, observe, allow, or tunnel",
 		cell: func(c cellContext) string { a, _ := rowAction(c.row, c.row.invocations()); return a }},
-	{id: colPlugin, width: 18, defaultOn: true,
+	{id: colPlugin, width: 18, defaultOn: true, keep: keepNormal,
+		desc: "which plugin acted; blank when none did",
 		cell: func(c cellContext) string {
 			_, p := rowAction(c.row, c.row.invocations())
 			return truncStr(p, 18)
 		}},
-	{id: colMethod, width: methodColWidth, defaultOn: true,
+	{id: colMethod, width: methodColWidth, defaultOn: true, keep: keepNormal,
+		desc: "protocol operation: model name, MCP or A2A method",
 		cell: func(c cellContext) string { return eventMethod(*c.row.event) }},
-	{id: colStatus, width: 7, defaultOn: true,
+	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal,
+		desc: "HTTP status of the response",
 		cell: func(c cellContext) string { return statusCell(*c.row.event) }},
-	{id: colDuration, width: 10, defaultOn: true,
+	{id: colDuration, width: 10, defaultOn: true, keep: keepLow,
+		desc: "how long the exchange took",
 		cell: func(c cellContext) string { return durationCell(*c.row.event) }},
-	{id: colTokens, width: 17, defaultOn: true,
+	{id: colTokens, width: 17, defaultOn: true, keep: keepLow,
+		desc: "tokens used, and what tool-prune saved",
 		cell: func(c cellContext) string { return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event) }},
-	{id: colCost, width: 19, defaultOn: true,
+	{id: colCost, width: 19, defaultOn: true, keep: keepLow,
+		desc: "estimated cost, and what tool-prune saved",
 		cell: func(c cellContext) string { return c.m.costCell(c.rows, c.partner, c.i, c.row.event) }},
-	// The column the issue is about. Off by default — see eventColumn.defaultOn.
-	{id: colHost, width: 20, defaultOn: false,
+	// keepHigh: the column #866 was filed about. Last in display order, so without
+	// a rank it is the first thing a narrow terminal drops — which is how it came
+	// to be declared but never visible.
+	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
+		desc: "host the message was sent to",
 		cell: func(c cellContext) string { return truncStr(c.row.event.Host, 20) }},
 }
 
@@ -176,17 +205,16 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 	// Rank sacrifices: default-on columns first, from the right, then opted-in
 	// ones. Index 0 is never sacrificed — "#" pairs the exchange and is what makes
 	// the timeline readable at all.
-	// Two passes: default-on columns are given up first, then the opted-in ones. A
-	// column with defaultOn=false is only present because the user asked for it, so
-	// it is sacrificed LAST — the reverse of that is what made HOST vanish again in
-	// the issue's own scenario.
+	// Give up low-ranked columns first, then normal, then high — and within a rank,
+	// from the right. Ranking by "is it a default" instead made every default
+	// equally expendable, so HOST (last in display order) went first, which is the
+	// failure #866 describes.
 	sacrificeOrder := make([]int, 0, len(cols))
-	for _, giveUpDefaults := range []bool{true, false} {
+	for _, rank := range []int{keepLow, keepNormal, keepHigh} {
 		for i := len(cols) - 1; i > 0; i-- {
-			if cols[i].defaultOn != giveUpDefaults {
-				continue
+			if cols[i].keep == rank {
+				sacrificeOrder = append(sacrificeOrder, i)
 			}
-			sacrificeOrder = append(sacrificeOrder, i)
 		}
 	}
 
@@ -208,30 +236,51 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 	return fitted, len(drop)
 }
 
-// columnPickerLine is the one-line column selector, rendered in the footer while
-// the picker is open.
+// renderColumnPicker draws the column selector as a centred popup.
 //
-// A line rather than a modal overlay: the choice is a set of toggles over twelve
-// short names, and seeing the table change underneath as you toggle is the whole
-// point — an overlay would cover the thing being configured.
-func columnPickerLine(sel map[eventColumnID]bool, cursor int) string {
-	var b strings.Builder
-	b.WriteString("columns: ")
-	for i, c := range eventColumns {
-		name := string(c.id)
-		switch {
-		case i == cursor && sel[c.id]:
-			b.WriteString(styleOK.Render("[" + name + "]"))
-		case i == cursor:
-			b.WriteString(styleWarn.Render("[" + name + "]"))
-		case sel[c.id]:
-			b.WriteString(styleOK.Render(name))
-		default:
-			b.WriteString(styleMuted.Render(name))
-		}
-		if i < len(eventColumns)-1 {
-			b.WriteString(" ")
-		}
+// A popup rather than the footer line this replaced: twelve abbreviated headers
+// are not self-describing, and a one-line list had no room to say what DIR or
+// METHOD mean. A box gives every column its own row, a checkbox, and a
+// description — which is the difference between choosing and guessing.
+//
+// A column that is selected but will not fit the current terminal is marked, so
+// enabling something and seeing no change is explained in place rather than only
+// by the footer's count.
+func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) string {
+	fitted, _ := fitColumns(selectedColumns(sel), width)
+	visible := make(map[eventColumnID]bool, len(fitted))
+	for _, c := range fitted {
+		visible[c.id] = true
 	}
-	return b.String()
+
+	var b strings.Builder
+	b.WriteString(styleTitle.Render("COLUMNS"))
+	b.WriteString("\n\n")
+
+	for i, c := range eventColumns {
+		box := "[ ]"
+		if sel[c.id] {
+			box = "[x]"
+		}
+		name := fmt.Sprintf("%-9s", string(c.id))
+		line := fmt.Sprintf("%s %s %s", box, name, c.desc)
+
+		// Mark a selection the terminal cannot honour. Without this, turning HOST
+		// on in an 80-column window looks like the checkbox did nothing.
+		if sel[c.id] && !visible[c.id] {
+			line += styleMuted.Render("  (no room)")
+		}
+
+		if i == cursor {
+			b.WriteString(styleTitle.Render("▸ " + line))
+		} else {
+			b.WriteString("  " + line)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styleHint.Render("[↑↓] move  [space] toggle  [r] reset  [esc] close  [q] quit"))
+
+	return styleBorder.Render(b.String())
 }
