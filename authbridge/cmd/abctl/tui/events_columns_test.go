@@ -1,15 +1,13 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/table"
-
-	"github.com/charmbracelet/lipgloss"
-
-	tea "github.com/charmbracelet/bubbletea"
-
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
@@ -727,5 +725,83 @@ func TestColumnPicker_DoesNotStrandOnAnAsyncPaneChange(t *testing.T) {
 	// And it must not paint over the sessions pane.
 	if strings.Contains(m.paneView(), "COLUMNS") {
 		t.Error("the column picker popup was drawn over the sessions pane")
+	}
+}
+
+// The picker must close with the pane it belongs to, not merely go quiet.
+//
+// The paneEvents gates make it inert and invisible while the user is bounced to
+// the sessions table, but the flag outlived the pane: pressing enter on another
+// session restored paneEvents and the popup was back without the user reopening
+// it, owning the keyboard until they found esc. Gating covers "drawn over the
+// wrong pane"; this covers the return trip.
+func TestColumnPicker_DoesNotReturnAfterAnAsyncPaneChange(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.width, m.height = 100, 40
+	m.handleKey(keyRune('c'))
+	if !m.colPicker || !strings.Contains(m.View(), "COLUMNS") {
+		t.Fatal("picker did not open")
+	}
+
+	// Drive the REAL handler, not a hand-set flag: the focused session disappears
+	// from the server's list, and sessionsLoadedMsg backs out to paneSessions. A
+	// test that assigned m.colPicker itself would pass without the fix.
+	m.Update(sessionsLoadedMsg{})
+	if m.pane != paneSessions {
+		t.Fatalf("handler did not back out to paneSessions (pane=%v)", m.pane)
+	}
+	if strings.Contains(m.View(), "COLUMNS") {
+		t.Error("popup still drawn over the sessions pane")
+	}
+
+	// The user picks another session. The picker must NOT reappear.
+	m.selectedSess = "s"
+	m.pane = paneEvents
+	if m.colPicker {
+		t.Error("colPicker survived the pane change; the popup returns unbidden")
+	}
+	if strings.Contains(m.View(), "COLUMNS") {
+		t.Error("a popup the user never reopened is back on the events pane")
+	}
+	// And it does not own the keyboard.
+	before := m.colCursor
+	m.handleKey(keyRune('j'))
+	if m.colCursor != before {
+		t.Errorf("the closed picker still captured `j` (colCursor %d -> %d)", before, m.colCursor)
+	}
+}
+
+// Cells must truncate to their own column's declared width, read from
+// cellContext rather than hardcoded.
+//
+// PLUGIN and HOST previously repeated 18 and 20 in their truncStr calls,
+// duplicating the width two lines above — the same drift actionColWidth and
+// methodColWidth were named to prevent, in the file whose premise is that a column
+// is one definition. This fails if the plumbing regresses to a hardcoded number or
+// silently passes 0.
+func TestEventColumns_CellsTruncateToTheirOwnWidth(t *testing.T) {
+	m := newTestEventsModel(t)
+	long := strings.Repeat("x", 80)
+	for i := range m.events["s"] {
+		m.events["s"][i].Host = long + ".example.com"
+	}
+	m.rebuildEventsTable()
+
+	cols := m.eventsTbl.Columns()
+	rows := m.eventsTbl.Rows()
+	if len(rows) == 0 {
+		t.Fatal("no rows")
+	}
+	for i, c := range cols {
+		cell := rows[0][i]
+		n := len([]rune(cell))
+		if n > c.Width {
+			t.Errorf("%s cell is %d wide, exceeding its column width %d: %q", c.Title, n, c.Width, cell)
+		}
+		// A cell that came back empty for a column that has content to show would be
+		// the signature of a zero width reaching truncStr.
+		if c.Title == "HOST" && n == 0 {
+			t.Error("HOST truncated to nothing; the column width was not plumbed through")
+		}
 	}
 }

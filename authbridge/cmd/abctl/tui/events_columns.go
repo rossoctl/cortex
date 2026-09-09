@@ -10,8 +10,11 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
-// eventColumnID names a column stably, so a saved selection survives reordering
-// and a future column being inserted in the middle.
+// eventColumnID names a column stably, so a selection is keyed by identity rather
+// than position: a future column inserted in the middle cannot silently change what
+// an existing selection means. (Nothing persists a selection today — it lives in
+// m.eventColumns for the process lifetime — so this is the property the naming
+// buys, not behaviour already in place.)
 type eventColumnID string
 
 const (
@@ -44,6 +47,30 @@ type cellContext struct {
 	// ids pairs a request event with its response, computed once per rebuild by
 	// computeEventPairs. Carried here rather than recomputed per cell.
 	ids map[*pipeline.SessionEvent]int
+	// invs is this row's invocations, computed once in the row loop.
+	//
+	// rebuildEventsTable already needs them for the hideInactive check, and
+	// rowAction returns ACTION and PLUGIN together — so having each of those two
+	// cells call row.invocations() ran it three times per row and discarded half of
+	// rowAction's result twice. invocations() allocates (allInvocations, plus an
+	// append when a tunnel row is folded in) and eventAction walks the slice twice,
+	// on up to 500 rows for every SSE event and every resize.
+	//
+	// Carrying it also makes it structural rather than incidental that the ACTION
+	// and PLUGIN cells agree: they now read one rowAction result instead of two.
+	invs []pipeline.Invocation
+	// action and plugin are that one rowAction result.
+	action string
+	plugin string
+	// width is the declared width of the column being filled, set per column in
+	// the row loop.
+	//
+	// PLUGIN and HOST previously hardcoded 18 and 20 in their truncStr calls,
+	// duplicating the width two lines above them — the same drift actionColWidth and
+	// methodColWidth were named to prevent, in the one file whose premise is that a
+	// column is a single definition. Reading it from here means changing a width
+	// cannot leave a truncation behind.
+	width int
 }
 
 // eventColumn is one column: how to head it, how wide, and how to fill it.
@@ -102,12 +129,12 @@ var eventColumns = []eventColumn{
 		cell: func(c cellContext) string { return shortPhase(c.row.event.Phase) }},
 	{id: colAction, width: actionColWidth, defaultOn: true, keep: keepNormal,
 		desc: "what took effect: deny, modify, observe, allow, or tunnel",
-		cell: func(c cellContext) string { a, _ := rowAction(c.row, c.row.invocations()); return a }},
+		cell: func(c cellContext) string { return c.action }},
 	{id: colPlugin, width: 18, defaultOn: true, keep: keepNormal,
 		desc: "which plugin acted; blank when none did",
 		cell: func(c cellContext) string {
-			_, p := rowAction(c.row, c.row.invocations())
-			return truncStr(p, 18)
+			p := c.plugin
+			return truncStr(p, c.width)
 		}},
 	// methodColWidth rather than 22: the widest realistic value is a model name
 	// ("claude-opus-5"), and the columns freed pay for splitting TOKENS and COST
@@ -139,7 +166,7 @@ var eventColumns = []eventColumn{
 	// to be declared but never visible.
 	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
 		desc: "host the message was sent to",
-		cell: func(c cellContext) string { return truncStr(c.row.event.Host, 20) }},
+		cell: func(c cellContext) string { return truncStr(c.row.event.Host, c.width) }},
 }
 
 // defaultColumnSelection is the set shown before the user chooses.

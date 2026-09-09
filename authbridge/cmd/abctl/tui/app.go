@@ -626,6 +626,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selectedSess != "" && !serverIDs[m.selectedSess] && m.pane != paneSessions {
 			m.selectedSess = ""
 			m.pane = paneSessions
+			// Close the picker with the pane it belongs to.
+			//
+			// The paneEvents gates on the key block and in View() make it inert and
+			// invisible while the user is on the sessions table, but the flag itself
+			// outlived the pane: pressing enter on another session put m.pane back to
+			// paneEvents and the popup the user never reopened was there again, owning
+			// the keyboard until they found esc. Gating covers "drawn over the wrong
+			// pane"; this covers the return trip.
+			m.colPicker = false
 		}
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen

@@ -1,9 +1,12 @@
 package tui
 
 import (
-	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // Quit and help must survive at every terminal width. The events footer runs ~135
@@ -15,8 +18,8 @@ func TestFitHintLine_KeepsQuitAndHelpAtEveryWidth(t *testing.T) {
 
 	for _, width := range []int{200, 140, 120, 100, 80, 60, 40, 24, 20} {
 		got := fitHintLine(full, width)
-		if len([]rune(got)) > width {
-			t.Errorf("width %d: hint is %d columns:\n%q", width, len([]rune(got)), got)
+		if lipgloss.Width(got) > width {
+			t.Errorf("width %d: hint is %d columns:\n%q", width, lipgloss.Width(got), got)
 		}
 		if !strings.Contains(got, "[q] quit") {
 			t.Errorf("width %d: lost [q] quit:\n%q", width, got)
@@ -70,8 +73,8 @@ func TestFitHintLine_EveryPaneFitsAt80(t *testing.T) {
 	} {
 		m := &model{pane: pane, eventColumns: defaultColumnSelection()}
 		got := fitHintLine(m.helpView(), 80)
-		if len([]rune(got)) > 80 {
-			t.Errorf("pane %v: hint is %d columns at 80:\n%q", pane, len([]rune(got)), got)
+		if lipgloss.Width(got) > 80 {
+			t.Errorf("pane %v: hint is %d columns at 80:\n%q", pane, lipgloss.Width(got), got)
 		}
 		if !strings.Contains(got, "[q] quit") {
 			t.Errorf("pane %v: lost [q] quit at 80 columns:\n%q", pane, got)
@@ -115,8 +118,8 @@ func TestFitHintLine_NoticesNeverOutliveQuit(t *testing.T) {
 
 		for _, width := range []int{120, 80, 60, 40, 30, 20} {
 			got := fitHintLine(full, width)
-			if len([]rune(got)) > width {
-				t.Errorf("%s at %d: %d columns:\n%q", tc.name, width, len([]rune(got)), got)
+			if lipgloss.Width(got) > width {
+				t.Errorf("%s at %d: %d columns:\n%q", tc.name, width, lipgloss.Width(got), got)
 			}
 			if !strings.Contains(got, "[q] quit") {
 				t.Errorf("%s at %d: lost [q] quit:\n%q", tc.name, width, got)
@@ -164,13 +167,18 @@ func TestFitHintLine_PipelineNoticeNeverOutlivesQuit(t *testing.T) {
 	if !strings.Contains(full, "unmet deps") {
 		t.Fatalf("footer lacks the unmet-deps notice this test is named for:\n%q", full)
 	}
+	// lipgloss.Width, not len([]rune(...)): fitHintLine measures display columns, so
+	// the test has to measure the same thing. They agree for today's hints (↑ and ↓
+	// are width 1), but a hint with a genuinely wide glyph would overflow the footer
+	// while a rune count still read it as fitting — which is the exact failure this
+	// test exists to catch.
 	for _, width := range []int{80, 60, 40, 24} {
 		got := fitHintLine(full, width)
 		if !strings.Contains(got, "[q] quit") {
 			t.Errorf("width %d: lost [q] quit:\n%q", width, got)
 		}
-		if len([]rune(got)) > width {
-			t.Errorf("width %d: %d columns:\n%q", width, len([]rune(got)), got)
+		if lipgloss.Width(got) > width {
+			t.Errorf("width %d: %d columns:\n%q", width, lipgloss.Width(got), got)
 		}
 	}
 }

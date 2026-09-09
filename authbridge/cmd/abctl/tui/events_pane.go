@@ -125,9 +125,17 @@ func (m *model) rebuildEventsTable() {
 		// notation, so both rows claimed to contain each other and the output was
 		// actively misleading. The # column pairs exchanges exactly (by the
 		// proxy-stamped RequestID), which is what the glyphs approximated.
-		cc := cellContext{m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids}
+		// One rowAction per row, reusing the invs computed for hideInactive above:
+		// the ACTION and PLUGIN cells read this result rather than each recomputing
+		// the pair and discarding half of it.
+		action, plugin := rowAction(er, invs)
+		cc := cellContext{
+			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
+			invs: invs, action: action, plugin: plugin,
+		}
 		row := make(table.Row, 0, len(cols))
 		for _, c := range cols {
+			cc.width = c.width
 			row = append(row, c.cell(cc))
 		}
 		rows = append(rows, row)
