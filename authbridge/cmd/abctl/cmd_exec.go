@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
 )
 
 // exec runs one command with Cortex's proxy and CA already in its environment,
@@ -40,15 +43,51 @@ import (
 // the proxy itself and fail the handshake.
 var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
 
-// execCAVars are the names that get the bridge CA path. Same reasoning: each
-// runtime invented its own. NODE_EXTRA_CA_CERTS is Node, CURL_CA_BUNDLE is
-// libcurl, REQUESTS_CA_BUNDLE is Python requests, SSL_CERT_FILE is OpenSSL and
-// most things built on it.
+// execCAExtraVars are the ADDITIVE trust variables: the runtime keeps its own
+// root store and adds this file to it. Node is the only one of the four that
+// works this way.
+var execCAExtraVars = []string{"NODE_EXTRA_CA_CERTS"}
+
+// execCAReplaceVars REPLACE the trust store: whatever file they name becomes the
+// complete set of roots. CURL_CA_BUNDLE is libcurl, REQUESTS_CA_BUNDLE is Python
+// requests, SSL_CERT_FILE is OpenSSL and most things built on it.
 //
-// Every one is a *_FILE / *_BUNDLE, not a directory, so all four take the same
-// ca.crt path; a tool wanting a hashed CA directory (SSL_CERT_DIR) is not served
-// here.
-var execCAVars = []string{"NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"}
+// This distinction is the whole reason execEnv writes a bundle instead of
+// pointing everything at ca.crt. ca.crt is a single certificate — the bridge CA
+// alone (tlsbridge/ca.go writes certPEM to it, not a chain) — so naming it here
+// would leave the child trusting exactly one CA and nothing else. Every request
+// the bridge does NOT terminate then fails verification against the real
+// upstream certificate: tls_bridge.passthrough_hosts, listener.skip_hosts, any
+// port outside tls_bridge.ports (default 443 + 8443), and the runtime
+// passthrough decisions in tlsbridge/decision.go (non-TLS bytes, skip list).
+// Verified rather than assumed: on a Linux/OpenSSL curl, CURL_CA_BUNDLE pointed
+// at a lone CA fails `curl https://example.com` with exit 77.
+//
+// So these get a concatenation of the system roots and the bridge CA, written to
+// a temp file for the child's lifetime. Bridged hosts verify against the bridge
+// CA; everything excluded from bridging still verifies against the public roots
+// it would have used anyway.
+var execCAReplaceVars = []string{"CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"}
+
+// execCAVars is every CA name, in the order --print emits them.
+var execCAVars = append(append([]string{}, execCAExtraVars...), execCAReplaceVars...)
+
+// systemRootFiles are the usual system CA bundle locations, in the order
+// crypto/x509 itself consults them (root_linux.go's certFiles, plus the common
+// BSD/macOS paths). The first one that exists is treated as the system store.
+//
+// Read from disk rather than via x509.SystemCertPool because the output has to
+// be a PEM *file* another process can open: SystemCertPool returns an opaque
+// pool whose certificates cannot be re-serialised (the DER is not retained on
+// every platform), so there is nothing to write back out.
+var systemRootFiles = []string{
+	"/etc/ssl/certs/ca-certificates.crt",                // Debian/Ubuntu/Alpine(ish)
+	"/etc/pki/tls/certs/ca-bundle.crt",                  // Fedora/RHEL 6
+	"/etc/ssl/ca-bundle.pem",                            // OpenSUSE
+	"/etc/pki/tls/cacert.pem",                           // OpenELEC
+	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // CentOS/RHEL 7
+	"/etc/ssl/cert.pem",                                 // Alpine, macOS (Homebrew OpenSSL)
+}
 
 const execUsage = `abctl exec — run a command with Cortex's proxy and CA in its environment
 
@@ -66,8 +105,15 @@ The child inherits your environment plus these, read from ~/.cortex/config.yaml
 so they always match the running proxy:
 
   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy      the forward proxy URL
-  NODE_EXTRA_CA_CERTS  CURL_CA_BUNDLE                   the bridge CA file
-  REQUESTS_CA_BUNDLE   SSL_CERT_FILE
+  NODE_EXTRA_CA_CERTS                                   the bridge CA (added to
+                                                        the runtime's own roots)
+  CURL_CA_BUNDLE  REQUESTS_CA_BUNDLE  SSL_CERT_FILE     a temporary bundle of the
+                                                        system roots + bridge CA
+
+The last three REPLACE the trust store rather than extend it, so they get a
+bundle: naming the bridge CA alone would leave the child trusting one CA and
+break every host the bridge does not terminate (passthrough_hosts, skip_hosts,
+ports outside tls_bridge.ports). Requires tls_bridge.mode: enabled.
 
 Values already in your environment are replaced for this child only; nothing is
 exported to your shell and no file is modified. Signals go to the child, and
@@ -132,10 +178,25 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		*cortexCfg = filepath.Join(home, cortexCfgRel)
 	}
 
-	inject, err := execEnv(*cortexCfg)
+	inject, cleanup, err := execEnv(*cortexCfg)
+	// errNoSystemRoots comes back WITH a usable bundle: the bridge CA is in it, so
+	// bridged hosts verify fine; only public trust is absent, and on an image with
+	// no root store there was none to begin with. Reported, not fatal.
+	if errors.Is(err, errNoSystemRoots) {
+		fmt.Fprintf(stderr, "abctl: note: no system CA bundle found on this machine, so the child\n"+
+			"  trusts only Cortex's bridge CA. Hosts the bridge does not terminate\n"+
+			"  (tls_bridge.passthrough_hosts, listener.skip_hosts, ports outside\n"+
+			"  tls_bridge.ports) will fail certificate verification.\n")
+		err = nil
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
+	}
+	// The bundle is a temp file scoped to this child, so it must go whichever way
+	// runExec returns — including the usage and not-found paths below.
+	if cleanup != nil {
+		defer cleanup()
 	}
 
 	// A CA path that does not exist yet is a warning, not an error: enabling
@@ -143,7 +204,10 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// unlike the settings path, here the failure is loud rather than silent —
 	// Node and curl both refuse to start with a CA file they cannot read — so it
 	// is worth naming the cause before the child dies of it.
-	if ca := inject[execCAVars[0]]; ca != "" {
+	//
+	// Checked on the ADDITIVE var, which is the bridge CA itself; the replacing
+	// vars name the generated bundle, which by construction exists.
+	if ca := inject[execCAExtraVars[0]]; ca != "" {
 		if _, serr := os.Stat(ca); serr != nil {
 			fmt.Fprintf(stderr, "abctl: note: %s does not exist yet — Cortex writes it on first start.\n"+
 				"  TLS verification against the bridge will fail until then (abctl service start).\n", ca)
@@ -221,33 +285,143 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 // only way to guarantee that is one derivation. The telemetry key wanted() also
 // returns is dropped here — it is a Claude Code setting, and exec's child is
 // usually not Claude Code.
-func execEnv(cortexCfgPath string) (map[string]string, error) {
+func execEnv(cortexCfgPath string) (env map[string]string, cleanup func(), err error) {
 	want, err := wanted(cortexCfgPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	proxy := want[envProxy]
 	if proxy == "" {
-		return nil, fmt.Errorf("%s yields no proxy address", cortexCfgPath)
+		return nil, nil, fmt.Errorf("%s yields no proxy address", cortexCfgPath)
 	}
+
+	// The bridge posture, not just the CA path. ca_dir is only *required* when
+	// mode is "enabled" (config.go's Validate), so `mode: disabled` with a ca_dir
+	// set is a perfectly valid config that this used to accept — and then injected
+	// a CA for a bridge that terminates nothing, so every https request in the
+	// child failed verification against the real upstream certificate. A harder
+	// break than the missing-ca_dir case, and silent about its cause.
+	cfg, cerr := config.Load(cortexCfgPath)
+	if cerr != nil {
+		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, cerr)
+	}
+	// Empty mode means disabled, per TLSBridgeConfig.Mode's own documentation.
+	if cfg.TLSBridge == nil || cfg.TLSBridge.Mode != "enabled" {
+		return nil, nil, fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
+			"  without it Cortex terminates no TLS, so the child would gain nothing and\n"+
+			"  every https request would fail verification. Enable the TLS bridge first", cortexCfgPath)
+	}
+
 	ca, ok := want[envCACerts]
 	if !ok || ca == "" {
 		// Refused rather than injecting the proxy alone. Without a trusted CA the
 		// bridge cannot terminate TLS, so every https request either fails
 		// verification or — worse, if the tool is lenient — tunnels through
 		// unparsed, which looks exactly like success while Cortex sees nothing.
-		return nil, fmt.Errorf("%s has no tls_bridge.ca_dir, so the child would have no CA to trust;\n"+
+		return nil, nil, fmt.Errorf("%s has no tls_bridge.ca_dir, so the child would have no CA to trust;\n"+
 			"  https requests through the bridge would fail verification. Enable the TLS bridge first", cortexCfgPath)
 	}
+
 	out := make(map[string]string, len(execProxyVars)+len(execCAVars))
 	for _, k := range execProxyVars {
 		out[k] = proxy
 	}
-	for _, k := range execCAVars {
+	// Additive names take the bridge CA directly — the runtime keeps its own roots.
+	for _, k := range execCAExtraVars {
 		out[k] = ca
 	}
-	return out, nil
+	// Replacing names take a bundle, so excluded hosts keep public trust.
+	bundle, cleanup, berr := writeTrustBundle(ca)
+	switch {
+	case errors.Is(berr, errNoBridgeCA):
+		// The CA is not on disk yet — Cortex writes it on first start, and enabling
+		// before then is legitimate (the caller warns about it). Leave the replacing
+		// vars UNSET rather than name a bundle without the bridge CA in it: unset
+		// means the child keeps its own public roots and only bridged hosts fail,
+		// which is the same state `claude-code enable` has always produced. Naming a
+		// bridge-CA-less bundle would instead break every host, bridged or not.
+		return out, cleanup, nil
+	case berr != nil && !errors.Is(berr, errNoSystemRoots):
+		return nil, cleanup, berr
+	}
+	for _, k := range execCAReplaceVars {
+		out[k] = bundle
+	}
+	// errNoSystemRoots is returned with a usable bundle; propagate it so the caller
+	// can report the missing public trust without treating it as a failure.
+	return out, cleanup, berr
 }
+
+// writeTrustBundle concatenates the system roots with the bridge CA and returns
+// the path to the result, plus a cleanup to remove it.
+//
+// Ordering is system-roots-then-bridge-CA, but only for readability: PEM trust
+// files are an unordered set, and every consumer parses all of them.
+//
+// A missing system store is not fatal. A distroless or scratch-based image may
+// genuinely have no root bundle, in which case the bridge CA alone is the whole
+// trust set — which is exactly right there, since such an image had no public
+// trust to lose. It is reported so the difference is not silent.
+func writeTrustBundle(caPath string) (path string, cleanup func(), err error) {
+	caPEM, err := os.ReadFile(caPath) //nolint:gosec // path derived from the operator's own config
+	if err != nil {
+		// Signalled, not fatal: the CA is written by Cortex on first start and exec
+		// deliberately works before that. The caller decides what to do — it leaves
+		// the replacing vars unset, because a bundle without the bridge CA is worse
+		// than no bundle at all.
+		return "", func() {}, fmt.Errorf("%w: %s: %v", errNoBridgeCA, caPath, err)
+	}
+
+	var buf []byte
+	for _, f := range systemRootFiles {
+		// Stat first: some of these paths are a DIRECTORY on some distros
+		// (/etc/ssl/certs is a hashed cert dir on Alpine), and ReadFile on a
+		// directory fails on Linux but succeeds with garbage on some systems.
+		if fi, serr := os.Stat(f); serr != nil || fi.IsDir() {
+			continue
+		}
+		b, rerr := os.ReadFile(f) //nolint:gosec // fixed list of well-known system paths
+		if rerr == nil && len(b) > 0 {
+			buf = append(buf, b...)
+			if !bytes.HasSuffix(buf, []byte("\n")) {
+				buf = append(buf, '\n')
+			}
+			break
+		}
+	}
+	systemFound := len(buf) > 0
+	buf = append(buf, caPEM...)
+
+	// 0600 in the process's temp dir: this is a trust store, and a world-writable
+	// one would let any local user add a root the child then trusts.
+	f, err := os.CreateTemp("", "abctl-trust-*.pem")
+	if err != nil {
+		return "", func() {}, err
+	}
+	name := f.Name()
+	rm := func() { _ = os.Remove(name) }
+	if _, werr := f.Write(buf); werr != nil {
+		f.Close()
+		rm()
+		return "", func() {}, werr
+	}
+	if cerr := f.Close(); cerr != nil {
+		rm()
+		return "", func() {}, cerr
+	}
+	if !systemFound {
+		return name, rm, errNoSystemRoots
+	}
+	return name, rm, nil
+}
+
+// errNoSystemRoots is returned alongside a usable bundle when no system CA store
+// was found, so the caller can say so without treating it as a failure.
+var errNoSystemRoots = errors.New("no system CA bundle found")
+
+// errNoBridgeCA means ca.crt is not on disk yet, which is an expected state
+// before Cortex's first start rather than a misconfiguration.
+var errNoBridgeCA = errors.New("bridge CA not written yet")
 
 // mergeEnv layers inject over env, replacing rather than appending.
 //

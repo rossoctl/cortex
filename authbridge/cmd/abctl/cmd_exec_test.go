@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,34 @@ func execCfg(t *testing.T) (cfgPath, caPath string) {
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Write ca.crt, so the fixture represents a Cortex that has started at least
+	// once — the normal case, and the only one where the replacing CA vars are set.
+	// execCfgNoCA covers the pre-first-start state.
+	if err := os.MkdirAll(caDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caPath = filepath.Join(caDir, "ca.crt")
+	if err := os.WriteFile(caPath, []byte(testCAPEM), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath, caPath
+}
+
+// testCAPEM stands in for the bridge CA. Only its bytes matter here — nothing
+// under test parses it.
+const testCAPEM = "-----BEGIN CERTIFICATE-----\nBRIDGECA\n-----END CERTIFICATE-----\n"
+
+// execCfgNoCA is execCfg without ca.crt on disk: Cortex configured but never
+// started.
+func execCfgNoCA(t *testing.T) (cfgPath, caPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	caDir := filepath.Join(dir, "ca")
+	cfgPath = filepath.Join(dir, "config.yaml")
+	body := strings.Replace(cortexCfg, "CADIR", caDir, 1)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return cfgPath, filepath.Join(caDir, "ca.crt")
 }
 
@@ -26,10 +55,11 @@ func execCfg(t *testing.T) (cfgPath, caPath string) {
 // distinct values, both derived from the config rather than hardcoded.
 func TestExecEnv_AllEightNamesFromTwoValues(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
-	env, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanup()
 	if len(env) != 8 {
 		t.Fatalf("want 8 variables, got %d: %v", len(env), env)
 	}
@@ -40,9 +70,19 @@ func TestExecEnv_AllEightNamesFromTwoValues(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, env[k], wantProxy)
 		}
 	}
-	for _, k := range execCAVars {
+	// The additive var gets the bridge CA itself.
+	for _, k := range execCAExtraVars {
 		if env[k] != caPath {
-			t.Errorf("%s = %q, want %q", k, env[k], caPath)
+			t.Errorf("%s = %q, want the bridge CA %q", k, env[k], caPath)
+		}
+	}
+	// The replacing vars must NOT name the lone CA — see execCAReplaceVars.
+	for _, k := range execCAReplaceVars {
+		if env[k] == caPath {
+			t.Errorf("%s = the lone bridge CA, which would drop all public trust", k)
+		}
+		if env[k] == "" {
+			t.Errorf("%s is unset", k)
 		}
 	}
 }
@@ -57,10 +97,11 @@ func TestExecEnv_MatchesClaudeCodeEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanup()
 	if env["HTTPS_PROXY"] != want[envProxy] {
 		t.Errorf("exec HTTPS_PROXY = %q, enable writes %q", env["HTTPS_PROXY"], want[envProxy])
 	}
@@ -88,7 +129,7 @@ listener:
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execEnv(cfgPath); err == nil {
+	if _, _, err := execEnv(cfgPath); err == nil {
 		t.Fatal("want an error when tls_bridge.ca_dir is absent, got nil")
 	}
 }
@@ -139,7 +180,9 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 		"/bin/sh", "-c", `for v in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy \
 			NODE_EXTRA_CA_CERTS CURL_CA_BUNDLE REQUESTS_CA_BUNDLE SSL_CERT_FILE; do
 			eval "printf '%s=%s\n' \"$v\" \"\$$v\""
-		done`}, &stdout, &stderr)
+		done
+		# Prove the bundle is usable from inside the child, where it still exists.
+		grep -q BRIDGECA "$CURL_CA_BUNDLE" && echo BUNDLE_HAS_BRIDGE_CA`}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -149,10 +192,32 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 			t.Errorf("child did not see %s=http://127.0.0.1:47600\n%s", k, got)
 		}
 	}
-	for _, k := range execCAVars {
+	for _, k := range execCAExtraVars {
 		if !strings.Contains(got, k+"="+caPath+"\n") {
 			t.Errorf("child did not see %s=%s\n%s", k, caPath, got)
 		}
+	}
+	// The replacing vars name the generated bundle, not the lone CA, and the child
+	// must be able to read it.
+	for _, k := range execCAReplaceVars {
+		line := k + "="
+		i := strings.Index(got, line)
+		if i < 0 {
+			t.Errorf("child did not see %s\n%s", k, got)
+			continue
+		}
+		v := got[i+len(line):]
+		if j := strings.IndexByte(v, '\n'); j >= 0 {
+			v = v[:j]
+		}
+		if v == caPath {
+			t.Errorf("%s names the lone bridge CA; public trust would be lost", k)
+		}
+	}
+	// Asserted from the child's output: the bundle is deliberately removed when
+	// runExec returns, so it cannot be read from here.
+	if !strings.Contains(got, "BUNDLE_HAS_BRIDGE_CA") {
+		t.Errorf("the child could not read a bundle containing the bridge CA\n%s", got)
 	}
 }
 
@@ -358,5 +423,209 @@ func TestRunExec_SignaledChild(t *testing.T) {
 		"/bin/sh", "-c", "kill -9 $$"}, &stdout, &stderr)
 	if code != 137 {
 		t.Errorf("exit = %d, want 137 (128+SIGKILL)", code)
+	}
+}
+
+// --- Regression tests for the two blocking review findings (PR #916) ---
+
+// TestExecEnv_ReplacingVarsBundleSystemRoots is the first finding. ca.crt is a
+// single certificate, so pointing CURL_CA_BUNDLE / REQUESTS_CA_BUNDLE /
+// SSL_CERT_FILE at it replaced the child's whole trust store with one CA —
+// breaking every host the bridge does NOT terminate (passthrough_hosts,
+// skip_hosts, ports outside tls_bridge.ports). Confirmed against a Linux/OpenSSL
+// curl, which exits 77 in that configuration.
+//
+// The bundle must therefore contain the bridge CA *and*, when the machine has
+// one, the system roots.
+func TestExecEnv_ReplacingVarsBundleSystemRoots(t *testing.T) {
+	cfgPath, caPath := execCfg(t)
+	const caBody = testCAPEM
+
+	env, cleanup, err := execEnv(cfgPath)
+	if err != nil && !errors.Is(err, errNoSystemRoots) {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	bundlePath := env["CURL_CA_BUNDLE"]
+	if bundlePath == caPath {
+		t.Fatal("CURL_CA_BUNDLE names the lone bridge CA; public trust would be lost")
+	}
+	// All three replacing vars must agree on the one bundle.
+	for _, k := range execCAReplaceVars {
+		if env[k] != bundlePath {
+			t.Errorf("%s = %q, want the shared bundle %q", k, env[k], bundlePath)
+		}
+	}
+
+	got, rerr := os.ReadFile(bundlePath)
+	if rerr != nil {
+		t.Fatalf("bundle unreadable: %v", rerr)
+	}
+	if !strings.Contains(string(got), "BRIDGECA") {
+		t.Error("bundle omits the bridge CA, so bridged hosts would fail verification")
+	}
+	// If this machine has a system store, the bundle must be strictly larger than
+	// the bridge CA alone — that difference IS the retained public trust.
+	var systemFound bool
+	for _, f := range systemRootFiles {
+		if b, e := os.ReadFile(f); e == nil && len(b) > 0 {
+			systemFound = true
+			break
+		}
+	}
+	if systemFound && len(got) <= len(caBody) {
+		t.Errorf("bundle is %d bytes, no larger than the bridge CA alone (%d); system roots were dropped",
+			len(got), len(caBody))
+	}
+	if !systemFound {
+		t.Logf("no system CA store on this machine; skipped the public-trust size check")
+	}
+}
+
+// TestExecEnv_CleanupRemovesBundle: the bundle is a temp file scoped to one
+// child, so it must not accumulate in the temp dir across invocations.
+func TestExecEnv_CleanupRemovesBundle(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	env, cleanup, err := execEnv(cfgPath)
+	if err != nil && !errors.Is(err, errNoSystemRoots) {
+		t.Fatal(err)
+	}
+	bundle := env["CURL_CA_BUNDLE"]
+	if _, serr := os.Stat(bundle); serr != nil {
+		t.Fatalf("bundle missing before cleanup: %v", serr)
+	}
+	cleanup()
+	if _, serr := os.Stat(bundle); !os.IsNotExist(serr) {
+		t.Errorf("bundle survived cleanup at %s", bundle)
+	}
+}
+
+// TestExecEnv_BundleIsNotWorldWritable: it is a trust store. A world-writable one
+// would let any local user add a root the child then trusts.
+func TestExecEnv_BundleIsNotWorldWritable(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	env, cleanup, err := execEnv(cfgPath)
+	if err != nil && !errors.Is(err, errNoSystemRoots) {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	fi, serr := os.Stat(env["SSL_CERT_FILE"])
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		t.Errorf("bundle mode is %04o; group/other must not be writable", perm)
+	}
+}
+
+// TestExecEnv_DisabledBridgeIsRefused is the second finding. ca_dir is only
+// *required* when mode is "enabled", so `mode: disabled` with a ca_dir set is a
+// valid config that used to be accepted — injecting a CA for a bridge that
+// terminates nothing, which fails every https request in the child.
+func TestExecEnv_DisabledBridgeIsRefused(t *testing.T) {
+	for _, mode := range []string{"disabled", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.yaml")
+			body := "mode: proxy-sidecar\n" +
+				"listener:\n  roles: [forward]\n  forward_proxy_addr: \"127.0.0.1:47600\"\n" +
+				"tls_bridge:\n"
+			if mode != "" {
+				body += "  mode: " + mode + "\n"
+			}
+			body += "  ca_dir: \"" + filepath.Join(dir, "ca") + "\"\n"
+			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := execEnv(cfgPath)
+			if err == nil {
+				t.Fatal("want an error when the bridge is not enabled, got nil")
+			}
+			if !strings.Contains(err.Error(), "tls_bridge.mode") {
+				t.Errorf("error should name tls_bridge.mode, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestRunExec_DisabledBridgeExitsBeforeRunning: the guard must refuse rather than
+// run the command with broken TLS settings.
+func TestRunExec_DisabledBridgeExitsBeforeRunning(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "mode: proxy-sidecar\n" +
+		"listener:\n  roles: [forward]\n  forward_proxy_addr: \"127.0.0.1:47600\"\n" +
+		"tls_bridge:\n  mode: disabled\n  ca_dir: \"" + filepath.Join(dir, "ca") + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "ran")
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", cfgPath, "--",
+		"/bin/sh", "-c", "touch " + marker}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit = %d, want 1", code)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the command ran despite the disabled bridge")
+	}
+}
+
+// TestExecEnv_BeforeFirstStart_LeavesReplacingVarsUnset. Cortex writes ca.crt on
+// boot, and enabling before that is legitimate — so exec must still run the
+// child. But the replacing vars must be left UNSET rather than pointed at a
+// bundle with no bridge CA in it: unset costs only the bridged hosts (the same
+// state `claude-code enable` has always produced), whereas a bridge-CA-less
+// bundle would break every host, bridged or not.
+//
+// This is the regression that making an unreadable CA fatal introduced.
+func TestExecEnv_BeforeFirstStart_LeavesReplacingVarsUnset(t *testing.T) {
+	cfgPath, caPath := execCfgNoCA(t)
+	if _, err := os.Stat(caPath); err == nil {
+		t.Fatal("fixture should not have created ca.crt")
+	}
+	env, cleanup, err := execEnv(cfgPath)
+	if err != nil {
+		t.Fatalf("a not-yet-written CA must not be fatal: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	// The proxy is still worth setting — that half works before first start.
+	for _, k := range execProxyVars {
+		if env[k] == "" {
+			t.Errorf("%s should still be set", k)
+		}
+	}
+	// The additive var is harmless when the file is missing: Node warns, keeps its
+	// own roots. This matches what `claude-code enable` writes.
+	if env["NODE_EXTRA_CA_CERTS"] != caPath {
+		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want %q", env["NODE_EXTRA_CA_CERTS"], caPath)
+	}
+	for _, k := range execCAReplaceVars {
+		if v, ok := env[k]; ok {
+			t.Errorf("%s = %q; must be unset before the CA exists, or the child loses all trust", k, v)
+		}
+	}
+}
+
+// TestRunExec_BeforeFirstStart_StillRuns pairs with the above: the command runs,
+// and the note about the missing CA is printed.
+func TestRunExec_BeforeFirstStart_StillRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	cfgPath, _ := execCfgNoCA(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", "echo ran"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "ran" {
+		t.Errorf("child did not run: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "does not exist yet") {
+		t.Errorf("expected a note about the missing CA:\n%s", stderr.String())
 	}
 }

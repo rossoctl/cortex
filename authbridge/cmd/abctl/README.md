@@ -113,13 +113,23 @@ these eight variables:
 | Variable | Value |
 |---|---|
 | `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | the forward proxy URL |
-| `NODE_EXTRA_CA_CERTS` `CURL_CA_BUNDLE` `REQUESTS_CA_BUNDLE` `SSL_CERT_FILE` | the TLS-bridge CA file |
+| `NODE_EXTRA_CA_CERTS` | the bridge CA, *added* to the runtime's own roots |
+| `CURL_CA_BUNDLE` `REQUESTS_CA_BUNDLE` `SSL_CERT_FILE` | a temporary bundle: system roots + bridge CA |
 
-Four spellings of each because there is no agreed one: Go and most Unix
-tools read the lowercase pair, Node the uppercase, libcurl either; the CA
-name differs per runtime (Node, libcurl, Python `requests`, OpenSSL). A
-tool that reads only the spelling we left out would silently bypass the
-proxy — invisible, because it keeps working.
+Four proxy spellings because there is no agreed one: Go and most Unix
+tools read the lowercase pair, Node the uppercase, libcurl either. A tool
+that reads only the spelling we left out would silently bypass the proxy —
+invisible, because it keeps working.
+
+The CA names split two ways, and the difference matters. `NODE_EXTRA_CA_CERTS`
+*extends* Node's trust store, so it takes the bridge CA directly. The other
+three *replace* the trust store: whatever file they name becomes the complete
+set of roots. `ca.crt` is a single certificate, so naming it there would leave
+the child trusting one CA and nothing else — breaking every host the bridge
+does **not** terminate (`tls_bridge.passthrough_hosts`, `listener.skip_hosts`,
+ports outside `tls_bridge.ports`, non-TLS traffic). So those three get a
+concatenation of your system roots and the bridge CA, written to a temp file
+for the child's lifetime and removed afterwards.
 
 Both proxy variables get the **`http://`** URL, deliberately. The scheme
 in a `*_PROXY` variable says how to reach the *proxy*, not what the
@@ -141,11 +151,16 @@ abctl exec --print --              # eight shell-quoted export lines
 eval "$(abctl exec --print --)"    # or apply them to the current shell
 ```
 
-Requires the TLS bridge (`tls_bridge.ca_dir`). Without a CA to trust,
-every https request would either fail verification or — worse, in a
-lenient client — tunnel through unparsed, which looks exactly like
-success while Cortex sees nothing; `abctl exec` refuses rather than
-inject a proxy with no CA.
+Requires an enabled TLS bridge — both `tls_bridge.mode: enabled` and
+`tls_bridge.ca_dir`. `mode: disabled` with a `ca_dir` set is a valid config,
+but the bridge then terminates nothing, so a CA would buy the child nothing
+while breaking its https; `abctl exec` refuses rather than inject either half
+of a setup that cannot work.
+
+Before Cortex's first start, `ca.crt` does not exist yet. `exec` still runs the
+command and says so, but leaves the three replacing variables unset — the child
+keeps its own public roots and only bridged hosts fail, rather than losing all
+trust to a bundle with no bridge CA in it.
 
 ## Panes
 
