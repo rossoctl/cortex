@@ -113,8 +113,8 @@ these eight variables:
 | Variable | Value |
 |---|---|
 | `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | the forward proxy URL |
-| `NODE_EXTRA_CA_CERTS` | the bridge CA, *added* to the runtime's own roots |
-| `CURL_CA_BUNDLE` `REQUESTS_CA_BUNDLE` `SSL_CERT_FILE` | a temporary bundle: system roots + bridge CA |
+| `NODE_EXTRA_CA_CERTS` | `ca.crt`, *added* to the runtime's own roots |
+| `CURL_CA_BUNDLE` `REQUESTS_CA_BUNDLE` `SSL_CERT_FILE` `GIT_SSL_CAINFO` | `bundle.crt` — the bridge CA plus the platform roots |
 
 Four proxy spellings because there is no agreed one: Go and most Unix
 tools read the lowercase pair, Node the uppercase, libcurl either. A tool
@@ -122,16 +122,14 @@ that reads only the spelling we left out would silently bypass the proxy —
 invisible, because it keeps working.
 
 The CA names split two ways, and the difference matters. `NODE_EXTRA_CA_CERTS`
-*extends* Node's trust store, so it takes the bridge CA directly. The other
-three *replace* the trust store: whatever file they name becomes the complete
-set of roots. `ca.crt` is a single certificate, so naming it there would leave
-the child trusting one CA and nothing else — breaking every host the bridge
-does **not** terminate (`tls_bridge.passthrough_hosts`, `listener.skip_hosts`,
-ports outside `tls_bridge.ports`, non-TLS traffic). So those three get a
-concatenation of your system roots and the bridge CA. For a child process that
-bundle is a temp file removed when the child exits; for `--print` it is written
-beside the CA as `trust-bundle.pem`, because the path it exports has to outlive
-the abctl process that printed it.
+*extends* Node's trust store, so it takes `ca.crt` directly. The other four
+*replace* it: whatever file they name becomes the complete set of roots, so
+pointing them at `ca.crt` would leave the child trusting the bridge and nothing
+else — breaking every host the bridge does not terminate. They get `bundle.crt`
+instead, which Cortex writes beside `ca.crt` on startup (bridge CA + platform
+roots). These are the same values `abctl claude-code enable` writes into
+`settings.json`; `exec` reuses that derivation rather than repeating it, so the
+two commands cannot disagree.
 
 Both proxy variables get the **`http://`** URL, deliberately. The scheme
 in a `*_PROXY` variable says how to reach the *proxy*, not what the
@@ -157,10 +155,9 @@ abctl exec --print --              # eight shell-quoted export lines
 eval "$(abctl exec --print --)"    # or apply them to the current shell
 ```
 
-`--print` writes `trust-bundle.pem` next to your `ca.crt` and points the three
-replacing variables at it, rewriting it each time so a rotated CA is picked up.
-That is what makes the `eval` form usable: the exported paths still resolve after
-abctl has exited.
+`--print` emits paths only — it writes nothing. `bundle.crt` and `ca.crt` are
+created by Cortex itself on first start, so the exported paths keep resolving
+long after abctl exits, which is what makes the `eval` form usable.
 
 `--print` and a command are mutually exclusive — `abctl exec --print -- curl …`
 is a usage error, not a command that runs. The paths `--print` hands out are

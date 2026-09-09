@@ -326,7 +326,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 		// Everything else gets the bundle, never ca.crt — see bundleKeys.
 		bundle, berr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, tlsbridge.TrustBundleName))
 		if berr != nil {
-			return nil, berr
+			return nil, nil, berr
 		}
 		for _, k := range bundleKeys {
 			out[k] = bundle
