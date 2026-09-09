@@ -16,30 +16,13 @@ import (
 // now safe because per-cell ANSI coloring was removed from this table.
 func newEventsTable() table.Model {
 	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "#", Width: 4},
-			{Title: "TIME", Width: 12},
-			{Title: "DIR", Width: 4},
-			{Title: "PHASE", Width: 7},
-			{Title: "ACTION", Width: actionColWidth},
-			{Title: "PLUGIN", Width: 18},
-			// methodColWidth rather than 22: the widest realistic value is a model
-			// name ("claude-opus-5"), and the columns freed pay for splitting
-			// TOKENS and COST apart below.
-			{Title: "METHOD", Width: methodColWidth},
-			{Title: "STATUS", Width: 7},
-			{Title: "DURATION", Width: 10},
-			// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)".
-			// Million-token contexts are in service, and bubbles truncates a cell
-			// at the column width, so 15 rendered "1,048,576(−1…" — dropping the
-			// saving, which is the half of this cell that appears nowhere else.
-			{Title: "TOKENS", Width: 17},
-			// 19 fits the widest cell the formatter can produce:
-			// "<$0.0001(−<$0.0001)", where both halves fell under the
-			// four-decimal floor. The ordinary shape is "$0.2546(−$0.0037)" at 17.
-			{Title: "COST", Width: 19},
-			{Title: "HOST", Width: 20},
-		}),
+		// One definition, not two. This used to hold a hand-written twelve-entry
+		// copy of eventColumns' widths — harmless, because the first
+		// rebuildEventsTable overwrites it via SetColumns, which is exactly what
+		// made it a hazard: a width changed in one place and not the other produced
+		// no symptom at all. The rationale for the non-obvious widths now lives
+		// beside the widths that actually decide, in eventColumns.
+		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()))),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())

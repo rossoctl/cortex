@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/table"
+
 	"github.com/charmbracelet/lipgloss"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -528,5 +530,119 @@ func TestColumnPicker_CursorStaysVisibleWhenClipped(t *testing.T) {
 	}
 	if !strings.Contains(out, "terminal too short") {
 		t.Errorf("a clipped list should say so:\n%s", out)
+	}
+}
+
+// The invariant the whole feature rests on: what fitColumns returns must actually
+// render inside the terminal width. Asserted against a real bubbles table, because
+// the bug this replaces was a mismodelled padding constant — every unit test that
+// checked only fitColumns' return value passed while the rendered row overflowed.
+//
+// bubbles pads each cell on both sides (Padding(0, 1) on Cell and Header), so a
+// column occupies width+2. Modelling it as +1 under-counted by one per column: a
+// row of all twelve rendered at 168 against a computed 156, so the table wrapped
+// at 80 and — worse, between 156 and 167 — reported dropped==0 while up to twelve
+// columns sat off the edge, with no footer count and no "(no room)" marker.
+func TestFitColumns_RenderedWidthNeverExceedsTerminal(t *testing.T) {
+	sel := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		sel[c.id] = true
+	}
+	all := selectedColumns(sel)
+
+	// Every width from very narrow to past the full table, so no band is skipped —
+	// 156..167 is precisely where the old model reported a clean fit.
+	for w := 20; w <= 180; w++ {
+		fitted, dropped := fitColumns(all, w)
+		if len(fitted) == 0 {
+			t.Fatalf("width %d: no columns returned", w)
+		}
+
+		tbl := newEventsTable()
+		tbl.SetColumns(tableColumns(fitted))
+		row := make([]string, len(fitted))
+		for i := range row {
+			row[i] = "x"
+		}
+		tbl.SetRows([]table.Row{row})
+
+		rendered := 0
+		for _, ln := range strings.Split(tbl.View(), "\n") {
+			if n := lipgloss.Width(ln); n > rendered {
+				rendered = n
+			}
+		}
+
+		// The one legitimate exception: a terminal too narrow for even one column.
+		// fitColumns never returns empty, so a single column may exceed a tiny width.
+		if len(fitted) == 1 && rendered > w {
+			continue
+		}
+		if rendered > w {
+			t.Errorf("width %d: %d columns render at %d (%d dropped) — overflows by %d",
+				w, len(fitted), rendered, dropped, rendered-w)
+		}
+		// And the model must agree with reality, or the footer count and the picker's
+		// "(no room)" markers describe a different table than the one on screen.
+		if got := columnsWidth(fitted); got != rendered {
+			t.Errorf("width %d: columnsWidth says %d, bubbles renders %d", w, got, rendered)
+		}
+	}
+}
+
+// Nothing bounds the table downstream — SetWidth is never called and paneView
+// applies no MaxWidth — so dropped==0 has to mean the whole selection really fits.
+func TestFitColumns_ZeroDroppedMeansItFits(t *testing.T) {
+	sel := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		sel[c.id] = true
+	}
+	all := selectedColumns(sel)
+	full := columnsWidth(all)
+
+	for w := full - 20; w <= full+4; w++ {
+		fitted, dropped := fitColumns(all, w)
+		if dropped != 0 {
+			continue
+		}
+		if len(fitted) != len(all) {
+			t.Errorf("width %d: dropped==0 but only %d of %d columns returned",
+				w, len(fitted), len(all))
+		}
+		if columnsWidth(fitted) > w {
+			t.Errorf("width %d: dropped==0 while the table needs %d — silently off the edge",
+				w, columnsWidth(fitted))
+		}
+	}
+}
+
+// The picker must not own the keyboard, or draw itself, over a pane it does not
+// belong to. No KEY can switch panes underneath it, but a MESSAGE can: the
+// sessionsMsg handler drops to paneSessions when the selected session disappears
+// server-side, which left the popup drawn over the sessions table with its key
+// block swallowing enter/j/k — an inert pane until the user guessed esc.
+func TestColumnPicker_DoesNotStrandOnAnAsyncPaneChange(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+	if !m.colPicker {
+		t.Fatal("picker did not open")
+	}
+
+	// The server no longer reports the session being read: same shape as
+	// app.go's sessionsMsg handler.
+	m.selectedSess = ""
+	m.pane = paneSessions
+
+	// The picker's block must not claim these any more.
+	if cmd := m.handleKey(keyRune('j')); cmd != nil {
+		t.Log("j returned a command, which is fine — what matters is the pane below")
+	}
+	if m.colCursor != 0 {
+		t.Errorf("picker moved its cursor while the sessions pane was active (colCursor=%d)", m.colCursor)
+	}
+
+	// And it must not paint over the sessions pane.
+	if strings.Contains(m.paneView(), "COLUMNS") {
+		t.Error("the column picker popup was drawn over the sessions pane")
 	}
 }

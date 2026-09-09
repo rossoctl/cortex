@@ -98,7 +98,7 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.
 
-  All twelve together need ~156 terminal columns, so the table drops what does
+  All twelve together need ~168 terminal columns, so the table drops what does
   not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
   give way first, while `#` and HOST survive longest. That is what makes HOST

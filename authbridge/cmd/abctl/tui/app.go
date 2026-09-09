@@ -236,7 +236,7 @@ type model struct {
 	eventColumns map[eventColumnID]bool
 	// eventColsDropped is how many selected columns did not fit the terminal on the
 	// last rebuild. Surfaced in the footer: with every column on the table needs
-	// ~156 columns, and the excess was clipped with nothing saying so (#866).
+	// ~168 columns, and the excess was clipped with nothing saying so (#866).
 	eventColsDropped int
 	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
 	// column within it.
@@ -1103,7 +1103,9 @@ func (m *model) View() string {
 	if m.helpVisible {
 		return overlayCenter(base, renderHelpOverlay(m.helpVp, m.width, m.height), m.width, m.height)
 	}
-	if m.colPicker {
+	// Same paneEvents scoping as the key block: an async pane change must not leave
+	// the popup drawn over a pane it does not belong to.
+	if m.colPicker && m.pane == paneEvents {
 		return overlayCenter(base,
 			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height),
 			m.width, m.height)

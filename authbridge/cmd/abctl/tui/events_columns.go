@@ -109,6 +109,9 @@ var eventColumns = []eventColumn{
 			_, p := rowAction(c.row, c.row.invocations())
 			return truncStr(p, 18)
 		}},
+	// methodColWidth rather than 22: the widest realistic value is a model name
+	// ("claude-opus-5"), and the columns freed pay for splitting TOKENS and COST
+	// apart below.
 	{id: colMethod, width: methodColWidth, defaultOn: true, keep: keepNormal,
 		desc: "protocol operation: model name, MCP or A2A method",
 		cell: func(c cellContext) string { return eventMethod(*c.row.event) }},
@@ -118,9 +121,16 @@ var eventColumns = []eventColumn{
 	{id: colDuration, width: 10, defaultOn: true, keep: keepLow,
 		desc: "how long the exchange took",
 		cell: func(c cellContext) string { return durationCell(*c.row.event) }},
+	// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)". Million-token
+	// contexts are in service, and bubbles truncates a cell at the column width, so
+	// 15 rendered "1,048,576(−1…" — dropping the saving, which is the half of this
+	// cell that appears nowhere else.
 	{id: colTokens, width: 17, defaultOn: true, keep: keepLow,
 		desc: "tokens used, and what tool-prune saved",
 		cell: func(c cellContext) string { return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event) }},
+	// 19 fits the widest cell the formatter can produce: "<$0.0001(−<$0.0001)",
+	// where both halves fell under the four-decimal floor. The ordinary shape is
+	// "$0.2546(−$0.0037)" at 17.
 	{id: colCost, width: 19, defaultOn: true, keep: keepLow,
 		desc: "estimated cost, and what tool-prune saved",
 		cell: func(c cellContext) string { return c.m.costCell(c.rows, c.partner, c.i, c.row.event) }},
@@ -174,10 +184,35 @@ func tableColumns(cols []eventColumn) []table.Column {
 
 // columnsWidth is how many terminal columns a selection needs, including the
 // one-space gutter bubbles renders between cells.
+// cellPadding is what bubbles adds to every cell's declared width.
+//
+// TWO, not one: bubbles pads each cell on BOTH sides rather than putting a single
+// space between them. table.DefaultStyles sets Cell and Header to
+// `Padding(0, 1)`, renderRow runs each value through styles.Cell.Render and
+// headersView through styles.Header.Render, and this repo's tableStyles() keeps
+// both paddings (it only adds Foreground/Bold). So a column occupies width+2 and
+// a row is sum(width) + 2n.
+//
+// Modelling it as +1 made fitColumns systematically under-count, so the fitting
+// the whole feature rests on never actually fit — measured against bubbles v1.0.0,
+// a row of all twelve columns renders at 168 while columnsWidth reported 156. At
+// 80 the table overflowed by one column and wrapped, costing two terminal rows per
+// event and throwing off the SetHeight accounting; between 156 and 167 it was
+// worse, because dropped==0 meant the footer said nothing and the picker showed no
+// "(no room)" while 8-12 columns sat off the edge — issue #866's exact failure
+// mode at a different width.
+const cellPadding = 2
+
+// borderWidth is what styleBorder costs: one column each side. It has no padding —
+// Border(RoundedBorder()).BorderForeground(colorMuted) — so the panel is its
+// content plus two, and reserving four trimmed the hint line two columns earlier
+// than necessary.
+const borderWidth = 2
+
 func columnsWidth(cols []eventColumn) int {
 	w := 0
 	for _, c := range cols {
-		w += c.width + 1
+		w += c.width + cellPadding
 	}
 	return w
 }
@@ -186,9 +221,9 @@ func columnsWidth(cols []eventColumn) int {
 // many it had to drop.
 //
 // Explicit rather than letting bubbles clip: with every column on the table needs
-// ~156 terminal columns (144 of column width plus a gutter each, see
-// columnsWidth), so HOST simply was not there and nothing said so. The count feeds
-// the footer, which is what issue #866 asks for.
+// ~168 terminal columns (144 of declared width plus two of bubbles padding per
+// column, see columnsWidth), so HOST simply was not there and nothing said so. The
+// count feeds the footer, which is what issue #866 asks for.
 //
 // Drops from the right by the static keep rank, so the columns that identify a row
 // outlive the ones that merely annotate it.
@@ -303,13 +338,20 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 			box = "[x]"
 		}
 		name := fmt.Sprintf("%-9s", string(c.id))
-		line := fmt.Sprintf("%s %s %s", box, name, c.desc)
 
 		// Mark a selection the terminal cannot honour. Without this, turning HOST
 		// on in an 80-column window looks like the checkbox did nothing.
+		//
+		// BEFORE the description, not after: the MaxWidth backstop truncates from the
+		// right, so a marker appended to a long row was the first thing cut — ACTION's
+		// row at 60 columns rendered as "… observe, allow, or" with the marker gone
+		// entirely, losing the signal and keeping the prose that merely qualifies it.
+		// This way a narrow terminal loses the explanation instead.
+		marker := ""
 		if sel[c.id] && !visible[c.id] {
-			line += styleMuted.Render("  (no room)")
+			marker = styleMuted.Render("(no room) ")
 		}
+		line := fmt.Sprintf("%s %s %s%s", box, name, marker, c.desc)
 
 		if i == cursor {
 			b.WriteString(styleTitle.Render("▸ " + line))
@@ -329,7 +371,8 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
 	b.WriteString(styleHint.Render(fitHintLine(
-		"[↑↓] move  [space]/[x] toggle  [r] reset  [esc]/[enter] close  [q] quit", width-4)))
+		"[↑↓] move  [space]/[x] toggle  [r] reset  [esc]/[enter] close  [q] quit",
+		width-borderWidth)))
 
 	// MaxWidth as a backstop. overlayCenter is explicit that bounding the panel is
 	// the caller's job — it renders an over-wide panel flush-left and lets the

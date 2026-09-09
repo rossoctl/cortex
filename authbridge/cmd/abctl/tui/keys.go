@@ -137,7 +137,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// The column picker owns the keyboard while it is up, so ↑↓/space cannot also
 	// move the table cursor underneath it. Checked before pane dispatch for the
 	// same reason the help overlay is.
-	if m.colPicker && !m.filtering {
+	//
+	// Scoped to paneEvents, mirroring the condition that opens it: no KEY can change
+	// panes underneath the picker, but a MESSAGE still can — the sessionsMsg handler
+	// drops to paneSessions when the selected session disappears server-side, which
+	// left this block swallowing enter/j/k over an inert sessions table. Gating on
+	// the pane covers that and any future transition, where clearing the flag in one
+	// handler would only fix today's path.
+	if m.colPicker && m.pane == paneEvents && !m.filtering {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			// Quit stays live. A modal that traps the user until they find its exit
@@ -169,7 +176,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// exists to rescue was also the state where the picker misreported what is
 			// on screen, and the `(no room)` markers vanished too since they are gated
 			// on the selection.
-			if len(selectedColumns(m.eventColumns)) > 0 && !anyColumnSelected(m.eventColumns) {
+			if !anyColumnSelected(m.eventColumns) {
 				m.eventColumns = defaultColumnSelection()
 			}
 			m.rebuildEventsTable()
