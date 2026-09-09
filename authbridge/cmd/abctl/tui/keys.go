@@ -647,7 +647,14 @@ func (m *model) helpView() string {
 		if m.hideInactive {
 			skipHint = "[s] show all"
 		}
-		base := "[↑↓] nav  [b/f] page  [↵] detail  [u] usage  [c] columns  [esc] back  [/] filter  " + skipHint + "  [p] pause  [?] keys  [q] quit"
+		// Ordered by what must survive truncation, not by how the keys group. The
+		// footer runs 135 columns and an 80-column terminal cuts the tail, so
+		// anything after the cut is invisible — [?] keys and [q] quit were both
+		// past it, which is the pair a stuck user reaches for. They now sit at the
+		// end, and the escapable/discoverable keys ahead of them, with the
+		// specialised ones first to be lost.
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
+			skipHint + "  [p] pause  [/] filter  [esc] back  [?] keys  [q] quit"
 		// Surface the hidden-message count so a filtered timeline doesn't
 		// look like data loss. Only annotate when hiding is on AND at
 		// least one message was hidden.

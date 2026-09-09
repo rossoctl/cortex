@@ -1137,6 +1137,10 @@ func (m *model) paneView() string {
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
+		// Fitted like the session-view footer: an error prefix can push even a
+		// short picker hint past the terminal width, and a wrapped footer costs a
+		// row of the table above it.
+		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			styleTitle.Render(title),
 			body,
@@ -1150,6 +1154,10 @@ func (m *model) paneView() string {
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
+		// Fitted like the session-view footer: an error prefix can push even a
+		// short picker hint past the terminal width, and a wrapped footer costs a
+		// row of the table above it.
+		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			styleTitle.Render(title),
 			body,
