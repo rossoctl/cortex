@@ -137,8 +137,16 @@ proxied request is; Cortex's forward proxy speaks plain HTTP and
 CONNECT-tunnels TLS, so `https://` there would make clients attempt TLS
 to the proxy itself and fail the handshake.
 
-The values come from `~/.cortex/config.yaml` — the same derivation
-`claude-code enable` uses, so the two cannot drift apart. Nothing is
+The values come from the **running proxy**, fetched from its stats endpoint
+(`http://localhost:47602/config` by default, `--cortex-stats-url` to point
+elsewhere). There is no `--config` flag: `exec` works against a proxy that has to
+be up for the child to reach anything, and that process already has a config —
+reading a file instead would let the two disagree, since listener addresses are
+not hot-reloaded and a file says nothing about whether anything is listening. A
+Cortex that is down is reported as down rather than yielding an environment that
+points at nothing. The derivation from config to variables is still the one
+`claude-code enable` uses, so the two produce identical values for the same
+Cortex. Nothing is
 exported to your shell and no file is modified.
 
 abctl exits with the child's status (127 if the command was not found,
@@ -151,16 +159,18 @@ orphaned with the injected environment.
 To see the variables without running anything:
 
 ```sh
-abctl exec --print --              # eight shell-quoted export lines
-eval "$(abctl exec --print --)"    # or apply them to the current shell
+abctl exec --print                 # nine shell-quoted export lines
+eval "$(abctl exec --print)"       # or apply them to the current shell
 ```
 
 `--print` emits paths only — it writes nothing. `bundle.crt` and `ca.crt` are
 created by Cortex itself on first start, so the exported paths keep resolving
 long after abctl exits, which is what makes the `eval` form usable.
 
-`--print` and a command are mutually exclusive — `abctl exec --print -- curl …`
-is a usage error, not a command that runs. The paths `--print` hands out are
+`--print` takes no command, and no `--`: it is a complete request on its own.
+Both `abctl exec --print -- curl …` and a bare `abctl exec --print --` are usage
+errors — the first asks for two different things at once, the second promises a
+command and supplies none. The paths `--print` hands out are
 meant to be kept, and are the same ones `abctl claude-code enable` writes into
 `settings.json`; running a command is the opposite, applying them to one process
 for its lifetime. Asking for both in one invocation is a contradiction about

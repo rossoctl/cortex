@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -50,8 +49,8 @@ var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_p
 const execUsage = `abctl exec — run a command with Cortex's proxy and CA in its environment
 
 Usage:
-  abctl exec [--config PATH] -- COMMAND [ARG...]
-  abctl exec [--config PATH] --print --
+  abctl exec [--cortex-stats-url URL] -- COMMAND [ARG...]
+  abctl exec [--cortex-stats-url URL] --print
 
 Everything after -- is passed to COMMAND exactly as given; abctl does not
 interpret it, so the command's own flags need no escaping:
@@ -80,9 +79,14 @@ abctl exits with the child's exit status, so it is safe in a pipeline or a
 Makefile.
 
 Flags:
-  --config PATH  Cortex config to read addresses from (default ~/.cortex/config.yaml)
+  --cortex-stats-url URL
+                 stats URL of the running Cortex (default http://localhost:47602/).
+                 The values come from the RUNNING proxy's /config, not from a file,
+                 so they describe the process that will actually serve the request —
+                 and a proxy that is down is reported rather than yielding an
+                 environment that points at nothing.
   --print        print the variables that would be set and exit, without running
-                 anything. Shell-quoted, so: eval "$(abctl exec --print --)"
+                 anything. Shell-quoted, so: eval "$(abctl exec --print)"
                  Mutually exclusive with a command: --print emits settings for a
                  shell to keep (paths under the CA directory, which outlive this
                  process), whereas a command gets them for its own lifetime only.
@@ -109,17 +113,32 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// after it is ever parsed, so no child flag can collide with an abctl flag,
 	// now or when a future flag is added.
 	before, cmdArgs, found := cutArgs(args, "--")
-	if !found {
-		fmt.Fprint(stderr, execUsage)
-		return 2
-	}
 
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, execUsage) }
-	cortexCfg := fs.String("config", "", "Cortex config file")
 	printOnly := fs.Bool("print", false, "print the variables instead of running a command")
+	statsURL := fs.String("cortex-stats-url", defaultCortexStatsURL, "stats URL of the running Cortex")
 	if err := fs.Parse(before); err != nil {
+		return 2
+	}
+
+	// The delimiter is required to RUN something, not to print.
+	//
+	// `abctl exec --print` is a complete request on its own: it asks for the
+	// environment, and there is no command for a delimiter to separate. Demanding
+	// `--print --` answered a well-formed request with usage text.
+	if !found && !*printOnly {
+		fmt.Fprint(stderr, execUsage)
+		return 2
+	}
+	// `abctl exec --print --` is the opposite mistake: the delimiter promises a
+	// command and none follows. Refused rather than quietly read as plain --print —
+	// it is the empty case of the mutual exclusion below, and the same reasoning
+	// applies, so it gets the same answer.
+	if found && *printOnly && len(cmdArgs) == 0 {
+		fmt.Fprintln(stderr, "abctl: --print takes no command, so `--` has nothing to separate.")
+		fmt.Fprintln(stderr, "  Use `abctl exec --print` on its own.")
 		return 2
 	}
 	// Stray positional arguments before the delimiter are a mistake, not something
@@ -146,22 +165,13 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 			"  --print emits environment settings to keep (paths under the CA directory,\n"+
 			"  which outlive this process); running a command applies them to that one\n"+
 			"  child. Pick one:\n"+
-			"    abctl exec --print --          # print the settings\n"+
+			"    abctl exec --print               # print the settings\n"+
 			"    abctl exec -- %s\n",
 			strings.Join(cmdArgs, " "))
 		return 2
 	}
 
-	if *cortexCfg == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			fmt.Fprintf(stderr, "abctl: cannot determine your home directory: %v\n", err)
-			return 1
-		}
-		*cortexCfg = filepath.Join(home, cortexCfgRel)
-	}
-
-	inject, err := execEnv(*cortexCfg)
+	inject, err := execEnv(*statsURL)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
@@ -298,39 +308,43 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 }
 
 // execEnv builds the variables to inject for one child.
-func execEnv(cortexCfgPath string) (env map[string]string, err error) {
-	// wanted() is the whole derivation, bundle paths included: since the trust
-	// bundle moved into authlib/tlsbridge, `claude-code enable` already points
-	// SSL_CERT_FILE / GIT_SSL_CAINFO / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE at
-	// bundle.crt and NODE_EXTRA_CA_CERTS at ca.crt. exec reuses that verbatim
-	// rather than deriving it again — the two commands cannot drift if only one of
-	// them decides.
-	//
-	// What exec adds is the lowercase proxy spellings, which Claude Code does not
-	// need (it reads HTTPS_PROXY from its settings file) but Go's
-	// http.ProxyFromEnvironment and most Unix tools do.
-	want, cfg, err := wantedFromConfig(cortexCfgPath)
+func execEnv(statsURL string) (env map[string]string, err error) {
+	// The RUNNING proxy's config, not ~/.cortex/config.yaml. exec's whole job is to
+	// point a child at a proxy that has to be up for it to work, so the values must
+	// come from the process that will serve it — a file can have been edited since
+	// boot (listener addresses are not hot-reloaded) and says nothing about whether
+	// anything is listening.
+	cfg, err := runningConfig(statsURL)
+	if err != nil {
+		return nil, err
+	}
+	// wanted() still owns the derivation from a config to the env vars, so exec and
+	// `claude-code enable` produce identical values for the same Cortex; only the
+	// SOURCE of the config differs (live process here, file there — enable writes
+	// settings for sessions that outlive any one proxy run).
+	want, err := wantedFromLoaded(cfg)
 	if err != nil {
 		return nil, err
 	}
 	proxy := want[envProxy]
 	if proxy == "" {
-		return nil, fmt.Errorf("%s yields no proxy address", cortexCfgPath)
+		return nil, fmt.Errorf("the Cortex at %s yields no proxy address", statsURL)
 	}
 
 	// The bridge posture, not just the CA path. Shared with `claude-code enable`
 	// via bridgeEnabled/errBridgeDisabled so the two commands cannot disagree about
 	// it — see errBridgeDisabled for why a disabled bridge has to be refused.
 	if !bridgeEnabled(cfg) {
-		return nil, errBridgeDisabled(cortexCfgPath)
+		return nil, errBridgeDisabled("the Cortex at " + statsURL)
 	}
 	if want[envCACerts] == "" {
 		// Refused rather than injecting the proxy alone. Without a trusted CA the
 		// bridge cannot terminate TLS, so every https request either fails
 		// verification or — worse, if the tool is lenient — tunnels through
 		// unparsed, which looks exactly like success while Cortex sees nothing.
-		return nil, fmt.Errorf("%s has no tls_bridge.ca_dir, so the child would have no CA to trust;\n"+
-			"  https requests through the bridge would fail verification. Enable the TLS bridge first", cortexCfgPath)
+		return nil, fmt.Errorf("the Cortex at %s has no tls_bridge.ca_dir, so the child would\n"+
+			"  have no CA to trust and https through the bridge would fail verification.\n"+
+			"  Enable the TLS bridge first", statsURL)
 	}
 
 	out := make(map[string]string, len(want)+len(execProxyVars))

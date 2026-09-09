@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,4 +87,73 @@ func dialable(endpoint string) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// runningConfigTimeout bounds the fetch of a running proxy's live config. Longer
+// than localProbeTimeout because this one is not a speculative "is anything
+// there?" on a hot path — the user has explicitly asked to run something through
+// the proxy, so a slow answer beats a wrong one.
+const runningConfigTimeout = 2 * time.Second
+
+// defaultCortexStatsURL is where a local Cortex serves its stats endpoints.
+//
+// A fixed default rather than a value read from ~/.cortex/config.yaml. The file
+// would only ever tell us where to ask, and reading it for that reintroduces the
+// staleness the live fetch exists to avoid: an edited stats address would send
+// abctl to the wrong port and have it report "nothing running" about a proxy that
+// is running fine. One well-known port, with --cortex-stats-url for a non-default
+// install.
+const defaultCortexStatsURL = "http://localhost:47602/"
+
+// errNoRunningCortex means nothing answered at the stats URL.
+var errNoRunningCortex = errors.New("no Cortex is running on this machine")
+
+// runningConfig returns the config of the Cortex actually running, fetched from
+// the stats server's /config endpoint under base.
+//
+// Read from the running process rather than from ~/.cortex/config.yaml on purpose.
+// `abctl exec` hands its child the addresses of a proxy that must be up for the
+// child to work at all, so the file is the wrong source of truth twice over: it can
+// have been edited since the proxy started (listener addresses are not hot-reloaded
+// at all), and it says nothing about whether anything is listening. Asking the
+// process means the values describe the thing that will actually serve the request,
+// and a proxy that is down is reported as down rather than yielding an environment
+// that points at nothing.
+func runningConfig(base string) (*config.Config, error) {
+	u, perr := url.Parse(base)
+	if perr != nil || u.Host == "" {
+		return nil, fmt.Errorf("%q is not a URL like %s", base, defaultCortexStatsURL)
+	}
+	// JoinPath rather than concatenation, so a base with or without a trailing
+	// slash — and the documented default has one — yields exactly one "/config".
+	cfgURL := u.JoinPath("config").String()
+
+	c := &http.Client{Timeout: runningConfigTimeout}
+	resp, err := c.Get(cfgURL) //nolint:noctx // bounded by Timeout
+	if err != nil {
+		return nil, fmt.Errorf("%w (nothing answered at %s)", errNoRunningCortex, cfgURL)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%w (%s returned %s)", errNoRunningCortex, cfgURL, resp.Status)
+	}
+
+	// Capped read: a local endpoint, but a wrong service holding the port should not
+	// stream unbounded JSON into abctl.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", cfgURL, err)
+	}
+	var cfg config.Config
+	if uerr := json.Unmarshal(body, &cfg); uerr != nil {
+		return nil, fmt.Errorf("%s did not return a Cortex config: %w", cfgURL, uerr)
+	}
+	// /config redacts values whose keys end in secret/password/token/key/credential.
+	// Nothing exec reads is redacted — forward_proxy_addr, tls_bridge.mode and
+	// tls_bridge.ca_dir all survive — but an empty proxy address would otherwise
+	// surface as a confusing downstream error, so it is named here.
+	if cfg.Listener.ForwardProxyAddr == "" {
+		return nil, fmt.Errorf("the Cortex at %s reports no listener.forward_proxy_addr", cfgURL)
+	}
+	return &cfg, nil
 }

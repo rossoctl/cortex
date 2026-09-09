@@ -272,11 +272,14 @@ func bridgeEnabled(cfg *config.Config) bool {
 // terminates nothing, so every https request fails verification against the real
 // upstream certificate. exec grew the check first; hoisting it here is what makes
 // "the two cannot drift" true of the posture too, not only the proxy and CA paths.
-func errBridgeDisabled(cortexCfgPath string) error {
+// source names where the config came from — a file path for `claude-code enable`,
+// a stats URL for `abctl exec` — so the message points at the thing the reader can
+// actually go and change.
+func errBridgeDisabled(source string) error {
 	return fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
 		"  without it Cortex terminates no TLS, so there is nothing for a client to\n"+
 		"  trust and every https request would fail verification. Enable the TLS bridge first",
-		cortexCfgPath)
+		source)
 }
 
 // wantedFromConfig is wanted plus the loaded config, so a caller needing more than
@@ -286,9 +289,20 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
 	}
+	out, err := wantedFromLoaded(cfg)
+	return out, cfg, err
+}
+
+// wantedFromLoaded is the derivation itself, over a config that is already in hand.
+//
+// Split out so `abctl exec` can feed it the config it fetched from the RUNNING
+// proxy while `claude-code enable` feeds it one read from disk. One derivation, two
+// sources: the values the two commands produce for the same Cortex cannot drift,
+// which is the property both rely on.
+func wantedFromLoaded(cfg *config.Config) (map[string]string, error) {
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {
-		return nil, nil, fmt.Errorf("%s has no listener.forward_proxy_addr; Claude Code needs a forward proxy to point at", cortexCfgPath)
+		return nil, fmt.Errorf("the Cortex config has no listener.forward_proxy_addr; there is no forward proxy to point at")
 	}
 	// A bind address is not a URL: ":8081" and "127.0.0.1:47600" both need a host
 	// a client can actually dial.
@@ -301,7 +315,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 	// errors on genuinely bad input.
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listener.forward_proxy_addr %q is not host:port: %w", addr, err)
+		return nil, fmt.Errorf("listener.forward_proxy_addr %q is not host:port: %w", addr, err)
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "localhost"
@@ -320,19 +334,19 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 	if cfg.TLSBridge != nil && cfg.TLSBridge.CADir != "" {
 		ca, aerr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, "ca.crt"))
 		if aerr != nil {
-			return nil, nil, aerr
+			return nil, aerr
 		}
 		out[envCACerts] = ca
 		// Everything else gets the bundle, never ca.crt — see bundleKeys.
 		bundle, berr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, tlsbridge.TrustBundleName))
 		if berr != nil {
-			return nil, nil, berr
+			return nil, berr
 		}
 		for _, k := range bundleKeys {
 			out[k] = bundle
 		}
 	}
-	return out, cfg, nil
+	return out, nil
 }
 
 func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {

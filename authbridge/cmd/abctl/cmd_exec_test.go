@@ -2,7 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
+	"github.com/rossoctl/cortex/authbridge/authlib/redact"
 	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,7 +80,7 @@ func execCfgNoCA(t *testing.T) (cfgPath, caPath string) {
 // the bridge and nothing else, so every unproxied TLS call fails.
 func TestExecEnv_InjectsManagedKeysPlusLowercaseProxies(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
-	env, err := execEnv(cfgPath)
+	env, err := execEnvFor(t, cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +122,7 @@ func TestExecEnv_MatchesClaudeCodeEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := execEnv(cfgPath)
+	env, err := execEnvFor(t, cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +153,7 @@ listener:
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execEnv(cfgPath); err == nil {
+	if _, err := execEnvFor(t, cfgPath); err == nil {
 		t.Fatal("want an error when tls_bridge.ca_dir is absent, got nil")
 	}
 }
@@ -167,7 +172,7 @@ func TestRunExec_PassesArgvIntactAndReturnsExitCode(t *testing.T) {
 	// saw them, this would fail by printing instead of running.
 	var stdout, stderr bytes.Buffer
 	code := runExec([]string{
-		"--config", cfgPath, "--",
+		"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"/bin/sh", "-c", `printf '%s\n' "$@"; exit 7`, "sh",
 		"--config", "--print", "-x", "a b", "",
 	}, &stdout, &stderr)
@@ -210,7 +215,7 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 		grep -q BRIDGECA "$CURL_CA_BUNDLE" && echo BUNDLE_HAS_BRIDGE_CA`
 
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", script}, &stdout, &stderr)
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", script}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -260,7 +265,7 @@ func TestRunExec_InheritsUnrelatedEnvironment(t *testing.T) {
 	t.Setenv("ABCTL_EXEC_CANARY", "kept")
 
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--",
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"/bin/sh", "-c", `printf '%s\n' "$ABCTL_EXEC_CANARY"`}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
@@ -340,7 +345,7 @@ func TestRunExec_RequiresDelimiter(t *testing.T) {
 func TestRunExec_RejectsArgsBeforeDelimiter(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "curl", "--", "-sv"}, &stdout, &stderr)
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "curl", "--", "-sv"}, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
@@ -353,7 +358,7 @@ func TestRunExec_RejectsArgsBeforeDelimiter(t *testing.T) {
 func TestRunExec_EmptyAfterDelimiter(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--"}, &stdout, &stderr); code != 2 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--"}, &stdout, &stderr); code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
 }
@@ -363,22 +368,30 @@ func TestRunExec_EmptyAfterDelimiter(t *testing.T) {
 func TestRunExec_CommandNotFound(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--",
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"abctl-no-such-command-xyzzy"}, &stdout, &stderr)
 	if code != execEnvNotFound {
 		t.Errorf("exit = %d, want %d", code, execEnvNotFound)
 	}
 }
 
-// TestRunExec_BadConfigIsAnError, not a silently unproxied child. Running the
-// command anyway would be the worst outcome: it works, bypasses Cortex, and
-// nothing says so.
-func TestRunExec_BadConfigIsAnError(t *testing.T) {
+// A Cortex that is not running is an error, not a silently unproxied child.
+// Running the command anyway would be the worst outcome: it works, bypasses
+// Cortex, and nothing says so.
+func TestRunExec_NoRunningCortexIsAnError(t *testing.T) {
+	// A port nothing is listening on. httptest gives us one and closes it.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead := srv.URL + "/"
+	srv.Close()
+
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", filepath.Join(t.TempDir(), "missing.yaml"), "--",
+	code := runExec([]string{"--cortex-stats-url", dead, "--",
 		"/bin/sh", "-c", "exit 0"}, &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "no Cortex is running") {
+		t.Errorf("error should say no Cortex is running:\n%s", stderr.String())
 	}
 }
 
@@ -386,7 +399,7 @@ func TestRunExec_BadConfigIsAnError(t *testing.T) {
 func TestRunExec_Print(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
 	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--print", "--"}, &stdout, &stderr); code != 0 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d: %s", code, stderr.String())
 	}
 	got := stdout.String()
@@ -456,7 +469,7 @@ func TestRunExec_SignaledChild(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
 	// 9 = SIGKILL, so 128+9 = 137.
-	code := runExec([]string{"--config", cfgPath, "--",
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"/bin/sh", "-c", "kill -9 $$"}, &stdout, &stderr)
 	if code != 137 {
 		t.Errorf("exit = %d, want 137 (128+SIGKILL)", code)
@@ -484,7 +497,7 @@ func TestExecEnv_DisabledBridgeIsRefused(t *testing.T) {
 			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := execEnv(cfgPath)
+			_, err := execEnvFor(t, cfgPath)
 			if err == nil {
 				t.Fatal("want an error when the bridge is not enabled, got nil")
 			}
@@ -508,7 +521,7 @@ func TestRunExec_DisabledBridgeExitsBeforeRunning(t *testing.T) {
 	}
 	marker := filepath.Join(dir, "ran")
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--",
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"/bin/sh", "-c", "touch " + marker}, &stdout, &stderr)
 	if code != 1 {
 		t.Errorf("exit = %d, want 1", code)
@@ -526,7 +539,7 @@ func TestRunExec_BeforeFirstStart_StillRuns(t *testing.T) {
 	}
 	cfgPath, _ := execCfgNoCA(t)
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", "echo ran"}, &stdout, &stderr)
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", "echo ran"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, stderr.String())
 	}
@@ -559,7 +572,7 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
-		done <- runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", script}, &stdout, &stderr)
+		done <- runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", script}, &stdout, &stderr)
 	}()
 
 	// Wait for the child to install its trap.
@@ -617,7 +630,7 @@ func TestRunExec_PreservesArgv0AsTyped(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--", "argvprobe"}, &stdout, &stderr); code != 0 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "argvprobe"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "argv0=argvprobe" {
@@ -633,7 +646,7 @@ func TestRunExec_PreservesArgv0AsTyped(t *testing.T) {
 func TestRunExec_PrintWithCommandIsAUsageError(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--print", "--", "curl", "https://x"}, &stdout, &stderr)
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print", "--", "curl", "https://x"}, &stdout, &stderr)
 	if code != 2 {
 		t.Errorf("exit = %d, want 2 (usage)", code)
 	}
@@ -658,7 +671,7 @@ func TestRunExec_PrintWithCommandWritesNothing(t *testing.T) {
 	bundle := filepath.Join(filepath.Dir(caPath), "trust-bundle.pem")
 
 	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--print", "--", "curl"}, &stdout, &stderr); code != 2 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print", "--", "curl"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 	if _, err := os.Stat(bundle); err == nil {
@@ -675,7 +688,7 @@ func TestRunExec_PrintAloneAndCommandAloneBothWork(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 
 	var pout, perr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--print", "--"}, &pout, &perr); code != 0 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print"}, &pout, &perr); code != 0 {
 		t.Errorf("--print alone: exit %d: %s", code, perr.String())
 	}
 	if !strings.Contains(pout.String(), "export HTTPS_PROXY=") {
@@ -683,7 +696,7 @@ func TestRunExec_PrintAloneAndCommandAloneBothWork(t *testing.T) {
 	}
 
 	var cout, cerr bytes.Buffer
-	if code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", "echo ran"}, &cout, &cerr); code != 0 {
+	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", "echo ran"}, &cout, &cerr); code != 0 {
 		t.Errorf("command alone: exit %d: %s", code, cerr.String())
 	}
 	if strings.TrimSpace(cout.String()) != "ran" {
@@ -703,7 +716,7 @@ func TestRunExec_PreservesInheritedNoProxy(t *testing.T) {
 	t.Setenv("no_proxy", "internal.example.com")
 
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--config", cfgPath, "--",
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
 		"/bin/sh", "-c", `printf 'NO_PROXY=%s\nno_proxy=%s\n' "$NO_PROXY" "$no_proxy"`}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
@@ -758,7 +771,7 @@ func TestBridgeGate_ExecAndEnableAgree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, execErr := execEnv(cfgPath)
+	_, execErr := execEnvFor(t, cfgPath)
 	if execErr == nil {
 		t.Fatal("exec accepted a disabled bridge")
 	}
@@ -766,8 +779,159 @@ func TestBridgeGate_ExecAndEnableAgree(t *testing.T) {
 	if code := claudeCodeEnable(filepath.Join(dir, "settings.json"), cfgPath, true, &stdout, &stderr); code == 0 {
 		t.Fatal("claude-code enable accepted a disabled bridge")
 	}
-	// Same message, so a user sees one explanation whichever command they reached for.
-	if !strings.Contains(stderr.String(), execErr.Error()) {
-		t.Errorf("the two commands explain it differently:\n exec:   %v\n enable: %s", execErr, stderr.String())
+	// The same EXPLANATION, from the one shared errBridgeDisabled. Not byte-identical
+	// any more, and deliberately so: each names where its config came from — a stats
+	// URL for exec, a file path for enable — because that is the thing the reader can
+	// go and change. What must not differ is the diagnosis.
+	const reason = `tls_bridge.mode must be "enabled"`
+	if !strings.Contains(execErr.Error(), reason) {
+		t.Errorf("exec's error omits the shared reason:\n%v", execErr)
+	}
+	if !strings.Contains(stderr.String(), reason) {
+		t.Errorf("enable's error omits the shared reason:\n%s", stderr.String())
+	}
+	// And both must point at their own source, so neither blames the wrong thing.
+	if !strings.Contains(stderr.String(), cfgPath) {
+		t.Errorf("enable's error should name the config file it read:\n%s", stderr.String())
+	}
+}
+
+// execStats stands up a stub /config endpoint and returns its base URL, so the
+// tests exercise the same path production does: exec fetches the RUNNING proxy's
+// config rather than reading a file.
+//
+// Serving real config YAML through config.Load and back out as JSON, rather than
+// hand-writing the JSON, keeps the fixture honest about the shape /config actually
+// returns — including that the fields exec reads survive redaction.
+func execStats(t *testing.T, cfgPath string) string {
+	t.Helper()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("loading the fixture config: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/config" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		raw, merr := json.Marshal(cfg)
+		if merr != nil {
+			http.Error(w, merr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Through the same redactor the real endpoint uses, so a test cannot pass on
+		// a field production would have stripped.
+		_, _ = w.Write(redact.JSON(raw))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/"
+}
+
+// execEnvFor is execEnv against a stub serving the given config file.
+func execEnvFor(t *testing.T, cfgPath string) (map[string]string, error) {
+	t.Helper()
+	return execEnv(execStats(t, cfgPath))
+}
+
+// --- The three behaviours changed in this round ---
+
+// `abctl exec --print` is a complete request: it asks for the environment, and
+// there is no command for a delimiter to separate. It used to print usage text,
+// answering a well-formed request with help.
+func TestRunExec_PrintNeedsNoDelimiter(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "export HTTPS_PROXY=") {
+		t.Errorf("--print printed no exports:\n%s", stdout.String())
+	}
+	// Specifically not usage text.
+	if strings.Contains(stdout.String(), "Usage:") || strings.Contains(stderr.String(), "Usage:") {
+		t.Errorf("--print emitted usage text:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+// `abctl exec --print --` is the opposite mistake: the delimiter promises a command
+// and none follows. Refused rather than quietly read as plain --print.
+func TestRunExec_PrintWithEmptyCommandIsAUsageError(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print", "--"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage)", code)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("emitted exports despite the usage error:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing to separate") {
+		t.Errorf("error should explain the empty command:\n%s", stderr.String())
+	}
+}
+
+// exec works against a running proxy, which already has a config, so there is no
+// --config flag to point at a file.
+func TestRunExec_HasNoConfigFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", "/tmp/whatever.yaml", "--", "true"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 for an unknown flag", code)
+	}
+	if !strings.Contains(stderr.String(), "not defined") {
+		t.Errorf("--config should be rejected as undefined:\n%s", stderr.String())
+	}
+}
+
+// The values must come from the RUNNING proxy, not a file. Proven by serving a
+// config whose addresses differ from anything on disk and checking they arrive.
+func TestExecEnv_ReadsTheRunningProxyNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	caDir := filepath.Join(dir, "live-ca")
+	if err := os.MkdirAll(caDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"ca.crt", tlsbridge.TrustBundleName} {
+		if err := os.WriteFile(filepath.Join(caDir, n), []byte(testCAPEM), 0o644); err != nil { //nolint:gosec // test fixture
+			t.Fatal(err)
+		}
+	}
+	cfgPath := filepath.Join(dir, "live.yaml")
+	body := "mode: proxy-sidecar\n" +
+		"listener:\n  roles: [forward]\n  forward_proxy_addr: \"127.0.0.1:51999\"\n" +
+		"tls_bridge:\n  mode: enabled\n  ca_dir: \"" + caDir + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := execEnv(execStats(t, cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 51999 appears in no file abctl would default to; it can only have come from
+	// the served config.
+	if got := env["HTTPS_PROXY"]; got != "http://127.0.0.1:51999" {
+		t.Errorf("HTTPS_PROXY = %q, want the running proxy's address", got)
+	}
+	if got := env[envCACerts]; got != filepath.Join(caDir, "ca.crt") {
+		t.Errorf("%s = %q, want the running proxy's CA", envCACerts, got)
+	}
+}
+
+// A stats URL that is not a URL is reported as such, rather than becoming a
+// confusing connection error.
+func TestExecEnv_RejectsAMalformedStatsURL(t *testing.T) {
+	if _, err := execEnv("not a url"); err == nil {
+		t.Fatal("want an error for a malformed stats URL")
+	}
+}
+
+// The default is the documented local address, so a plain `abctl exec` needs no
+// flag on a normal install.
+func TestDefaultCortexStatsURL(t *testing.T) {
+	if defaultCortexStatsURL != "http://localhost:47602/" {
+		t.Errorf("defaultCortexStatsURL = %q, want http://localhost:47602/", defaultCortexStatsURL)
 	}
 }
