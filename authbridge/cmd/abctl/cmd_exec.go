@@ -13,8 +13,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-
-	"github.com/rossoctl/cortex/authbridge/authlib/config"
 )
 
 // exec runs one command with Cortex's proxy and CA already in its environment,
@@ -179,7 +177,14 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		*cortexCfg = filepath.Join(home, cortexCfgRel)
 	}
 
-	inject, cleanup, err := execEnv(*cortexCfg)
+	inject, cleanup, err := execEnv(*cortexCfg, *printOnly)
+	// Registered before the error branches below, so "cleanup always runs" is
+	// enforced in one place. Nothing leaks today — writeTrustBundle removes its own
+	// file on every error path — but that invariant was being held in two places,
+	// and the next error return added there would have broken it silently.
+	if cleanup != nil {
+		defer cleanup()
+	}
 	// errNoSystemRoots comes back WITH a usable bundle: the bridge CA is in it, so
 	// bridged hosts verify fine; only public trust is absent, and on an image with
 	// no root store there was none to begin with. Reported, not fatal.
@@ -194,12 +199,6 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
-	// The bundle is a temp file scoped to this child, so it must go whichever way
-	// runExec returns — including the usage and not-found paths below.
-	if cleanup != nil {
-		defer cleanup()
-	}
-
 	// A CA path that does not exist yet is a warning, not an error: enabling
 	// before the first start is legitimate and the proxy writes it on boot. But
 	// unlike the settings path, here the failure is loud rather than silent —
@@ -228,6 +227,10 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 				strings.Join(cmdArgs, " "))
 		}
 		printExecEnv(inject, stdout)
+		if b := inject[execCAReplaceVars[0]]; b != "" {
+			fmt.Fprintf(stderr, "abctl: wrote the trust bundle to %s (system roots + Cortex's bridge CA).\n"+
+				"  It is rewritten on each --print, so a rotated CA is picked up.\n", b)
+		}
 		return 0
 	}
 	if len(cmdArgs) == 0 {
@@ -282,30 +285,41 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	// environment — and `timeout` in a Makefile is exactly what "safe in a pipeline
 	// or a Makefile" claims to support. So SIGTERM and SIGHUP are relayed, then abctl
 	// keeps waiting and still reports the child's real status.
+	//
+	// Notify BEFORE Start, not after: a SIGTERM landing in the window between them
+	// would hit Go's default disposition and kill abctl with the child already
+	// running — orphaning it with the injected environment, the exact failure this
+	// relay exists to prevent. The channel is buffered, so a signal arriving during
+	// that window is held and delivered to the relay below rather than dropped.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
+	// Stopped before the relay goroutine is told to exit, so nothing can be queued
+	// onto a channel with no reader.
+	defer signal.Stop(sigs)
+
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(stderr, "abctl: %s: %v\n", argv[0], err)
 		return 1
 	}
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
+
+	// The relay starts only AFTER Start returns. cmd.Process is written by Start,
+	// and reading it from the goroutine concurrently is a genuine data race that
+	// -race catches — the process handle, not just a stale read. Capturing it here
+	// means the goroutine touches nothing cmd owns.
+	proc := cmd.Process
 	relayDone := make(chan struct{})
+	defer close(relayDone)
 	go func() {
 		for {
 			select {
 			case sig := <-sigs:
-				if p := cmd.Process; p != nil {
-					// Best-effort: the child may have exited between the signal and here,
-					// which is a benign race, not an error worth reporting.
-					_ = p.Signal(sig)
-				}
+				// Best-effort: the child may have exited between the signal and here,
+				// which is a benign race, not an error worth reporting.
+				_ = proc.Signal(sig)
 			case <-relayDone:
 				return
 			}
 		}
-	}()
-	defer func() {
-		signal.Stop(sigs)
-		close(relayDone)
 	}()
 
 	if err := cmd.Wait(); err != nil {
@@ -335,8 +349,11 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 // only way to guarantee that is one derivation. The telemetry key wanted() also
 // returns is dropped here — it is a Claude Code setting, and exec's child is
 // usually not Claude Code.
-func execEnv(cortexCfgPath string) (env map[string]string, cleanup func(), err error) {
-	want, err := wanted(cortexCfgPath)
+// persist selects where the trust bundle goes: a stable path beside the CA (for
+// --print, whose output must outlive this process) or a temp file removed by
+// cleanup (for a child, which reads it while running).
+func execEnv(cortexCfgPath string, persist bool) (env map[string]string, cleanup func(), err error) {
+	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -345,21 +362,11 @@ func execEnv(cortexCfgPath string) (env map[string]string, cleanup func(), err e
 		return nil, nil, fmt.Errorf("%s yields no proxy address", cortexCfgPath)
 	}
 
-	// The bridge posture, not just the CA path. ca_dir is only *required* when
-	// mode is "enabled" (config.go's Validate), so `mode: disabled` with a ca_dir
-	// set is a perfectly valid config that this used to accept — and then injected
-	// a CA for a bridge that terminates nothing, so every https request in the
-	// child failed verification against the real upstream certificate. A harder
-	// break than the missing-ca_dir case, and silent about its cause.
-	cfg, cerr := config.Load(cortexCfgPath)
-	if cerr != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, cerr)
-	}
-	// Empty mode means disabled, per TLSBridgeConfig.Mode's own documentation.
-	if cfg.TLSBridge == nil || cfg.TLSBridge.Mode != "enabled" {
-		return nil, nil, fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
-			"  without it Cortex terminates no TLS, so the child would gain nothing and\n"+
-			"  every https request would fail verification. Enable the TLS bridge first", cortexCfgPath)
+	// The bridge posture, not just the CA path. Shared with `claude-code enable`
+	// via bridgeEnabled/errBridgeDisabled so the two commands cannot disagree about
+	// it — see errBridgeDisabled for why a disabled bridge has to be refused.
+	if !bridgeEnabled(cfg) {
+		return nil, nil, errBridgeDisabled(cortexCfgPath)
 	}
 
 	ca, ok := want[envCACerts]
@@ -381,7 +388,7 @@ func execEnv(cortexCfgPath string) (env map[string]string, cleanup func(), err e
 		out[k] = ca
 	}
 	// Replacing names take a bundle, so excluded hosts keep public trust.
-	bundle, cleanup, berr := writeTrustBundle(ca)
+	bundle, cleanup, berr := writeTrustBundle(ca, persist)
 	switch {
 	case errors.Is(berr, errNoBridgeCA):
 		// The CA is not on disk yet — Cortex writes it on first start, and enabling
@@ -412,7 +419,13 @@ func execEnv(cortexCfgPath string) (env map[string]string, cleanup func(), err e
 // genuinely have no root bundle, in which case the bridge CA alone is the whole
 // trust set — which is exactly right there, since such an image had no public
 // trust to lose. It is reported so the difference is not silent.
-func writeTrustBundle(caPath string) (path string, cleanup func(), err error) {
+// When persist is true the bundle is written to a STABLE path beside the CA
+// (ca_dir/trust-bundle.pem) and no cleanup is returned, because the caller is
+// --print: the exported path has to outlive this process for
+// `eval "$(abctl exec --print --)"` to mean anything. A temp file per eval would
+// also leak with no owner, so a single rewritten file beside the CA it is derived
+// from is both durable and self-limiting.
+func writeTrustBundle(caPath string, persist bool) (path string, cleanup func(), err error) {
 	caPEM, err := os.ReadFile(caPath) //nolint:gosec // path derived from the operator's own config
 	if err != nil {
 		// Signalled, not fatal: the CA is written by Cortex on first start and exec
@@ -441,6 +454,28 @@ func writeTrustBundle(caPath string) (path string, cleanup func(), err error) {
 	}
 	systemFound := len(buf) > 0
 	buf = append(buf, caPEM...)
+
+	if persist {
+		// Beside the CA, not in the temp dir: --print's output must still resolve
+		// after this process exits. Rewritten in place each run so a rotated CA is
+		// picked up, and atomically so a concurrent reader never sees a half-written
+		// trust store.
+		name := filepath.Join(filepath.Dir(caPath), "trust-bundle.pem")
+		tmp := name + ".tmp"
+		// 0644, matching ca.crt: a trust store is public material, and a file only
+		// the writing user can read would break a child running as anyone else.
+		if werr := os.WriteFile(tmp, buf, 0o644); werr != nil { //nolint:gosec // trust anchors are not secret
+			return "", func() {}, werr
+		}
+		if rerr := os.Rename(tmp, name); rerr != nil {
+			_ = os.Remove(tmp)
+			return "", func() {}, rerr
+		}
+		if !systemFound {
+			return name, func() {}, errNoSystemRoots
+		}
+		return name, func() {}, nil
+	}
 
 	// 0600 in the process's temp dir: this is a trust store, and a world-writable
 	// one would let any local user add a root the child then trusts.

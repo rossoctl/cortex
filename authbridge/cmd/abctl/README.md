@@ -128,8 +128,10 @@ set of roots. `ca.crt` is a single certificate, so naming it there would leave
 the child trusting one CA and nothing else — breaking every host the bridge
 does **not** terminate (`tls_bridge.passthrough_hosts`, `listener.skip_hosts`,
 ports outside `tls_bridge.ports`, non-TLS traffic). So those three get a
-concatenation of your system roots and the bridge CA, written to a temp file
-for the child's lifetime and removed afterwards.
+concatenation of your system roots and the bridge CA. For a child process that
+bundle is a temp file removed when the child exits; for `--print` it is written
+beside the CA as `trust-bundle.pem`, because the path it exports has to outlive
+the abctl process that printed it.
 
 Both proxy variables get the **`http://`** URL, deliberately. The scheme
 in a `*_PROXY` variable says how to reach the *proxy*, not what the
@@ -154,6 +156,11 @@ To see the variables without running anything:
 abctl exec --print --              # eight shell-quoted export lines
 eval "$(abctl exec --print --)"    # or apply them to the current shell
 ```
+
+`--print` writes `trust-bundle.pem` next to your `ca.crt` and points the three
+replacing variables at it, rewriting it each time so a rotated CA is picked up.
+That is what makes the `eval` form usable: the exported paths still resolve after
+abctl has exited.
 
 Requires an enabled TLS bridge — both `tls_bridge.mode: enabled` and
 `tls_bridge.ca_dir`. `mode: disabled` with a `ca_dir` set is a valid config,

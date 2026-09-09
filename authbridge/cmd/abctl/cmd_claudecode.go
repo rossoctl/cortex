@@ -251,13 +251,44 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 // from the proxy that is actually running. Hardcoding 47600 here would silently
 // point Claude Code at nothing the moment someone edited their config.
 func wanted(cortexCfgPath string) (map[string]string, error) {
+	out, _, err := wantedFromConfig(cortexCfgPath)
+	return out, err
+}
+
+// bridgeEnabled reports whether cfg has an enabled TLS bridge.
+//
+// Empty Mode means disabled, per TLSBridgeConfig.Mode's own documentation, and a
+// nil TLSBridge means the block is absent entirely.
+func bridgeEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.TLSBridge != nil && cfg.TLSBridge.Mode == "enabled"
+}
+
+// errBridgeDisabled is the shared refusal for a config whose bridge is off.
+//
+// Shared, because `abctl exec` and `abctl claude-code enable` must agree about the
+// bridge posture as well as the addresses. ca_dir is only *required* when
+// mode is "enabled" (config.Validate), so `mode: disabled` with a ca_dir set is
+// valid config that both commands used to accept — writing a CA for a bridge that
+// terminates nothing, so every https request fails verification against the real
+// upstream certificate. exec grew the check first; hoisting it here is what makes
+// "the two cannot drift" true of the posture too, not only the proxy and CA paths.
+func errBridgeDisabled(cortexCfgPath string) error {
+	return fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
+		"  without it Cortex terminates no TLS, so there is nothing for a client to\n"+
+		"  trust and every https request would fail verification. Enable the TLS bridge first",
+		cortexCfgPath)
+}
+
+// wantedFromConfig is wanted plus the loaded config, so a caller needing more than
+// the three values does not parse the file twice.
+func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, error) {
 	cfg, err := config.Load(cortexCfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
 	}
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {
-		return nil, fmt.Errorf("%s has no listener.forward_proxy_addr; Claude Code needs a forward proxy to point at", cortexCfgPath)
+		return nil, nil, fmt.Errorf("%s has no listener.forward_proxy_addr; Claude Code needs a forward proxy to point at", cortexCfgPath)
 	}
 	// A bind address is not a URL: ":8081" and "127.0.0.1:47600" both need a host
 	// a client can actually dial.
@@ -270,7 +301,7 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 	// errors on genuinely bad input.
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, fmt.Errorf("listener.forward_proxy_addr %q is not host:port: %w", addr, err)
+		return nil, nil, fmt.Errorf("listener.forward_proxy_addr %q is not host:port: %w", addr, err)
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "localhost"
@@ -289,7 +320,7 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 	if cfg.TLSBridge != nil && cfg.TLSBridge.CADir != "" {
 		ca, aerr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, "ca.crt"))
 		if aerr != nil {
-			return nil, aerr
+			return nil, nil, aerr
 		}
 		out[envCACerts] = ca
 		// Everything else gets the bundle, never ca.crt — see bundleKeys.
@@ -301,13 +332,20 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 			out[k] = bundle
 		}
 	}
-	return out, nil
+	return out, cfg, nil
 }
 
 func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	want, err := wanted(cortexCfgPath)
+	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		return 1
+	}
+	// Same bridge-posture gate `abctl exec` applies. Without it, `mode: disabled`
+	// with a ca_dir set was written into settings.json and produced exactly the
+	// silent break the ca_dir check below exists to prevent.
+	if !bridgeEnabled(cfg) {
+		fmt.Fprintf(stderr, "abctl: %v\n", errBridgeDisabled(cortexCfgPath))
 		return 1
 	}
 	if _, ok := want[envCACerts]; !ok {

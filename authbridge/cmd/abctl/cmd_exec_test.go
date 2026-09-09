@@ -58,7 +58,7 @@ func execCfgNoCA(t *testing.T) (cfgPath, caPath string) {
 // distinct values, both derived from the config rather than hardcoded.
 func TestExecEnv_AllEightNamesFromTwoValues(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestExecEnv_MatchesClaudeCodeEnable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ listener:
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := execEnv(cfgPath); err == nil {
+	if _, _, err := execEnv(cfgPath, false); err == nil {
 		t.Fatal("want an error when tls_bridge.ca_dir is absent, got nil")
 	}
 }
@@ -444,7 +444,7 @@ func TestExecEnv_ReplacingVarsBundleSystemRoots(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
 	const caBody = testCAPEM
 
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil && !errors.Is(err, errNoSystemRoots) {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestExecEnv_ReplacingVarsBundleSystemRoots(t *testing.T) {
 // child, so it must not accumulate in the temp dir across invocations.
 func TestExecEnv_CleanupRemovesBundle(t *testing.T) {
 	cfgPath, _ := execCfg(t)
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil && !errors.Is(err, errNoSystemRoots) {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestExecEnv_CleanupRemovesBundle(t *testing.T) {
 // would let any local user add a root the child then trusts.
 func TestExecEnv_BundleIsNotWorldWritable(t *testing.T) {
 	cfgPath, _ := execCfg(t)
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil && !errors.Is(err, errNoSystemRoots) {
 		t.Fatal(err)
 	}
@@ -541,7 +541,7 @@ func TestExecEnv_DisabledBridgeIsRefused(t *testing.T) {
 			if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, _, err := execEnv(cfgPath)
+			_, _, err := execEnv(cfgPath, false)
 			if err == nil {
 				t.Fatal("want an error when the bridge is not enabled, got nil")
 			}
@@ -588,7 +588,7 @@ func TestExecEnv_BeforeFirstStart_LeavesReplacingVarsUnset(t *testing.T) {
 	if _, err := os.Stat(caPath); err == nil {
 		t.Fatal("fixture should not have created ca.crt")
 	}
-	env, cleanup, err := execEnv(cfgPath)
+	env, cleanup, err := execEnv(cfgPath, false)
 	if err != nil {
 		t.Fatalf("a not-yet-written CA must not be fatal: %v", err)
 	}
@@ -758,5 +758,197 @@ func TestRunExec_PreservesInheritedNoProxy(t *testing.T) {
 	if !strings.Contains(got, "NO_PROXY=internal.example.com,.corp") ||
 		!strings.Contains(got, "no_proxy=internal.example.com") {
 		t.Errorf("NO_PROXY was not preserved:\n%s", got)
+	}
+}
+
+// --- Regression tests for the second review round (PR #916) ---
+
+// TestRunExec_PrintBundleOutlivesTheProcess is the blocking finding. --print
+// emitted the temp bundle's path and then `defer cleanup()` deleted the file, so
+// the documented `eval "$(abctl exec --print --)"` exported a path to nothing and
+// every https request failed with curl's "error setting certificate verify
+// locations". Reproduced by hand before the fix.
+//
+// The check that matters is stat-ing the path AFTER runExec returns —
+// TestRunExec_Print counted export lines and grepped for the additive var, so it
+// never touched the file the three replacing vars name.
+func TestRunExec_PrintBundleOutlivesTheProcess(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	var stdout, stderr bytes.Buffer
+	if code := runExec([]string{"--config", cfgPath, "--print", "--"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d: %s", code, stderr.String())
+	}
+
+	// Pull the bundle path back out of the printed exports, the way a shell would.
+	var bundle string
+	for _, ln := range strings.Split(stdout.String(), "\n") {
+		if rest, ok := strings.CutPrefix(ln, "export CURL_CA_BUNDLE="); ok {
+			bundle = strings.Trim(rest, "'")
+			break
+		}
+	}
+	if bundle == "" {
+		t.Fatalf("--print emitted no CURL_CA_BUNDLE:\n%s", stdout.String())
+	}
+
+	b, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatalf("the path --print exported does not exist after abctl exits: %v\n"+
+			"  `eval \"$(abctl exec --print --)\"` would export a dangling CA path", err)
+	}
+	if !strings.Contains(string(b), "BRIDGECA") {
+		t.Error("the persisted bundle omits the bridge CA")
+	}
+}
+
+// The persisted bundle is rewritten in place rather than accumulating one file per
+// eval, and a rotated CA is picked up.
+func TestRunExec_PrintBundleIsStableAndRefreshed(t *testing.T) {
+	cfgPath, caPath := execCfg(t)
+	run := func() string {
+		var stdout, stderr bytes.Buffer
+		if code := runExec([]string{"--config", cfgPath, "--print", "--"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("exit %d: %s", code, stderr.String())
+		}
+		for _, ln := range strings.Split(stdout.String(), "\n") {
+			if rest, ok := strings.CutPrefix(ln, "export SSL_CERT_FILE="); ok {
+				return strings.Trim(rest, "'")
+			}
+		}
+		t.Fatal("no SSL_CERT_FILE in --print output")
+		return ""
+	}
+
+	first := run()
+	second := run()
+	if first != second {
+		t.Errorf("--print produced two different paths (%s, %s); every eval would leak one", first, second)
+	}
+	// It must live beside the CA, not in the temp dir.
+	if filepath.Dir(first) != filepath.Dir(caPath) {
+		t.Errorf("bundle at %s, want it beside the CA in %s", first, filepath.Dir(caPath))
+	}
+
+	// Rotate the CA; the next --print must reflect it.
+	if err := os.WriteFile(caPath, []byte("-----BEGIN CERTIFICATE-----\nROTATED\n-----END CERTIFICATE-----\n"), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	run()
+	b, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "ROTATED") {
+		t.Error("the bundle was not refreshed after the CA rotated")
+	}
+}
+
+// The child path must still use a temp bundle that IS cleaned up — the persisted
+// path is only for --print.
+func TestExecEnv_ChildBundleIsStillTemporary(t *testing.T) {
+	cfgPath, caPath := execCfg(t)
+	env, cleanup, err := execEnv(cfgPath, false)
+	if err != nil && !errors.Is(err, errNoSystemRoots) {
+		t.Fatal(err)
+	}
+	bundle := env["CURL_CA_BUNDLE"]
+	if filepath.Dir(bundle) == filepath.Dir(caPath) {
+		t.Errorf("child bundle at %s is the persisted path; it should be a temp file", bundle)
+	}
+	cleanup()
+	if _, serr := os.Stat(bundle); !os.IsNotExist(serr) {
+		t.Errorf("child bundle survived cleanup at %s", bundle)
+	}
+}
+
+// TestWriteTrustBundle_NoSystemRoots covers the errNoSystemRoots branch, which is
+// otherwise reachable only on a machine with no root store — so it never ran in
+// CI, and the test that mentions it degraded to a t.Logf there. systemRootFiles is
+// a package var precisely so it can be swapped.
+func TestWriteTrustBundle_NoSystemRoots(t *testing.T) {
+	saved := systemRootFiles
+	systemRootFiles = []string{filepath.Join(t.TempDir(), "definitely-absent")}
+	t.Cleanup(func() { systemRootFiles = saved })
+
+	cfgPath, _ := execCfg(t)
+	env, cleanup, err := execEnv(cfgPath, false)
+	if !errors.Is(err, errNoSystemRoots) {
+		t.Fatalf("want errNoSystemRoots, got %v", err)
+	}
+	defer cleanup()
+
+	// A usable bundle comes back regardless: on an image with no root store the
+	// bridge CA alone is the whole trust set, which is correct there.
+	b, rerr := os.ReadFile(env["CURL_CA_BUNDLE"])
+	if rerr != nil {
+		t.Fatalf("no bundle despite the sentinel being advisory: %v", rerr)
+	}
+	if !strings.Contains(string(b), "BRIDGECA") {
+		t.Error("bundle omits the bridge CA")
+	}
+
+	// And runExec reports it without failing.
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--config", cfgPath, "--", "/bin/sh", "-c", "echo ran"}, &stdout, &stderr)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0; a missing system store is advisory", code)
+	}
+	if !strings.Contains(stderr.String(), "no system CA bundle") {
+		t.Errorf("expected the missing-roots note:\n%s", stderr.String())
+	}
+}
+
+// TestClaudeCodeEnable_DisabledBridgeIsRefused. The tls_bridge.mode gate was
+// exec-only, so the two commands drifted on exactly the check whose comment claims
+// they cannot: `abctl exec` refused `mode: disabled` + ca_dir, while
+// `claude-code enable` wrote it into settings.json and produced the same silent
+// break. Both now share bridgeEnabled/errBridgeDisabled.
+func TestClaudeCodeEnable_DisabledBridgeIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "mode: proxy-sidecar\n" +
+		"listener:\n  roles: [forward]\n  forward_proxy_addr: \"127.0.0.1:47600\"\n" +
+		"tls_bridge:\n  mode: disabled\n  ca_dir: \"" + filepath.Join(dir, "ca") + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := claudeCodeEnable(settingsPath, cfgPath, true, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 for a disabled bridge", code)
+	}
+	if !strings.Contains(stderr.String(), "tls_bridge.mode") {
+		t.Errorf("error should name tls_bridge.mode:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(settingsPath); err == nil {
+		t.Error("settings.json was written despite the disabled bridge")
+	}
+}
+
+// Both commands must refuse the same config for the same reason — the property the
+// shared helper exists to guarantee.
+func TestBridgeGate_ExecAndEnableAgree(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "mode: proxy-sidecar\n" +
+		"listener:\n  roles: [forward]\n  forward_proxy_addr: \"127.0.0.1:47600\"\n" +
+		"tls_bridge:\n  mode: disabled\n  ca_dir: \"" + filepath.Join(dir, "ca") + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, execErr := execEnv(cfgPath, false)
+	if execErr == nil {
+		t.Fatal("exec accepted a disabled bridge")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := claudeCodeEnable(filepath.Join(dir, "settings.json"), cfgPath, true, &stdout, &stderr); code == 0 {
+		t.Fatal("claude-code enable accepted a disabled bridge")
+	}
+	// Same message, so a user sees one explanation whichever command they reached for.
+	if !strings.Contains(stderr.String(), execErr.Error()) {
+		t.Errorf("the two commands explain it differently:\n exec:   %v\n enable: %s", execErr, stderr.String())
 	}
 }
