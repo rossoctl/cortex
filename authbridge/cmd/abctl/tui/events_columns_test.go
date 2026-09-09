@@ -544,49 +544,132 @@ func TestColumnPicker_CursorStaysVisibleWhenClipped(t *testing.T) {
 // at 80 and — worse, between 156 and 167 — reported dropped==0 while up to twelve
 // columns sat off the edge, with no footer count and no "(no room)" marker.
 func TestFitColumns_RenderedWidthNeverExceedsTerminal(t *testing.T) {
-	sel := map[eventColumnID]bool{}
-	for _, c := range eventColumns {
-		sel[c.id] = true
-	}
-	all := selectedColumns(sel)
+	// Several selections, not just all-on. The all-on case alone let a real bug
+	// through: fitColumns credited back width+1 while columnsWidth charged
+	// width+cellPadding, and the greedy loop never reconsidered an overshoot — at 80
+	// it dropped seven columns and left 19 unused. Neither shows up if the only
+	// input is "everything on", because the invariant checked (rendered <= width)
+	// stays true when too MUCH is dropped.
+	for _, tc := range columnSelectionCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := selectedColumns(tc.sel)
+			for w := 20; w <= 180; w++ {
+				fitted, dropped := fitColumns(cols, w)
+				if len(fitted) == 0 {
+					t.Fatalf("width %d: no columns returned", w)
+				}
 
-	// Every width from very narrow to past the full table, so no band is skipped —
-	// 156..167 is precisely where the old model reported a clean fit.
-	for w := 20; w <= 180; w++ {
-		fitted, dropped := fitColumns(all, w)
-		if len(fitted) == 0 {
-			t.Fatalf("width %d: no columns returned", w)
-		}
+				tbl := newEventsTable()
+				tbl.SetColumns(tableColumns(fitted))
+				row := make([]string, len(fitted))
+				for i := range row {
+					row[i] = "x"
+				}
+				tbl.SetRows([]table.Row{row})
 
-		tbl := newEventsTable()
-		tbl.SetColumns(tableColumns(fitted))
-		row := make([]string, len(fitted))
-		for i := range row {
-			row[i] = "x"
-		}
-		tbl.SetRows([]table.Row{row})
+				rendered := 0
+				for _, ln := range strings.Split(tbl.View(), "\n") {
+					if n := lipgloss.Width(ln); n > rendered {
+						rendered = n
+					}
+				}
 
-		rendered := 0
-		for _, ln := range strings.Split(tbl.View(), "\n") {
-			if n := lipgloss.Width(ln); n > rendered {
-				rendered = n
+				// The one legitimate exception: a terminal too narrow for even one
+				// column. fitColumns never returns empty, so a single column may exceed.
+				if len(fitted) == 1 && rendered > w {
+					continue
+				}
+				if rendered > w {
+					t.Errorf("width %d: %d columns render at %d (%d dropped) — overflows by %d",
+						w, len(fitted), rendered, dropped, rendered-w)
+				}
+				if got := columnsWidth(fitted); got != rendered {
+					t.Errorf("width %d: columnsWidth says %d, bubbles renders %d", w, got, rendered)
+				}
 			}
-		}
+		})
+	}
+}
 
-		// The one legitimate exception: a terminal too narrow for even one column.
-		// fitColumns never returns empty, so a single column may exceed a tiny width.
-		if len(fitted) == 1 && rendered > w {
-			continue
+// The other half of "fits": it must not drop MORE than it has to. The
+// rendered-width check above is satisfied by dropping everything, so without this
+// an over-eager fitColumns looks correct.
+func TestFitColumns_DropsNoMoreThanNecessary(t *testing.T) {
+	for _, tc := range columnSelectionCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := selectedColumns(tc.sel)
+			for w := 20; w <= 180; w++ {
+				fitted, _ := fitColumns(cols, w)
+				used := columnsWidth(fitted)
+				if used > w {
+					continue // covered by the invariant test above
+				}
+				in := make(map[eventColumnID]bool, len(fitted))
+				for _, c := range fitted {
+					in[c.id] = true
+				}
+				// Any dropped column that would still fit in the leftover room means the
+				// drop was unnecessary — the user lost a column for nothing.
+				for _, c := range cols {
+					if in[c.id] {
+						continue
+					}
+					if used+c.width+cellPadding <= w {
+						t.Errorf("width %d: dropped %s (needs %d) with %d columns unused",
+							w, c.id, c.width+cellPadding, w-used)
+					}
+				}
+			}
+		})
+	}
+}
+
+// columnSelectionCases spans the selection shapes the picker can produce: all on,
+// the defaults, and several partial sets chosen to vary which keep-ranks and which
+// widths are present.
+func columnSelectionCases() []struct {
+	name string
+	sel  map[eventColumnID]bool
+} {
+	all := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		all[c.id] = true
+	}
+	// Only the widest columns, so a single drop swings the total a long way — the
+	// shape that made the greedy loop overshoot.
+	wide := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		if c.width >= 17 {
+			wide[c.id] = true
 		}
-		if rendered > w {
-			t.Errorf("width %d: %d columns render at %d (%d dropped) — overflows by %d",
-				w, len(fitted), rendered, dropped, rendered-w)
+	}
+	// Only narrow ones, where many drops are needed to move the total at all.
+	narrow := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		if c.width <= 10 {
+			narrow[c.id] = true
 		}
-		// And the model must agree with reality, or the footer count and the picker's
-		// "(no room)" markers describe a different table than the one on screen.
-		if got := columnsWidth(fitted); got != rendered {
-			t.Errorf("width %d: columnsWidth says %d, bubbles renders %d", w, got, rendered)
+	}
+	// Alternating, to mix ranks and widths.
+	alt := map[eventColumnID]bool{}
+	for i, c := range eventColumns {
+		if i%2 == 0 {
+			alt[c.id] = true
 		}
+	}
+	// A single column: the degenerate case fitColumns must not return empty for.
+	one := map[eventColumnID]bool{eventColumns[len(eventColumns)-1].id: true}
+
+	return []struct {
+		name string
+		sel  map[eventColumnID]bool
+	}{
+		{"all-on", all},
+		{"defaults", defaultColumnSelection()},
+		{"wide-only", wide},
+		{"narrow-only", narrow},
+		{"alternating", alt},
+		{"single", one},
 	}
 }
 

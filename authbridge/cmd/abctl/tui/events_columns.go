@@ -182,8 +182,6 @@ func tableColumns(cols []eventColumn) []table.Column {
 	return out
 }
 
-// columnsWidth is how many terminal columns a selection needs, including the
-// one-space gutter bubbles renders between cells.
 // cellPadding is what bubbles adds to every cell's declared width.
 //
 // TWO, not one: bubbles pads each cell on BOTH sides rather than putting a single
@@ -209,6 +207,8 @@ const cellPadding = 2
 // than necessary.
 const borderWidth = 2
 
+// columnsWidth is how many terminal columns a selection needs: each column's
+// declared width plus the cellPadding bubbles adds around it.
 func columnsWidth(cols []eventColumn) int {
 	w := 0
 	for _, c := range cols {
@@ -257,7 +257,34 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 			break
 		}
 		drop[i] = true
-		used -= cols[i].width + 1
+		// cellPadding, matching what columnsWidth charged. Crediting back +1 against
+		// a +2 charge refunded one column too little per drop.
+		used -= cols[i].width + cellPadding
+	}
+
+	// Second pass: take back what still fits.
+	//
+	// The loop above is greedy and never reconsiders, so it overshoots whenever the
+	// column that finally gets it under the limit is a wide one. At 80 it stood at 81
+	// — one column over — and had to give up an 18-wide PLUGIN to comply, landing at
+	// 61 and leaving 19 columns unused while DIR (6), STATUS (9), DURATION (12) and
+	// TOKENS (19) each would have fit in that slack.
+	//
+	// Restoring in REVERSE sacrifice order returns the most valuable candidates
+	// first: the last thing given up was the least expendable, so it has the best
+	// claim on the room that turned out to be there. A column that does not fit is
+	// skipped rather than ending the pass, since a narrower one further back may
+	// still fit — which is exactly the COST-then-TOKENS case at 80.
+	for i := len(sacrificeOrder) - 1; i >= 0; i-- {
+		idx := sacrificeOrder[i]
+		if !drop[idx] {
+			continue
+		}
+		cost := cols[idx].width + cellPadding
+		if used+cost <= width {
+			delete(drop, idx)
+			used += cost
+		}
 	}
 
 	for i, c := range cols {
