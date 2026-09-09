@@ -281,7 +281,12 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 		envProxy:   "http://" + net.JoinHostPort(host, port),
 		envNoTelem: "1",
 	}
-	if cfg.TLSBridge.CADir != "" {
+	// Nil-checked: tls_bridge is an omitempty pointer, so a config without the
+	// block at all leaves it nil and dereferencing it segfaulted — `abctl
+	// claude-code enable` crashed with a stack trace on a perfectly valid config
+	// whose only fault was having no TLS bridge, which is exactly the case the
+	// caller below is written to report cleanly.
+	if cfg.TLSBridge != nil && cfg.TLSBridge.CADir != "" {
 		ca, aerr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, "ca.crt"))
 		if aerr != nil {
 			return nil, aerr

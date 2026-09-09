@@ -87,6 +87,66 @@ kubectl port-forward -n team1 pod/weather-agent-xxxx 9094:9094 &
 This preserves the pre-picker behavior for scripts, CI, or remote
 session APIs that aren't in your kube context.
 
+## Running one command through Cortex (`abctl exec`)
+
+`abctl claude-code enable` works because Claude Code has a settings file:
+the variables can be written once and reach every session on the machine,
+background agents included. Nothing else has that. `curl`, `python`,
+`node`, `gh` and your test suite read the process environment and nothing
+else, and the usual workaround — exporting `HTTPS_PROXY` in your shell —
+leaks into every unrelated command in that terminal until you remember to
+unset it.
+
+`abctl exec` scopes the routing to a single child process:
+
+```sh
+abctl exec -- curl -sv https://api.anthropic.com/v1/messages
+abctl exec -- claude --dangerously-skip-permissions
+abctl exec -- bob
+```
+
+Everything after `--` is passed through exactly as typed. abctl never
+parses it, so the command's own flags need no escaping — even ones abctl
+also has, like `--config`. The child inherits your whole environment plus
+these eight variables:
+
+| Variable | Value |
+|---|---|
+| `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | the forward proxy URL |
+| `NODE_EXTRA_CA_CERTS` `CURL_CA_BUNDLE` `REQUESTS_CA_BUNDLE` `SSL_CERT_FILE` | the TLS-bridge CA file |
+
+Four spellings of each because there is no agreed one: Go and most Unix
+tools read the lowercase pair, Node the uppercase, libcurl either; the CA
+name differs per runtime (Node, libcurl, Python `requests`, OpenSSL). A
+tool that reads only the spelling we left out would silently bypass the
+proxy — invisible, because it keeps working.
+
+Both proxy variables get the **`http://`** URL, deliberately. The scheme
+in a `*_PROXY` variable says how to reach the *proxy*, not what the
+proxied request is; Cortex's forward proxy speaks plain HTTP and
+CONNECT-tunnels TLS, so `https://` there would make clients attempt TLS
+to the proxy itself and fail the handshake.
+
+The values come from `~/.cortex/config.yaml` — the same derivation
+`claude-code enable` uses, so the two cannot drift apart. Nothing is
+exported to your shell and no file is modified. Signals reach the child
+through the shared process group, and abctl exits with the child's
+status (127 if the command was not found, 128+signum if it was killed),
+so it is safe in a pipeline or a Makefile.
+
+To see the variables without running anything:
+
+```sh
+abctl exec --print --              # eight shell-quoted export lines
+eval "$(abctl exec --print --)"    # or apply them to the current shell
+```
+
+Requires the TLS bridge (`tls_bridge.ca_dir`). Without a CA to trust,
+every https request would either fail verification or — worse, in a
+lenient client — tunnel through unparsed, which looks exactly like
+success while Cortex sees nothing; `abctl exec` refuses rather than
+inject a proxy with no CA.
+
 ## Panes
 
 The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
