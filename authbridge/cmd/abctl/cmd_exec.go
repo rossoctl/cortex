@@ -59,19 +59,20 @@ interpret it, so the command's own flags need no escaping:
   abctl exec -- claude --dangerously-skip-permissions
   abctl exec -- bob
 
-The child inherits your environment plus these, read from ~/.cortex/config.yaml
-so they always match the running proxy:
+The child inherits your environment plus these, read from the RUNNING proxy's
+/config so they always match the process that will serve the request:
 
   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy      the forward proxy URL
-  NODE_EXTRA_CA_CERTS                                   the bridge CA (added to
-                                                        the runtime's own roots)
-  CURL_CA_BUNDLE  REQUESTS_CA_BUNDLE  SSL_CERT_FILE     a temporary bundle of the
-                                                        system roots + bridge CA
+  NODE_EXTRA_CA_CERTS                                   ca.crt, ADDED to the
+                                                        runtime's own roots
+  CURL_CA_BUNDLE  REQUESTS_CA_BUNDLE                    bundle.crt: the bridge CA
+  SSL_CERT_FILE   GIT_SSL_CAINFO                        plus the platform roots
 
-The last three REPLACE the trust store rather than extend it, so they get a
+Those last four REPLACE the trust store rather than extend it, so they get the
 bundle: naming the bridge CA alone would leave the child trusting one CA and
 break every host the bridge does not terminate (passthrough_hosts, skip_hosts,
-ports outside tls_bridge.ports). Requires tls_bridge.mode: enabled.
+ports outside tls_bridge.ports). Cortex writes both files itself, beside each
+other in tls_bridge.ca_dir. Requires tls_bridge.mode: enabled.
 
 Values already in your environment are replaced for this child only; nothing is
 exported to your shell and no file is modified. Signals go to the child, and
@@ -154,9 +155,9 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	//
 	// Not merely "the command would be ignored": the two modes disagree about how
 	// long their output is meant to last. --print emits paths for a shell to keep —
-	// the same ca.crt that `claude-code enable` writes into settings.json, plus a
-	// trust-bundle.pem beside it — and those are expected to outlive any single
-	// invocation. Running a command is the opposite: one process, one lifetime.
+	// the same ca.crt and bundle.crt that `claude-code enable` writes into
+	// settings.json — and those outlive any single invocation, because Cortex writes
+	// them, not abctl. Running a command is the opposite: one process, one lifetime.
 	// Asking for both in one breath is a contradiction about intent, not a spare
 	// argument, so it is refused the way an argument in the wrong place is rather
 	// than warned about and half-honoured.
@@ -376,9 +377,9 @@ func execEnv(statsURL string) (env map[string]string, err error) {
 //
 // Comparison is case-sensitive on every platform, which is correct here: the
 // lowercase and uppercase proxy spellings are distinct variables that we set
-// deliberately, and folding them would collapse four of the eight names into
-// one. (Windows environments are case-insensitive, but abctl's proxy/CA story is
-// a Unix one.)
+// deliberately, and folding them would collapse the four proxy names into one.
+// (Windows environments are case-insensitive, but abctl's proxy/CA story is a Unix
+// one.)
 func mergeEnv(env []string, inject map[string]string) []string {
 	out := make([]string, 0, len(env)+len(inject))
 	seen := make(map[string]bool, len(inject))

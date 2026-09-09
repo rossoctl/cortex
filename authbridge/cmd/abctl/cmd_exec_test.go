@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -313,8 +315,8 @@ func TestMergeEnv_ReplacesRatherThanAppends(t *testing.T) {
 	}
 }
 
-// TestMergeEnv_IsCaseSensitive: the lowercase and uppercase proxy spellings are
-// eight distinct names, not four folded pairs.
+// TestMergeEnv_IsCaseSensitive: HTTP_PROXY and http_proxy are two distinct
+// variables, not one name in two casings — folding them would set only one.
 func TestMergeEnv_IsCaseSensitive(t *testing.T) {
 	out := mergeEnv([]string{"http_proxy=http://old:1"}, map[string]string{
 		"HTTP_PROXY": "http://new:2",
@@ -663,50 +665,55 @@ func TestRunExec_PrintWithCommandIsAUsageError(t *testing.T) {
 	}
 }
 
-// A usage error must not touch the filesystem. The check is placed with the other
-// argument validation, before the config is read, so a rejected invocation does not
-// leave a trust-bundle.pem behind as a side effect of being wrong.
-func TestRunExec_PrintWithCommandWritesNothing(t *testing.T) {
+// exec must not write to the CA directory at all — not on the usage-error path,
+// and not on the happy one either.
+//
+// This replaces a test that stat'd "trust-bundle.pem" after a rejected
+// invocation. That filename stopped existing when the bundle moved into
+// authlib/tlsbridge, so the assertion watched a path nothing could ever create and
+// could not fail. The property worth pinning is the stronger one that made it
+// vacuous: Cortex owns those files now, so abctl only ever reads them.
+func TestRunExec_NeverWritesToTheCADir(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
-	bundle := filepath.Join(filepath.Dir(caPath), "trust-bundle.pem")
+	caDir := filepath.Dir(caPath)
 
-	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print", "--", "curl"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	before, err := os.ReadDir(caDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(bundle); err == nil {
-		t.Errorf("a rejected invocation wrote %s", bundle)
+	names := func(es []os.DirEntry) []string {
+		out := make([]string, 0, len(es))
+		for _, e := range es {
+			out = append(out, e.Name())
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := names(before)
+
+	// Every path through runExec that gets far enough to have derived an environment.
+	stats := execStats(t, cfgPath)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"print-with-command (usage error)", []string{"--cortex-stats-url", stats, "--print", "--", "curl"}},
+		{"print-with-empty-command (usage error)", []string{"--cortex-stats-url", stats, "--print", "--"}},
+		{"print alone", []string{"--cortex-stats-url", stats, "--print"}},
+		{"running a command", []string{"--cortex-stats-url", stats, "--", "/bin/sh", "-c", "exit 0"}},
+	} {
+		var stdout, stderr bytes.Buffer
+		runExec(tc.args, &stdout, &stderr)
+		after, rerr := os.ReadDir(caDir)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		if got := names(after); !slices.Equal(got, want) {
+			t.Errorf("%s changed the CA directory:\n before %v\n after  %v", tc.name, want, got)
+		}
 	}
 }
 
-// Each mode alone still works: this is exclusivity, not a new restriction on
-// either form.
-func TestRunExec_PrintAloneAndCommandAloneBothWork(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses /bin/sh")
-	}
-	cfgPath, _ := execCfg(t)
-
-	var pout, perr bytes.Buffer
-	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--print"}, &pout, &perr); code != 0 {
-		t.Errorf("--print alone: exit %d: %s", code, perr.String())
-	}
-	if !strings.Contains(pout.String(), "export HTTPS_PROXY=") {
-		t.Errorf("--print alone printed nothing useful:\n%s", pout.String())
-	}
-
-	var cout, cerr bytes.Buffer
-	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", "echo ran"}, &cout, &cerr); code != 0 {
-		t.Errorf("command alone: exit %d: %s", code, cerr.String())
-	}
-	if strings.TrimSpace(cout.String()) != "ran" {
-		t.Errorf("command alone did not run: %q", cout.String())
-	}
-}
-
-// TestRunExec_PreservesInheritedNoProxy. NO_PROXY is not ours to touch: a host
-// listed there bypasses Cortex, and with the replacing CA vars now carrying the
-// system roots, such a request still verifies against public trust.
 func TestRunExec_PreservesInheritedNoProxy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")

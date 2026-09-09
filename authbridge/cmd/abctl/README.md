@@ -107,8 +107,8 @@ abctl exec -- bob
 
 Everything after `--` is passed through exactly as typed. abctl never
 parses it, so the command's own flags need no escaping — even ones abctl
-also has, like `--config`. The child inherits your whole environment plus
-these eight variables:
+also has, like `--print`. The child inherits your whole environment plus
+these nine variables:
 
 | Variable | Value |
 |---|---|
