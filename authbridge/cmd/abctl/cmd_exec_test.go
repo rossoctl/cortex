@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -940,5 +941,59 @@ func TestExecEnv_RejectsAMalformedStatsURL(t *testing.T) {
 func TestDefaultCortexStatsURL(t *testing.T) {
 	if defaultCortexStatsURL != "http://localhost:47602/" {
 		t.Errorf("defaultCortexStatsURL = %q, want http://localhost:47602/", defaultCortexStatsURL)
+	}
+}
+
+// The help block must list exactly the variables exec injects.
+//
+// Every one of the five findings in the review round that produced this test was
+// text describing an older implementation, and two of them were this specific
+// drift: the help block omitted GIT_SSL_CAINFO once authlib added it, and called
+// bundle.crt "a temporary bundle" after it stopped being one. Both were invisible
+// to the suite — the help text is a string constant nothing asserted on.
+//
+// Names only. The prose around them is a human's job to keep honest, but the set
+// of variable names is mechanical, so it should not depend on anyone remembering.
+func TestExecUsage_ListsExactlyTheInjectedVariables(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	inject, err := execEnv(execStats(t, cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The block between the "child inherits" line and the paragraph after the table:
+	// the variable names live there, and nowhere else in the usage text does an
+	// ALL-CAPS env-var-shaped token appear.
+	start := strings.Index(execUsage, "The child inherits")
+	end := strings.Index(execUsage, "Those last four REPLACE")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("could not locate the variable block in execUsage; update this test's anchors")
+	}
+	block := execUsage[start:end]
+
+	// Env-var-shaped tokens: upper or lower snake case, at least two segments, so
+	// prose words like ADDED and REPLACE do not match.
+	re := regexp.MustCompile(`\b[A-Za-z]+(?:_[A-Za-z]+)+\b`)
+	listed := map[string]bool{}
+	for _, m := range re.FindAllString(block, -1) {
+		// Only count it if it is actually one of ours or is env-var-shaped enough to
+		// be a claim about one; anything else in the block is prose.
+		if strings.ToUpper(m) == m || strings.ToLower(m) == m {
+			listed[m] = true
+		}
+	}
+
+	for name := range inject {
+		if !listed[name] {
+			t.Errorf("exec injects %s but the help block does not list it", name)
+		}
+	}
+	for name := range listed {
+		if _, ok := inject[name]; !ok {
+			t.Errorf("the help block lists %s but exec does not inject it", name)
+		}
+	}
+	if len(listed) != len(inject) {
+		t.Errorf("help lists %d names, exec injects %d", len(listed), len(inject))
 	}
 }
