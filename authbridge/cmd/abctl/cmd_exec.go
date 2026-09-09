@@ -47,23 +47,6 @@ var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_p
 // A local copy went stale the moment GIT_SSL_CAINFO joined the managed set —
 // --print silently stopped emitting it — so exec reads the managed set instead.
 
-// systemRootFiles are the usual system CA bundle locations, in the order
-// crypto/x509 itself consults them (root_linux.go's certFiles, plus the common
-// BSD/macOS paths). The first one that exists is treated as the system store.
-//
-// Read from disk rather than via x509.SystemCertPool because the output has to
-// be a PEM *file* another process can open: SystemCertPool returns an opaque
-// pool whose certificates cannot be re-serialised (the DER is not retained on
-// every platform), so there is nothing to write back out.
-var systemRootFiles = []string{
-	"/etc/ssl/certs/ca-certificates.crt",                // Debian/Ubuntu/Alpine(ish)
-	"/etc/pki/tls/certs/ca-bundle.crt",                  // Fedora/RHEL 6
-	"/etc/ssl/ca-bundle.pem",                            // OpenSUSE
-	"/etc/pki/tls/cacert.pem",                           // OpenELEC
-	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // CentOS/RHEL 7
-	"/etc/ssl/cert.pem",                                 // Alpine, macOS (Homebrew OpenSSL)
-}
-
 const execUsage = `abctl exec — run a command with Cortex's proxy and CA in its environment
 
 Usage:
