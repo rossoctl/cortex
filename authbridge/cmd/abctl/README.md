@@ -105,10 +105,14 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   usable at 80 columns despite being last in display order — it is the column
   most people open this pane for.
 
-  Default columns: time, direction (in/out),
-  phase (req/resp), protocol (a2a/mcp/inf), method or model, HTTP status,
-  duration, host. Live-updates while in view — if the cursor is on the
-  last row, it auto-follows new events.
+  All twelve are on by default: `#` (exchange number, shared by a request
+  and its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS,
+  DURATION, TOKENS, COST, HOST. On a narrow terminal the low-ranked ones
+  are hidden rather than turned off, so widening the window brings them
+  back without touching the picker.
+
+  Live-updates while in view — if the cursor is on the last row, it
+  auto-follows new events.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
   keys; `y` yanks to `/tmp/abctl-event-<timestamp>.json` and flashes the
   path in the footer.

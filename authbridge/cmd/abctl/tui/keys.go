@@ -654,38 +654,45 @@ func (m *model) helpView() string {
 		// end, and the escapable/discoverable keys ahead of them, with the
 		// specialised ones first to be lost.
 		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
-			skipHint + "  [p] pause  [/] filter  [esc] back  [?] keys  [q] quit"
-		// Surface the hidden-message count so a filtered timeline doesn't
-		// look like data loss. Only annotate when hiding is on AND at
-		// least one message was hidden.
+			skipHint + "  [p] pause  [/] filter  [esc] back"
+
+		// Notices go BEFORE the essential hints, not after.
+		//
+		// fitHintLine drops from the front, so anything appended past "[q] quit"
+		// outlives it — at width 40 the footer read "… · → 1 more column ([c] to
+		// choose)" with no way to quit or reach help. A notice is worth less than
+		// the keys that let a user act on it.
+		//
+		// Surface the hidden-message count so a filtered timeline doesn't look like
+		// data loss. Only when hiding is on AND at least one message was hidden.
 		if m.hideInactive && m.hiddenInactive > 0 {
-			base = fmt.Sprintf("%s  ·  %d hidden",
-				base, m.hiddenInactive)
+			base = fmt.Sprintf("%s  ·  %d hidden", base, m.hiddenInactive)
 		}
-		// Columns that did not fit. The whole reason issue #866 was filed: HOST
-		// was declared but never visible, and nothing said the table had been
-		// clipped. Says how many and how to reach them.
+		// Columns that did not fit — the whole reason issue #866 was filed: HOST was
+		// declared but never visible, and nothing said the table had been clipped.
 		if m.eventColsDropped > 0 {
 			base = fmt.Sprintf("%s  ·  → %d more column%s ([c] to choose)",
 				base, m.eventColsDropped, plural(m.eventColsDropped))
 		}
-		return base
+		return base + "  [?] keys  [q] quit"
 	case paneDetail:
 		return "[↑↓] scroll  [y] yank  [u] usage  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		var base string
 		if m.parentCtx != nil {
-			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [esc] pods  [?] keys  [q] quit"
+			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [esc] pods"
 		} else {
-			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [?] keys  [q] quit"
+			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions"
 		}
-		// Surface a count of plugins with unmet dependencies so a single
-		// "✗" in the DEPS column doesn't get lost in a long list.
+		// Surface a count of plugins with unmet dependencies so a single "✗" in the
+		// DEPS column doesn't get lost in a long list. Before the essential hints,
+		// for the reason given in the paneEvents case: fitHintLine drops from the
+		// front, so a notice appended past "[q] quit" outlives it.
 		if n := m.unmetDepsCount(); n > 0 {
 			base = fmt.Sprintf("%s  ·  %d plugin%s with unmet deps",
 				base, n, plural(n))
 		}
-		return base
+		return base + "  [?] keys  [q] quit"
 	case panePluginDetail:
 		return "[↑↓] scroll  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
