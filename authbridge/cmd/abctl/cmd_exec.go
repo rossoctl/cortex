@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -137,6 +138,15 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// command and none follows. Refused rather than quietly read as plain --print —
 	// it is the empty case of the mutual exclusion below, and the same reasoning
 	// applies, so it gets the same answer.
+	// `abctl exec --` with nothing after it is a usage error knowable from argv, so
+	// it is answered here rather than after the config fetch below. Diagnosed later,
+	// a user with Cortex down was told "no Cortex is running" and got exit 1 for what
+	// execUsage documents as exit 2 — and paid a pointless round-trip to learn it.
+	if found && !*printOnly && len(cmdArgs) == 0 {
+		fmt.Fprintln(stderr, "abctl: nothing to run after --")
+		fmt.Fprint(stderr, execUsage)
+		return 2
+	}
 	if found && *printOnly && len(cmdArgs) == 0 {
 		fmt.Fprintln(stderr, "abctl: --print takes no command, so `--` has nothing to separate.")
 		fmt.Fprintln(stderr, "  Use `abctl exec --print` on its own.")
@@ -172,38 +182,21 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	inject, err := execEnv(*statsURL)
+	inject, missingBundle, err := execEnv(*statsURL)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
-
-	// Neither ca.crt nor bundle.crt is written by exec any more: the proxy writes
-	// both on boot (authbridge-proxy calls tlsbridge.EnsureTrustBundle). Running
-	// before that first start is legitimate, so this is a warning rather than an
-	// error — but it is worth naming, because the failure it causes is loud and
-	// otherwise unexplained: git, curl and Python all refuse outright when the CA
-	// file they were pointed at cannot be read.
-	for _, k := range []string{envCACerts, envSSLCert} {
-		p := inject[k]
-		if p == "" {
-			continue
-		}
-		if _, serr := os.Stat(p); serr != nil {
-			fmt.Fprintf(stderr, "abctl: note: %s does not exist yet — Cortex writes it on first start.\n"+
-				"  TLS through the bridge will fail until then (abctl service start).\n", p)
-			break
-		}
+	// execEnv already dropped the replacing variables; say what that costs.
+	if missingBundle != "" {
+		fmt.Fprintf(stderr, "abctl: note: %s does not exist yet — Cortex writes it on first start.\n"+
+			"  Until then the child keeps its own trusted roots and only hosts the bridge\n"+
+			"  terminates will fail verification (abctl service start).\n", missingBundle)
 	}
 
 	if *printOnly {
 		printExecEnv(inject, stdout)
 		return 0
-	}
-	if len(cmdArgs) == 0 {
-		fmt.Fprintln(stderr, "abctl: nothing to run after --")
-		fmt.Fprint(stderr, execUsage)
-		return 2
 	}
 
 	return runChild(cmdArgs, inject, stdout, stderr)
@@ -239,32 +232,43 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// Signal handling splits by how the signal arrives.
+	// Signal handling splits by how the signal arrives, and abctl has to survive
+	// both kinds — it is a wrapper, so dying first strands the child on the terminal.
 	//
-	// tty-generated signals (SIGINT/SIGQUIT/SIGTSTP from a keystroke) are delivered
-	// by the tty driver to the whole foreground process group, so the child already
-	// gets them and relaying would double the signal. Those are left alone —
-	// interactive children rely on handling their own Ctrl-C.
+	// tty-generated signals (SIGINT and SIGQUIT from a keystroke) go to the whole
+	// foreground process group, so the child already has them: there is no Setpgid
+	// here, deliberately, because an interactive child is supposed to see Ctrl-C.
+	// Relaying them would double the signal. But abctl must still CATCH them, or
+	// Go's default disposition kills the wrapper while the child keeps running —
+	// for `abctl exec -- claude`, where Ctrl-C interrupts a turn rather than
+	// quitting, that leaves the shell prompt and claude both reading one stdin, with
+	// the terminal in whatever mode claude left it. Verified: with SIGINT unhandled,
+	// abctl exits -2 and the child survives. SIGQUIT is the same shape and
+	// additionally dumps Go's goroutine stacks over the user's screen.
 	//
-	// A signal aimed at abctl's PID is different: `timeout 30 abctl exec -- …`, a CI
-	// runner, or systemd sends SIGTERM to abctl alone. Go's default disposition then
-	// kills abctl and leaves the child running, orphaned, with the injected
-	// environment — and `timeout` in a Makefile is exactly what "safe in a pipeline
-	// or a Makefile" claims to support. So SIGTERM and SIGHUP are relayed, then abctl
-	// keeps waiting and still reports the child's real status.
+	// So they are caught and dropped: notified, never forwarded. The runtime absorbs
+	// them, Wait keeps running, and the child's own death arrives as 128+signum —
+	// what a shell would report anyway.
 	//
-	// Notify BEFORE Start, not after: a SIGTERM landing in the window between them
-	// would hit Go's default disposition and kill abctl with the child already
-	// running — orphaning it with the injected environment, the exact failure this
-	// relay exists to prevent. The channel is buffered, so a signal arriving during
-	// that window is held and delivered to the relay below rather than dropped.
+	// NOT signal.Ignore: that sets SIG_IGN at the OS level, and exec() preserves
+	// ignored dispositions across the exec (caught ones reset to default), so the
+	// child would inherit the ignore and Ctrl-C would stop reaching it at all.
+	//
+	// A signal aimed at abctl's PID alone is the other kind: `timeout 30 abctl exec
+	// -- …`, a CI runner, or systemd sends SIGTERM to the wrapper only, and nothing
+	// reaches the child unless abctl passes it on. Those two ARE relayed.
+	//
+	// Notify BEFORE Start: a signal landing between them would hit the default
+	// disposition and kill abctl with the child already running. The channel is
+	// buffered, so one arriving in that window is held for the relay rather than
+	// dropped.
+	relayed := []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
+	absorbed := []os.Signal{syscall.SIGINT, syscall.SIGQUIT}
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP)
-	// Stopped before the relay goroutine is told to exit, so nothing can be queued
-	// onto a channel with no reader.
-	defer signal.Stop(sigs)
+	signal.Notify(sigs, append(append([]os.Signal{}, relayed...), absorbed...)...)
 
 	if err := cmd.Start(); err != nil {
+		signal.Stop(sigs)
 		fmt.Fprintf(stderr, "abctl: %s: %v\n", argv[0], err)
 		return 1
 	}
@@ -275,11 +279,22 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	// means the goroutine touches nothing cmd owns.
 	proc := cmd.Process
 	relayDone := make(chan struct{})
+	// Registered AFTER the goroutine's own defer below, so LIFO order runs
+	// signal.Stop first and then closes relayDone: deliveries stop before the reader
+	// goes away, rather than the other way round. (No bug either way — sigs is
+	// buffered and os/signal drops instead of blocking on a full channel — but the
+	// previous comment claimed this order while the code did the reverse.)
 	defer close(relayDone)
+	defer signal.Stop(sigs)
 	go func() {
 		for {
 			select {
 			case sig := <-sigs:
+				// Absorbed signals are caught so abctl survives them, and deliberately
+				// NOT forwarded: the child already got them from the tty.
+				if slices.Contains(absorbed, sig) {
+					continue
+				}
 				// Best-effort: the child may have exited between the signal and here,
 				// which is a benign race, not an error worth reporting.
 				_ = proc.Signal(sig)
@@ -309,7 +324,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 }
 
 // execEnv builds the variables to inject for one child.
-func execEnv(statsURL string) (env map[string]string, err error) {
+func execEnv(statsURL string) (env map[string]string, missingBundle string, err error) {
 	// The RUNNING proxy's config, not ~/.cortex/config.yaml. exec's whole job is to
 	// point a child at a proxy that has to be up for it to work, so the values must
 	// come from the process that will serve it — a file can have been edited since
@@ -317,33 +332,33 @@ func execEnv(statsURL string) (env map[string]string, err error) {
 	// anything is listening.
 	cfg, err := runningConfig(statsURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// wanted() still owns the derivation from a config to the env vars, so exec and
 	// `claude-code enable` produce identical values for the same Cortex; only the
 	// SOURCE of the config differs (live process here, file there — enable writes
 	// settings for sessions that outlive any one proxy run).
-	want, err := wantedFromLoaded(cfg)
+	want, err := wantedFromLoaded(cfg, "the Cortex at "+statsURL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	proxy := want[envProxy]
 	if proxy == "" {
-		return nil, fmt.Errorf("the Cortex at %s yields no proxy address", statsURL)
+		return nil, "", fmt.Errorf("the Cortex at %s yields no proxy address", statsURL)
 	}
 
 	// The bridge posture, not just the CA path. Shared with `claude-code enable`
 	// via bridgeEnabled/errBridgeDisabled so the two commands cannot disagree about
 	// it — see errBridgeDisabled for why a disabled bridge has to be refused.
 	if !bridgeEnabled(cfg) {
-		return nil, errBridgeDisabled("the Cortex at " + statsURL)
+		return nil, "", errBridgeDisabled("the Cortex at " + statsURL)
 	}
 	if want[envCACerts] == "" {
 		// Refused rather than injecting the proxy alone. Without a trusted CA the
 		// bridge cannot terminate TLS, so every https request either fails
 		// verification or — worse, if the tool is lenient — tunnels through
 		// unparsed, which looks exactly like success while Cortex sees nothing.
-		return nil, fmt.Errorf("the Cortex at %s has no tls_bridge.ca_dir, so the child would\n"+
+		return nil, "", fmt.Errorf("the Cortex at %s has no tls_bridge.ca_dir, so the child would\n"+
 			"  have no CA to trust and https through the bridge would fail verification.\n"+
 			"  Enable the TLS bridge first", statsURL)
 	}
@@ -363,7 +378,32 @@ func execEnv(statsURL string) (env map[string]string, err error) {
 	for _, k := range execProxyVars {
 		out[k] = proxy
 	}
-	return out, nil
+
+	// Omit the REPLACING variables when the bundle is not on disk yet.
+	//
+	// Cortex writes bundle.crt on boot (tlsbridge.EnsureTrustBundle), and running
+	// before that first start is legitimate. But those four names replace the trust
+	// store rather than extend it, so pointing them at a missing file does not fall
+	// back to the platform roots — git, curl and Python refuse outright ("error
+	// setting certificate verify locations") and EVERY https request fails, bridged
+	// or not. Leaving them unset costs only the bridged hosts, which is strictly
+	// better and is what the README describes.
+	//
+	// NODE_EXTRA_CA_CERTS stays either way: it is additive, so a missing file makes
+	// Node warn and keep its own roots — the same state `claude-code enable` has
+	// always written.
+	//
+	// Here rather than in runExec, so the invariant travels with the derivation: any
+	// caller of execEnv gets an environment that is safe to hand a child.
+	if b := out[envSSLCert]; b != "" {
+		if _, serr := os.Stat(b); serr != nil {
+			for _, k := range bundleKeys {
+				delete(out, k)
+			}
+			missingBundle = b
+		}
+	}
+	return out, missingBundle, nil
 }
 
 // mergeEnv layers inject over env, replacing rather than appending.

@@ -289,7 +289,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
 	}
-	out, err := wantedFromLoaded(cfg)
+	out, err := wantedFromLoaded(cfg, cortexCfgPath)
 	return out, cfg, err
 }
 
@@ -299,10 +299,15 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 // proxy while `claude-code enable` feeds it one read from disk. One derivation, two
 // sources: the values the two commands produce for the same Cortex cannot drift,
 // which is the property both rely on.
-func wantedFromLoaded(cfg *config.Config) (map[string]string, error) {
+// source names where cfg came from — a file path from wantedFromConfig, a stats
+// URL from execEnv — so a refusal points at the thing the reader can go and change.
+// errBridgeDisabled already took this parameter for exactly that reason; this
+// applies the same reasoning to the forward_proxy_addr refusal, which had lost the
+// path when the derivation became shared.
+func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, error) {
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {
-		return nil, fmt.Errorf("the Cortex config has no listener.forward_proxy_addr; there is no forward proxy to point at")
+		return nil, fmt.Errorf("%s has no listener.forward_proxy_addr; there is no forward proxy to point at", source)
 	}
 	// A bind address is not a URL: ":8081" and "127.0.0.1:47600" both need a host
 	// a client can actually dial.

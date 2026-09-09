@@ -176,6 +176,12 @@ meant to be kept, and are the same ones `abctl claude-code enable` writes into
 for its lifetime. Asking for both in one invocation is a contradiction about
 which you want, so abctl says so rather than picking one.
 
+`abctl claude-code enable` shares this requirement as of the same change: it too
+refuses `tls_bridge.mode: disabled` with a `ca_dir` set, a combination it used to
+accept and write into `settings.json`, where the CA bought nothing because the
+bridge terminated no TLS. `enable` also now points its four replacing variables at
+`bundle.crt` rather than the bare `ca.crt`.
+
 Requires an enabled TLS bridge — both `tls_bridge.mode: enabled` and
 `tls_bridge.ca_dir`. `mode: disabled` with a `ca_dir` set is a valid config,
 but the bridge then terminates nothing, so a CA would buy the child nothing
@@ -183,7 +189,7 @@ while breaking its https; `abctl exec` refuses rather than inject either half
 of a setup that cannot work.
 
 Before Cortex's first start, `ca.crt` does not exist yet. `exec` still runs the
-command and says so, but leaves the three replacing variables unset — the child
+command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
 

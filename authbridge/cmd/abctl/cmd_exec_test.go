@@ -59,6 +59,27 @@ const testRootPEM = "-----BEGIN CERTIFICATE-----\nSYSTEMROOT\n-----END CERTIFICA
 // under test parses it.
 const testCAPEM = "-----BEGIN CERTIFICATE-----\nBRIDGECA\n-----END CERTIFICATE-----\n"
 
+// execCfgNoBundle is execCfg with ca.crt but no bundle.crt: Cortex configured and
+// its CA present, but never started, so EnsureTrustBundle has not run.
+func execCfgNoBundle(t *testing.T) (cfgPath, caPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	caDir := filepath.Join(dir, "ca")
+	if err := os.MkdirAll(caDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caPath = filepath.Join(caDir, "ca.crt")
+	if err := os.WriteFile(caPath, []byte(testCAPEM), 0o644); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	cfgPath = filepath.Join(dir, "config.yaml")
+	body := strings.Replace(cortexCfg, "CADIR", caDir, 1)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath, caPath
+}
+
 // execCfgNoCA is execCfg without ca.crt on disk: Cortex configured but never
 // started.
 func execCfgNoCA(t *testing.T) (cfgPath, caPath string) {
@@ -250,8 +271,11 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 			t.Errorf("%s names the lone bridge CA; public trust would be lost", k)
 		}
 	}
-	// Asserted from the child's output: the bundle is deliberately removed when
-	// runExec returns, so it cannot be read from here.
+	// Asserted from the CHILD's output rather than from here, because what matters is
+	// that the child can read the bundle — the variable is only useful if the process
+	// it is handed to can open the file. (The bundle is a fixture in t.TempDir() that
+	// outlives runExec, so the parent could read it too; that just would not prove
+	// the same thing.)
 	if !strings.Contains(got, "BUNDLE_HAS_BRIDGE_CA") {
 		t.Errorf("the child could not read a bundle containing the bridge CA\n%s", got)
 	}
@@ -839,7 +863,8 @@ func execStats(t *testing.T, cfgPath string) string {
 // execEnvFor is execEnv against a stub serving the given config file.
 func execEnvFor(t *testing.T, cfgPath string) (map[string]string, error) {
 	t.Helper()
-	return execEnv(execStats(t, cfgPath))
+	env, _, err := execEnv(execStats(t, cfgPath))
+	return env, err
 }
 
 // --- The three behaviours changed in this round ---
@@ -914,7 +939,7 @@ func TestExecEnv_ReadsTheRunningProxyNotAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env, err := execEnv(execStats(t, cfgPath))
+	env, _, err := execEnv(execStats(t, cfgPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +956,7 @@ func TestExecEnv_ReadsTheRunningProxyNotAFile(t *testing.T) {
 // A stats URL that is not a URL is reported as such, rather than becoming a
 // confusing connection error.
 func TestExecEnv_RejectsAMalformedStatsURL(t *testing.T) {
-	if _, err := execEnv("not a url"); err == nil {
+	if _, _, err := execEnv("not a url"); err == nil {
 		t.Fatal("want an error for a malformed stats URL")
 	}
 }
@@ -956,7 +981,7 @@ func TestDefaultCortexStatsURL(t *testing.T) {
 // of variable names is mechanical, so it should not depend on anyone remembering.
 func TestExecUsage_ListsExactlyTheInjectedVariables(t *testing.T) {
 	cfgPath, _ := execCfg(t)
-	inject, err := execEnv(execStats(t, cfgPath))
+	inject, _, err := execEnv(execStats(t, cfgPath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,5 +1020,133 @@ func TestExecUsage_ListsExactlyTheInjectedVariables(t *testing.T) {
 	}
 	if len(listed) != len(inject) {
 		t.Errorf("help lists %d names, exec injects %d", len(listed), len(inject))
+	}
+}
+
+// abctl must SURVIVE Ctrl-C, not die on it.
+//
+// SIGINT and SIGQUIT are tty-generated: they reach the whole foreground process
+// group, so the child already has them and abctl must not relay. But abctl still
+// has to CATCH them, or Go's default disposition kills the wrapper while the child
+// keeps running — for `abctl exec -- claude`, where Ctrl-C interrupts a turn rather
+// than quitting, that strands claude on the terminal with the shell prompt back and
+// two processes reading one stdin. Verified before the fix: abctl exited -2 while
+// the child survived.
+//
+// Not signal.Ignore: that sets SIG_IGN, which exec() preserves across the exec, so
+// the child would inherit it and Ctrl-C would stop reaching it at all.
+func TestRunExec_SurvivesSIGINT(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX signals")
+	}
+	cfgPath, _ := execCfg(t)
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	// The child exits on its own shortly after; the point is that runExec is still
+	// there to report its status rather than having been killed by the SIGINT.
+	script := "trap 'true' INT; touch " + started +
+		"; i=0; while [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done; exit 3"
+
+	var stdout, stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
+			"/bin/sh", "-c", script}, &stdout, &stderr)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Signal THIS process, as a tty would. If runExec did not catch SIGINT, the
+	// whole test binary would die here rather than one test failing.
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case code := <-done:
+		// The child's own exit status, proving abctl stayed alive to Wait on it.
+		if code != 3 {
+			t.Errorf("exit = %d, want 3 (the child's); abctl did not survive the SIGINT", code)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("runExec never returned after SIGINT")
+	}
+}
+
+// Before Cortex's first start, bundle.crt does not exist. The four REPLACING
+// variables must be omitted rather than pointed at a missing file.
+//
+// Those names replace the trust store, so a missing target does not fall back to
+// the platform roots — git, curl and Python refuse outright and EVERY https request
+// fails, bridged or not. Leaving them unset costs only the bridged hosts. The README
+// described this behaviour while the code only warned and continued.
+func TestExecEnv_OmitsReplacingVarsWhenTheBundleIsMissing(t *testing.T) {
+	cfgPath, caPath := execCfgNoBundle(t)
+
+	env, _, err := execEnv(execStats(t, cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range bundleKeys {
+		if v, ok := env[k]; ok {
+			t.Errorf("%s = %q, but the bundle does not exist — the child would lose all trust", k, v)
+		}
+	}
+	// The additive name stays: Node warns and keeps its own roots, which is the same
+	// state `claude-code enable` has always written.
+	if env[envCACerts] != caPath {
+		t.Errorf("%s = %q, want the bridge CA %q", envCACerts, env[envCACerts], caPath)
+	}
+	// And the proxy half still works.
+	if env[envProxy] == "" {
+		t.Error("the proxy variables should still be set before first start")
+	}
+}
+
+// The note must say what the user actually gets, and the command must still run.
+func TestRunExec_BeforeFirstStartRunsAndSaysWhatIsLost(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	cfgPath, _ := execCfgNoBundle(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
+		"/bin/sh", "-c", `printf 'SSL_CERT_FILE=[%s]\n' "$SSL_CERT_FILE"; echo ran`}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "SSL_CERT_FILE=[]") {
+		t.Errorf("the child inherited a bundle path that does not exist:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "keeps its own trusted roots") {
+		t.Errorf("the note should say what the child keeps:\n%s", stderr.String())
+	}
+}
+
+// `abctl exec --` is a usage error knowable from argv, so it must not depend on
+// reaching Cortex. Diagnosed after the fetch, a user with Cortex down got "no Cortex
+// is running" and exit 1 for what execUsage documents as exit 2.
+func TestRunExec_EmptyCommandIsAUsageErrorWithoutCortex(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// A URL nothing answers on: if the check were still below the fetch, this would
+	// report an outage instead.
+	code := runExec([]string{"--cortex-stats-url", "http://127.0.0.1:1/", "--"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (usage)", code)
+	}
+	if strings.Contains(stderr.String(), "no Cortex is running") {
+		t.Errorf("a usage error was diagnosed as a Cortex outage:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing to run") {
+		t.Errorf("error should name the empty command:\n%s", stderr.String())
 	}
 }

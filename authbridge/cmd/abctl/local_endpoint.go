@@ -119,6 +119,20 @@ var errNoRunningCortex = errors.New("no Cortex is running on this machine")
 // process means the values describe the thing that will actually serve the request,
 // and a proxy that is down is reported as down rather than yielding an environment
 // that points at nothing.
+// TRUST NOTE, considered rather than missed: this moves the trust anchor from a
+// file only the user can write to whatever answers on a TCP port. The response
+// carries tls_bridge.ca_dir, from which exec derives a CA path it injects into four
+// variables that REPLACE the child's trust store — so anything able to bind 47602
+// before Cortex does (no privileges needed, any local account) could hand back a
+// proxy URL and a CA of its choosing. `claude-code enable` reads a file instead, so
+// this is new surface rather than a regression.
+//
+// Not hardened further here: on a single-user workstation a local process that can
+// squat a port can generally also write ~/.cortex, so the file path is not much
+// stronger, and requiring the response to "look like Cortex" is a speed bump rather
+// than a boundary. Worth revisiting if abctl ever runs somewhere multi-tenant —
+// checking that ca_dir is where abctl expects Cortex's own to be would be the
+// cheapest first step.
 func runningConfig(base string) (*config.Config, error) {
 	u, perr := url.Parse(base)
 	if perr != nil || u.Host == "" {
