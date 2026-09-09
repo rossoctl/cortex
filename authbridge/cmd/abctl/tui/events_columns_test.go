@@ -56,20 +56,33 @@ func TestFitColumns_IssueScenarioRevealsHost(t *testing.T) {
 	}
 }
 
-// A column the user turned on explicitly must outrank one that is merely on by
-// default. Without this the feature does not work: the user's choice is the first
-// thing sacrificed.
-func TestFitColumns_OptedInColumnsSurviveDefaults(t *testing.T) {
-	sel := defaultColumnSelection()
-	sel[colHost] = true // opted in; defaultOn is false
-
-	fitted, dropped := fitColumns(selectedColumns(sel), 90)
+// A high-ranked column must outlive a low-ranked one. Ranking by "is it a default"
+// instead made every default equally expendable, so HOST — last in display order —
+// was the first thing dropped, which is the failure #866 describes.
+func TestFitColumns_KeepRankDecidesWhatSurvives(t *testing.T) {
+	fitted, dropped := fitColumns(selectedColumns(defaultColumnSelection()), 90)
 	if dropped == 0 {
-		t.Skip("terminal wide enough that nothing was dropped")
+		t.Fatal("nothing dropped at 90 columns; the ranking is untested")
 	}
-	if !has(fitted, colHost) {
-		t.Errorf("the opted-in HOST column was dropped before default-on ones; got %v",
-			colNames(fitted))
+
+	for _, c := range fitted {
+		if c.keep != keepLow {
+			continue
+		}
+		// A keepLow column survived, so no keepHigh one may have been dropped in
+		// its place.
+		for _, want := range eventColumns {
+			if want.keep == keepHigh && !has(fitted, want.id) {
+				t.Errorf("dropped %s (keepHigh) while keeping %s (keepLow); got %v",
+					want.id, c.id, colNames(fitted))
+			}
+		}
+	}
+	// Concretely: the columns the ranks exist to protect.
+	for _, id := range []eventColumnID{colIndex, colHost} {
+		if !has(fitted, id) {
+			t.Errorf("%s is keepHigh but was dropped; got %v", id, colNames(fitted))
+		}
 	}
 }
 

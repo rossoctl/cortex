@@ -202,13 +202,13 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 		return cols, 0
 	}
 
-	// Rank sacrifices: default-on columns first, from the right, then opted-in
-	// ones. Index 0 is never sacrificed — "#" pairs the exchange and is what makes
-	// the timeline readable at all.
 	// Give up low-ranked columns first, then normal, then high — and within a rank,
 	// from the right. Ranking by "is it a default" instead made every default
 	// equally expendable, so HOST (last in display order) went first, which is the
 	// failure #866 describes.
+	//
+	// Index 0 is never sacrificed: "#" pairs a request with its response, and
+	// without it the timeline cannot be read at all.
 	sacrificeOrder := make([]int, 0, len(cols))
 	for _, rank := range []int{keepLow, keepNormal, keepHigh} {
 		for i := len(cols) - 1; i > 0; i-- {
