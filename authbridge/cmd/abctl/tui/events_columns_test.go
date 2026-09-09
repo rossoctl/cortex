@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 func colNames(cols []eventColumn) []string {
@@ -179,5 +182,138 @@ func TestColumnPickerLine(t *testing.T) {
 	}
 	if strings.Contains(stripANSI(columnPickerLine(sel, 3)), "["+string(eventColumns[0].id)+"]") {
 		t.Error("bracket did not move with the cursor")
+	}
+}
+
+// newTestEventsModel builds a model with a populated events table, at a width
+// wide enough for every default column.
+func newTestEventsModel(t *testing.T) *model {
+	t.Helper()
+	events := make([]pipeline.SessionEvent, 6)
+	for i := range events {
+		events[i] = pipeline.SessionEvent{
+			At:        time.Now(),
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "api.example.com",
+			Inference: &pipeline.InferenceExtension{Model: "claude-sonnet-5", TotalTokens: 100},
+		}
+	}
+	m := &model{
+		pane: paneEvents, selectedSess: "s", bodyHeight: 12, width: 200,
+		events:       map[string][]pipeline.SessionEvent{"s": events},
+		eventColumns: defaultColumnSelection(),
+	}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+	return m
+}
+
+// Toggling a column OFF must not panic.
+//
+// bubbles' SetColumns calls UpdateViewport, which re-renders the rows already
+// loaded; its renderRow iterates the ROW's cells while indexing m.cols[i], so a
+// row wider than the new column set reads past the end of m.cols. Setting the
+// columns before the rows was exactly that — 11 stale cells against 10 new
+// columns — and it panicked inside the bubbletea render loop the first time a
+// user pressed space.
+func TestRebuildEventsTable_ToggleOffDoesNotPanic(t *testing.T) {
+	m := newTestEventsModel(t)
+
+	// Start wide so every default column is present, then narrow the selection one
+	// column at a time. Each rebuild renders the previous, wider rows.
+	for _, id := range []eventColumnID{colCost, colTokens, colDuration, colStatus, colMethod} {
+		m.eventColumns[id] = false
+		m.rebuildEventsTable() // must not panic
+	}
+	// And back on again, which widens rows against a narrower column set.
+	for _, id := range []eventColumnID{colMethod, colStatus, colDuration, colTokens, colCost} {
+		m.eventColumns[id] = true
+		m.rebuildEventsTable()
+	}
+}
+
+// Every row must carry exactly one cell per rendered column. A mismatch is what
+// panics inside bubbles, so assert the invariant directly rather than only that we
+// survived.
+func TestRebuildEventsTable_RowWidthMatchesColumns(t *testing.T) {
+	m := newTestEventsModel(t)
+
+	for _, sel := range []map[eventColumnID]bool{
+		defaultColumnSelection(),
+		{colIndex: true, colHost: true},
+		{colIndex: true},
+		{}, // falls back to the defaults
+	} {
+		m.eventColumns = sel
+		m.rebuildEventsTable()
+
+		want := len(m.eventsTbl.Columns())
+		for i, row := range m.eventsTbl.Rows() {
+			if len(row) != want {
+				t.Errorf("row %d has %d cells for %d columns", i, len(row), want)
+			}
+		}
+	}
+}
+
+// A narrow terminal re-fits on every rebuild, so the same invariant has to hold
+// as the width changes underneath.
+func TestRebuildEventsTable_WidthChangesKeepRowsAligned(t *testing.T) {
+	m := newTestEventsModel(t)
+	for _, w := range []int{200, 120, 80, 40, 200} {
+		m.width = w
+		m.rebuildEventsTable()
+		want := len(m.eventsTbl.Columns())
+		for i, row := range m.eventsTbl.Rows() {
+			if len(row) != want {
+				t.Errorf("width %d: row %d has %d cells for %d columns", w, i, len(row), want)
+			}
+		}
+	}
+}
+
+// Drive the picker the way a user does — `c`, then space and arrow keys. The crash
+// this guards against fired through the key path, not through a direct
+// rebuildEventsTable call, so exercise that path end to end.
+func TestColumnPicker_KeyPathSurvivesEveryToggle(t *testing.T) {
+	m := newTestEventsModel(t)
+
+	m.handleKey(keyRune('c'))
+	if !m.colPicker {
+		t.Fatal("`c` did not open the picker")
+	}
+	// Toggle every column off, moving right each time.
+	for i := 0; i < len(eventColumns); i++ {
+		m.handleKey(keyRune(' '))
+		m.handleKey(keyRune('l'))
+	}
+	// Never a blank table, however much was turned off.
+	if len(m.eventsTbl.Columns()) == 0 {
+		t.Error("every column off left a blank table")
+	}
+	// Reset restores the defaults.
+	m.handleKey(keyRune('r'))
+	if got, want := len(m.eventsTbl.Columns()), len(selectedColumns(defaultColumnSelection())); got != want {
+		t.Errorf("after reset: %d columns, want %d", got, want)
+	}
+	m.handleKey(keyRune('c'))
+	if m.colPicker {
+		t.Error("`c` did not close the picker")
+	}
+}
+
+// The picker owns the keyboard while open: space and the arrows must not also move
+// the table cursor underneath it.
+func TestColumnPicker_OwnsTheKeyboard(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.eventsTbl.SetCursor(2)
+
+	m.handleKey(keyRune('c'))
+	m.handleKey(keyRune('l'))
+	m.handleKey(keyRune(' '))
+
+	if got := m.eventsTbl.Cursor(); got != 2 {
+		t.Errorf("table cursor moved to %d while the picker was open", got)
 	}
 }

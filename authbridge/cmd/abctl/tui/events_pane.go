@@ -108,8 +108,9 @@ func (m *model) rebuildEventsTable() {
 	// row cell come from `cols`, so they cannot disagree.
 	cols, dropped := fitColumns(selectedColumns(m.eventColumns), m.width)
 	m.eventColsDropped = dropped
-	m.eventsTbl.SetColumns(tableColumns(cols))
 
+	// Rows are built first and handed to the table together with their columns at
+	// the end of this function — see the note there on why the order matters.
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
@@ -149,6 +150,15 @@ func (m *model) rebuildEventsTable() {
 		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, er)
 	}
+	// Clear, set columns, then set the matching rows.
+	//
+	// SetColumns calls UpdateViewport, which re-renders whatever rows are loaded,
+	// and bubbles' renderRow walks the ROW's cells while indexing m.cols[i] — so a
+	// row with more cells than there are columns reads past the end and panics
+	// ("index out of range [10] with length 10"). Toggling a column off is exactly
+	// that. Clearing first leaves SetColumns nothing to mis-render.
+	m.eventsTbl.SetRows(nil)
+	m.eventsTbl.SetColumns(tableColumns(cols))
 	m.eventsTbl.SetRows(rows)
 
 	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise
