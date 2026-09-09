@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 	"strings"
 	"testing"
 )
@@ -145,10 +146,24 @@ func TestFooter_NoticesStillAppearWhenThereIsRoom(t *testing.T) {
 // The pipeline pane appended its unmet-deps notice the same way, so it had the
 // same defect. Pre-existing rather than introduced here, but identical in kind.
 func TestFitHintLine_PipelineNoticeNeverOutlivesQuit(t *testing.T) {
-	m := &model{pane: panePipeline}
-	// unmetDepsCount reads the pipeline; a nil one yields 0, so drive the notice
-	// through a stub-free path by checking both with and without it present.
+	// A populated pipeline with one genuinely unmet dependency, so the
+	// "%d plugin%s with unmet deps" branch is actually taken. With a nil pipeline
+	// unmetDepsCount() returns 0 and this test asserted only the plain panePipeline
+	// footer — which TestEveryPaneFitsAt80 already covers, so the notice this test
+	// is named for went unexercised.
+	m := &model{pane: panePipeline, pipeline: &apiclient.PipelineView{
+		Outbound: []apiclient.PipelinePlugin{
+			{Name: "token-exchange", Direction: "outbound", Position: 0,
+				Requires: []string{"jwt-validation"}},
+		},
+	}}
+	if n := m.unmetDepsCount(); n == 0 {
+		t.Fatal("fixture produced no unmet deps, so the notice branch is not exercised")
+	}
 	full := m.helpView()
+	if !strings.Contains(full, "unmet deps") {
+		t.Fatalf("footer lacks the unmet-deps notice this test is named for:\n%q", full)
+	}
 	for _, width := range []int{80, 60, 40, 24} {
 		got := fitHintLine(full, width)
 		if !strings.Contains(got, "[q] quit") {

@@ -186,15 +186,12 @@ func columnsWidth(cols []eventColumn) int {
 // many it had to drop.
 //
 // Explicit rather than letting bubbles clip: with every column on the table needs
-// ~135 terminal columns, so HOST simply was not there and nothing said so. The
-// count feeds the footer, which is what issue #866 asks for.
+// ~156 terminal columns (144 of column width plus a gutter each, see
+// columnsWidth), so HOST simply was not there and nothing said so. The count feeds
+// the footer, which is what issue #866 asks for.
 //
-// Drops by declaration order from the right, EXCEPT that a column the user turned
-// on explicitly outranks one that is merely on by default. Without that, the
-// issue's own scenario fails: turn off DIR/TIME/TOKENS to make room for HOST, and
-// HOST — last in display order — is still the first thing dropped, so the user
-// gets none of what they asked for. An explicit choice has to survive the columns
-// nobody chose.
+// Drops from the right by the static keep rank, so the columns that identify a row
+// outlive the ones that merely annotate it.
 //
 // Never returns an empty slice: one clipped column beats a blank pane.
 func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped int) {
@@ -257,7 +254,50 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 	b.WriteString(styleTitle.Render("COLUMNS"))
 	b.WriteString("\n\n")
 
+	// Bound the list to what the terminal can actually show.
+	//
+	// overlayCenter breaks out at `row >= len(out)`, so rows past the bottom edge
+	// are dropped silently — and the LAST row is the key hints, the one thing a
+	// stuck user needs. Verified: at 12 lines the "[esc] close" hint disappeared
+	// entirely. The `height` parameter was accepted and ignored; this is the guard
+	// it exists for.
+	//
+	// Reserve, counted against the rendered panel rather than guessed: 2 border
+	// rows + title + blank after it + blank before the hint + hint = 6, plus 1 for
+	// the "N of M shown" note that appears exactly when the list is clipped.
+	rows := len(eventColumns)
+	if height > 0 {
+		if avail := height - 7; avail < rows {
+			rows = avail
+		}
+		// Always show at least one column row, however short the terminal: a picker
+		// with a title and no columns is worse than one that is obviously clipped.
+		// Below ~8 lines the panel cannot fit its own border, title and hint, so it
+		// is clipped by overlayCenter — a physical limit of a bordered modal, not
+		// something this guard can recover. At 8 it degrades correctly: fitHintLine
+		// drops "[↑↓] move" and keeps close/quit.
+		if rows < 1 {
+			rows = 1
+		}
+	}
+	// Scroll the window so the cursor stays visible, rather than clipping the tail
+	// and leaving the selection off-screen where space toggles something unseen.
+	start := 0
+	if cursor >= rows {
+		start = cursor - rows + 1
+	}
+	end := start + rows
+	if end > len(eventColumns) {
+		end = len(eventColumns)
+		if start = end - rows; start < 0 {
+			start = 0
+		}
+	}
+
 	for i, c := range eventColumns {
+		if i < start || i >= end {
+			continue
+		}
 		box := "[ ]"
 		if sel[c.id] {
 			box = "[x]"
@@ -279,8 +319,38 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(styleHint.Render("[↑↓] move  [space] toggle  [r] reset  [esc] close  [q] quit"))
+	if end-start < len(eventColumns) {
+		b.WriteString(styleMuted.Render(fmt.Sprintf("  … %d of %d shown (terminal too short)",
+			end-start, len(eventColumns))))
+		b.WriteString("\n")
+	}
 
-	return styleBorder.Render(b.String())
+	b.WriteString("\n")
+	// fitHintLine, so a narrow terminal drops hints from the front and keeps
+	// [q] quit rather than wrapping the line. Same treatment the footer gets.
+	b.WriteString(styleHint.Render(fitHintLine(
+		"[↑↓] move  [space]/[x] toggle  [r] reset  [esc]/[enter] close  [q] quit", width-4)))
+
+	// MaxWidth as a backstop. overlayCenter is explicit that bounding the panel is
+	// the caller's job — it renders an over-wide panel flush-left and lets the
+	// content spill — and renderHelpOverlay holds up its end the same way.
+	box := styleBorder
+	if width > 0 {
+		box = box.MaxWidth(width)
+	}
+	return box.Render(b.String())
+}
+
+// anyColumnSelected reports whether the user has at least one column on.
+//
+// Distinct from len(selectedColumns(sel)) > 0, which is never zero: that function
+// substitutes the defaults for an empty selection, so it cannot answer "did the
+// user turn everything off". The toggle handler needs exactly that question.
+func anyColumnSelected(sel map[eventColumnID]bool) bool {
+	for _, c := range eventColumns {
+		if sel[c.id] {
+			return true
+		}
+	}
+	return false
 }

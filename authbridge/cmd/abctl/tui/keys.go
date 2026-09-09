@@ -115,7 +115,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// events timeline it charts the session being read, from the session picker
 	// it charts everything. Suppressed while filtering, where `u` is a character
 	// the user is typing — the same reasoning as the `?` overlay above.
-	if msg.String() == "u" && !m.filtering && m.editState.phase == editPhaseDone {
+	//
+	// Gated on !m.colPicker as well: this handler sits above the picker block, so
+	// without it `u` reached openUsage while m.colPicker stayed true — View() drew
+	// the picker popup over the Usage pane, paneUsage's own m/w/b/s bindings went
+	// live underneath it, and `esc` then closed the picker onto Usage instead of the
+	// events timeline the picker was opened from. (`?` above is deliberately NOT
+	// gated: it layers help over the picker without changing panes, and closing it
+	// restores the picker.)
+	if msg.String() == "u" && !m.filtering && !m.colPicker && m.editState.phase == editPhaseDone {
 		switch m.pane {
 		case paneEvents, paneDetail:
 			if m.selectedSess != "" {
@@ -155,6 +163,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// pane.
 			id := eventColumns[m.colCursor].id
 			m.eventColumns[id] = !m.eventColumns[id]
+			// Make that fallback visible in the checkboxes rather than only in the
+			// table. Without this, emptying the selection drew twelve `[ ]` boxes over
+			// a table showing twelve default columns — the one state the fallback
+			// exists to rescue was also the state where the picker misreported what is
+			// on screen, and the `(no room)` markers vanished too since they are gated
+			// on the selection.
+			if len(selectedColumns(m.eventColumns)) > 0 && !anyColumnSelected(m.eventColumns) {
+				m.eventColumns = defaultColumnSelection()
+			}
 			m.rebuildEventsTable()
 			return nil
 		case "r":

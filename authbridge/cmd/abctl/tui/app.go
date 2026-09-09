@@ -236,7 +236,7 @@ type model struct {
 	eventColumns map[eventColumnID]bool
 	// eventColsDropped is how many selected columns did not fit the terminal on the
 	// last rebuild. Surfaced in the footer: with every column on the table needs
-	// ~151 columns, and the excess was clipped with nothing saying so (#866).
+	// ~156 columns, and the excess was clipped with nothing saying so (#866).
 	eventColsDropped int
 	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
 	// column within it.

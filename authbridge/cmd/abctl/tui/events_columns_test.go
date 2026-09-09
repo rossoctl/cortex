@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"github.com/charmbracelet/lipgloss"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"strings"
@@ -331,10 +333,24 @@ func TestColumnPicker_KeyPathSurvivesEveryToggle(t *testing.T) {
 	if !m.colPicker {
 		t.Fatal("`c` did not open the picker")
 	}
-	// Toggle every column off, moving right each time.
+	// Toggle every column off, moving DOWN each time.
+	//
+	// `j`, not `l`: the picker binds up/k and down/j, and `l` falls to the switch's
+	// default. With `l` the cursor never moved, so all twelve space presses toggled
+	// the same column — an even count that ended back at all-on, and both assertions
+	// below passed without the picker ever having emptied the selection.
 	for i := 0; i < len(eventColumns); i++ {
 		m.handleKey(keyRune(' '))
-		m.handleKey(keyRune('l'))
+		m.handleKey(keyRune('j'))
+	}
+	// The final toggle empties the selection, and the handler snaps it back to the
+	// defaults so the checkboxes keep matching the table. Before that snap-back the
+	// popup drew twelve empty boxes over a table showing twelve default columns.
+	if !anyColumnSelected(m.eventColumns) {
+		t.Fatal("emptying the selection left every checkbox off; the table shows defaults, so the picker misreports it")
+	}
+	if got, want := len(selectedColumns(m.eventColumns)), len(selectedColumns(defaultColumnSelection())); got != want {
+		t.Errorf("after emptying: %d columns selected, want the %d defaults", got, want)
 	}
 	// Never a blank table, however much was turned off.
 	if len(m.eventsTbl.Columns()) == 0 {
@@ -433,5 +449,84 @@ func TestDefaultColumns_HostIsOnAndSurvivesNarrowTerminals(t *testing.T) {
 		if !has(fitted, colHost) {
 			t.Errorf("width %d: HOST dropped; got %v", width, colNames(fitted))
 		}
+	}
+}
+
+// TestColumnPicker_UDoesNotEscapeModality is the first blocker from the #915
+// review. The `u`-opens-Usage handler sits ABOVE the picker block, so `u` reached
+// openUsage while m.colPicker stayed true: View() then drew the picker popup over
+// the Usage pane, paneUsage's own m/w/b/s bindings went live underneath it, and
+// `esc` closed the picker onto Usage rather than the events timeline the user
+// opened it from.
+func TestColumnPicker_UDoesNotEscapeModality(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.handleKey(keyRune('c'))
+	if !m.colPicker {
+		t.Fatal("picker did not open")
+	}
+
+	m.handleKey(keyRune('u'))
+
+	if m.pane != paneEvents {
+		t.Errorf("pane switched to %v underneath the open picker; the picker owns the keyboard", m.pane)
+	}
+	if !m.colPicker {
+		t.Error("picker closed on `u`; it should have been ignored")
+	}
+}
+
+// The picker popup must bound itself to the terminal. overlayCenter is explicit
+// that this is the caller's job: it renders an over-wide panel flush-left and
+// drops rows past the bottom edge, so an unbounded panel loses content silently.
+func TestColumnPicker_FitsTheTerminal(t *testing.T) {
+	// Every column on, so the "(no room)" markers are live too — the widest state.
+	sel := map[eventColumnID]bool{}
+	for _, c := range eventColumns {
+		sel[c.id] = true
+	}
+	for _, w := range []int{60, 80, 100, 200} {
+		for _, c := range []int{0, len(eventColumns) - 1} {
+			out := renderColumnPicker(sel, c, w, 40)
+			for _, ln := range strings.Split(out, "\n") {
+				if n := lipgloss.Width(ln); n > w {
+					t.Errorf("width %d, cursor %d: a row is %d columns wide:\n%s", w, c, n, ln)
+					break
+				}
+			}
+		}
+	}
+}
+
+// The bottom row is the key hints, and overlayCenter drops rows past the bottom
+// edge. Before the height guard, a 12-line terminal lost "[esc] close" entirely —
+// the keys a stuck user reaches for, which is the same thing fitHintLine exists to
+// protect in the footer.
+func TestColumnPicker_HintsSurviveAShortTerminal(t *testing.T) {
+	sel := defaultColumnSelection()
+	base := strings.Repeat("row\n", 11)
+	for _, h := range []int{40, 24, 18, 14, 12, 10, 8} {
+		panel := renderColumnPicker(sel, 0, 100, h)
+		if got := len(strings.Split(panel, "\n")); got > h {
+			t.Errorf("height %d: panel is %d lines, so overlayCenter will clip it", h, got)
+		}
+		out := overlayCenter(base, panel, 100, h)
+		if !strings.Contains(out, "close") {
+			t.Errorf("height %d: the close hint was dropped:\n%s", h, out)
+		}
+	}
+}
+
+// Clipping the list must not hide the cursor: space would then toggle a column the
+// user cannot see.
+func TestColumnPicker_CursorStaysVisibleWhenClipped(t *testing.T) {
+	sel := defaultColumnSelection()
+	// 12 lines leaves room for only a few column rows.
+	last := len(eventColumns) - 1
+	out := renderColumnPicker(sel, last, 100, 12)
+	if !strings.Contains(out, string(eventColumns[last].id)) {
+		t.Errorf("cursor row %q is not rendered in a clipped popup:\n%s", eventColumns[last].id, out)
+	}
+	if !strings.Contains(out, "terminal too short") {
+		t.Errorf("a clipped list should say so:\n%s", out)
 	}
 }
