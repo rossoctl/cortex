@@ -228,7 +228,20 @@ type model struct {
 	// UI state.
 	pane paneID
 	// usage is the Usage pane's view state (metric, window, scope, snapshot).
-	usage        usageState
+	usage usageState
+
+	// eventColumns is which events-table columns are shown. Keyed by a stable id
+	// rather than an index, so a future column inserted in the middle does not
+	// silently change what an existing selection means.
+	eventColumns map[eventColumnID]bool
+	// eventColsDropped is how many selected columns did not fit the terminal on the
+	// last rebuild. Surfaced in the footer: with every column on the table needs
+	// ~151 columns, and the excess was clipped with nothing saying so (#866).
+	eventColsDropped int
+	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
+	// column within it.
+	colPicker    bool
+	colCursor    int
 	selectedSess string
 	filter       string
 	filtering    bool
@@ -361,6 +374,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		cancel:       cancel,
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
+		eventColumns: defaultColumnSelection(),
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),

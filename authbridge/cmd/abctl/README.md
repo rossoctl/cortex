@@ -94,7 +94,14 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
   active marker.
-- **Events**: per-session event table. Columns: time, direction (in/out),
+- **Events**: per-session event table, with `c` to choose columns. Twelve are
+  defined and all of them together need ~135 terminal columns, so the table
+  drops what does not fit and the footer says how many (`→ N more columns`).
+  HOST is defined but off by default for that reason — turn it on with `c`, and
+  a column you enable explicitly outranks the ones that are merely on by
+  default, so it is not the first thing dropped again.
+
+  Default columns: time, direction (in/out),
   phase (req/resp), protocol (a2a/mcp/inf), method or model, HTTP status,
   duration, host. Live-updates while in view — if the cursor is on the
   last row, it auto-follows new events.
@@ -175,6 +182,7 @@ Layered on top of all of them:
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
+| `c` | events | choose which columns to show (`←→` move, `space` toggle, `r` reset, `c`/`Esc` done) |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `/tmp` |
 | `g` / `G` | lists | jump to top / bottom |

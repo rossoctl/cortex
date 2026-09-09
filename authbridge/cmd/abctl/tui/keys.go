@@ -126,6 +126,49 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	// The column picker owns the keyboard while it is up, so ↑↓/space cannot also
+	// move the table cursor underneath it. Checked before pane dispatch for the
+	// same reason the help overlay is.
+	if m.colPicker && !m.filtering {
+		switch msg.String() {
+		case "c", "esc", "enter":
+			m.colPicker = false
+			return nil
+		case "left", "h":
+			if m.colCursor > 0 {
+				m.colCursor--
+			}
+			return nil
+		case "right", "l":
+			if m.colCursor < len(eventColumns)-1 {
+				m.colCursor++
+			}
+			return nil
+		case " ", "x":
+			// Toggle. selectedColumns falls back to the defaults when the set is
+			// empty, so turning everything off cannot leave an unrecoverable blank
+			// pane.
+			id := eventColumns[m.colCursor].id
+			m.eventColumns[id] = !m.eventColumns[id]
+			m.rebuildEventsTable()
+			return nil
+		case "r":
+			m.eventColumns = defaultColumnSelection()
+			m.rebuildEventsTable()
+			return nil
+		}
+		return nil
+	}
+
+	// `c` opens the column picker from the events timeline. Suppressed while
+	// filtering, where `c` is a character being typed — the same reasoning as `?`
+	// and `u`.
+	if msg.String() == "c" && m.pane == paneEvents && !m.filtering &&
+		m.editState.phase == editPhaseDone {
+		m.colPicker = true
+		return nil
+	}
+
 	// Picker panes handle their own keys before session-view logic.
 	if m.pane == paneNamespaces {
 		switch msg.String() {
@@ -596,13 +639,26 @@ func (m *model) helpView() string {
 		if m.hideInactive {
 			skipHint = "[s] show all"
 		}
-		base := "[↑↓] nav  [b/f] page  [↵] detail  [u] usage  [esc] back  [/] filter  " + skipHint + "  [p] pause  [?] keys  [q] quit"
+		// While the picker is up it replaces the footer: it owns the keyboard, so
+		// advertising the timeline's keys would list bindings that do nothing.
+		if m.colPicker {
+			return columnPickerLine(m.eventColumns, m.colCursor) +
+				"   [←→] move  [space] toggle  [r] reset  [c/esc] done"
+		}
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [u] usage  [c] columns  [esc] back  [/] filter  " + skipHint + "  [p] pause  [?] keys  [q] quit"
 		// Surface the hidden-message count so a filtered timeline doesn't
 		// look like data loss. Only annotate when hiding is on AND at
 		// least one message was hidden.
 		if m.hideInactive && m.hiddenInactive > 0 {
 			base = fmt.Sprintf("%s  ·  %d hidden",
 				base, m.hiddenInactive)
+		}
+		// Columns that did not fit. The whole reason issue #866 was filed: HOST
+		// was declared but never visible, and nothing said the table had been
+		// clipped. Says how many and how to reach them.
+		if m.eventColsDropped > 0 {
+			base = fmt.Sprintf("%s  ·  → %d more column%s ([c] to choose)",
+				base, m.eventColsDropped, plural(m.eventColsDropped))
 		}
 		return base
 	case paneDetail:

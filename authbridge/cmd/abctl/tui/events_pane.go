@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -105,11 +104,16 @@ func (m *model) rebuildEventsTable() {
 	// exchange is read off the timeline.
 	ids, partner := computeEventPairs(eventRows)
 
+	// One selection per rebuild, fitted to the terminal. Both the header and every
+	// row cell come from `cols`, so they cannot disagree.
+	cols, dropped := fitColumns(selectedColumns(m.eventColumns), m.width)
+	m.eventColsDropped = dropped
+	m.eventsTbl.SetColumns(tableColumns(cols))
+
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
 	for i, er := range eventRows {
-		ev := er.event
 		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
 		}
@@ -124,34 +128,25 @@ func (m *model) rebuildEventsTable() {
 			continue
 		}
 
-		action, plugin := rowAction(er, invs)
-		var idCell string
-		if id, ok := ids[ev]; ok {
-			idCell = strconv.Itoa(id)
+		// Cells come from the selected columns, in their order — see
+		// events_columns.go. Previously this was a positional table.Row literal
+		// parallel to a []table.Column slice, so inserting a column meant editing
+		// both in step and a mismatch shifted every later cell under the wrong
+		// heading.
+		//
+		// PHASE carries no bracket glyphs. They were box-drawing corners (┌/│/└)
+		// meant to visually connect a request to its response, and they could only
+		// ever be correct for exchanges that NEST. Concurrent requests cross
+		// instead: A starts, B starts, A ends, B ends — for which a tree has no
+		// notation, so both rows claimed to contain each other and the output was
+		// actively misleading. The # column pairs exchanges exactly (by the
+		// proxy-stamped RequestID), which is what the glyphs approximated.
+		cc := cellContext{m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids}
+		row := make(table.Row, 0, len(cols))
+		for _, c := range cols {
+			row = append(row, c.cell(cc))
 		}
-		// PHASE carries no bracket glyphs. They were box-drawing corners
-		// (┌/│/└) meant to visually connect a request to its response, and they
-		// could only ever be correct for exchanges that NEST. Concurrent
-		// requests cross instead: A starts, B starts, A ends, B ends — for
-		// which a tree has no notation, so both rows claimed to contain each
-		// other and the output was actively misleading. The # column pairs
-		// exchanges exactly (by the proxy-stamped RequestID), which is what the
-		// glyphs were a lossy approximation of.
-		phaseCell := shortPhase(ev.Phase)
-		rows = append(rows, table.Row{
-			idCell,
-			ev.At.Format("15:04:05.00"),
-			shortDirection(ev.Direction),
-			phaseCell,
-			action,
-			truncStr(plugin, 18),
-			eventMethod(*ev),
-			statusCell(*ev),
-			durationCell(*ev),
-			m.tokensCell(eventRows, partner, i, ev),
-			m.costCell(eventRows, partner, i, ev),
-			truncStr(ev.Host, 20),
-		})
+		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, er)
 	}
 	m.eventsTbl.SetRows(rows)
