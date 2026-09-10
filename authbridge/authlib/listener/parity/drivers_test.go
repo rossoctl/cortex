@@ -84,21 +84,29 @@ type invocationSummary struct {
 	Details map[string]string
 }
 
-// observe returns the first event matching (direction, phase) in the
+// observe returns the sole event matching (direction, phase) in the
 // DefaultSessionID bucket, folded into the parity-comparable shape.
-// Returns nil when the bucket is empty or the phase is absent.
+// Returns nil when the bucket is empty or the phase is absent. Fails
+// on more than one match so duplicate-record drift surfaces here
+// instead of passing through as equal counts on both listeners.
 func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wantPhase pipeline.SessionPhase) *observation {
 	t.Helper()
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) == 0 {
 		return nil
 	}
-	var ev *pipeline.SessionEvent
+	var (
+		ev      *pipeline.SessionEvent
+		matches int
+	)
 	for i := range v.Events {
 		if v.Events[i].Phase == wantPhase && v.Events[i].Direction == wantDir {
 			ev = &v.Events[i]
-			break
+			matches++
 		}
+	}
+	if matches > 1 {
+		t.Fatalf("observe: %d events matched (direction=%v phase=%v); listener must record exactly once", matches, wantDir, wantPhase)
 	}
 	if ev == nil {
 		return nil
@@ -301,7 +309,7 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 	if len(f.reqBody) > 0 {
 		bodyReader = bytes.NewReader(f.reqBody)
 	}
-	req, err := http.NewRequest(f.method, proxy.URL+f.path, bodyReader)
+	req, err := http.NewRequestWithContext(context.Background(), f.method, proxy.URL+f.path, bodyReader)
 	if err != nil {
 		t.Fatalf("reverseproxy: NewRequest: %v", err)
 	}
@@ -313,7 +321,9 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 		t.Fatalf("reverseproxy: Do: %v", err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("reverseproxy: Body.Close: %v", err)
+	}
 
 	// Deny-fixture sanity: the upstream stub must stay untouched.
 	if f.upstreamStatus == 0 && upstreamHit {
@@ -370,7 +380,7 @@ func runForwardProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 	if len(f.reqBody) > 0 {
 		bodyReader = bytes.NewReader(f.reqBody)
 	}
-	req, err := http.NewRequest(f.method, upstream.URL+f.path, bodyReader)
+	req, err := http.NewRequestWithContext(context.Background(), f.method, upstream.URL+f.path, bodyReader)
 	if err != nil {
 		t.Fatalf("forwardproxy: NewRequest: %v", err)
 	}
@@ -382,7 +392,9 @@ func runForwardProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 		t.Fatalf("forwardproxy: Do: %v", err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("forwardproxy: Body.Close: %v", err)
+	}
 
 	if f.upstreamStatus == 0 && upstreamHit {
 		t.Errorf("forwardproxy: fixture %q asked for deny but upstream was reached", f.name)
