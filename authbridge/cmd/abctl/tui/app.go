@@ -445,6 +445,12 @@ func (m *model) backToPodsPane() {
 	m.catalog = nil
 	m.catalogTbl.SetRows(nil)
 	m.previousPane = paneNone
+	// Close the column picker with the pane it belongs to. The paneEvents gates
+	// on the key block and in View() make it inert and invisible once we leave,
+	// but the flag itself outlives the pane: entering a session on the next pod
+	// puts m.pane back to paneEvents and the popup nobody reopened is there
+	// again, owning the keyboard until the user finds esc.
+	m.colPicker = false
 	m.detailEvent = nil
 	m.detailPlugin = nil
 	m.selectedSess = ""
@@ -609,33 +615,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case sessionsLoadedMsg:
-		// Server list is authoritative. Reconcile: drop cached events for
-		// sessions the server no longer knows about (typically the
-		// bootstrap "default" bucket after rekey). If the focused session
-		// disappeared, back out to the sessions pane so the user isn't
-		// stranded on an empty events view.
-		serverIDs := make(map[string]bool, len(msg))
-		for _, s := range msg {
-			serverIDs[s.ID] = true
-		}
-		for id := range m.events {
-			if !serverIDs[id] {
-				delete(m.events, id)
-			}
-		}
-		if m.selectedSess != "" && !serverIDs[m.selectedSess] && m.pane != paneSessions {
-			m.selectedSess = ""
-			m.pane = paneSessions
-			// Close the picker with the pane it belongs to.
-			//
-			// The paneEvents gates on the key block and in View() make it inert and
-			// invisible while the user is on the sessions table, but the flag itself
-			// outlived the pane: pressing enter on another session put m.pane back to
-			// paneEvents and the popup the user never reopened was there again, owning
-			// the keyboard until they found esc. Gating covers "drawn over the wrong
-			// pane"; this covers the return trip.
-			m.colPicker = false
-		}
+		// The server list says what is LIVE. It does not say what is worth
+		// keeping on screen.
+		//
+		// This used to drop cached events for every session the list omitted, and
+		// bounce the user back to the sessions pane. The session store is
+		// in-memory and per-pod, so abctl's copy is the only copy: a proxy restart
+		// (or any blip that empties /v1/sessions, which arrives as a normal
+		// message, not an error) destroyed the events someone was mid-investigation
+		// on, about two seconds after they looked away. That is #870.
+		//
+		// Cached events are now released in exactly one place: when the user
+		// returns to the picker and selects a different session (see keys.go).
+		// Nothing here deletes, and nothing here changes the focused pane.
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen
 		m.rebuildSessionsTable()

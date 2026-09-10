@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/muesli/termenv v0.16.0
 	github.com/rossoctl/cortex/authbridge/authlib v0.0.0-00010101000000-000000000000
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -46,7 +47,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect

@@ -408,6 +408,24 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if id == "" {
 				return nil
 			}
+			// The one and only place cached events are released.
+			//
+			// Picking a different session in the picker is the sole reliable
+			// signal that the previous session's events have stopped being what
+			// the user is looking at. A proxy restart, or any gap in
+			// /v1/sessions, is not that signal — treating it as one is #870.
+			//
+			// The session being opened is kept (that is the point), and so is
+			// the one left behind if it is the same id; everything else the
+			// cache holds is released here, which is what bounds the cache now
+			// that the periodic reconcile no longer deletes anything.
+			if id != m.selectedSess {
+				for cached := range m.events {
+					if cached != id {
+						delete(m.events, cached)
+					}
+				}
+			}
 			m.selectedSess = id
 			m.pane = paneEvents
 			m.rebuildEventsTable()

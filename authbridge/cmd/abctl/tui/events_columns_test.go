@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -743,12 +744,18 @@ func TestColumnPicker_DoesNotReturnAfterAnAsyncPaneChange(t *testing.T) {
 		t.Fatal("picker did not open")
 	}
 
-	// Drive the REAL handler, not a hand-set flag: the focused session disappears
-	// from the server's list, and sessionsLoadedMsg backs out to paneSessions. A
-	// test that assigned m.colPicker itself would pass without the fix.
-	m.Update(sessionsLoadedMsg{})
-	if m.pane != paneSessions {
-		t.Fatalf("handler did not back out to paneSessions (pane=%v)", m.pane)
+	// Drive a REAL pane change, not a hand-set flag: a test that assigned
+	// m.colPicker itself would pass without the fix.
+	//
+	// This used to drive sessionsLoadedMsg with an empty list, which back then
+	// bounced the user to paneSessions. That bounce is deliberately gone (#870):
+	// a session leaving the server's list no longer moves the user or discards
+	// their events. The picker-lifecycle bug guarded here is independent of which
+	// transition triggers it, so this now drives the pane change that remains.
+	m.parentCtx = context.Background()
+	m.backToPodsPane()
+	if m.pane == paneEvents {
+		t.Fatalf("backToPodsPane left us on paneEvents (pane=%v)", m.pane)
 	}
 	if strings.Contains(m.View(), "COLUMNS") {
 		t.Error("popup still drawn over the sessions pane")
