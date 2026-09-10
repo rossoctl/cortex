@@ -220,8 +220,8 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
-  keys; `y` yanks to `/tmp/abctl-event-<timestamp>.json` and flashes the
-  path in the footer.
+  keys; `y` yanks to `/tmp/abctl-events/<timestamp>-<rand>.json` and shows
+  the path in the footer until you press another key.
 - **Pipeline**: the active plugin chain in inbound + outbound order.
   Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens
@@ -298,7 +298,7 @@ Layered on top of all of them:
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close) |
 | `p` | any | pause/resume stream |
-| `y` | detail | yank event JSON to `/tmp` |
+| `y` | detail | yank event JSON to `/tmp/abctl-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
 | `m` | usage | cycle metric: tokens / requests / errors / latency |

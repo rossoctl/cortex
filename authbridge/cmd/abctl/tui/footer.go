@@ -47,8 +47,8 @@ func (m *model) footerView() string {
 		status.WriteString(styleWarn.Render("   [paused]"))
 	}
 
-	// Flash message (e.g. "yanked → /tmp/...").
-	if m.flash != "" && time.Now().Before(m.flashUntil) {
+	// Flash message (e.g. "yanked → /tmp/abctl-events/...").
+	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
 		status.WriteString(styleTitle.Render("   " + m.flash))
 	}
 

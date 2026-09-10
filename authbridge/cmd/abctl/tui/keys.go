@@ -28,6 +28,12 @@ func catalogPlugins(c *apiclient.PluginCatalog) []apiclient.PluginCatalogEntry {
 // pipeline edit, then the filter input. Only if none of those own the
 // keyboard is the key dispatched based on the active pane.
 func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
+	// A sticky flash (yank) stays up until the operator does something. Any key
+	// dismisses it, including one that goes on to do unrelated work: reading the
+	// path was the only thing pending, and pressing a key says they are done.
+	// Only the flag is cleared, never m.flash, so timed messages are unaffected.
+	m.flashSticky = false
+
 	// The help overlay is modal: while it's up, it owns the keyboard so a
 	// stray key can't navigate the pane hidden underneath. Checked before
 	// every other handler, including the picker and edit overlays, so `?`
@@ -452,7 +458,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if err != nil {
 			m.setFlash("yank failed: " + err.Error())
 		} else {
-			m.setFlash("yanked → " + path)
+			m.setStickyFlash("yanked → " + path)
 		}
 		return nil
 
@@ -647,6 +653,18 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 func (m *model) setFlash(s string) {
 	m.flash = s
 	m.flashUntil = time.Now().Add(flashDuration)
+	// Explicitly clear: a timed message arriving after a sticky one must not
+	// inherit its stickiness.
+	m.flashSticky = false
+}
+
+// setStickyFlash shows a message that stays until the next keypress. For yank,
+// where the whole point is giving the operator time to read or copy a path —
+// flashDuration is shared with ten other producers, so lengthening it is not an
+// option, and three seconds is not enough to transcribe a filename.
+func (m *model) setStickyFlash(s string) {
+	m.flash = s
+	m.flashSticky = true
 }
 
 // helpView renders the keybinding hint line for the current pane. Short
