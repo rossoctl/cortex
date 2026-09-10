@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -271,6 +273,53 @@ func TestYankAcceptsACleanDir(t *testing.T) {
 	yankHome(t)
 	if _, err := yankEventToFile(sampleEvent()); err != nil {
 		t.Errorf("clean home was refused: %v", err)
+	}
+}
+
+// The reported symptom: on a ~72-column terminal the footer read
+//
+//	● connected  0.0 ev/s   drops: 0   yanked → /Users/snible/.cortex/abctl-
+//
+// and the filename — the part you retype — was off the right edge. A sticky flash
+// now gets the whole line from column 0, and truncates from the LEFT so the tail
+// survives.
+//
+// Widths are measured with lipgloss.Width, not len: "…" and "→" are multi-byte, so
+// a byte count overstates the columns used.
+func TestStickyFlash_FitsANarrowFooter(t *testing.T) {
+	const path = "/Users/someone/.cortex/abctl-events/20260910-223650-80907711.json"
+
+	for _, width := range []int{40, 60, 72, 80, 120} {
+		m := newTestDetailModel(t)
+		m.width = width
+		m.setStickyFlash("yanked → " + path)
+
+		line := strings.SplitN(m.footerView(), "\n", 2)[0]
+		if got := lipgloss.Width(line); got > width {
+			t.Errorf("width %d: footer is %d columns, overflowing by %d: %q",
+				width, got, got-width, line)
+		}
+		// The filename must survive every truncation — it is what the user types.
+		if !strings.Contains(line, "80907711.json") {
+			t.Errorf("width %d: filename truncated away: %q", width, line)
+		}
+	}
+}
+
+// The full-width takeover applies to sticky flashes only. A timed flash keeps the
+// connection state, rate and drops beside it — ten other producers use that path
+// and none of them is a path the user is about to retype.
+func TestTimedFlash_KeepsTheStatusPrefix(t *testing.T) {
+	m := newTestDetailModel(t)
+	m.width = 72
+	m.setFlash("hot-reload succeeded")
+
+	line := strings.SplitN(m.footerView(), "\n", 2)[0]
+	if !strings.Contains(line, "ev/s") {
+		t.Errorf("a timed flash lost the status prefix: %q", line)
+	}
+	if !strings.Contains(line, "hot-reload succeeded") {
+		t.Errorf("a timed flash lost its message: %q", line)
 	}
 }
 
