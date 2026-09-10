@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -1270,24 +1271,48 @@ func trunc(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// yankDir is the fixed directory yank writes into.
+// yankDirRel is the yank output directory, relative to the user's home. It
+// follows the same convention as abctl's other durable state (cmd_claudecode.go's
+// cortexCfgRel / stateRel), so there is one ~/.cortex tree rather than a new one.
+const yankDirRel = ".cortex/abctl-events"
+
+// yankDir returns the absolute directory yank writes into.
 //
 // Not os.TempDir(): on macOS that is /var/folders/<opaque>/T, so a yanked file
-// landed on a 92-character path nobody could find or retype, which is what #868
-// reported. A literal /tmp is short, is the same on macOS and Linux, and is what
-// the help text and README already claimed. 0700 so a directory listing does not
-// leak session ids on a shared host; the files themselves are 0600 (below).
-const yankDir = "/tmp/abctl-events"
+// landed on a 92-character path nobody could find or retype, which is #868.
+//
+// Not a fixed path under /tmp either, which is where this started. /tmp is
+// world-writable, and os.MkdirAll returns nil for a path that already exists
+// whatever its owner or mode — so a fixed /tmp/<name> cannot enforce 0700, can
+// be pre-created as a symlink that redirects where events land, and on a shared
+// host is squatted by whoever yanks first, permanently breaking everyone else.
+// Session events carry identity subjects, raw LLM completions and tool
+// arguments, so none of that is acceptable for a directory holding them.
+//
+// ~/.cortex is already 0700 and owned by the user, and only its owner can create
+// or replace entries inside it — which is what removes the squatting, symlink
+// and cross-user cases rather than merely detecting them. Still far shorter than
+// where this started, and it is a location users already know.
+func yankDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("cannot determine your home directory: %w", err)
+	}
+	return filepath.Join(home, yankDirRel), nil
+}
 
 // yankEventToFile writes the currently-focused event to a fresh file in yankDir
 // as pretty JSON and returns the path. Uses os.CreateTemp so the file is
 // created with 0600 perms (session events carry identity subjects, raw
 // LLM completions, and tool arguments — the operator-only default keeps
 // them off shared / CI hosts). CreateTemp also implies O_EXCL, so there is no
-// create-then-chmod window and no writing this content into a symlink someone
-// planted in world-writable /tmp.
+// create-then-chmod window.
 func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
-	if err := os.MkdirAll(yankDir, 0o700); err != nil {
+	dir, err := yankDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	ts := time.Now().UTC().Format("20060102-150405")
@@ -1295,7 +1320,7 @@ func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
 	// abctl-events it says nothing, and dropping it is 12 of the 43 characters
 	// this change takes off the path. The random tail stays — it is what keeps
 	// two yanks in the same second from clobbering each other.
-	f, err := os.CreateTemp(yankDir, ts+"-*.json")
+	f, err := os.CreateTemp(dir, ts+"-*.json")
 	if err != nil {
 		return "", err
 	}

@@ -89,7 +89,7 @@ var paneKeys = map[paneID]keyGroup{
 		title: "EVENT DETAIL (this pane)",
 		bindings: []keyBinding{
 			{"↑↓", "scroll"},
-			{"y", "yank event JSON to /tmp/abctl-events"},
+			{"y", "yank event JSON to ~/.cortex/abctl-events"},
 			{"u", "usage charts (this session)"},
 			{"esc / ← / h", "back to events"},
 		},

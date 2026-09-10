@@ -664,6 +664,12 @@ func (m *model) setFlash(s string) {
 // option, and three seconds is not enough to transcribe a filename.
 func (m *model) setStickyFlash(s string) {
 	m.flash = s
+	// Clear the deadline a previous timed flash may have left in the future.
+	// Once a keypress clears flashSticky, footerView falls back to the
+	// time.Now().Before(flashUntil) arm — so a stale deadline would keep the
+	// yanked path on screen for the remainder of the old timer instead of
+	// disappearing on the keypress.
+	m.flashUntil = time.Time{}
 	m.flashSticky = true
 }
 
