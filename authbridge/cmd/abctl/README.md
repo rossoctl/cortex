@@ -225,6 +225,9 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   private to you (0700, inside `~/.cortex`) and the files are 0600 — yanked
   events carry identity subjects, raw LLM completions and tool arguments, so
   they are deliberately not written to a shared location such as `/tmp`.
+  Nothing prunes them: they accumulate until you delete them, and unlike
+  `$TMPDIR` this location is never cleared by the OS. Given what they hold,
+  `rm` the ones you are done with.
 - **Pipeline**: the active plugin chain in inbound + outbound order.
   Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens

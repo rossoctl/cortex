@@ -1295,8 +1295,14 @@ const yankDirRel = ".cortex/abctl-events"
 // where this started, and it is a location users already know.
 func yankDir() (string, error) {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	if err != nil {
 		return "", fmt.Errorf("cannot determine your home directory: %w", err)
+	}
+	if home == "" {
+		// Separate branch, not folded into the one above: %w on a nil error
+		// renders as "%!w(<nil>)", which would make this defensive path
+		// unreadable to whoever ever hits it.
+		return "", errors.New("cannot determine your home directory: it is empty")
 	}
 	return filepath.Join(home, yankDirRel), nil
 }

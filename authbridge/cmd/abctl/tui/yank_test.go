@@ -21,6 +21,7 @@ import (
 // events land, and is squatted by whoever yanks first on a shared host. Pins the
 // directory, the 0600 perms, and the absence of the redundant name prefix.
 func TestYankEventToFileUsesPrivatePerUserDir(t *testing.T) {
+	yankHome(t)
 	p := yankOne(t)
 
 	want := mustYankDir(t)
@@ -63,6 +64,7 @@ func TestYankEventToFileUsesPrivatePerUserDir(t *testing.T) {
 // second yank in the same second from silently clobbering the first. Guards
 // against "simplifying" to a stable filename.
 func TestYankEventToFileTwiceSameSecondDistinct(t *testing.T) {
+	yankHome(t)
 	p1 := yankOne(t)
 	p2 := yankOne(t)
 
@@ -80,6 +82,7 @@ func TestYankEventToFileTwiceSameSecondDistinct(t *testing.T) {
 // The other half of #868: the path used to vanish after flashDuration, before a
 // user could copy it. Pressing `y` now leaves it up until the next keypress.
 func TestYankFlashIsStickyUntilKeypress(t *testing.T) {
+	yankHome(t)
 	m := newTestDetailModel(t)
 
 	if cmd := m.handleKey(keyRune('y')); cmd != nil {
@@ -163,6 +166,7 @@ func TestTimedFlashClearsStickiness(t *testing.T) {
 // directory already exists — the common case on every run after the first — and
 // documents that the mode of a pre-existing directory is not tightened.
 func TestYankEventToFileWithPreExistingDir(t *testing.T) {
+	yankHome(t)
 	dir := mustYankDir(t)
 	if err := os.MkdirAll(dir, 0o755); err != nil { // deliberately looser
 		t.Fatal(err)
@@ -204,6 +208,49 @@ func TestStickyFlash_ClearsAStaleDeadline(t *testing.T) {
 		t.Error("the yanked path outlived the dismissing keypress, on the " +
 			"previous timed flash's deadline")
 	}
+}
+
+// yankDir's error path must stay readable. An unset $HOME is the reachable case
+// (os.UserHomeDir returns a non-nil "$HOME is not defined" error, so %w is fine);
+// the home == "" && err == nil case is defensive and not reachable here, which is
+// exactly why folding the two conditions together hid a "%!w(<nil>)" message
+// nobody would ever see until they did. This asserts the reachable path reads
+// well; the unreachable one is kept legible by construction, not by a test.
+func TestYankDir_UnsetHomeGivesAReadableError(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+
+	_, err := yankDir()
+	if err == nil {
+		t.Skip("this platform resolved a home directory without $HOME")
+	}
+	if strings.Contains(err.Error(), "%!w") {
+		t.Errorf("error message is mangled by a nil wrap: %v", err)
+	}
+	if !strings.Contains(err.Error(), "home directory") {
+		t.Errorf("error does not say what went wrong: %v", err)
+	}
+}
+
+// yankHome redirects $HOME at a per-test temp directory, so nothing in this file
+// touches the developer's real ~/.cortex.
+//
+// This is not tidiness. yankDir() resolves os.UserHomeDir(), so without it every
+// test here wrote into the real home — and TestYankEventToFileWithPreExistingDir
+// created ~/.cortex/abctl-events at 0755 on a machine where it did not yet exist.
+// os.MkdirAll does not tighten an existing directory, so every subsequent REAL
+// yank then wrote into a 0755 directory, silently voiding the 0700 guarantee the
+// README, yankDir's doc comment and that test's own name all assert. Permanent,
+// invisible, and only on a fresh machine — which is how it survived review.
+//
+// Call this first in every test that reaches yankDir, directly or through a
+// helper. t.Setenv is incompatible with t.Parallel(); nothing here is parallel.
+func yankHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	// os.UserHomeDir reads USERPROFILE on Windows; set both so the redirect holds
+	// wherever the suite runs.
+	t.Setenv("USERPROFILE", t.TempDir())
 }
 
 // mustYankDir resolves the yank directory or fails the test.
