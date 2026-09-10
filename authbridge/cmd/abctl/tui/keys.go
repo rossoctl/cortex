@@ -408,6 +408,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if id == "" {
 				return nil
 			}
+			live := make(map[string]bool, len(m.sessions))
+			for _, s := range m.sessions {
+				live[s.ID] = true
+			}
+
 			// The one and only place cached events are released.
 			//
 			// Picking a different session in the picker is the sole reliable
@@ -415,13 +420,22 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// the user is looking at. A proxy restart, or any gap in
 			// /v1/sessions, is not that signal — treating it as one is #870.
 			//
-			// The session being opened is kept (that is the point), and so is
-			// the one left behind if it is the same id; everything else the
-			// cache holds is released here, which is what bounds the cache now
-			// that the periodic reconcile no longer deletes anything.
+			// Released only for sessions the server still LISTS: those are
+			// recoverable, because snapshotCmd can fetch them again. A
+			// cached-only session is kept — abctl's copy is the only copy, so
+			// dropping it would be the same unrecoverable loss this PR exists to
+			// stop. After a restart every previously-visited session is
+			// cached-only, so opening one must not destroy the rest.
+			//
+			// The honest consequence: cached-only sessions are never released
+			// while abctl runs, so the cache grows by one entry per restart the
+			// user visited a session across. Measured, that is ~165 bytes per
+			// event and 1000 events per session, so ~161 KB per session and a
+			// few MB for a long debugging afternoon — worth it, given the
+			// alternative is deleting the only copy of what someone is reading.
 			if id != m.selectedSess {
 				for cached := range m.events {
-					if cached != id {
+					if cached != id && live[cached] {
 						delete(m.events, cached)
 					}
 				}
@@ -429,6 +443,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.selectedSess = id
 			m.pane = paneEvents
 			m.rebuildEventsTable()
+			if !live[id] {
+				// Cached-only: there is no server-side session to snapshot, so the
+				// fetch would 404 and flash an error over the very events this
+				// change preserved.
+				return nil
+			}
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
 		case paneEvents:

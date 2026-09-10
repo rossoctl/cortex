@@ -161,6 +161,65 @@ func TestPickingAnotherSession_ReleasesThePrevious(t *testing.T) {
 	}
 }
 
+// The release loop must NOT touch cached-only sessions. Their copy is the only
+// copy, so dropping one is the same unrecoverable loss as #870 — and after a
+// restart every previously-visited session is cached-only, so a user with three
+// such rows who opens one to read it would destroy the other two.
+//
+// (This test is the reason the release is scoped to live sessions rather than
+// "everything except the one being opened", which is what it did first.)
+func TestPickingAnotherSession_KeepsCachedOnlySessions(t *testing.T) {
+	m := newRetentionModel(t, "sessA", 3)
+	m.events["sessB"] = make([]pipeline.SessionEvent, 5)
+	m.events["sessC"] = make([]pipeline.SessionEvent, 7)
+
+	// Proxy restarted: the server lists nothing, so all three are cached-only.
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+	for i, r := range m.sessionsTbl.Rows() {
+		if r[0] == "sessB" {
+			m.sessionsTbl.SetCursor(i)
+		}
+	}
+
+	m.handleKey(keyRune('l'))
+
+	for id, want := range map[string]int{"sessA": 3, "sessB": 5, "sessC": 7} {
+		if got := len(m.events[id]); got != want {
+			t.Errorf("%s: got %d events, want %d — a cached-only session was "+
+				"released and its events are unrecoverable", id, got, want)
+		}
+	}
+}
+
+// A cached-only session has no server-side counterpart, so opening one must not
+// fire a snapshot: GetSession would 404 and errMsg flashes that over the very
+// events this change preserves.
+func TestOpeningCachedOnlySession_SkipsTheSnapshot(t *testing.T) {
+	m := newRetentionModel(t, "gone-session", 3)
+	m.Update(sessionsLoadedMsg{}) // restart; nothing is live
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+
+	if cmd := m.handleKey(keyRune('l')); cmd != nil {
+		t.Error("a snapshot was issued for a session the server does not have; " +
+			"it will 404 and flash an error over the retained events")
+	}
+}
+
+// The live case still fires one, or a session whose history has not yet streamed
+// in would render empty.
+func TestOpeningLiveSession_StillSnapshots(t *testing.T) {
+	m := newRetentionModel(t, "live", 3)
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+
+	if cmd := m.handleKey(keyRune('l')); cmd == nil {
+		t.Error("no snapshot for a live session")
+	}
+}
+
 // Re-opening the SAME session must not release its own events.
 func TestReopeningSameSession_KeepsItsEvents(t *testing.T) {
 	m := newRetentionModel(t, "default", 3)
