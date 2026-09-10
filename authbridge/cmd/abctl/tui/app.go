@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -1289,10 +1290,15 @@ const yankDirRel = ".cortex/abctl-events"
 // Session events carry identity subjects, raw LLM completions and tool
 // arguments, so none of that is acceptable for a directory holding them.
 //
-// ~/.cortex is already 0700 and owned by the user, and only its owner can create
-// or replace entries inside it — which is what removes the squatting, symlink
-// and cross-user cases rather than merely detecting them. Still far shorter than
-// where this started, and it is a location users already know.
+// ~/.cortex is the user's own tree and is normally 0700, which makes those cases
+// unreachable — but abctl never creates it, so its mode is whatever an installer
+// or the user left. With a 0755 ~/.cortex, MkdirAll neither tightens the mode nor
+// refuses to follow an abctl-events symlink someone planted, and the event lands
+// in their directory. Verified. So the guarantee is enforced here rather than
+// assumed: yankEventToFile Lstats the directory and refuses to write unless it is
+// a real directory, owned by this user, with no group or world access.
+//
+// Still far shorter than where this started, and a location users already know.
 func yankDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -1305,6 +1311,36 @@ func yankDir() (string, error) {
 		return "", errors.New("cannot determine your home directory: it is empty")
 	}
 	return filepath.Join(home, yankDirRel), nil
+}
+
+// checkYankDir refuses to write into a directory that does not actually protect
+// its contents. MkdirAll returns nil for a path that already exists whatever its
+// owner or mode, and it happily follows a symlink — so with a 0755 ~/.cortex an
+// abctl-events symlink planted by another local user would silently redirect
+// events carrying identity subjects and raw LLM completions into their directory.
+//
+// Lstat, not Stat: Stat resolves the symlink and would report the target's mode.
+func checkYankDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to write session events "+
+			"through it", dir)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return fmt.Errorf("%s has mode %v; session events need 0700 (chmod 700 %s)",
+			dir, perm, dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("%s is owned by uid %d, not you (uid %d)",
+			dir, st.Uid, os.Getuid())
+	}
+	return nil
 }
 
 // yankEventToFile writes the currently-focused event to a fresh file in yankDir
@@ -1321,10 +1357,12 @@ func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	if err := checkYankDir(dir); err != nil {
+		return "", err
+	}
 	ts := time.Now().UTC().Format("20060102-150405")
 	// No "abctl-event-" name prefix: inside a directory already called
-	// abctl-events it says nothing, and dropping it is 12 of the 43 characters
-	// this change takes off the path. The random tail stays — it is what keeps
+	// abctl-events it says nothing. The random tail stays — it is what keeps
 	// two yanks in the same second from clobbering each other.
 	f, err := os.CreateTemp(dir, ts+"-*.json")
 	if err != nil {

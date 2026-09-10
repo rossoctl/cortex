@@ -141,6 +141,7 @@ func TestNonYankFlashStillExpires(t *testing.T) {
 // A sticky flash must not survive a later timed one — otherwise a yank notice
 // would pin the footer past an error the operator needs to see.
 func TestTimedFlashClearsStickiness(t *testing.T) {
+	yankHome(t)
 	m := newTestDetailModel(t)
 	m.setStickyFlash("yanked → /home/u/.cortex/abctl-events/x.json")
 	m.setFlash("catalog fetch failed: boom")
@@ -154,21 +155,15 @@ func TestTimedFlashClearsStickiness(t *testing.T) {
 	}
 }
 
-// The gap the reviewer identified: every other test here runs against a yankDir
-// that either did not exist or was created by the test, so none exercised
-// os.MkdirAll's existing-directory semantics — which is where the /tmp problem
-// lived. MkdirAll returns nil for a path that already exists whatever its owner
-// or mode, so it cannot tighten a loose one.
-//
-// Under ~/.cortex that is no longer a security question: the parent is 0700 and
-// owned by the user, so nobody else can pre-create the directory, plant a symlink
-// in its place, or squat the name. This asserts yank still works when the
-// directory already exists — the common case on every run after the first — and
-// documents that the mode of a pre-existing directory is not tightened.
+// Yank must work when the directory already exists, which is every run after the
+// first. Pre-created at 0700 — the mode yank itself uses. (An earlier version of
+// this test pre-created it at 0755 to document that MkdirAll does not tighten an
+// existing directory; that is now refused outright, and TestYankRefusesALooseModeDir
+// covers it.)
 func TestYankEventToFileWithPreExistingDir(t *testing.T) {
 	yankHome(t)
 	dir := mustYankDir(t)
-	if err := os.MkdirAll(dir, 0o755); err != nil { // deliberately looser
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
@@ -177,15 +172,13 @@ func TestYankEventToFileWithPreExistingDir(t *testing.T) {
 	if got := filepath.Dir(p); got != dir {
 		t.Errorf("yanked into %q, want %q", got, dir)
 	}
-	// The file's own mode is what protects the contents, and CreateTemp sets it
-	// regardless of the directory's mode.
+	// The file's own mode is what protects the contents.
 	fi, err := os.Stat(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if perm := fi.Mode().Perm(); perm != 0o600 {
-		t.Errorf("file perms %v, want 0600 — the directory's mode must not affect "+
-			"the file's", perm)
+		t.Errorf("file perms %v, want 0600", perm)
 	}
 }
 
@@ -232,6 +225,55 @@ func TestYankDir_UnsetHomeGivesAReadableError(t *testing.T) {
 	}
 }
 
+// The must-fix: ~/.cortex is not guaranteed to be 0700 — abctl never creates it,
+// so its mode is whatever an installer or the user left. At 0755, MkdirAll neither
+// tightens the mode nor refuses to follow an abctl-events symlink, and the event —
+// identity subjects, raw LLM completions, tool arguments — lands in whichever
+// directory the symlink points at.
+func TestYankRefusesASymlinkedDir(t *testing.T) {
+	home := yankHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".cortex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(home, ".cortex", "abctl-events")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := yankEventToFile(sampleEvent()); err == nil {
+		t.Error("wrote through a symlink; a local user can redirect session events")
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+		t.Errorf("%d event file(s) landed in the symlink target", len(ents))
+	}
+}
+
+// Same premise, without a symlink: a pre-existing world-readable yank directory
+// must be refused rather than written into, since MkdirAll will not tighten it.
+func TestYankRefusesALooseModeDir(t *testing.T) {
+	home := yankHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".cortex", "abctl-events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := yankEventToFile(sampleEvent())
+	if err == nil {
+		t.Fatal("wrote into a 0755 directory, so the 0700 guarantee is not enforced")
+	}
+	// The message has to tell the user how to fix it.
+	if !strings.Contains(err.Error(), "0700") {
+		t.Errorf("error does not say what mode is required: %v", err)
+	}
+}
+
+// And the ordinary case still works: a clean home yanks without complaint.
+func TestYankAcceptsACleanDir(t *testing.T) {
+	yankHome(t)
+	if _, err := yankEventToFile(sampleEvent()); err != nil {
+		t.Errorf("clean home was refused: %v", err)
+	}
+}
+
 // yankHome redirects $HOME at a per-test temp directory, so nothing in this file
 // touches the developer's real ~/.cortex.
 //
@@ -245,12 +287,15 @@ func TestYankDir_UnsetHomeGivesAReadableError(t *testing.T) {
 //
 // Call this first in every test that reaches yankDir, directly or through a
 // helper. t.Setenv is incompatible with t.Parallel(); nothing here is parallel.
-func yankHome(t *testing.T) {
+func yankHome(t *testing.T) string {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	// os.UserHomeDir reads USERPROFILE on Windows; set both so the redirect holds
-	// wherever the suite runs.
-	t.Setenv("USERPROFILE", t.TempDir())
+	// One directory, both variables: os.UserHomeDir reads USERPROFILE on Windows
+	// and HOME elsewhere, and two separate t.TempDir() calls would make the two
+	// disagree — so a test would exercise a different home depending on platform.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	return dir
 }
 
 // mustYankDir resolves the yank directory or fails the test.
