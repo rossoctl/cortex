@@ -263,8 +263,8 @@ func TestYankRefusesALooseModeDir(t *testing.T) {
 		t.Fatal("wrote into a 0755 directory, so the 0700 guarantee is not enforced")
 	}
 	// The message has to tell the user how to fix it.
-	if !strings.Contains(err.Error(), "0700") {
-		t.Errorf("error does not say what mode is required: %v", err)
+	if !strings.Contains(err.Error(), "chmod 700") {
+		t.Errorf("error does not say how to fix it: %v", err)
 	}
 }
 
@@ -302,6 +302,54 @@ func TestStickyFlash_FitsANarrowFooter(t *testing.T) {
 		// The filename must survive every truncation — it is what the user types.
 		if !strings.Contains(line, "80907711.json") {
 			t.Errorf("width %d: filename truncated away: %q", width, line)
+		}
+	}
+}
+
+// #8: a yank failure carries the chmod guidance that fixes it, so it must persist
+// like the success case rather than vanishing after flashDuration.
+func TestYankFailure_IsAlsoSticky(t *testing.T) {
+	home := yankHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".cortex", "abctl-events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestDetailModel(t)
+
+	m.handleKey(keyRune('y'))
+
+	if !strings.Contains(m.flash, "yank failed") {
+		t.Fatalf("expected a failure flash, got %q", m.flash)
+	}
+	if !m.flashSticky {
+		t.Error("the failure notice is timed, so the chmod guidance disappears " +
+			"in three seconds while a success would persist")
+	}
+	if !strings.Contains(m.flash, "chmod 700") {
+		t.Errorf("failure flash lost its actionable guidance: %q", m.flash)
+	}
+}
+
+// #7: the wide-rune fixture whose absence let the column/rune confusion ship.
+// fitFlashLine budgets in display columns; slicing by rune index instead made a
+// CJK path asked to fit 40 columns render 55, since each kept rune was 2 wide.
+func TestStickyFlash_FitsWithWideRunes(t *testing.T) {
+	paths := map[string]string{
+		"cjk":   "yanked → /Users/u/.cortex/abctl-events/日本語日本語日本語日本語-1234567890.json",
+		"emoji": "yanked → /Users/u/.cortex/abctl-events/🎉🎉🎉🎉🎉-1234567890.json",
+		"mixed": "yanked → /Users/u/.cortex/abctl-events/日本語-🎉-20260910-80907711.json",
+	}
+	for name, path := range paths {
+		// Includes degenerate widths: the ellipsis alone is already 1 column.
+		for _, width := range []int{1, 2, 10, 40, 60, 72, 200} {
+			m := newTestDetailModel(t)
+			m.width = width
+			m.setStickyFlash(path)
+
+			line := strings.SplitN(m.footerView(), "\n", 2)[0]
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("%s at width %d: %d columns, overflowing by %d: %q",
+					name, width, got, got-width, line)
+			}
 		}
 	}
 }

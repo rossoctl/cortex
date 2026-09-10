@@ -456,7 +456,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		path, err := yankEventToFile(m.detailEvent)
 		if err != nil {
-			m.setFlash("yank failed: " + err.Error())
+			// Sticky, like the success case: checkYankDir's message names the
+			// directory and the chmod that fixes it, which is useless if it
+			// disappears after three seconds while the success path persists.
+			m.setStickyFlash("yank failed: " + err.Error())
 		} else {
 			m.setStickyFlash("yanked → " + path)
 		}

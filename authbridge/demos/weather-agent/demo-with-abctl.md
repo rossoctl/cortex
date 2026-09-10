@@ -197,7 +197,7 @@ Select any row and press `Enter` for the **Detail** pane. It shows the event as 
 
 Note the detail view **strictly separates request and response fields** — a request row shows only request-side data, a response row shows only response-side data. The `identity` field is filtered out here because it's already shown in the banner above the table.
 
-Press `y` (yank) to write the full, unfiltered wire-format JSON to `/tmp/abctl-event-<timestamp>-<random>.json` (mode `0600`). Useful for sharing with teammates or diffing across runs.
+Press `y` (yank) to write the full, unfiltered wire-format JSON to `~/.cortex/abctl-events/<timestamp>-<random>.json` (mode `0600`, in a `0700` directory). The path stays in the footer until you press another key. Useful for sharing with teammates or diffing across runs.
 
 Press `Esc` to go back to the events pane.
 

@@ -227,9 +227,10 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   they are deliberately not written to a shared location such as `/tmp`.
   Nothing prunes them: they accumulate until you delete them, and unlike
   `$TMPDIR` this location is never cleared by the OS. Given what they hold,
-  `rm` the ones you are done with. The footer shows the path expanded, not
-  abbreviated with `~`, and does not truncate it — on a narrow terminal it can
-  run past the right edge.
+  `rm` the ones you are done with. The footer shows the path expanded rather
+  than abbreviated with `~`, and gives it the whole line while the notice is up;
+  on a terminal too narrow for it the path is truncated from the left, so the
+  filename stays readable.
 - **Pipeline**: the active plugin chain in inbound + outbound order.
   Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens

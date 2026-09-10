@@ -81,17 +81,26 @@ func fitFlashLine(flash string, width int) string {
 		return flash
 	}
 	const ell = "…"
-	r := []rune(flash)
-	// Keep the last width-1 runes and mark the cut. Rune-based, so a multi-byte
-	// path does not get sliced mid-character.
-	keep := width - lipgloss.Width(ell)
-	if keep <= 0 {
+	budget := width - lipgloss.Width(ell)
+	if budget <= 0 {
 		return ell
 	}
-	if keep > len(r) {
-		keep = len(r)
+	// Walk backwards accumulating DISPLAY COLUMNS, not runes. An earlier version
+	// computed the budget in columns and then sliced by rune index, which
+	// overflowed on any wide character — a CJK path asked to fit 40 columns
+	// rendered 55, because each rune it kept was two columns wide.
+	r := []rune(flash)
+	used := 0
+	i := len(r)
+	for i > 0 {
+		w := lipgloss.Width(string(r[i-1]))
+		if used+w > budget {
+			break
+		}
+		used += w
+		i--
 	}
-	return ell + string(r[len(r)-keep:])
+	return ell + string(r[i:])
 }
 
 // fitHintLine trims a footer hint line to the terminal width, dropping whole

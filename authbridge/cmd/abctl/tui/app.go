@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -1315,30 +1314,62 @@ func yankDir() (string, error) {
 
 // checkYankDir refuses to write into a directory that does not actually protect
 // its contents. MkdirAll returns nil for a path that already exists whatever its
-// owner or mode, and it happily follows a symlink — so with a 0755 ~/.cortex an
-// abctl-events symlink planted by another local user would silently redirect
-// events carrying identity subjects and raw LLM completions into their directory.
+// owner or mode, and it happily follows a symlink — so an abctl-events symlink
+// planted by another local user would silently redirect events carrying identity
+// subjects and raw LLM completions into their directory.
 //
-// Lstat, not Stat: Stat resolves the symlink and would report the target's mode.
+// Checks every component from the home directory down, not just the leaf: a
+// symlinked ~/.cortex redirects the whole subtree just as effectively, and the
+// leaf-only version of this function missed it (verified — the event landed in the
+// attacker's tree). Lstat, not Stat: Stat resolves the link and would report the
+// target's mode.
+//
+// The mode requirement applies only to the directories abctl owns (~/.cortex and
+// abctl-events), not to the home directory itself: a real home is commonly 0750
+// or 0755 — this machine's is 0750 — and demanding 0700 there would refuse to
+// yank on an ordinary account. Every component is still checked for a symlink,
+// which is the redirection risk.
+//
+// Ownership is deliberately not checked via syscall.Stat_t: that type does not
+// exist on Windows and would break this package's cross-compile.
 func checkYankDir(dir string) error {
-	fi, err := os.Lstat(dir)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(home, dir)
+	if err != nil {
+		return err
+	}
+
+	// home first (symlink check only), then each component abctl owns.
+	fi, err := os.Lstat(home)
 	if err != nil {
 		return err
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symlink; refusing to write session events "+
-			"through it", dir)
+			"through it", home)
 	}
-	if !fi.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	}
-	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		return fmt.Errorf("%s has mode %v; session events need 0700 (chmod 700 %s)",
-			dir, perm, dir)
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("%s is owned by uid %d, not you (uid %d)",
-			dir, st.Uid, os.Getuid())
+
+	path := home
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		path = filepath.Join(path, part)
+		fi, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; refusing to write session events "+
+				"through it", path)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("%s is not a directory", path)
+		}
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			return fmt.Errorf("%s has mode %v; session events need no group or "+
+				"world access (chmod 700 %s)", path, perm, path)
+		}
 	}
 	return nil
 }
