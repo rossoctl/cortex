@@ -87,43 +87,49 @@ func TestParity_OutboundDenyOnRequest(t *testing.T) {
 	assertParity(t, f, pipeline.SessionDenied, outboundListeners)
 }
 
-// TestParity_RequiresLaterOrderingRejected: a RequiresLater violation
-// must fail at plugins.BuildWithDeps, the single construction call
-// every listener consumes. This locks the wrong-order refusal for
-// every listener path at once.
-//
-// Wrong order: the RequiresLater dependency at a LOWER index than
-// the plugin that names it. Contract says HIGHER.
-//
-// Complements the unit tests in plugins/deps_test.go, which cover the
-// gate itself; this test asserts the parity property — that every
-// listener funnels through the same construction call — which is a
-// listener-package concern and belongs here.
+// TestParity_RequiresLaterOrderingRejected: each listener's
+// construction must reject a RequiresLater violation (dependency at a
+// LOWER index than the plugin naming it; contract requires HIGHER).
 func TestParity_RequiresLaterOrderingRejected(t *testing.T) {
 	entriesWrong := []config.PluginEntry{
 		spyEntry(spyPluginB, spyConfig{}),
 		spyEntry(spyPluginA, spyConfig{RequiresLater: []string{spyPluginB}}),
 	}
-	if _, err := buildSpyPipeline(entriesWrong); err == nil {
-		t.Fatal("BuildWithDeps accepted a wrong-order pipeline; RequiresLater is not enforced")
-	}
-	// Well-ordered: dependency at HIGHER index than the plugin that names it.
 	entriesOK := []config.PluginEntry{
 		spyEntry(spyPluginA, spyConfig{RequiresLater: []string{spyPluginB}}),
 		spyEntry(spyPluginB, spyConfig{}),
 	}
-	if _, err := buildSpyPipeline(entriesOK); err != nil {
-		t.Fatalf("BuildWithDeps rejected a well-ordered pipeline: %v", err)
+
+	builders := []struct {
+		name string
+		fn   func([]config.PluginEntry) error
+	}{
+		{"extproc", tryBuildExtproc},
+		{"reverseproxy", tryBuildReverseProxy},
+		{"forwardproxy", tryBuildForwardProxy},
+	}
+	for _, b := range builders {
+		t.Run(b.name, func(t *testing.T) {
+			if err := b.fn(entriesWrong); err == nil {
+				t.Errorf("%s accepted a wrong-order pipeline; RequiresLater is not enforced", b.name)
+			}
+			if err := b.fn(entriesOK); err != nil {
+				t.Errorf("%s rejected a well-ordered pipeline: %v", b.name, err)
+			}
+		})
 	}
 }
 
 // assertParity runs the fixture through every listener and fails on
-// any observation mismatch, naming both listeners in the diff. A
-// listener that produced no event when others did is itself parity
-// drift ("presence" is the first field consumers compare), so that
-// case is reported at the parent-test level even when a subtest fails.
+// any observation mismatch. Partial presence (one listener records, the
+// others don't) is itself drift and reported at the parent-test level.
 func assertParity(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, listeners []listenerRun) {
 	t.Helper()
+
+	// A single-listener call would pass vacuously with nothing to compare.
+	if len(listeners) < 2 {
+		t.Fatalf("assertParity: fixture %q was given %d listener(s); need at least 2", f.name, len(listeners))
+	}
 
 	type namedObs struct {
 		listener string
@@ -151,7 +157,7 @@ func assertParity(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, list
 		t.Errorf("parity presence drift on fixture %q: only these listeners produced an event: %v", f.name, present)
 	}
 	if len(got) < 2 {
-		return // fewer than two observations to compare against each other.
+		return // one or more legs failed in the subtest; presence drift already reported.
 	}
 
 	// Pairwise compare against the first listener. All observations must
@@ -173,6 +179,9 @@ func observationDiff(a, b *observation) string {
 	}
 	if a.StatusCode != b.StatusCode {
 		return fmt.Sprintf("StatusCode: %d vs %d", a.StatusCode, b.StatusCode)
+	}
+	if !reflect.DeepEqual(a.Error, b.Error) {
+		return "Error: " + jsonPretty(a.Error) + " vs " + jsonPretty(b.Error)
 	}
 	if !invocationsEqual(a.Invocations, b.Invocations) {
 		return "Invocations differ:\n  a=" + jsonPretty(a.Invocations) + "\n  b=" + jsonPretty(b.Invocations)
@@ -239,4 +248,3 @@ func jsonEqual(a, b string) bool {
 	}
 	return reflect.DeepEqual(av, bv)
 }
-

@@ -45,13 +45,8 @@ type fixture struct {
 	upstreamBody   []byte
 }
 
-// buildSpyPipeline constructs the pipeline every driver runs against,
-// routing through plugins.BuildWithDeps so the RequiresLater / Requires
-// gate fires at construction time on every listener path.
-//
-// Returned error is the build error verbatim so parity assertions on the
-// negative case ("both listeners refuse this pipeline the same way")
-// can compare error strings across drivers.
+// buildSpyPipeline routes construction through plugins.BuildWithDeps
+// so Requires / RequiresLater fire at build time on every driver.
 func buildSpyPipeline(entries []config.PluginEntry) (*pipeline.Pipeline, error) {
 	return plugins.BuildWithDeps(entries, plugins.Deps{})
 }
@@ -63,18 +58,27 @@ func spyEntry(name string, cfg spyConfig) config.PluginEntry {
 	return config.PluginEntry{Name: name, Config: raw}
 }
 
-// observation is the parity-comparable snapshot of what each listener
-// wrote to the session store. Includes only fields the framework
-// promises stay stable across listeners; Host casing, timestamps, and
-// RequestID are omitted since each listener sets them independently.
+// observation is the parity-comparable snapshot of a listener's session
+// event. Covers the operator-facing wire surface; per-listener locals
+// (Host casing, timestamps, RequestID, Duration, TLS, Identity) are
+// excluded — expanding coverage there is a follow-up fixture pass.
 type observation struct {
 	Phase       string
 	StatusCode  int
+	Error       *errorSummary
 	Invocations []invocationSummary
 	PluginKeys  []string
 	// PluginEventJSON pins the raw JSON per plugin key so a snapshot
 	// difference between listeners surfaces as a value diff.
 	PluginEventJSON map[string]string
+}
+
+// errorSummary mirrors pipeline.EventError so listener drift in the
+// deny reason fails parity instead of remaining invisible.
+type errorSummary struct {
+	Kind    string
+	Code    string
+	Message string
 }
 
 type invocationSummary struct {
@@ -87,8 +91,7 @@ type invocationSummary struct {
 // observe returns the sole event matching (direction, phase) in the
 // DefaultSessionID bucket, folded into the parity-comparable shape.
 // Returns nil when the bucket is empty or the phase is absent. Fails
-// on more than one match so duplicate-record drift surfaces here
-// instead of passing through as equal counts on both listeners.
+// on more than one match so duplicate-record drift surfaces here.
 func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wantPhase pipeline.SessionPhase) *observation {
 	t.Helper()
 	v := store.View(session.DefaultSessionID)
@@ -116,6 +119,9 @@ func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wan
 		Phase:           ev.Phase.String(),
 		StatusCode:      ev.StatusCode,
 		PluginEventJSON: map[string]string{},
+	}
+	if ev.Error != nil {
+		obs.Error = &errorSummary{Kind: ev.Error.Kind, Code: ev.Error.Code, Message: ev.Error.Message}
 	}
 	if ev.Invocations != nil {
 		invs := ev.Invocations.Inbound
@@ -162,7 +168,7 @@ func (m *mockStream) Send(resp *extprocv3.ProcessingResponse) error {
 }
 func (m *mockStream) Recv() (*extprocv3.ProcessingRequest, error) {
 	if m.recvIdx >= len(m.requests) {
-		return nil, fmt.Errorf("EOF")
+		return nil, io.EOF
 	}
 	req := m.requests[m.recvIdx]
 	m.recvIdx++
@@ -265,6 +271,19 @@ func runExtproc(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *obser
 	stream := &mockStream{ctx: context.Background(), requests: reqs}
 	_ = srv.Process(stream)
 
+	// Wire guards matching the HTTP drivers' upstreamHit check: consume
+	// every message, and reject fixtures must send an ImmediateResponse.
+	if stream.recvIdx != len(reqs) {
+		t.Errorf("extproc: consumed %d of %d messages; listener bailed", stream.recvIdx, len(reqs))
+	}
+	if f.upstreamStatus == 0 {
+		if n := len(stream.responses); n == 0 {
+			t.Errorf("extproc: fixture %q asked for deny but no response was sent", f.name)
+		} else if last := stream.responses[n-1]; last.GetImmediateResponse() == nil {
+			t.Errorf("extproc: fixture %q asked for deny but last response was %T, want ImmediateResponse", f.name, last.Response)
+		}
+	}
+
 	return observe(t, store, f.direction, wantPhase)
 }
 
@@ -275,6 +294,9 @@ func runExtproc(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *obser
 // when a deny fixture reaches it, guarding OnRequest deny correctness.
 func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *observation {
 	t.Helper()
+	if f.direction != pipeline.Inbound {
+		t.Fatalf("reverseproxy handles Inbound only, got fixture %q direction=%v", f.name, f.direction)
+	}
 
 	var upstreamHit bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +362,9 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 // listener agents egress through in the laptop (proxy-sidecar) shape.
 func runForwardProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *observation {
 	t.Helper()
+	if f.direction != pipeline.Outbound {
+		t.Fatalf("forwardproxy handles Outbound only, got fixture %q direction=%v", f.name, f.direction)
+	}
 
 	var upstreamHit bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -403,3 +428,41 @@ func runForwardProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 	return observe(t, store, pipeline.Outbound, wantPhase)
 }
 
+// --- construction-only helpers -------------------------------------------
+
+// tryBuild* replay each driver's construction (pipeline + listener
+// NewServer / Server init) and return the first error.
+
+func tryBuildExtproc(entries []config.PluginEntry) error {
+	spyPipe, err := buildSpyPipeline(entries)
+	if err != nil {
+		return err
+	}
+	emptyPipe, err := plugins.BuildWithDeps(nil, plugins.Deps{})
+	if err != nil {
+		return err
+	}
+	_ = &extproc.Server{
+		InboundPipeline:  pipeline.NewHolder(spyPipe),
+		OutboundPipeline: pipeline.NewHolder(emptyPipe),
+	}
+	return nil
+}
+
+func tryBuildReverseProxy(entries []config.PluginEntry) error {
+	p, err := buildSpyPipeline(entries)
+	if err != nil {
+		return err
+	}
+	_, err = reverseproxy.NewServer(pipeline.NewHolder(p), nil, "http://parity.local", nil)
+	return err
+}
+
+func tryBuildForwardProxy(entries []config.PluginEntry) error {
+	p, err := buildSpyPipeline(entries)
+	if err != nil {
+		return err
+	}
+	_, err = forwardproxy.NewServer(pipeline.NewHolder(p), nil, nil)
+	return err
+}
