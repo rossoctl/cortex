@@ -36,6 +36,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
@@ -78,9 +79,11 @@ type ToolPrune struct {
 	raw    json.RawMessage
 	remove map[string]struct{}
 
-	// rates is the process rate table, injected by plugins.BuildWithDeps before
-	// Configure runs. Read only through resolveRates, which guards it.
-	rates pricing.Resolver
+	// No rate table here any more. This plugin reduces tokens; pricing the reduction is
+	// the cost owner's job, and OnFinish reads the figure back off the published record.
+	// Dropping the resolver also removes the nil-interface trap that once silently
+	// stopped pruning altogether: an un-injected pricing.Resolver panics on call, and
+	// this plugin's fail-open recovery swallowed the panic.
 
 	m         metrics
 	driftOnce sync.Once
@@ -93,28 +96,6 @@ func New() *ToolPrune { return &ToolPrune{} }
 
 func init() {
 	plugins.RegisterPlugin("tool-prune", func() pipeline.Plugin { return New() })
-}
-
-// SetPricingResolver implements pricing.ResolverConsumer.
-func (p *ToolPrune) SetPricingResolver(r pricing.Resolver) { p.rates = r }
-
-// resolveRates is the only read of the rate table.
-//
-// The nil guard is load-bearing and easy to get wrong: the field is an INTERFACE,
-// so a plugin that was never injected holds a nil interface, and calling a method
-// on that panics. A nil *pricing.Registry would have been safe — its methods
-// tolerate a nil receiver — but the interface type is what lets a test substitute
-// a fixed table, so the guard lives here instead.
-//
-// This is not a theoretical hazard: without it, an un-injected plugin panicked on
-// the request path. The plugin's fail-open recovered and forwarded the original
-// body, so pruning silently stopped working rather than crashing — which is the
-// worse failure, because nothing surfaced it.
-func (p *ToolPrune) resolveRates(host, model string, promptTotal int) (pricing.Rates, pricing.Provenance) {
-	if p.rates == nil {
-		return pricing.Rates{}, pricing.ProvNone
-	}
-	return p.rates.Resolve(host, model, promptTotal)
 }
 
 func (p *ToolPrune) Name() string { return "tool-prune" }
@@ -461,17 +442,6 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// headed for — the same model can bill differently on a discounted gateway
 	// than on the vendor endpoint, and only the target host distinguishes them.
 	//
-	// Resolved at prompt size 0, so these are BASE rates: a long-context threshold
-	// depends on the prompt token count, which the provider only reports on the
-	// response. OnFinish resolves again with the real count, so the metrics and the
-	// `$ saved` total are threshold-correct; only the rates published on this event
-	// are base-tier. A consumer doing its own arithmetic from them under-prices a
-	// request past the threshold, which is why that arithmetic is moving out of the
-	// consumer entirely.
-	rates, prov := p.resolveRates(pctx.Host, inferenceModel(pctx), 0)
-	rateInput, _ := rates.For(pricing.TierInput)
-	rateWrite, _ := rates.For(pricing.TierCacheWrite)
-	rateRead, _ := rates.For(pricing.TierCacheRead)
 	// SetBody BEFORE publishing, so the event can report what was actually sent.
 	// Under ErrorPolicyObserve it is a no-op on bytes and leaves bodyMutated
 	// false — this same code path measures without enforcing.
@@ -489,10 +459,6 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		BodyBytesAfter: bodySent,
 		Projected:      !applied,
 		Model:          inferenceModel(pctx),
-		RateInput:      rateInput,
-		RateCacheWrite: rateWrite,
-		RateCacheRead:  rateRead,
-		RateSource:     prov.String(),
 	})
 	// Carry the saving to OnFinish, where the response reveals which token tier
 	// it came out of. SetState keeps it private to this plugin, unlike
@@ -535,33 +501,62 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	if st == nil || st.bytesRemoved <= 0 {
 		return
 	}
-	inf := pctx.Extensions.Inference
-	if inf == nil || len(pctx.Body) == 0 {
-		return
-	}
-	promptTotal := inf.InputTokens + inf.CacheReadTokens + inf.CacheWriteTokens
-	if promptTotal <= 0 {
-		// Fall back to the aggregate when a provider reports only a total.
-		promptTotal = inf.PromptTokens
-	}
-	if promptTotal <= 0 {
-		return
-	}
-	tokens := float64(st.bytesRemoved) * float64(promptTotal) / float64(len(pctx.Body))
-	if tokens <= 0 {
-		return
-	}
-	t := tierOf(inf)
-	// Resolved with the real prompt total, so a long-context threshold applies.
-	rates, prov := p.resolveRates(pctx.Host, inf.Model, promptTotal)
-	rate, ok := rates.For(t)
+	// The saving is priced by the cost owner, not here.
+	//
+	// This function used to do it: estimate tokens from the byte delta, pick the tier,
+	// resolve rates, multiply. That was the third copy of the same arithmetic — abctl had
+	// one and litellm-budget-track had another — and this plugin's job is reducing
+	// tokens, not accounting for money. It now reads the figure attributed to it and
+	// aggregates, so the pane and the ledger cannot disagree about what was saved.
+	//
+	// Nothing to report is the normal case for a request with no inference in it.
+	sv, ok := savingFor(pctx, p.Name())
 	if !ok {
-		// No usable rate for the tier this request actually used. Count it
-		// unpriced rather than charging zero into the total — pricing a carried
-		// tier at zero would hide the gap inside the priced denominator.
-		prov = pricing.ProvNone
+		return
 	}
-	p.m.observeSaving(tokens, t, tokens*rate, prov, inf.Model)
+	tier, ok := pricing.TierFromString(sv.Tier)
+	if !ok {
+		// An unrecognized tier means the record and this build disagree about the
+		// vocabulary. Counting it in a tier bucket would misattribute up to 12.5x, so
+		// the tokens are recorded without one.
+		tier = pricing.TierInput
+	}
+	prov := pricing.ProvNone
+	if sv.Provenance != "" {
+		if pv, ok := pricing.ProvenanceFromString(sv.Provenance); ok {
+			prov = pv
+		}
+	}
+	p.m.observeSaving(float64(sv.TokensAvoided), tier, sv.USD, prov, modelOf(pctx))
+}
+
+// savingFor pulls this plugin's entry out of the published cost record.
+//
+// Reads the record rather than recomputing, and reads it by COMPONENT so a pipeline with
+// several body-shrinking plugins attributes each one's saving to itself.
+func savingFor(pctx *pipeline.Context, component string) (costevent.Saving, bool) {
+	if pctx == nil || len(pctx.Extensions.Custom) == 0 {
+		return costevent.Saving{}, false
+	}
+	ev, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix].(costevent.Event)
+	if !ok {
+		return costevent.Saving{}, false
+	}
+	for _, s := range ev.Avoided {
+		if s.Component == component {
+			return s, true
+		}
+	}
+	return costevent.Saving{}, false
+}
+
+// modelOf names the model for the unpriced-model tally, which is what tells an operator
+// WHICH pricing entry to add.
+func modelOf(pctx *pipeline.Context) string {
+	if pctx.Extensions.Inference == nil {
+		return ""
+	}
+	return pctx.Extensions.Inference.Model
 }
 
 // tierOf picks the tier the pruned manifest belonged to, delegating the rule to

@@ -91,6 +91,14 @@ type Event struct {
 	// A settled zero is now a real answer that suppresses the fallback.
 	Settled bool `json:"settled,omitempty"`
 
+	// PromptUSD is the modelled cost of the PROMPT alone, output excluded.
+	//
+	// A breakdown, not a component of a sum: it is the table's figure even when CostUSD
+	// is the gateway's, so PromptUSD + anything is not a total of anything. It exists so
+	// a request row can show what that request cost while the response row shows the
+	// call's total, which is a question the gateway's single number cannot answer.
+	PromptUSD float64 `json:"prompt_usd,omitempty"`
+
 	// Avoided is cost that was NOT incurred. Nothing in here is spend.
 	//
 	// A nested list rather than sibling floats, deliberately. More counterfactuals are
@@ -117,6 +125,14 @@ type Saving struct {
 	// USD is TokensAvoided priced at the tier the prompt actually landed in, through
 	// the same table, multiplier and provenance as CostUSD above.
 	USD float64 `json:"usd,omitempty"`
+	// Provenance is how trustworthy the dollar figure is: the rate table's level
+	// ("configured", "bundled", ...), or empty when no rate covered the tier.
+	//
+	// NOT the record's top-level Provenance, which may be "authoritative" because the
+	// gateway reported what the request actually cost. A saving is counterfactual, so it
+	// is always modelled from the table — claiming the gateway's authority for it would
+	// overstate a figure nobody measured.
+	Provenance string `json:"provenance,omitempty"`
 	// Tier names which prompt tier the saving came out of: cache-write, cache-read or
 	// input. It matters because they differ by 12.5x, and a saving quoted without it
 	// cannot be checked.

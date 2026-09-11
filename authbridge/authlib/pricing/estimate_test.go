@@ -72,3 +72,21 @@ func TestAvoidedUsage_NeverAttributesOutput(t *testing.T) {
 		t.Error("tier is output; a prompt saving can never come out of the output tier")
 	}
 }
+
+// The spelling must match the config keys, because a tier name in a cost record is meant to
+// be pasted into `pricing:` without translation.
+func TestTierString_MatchesConfigSpelling(t *testing.T) {
+	for tier, want := range map[Tier]string{
+		TierInput:      "input",
+		TierCacheWrite: "cache_write",
+		TierCacheRead:  "cache_read",
+		TierOutput:     "output",
+	} {
+		if got := tier.String(); got != want {
+			t.Errorf("Tier(%d).String() = %q, want %q", int(tier), got, want)
+		}
+	}
+	if got := Tier(99).String(); got != "unknown" {
+		t.Errorf("out-of-range tier = %q, want %q", got, "unknown")
+	}
+}

@@ -138,10 +138,29 @@ func TestPricingConsumerPlugins_FindsRegisteredConsumers(t *testing.T) {
 	}
 }
 
-func TestPricingConsumerPlugins_ExcludesNonConsumers(t *testing.T) {
-	for _, n := range PricingConsumerPlugins() {
-		if n == "inference-parser" {
-			t.Error("inference-parser reported as a pricing consumer; it publishes tokens, it does not price them")
+// inference-parser IS a pricing consumer, and litellm-budget-track is not — the inverse of
+// what this test asserted before cortex #972.
+//
+// The reason it flipped: the component that knows when token counts are FINAL is the one
+// that can price them exactly once, and a budget has no business computing the number it
+// enforces against. The old arrangement meant a pipeline without the budget plugin showed
+// token counts and no money, with the same field silently changing meaning depending on
+// configuration.
+func TestPricingConsumerPlugins_TracksTheCostOwner(t *testing.T) {
+	consumers := PricingConsumerPlugins()
+	var hasParser, hasBudget bool
+	for _, n := range consumers {
+		switch n {
+		case "inference-parser":
+			hasParser = true
+		case "litellm-budget-track":
+			hasBudget = true
 		}
+	}
+	if !hasParser {
+		t.Errorf("inference-parser is not reported as a pricing consumer, but it owns costing: %v", consumers)
+	}
+	if hasBudget {
+		t.Errorf("litellm-budget-track is reported as a pricing consumer; it bills a settled figure and computes nothing: %v", consumers)
 	}
 }

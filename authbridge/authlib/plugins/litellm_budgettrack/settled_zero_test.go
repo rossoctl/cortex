@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
@@ -16,7 +17,7 @@ import (
 // list, the inverse of the bug the branch was added to fix.
 func TestSettledZero_OnlyForADeclaredFreeCall(t *testing.T) {
 	// A model the table does not price, so the usage fallback cannot rescue a case.
-	unpriced := func(t *testing.T) *BudgetTrack {
+	unpriced := func(t *testing.T) *billing {
 		t.Helper()
 		p := New()
 		var r pricing.Rates
@@ -27,11 +28,12 @@ func TestSettledZero_OnlyForADeclaredFreeCall(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.SetPricingResolver(pricing.NewRegistry(tab))
 		if err := p.Configure([]byte(`{"spend_file":"` + t.TempDir() + `/s.json","max_budget":100}`)); err != nil {
 			t.Fatal(err)
 		}
-		return p
+		// The rates go to the COST OWNER now, not to this plugin — see the billing
+		// wrapper in plugin_test.go.
+		return &billing{BudgetTrack: p, rates: pricing.NewRegistry(tab)}
 	}
 
 	for _, tc := range []struct {
@@ -71,7 +73,7 @@ func TestSettledZero_OnlyForADeclaredFreeCall(t *testing.T) {
 			p := unpriced(t)
 			h := http.Header{}
 			if tc.header != "" {
-				h.Set(responseCostHeader, tc.header)
+				h.Set(costing.ResponseCostHeader, tc.header)
 			}
 			if tc.streamed {
 				h.Set("Content-Type", "text/event-stream")
@@ -113,8 +115,8 @@ func TestSettledZero_StreamedZeroStillPricesFromUsage(t *testing.T) {
 		pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6,
 	})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
-		responseCostHeader: {"0"},
-		"Content-Type":     {"text/event-stream"},
+		costing.ResponseCostHeader: {"0"},
+		"Content-Type":             {"text/event-stream"},
 	}}
 	pricedInference(pctx, 1000, 0, 0, 100)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)

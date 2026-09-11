@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 	"github.com/rossoctl/cortex/authbridge/authlib/sessionapi"
@@ -56,9 +57,14 @@ func seedAgentTurns(store *session.Store, sid string, n int) {
 				OutputTokens: output, TotalTokens: 1_300 + cacheRead + output,
 			},
 			Plugins: map[string]json.RawMessage{
-				"litellm-budget-track": json.RawMessage(fmt.Sprintf(
-					`{"cost_usd":%.4f,"source":"gateway-header","daily_total_usd":%.4f,"daily_max_usd":5}`,
-					cost, cost*float64(i+1))),
+				// The cost record, as the proxy publishes it on the RESPONSE: the
+				// prompt-only figure and the saving now travel here rather than
+				// being derived in the UI from rates on the request event.
+				costevent.Key: json.RawMessage(fmt.Sprintf(
+					`{"cost_usd":%.4f,"source":"gateway-header","daily_total_usd":%.4f,"daily_max_usd":5,`+
+						`"prompt_usd":%.5f,"avoided":[{"component":"tool-prune","tokensAvoided":9899,`+
+						`"usd":0.0038,"tier":"cache_read","estimated":true}]}`,
+					cost, cost*float64(i+1), 1_300*3.8e-6+float64(cacheRead)*3.8e-7)),
 			},
 			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
 				{Plugin: "inference-parser", Action: pipeline.ActionObserve, Reason: "parsed"},

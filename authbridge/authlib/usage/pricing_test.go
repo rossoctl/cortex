@@ -333,3 +333,58 @@ func TestPricing_ProvenanceReachesTheSnapshot(t *testing.T) {
 		t.Errorf("snapshot JSON carries no pricedBy: %s", b)
 	}
 }
+
+// Avoided cost must never reach spend. This is the invariant that keeps a counterfactual
+// out of a real total, and it is asserted here because usage.go:212 is the only place in the
+// codebase that sums money — one line, guarded once.
+//
+// Two records, identical except that one carries a large avoided figure. Every money field
+// the aggregator reports must be identical across the two.
+func TestAggregator_TotalsAreInvariantToAvoidedCost(t *testing.T) {
+	snapshotWith := func(t *testing.T, avoided []costevent.Saving) Snapshot {
+		t.Helper()
+		a := New(WithPricing(nil))
+		raw, err := json.Marshal(costevent.Event{
+			CostUSD:    0.25,
+			Source:     costevent.SourceGatewayHeader,
+			Provenance: "authoritative",
+			Settled:    true,
+			// A deliberately absurd figure: if it leaks into a total, no rounding
+			// tolerance could hide it.
+			Avoided: avoided,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev := &pipeline.SessionEvent{
+			Phase:     pipeline.SessionResponse,
+			Host:      "gw.internal",
+			Inference: &pipeline.InferenceExtension{Model: "claude-opus-5", InputTokens: 100, OutputTokens: 10},
+			Plugins:   map[string]json.RawMessage{costevent.Key: raw},
+		}
+		a.Record("session-1", ev)
+		return a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone)
+	}
+
+	without := snapshotWith(t, nil)
+	with := snapshotWith(t, []costevent.Saving{
+		{Component: "tool-prune", TokensAvoided: 500_000, USD: 999.99, Tier: "cache_write", Estimated: true},
+		{Component: "some-future-plugin", TokensAvoided: 1_000, USD: 42, Tier: "input", Projected: true},
+	})
+
+	if with.Totals.CostMicros != without.Totals.CostMicros {
+		t.Errorf("CostMicros = %d with avoided cost, %d without — a counterfactual entered spend",
+			with.Totals.CostMicros, without.Totals.CostMicros)
+	}
+	if with.Totals.PricedRequests != without.Totals.PricedRequests {
+		t.Errorf("PricedRequests = %d vs %d", with.Totals.PricedRequests, without.Totals.PricedRequests)
+	}
+	if with.Totals.Requests != without.Totals.Requests {
+		t.Errorf("Requests = %d vs %d", with.Totals.Requests, without.Totals.Requests)
+	}
+	// And the figure that IS real still lands: an invariant that holds because nothing
+	// was recorded at all would prove nothing.
+	if with.Totals.CostMicros != 250_000 {
+		t.Errorf("CostMicros = %d, want the record's own 250000", with.Totals.CostMicros)
+	}
+}

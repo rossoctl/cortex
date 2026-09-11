@@ -188,3 +188,39 @@ func PromptTier(u Usage) Tier {
 		return TierInput
 	}
 }
+
+// String names a tier using the spelling operators write in `pricing:` config, so a tier
+// reported in a cost record or an error can be pasted straight into a YAML key without
+// translation.
+func (t Tier) String() string {
+	switch t {
+	case TierInput:
+		return "input"
+	case TierCacheWrite:
+		return "cache_write"
+	case TierCacheRead:
+		return "cache_read"
+	case TierOutput:
+		return "output"
+	}
+	return "unknown"
+}
+
+// TierFromString is the inverse of Tier.String, for a tier that has been through JSON.
+//
+// Reports false for anything unrecognized rather than defaulting to input: a saving
+// attributed to the wrong tier is off by up to 12.5x, and silently picking the cheapest
+// interpretation would understate it.
+func TierFromString(s string) (Tier, bool) {
+	switch s {
+	case "input":
+		return TierInput, true
+	case "cache_write":
+		return TierCacheWrite, true
+	case "cache_read":
+		return TierCacheRead, true
+	case "output":
+		return TierOutput, true
+	}
+	return TierInput, false
+}

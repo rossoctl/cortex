@@ -3,7 +3,6 @@ package tui
 import (
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // costEvent is the litellm-budget-track per-response event.
@@ -40,35 +39,22 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 	return costevent.Decode(e)
 }
 
-// promptCost models what the prompt of one request cost, from the response's
-// per-tier token counts and the rates tool-prune published on the request.
+// promptCost is what the PROMPT of one request cost, read off the cost record.
 //
-// Tier-weighted rather than a flat prompt x single-rate: providers bill a cache
-// read at ~0.1x the uncached input rate and a cache write at ~1.25x, so a
-// cache-heavy turn (the common case for a long-running agent) is overstated by
-// close to an order of magnitude by flat pricing.
+// Not computed here any more. The record carries a prompt-only figure precisely so a
+// request row can show one: the gateway reports a single total for the call and cannot
+// answer "what did the prompt cost", while a flat prompt-times-one-rate figure overstates
+// a cache-heavy turn — the common case for a long-running agent — by close to an order of
+// magnitude, because a cache read bills at ~0.1x input and a write at ~1.25x.
 //
-// The arithmetic is pricing.Cost's, not this file's. This function only supplies
-// inputs; it holds no rates and multiplies nothing.
-//
-// Output is deliberately zeroed. tool-prune publishes no output rate, and Cost
-// refuses to price a tier that carried tokens with no rate — correctly, since a
-// partial total is worse than none. What this figure means is what the PROMPT
-// cost, which is the half tool-prune can speak to.
-//
-// A model with no rates yields ok=false rather than a $0.00 that would read as a
-// free prompt.
-func promptCost(ps pruneSaving, resp *pipeline.InferenceExtension) (usd float64, ok bool) {
-	if resp == nil || ps.RateSource == "none" {
+// False when the proxy could not model it, which is an older proxy or a model with no rate,
+// rather than a $0.00 that would read as a free prompt.
+func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
+	ev, ok := costevent.Record(resp)
+	if !ok || ev.PromptUSD <= 0 {
 		return 0, false
 	}
-	u := pricing.UsageFromInference(resp)
-	u.Output = 0
-	micros, priced := pricing.Cost(ps.publishedRates(), u)
-	if !priced || micros <= 0 {
-		return 0, false
-	}
-	return float64(micros) / 1e6, true
+	return ev.PromptUSD, true
 }
 
 // promptTokens is the request's own billed token count: what the provider

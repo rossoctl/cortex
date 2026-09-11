@@ -29,45 +29,13 @@ import (
 	"math"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
-	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
-)
-
-// Response cost headers emitted by LiteLLM.
-//
-// MEASURED 2026-09-11 against ete-litellm (LiteLLM 1.85.5), because an earlier version of
-// this comment had the semantics backwards and a reviewer reasonably concluded from it
-// that drift detection would false-positive on every Anthropic-format request:
-//
-//	/v1/chat/completions  both headers present, IDENTICAL values
-//	/v1/messages          only "-original", same value the other path reports
-//
-// For 16 input + 4 output tokens of claude-opus-5 both paths reported
-// 0.00013680000000000002, which is 0.76 x vendor list (16x$5 + 4x$25 per Mtok = 0.00018).
-// So "-original" is the cost the gateway ACTUALLY CHARGED, not a pre-discount list price,
-// and falling back to it compares like with like.
-//
-// "Original" refers to LiteLLM's OWN discount/margin layer, reported alongside in
-// X-Litellm-Response-Cost-{Discount,Margin}-Amount: original is the figure before that
-// layer is applied. This gateway runs neither (both report 0.0), so the two agree. A
-// gateway that DOES configure them would see them diverge, which is why checkDrift
-// checks those headers before comparing — see driftComparable.
-//
-// The fallback itself is load-bearing: without it, budget tracking silently records $0
-// for every Anthropic-format request, which is the shape Claude Code sends.
-const (
-	responseCostHeader         = "X-Litellm-Response-Cost"
-	responseCostOriginalHeader = "X-Litellm-Response-Cost-Original"
-
-	// LiteLLM's own adjustment layer, non-zero only where an operator configured it.
-	costDiscountAmountHeader = "X-Litellm-Response-Cost-Discount-Amount"
-	costMarginAmountHeader   = "X-Litellm-Response-Cost-Margin-Amount"
 )
 
 type budgetTrackConfig struct {
@@ -106,22 +74,23 @@ type spendLedger struct {
 	TotalCalls int     `json:"total_calls"`
 }
 
-// BudgetTrack enforces a daily spending budget based on x-litellm-response-cost.
+// BudgetTrack keeps the daily spend ledger and refuses requests once the budget is spent.
+//
+// It does NOT decide what a request cost. That is authlib/costing, driven by
+// inference-parser — the component that knows when token counts are final — and this plugin
+// bills the figure that was published. Before cortex #972 both jobs lived here, which meant
+// a pipeline without this plugin had no authoritative figure at all and every cost silently
+// became a modelled one.
 type BudgetTrack struct {
 	cfg    budgetTrackConfig
 	mu     sync.Mutex
 	ledger spendLedger
 
-	// rates is the process rate table, injected before Configure. Read only
-	// through costOf, which guards the nil interface.
-	rates pricing.Resolver
-
-	// drift reports when the table disagrees with the gateway's own figure.
+	// drift warns when the rate table disagrees with what the gateway charged. It stays
+	// here rather than moving with the arithmetic because the dedup, the cap and the
+	// operator advice are policy, and a body parser is the wrong home for policy.
 	drift driftReporter
 }
-
-// SetPricingResolver implements pricing.ResolverConsumer.
-func (p *BudgetTrack) SetPricingResolver(r pricing.Resolver) { p.rates = r }
 
 // New creates an unconfigured BudgetTrack plugin instance.
 func New() *BudgetTrack { return &BudgetTrack{} }
@@ -224,117 +193,81 @@ func (p *BudgetTrack) OnRequest(_ context.Context, pctx *pipeline.Context) pipel
 // so pipeline.RunResponse skips it and OnResponseFrame drives accumulation
 // instead; this remains for listeners that only call OnResponse.
 func (p *BudgetTrack) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if cost, st := headerCost(pctx); st == headerPositive && cost > 0 {
-		if total, ok := p.accumulate(cost); ok {
-			p.emitCost(pctx, cost, costevent.SourceGatewayHeader, total, pricing.ProvAuthoritative)
-		}
-	}
+	p.bill(pctx)
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// OnResponseFrame observes each response frame. It parses token usage out of
-// streamed SSE frames and, on the terminal frame, prices the request: the
-// response-header cost when present (non-streaming), otherwise the parsed
-// usage times the configured per-token rates (streaming).
+// OnResponseFrame bills the terminal frame.
+//
+// It no longer prices anything. inference-parser settles the cost — it is the component
+// that knows when usage is final — and this plugin's job is the ledger and the budget. See
+// authlib/costing and inferenceparser/cost.go for why the split runs that way.
 func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
 	if !last {
 		return pipeline.Action{Type: pipeline.Continue}
 	}
+	p.bill(pctx)
+	return pipeline.Action{Type: pipeline.Continue}
+}
 
-	// Terminal frame: settle the cost exactly once. Materialize the scratch
-	// unconditionally (a header-only response never allocated it above) so the
-	// guard also covers that path — a listener that dispatches last=true twice
-	// (e.g. extproc header + buffered-body phases) must not double-charge.
+// bill adds the settled cost to today's ledger, exactly once per request.
+//
+// The idempotence guard stays here even though the parser has one of its own: a listener
+// can dispatch a terminal frame twice (extproc does, once for headers and once for the
+// buffered body), and this is the ledger — double-counting money is not recoverable from a
+// later correction, because the file has already been written.
+func (p *BudgetTrack) bill(pctx *pipeline.Context) {
 	st := pipeline.GetState[settleState](pctx, stateKey)
 	if st == nil {
 		st = &settleState{}
 		pipeline.SetState(pctx, stateKey, st)
 	}
 	if st.settled {
-		return pipeline.Action{Type: pipeline.Continue}
+		return
+	}
+
+	settled, ok := costing.Load(pctx)
+	if !ok || !settled.Priced {
+		// Nothing was priced, so there is nothing to bill and no ledger fields to
+		// add. NOT marked settled: a listener that calls OnResponse before the
+		// parser has finalized must not lock this request out of being billed by the
+		// terminal frame that follows.
+		return
 	}
 	st.settled = true
 
-	cost, state := headerCost(pctx)
-	source := costevent.SourceGatewayHeader
-	// A header cost is a settled figure the gateway reported, not a rate we looked
-	// up — the strongest provenance there is.
-	provenance := pricing.ProvAuthoritative
-	// A zero on a stream is LiteLLM's placeholder, not an answer, so it falls back
-	// like an absent header. A zero on a non-streamed response IS an answer.
-	streamedPlaceholder := state == headerZero && isEventStream(pctx)
-	declaredFree := state == headerZero && !streamedPlaceholder
-	if state != headerPositive {
-		// Fall back to per-token pricing only when there is no authoritative
-		// header cost: the header is absent, or this is a streamed response
-		// (where LiteLLM always reports 0). A present "0" on a non-streamed
-		// response is a genuine free call (cache hit / error) — charge nothing,
-		// don't invent a cost from the usage block.
-		if !declaredFree {
-			// Price the per-tier counts inference-parser published, through the
-			// process rate table scoped to this request's endpoint.
-			//
-			// The plugin used to run its own SSE parser to gather those counts,
-			// folding the same frames inference-parser had already folded, and to
-			// hold its own four rates. Both are gone: one parser, one rate table,
-			// one place tokens become dollars.
-			usage := pricing.UsageFromInference(pctx.Extensions.Inference)
-			model := ""
-			if pctx.Extensions.Inference != nil {
-				model = pctx.Extensions.Inference.Model
-			}
-			micros, prov, priced := p.costOf(pctx.Host, model, usage)
-			if priced {
-				cost = float64(micros) / 1e6
-				source = costevent.SourceUsageFallback
-				provenance = prov
-			}
-		}
+	// Only a gateway figure is worth comparing against the table. Comparing a modelled
+	// figure with itself would always agree and say nothing.
+	if settled.Source == costevent.SourceGatewayHeader && settled.CostUSD > 0 {
+		p.checkDrift(pctx, settled)
 	}
-	switch {
-	case cost > 0:
-		if source == costevent.SourceGatewayHeader {
-			// Only a header cost is authoritative. Comparing a modelled figure against
-			// itself would always agree and say nothing.
-			p.checkDrift(pctx, cost)
-		}
-		if total, ok := p.accumulate(cost); ok {
-			p.emitCost(pctx, cost, source, total, provenance)
-		}
-	case declaredFree:
-		// The gateway reported a parsed, finite, exactly-zero cost on a NON-streamed
-		// response: a genuine free call — a cache hit, or an error it declined to
-		// charge for. Nothing is added to the ledger, but the event is published so
-		// downstream knows this was PRICED at zero rather than unpriced. Without it
-		// the aggregator finds no figure and invents a cost for a call the gateway
-		// declared free.
-		//
-		// Deliberately NOT reached for an unusable header, nor for a stream whose
-		// usage fallback failed to price. Those are unpriced, and claiming them as
-		// settled zeros would count them toward coverage and drop them from the
-		// unpriced list — the inverse of the bug this branch fixes.
-		p.emitSettledZero(pctx)
+
+	total, added := p.accumulate(settled.CostUSD)
+	if !added {
+		// A settled zero: the gateway charged nothing, so nothing enters the ledger.
+		// The record still needs this plugin's fields, because a client showing a
+		// budget needs the daily total for a free call as much as for a billed one.
+		p.mu.Lock()
+		total = p.ledger.TotalSpend
+		p.mu.Unlock()
 	}
-	return pipeline.Action{Type: pipeline.Continue}
+	p.amend(pctx, total)
 }
 
-// emitSettledZero publishes a zero cost the gateway actually reported, as distinct
-// from the absence of any figure.
-func (p *BudgetTrack) emitSettledZero(pctx *pipeline.Context) {
-	if pctx.Extensions.Custom == nil {
-		pctx.Extensions.Custom = map[string]any{}
+// amend adds this plugin's own fields to the record the cost owner published.
+//
+// The one sanctioned second write to that key: the daily total and the configured maximum
+// are the budget's business and nothing else's, and the alternative — a second event just
+// for two numbers — would make every consumer join two records to render one line.
+func (p *BudgetTrack) amend(pctx *pipeline.Context, dailyTotal float64) {
+	if costing.Amend(pctx, func(ev *costevent.Event) {
+		ev.DailyTotalUSD = dailyTotal
+		ev.DailyMaxUSD = p.cfg.MaxBudget
+	}) {
+		return
 	}
-	p.mu.Lock()
-	total := p.ledger.TotalSpend
-	p.mu.Unlock()
-	pctx.Extensions.Custom[p.Name()+pipeline.PluginEventSuffix] = costevent.Event{
-		CostUSD:       0,
-		Source:        costevent.SourceGatewayHeader,
-		DailyTotalUSD: total,
-		DailyMaxUSD:   p.cfg.MaxBudget,
-		Provenance:    pricing.ProvAuthoritative.String(),
-		Settled:       true,
-	}
+	// No record to amend means no cost owner ran. Nothing to say, and inventing a
+	// record here would report a cost this plugin did not compute.
 }
 
 // accumulate adds one priced call to today's ledger and persists it,
@@ -355,99 +288,6 @@ func (p *BudgetTrack) accumulate(cost float64) (dailyTotal float64, added bool) 
 	p.saveLedger()
 	p.mu.Unlock()
 	return total, true
-}
-
-// emitCost writes the costEvent to pctx.Extensions.Custom; the listener
-// forwards it to SessionEvent.Plugins under the plugin name.
-func (p *BudgetTrack) emitCost(pctx *pipeline.Context, cost float64, source string, dailyTotal float64, prov pricing.Provenance) {
-	if pctx.Extensions.Custom == nil {
-		pctx.Extensions.Custom = map[string]any{}
-	}
-	pctx.Extensions.Custom[p.Name()+pipeline.PluginEventSuffix] = costevent.Event{
-		CostUSD:       cost,
-		Source:        source,
-		DailyTotalUSD: dailyTotal,
-		DailyMaxUSD:   p.cfg.MaxBudget,
-		Provenance:    prov.String(),
-		Settled:       true,
-	}
-}
-
-// costOf prices usage through the injected rate table.
-//
-// The nil guard is on the INTERFACE, which is the trap: an un-injected plugin holds
-// a nil interface and calling a method on it panics, where a nil *pricing.Registry
-// would have been safe. tool-prune hit exactly this and its fail-open masked the
-// panic as silently-disabled pruning.
-func (p *BudgetTrack) costOf(host, model string, u pricing.Usage) (micros int64, prov pricing.Provenance, ok bool) {
-	if p.rates == nil {
-		return 0, pricing.ProvNone, false
-	}
-	rates, prov := p.rates.Resolve(host, model, u.PromptTotal())
-	if prov == pricing.ProvNone {
-		return 0, pricing.ProvNone, false
-	}
-	micros, ok = pricing.Cost(rates, u)
-	if !ok {
-		return 0, pricing.ProvNone, false
-	}
-	return micros, prov, true
-}
-
-// headerCostState says what the gateway's cost header actually told us. A bool
-// could not carry this, and collapsing these cases caused a real defect: every
-// state below except headerPositive returned (0, true), so "the gateway declared
-// this call free" was indistinguishable from "the header was garbage" and from
-// "this is a stream, where LiteLLM always stamps 0 as a placeholder". Publishing a
-// settled zero for all of them counted unpriced traffic as priced.
-type headerCostState int
-
-const (
-	// headerAbsent: no cost header at all. Price from token usage.
-	headerAbsent headerCostState = iota
-	// headerUnusable: a header was present but could not be believed — unparseable,
-	// negative, NaN or Inf. NOT a declaration of anything, so it must not suppress
-	// the usage fallback and must never publish a settled zero.
-	headerUnusable
-	// headerZero: present, parsed, finite and exactly zero. On a NON-streamed
-	// response this is the gateway saying the call was free — a cache hit, or an
-	// error it declined to charge for. On a streamed response it means nothing:
-	// LiteLLM stamps 0 there by design because the total is unknown when headers
-	// are sent.
-	headerZero
-	// headerPositive: a usable figure.
-	headerPositive
-)
-
-// headerCost returns the cost the gateway reported and what kind of answer it was.
-func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
-	costStr := pctx.ResponseHeaders.Get(responseCostHeader)
-	if costStr == "" {
-		// Anthropic /v1/messages (and newer LiteLLM) omit the bare header.
-		costStr = pctx.ResponseHeaders.Get(responseCostOriginalHeader)
-	}
-	if costStr == "" {
-		return 0, headerAbsent
-	}
-	c, err := strconv.ParseFloat(costStr, 64)
-	if err != nil || math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
-		return 0, headerUnusable
-	}
-	if c == 0 {
-		return 0, headerZero
-	}
-	return c, headerPositive
-}
-
-// isEventStream reports whether the response is a text/event-stream (SSE) — the
-// streamed shape where LiteLLM reports cost 0 in the header, so usage-based
-// pricing is the intended fallback.
-func isEventStream(pctx *pipeline.Context) bool {
-	ct := pctx.ResponseHeaders.Get("Content-Type")
-	if i := strings.IndexByte(ct, ';'); i >= 0 {
-		ct = ct[:i]
-	}
-	return strings.EqualFold(strings.TrimSpace(ct), "text/event-stream")
 }
 
 func (p *BudgetTrack) todayUTC() string {

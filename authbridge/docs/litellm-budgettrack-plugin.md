@@ -42,6 +42,13 @@ The plugin hooks:
 
 ### Cost source (what the terminal frame charges)
 
+**Since cortex #972 this plugin does not settle the cost itself.** `inference-parser` does,
+via `authlib/costing`, because it is the component that knows when token usage is final; this
+plugin bills the published figure, adds the day's total, enforces the cap, and reports drift.
+The two sources below are still the rule — they just live in one place now, shared with every
+other consumer of a cost, instead of being implemented here and again in the usage
+aggregator.
+
 The cost is settled **once**, on the terminal frame, from one of two sources:
 
 - **Response header** — `x-litellm-response-cost`, falling back to the pre-discount
