@@ -1,0 +1,75 @@
+name: Laptop feedback
+description: Tell us about running Cortex on your own computer — what worked, what was confusing, or what broke.
+title: "Feedback: "
+labels: ["feedback", "laptop"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for trying Cortex on your laptop. This form is for feedback on the
+        local tool — the install, `abctl observe`, and the numbers it shows.
+
+        For a security issue, do not use this form. See
+        [SECURITY.md](https://github.com/rossoctl/cortex/blob/main/SECURITY.md).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of feedback is this?
+      options:
+        - Something was confusing
+        - Something did not work
+        - The numbers did not tell me what I expected
+        - A suggestion
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: >
+        Describe what you did and what you saw. If the numbers did not tell you
+        what you expected, say which number and what you were trying to learn.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      description: The output of `uname -sm`.
+      placeholder: "Darwin arm64"
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and model
+      description: The coding agent you ran, and the model it used.
+      placeholder: "Claude Code, claude-sonnet-4"
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Cortex version
+      description: The output of `abctl --version`.
+      placeholder: "v0.9.0"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Service status and logs
+      description: >
+        The output of `abctl service status`, and the last part of the service
+        log if it is relevant. Remove any secret before you paste.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: other-tools
+    attributes:
+      label: Did anything else on your machine change?
+      options:
+        - label: "`git`, `gh`, `ssh` or `curl` stopped working after I installed Cortex"
+          required: false
