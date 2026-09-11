@@ -50,14 +50,17 @@ endif
 
 abctl: ## Build abctl to ./bin/abctl
 	@mkdir -p $(BIN_DIR)
-	cd authbridge/cmd/abctl && go build -o $(BIN_DIR)/abctl .
+	cd authbridge/cmd/abctl && GOWORK=off go build -o $(BIN_DIR)/abctl .
 
 authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)
-	@# Resolve the profile's tag list at build time so the plugin set stays
-	@# in sync with authbridge/scripts/profile-tags without hand-maintenance.
-	@# An unknown profile exits non-zero — the $$(...) captures that and
-	@# the target fails.
+	@# Restrict PROFILE to the plugin sets this binary ships.
+	@if [ -n "$(PROFILE)" ] && [ -z "$(filter full lite local,$(PROFILE))" ]; then \
+		echo "PROFILE=$(PROFILE) is not one of: full lite local" >&2; \
+		exit 1; \
+	fi
+	@# GOWORK=off matches CI and the Dockerfile — workspace mode can select a
+	@# higher third-party version than this binary's own go.mod requires.
 	TAGS=$$(go -C authbridge/scripts/profile-tags run . $(or $(PROFILE),full)) && \
 		cd authbridge/cmd/authbridge-proxy && \
-		go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
+		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
