@@ -360,6 +360,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
+			HTTPMethod:  pctx.Method,
+			HTTPPath:    pctx.Path,
 		}
 		// Record EVERY message that reaches the pipeline — even when no
 		// plugin acted and no parser matched (Invocations/MCP/Inference all
@@ -743,6 +745,8 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  statusCode,
 		Error:       pipeline.DeriveError(pctx),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
@@ -1052,6 +1056,8 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		RequestID:   pctx.RequestID(),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
 			Kind:    "policy",

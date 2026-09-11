@@ -284,6 +284,7 @@ func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
 		SessionID: "s", At: time.Now(), Direction: Outbound, Phase: SessionRequest,
 		RequestID: "r", Host: "h:443", StatusCode: 200, Duration: time.Second,
 		Tunnel: true, TunnelReason: TunnelClientRejectedCA,
+		HTTPMethod: "GET", HTTPPath: "/v1/models",
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
@@ -296,6 +297,7 @@ func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
 	for _, key := range []string{
 		"sessionId", "at", "direction", "phase", "requestId",
 		"host", "statusCode", "durationMs", "tunnel", "tunnelReason",
+		"httpMethod", "httpPath",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("populated event produced no %q key; got %s", key, b)

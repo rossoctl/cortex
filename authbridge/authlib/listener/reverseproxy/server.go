@@ -430,6 +430,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
+			HTTPMethod:  pctx.Method,
+			HTTPPath:    pctx.Path,
 			TLS:         eventTLS(pctx),
 		})
 	}
@@ -550,6 +552,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
 			Host:        pctx.Host,
+			HTTPMethod:  pctx.Method,
+			HTTPPath:    pctx.Path,
 			StatusCode:  resp.StatusCode,
 			Error:       pipeline.DeriveError(pctx),
 			Duration:    pipeline.DurationSince(pctx.StartedAt),
@@ -602,6 +606,8 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 		RequestID:   pctx.RequestID(),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
 			Kind:    "policy",
@@ -694,6 +700,8 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  statusCode,
 		Error:       pipeline.DeriveError(pctx),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),

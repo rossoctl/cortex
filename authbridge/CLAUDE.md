@@ -502,6 +502,7 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). abctl renders one row per invocation, so operators see an explicit per-plugin timeline.
 - `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in abctl. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
 - `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context.
+- `httpMethod`, `httpPath` — the HTTP verb and query-stripped path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name, not an HTTP verb. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line, so a blank path there is accurate rather than missing.
 
 ### Invocation action vocabulary
 

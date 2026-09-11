@@ -162,6 +162,29 @@ type SessionEvent struct {
 	// previously required the proxy log, the CA's NotBefore and a process
 	// listing — none of which the timeline hinted at.
 	TunnelReason TunnelReason
+
+	// HTTPMethod and HTTPPath are the request's HTTP verb and its
+	// query-stripped path, copied from the pipeline context at record
+	// time.
+	//
+	// They exist because an event Cortex could not parse as A2A, MCP or
+	// inference previously reached the timeline carrying only a host: the
+	// operator saw that *something* went to an address, with no way to tell
+	// a token refresh from an object download. The verb and path are the
+	// cheapest thing that distinguishes them, and both were already on the
+	// context — they simply never made it onto the event.
+	//
+	// Distinct from the Method on A2AExtension and MCPExtension, which is a
+	// protocol-level method name ("message/stream", "tools/call") and not an
+	// HTTP verb; hence the prefix on these two.
+	//
+	// HTTPPath is empty on an opaque tunnel, where the bytes are never parsed
+	// as HTTP and there is no request line to read: recordTunnelOpened pairs
+	// that empty path with a synthetic CONNECT. A blank path on a tunnel row
+	// is therefore correct rather than missing plumbing. Both are empty when
+	// the listener left the context fields unset.
+	HTTPMethod string
+	HTTPPath   string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -308,6 +331,11 @@ type sessionEventWire struct {
 	// key, and a new abctl against an old proxy sees "" and renders exactly what it
 	// renders today.
 	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
+	// omitempty for the same skew reason as TunnelReason above: an old abctl
+	// ignores keys it does not know, and a new abctl against a proxy that
+	// predates these fields sees "" and renders what it renders today.
+	HTTPMethod string `json:"httpMethod,omitempty"`
+	HTTPPath   string `json:"httpPath,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -330,6 +358,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		TLS:          e.TLS,
 		Tunnel:       e.Tunnel,
 		TunnelReason: e.TunnelReason,
+		HTTPMethod:   e.HTTPMethod,
+		HTTPPath:     e.HTTPPath,
 	})
 }
 
@@ -360,6 +390,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		TLS:          w.TLS,
 		Tunnel:       w.Tunnel,
 		TunnelReason: w.TunnelReason,
+		HTTPMethod:   w.HTTPMethod,
+		HTTPPath:     w.HTTPPath,
 	}
 	return nil
 }

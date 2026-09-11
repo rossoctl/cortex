@@ -247,6 +247,8 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 	}
 	s.Sessions.Append(sid, ev)
 }
@@ -285,6 +287,8 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
 			Kind:    "policy",
@@ -339,6 +343,8 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		StatusCode:  status,
 		Error: &pipeline.EventError{
 			Kind:    "policy",
@@ -382,6 +388,8 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		StatusCode:  pctx.StatusCode,
 		Error:       pipeline.DeriveError(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
 	s.Sessions.Append(sid, ev)
@@ -412,6 +420,8 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 		StatusCode:  pctx.StatusCode,
 		Error:       pipeline.DeriveError(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 	}
 	// Auth / Plugins alone qualify for recording; matches the widened
@@ -458,6 +468,8 @@ func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
 	}
 	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
 		s.Sessions.Append(sid, ev)
