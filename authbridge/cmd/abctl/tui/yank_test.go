@@ -250,21 +250,37 @@ func TestYankRefusesASymlinkedDir(t *testing.T) {
 	}
 }
 
-// Same premise, without a symlink: a pre-existing world-readable yank directory
-// must be refused rather than written into, since MkdirAll will not tighten it.
-func TestYankRefusesALooseModeDir(t *testing.T) {
+// A pre-existing world-readable directory abctl owns is TIGHTENED, not refused.
+// That matches writeBuiltinConfig in cmd/authbridge-proxy/local.go, which chmods
+// ~/.cortex to 0700 after MkdirAll for this same reason — self-healing beats
+// handing the user a chmod to run by hand.
+func TestYankTightensALooseModeDir(t *testing.T) {
 	home := yankHome(t)
-	if err := os.MkdirAll(filepath.Join(home, ".cortex", "abctl-events"), 0o755); err != nil {
+	cortex := filepath.Join(home, ".cortex")
+	events := filepath.Join(cortex, "abctl-events")
+	if err := os.MkdirAll(events, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	_, err := yankEventToFile(sampleEvent())
-	if err == nil {
-		t.Fatal("wrote into a 0755 directory, so the 0700 guarantee is not enforced")
+	// MkdirAll only sets the mode on directories it creates, so force both.
+	for _, d := range []string{cortex, events} {
+		if err := os.Chmod(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// The message has to tell the user how to fix it.
-	if !strings.Contains(err.Error(), "chmod 700") {
-		t.Errorf("error does not say how to fix it: %v", err)
+
+	if _, err := yankEventToFile(sampleEvent()); err != nil {
+		t.Fatalf("refused instead of tightening: %v", err)
+	}
+
+	// Both levels, not just the leaf: a loose ~/.cortex exposes the subtree.
+	for _, d := range []string{cortex, events} {
+		fi, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("%s left at %v; group/world access still open", d, perm)
+		}
 	}
 }
 
@@ -310,7 +326,9 @@ func TestStickyFlash_FitsANarrowFooter(t *testing.T) {
 // like the success case rather than vanishing after flashDuration.
 func TestYankFailure_IsAlsoSticky(t *testing.T) {
 	home := yankHome(t)
-	if err := os.MkdirAll(filepath.Join(home, ".cortex", "abctl-events"), 0o755); err != nil {
+	// A symlink, not a loose mode: loose modes are now tightened in place, so a
+	// symlink is the remaining hard refusal — and there is no chmod out of it.
+	if err := os.Symlink(t.TempDir(), filepath.Join(home, ".cortex")); err != nil {
 		t.Fatal(err)
 	}
 	m := newTestDetailModel(t)
@@ -324,8 +342,8 @@ func TestYankFailure_IsAlsoSticky(t *testing.T) {
 		t.Error("the failure notice is timed, so the chmod guidance disappears " +
 			"in three seconds while a success would persist")
 	}
-	if !strings.Contains(m.flash, "chmod 700") {
-		t.Errorf("failure flash lost its actionable guidance: %q", m.flash)
+	if !strings.Contains(m.flash, "symlink") {
+		t.Errorf("failure flash does not say what is wrong: %q", m.flash)
 	}
 }
 

@@ -1330,6 +1330,14 @@ func yankDir() (string, error) {
 // yank on an ordinary account. Every component is still checked for a symlink,
 // which is the redirection risk.
 //
+// A loose mode on a directory abctl owns is tightened rather than refused, which
+// is what the rest of the tree already does for this exact problem:
+// writeBuiltinConfig in cmd/authbridge-proxy/local.go chmods ~/.cortex to 0700
+// after MkdirAll, and again one level down for the CA directory. Self-healing
+// beats handing the user a chmod to run by hand, and if the chmod fails — someone
+// else owns it — the refusal below still stands. Symlinks and non-directories stay
+// hard refusals; there is no chmod out of those.
+//
 // Ownership is deliberately not checked via syscall.Stat_t: that type does not
 // exist on Windows and would break this package's cross-compile.
 func checkYankDir(dir string) error {
@@ -1367,8 +1375,12 @@ func checkYankDir(dir string) error {
 			return fmt.Errorf("%s is not a directory", path)
 		}
 		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-			return fmt.Errorf("%s has mode %v; session events need no group or "+
-				"world access (chmod 700 %s)", path, perm, path)
+			// Tighten in place; only report if that does not work.
+			if err := os.Chmod(path, 0o700); err != nil {
+				return fmt.Errorf("%s has mode %v and could not be tightened "+
+					"(%v); session events need no group or world access "+
+					"(chmod 700 %s)", path, perm, err, path)
+			}
 		}
 	}
 	return nil
