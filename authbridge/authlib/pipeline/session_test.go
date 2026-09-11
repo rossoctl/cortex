@@ -82,6 +82,8 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 		StatusCode: 200,
 		Error:      &EventError{Kind: "upstream", Message: "timeout"},
 		Tunnel:     true,
+		HTTPMethod: "GET",
+		HTTPPath:   "/v1/models",
 	}
 
 	first, err := json.Marshal(orig)
@@ -109,7 +111,14 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 	}
 	s := string(data)
 
-	for _, field := range []string{"a2a", "mcp", "inference", "auth", "plugins", "identity", "statusCode", "error", "host", "durationMs"} {
+	for _, field := range []string{
+		"a2a", "mcp", "inference", "auth", "plugins", "identity", "statusCode",
+		"error", "host", "durationMs",
+		// The omitempty half of the version-skew contract: a new proxy that
+		// recorded none of these must not emit the keys at all, so a client
+		// predating them sees the same bytes it always did.
+		"tunnel", "tunnelReason", "httpMethod", "httpPath",
+	} {
 		if strings.Contains(s, `"`+field+`":`) {
 			t.Errorf("expected %q omitted when zero: %s", field, s)
 		}

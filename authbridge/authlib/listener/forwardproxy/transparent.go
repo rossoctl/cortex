@@ -93,6 +93,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		Method:    http.MethodConnect, // synthetic: opaque tunnel, parity with handleConnect
 		Scheme:    "tcp",              // marker: bytes are opaque, not HTTP
 		Host:      host,
+		Path:      "", // no request line to read one from; explicit, as in handleConnect
 		Headers:   http.Header{},
 		Shared:    s.Shared,
 		StartedAt: time.Now(),

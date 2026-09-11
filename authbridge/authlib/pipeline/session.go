@@ -182,7 +182,16 @@ type SessionEvent struct {
 	// as HTTP and there is no request line to read: recordTunnelOpened pairs
 	// that empty path with a synthetic CONNECT. A blank path on a tunnel row
 	// is therefore correct rather than missing plumbing. Both are empty when
-	// the listener left the context fields unset.
+	// the listener left the context fields unset — ext_authz never populates
+	// Method, though it records no session events either.
+	//
+	// A query string is always stripped before the path gets here (see
+	// pipeline.Context.Path), so query-borne credentials never reach the
+	// timeline. A secret embedded in a path SEGMENT does survive, because
+	// nothing can tell it from a resource id — a bot token or a webhook path
+	// lands here verbatim. That is the same exposure Host already carried on
+	// this unauthenticated surface, which serves request bodies besides; it is
+	// worth knowing before these events are exported off-box.
 	HTTPMethod string
 	HTTPPath   string
 }
