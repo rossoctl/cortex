@@ -192,6 +192,16 @@ type SessionEvent struct {
 	// lands here verbatim. That is the same exposure Host already carried on
 	// this unauthenticated surface, which serves request bodies besides; it is
 	// worth knowing before these events are exported off-box.
+	//
+	// HTTPPath duplicates the per-invocation Invocation.Path (serialized as
+	// "path"), deliberately: both are copies of the same Context.Path, so the
+	// two keys cannot disagree. They differ in when they are THERE, which is
+	// why this one exists. HTTPPath is on every event the listener recorded
+	// from a parsed HTTP request, whether or not a plugin ran; Invocation.Path
+	// appears only where some plugin recorded an invocation. An event can
+	// carry invocations and no HTTPPath (an opaque tunnel that ran a gate), so
+	// a consumer that wants "the path of this request" should read HTTPPath
+	// and treat Invocation.Path as per-invocation context.
 	HTTPMethod string
 	HTTPPath   string
 }

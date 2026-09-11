@@ -386,6 +386,12 @@ type Invocation struct {
 	// a jwt-validation skip on /healthz vs /.well-known/agent.json;
 	// a mcp-parser observe on tools/call vs tools/list). Left empty
 	// when the plugin has no path context.
+	//
+	// Back-filled from Context.Path by Record when a plugin leaves it
+	// unset, so it holds the same value as SessionEvent.HTTPPath on the
+	// enclosing event. Read HTTPPath for "the path of this request" — it
+	// is present on every recorded HTTP event, while this field exists
+	// only where a plugin recorded an invocation.
 	Path string `json:"path,omitempty"`
 
 	// Details carries plugin-specific context as a flat string→string
