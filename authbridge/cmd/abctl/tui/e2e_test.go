@@ -136,6 +136,11 @@ func TestModel_PauseTogglesViaKey(t *testing.T) {
 // pane: entering `/ foo enter` should narrow the table to rows matching
 // "foo".
 func TestModel_FilterNarrowsSessions(t *testing.T) {
+	// Before New: the constructors seed filter and filterInput from Settings, so a
+	// filter another test committed would make the "unfiltered" baseline below
+	// already filtered. Committing "foo" here also writes Settings, so this keeps it
+	// from leaking outward too.
+	resetSettingsForTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := apiclient.New("http://127.0.0.1:1")

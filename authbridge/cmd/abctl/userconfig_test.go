@@ -271,10 +271,16 @@ func TestSaveUserConfig_OverwritesAnExistingFile(t *testing.T) {
 	}
 }
 
-// TestSaveUserConfig_RefusesAPrePlantedTempfile is the residual symlink risk that
-// O_EXCL closes, and the reason saveUserConfig does not need checkYankDir's sweep.
-// A tempfile another local user planted must not be written through.
-func TestSaveUserConfig_RefusesAPrePlantedTempfile(t *testing.T) {
+// TestSaveUserConfig_DoesNotWriteThroughAPlantedTempfile is the residual symlink
+// risk, and the reason saveUserConfig does not need checkYankDir's Lstat sweep.
+//
+// Asserts the PROPERTY (the planted target is never written) rather than the
+// mechanism. An earlier version demanded an error, which pinned the fixed-name
+// O_EXCL implementation — and that implementation wedged permanently on crash
+// debris. CreateTemp writes to an unpredictable name, so a planted symlink is
+// bypassed entirely: the save succeeds and the attacker's file is untouched, which
+// is a better outcome than the refusal, not a weaker one.
+func TestSaveUserConfig_DoesNotWriteThroughAPlantedTempfile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks")
 	}
@@ -287,19 +293,57 @@ func TestSaveUserConfig_RefusesAPrePlantedTempfile(t *testing.T) {
 	if err := os.WriteFile(target, []byte("untouched\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The name the old implementation used, and the obvious guess for an attacker.
 	if err := os.Symlink(target, path+".tmp"); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := saveUserConfig(path, tui.UserSettings{Filter: "x"}); err == nil {
-		t.Error("saved through a pre-planted tempfile symlink, want a refusal")
+	if err := saveUserConfig(path, tui.UserSettings{Filter: "x"}); err != nil {
+		t.Fatalf("save failed: %v", err)
 	}
+
 	body, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(body) != "untouched\n" {
 		t.Errorf("symlink target was written through: %q", body)
+	}
+	// And the real config still landed.
+	var warn bytes.Buffer
+	if got := loadUserConfig(path, &warn).Filter; got != "x" {
+		t.Errorf("filter = %q, want the save to have succeeded regardless", got)
+	}
+}
+
+// TestSaveUserConfig_SurvivesTempfileDebris is the crash-recovery property.
+//
+// A hard kill between create and rename leaves a tempfile behind. With a fixed
+// name plus O_EXCL, every save afterwards failed with "file exists" — forever,
+// surfacing only as a footer flash the user cannot act on, with the config frozen
+// at its pre-crash value. Verified at five consecutive failed saves before the fix.
+func TestSaveUserConfig_SurvivesTempfileDebris(t *testing.T) {
+	home := prefsHome(t)
+	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	if err := saveUserConfig(path, tui.UserSettings{Filter: "before-crash"}); err != nil {
+		t.Fatal(err)
+	}
+	// Debris at the old fixed name, and at a CreateTemp-shaped one.
+	for _, junk := range []string{path + ".tmp", filepath.Join(filepath.Dir(path), ".abctl-config.yaml.123.tmp")} {
+		if err := os.WriteFile(junk, []byte("debris\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i := 0; i < 5; i++ {
+		if err := saveUserConfig(path, tui.UserSettings{Filter: "after-crash"}); err != nil {
+			t.Fatalf("save %d failed on leftover debris: %v", i+1, err)
+		}
+	}
+
+	var warn bytes.Buffer
+	if got := loadUserConfig(path, &warn).Filter; got != "after-crash" {
+		t.Errorf("filter = %q; saves after a crash never took effect", got)
 	}
 }
 

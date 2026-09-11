@@ -61,6 +61,14 @@ func (m *model) footerView() string {
 	if m.paused {
 		status.WriteString(styleWarn.Render("   [paused]"))
 	}
+	// A filter that is ON but not being edited has nowhere else to show: the filter
+	// box renders only while m.filtering, so a filter restored from the config file
+	// silently truncated the list with nothing on screen explaining it. Shown here
+	// rather than in the hint line because it is state, not a keybinding — the same
+	// reason [paused] sits above.
+	if m.filter != "" && !m.filtering {
+		status.WriteString(styleWarn.Render("   [filter: " + m.filter + "]"))
+	}
 
 	// Flash message (e.g. "yanked → ~/.cortex/abctl-events/...").
 	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {

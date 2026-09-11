@@ -332,6 +332,14 @@ abctl remembers the events-table column selection and the active filter in
 `Esc`/`Enter`/`c` (`q` quits without saving); the filter is saved when you commit it
 with `Enter` or clear it with `Esc`. There is no explicit save step.
 
+A restored filter is shown in the footer as `[filter: …]` while it is in effect but
+not being edited — otherwise a shortened list would have no explanation on screen.
+Pressing `/` puts the cursor in the restored value so you extend it rather than
+replace it. In picker mode the restored filter applies to the first session view you
+open and is then cleared when you go back to the pod list: a filter surviving a pod
+switch reads as data loss, so the active one is dropped while the saved one stays on
+disk for the next start.
+
 `--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
 config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` and
 `abctl claude-code`.

@@ -91,9 +91,10 @@ func loadUserConfig(path string, warn io.Writer) tui.UserSettings {
 // holds a filter string and a list of column names — a redirect leaks nothing worth
 // having, and the sweep's other half (chmod 0700 in place) would mean that merely
 // opening the viewer retightens a directory the user or an installer deliberately
-// set. The residual symlink risk is closed more cheaply instead: O_EXCL refuses a
-// pre-planted tempfile, and os.Rename replaces a symlink at the destination rather
-// than following it.
+// set. The residual symlink risk is closed more cheaply instead: the tempfile is
+// created by os.CreateTemp, whose name an attacker cannot predict and which passes
+// O_EXCL itself, and os.Rename replaces a symlink at the destination rather than
+// following it.
 //
 // What would change that calculus: any future setting holding a secret, a
 // filesystem path, or a command line. At that point this needs checkYankDir's
@@ -110,12 +111,25 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 		return err
 	}
 	// Atomic: a crash between truncate and write would otherwise leave a half-file
-	// that the next start reports as malformed. Same shape cmd_config_migrate.go uses.
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// that the next start reports as malformed.
+	//
+	// CreateTemp, not a fixed path+".tmp" with O_EXCL. That combination looked
+	// stronger and was strictly worse: a hard kill between create and rename leaves
+	// the tempfile behind, and every save afterwards fails with "file exists" —
+	// forever, visible only as a footer flash the user cannot act on, with the config
+	// frozen at its pre-crash value. Verified before this change: five consecutive
+	// saves failed and the file never moved.
+	//
+	// CreateTemp keeps what O_EXCL was there for. It passes O_EXCL itself on a name
+	// no attacker can predict, so a pre-planted symlink cannot be written through
+	// (the test for that still passes), while crash debris is inert rather than
+	// wedging. It is also what every other tempfile in this module uses —
+	// toolscan/patch.go, tui's yank, edit's two.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := f.Write(fileHeader); err == nil {
 		_, err = f.Write(body)
 	}
@@ -123,6 +137,12 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 		err = cerr
 	}
 	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// CreateTemp makes the file 0600 already; chmod is belt-and-braces against a
+	// umask surprise and costs one syscall on a path taken once per keypress at most.
+	if err := os.Chmod(tmp, 0o600); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

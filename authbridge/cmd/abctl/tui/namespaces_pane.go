@@ -83,6 +83,12 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 	ti := textinput.New()
 	ti.Placeholder = "filter…"
 	ti.Prompt = "/ "
+	// Seed the input, not just m.filter: the filter box renders only while filtering,
+	// so a restored filter was applied invisibly — the list came back truncated with
+	// nothing on screen saying why. Worse, `/` then one character replaced the saved
+	// filter with that character, and `/` then Esc persisted an empty one, discarding
+	// it for good.
+	ti.SetValue(Settings.Filter)
 
 	return &model{
 		// endpoint and client are set later, when portForwardReadyMsg arrives.

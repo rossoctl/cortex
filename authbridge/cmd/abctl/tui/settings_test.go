@@ -150,3 +150,61 @@ func TestColumnSettings_RoundTrip(t *testing.T) {
 		t.Errorf("round trip = %v, want %v", got, want)
 	}
 }
+
+// TestColumnSelection_AbsentHonorsDefaultOn: "absent from the file" means "the user
+// never changed this", so the fallback must be the column's own defaultOn — not a
+// literal true.
+//
+// Cannot be observed through eventColumns as it stands: all twelve entries are
+// defaultOn, so the two spellings agree. This substitutes a table containing a
+// defaultOn:false column, which is what a future column would look like, and pins
+// that columnSelection agrees with defaultColumnSelection about it.
+func TestColumnSelection_AbsentHonorsDefaultOn(t *testing.T) {
+	prev := eventColumns
+	t.Cleanup(func() { eventColumns = prev })
+	eventColumns = []eventColumn{
+		{id: colTime, width: 12, defaultOn: true, cell: func(cellContext) string { return "" }},
+		{id: "OPTIONAL", width: 8, defaultOn: false, cell: func(cellContext) string { return "" }},
+	}
+
+	// Nothing in the file: each column gets its own default.
+	got := (UserSettings{}).columnSelection()
+	if !got[colTime] {
+		t.Error("a defaultOn:true column is off with an empty config")
+	}
+	if got["OPTIONAL"] {
+		t.Error("a defaultOn:false column is ON with an empty config; absent must mean the default, not visible")
+	}
+	if want := defaultColumnSelection(); !reflect.DeepEqual(got, want) {
+		t.Errorf("columnSelection = %v, want it to agree with defaultColumnSelection %v", got, want)
+	}
+
+	// A file can still turn the opt-in column on explicitly.
+	on := UserSettings{Events: EventSettings{Columns: []ColumnSetting{{Name: "OPTIONAL", Visible: true}}}}
+	if !on.columnSelection()["OPTIONAL"] {
+		t.Error("an explicit visible:true did not turn on a defaultOn:false column")
+	}
+}
+
+// TestColumnSettings_RoundTripsADefaultOffColumn: turning ON a defaultOn:false
+// column is as much a deviation as turning a default one off, so it has to survive
+// a save/load. Recording only the off-list would make it unpersistable — the user
+// would enable the column, close the picker, and find it off again next launch.
+func TestColumnSettings_RoundTripsADefaultOffColumn(t *testing.T) {
+	prev := eventColumns
+	t.Cleanup(func() { eventColumns = prev })
+	eventColumns = []eventColumn{
+		{id: colTime, width: 12, defaultOn: true, cell: func(cellContext) string { return "" }},
+		{id: "OPTIONAL", width: 8, defaultOn: false, cell: func(cellContext) string { return "" }},
+	}
+
+	want := map[eventColumnID]bool{colTime: true, "OPTIONAL": true}
+	written := columnSettingsFrom(want)
+	if len(written) != 1 || written[0] != (ColumnSetting{Name: "OPTIONAL", Visible: true}) {
+		t.Fatalf("wrote %+v, want just OPTIONAL visible:true", written)
+	}
+	got := UserSettings{Events: EventSettings{Columns: written}}.columnSelection()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round trip = %v, want %v", got, want)
+	}
+}

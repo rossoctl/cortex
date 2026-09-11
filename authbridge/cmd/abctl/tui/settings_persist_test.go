@@ -271,6 +271,56 @@ func TestConstructors_SeedFromSettings(t *testing.T) {
 			if tc.m.filter != "seeded" {
 				t.Errorf("filter = %q, want the saved %q", tc.m.filter, "seeded")
 			}
+			// The input, not just the value. Seeding only m.filter applied the filter
+			// invisibly — the filter box renders only while filtering, so the list came
+			// back truncated with nothing on screen saying why — and worse, `/` then one
+			// character REPLACED the saved filter, while `/` then Esc persisted an empty
+			// one and discarded it for good. Asserting m.filter alone passed throughout.
+			if got := tc.m.filterInput.Value(); got != "seeded" {
+				t.Errorf("filterInput = %q, want the saved filter pre-filled so `/` edits "+
+					"it rather than replacing it", got)
+			}
 		})
+	}
+}
+
+// TestRestoredFilter_IsEditableRatherThanReplaced: with only m.filter seeded, `/`
+// opened an EMPTY box, so the first character typed replaced the saved filter
+// instead of extending it. Pressing `/` on a restored filter must land the cursor
+// in the value that is actually in effect.
+func TestRestoredFilter_IsEditableRatherThanReplaced(t *testing.T) {
+	resetSettingsForTest(t)
+	Settings.Filter = "github"
+	m := New(context.Background(), apiclient.New("http://127.0.0.1:1")).(*model)
+	m.bodyHeight, m.width = 12, 200
+
+	m.handleKey(keyRune('/'))
+	m.handleKey(keyRune('-'))
+	m.handleKey(keyRune('t'))
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := m.filter; got != "github-t" {
+		t.Errorf("filter = %q, want the restored value extended to %q", got, "github-t")
+	}
+}
+
+// TestRestoredFilter_ShowsInTheFooterWhileInactive: the filter box renders only
+// while filtering, so a restored filter silently truncated the list. The footer is
+// the only place left to say so.
+func TestRestoredFilter_ShowsInTheFooterWhileInactive(t *testing.T) {
+	resetSettingsForTest(t)
+	Settings.Filter = "github"
+	m := New(context.Background(), apiclient.New("http://127.0.0.1:1")).(*model)
+	m.width, m.height, m.bodyHeight = 200, 40, 12
+
+	if got := m.footerView(); !strings.Contains(got, "github") {
+		t.Errorf("footer does not mention the active filter, so a truncated list has no "+
+			"explanation on screen:\n%s", got)
+	}
+
+	// While editing, the input box carries it and the indicator would be redundant.
+	m.handleKey(keyRune('/'))
+	if got := m.footerView(); strings.Contains(got, "[filter:") {
+		t.Errorf("footer shows the indicator while the filter box is open:\n%s", got)
 	}
 }
