@@ -130,8 +130,14 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 		return err
 	}
 	tmp := f.Name()
-	if _, err := f.Write(fileHeader); err == nil {
-		_, err = f.Write(body)
+	// err, not a fresh `err :=`. An earlier version wrote `if _, err := f.Write(...)`,
+	// which declared a NEW err scoped to the if: both writes landed in it, it was
+	// discarded, and the outer err stayed nil — so Close and Rename saw success and a
+	// truncated settings file was renamed over the good one, with saveUserConfig
+	// returning nil. The next start would have reported a malformed config and nothing
+	// would have said why.
+	if _, err = writeAll(f, fileHeader); err == nil {
+		_, err = writeAll(f, body)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -158,3 +164,8 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 // guessable from the contents.
 var fileHeader = []byte("# abctl user settings. Written by abctl; safe to hand-edit or delete.\n" +
 	"# Columns not listed under events.columns are visible — only deviations are recorded.\n")
+
+// writeAll is io.Writer.Write, indirected so a test can make a write fail. The
+// shadowing bug above was invisible to every test because a write to a tempfile on
+// a working filesystem does not fail, so the only way to pin it is to inject one.
+var writeAll = func(w io.Writer, p []byte) (int, error) { return w.Write(p) }

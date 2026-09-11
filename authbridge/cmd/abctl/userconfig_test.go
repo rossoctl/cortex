@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -360,4 +362,85 @@ func reflectDeepEqualSettings(a, b tui.UserSettings) bool {
 		}
 	}
 	return true
+}
+
+// TestSaveUserConfig_ReportsAWriteFailure: a write that fails must not be renamed
+// into place and reported as success.
+//
+// The bug this pins was a shadowed variable: `if _, err := f.Write(...)` declared a
+// NEW err scoped to the if, so both writes landed in it and it was discarded. The
+// outer err stayed nil, Close and Rename saw nil, and a truncated settings file was
+// renamed over the good one while saveUserConfig returned success — the footer would
+// have shown nothing and the next start would have warned about a malformed file.
+//
+// Driven by filling the filesystem, which is not portable, so this uses the one
+// reliably-failing write available: a tempfile directory on a read-only parent makes
+// CreateTemp itself fail, which covers the early return. For the write path proper,
+// the guard is that err is assigned rather than shadowed — checked by vet's
+// shadow-adjacent analysers and by this test's sibling below.
+func TestSaveUserConfig_ReportsACreateFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix modes")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := prefsHome(t)
+	dir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Read-only directory: MkdirAll succeeds (it exists), CreateTemp cannot.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := saveUserConfig(filepath.Join(dir, "abctl-config.yaml"), tui.UserSettings{Filter: "x"}); err == nil {
+		t.Error("saveUserConfig reported success on an unwritable directory")
+	}
+}
+
+// TestSaveUserConfig_AWriteFailureDoesNotClobberTheGoodFile is the shadowing bug
+// proper: a failed write must not be renamed into place, and must be reported.
+//
+// Injects the failure because a write to a tempfile on a working filesystem does
+// not fail, which is precisely why the bug survived every other test here.
+func TestSaveUserConfig_AWriteFailureDoesNotClobberTheGoodFile(t *testing.T) {
+	home := prefsHome(t)
+	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	if err := saveUserConfig(path, tui.UserSettings{Filter: "good"}); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := writeAll
+	t.Cleanup(func() { writeAll = prev })
+	writeAll = func(io.Writer, []byte) (int, error) { return 0, errors.New("no space left on device") }
+
+	err := saveUserConfig(path, tui.UserSettings{Filter: "truncated"})
+	if err == nil {
+		t.Error("a failed write reported success; a truncated file would be renamed into place")
+	} else if !strings.Contains(err.Error(), "no space left") {
+		t.Errorf("error = %v, want the underlying write failure", err)
+	}
+
+	// The good file must still be there and still good.
+	writeAll = prev
+	var warn bytes.Buffer
+	if got := loadUserConfig(path, &warn).Filter; got != "good" {
+		t.Errorf("filter = %q; the previous config was clobbered by a failed save", got)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("config no longer parses after a failed save: %q", warn.String())
+	}
+	// And no debris left behind.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("failed save left a tempfile: %s", e.Name())
+		}
+	}
 }
