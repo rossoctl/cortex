@@ -8,9 +8,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// feedbackURL is where a user sends feedback or reports a problem. The footer
+// carries it on every screen (see #975): the moment a user is looking at their
+// session data is the moment they have an opinion, and the tool should not make
+// them hunt for the repository. Kept quiet (muted style) and to one line.
+const feedbackURL = "https://github.com/rossoctl/cortex/issues"
+
 // footerView renders the bottom two lines: status (connection + rate + drops
-// + optional transient flash) and a context-sensitive keybinding hint. No
-// lipgloss borders; parent view handles the frame.
+// + optional transient flash, then a muted feedback link) and a
+// context-sensitive keybinding hint. No lipgloss borders; parent view handles
+// the frame.
 func (m *model) footerView() string {
 	var status strings.Builder
 
@@ -74,6 +81,11 @@ func (m *model) footerView() string {
 	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
 		status.WriteString(styleTitle.Render("   " + m.flash))
 	}
+
+	// Feedback link, quiet and last on the status line so it never crowds the
+	// connection state or a flash. Always present — this is the one screen
+	// element #975 wants a user to be able to find without looking for it.
+	status.WriteString(styleMuted.Render("   feedback: " + feedbackURL))
 
 	hint := fitHintLine(m.helpView(), m.width)
 
