@@ -90,6 +90,61 @@ type Event struct {
 	//
 	// A settled zero is now a real answer that suppresses the fallback.
 	Settled bool `json:"settled,omitempty"`
+
+	// Avoided is cost that was NOT incurred. Nothing in here is spend.
+	//
+	// A nested list rather than sibling floats, deliberately. More counterfactuals are
+	// coming — compaction, redaction, "what a cheaper model would have cost" — and as
+	// flat fields beside CostUSD the record becomes half-real and half-hypothetical,
+	// which is how someone eventually sums two fields that must never be summed. One
+	// category-named container keeps the boundary visible in the type, and a new
+	// contributor appends an entry instead of adding a field.
+	//
+	// The invariant: no consumer may add any Avoided figure to spend, to a budget, or
+	// to usage totals. A test in the usage package asserts the aggregator's totals are
+	// unchanged by their presence.
+	Avoided []Saving `json:"avoided,omitempty"`
+}
+
+// Saving is one component's contribution to cost that was not incurred.
+type Saving struct {
+	// Component is what avoided the cost, e.g. "tool-prune". Attributed from the
+	// framework's own body-mutation record rather than self-reported, so a plugin
+	// cannot claim someone else's saving.
+	Component string `json:"component"`
+	// TokensAvoided is the estimated prompt-token reduction.
+	TokensAvoided int `json:"tokensAvoided,omitempty"`
+	// USD is TokensAvoided priced at the tier the prompt actually landed in, through
+	// the same table, multiplier and provenance as CostUSD above.
+	USD float64 `json:"usd,omitempty"`
+	// Tier names which prompt tier the saving came out of: cache-write, cache-read or
+	// input. It matters because they differ by 12.5x, and a saving quoted without it
+	// cannot be checked.
+	Tier string `json:"tier,omitempty"`
+	// Projected marks a saving that was measured but NOT APPLIED — tool-prune's
+	// observe mode leaves every byte on the wire. A consumer must present this as
+	// "would have saved", never as money already not spent, and must not add it to
+	// any total that includes applied savings.
+	Projected bool `json:"projected,omitempty"`
+	// Estimated marks TokensAvoided as derived from a bytes-to-tokens ratio rather
+	// than counted by a tokenizer. It is calibrated per request and therefore wrong
+	// when the removed span had a different token density from what remained — so a
+	// UI must not present the dollar figure as measured.
+	Estimated bool `json:"estimated,omitempty"`
+}
+
+// TotalAvoidedUSD sums the APPLIED savings, skipping projected ones.
+//
+// Provided so consumers do not each write the loop and disagree about whether
+// observe-mode figures count. They do not: a projected saving is money that WAS spent.
+func (e Event) TotalAvoidedUSD() float64 {
+	var t float64
+	for _, s := range e.Avoided {
+		if !s.Projected {
+			t += s.USD
+		}
+	}
+	return t
 }
 
 // Micros converts CostUSD to millionths of a dollar, rounded to nearest.
