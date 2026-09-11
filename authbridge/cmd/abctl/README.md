@@ -303,7 +303,7 @@ Layered on top of all of them:
 | `Enter` / `→` / `l` | sessions, events | drill into selection |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
-| `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
+| `/` | sessions, events | filter (substring match; Enter commits and saves, Esc cancels the edit and saves nothing; clear the box and press Enter to remove a saved filter) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close); the selection is saved on close |
 | `p` | any | pause/resume stream |
@@ -330,15 +330,17 @@ Layered on top of all of them:
 abctl remembers the events-table column selection and the active filter in
 `~/.cortex/abctl-config.yaml`. Columns are saved when the column picker closes with
 `Esc`/`Enter`/`c` (`q` quits without saving); the filter is saved when you commit it
-with `Enter` or clear it with `Esc`. There is no explicit save step.
+with `Enter`. There is no explicit save step.
 
 A restored filter is shown in the footer as `[filter: …]` while it is in effect but
 not being edited — otherwise a shortened list would have no explanation on screen.
 Pressing `/` puts the cursor in the restored value so you extend it rather than
-replace it. In picker mode the restored filter applies to the first session view you
-open and is then cleared when you go back to the pod list: a filter surviving a pod
-switch reads as data loss, so the active one is dropped while the saved one stays on
-disk for the next start.
+replace it, and `Esc` abandons the edit and puts the previous filter back without
+writing anything. `Enter` is the only key that saves a filter, so clearing one means
+emptying the box and pressing `Enter`. In picker mode the restored filter applies to
+the first session view you open and is then dropped when you go back to the pod list:
+a filter surviving a pod switch reads as data loss, so the active one is cleared while
+the saved one stays on disk for the next start.
 
 `--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
 config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` and

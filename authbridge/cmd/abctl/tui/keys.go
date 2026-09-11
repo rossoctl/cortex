@@ -295,17 +295,21 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleEditKey(msg)
 	}
 
-	// Filter-mode: input box consumes most keys. Esc cancels, Enter commits.
+	// Filter-mode: input box consumes most keys. Esc cancels (restores the filter as
+	// it was at `/`), Enter commits and is the only key that persists.
 	if m.filtering {
 		switch msg.String() {
 		case "esc":
+			// Cancel, so it restores what was in effect when `/` was pressed and writes
+			// nothing. It used to clear the filter instead — which, once filters began
+			// persisting, meant one mis-keyed Esc permanently discarded a committed
+			// filter, while the README and this file both called the key "cancel".
+			//
+			// Clearing has not been lost: empty the box and press Enter. That keeps Enter
+			// as the only key that writes, which is the property worth having.
 			m.filtering = false
-			m.filter = ""
-			m.filterInput.SetValue("")
-			// Clearing is as deliberate as setting, so it persists too — otherwise a
-			// filter the user explicitly dismissed would come back on the next start.
-			Settings.Filter = ""
-			m.persistSettings()
+			m.filter = m.filterBeforeEdit
+			m.filterInput.SetValue(m.filterBeforeEdit)
 			m.refreshActivePane()
 			return nil
 		case "enter":
@@ -313,6 +317,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.filtering = false
 			// Commit, not keystroke: the fallthrough below re-reads the input on every
 			// character typed, and saving there would write once per keypress.
+			//
+			// The only key that persists a filter. An empty box committed here is how a
+			// filter is cleared and the clearing made durable, now that Esc cancels.
 			Settings.Filter = m.filter
 			m.persistSettings()
 			m.refreshActivePane()
@@ -344,6 +351,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "/":
 		m.filtering = true
+		// Snapshot for Esc. Taken here rather than derived on the way out, because by
+		// then the input has already been edited and the original is gone.
+		m.filterBeforeEdit = m.filter
 		m.filterInput.Focus()
 		return nil
 

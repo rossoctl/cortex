@@ -255,7 +255,13 @@ type model struct {
 	// seeds it, and that clear deliberately does not write back.
 	filter    string
 	filtering bool
-	paused    bool
+	// filterBeforeEdit is the committed filter as it stood when `/` was pressed, so
+	// Esc can restore it. Esc is documented as cancelling and means cancel everywhere
+	// else in abctl, but it used to clear the filter outright — and once the filter
+	// began persisting, that turned a mis-keyed Esc into the permanent loss of a
+	// committed filter. Clearing is still one action: empty the box and press Enter.
+	filterBeforeEdit string
+	paused           bool
 	// hideInactive toggles whether passthrough / skip-only messages are
 	// hidden from the events table. False (default) shows every message —
 	// the operator asked to see all network traffic, processed or not.
@@ -482,6 +488,13 @@ func (m *model) backToPodsPane() {
 	m.selectedSess = ""
 	m.filter = ""
 	m.filtering = false
+	// The input too, not just the value. Since the input is seeded from saved
+	// settings it is a second source of truth, and leaving it behind meant that after
+	// backing out and entering the next pod, `/` presented the OLD filter text
+	// already in the box — one keystroke then committed "github-toolx" and Enter
+	// persisted it, over a list the footer correctly showed as unfiltered.
+	m.filterInput.SetValue("")
+	m.filterBeforeEdit = ""
 	m.visibleRows = nil
 	m.connState = connStateInfo{phase: connConnecting}
 

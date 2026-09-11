@@ -191,29 +191,111 @@ func TestFilter_KeystrokesDoNotSave(t *testing.T) {
 	}
 }
 
-// TestFilter_EscClearsAndSaves: dismissing a filter is as deliberate as setting
-// one, so the cleared value persists — otherwise a filter the user explicitly got
-// rid of would return on the next start.
-func TestFilter_EscClearsAndSaves(t *testing.T) {
+// TestFilter_EscCancelsAndPersistsNothing: Esc means cancel here as it does
+// everywhere else in abctl, so it restores the filter that was in effect when `/`
+// was pressed and writes nothing.
+//
+// It used to clear the filter outright. Harmless while filters were per-session;
+// once they persisted, one mis-keyed Esc permanently discarded a committed filter —
+// while the README and the code comment both called the key "cancel".
+func TestFilter_EscCancelsAndPersistsNothing(t *testing.T) {
 	m := newTestEventsModel(t)
 	m.filterInput = newTestFilterInput()
 	resetSettingsForTest(t)
-	Settings.Filter = "stale"
-	m.filter = "stale"
+	Settings.Filter = "committed"
+	m.filter = "committed"
+	m.filterInput.SetValue("committed")
+	var got []UserSettings
+	m.save = func(s UserSettings) error { got = append(got, s); return nil }
+
+	// Edit, then change your mind.
+	m.handleKey(keyRune('/'))
+	m.handleKey(keyRune('x'))
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if len(got) != 0 {
+		t.Errorf("Esc saved %d times, want 0 — cancelling is not a decision to record", len(got))
+	}
+	if Settings.Filter != "committed" {
+		t.Errorf("Settings.Filter = %q, want the committed filter untouched", Settings.Filter)
+	}
+	if m.filter != "committed" {
+		t.Errorf("m.filter = %q, want the pre-edit filter restored", m.filter)
+	}
+	if got := m.filterInput.Value(); got != "committed" {
+		t.Errorf("filterInput = %q, want the pre-edit value restored so the next `/` is not "+
+			"pre-loaded with the abandoned edit", got)
+	}
+}
+
+// TestFilter_ClearingIsCommittedWithEnter: Esc no longer clears, so emptying the box
+// and pressing Enter is the way to clear a filter and make that durable. Without
+// this there would be no way to discard a saved filter from the TUI at all.
+func TestFilter_ClearingIsCommittedWithEnter(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.filterInput = newTestFilterInput()
+	resetSettingsForTest(t)
+	Settings.Filter = "committed"
+	m.filter = "committed"
+	m.filterInput.SetValue("committed")
 	var got []UserSettings
 	m.save = func(s UserSettings) error { got = append(got, s); return nil }
 
 	m.handleKey(keyRune('/'))
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m.filterInput.SetValue("")
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 
 	if len(got) != 1 {
-		t.Fatalf("Esc produced %d saves, want 1", len(got))
+		t.Fatalf("Enter on an empty box produced %d saves, want 1", len(got))
 	}
 	if got[0].Filter != "" {
 		t.Errorf("saved filter = %q, want it cleared", got[0].Filter)
 	}
 	if m.filter != "" {
 		t.Errorf("m.filter = %q, want it cleared", m.filter)
+	}
+}
+
+// TestBackToPodsPane_ClearsTheFilterInputToo: the input is seeded from saved
+// settings, which makes it a second source of truth that teardown has to reset.
+//
+// Leaving it behind meant that after backing out to the pod list and entering the
+// next pod, the list was correctly unfiltered and the footer badge correctly gone,
+// but `/` presented the OLD filter text already in the box — so one keystroke
+// committed "github-toolx" and Enter persisted it.
+func TestBackToPodsPane_ClearsTheFilterInputToo(t *testing.T) {
+	resetSettingsForTest(t)
+	m := newPickerModel(context.Background(), nil, nil)
+	m.parentCtx = context.Background()
+	m.bodyHeight, m.width = 12, 200
+	var got []UserSettings
+	m.save = func(s UserSettings) error { got = append(got, s); return nil }
+
+	m.pane = paneSessions
+	m.handleKey(keyRune('/'))
+	for _, r := range "github-tool" {
+		m.handleKey(keyRune(r))
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	m.backToPodsPane()
+
+	if v := m.filterInput.Value(); v != "" {
+		t.Fatalf("filterInput = %q after teardown; the next `/` starts pre-loaded with it", v)
+	}
+
+	// The next pod: `/` then one character must mean that one character.
+	m.pane = paneSessions
+	m.handleKey(keyRune('/'))
+	m.handleKey(keyRune('x'))
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.filter != "x" {
+		t.Errorf("filter = %q, want %q — the previous pod's filter leaked into this one",
+			m.filter, "x")
+	}
+	if Settings.Filter != "x" {
+		t.Errorf("Settings.Filter = %q, want %q persisted", Settings.Filter, "x")
 	}
 }
 
