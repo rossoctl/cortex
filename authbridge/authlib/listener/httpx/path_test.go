@@ -1,6 +1,9 @@
 package httpx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestPathOnly pins the query-stripping invariant pipeline.Context.Path
 // promises. PathOnly is the single chokepoint upholding it for every
@@ -58,17 +61,8 @@ func TestPathOnlyNeverReturnsAQuery(t *testing.T) {
 		"/weird%zz?token=shhh",
 		"*?a=b",
 	} {
-		if got := PathOnly(target); containsQuestion(got) {
+		if got := PathOnly(target); strings.Contains(got, "?") {
 			t.Errorf("PathOnly(%q) = %q, which still carries a query string", target, got)
 		}
 	}
-}
-
-func containsQuestion(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '?' {
-			return true
-		}
-	}
-	return false
 }

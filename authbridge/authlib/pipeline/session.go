@@ -187,7 +187,13 @@ type SessionEvent struct {
 	//
 	// A query string is always stripped before the path gets here (see
 	// pipeline.Context.Path), so query-borne credentials never reach the
-	// timeline. A secret embedded in a path SEGMENT does survive, because
+	// timeline. What is recorded is the DECODED path, not the raw request
+	// target: every listener mode runs the target through net/url, so
+	// "/x/..%2f..%2fetc/passwd" is stored as "/x/../../etc/passwd". That is
+	// deliberate cross-mode parity (net/http decodes identically for the proxy
+	// listeners), but it means the timeline does not preserve how a caller
+	// encoded a path — read it as the resolved path, and do not infer from it
+	// that no encoded-traversal attempt was made. A secret embedded in a path SEGMENT does survive, because
 	// nothing can tell it from a resource id — a bot token or a webhook path
 	// lands here verbatim. That is the same exposure Host already carried on
 	// this unauthenticated surface, which serves request bodies besides; it is
