@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"flag"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -136,4 +138,55 @@ func TestRootUsage_DocumentsVersion(t *testing.T) {
 	if !strings.Contains(out, "abctl observe") || !strings.Contains(out, "Viewer flags") {
 		t.Errorf("usage does not scope the flag list to the viewer:\n%s", out)
 	}
+}
+
+// TestObserveFlags_DocumentThePrefsFile renders the flag set runObserve actually
+// builds, rather than usageText's hand-mirrored copy — the point is to catch the
+// real flag drifting, which a mirror cannot do.
+//
+// Also asserts the value renders as "string": flag.PrintDefaults reads the first
+// backquoted word in a usage string as the value's NAME, so a stray `abctl service`
+// in the description silently rendered the flag as "-prefs abctl service".
+func TestObserveFlags_DocumentThePrefsFile(t *testing.T) {
+	// runObserve's flag set is built inline and it opens the TUI, so it cannot be
+	// rendered directly here without extracting a helper this PR has no other reason
+	// to add. `--help` on the real binary is the honest substitute: it exercises the
+	// registration exactly as a user meets it.
+	out := runObserveHelp(t)
+
+	if !strings.Contains(out, "-prefs string") {
+		t.Errorf("--prefs is missing or mis-rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "abctl-config.yaml") {
+		t.Errorf("--prefs does not name the default file:\n%s", out)
+	}
+	// The whole reason the flag is not called --config. Matched as a flag-list entry
+	// ("  -config") rather than as a bare substring, because --prefs's own description
+	// mentions --config in order to point at the proxy config.
+	if strings.Contains(out, "  -config") {
+		t.Errorf("the viewer grew a -config flag; --config already means the proxy config "+
+			"on 'abctl service' and 'abctl claude-code':\n%s", out)
+	}
+}
+
+// runObserveHelp runs `abctl observe --help` in a subprocess and returns its
+// output. A subprocess because the flag set is ExitOnError, so -h exits the
+// process — which is fine for a child and fatal for a test binary.
+func runObserveHelp(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("ABCTL_HELP_CHILD") == "1" {
+		// Re-exec'd child: be abctl.
+		os.Args = []string{"abctl", "observe", "--help"}
+		main()
+		return ""
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestObserveFlags_DocumentThePrefsFile")
+	cmd.Env = append(os.Environ(), "ABCTL_HELP_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	// -h exits 0 through ExitOnError, but the test binary wrapping it may report
+	// otherwise; the output is what matters.
+	if len(out) == 0 && err != nil {
+		t.Fatalf("child produced no output: %v", err)
+	}
+	return string(out)
 }

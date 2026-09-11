@@ -270,7 +270,7 @@ back.
 ```sh
 abctl claude-code disable     # 1. unwire Claude Code
 abctl service uninstall       # 2. stop it and remove the service
-rm -rf ~/.cortex              # 3. config, CA, logs
+rm -rf ~/.cortex              # 3. config, CA, logs, abctl's UI settings
 rm -f ~/.local/bin/abctl ~/.local/bin/authbridge-proxy
 ```
 

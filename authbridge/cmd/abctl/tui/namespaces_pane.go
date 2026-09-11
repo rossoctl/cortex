@@ -86,11 +86,16 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 
 	return &model{
 		// endpoint and client are set later, when portForwardReadyMsg arrives.
-		parentCtx:    parentCtx,
-		ctx:          ctx,
-		cancel:       cancel,
-		events:       make(map[string][]pipeline.SessionEvent),
-		pane:         paneNamespaces,
+		parentCtx: parentCtx,
+		ctx:       ctx,
+		cancel:    cancel,
+		events:    make(map[string][]pipeline.SessionEvent),
+		pane:      paneNamespaces,
+		// Seeded here as well as in New: this constructor's doc comment promises it
+		// mirrors New's field initialization, and the events table it reaches after a
+		// port-forward reads both of these.
+		eventColumns: Settings.columnSelection(),
+		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),

@@ -170,6 +170,15 @@ func runObserve(args []string) int {
 
 	endpoint := fs.String("endpoint", "",
 		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker.")
+	// Named --prefs rather than --config: `abctl service` and `abctl claude-code`
+	// already spell the PROXY's config that way, and one flag name meaning two
+	// different files in one binary is worse than a second word.
+	//
+	// No backticks in the usage string: flag.PrintDefaults reads the first
+	// backquoted word as the value's NAME, so "`abctl service`" rendered the flag as
+	// "-prefs abctl service" instead of "-prefs string".
+	prefs := fs.String("prefs", "",
+		"abctl's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/abctl-config.yaml). Not the Cortex proxy config, which is --config on 'abctl service' and 'abctl claude-code'.")
 	// ExitOnError, so Parse exits 2 itself (0 for -h) rather than returning — there
 	// is no error branch to write here. Chosen over ContinueOnError because a bad
 	// flag has nothing useful to fall back to: the alternative is printing usage and
@@ -181,6 +190,22 @@ func runObserve(args []string) int {
 	// crash) so a user can recover an in-progress edit; the sweep keeps
 	// $TMPDIR bounded for users who edit often.
 	_ = edit.SweepStaleTempfiles()
+
+	// Load the user's settings — and print any complaint about a broken file — here,
+	// well before tea.NewProgram takes the alt screen: after that, anything written to
+	// the terminal corrupts the frame instead of reaching the user.
+	//
+	// A path we cannot resolve (no $HOME) means no load and no save rather than a
+	// failure. The viewer's job does not depend on remembering column choices.
+	prefsPath := *prefs
+	if prefsPath == "" {
+		var perr error
+		if prefsPath, perr = userConfigPath(); perr != nil {
+			fmt.Fprintf(os.Stderr, "abctl: not loading or saving settings: %v\n", perr)
+			prefsPath = ""
+		}
+	}
+	tui.Settings = loadUserConfig(prefsPath, os.Stderr)
 
 	// With no --endpoint, prefer a Cortex running on this machine. Before this,
 	// a bare `abctl` on a laptop demanded kubectl and opened a cluster picker,
@@ -228,6 +253,9 @@ func runObserve(args []string) int {
 	// working `kubectl port-forward` on 9094 could not be reached with the one key
 	// that exists for exactly that.
 	opts := tui.RunOptions{Endpoint: *endpoint}
+	if prefsPath != "" {
+		opts.Save = func(s tui.UserSettings) error { return saveUserConfig(prefsPath, s) }
+	}
 	if localUp {
 		opts.LocalEndpoint = local
 	}

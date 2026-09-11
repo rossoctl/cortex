@@ -159,6 +159,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// handler rather than being reimplemented here.
 		case "c", "esc", "enter":
 			m.colPicker = false
+			// Persist on close, not on each toggle: a user trying four columns on the
+			// way to the two they want would otherwise produce three writes describing
+			// states they rejected. `q` is not handled here — it falls through to the
+			// global quit above, because quitting is not settling on a selection.
+			Settings.Events.Columns = columnSettingsFrom(m.eventColumns)
+			m.persistSettings()
 			return nil
 		case "up", "k":
 			if m.colCursor > 0 {
@@ -296,11 +302,19 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.filtering = false
 			m.filter = ""
 			m.filterInput.SetValue("")
+			// Clearing is as deliberate as setting, so it persists too — otherwise a
+			// filter the user explicitly dismissed would come back on the next start.
+			Settings.Filter = ""
+			m.persistSettings()
 			m.refreshActivePane()
 			return nil
 		case "enter":
 			m.filter = m.filterInput.Value()
 			m.filtering = false
+			// Commit, not keystroke: the fallthrough below re-reads the input on every
+			// character typed, and saving there would write once per keypress.
+			Settings.Filter = m.filter
+			m.persistSettings()
 			m.refreshActivePane()
 			return nil
 		}
@@ -697,6 +711,26 @@ func (m *model) setFlash(s string) {
 	// Explicitly clear: a timed message arriving after a sticky one must not
 	// inherit its stickiness.
 	m.flashSticky = false
+}
+
+// persistSettings hands the current Settings to the save hook, if one is wired.
+//
+// Failure is reported once through the footer flash and then dropped. Three
+// constraints shape that: bubbletea owns the terminal via WithAltScreen, so
+// writing to stderr here would corrupt the frame; the user cannot fix a read-only
+// $HOME from inside the TUI, so an error that blocks or repeats is noise; and a
+// preference that failed to save costs them one re-toggle next launch. Silence was
+// the alternative, and it would leave a read-only home failing invisibly forever —
+// the flash mechanism already exists for exactly this class of non-fatal problem.
+//
+// Never retries: a full disk would turn a retry loop into a redraw storm.
+func (m *model) persistSettings() {
+	if m.save == nil {
+		return
+	}
+	if err := m.save(Settings); err != nil {
+		m.setFlash("could not save settings: " + err.Error())
+	}
 }
 
 // setStickyFlash shows a message that stays until the next keypress. For yank,

@@ -234,6 +234,11 @@ type model struct {
 	// eventColumns is which events-table columns are shown. Keyed by a stable id
 	// rather than an index, so a future column inserted in the middle does not
 	// silently change what an existing selection means.
+	//
+	// Derived from Settings.Events at startup and written back to it when the
+	// picker closes. Kept as a map on the model rather than read from Settings on
+	// every cell, because rebuildEventsTable consults it per column per row — up to
+	// 500 rows on every SSE event and every resize.
 	eventColumns map[eventColumnID]bool
 	// eventColsDropped is how many selected columns did not fit the terminal on the
 	// last rebuild. Surfaced in the footer: with every column on the table needs
@@ -244,9 +249,13 @@ type model struct {
 	colPicker    bool
 	colCursor    int
 	selectedSess string
-	filter       string
-	filtering    bool
-	paused       bool
+	// filter is the ACTIVE filter, which is not the same as the saved one:
+	// backToPodsPane clears this on teardown so a filter cannot survive a pod
+	// switch and read as data loss. Settings.Filter is the persisted value that
+	// seeds it, and that clear deliberately does not write back.
+	filter    string
+	filtering bool
+	paused    bool
 	// hideInactive toggles whether passthrough / skip-only messages are
 	// hidden from the events table. False (default) shows every message —
 	// the operator asked to see all network traffic, processed or not.
@@ -361,6 +370,11 @@ type model struct {
 	// editRunner is the kubectl Runner the edit flow uses for fetch/apply.
 	// Set in newPickerModel to edit.DefaultRunner; tests inject a stub.
 	editRunner edit.Runner
+
+	// save persists Settings when a setting changes. A callback rather than a path
+	// so this package needs no home-directory or filesystem logic, and so its tests
+	// never touch $HOME. Nil disables saving, which is what every test wants.
+	save func(UserSettings) error
 }
 
 // New returns a fresh model pointed at the given client. ctx governs both
@@ -379,7 +393,8 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		cancel:       cancel,
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
-		eventColumns: defaultColumnSelection(),
+		eventColumns: Settings.columnSelection(),
+		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
@@ -1442,6 +1457,13 @@ type RunOptions struct {
 	// LocalEndpoint overrides where `[l]` connects. Empty means
 	// defaultLocalEndpoint.
 	LocalEndpoint string
+	// Save persists the user's settings when one changes — the column picker
+	// closing, a filter being committed or cleared. A callback rather than a path
+	// keeps $HOME and the YAML out of this package, so its tests need neither.
+	//
+	// Nil disables persistence: what tests pass, and what main passes when there is
+	// no resolvable home directory to write to.
+	Save func(UserSettings) error
 }
 
 // Run starts the bubbletea program. See RunOptions for mode selection.
@@ -1457,6 +1479,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 		m = newPickerModel(ctx, opts.Lister, opts.PortForwarder)
 	}
 	m.localEndpoint = opts.LocalEndpoint
+	// After the constructor branch, so the two paths cannot disagree about it:
+	// newPickerModel and New would otherwise each need their own copy.
+	m.save = opts.Save
 	defer func() {
 		if m.activePF != nil {
 			_ = m.activePF.Close()

@@ -305,7 +305,7 @@ Layered on top of all of them:
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
-| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close) |
+| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close); the selection is saved on close |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `~/.cortex/abctl-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom |
@@ -324,6 +324,38 @@ Layered on top of all of them:
 | `Esc` | edit/{fetching,editing,applying} | abort the edit, return to Pipeline pane |
 | `Esc` | edit/{waiting,rollback} | background the watch; result lands as a footer flash |
 | `q` / `Ctrl+C` | any | quit (closes the key-help overlay first, if open) |
+
+## Settings
+
+abctl remembers the events-table column selection and the active filter in
+`~/.cortex/abctl-config.yaml`. Columns are saved when the column picker closes with
+`Esc`/`Enter`/`c` (`q` quits without saving); the filter is saved when you commit it
+with `Enter` or clear it with `Esc`. There is no explicit save step.
+
+`--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
+config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` and
+`abctl claude-code`.
+
+```yaml
+# abctl user settings. Written by abctl; safe to hand-edit or delete.
+# Columns not listed under events.columns are visible — only deviations are recorded.
+events:
+  columns:
+    - name: COST
+      visible: false
+    - name: TOKENS
+      visible: false
+filter: github-tool
+```
+
+**Columns not listed are visible.** The file records only what you changed, so a
+column added in a later abctl shows up rather than staying hidden because your file
+predates it. A column id this build does not recognise is ignored.
+
+Settings resolve **flags > this file > built-in defaults**. (No environment variable
+feeds any of these today; if one is ever added it sits between the two.) A missing
+file is normal and silent. An unreadable or malformed one is reported on stderr and
+ignored in full — never partially applied, and never fatal.
 
 ## Editing the pipeline
 
@@ -491,6 +523,9 @@ results; treat the output accordingly.
 ## Deferred to later PRs
 
 - Native clipboard (currently writes a file under `~/.cortex/abctl-events`).
+- More persisted settings (#954): sort order, pane sizes, theme. Each needs the
+  setting itself before there is anything to persist — the events table has no sort
+  state, pane sizes are recomputed per frame, and there is no theme to choose.
 - Fuzzy search beyond substring match.
 - Per-user filtering (`Identity.Subject == X`).
 - Krew plugin packaging.
