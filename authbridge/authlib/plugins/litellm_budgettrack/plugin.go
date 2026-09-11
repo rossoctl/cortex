@@ -247,7 +247,13 @@ func (p *BudgetTrack) bill(pctx *pipeline.Context) {
 		// A settled zero: the gateway charged nothing, so nothing enters the ledger.
 		// The record still needs this plugin's fields, because a client showing a
 		// budget needs the daily total for a free call as much as for a billed one.
+		//
+		// resetIfNewDay first, under the lock, exactly as accumulate does. A request
+		// that starts before midnight UTC and settles after it would otherwise stamp
+		// YESTERDAY's total onto today's first event — and a free call is a plausible
+		// first request of the day, since a cache hit costs nothing.
 		p.mu.Lock()
+		p.resetIfNewDay()
 		total = p.ledger.TotalSpend
 		p.mu.Unlock()
 	}

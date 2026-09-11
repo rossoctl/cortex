@@ -55,7 +55,11 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// operator which rate to add. costevent.Decode still reports such a record as
 	// unpriced, so no consumer counts it as spend; that is what Record/Priced separate.
 	avoided := costing.Avoided(pctx, p.rates)
-	if !settled.Priced && len(avoided) == 0 {
+	// HasPrompt is checked separately from Priced, because the two really can differ: a
+	// table that prices every prompt tier but not a populated output tier yields a prompt
+	// figure and no total. Dropping the record there would lose a figure a request row
+	// can legitimately show, and the total stays absent rather than invented.
+	if !settled.Priced && !settled.HasPrompt && len(avoided) == 0 {
 		return
 	}
 	costing.Publish(pctx, costing.NewRecord(settled, avoided))

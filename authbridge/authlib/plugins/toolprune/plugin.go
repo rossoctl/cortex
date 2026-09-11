@@ -514,12 +514,12 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	if !ok {
 		return
 	}
-	tier, ok := pricing.TierFromString(sv.Tier)
-	if !ok {
-		// An unrecognized tier means the record and this build disagree about the
-		// vocabulary. Counting it in a tier bucket would misattribute up to 12.5x, so
-		// the tokens are recorded without one.
-		tier = pricing.TierInput
+	// An unrecognized tier means the record and this build disagree about the vocabulary.
+	// Passed as nil rather than defaulted: naming it input would misattribute the tokens
+	// by up to 12.5x and render as a real input saving.
+	var tier *pricing.Tier
+	if t, ok := pricing.TierFromString(sv.Tier); ok {
+		tier = &t
 	}
 	prov := pricing.ProvNone
 	if sv.Provenance != "" {
@@ -527,7 +527,9 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 			prov = pv
 		}
 	}
-	p.m.observeSaving(float64(sv.TokensAvoided), tier, sv.USD, prov, modelOf(pctx))
+	// Projected travels with the figure: in observe mode the bytes went upstream and were
+	// billed, so this is money that WAS spent and must not join a realized total.
+	p.m.observeSaving(float64(sv.TokensAvoided), tier, sv.USD, prov, modelOf(pctx), sv.Projected)
 }
 
 // savingFor pulls this plugin's entry out of the published cost record.

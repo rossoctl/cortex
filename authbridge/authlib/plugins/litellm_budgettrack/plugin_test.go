@@ -934,3 +934,37 @@ func TestEndToEnd_UnpricedResponseReachesAggregatorUnpriced(t *testing.T) {
 		t.Errorf("Tokens = %d, want 1000", snap.Totals.Tokens)
 	}
 }
+
+// A request that starts before midnight UTC and settles after it must not stamp yesterday's
+// total onto today's first event.
+//
+// The free-call path is where this bites: it reports the day's total without adding to it, so
+// it reads the ledger directly, and a cache hit is a plausible first request of a new day.
+func TestBill_SettledZeroRollsTheLedgerDate(t *testing.T) {
+	p := configure(t, 5.00)
+	// Yesterday's ledger, as loadLedger would leave it for a process that has been up
+	// across midnight.
+	p.ledger = spendLedger{Date: "2026-09-10", TotalSpend: 4.20, TotalCalls: 7}
+
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0"}}}
+	p.OnResponse(context.Background(), pctx)
+
+	ev := getCostEvent(t, pctx)
+	if ev == nil {
+		t.Fatal("no settled-zero event")
+	}
+	if ev.DailyTotalUSD != 0 {
+		t.Errorf("DailyTotalUSD = %v, want 0 — yesterday's spend leaked into today's event", ev.DailyTotalUSD)
+	}
+	if p.ledger.TotalSpend != 0 || p.ledger.TotalCalls != 0 {
+		t.Errorf("ledger not rolled: %+v", p.ledger)
+	}
+	// Same day, and the total is reported as-is.
+	p2 := configure(t, 5.00)
+	p2.ledger = spendLedger{Date: p2.todayUTC(), TotalSpend: 1.25, TotalCalls: 3}
+	pctx2 := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0"}}}
+	p2.OnResponse(context.Background(), pctx2)
+	if ev2 := getCostEvent(t, pctx2); ev2 == nil || ev2.DailyTotalUSD != 1.25 {
+		t.Errorf("same-day total = %+v, want 1.25", ev2)
+	}
+}

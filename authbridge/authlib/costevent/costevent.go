@@ -33,6 +33,10 @@ import (
 //
 // Exactly ONE component may write this key per request. Extensions.Custom is a plain map,
 // so a second writer would win silently.
+//
+// A PRODUCER does not write this key directly — it writes Key+pipeline.PluginEventSuffix
+// into pctx.Extensions.Custom, and pipeline/snapshot.go strips the suffix when building
+// SessionEvent.Plugins. Use costing.Publish rather than assembling the key by hand.
 const Key = "cost"
 
 // PluginName is the LEGACY key: the name of the plugin that used to be the sole producer.

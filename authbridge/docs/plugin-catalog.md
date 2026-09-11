@@ -115,11 +115,16 @@ response** — it is the one place tokens become dollars.
 
 Costing lives here because this is the only component that knows when usage is *final*: it
 owns the three response-finalization paths and the assembled-usage handling (Claude Code's
-`?beta=true` path reports cache counts on `message_delta`, not `message_start`). It also
-means cost can never be missing while token counts are present — previously the figure came
-from `litellm-budget-track`, so a pipeline without that plugin showed tokens and no money,
-with the same field silently meaning "modelled" rather than "authoritative" depending on
+`?beta=true` path reports cache counts on `message_delta`, not `message_start`). It also means a
+priced request can no longer be missing its record: previously the figure came from
+`litellm-budget-track`, so a pipeline without that plugin showed tokens and no money, with
+the same field silently meaning "modelled" rather than "authoritative" depending on
 configuration.
+
+A record is not the same as a price. Where no rate resolves for the model, the record is
+still published — carrying the token counts, any avoided cost, and no dollar figure — and the
+gap is named in `/v1/usage`'s `unpricedBy` so an operator knows which `pricing:` entry to
+add. An absent figure is reported as absent, never as `$0.00`.
 
 The arithmetic and the gateway header semantics are in `authlib/costing`, not in the parser:
 a provider-shaped body parser has no business knowing one gateway's header names. The result

@@ -93,10 +93,19 @@ func savingSign(projected bool) string {
 // responsible for, with what was kept off it in parentheses. A bare total when
 // there was no saving.
 //
-// The total is exact-with-commas and the saving compact, matching how each is
-// already rendered today: the total is a measured count worth reading precisely,
-// the saving a derived estimate where trailing digits would be false precision.
-func formatTokensWithSaving(total int, saved float64, projected bool) string {
+// The total is exact-with-commas and an ESTIMATED saving compact: the total is a measured
+// count worth reading precisely, an estimate a figure where trailing digits would be false
+// precision. That is the estimate marker — precision itself — and it is why a counted saving
+// renders exact instead.
+//
+// No third glyph for estimated. "~" already means projected, and every saving published today
+// is estimated (costing derives them from a byte ratio), so a marker on 100% of rows would
+// distinguish nothing while adding noise to every one. The moment a component reports a
+// saving counted by a tokenizer, it renders differently here without a legend to learn.
+//
+// The record itself carries the flag verbatim, so an operator pressing enter sees
+// "estimated": true regardless of how the cell reads.
+func formatTokensWithSaving(total int, saved float64, projected, estimated bool) string {
 	if total <= 0 {
 		return ""
 	}
@@ -104,7 +113,11 @@ func formatTokensWithSaving(total int, saved float64, projected bool) string {
 	if saved <= 0 {
 		return cell
 	}
-	return cell + "(" + savingSign(projected) + formatCompact(saved) + ")"
+	figure := formatCompact(saved)
+	if !estimated {
+		figure = formatCount(int(saved))
+	}
+	return cell + "(" + savingSign(projected) + figure + ")"
 }
 
 // formatUSDWithSaving is formatTokensWithSaving for money: "$0.2546(−$0.0037)".

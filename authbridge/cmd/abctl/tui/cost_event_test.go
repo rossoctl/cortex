@@ -370,3 +370,28 @@ func TestMethodColumnDistinguishesDatedModelIDs(t *testing.T) {
 		t.Errorf("eventMethod = %d cols, want <= %d", n, methodColWidth)
 	}
 }
+
+// Precision IS the estimate marker: an estimated saving renders compact because trailing
+// digits would be false precision, and a counted one renders exact. No extra glyph — "~"
+// already means projected, and every saving published today is estimated, so a marker on
+// every row would distinguish nothing.
+func TestFormatTokensWithSaving_PrecisionMarksTheEstimate(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		projected, estimated bool
+		want                 string
+	}{
+		{"estimated and applied", false, true, "681,300(−9.9k)"},
+		{"estimated and projected", true, true, "681,300(~9.9k)"},
+		// A saving counted by a tokenizer, which nothing publishes yet: exact digits,
+		// because they would be real.
+		{"counted and applied", false, false, "681,300(−9,899)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatTokensWithSaving(681_300, 9_899, tc.projected, tc.estimated)
+			if got != tc.want {
+				t.Errorf("= %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
@@ -1060,5 +1061,72 @@ func TestEvent_ObserveModeSavingIsProjected(t *testing.T) {
 	}
 	if !got[0].Projected {
 		t.Error("observe-mode saving is not marked Projected; it would read as money not spent")
+	}
+}
+
+// Observe mode measures without applying: those bytes went upstream and were billed. So the
+// dollars belong in a "would save" row, never in the realized "$ saved" total — the readout
+// is the one place an operator reads this as money.
+func TestMetrics_ObserveModeDollarsAreNotRealized(t *testing.T) {
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	run(t, p.ToolPrune, pctx, pipeline.ErrorPolicyObserve)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	p.settle(pctx)
+	p.OnFinish(context.Background(), pctx)
+
+	ms := p.Metrics()
+	for _, m := range ms {
+		if m.Name == "$ saved" {
+			t.Errorf("$ saved = %v in observe mode; that money was spent", m.Value)
+		}
+		if m.Name == "tokens saved: cache write" {
+			t.Errorf("projected tokens landed in a realized tier row: %+v", m)
+		}
+	}
+	would := findMetric(t, ms, "$ would save")
+	if would.Value <= 0 {
+		t.Errorf("$ would save = %v, want the hypothetical figure", would.Value)
+	}
+	if !strings.Contains(would.Note, "NOT applied") {
+		t.Errorf("note does not say the saving was not applied: %q", would.Note)
+	}
+	if tw := findMetric(t, ms, "tokens would save"); tw.Value <= 0 {
+		t.Errorf("tokens would save = %v, want the projected tokens", tw.Value)
+	}
+}
+
+// A tier this build does not recognize is counted, but not as input: defaulting would
+// misattribute by up to 12.5x and read as a real input saving.
+func TestMetrics_UnknownTierIsNotInput(t *testing.T) {
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := pruneOnce(t, p)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	p.settle(pctx)
+
+	// Rewrite the published record with a tier name from a future build.
+	ev, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix].(costevent.Event)
+	if !ok {
+		t.Fatal("no cost record to rewrite")
+	}
+	if len(ev.Avoided) != 1 {
+		t.Fatalf("expected one saving, got %+v", ev.Avoided)
+	}
+	ev.Avoided[0].Tier = "cache_read_1h"
+	costing.Publish(pctx, ev)
+
+	p.OnFinish(context.Background(), pctx)
+
+	ms := p.Metrics()
+	for _, m := range ms {
+		if m.Name == "tokens saved: input" {
+			t.Errorf("an unknown tier was counted as input: %+v", m)
+		}
+	}
+	unknown := findMetric(t, ms, "tokens saved (tier unknown)")
+	if unknown.Value <= 0 {
+		t.Errorf("tier-unknown row = %v, want the tokens counted", unknown.Value)
 	}
 }

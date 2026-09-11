@@ -898,11 +898,11 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 			return ""
 		}
 		var saved float64
-		var projected bool
+		var projected, estimated bool
 		if s, ok := pruneSavingFor(resp); ok {
-			saved, projected = float64(s.TokensAvoided), s.Projected
+			saved, projected, estimated = float64(s.TokensAvoided), s.Projected, s.Estimated
 		}
-		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected)
+		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected, estimated)
 	default:
 		return ""
 	}
