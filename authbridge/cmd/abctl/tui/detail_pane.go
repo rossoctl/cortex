@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -135,6 +136,21 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	}
 	if a2a, ok := m["a2a"].(map[string]any); ok {
 		m["a2a"] = filterFields(a2a, a2aKeep)
+	}
+	// ONE cost record, not two.
+	//
+	// The proxy publishes the record under the current key AND the legacy plugin-name
+	// key, so an abctl older than the rename keeps showing cost at all. This abctl reads
+	// the current one, so rendering both would show an operator the same object twice
+	// under two names and give them no way to tell which is authoritative.
+	//
+	// Dropped from the VIEW only. yankEventToFile marshals the event itself, so the
+	// yanked file still holds exactly what went over the wire — the same split this
+	// function already makes for identity, one line down.
+	if pl, ok := m["plugins"].(map[string]any); ok {
+		if _, current := pl[costevent.Key]; current {
+			delete(pl, costevent.PluginName)
+		}
 	}
 	// Identity is summarized at the session level (events pane banner).
 	// Drop it from per-event detail rows to reduce repetition — the full

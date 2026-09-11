@@ -690,7 +690,7 @@ func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrun
 func (p *pricedPrune) settle(pctx *pipeline.Context) {
 	s := costing.Settle(pctx, p.rates)
 	costing.Store(pctx, s)
-	costing.Publish(pctx, costing.Record(s, costing.Avoided(pctx, p.rates)))
+	costing.Publish(pctx, costing.NewRecord(s, costing.Avoided(pctx, p.rates)))
 }
 
 // tierRates builds prompt-tier rates from per-token values. Zero means "no rate

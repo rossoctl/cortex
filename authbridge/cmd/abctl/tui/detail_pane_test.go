@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -99,5 +101,49 @@ func TestTunnelHeader_NoInvocations(t *testing.T) {
 	}
 	if strings.Count(got, "\n") != 0 {
 		t.Errorf("tunnelHeader with no invocations should be one line\ngot:\n%s", got)
+	}
+}
+
+// The proxy writes the cost record under both the current and the legacy key, so an abctl
+// older than the rename keeps showing cost. This abctl reads the current one, so the detail
+// view must show ONE record — two identical objects under two names give an operator no way
+// to tell which is authoritative.
+func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
+	record := `{"cost_usd":0.25,"settled":true}`
+	wire := []byte(`{"phase":"response","plugins":{` +
+		`"` + costevent.Key + `":` + record + `,` +
+		`"` + costevent.PluginName + `":` + record + `,` +
+		`"tool-prune":{"bytesRemoved":900}}}`)
+
+	var got map[string]any
+	if err := json.Unmarshal(filterForDetail(wire, pipeline.SessionResponse), &got); err != nil {
+		t.Fatal(err)
+	}
+	pl, ok := got["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("no plugins block survived: %v", got)
+	}
+	if _, ok := pl[costevent.Key]; !ok {
+		t.Errorf("the current cost key was dropped: %v", pl)
+	}
+	if _, ok := pl[costevent.PluginName]; ok {
+		t.Errorf("the legacy duplicate is still rendered: %v", pl)
+	}
+	// Unrelated plugin events are untouched — this filters a duplicate, not a category.
+	if _, ok := pl["tool-prune"]; !ok {
+		t.Errorf("an unrelated plugin event was dropped: %v", pl)
+	}
+}
+
+// A proxy older than the rename writes ONLY the legacy key, and its cost must still render.
+func TestFilterForDetail_KeepsALoneLegacyRecord(t *testing.T) {
+	wire := []byte(`{"phase":"response","plugins":{"` + costevent.PluginName + `":{"cost_usd":0.25}}}`)
+	var got map[string]any
+	if err := json.Unmarshal(filterForDetail(wire, pipeline.SessionResponse), &got); err != nil {
+		t.Fatal(err)
+	}
+	pl, _ := got["plugins"].(map[string]any)
+	if _, ok := pl[costevent.PluginName]; !ok {
+		t.Errorf("a lone legacy record was dropped, so an older proxy shows no cost: %v", pl)
 	}
 }

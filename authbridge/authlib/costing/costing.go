@@ -321,8 +321,13 @@ func Amend(pctx *pipeline.Context, f func(*costevent.Event)) bool {
 	return true
 }
 
-// Record builds the wire record from a settled outcome.
-func Record(s Settled, avoided []costevent.Saving) costevent.Event {
+// NewRecord builds the wire record from a settled outcome.
+//
+// Named NewRecord, not Record, because costevent.Record READS a record off a session event
+// and these two packages are imported together — the cost owner imports costing, every
+// consumer imports costevent. Two functions with one name pointing opposite directions is a
+// coin flip at each call site, and the New prefix says which way this one goes.
+func NewRecord(s Settled, avoided []costevent.Saving) costevent.Event {
 	return costevent.Event{
 		CostUSD:    s.CostUSD,
 		Source:     s.Source,

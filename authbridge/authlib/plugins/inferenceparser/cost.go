@@ -58,7 +58,7 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	if !settled.Priced && len(avoided) == 0 {
 		return
 	}
-	costing.Publish(pctx, costing.Record(settled, avoided))
+	costing.Publish(pctx, costing.NewRecord(settled, avoided))
 }
 
 // costSettledKey and settledOnce mark this request as already priced.
