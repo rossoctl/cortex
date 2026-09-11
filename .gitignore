@@ -103,3 +103,6 @@ cortex-ca/
 # `go build ./...` inside authbridge/scripts/profile-tags drops its 3 MB binary beside
 # the source, where it is easy to stage by accident — it was, once.
 /authbridge/scripts/profile-tags/profile-tags
+
+# Output dir for `make abctl` / `make authbridge-proxy`.
+/bin/

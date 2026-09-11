@@ -1,7 +1,9 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table abctl authbridge-proxy help
+
+BIN_DIR := $(CURDIR)/bin
 
 help: ## Display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -39,3 +41,23 @@ endif
 	cd authbridge/authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
 		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
 	cd authbridge/authlib && go test ./pricing/ -run TestBundled
+
+##@ Binary Targets
+
+# authbridge-proxy's plugin set is resolved from a named profile via
+# authbridge/scripts/profile-tags — the same helper CI uses — so the tag
+# list stays in sync without hand-maintenance. abctl links no plugins.
+
+abctl: ## Build abctl to ./bin/abctl
+	@mkdir -p $(BIN_DIR)
+	cd authbridge/cmd/abctl && go build -o $(BIN_DIR)/abctl .
+
+authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
+	@mkdir -p $(BIN_DIR)
+	@# Resolve the profile's tag list at build time so the plugin set stays
+	@# in sync with authbridge/scripts/profile-tags without hand-maintenance.
+	@# An unknown profile exits non-zero — the $$(...) captures that and
+	@# the target fails.
+	TAGS=$$(go -C authbridge/scripts/profile-tags run . $(or $(PROFILE),full)) && \
+		cd authbridge/cmd/authbridge-proxy && \
+		go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .

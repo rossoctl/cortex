@@ -29,8 +29,11 @@ abctl --version
 - **macOS** binaries are portable but unsigned; after extracting, clear the Gatekeeper
   quarantine once: `xattr -dr com.apple.quarantine ./abctl` (or `codesign --sign - ./abctl`).
 
-Building from source instead is just `cd authbridge/cmd/abctl && go build .` (likewise
-`cmd/authbridge-proxy`).
+Building from source: `make abctl` or `make authbridge-proxy` from the repo
+root. `authbridge-proxy` defaults to the `full` plugin profile; pass
+`PROFILE=lite` or `local` for smaller sets. See
+[Build-tag plugin selection](#build-tag-plugin-selection) for the underlying
+`go build` invocations.
 
 ## Deployment Modes
 
