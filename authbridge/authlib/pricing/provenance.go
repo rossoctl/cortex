@@ -62,3 +62,17 @@ func (p Provenance) String() string {
 type Resolver interface {
 	Resolve(endpoint, model string, promptTotal int) (Rates, Provenance)
 }
+
+// ProvenanceFromString is the inverse of String, for a level that has been through JSON.
+//
+// False for anything unrecognized rather than defaulting: provenance decides precedence and
+// drives WarnIfUnpinned, so a silent fallback to a valid-looking level would either suppress
+// a warning an operator needs or outrank a rate they configured.
+func ProvenanceFromString(s string) (Provenance, bool) {
+	for _, p := range []Provenance{ProvNone, ProvBundled, ProvDiscovered, ProvConfigured, ProvAuthoritative} {
+		if p.String() == s {
+			return p, true
+		}
+	}
+	return ProvNone, false
+}

@@ -49,6 +49,21 @@ type metrics struct {
 	// token total by any single rate would be wrong by that factor.
 	usdSaved float64
 
+	// usdProjected is what observe mode WOULD have saved. Kept apart from usdSaved
+	// because in observe mode SetBody is a no-op: those bytes went upstream and were
+	// paid for, so adding them to a realized total reports money that was spent as
+	// money that was not. The row is named separately for the same reason.
+	usdProjected float64
+	// savedProjected is the token half of the same distinction. One bucket, not three:
+	// the tier split exists so a real total can be multiplied by the right rate, and a
+	// hypothetical needs no such precision.
+	savedProjected float64
+	// savedUntiered holds tokens whose tier could not be established — a record written
+	// by a build with a tier vocabulary this one does not know. Counted, but kept out of
+	// the three tier buckets rather than defaulted into input, which would misattribute
+	// by up to 12.5x and read as a real input saving.
+	savedUntiered float64
+
 	// Requests whose model had no configured rate. Counted and named rather
 	// than charged at another model's rate, so an incomplete pricing table
 	// shows up as a gap instead of silently under-reporting the total.
@@ -103,19 +118,35 @@ func (m *metrics) recoveredPanic() {
 	m.mu.Unlock()
 }
 
-func (m *metrics) observeSaving(tokens float64, t pricing.Tier, usd float64, prov pricing.Provenance, model string) {
+// observeSaving records one request's saving.
+//
+// tier is nil when it could not be established; projected marks a saving that was measured
+// but never applied. Both are separate arguments rather than inferred here, because the
+// caller reads them off the cost record and this layer must not guess: a fabricated tier and
+// a hypothetical counted as real are the two ways this readout can lie about money.
+func (m *metrics) observeSaving(tokens float64, tier *pricing.Tier, usd float64, prov pricing.Provenance, model string, projected bool) {
 	m.mu.Lock()
-	switch t {
-	case pricing.TierCacheWrite:
+	switch {
+	case projected:
+		// Not attributed to a tier: it was not saved, so there is no billed tier it
+		// came out of.
+		m.savedProjected += tokens
+	case tier == nil:
+		m.savedUntiered += tokens
+	case *tier == pricing.TierCacheWrite:
 		m.savedCacheWrite += tokens
-	case pricing.TierCacheRead:
+	case *tier == pricing.TierCacheRead:
 		m.savedCacheRead += tokens
 	default:
 		m.savedInput += tokens
 	}
 	m.requestsCosted++
 	if prov != pricing.ProvNone {
-		m.usdSaved += usd
+		if projected {
+			m.usdProjected += usd
+		} else {
+			m.usdSaved += usd
+		}
 		if prov == pricing.ProvBundled {
 			m.usedBundledRates = true
 		}
@@ -207,6 +238,20 @@ func (m *metrics) snapshot() []pipeline.Metric {
 			out = append(out, pipeline.Metric{Name: t.name, Value: t.val, Unit: "tokens", Note: note})
 		}
 	}
+	if m.savedProjected > 0 {
+		out = append(out, pipeline.Metric{
+			Name: "tokens would save", Value: m.savedProjected, Unit: "tokens",
+			Note: "observe mode — measured but NOT applied",
+		})
+	}
+	if m.usdSaved == 0 && m.usdProjected > 0 {
+		// A deployment running purely in observe mode has no realized row above to
+		// hang this off, and silence would read as "nothing to save here".
+		out = append(out, pipeline.Metric{
+			Name: "$ would save", Value: m.usdProjected, Unit: "usd",
+			Note: "observe mode — measured but NOT applied; this money was spent",
+		})
+	}
 	if m.requestsCosted == 0 && acted > 0 {
 		out = append(out, pipeline.Metric{
 			Name: "tokens saved", Value: 0, Unit: "tokens",
@@ -242,6 +287,18 @@ func (m *metrics) snapshot() []pipeline.Metric {
 		}
 		grossNote += "gross — excludes cache re-warm after a remove-list change"
 		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: grossNote})
+		if m.usdProjected > 0 {
+			out = append(out, pipeline.Metric{
+				Name: "$ would save", Value: m.usdProjected, Unit: "usd",
+				Note: "observe mode — measured but NOT applied; this money was spent",
+			})
+		}
+		if m.savedUntiered > 0 {
+			out = append(out, pipeline.Metric{
+				Name: "tokens saved (tier unknown)", Value: m.savedUntiered, Unit: "tokens",
+				Note: "a cost record named a prompt tier this build does not know",
+			})
+		}
 		if priced := m.requestsCosted - m.unpriced; priced > 0 {
 			out = append(out, pipeline.Metric{
 				Name:  "$ saved / request",

@@ -898,12 +898,11 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 			return ""
 		}
 		var saved float64
-		var projected bool
-		if ps, ok := decodePruneSaving(ev); ok {
-			saved, _, _ = savedTokensAndCost(ps, resp.Inference)
-			projected = ps.Projected
+		var projected, estimated bool
+		if s, ok := pruneSavingFor(resp); ok {
+			saved, projected, estimated = float64(s.TokensAvoided), s.Projected, s.Estimated
 		}
-		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected)
+		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected, estimated)
 	default:
 		return ""
 	}
@@ -948,16 +947,16 @@ func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeli
 		if resp == nil {
 			return ""
 		}
-		ps, ok := decodePruneSaving(ev)
+		total, ok := promptCost(resp)
 		if !ok {
 			return ""
 		}
-		total, ok := promptCost(ps, resp.Inference)
-		if !ok {
-			return ""
+		var savedUSD float64
+		var projected bool
+		if s, ok := pruneSavingFor(resp); ok {
+			savedUSD, projected = s.USD, s.Projected
 		}
-		_, savedUSD, _ := savedTokensAndCost(ps, resp.Inference)
-		return formatUSDWithSaving(total, savedUSD, ps.Projected)
+		return formatUSDWithSaving(total, savedUSD, projected)
 	default:
 		return ""
 	}

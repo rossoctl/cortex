@@ -10,11 +10,19 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins/internal/parsercommon"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // InferenceParser parses outbound OpenAI-compatible LLM inference requests
 // and populates pctx.Extensions.Inference for downstream policy plugins.
-type InferenceParser struct{}
+//
+// It also prices the finalized response — see cost.go for why the component that produces
+// the token counts is the one that turns them into money.
+type InferenceParser struct {
+	// rates is the process rate table, injected by plugins.BuildWithDeps. Nil when the
+	// process has no pricing wired, which costing.Settle handles by reporting unpriced.
+	rates pricing.Resolver
+}
 
 func NewInferenceParser() *InferenceParser { return &InferenceParser{} }
 
@@ -164,6 +172,7 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	}
 
 	logInferenceFinalized(ext)
+	p.settleCost(pctx)
 	pctx.Observe("matched_" + ext.Model + "_response")
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -247,6 +256,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 			parseInferenceJSON(frame, ext)
 		}
 		logInferenceFinalized(ext)
+		p.settleCost(pctx)
 		pctx.Observe("matched_" + ext.Model + "_response")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -280,6 +290,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 			return pipeline.Action{Type: pipeline.Continue}
 		}
 		logInferenceFinalized(ext)
+		p.settleCost(pctx)
 		pctx.Observe("matched_" + ext.Model + "_response")
 	}
 	return pipeline.Action{Type: pipeline.Continue}

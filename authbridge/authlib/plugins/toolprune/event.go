@@ -9,12 +9,14 @@ import (
 // pruneEvent is the per-request record published under "tool-prune/event", so a
 // consumer can show what this one request saved instead of only an aggregate.
 //
-// It deliberately carries the applicable rates rather than a finished dollar
-// figure. The dollar amount depends on which prompt-cache tier the saving came
-// out of, and that is only known from the response — so the request-side event
-// supplies the inputs and the consumer, which can pair request to response by
-// RequestID, does the last step. Carrying the rates also means a consumer needs
-// no knowledge of the built-in default table.
+// It carries FACTS ONLY — what was removed and how big the body was. No rates, no dollars.
+//
+// It used to carry rates so a consumer could do the arithmetic, because the dollar amount
+// depends on which prompt-cache tier the saving came out of and that is only known from the
+// response. The conclusion was right and the remedy was backwards: the money step belongs
+// where both halves are in hand, which is the cost owner on the response side. It publishes
+// the priced saving in costevent.Event.Avoided, attributed to this plugin, so no consumer
+// needs rates and none of them can disagree about the figure.
 //
 // No body content: the session store is unauthenticated, so this holds counts,
 // tool names the operator themselves configured, and rates.
@@ -32,13 +34,6 @@ type pruneEvent struct {
 	// present this as "would have saved", never as money already not spent.
 	Projected bool   `json:"projected,omitempty"`
 	Model     string `json:"model,omitempty"`
-
-	// Rates are USD per token for this request's model, already resolved
-	// through config → flat fallback → built-in defaults.
-	RateInput      float64 `json:"rateInput,omitempty"`
-	RateCacheWrite float64 `json:"rateCacheWrite,omitempty"`
-	RateCacheRead  float64 `json:"rateCacheRead,omitempty"`
-	RateSource     string  `json:"rateSource,omitempty"` // configured | default | none
 }
 
 func (p *ToolPrune) publish(pctx *pipeline.Context, ev pruneEvent) {

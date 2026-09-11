@@ -5,13 +5,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
-// costWire is the exact JSON litellm-budget-track publishes under
-// "litellm-budget-track".
+// costWire is the exact JSON the proxy publishes as a cost record.
+//
+// It carries what this UI now READS rather than computes: the exchange total, the
+// prompt-only figure a request row shows, and the saving attributed to tool-prune. The
+// figures are the ones abctl used to derive itself — prompt 1,300 x 3.8e-6 + 680,000 x
+// 3.8e-7 = 0.26334, saving 9,899 tokens at the cache-read rate = 0.0038 — so the rendered
+// cells below are unchanged by the move. That is the point: same output, one owner.
 const costWire = `{"cost_usd":0.2824,"source":"gateway-header",
-  "daily_total_usd":1.4207,"daily_max_usd":5}`
+  "daily_total_usd":1.4207,"daily_max_usd":5,"prompt_usd":0.26334,
+  "avoided":[{"component":"tool-prune","tokensAvoided":9899,"usd":0.0038,
+  "tier":"cache_read","estimated":true}]}`
 
 // bigPromptWire is a tool-prune event sized for the cache-heavy agent turn this
 // split exists for: a ~2.4MB body (≈3.5 bytes/token against a 681k-token prompt)
@@ -161,24 +169,32 @@ func TestCostCellPhases(t *testing.T) {
 // rate overstates a cache-heavy turn by close to an order of magnitude, which is
 // the common shape for a long-running agent. The weighted figure must be well
 // below the flat one.
-func TestPromptCostIsTierWeighted(t *testing.T) {
-	ps := pruneSaving{RateInput: 3.8e-6, RateCacheRead: 3.8e-7, RateCacheWrite: 4.75e-6, RateSource: "default"}
+// The tier weighting now happens in the proxy (authlib/costing computes the prompt-only
+// figure; authlib/pricing weights the tiers), and is tested there against the real rate
+// table. What abctl must still get right is reading the published figure and declining to
+// invent one — a $0.00 in this column reads as a free prompt.
+func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 	inf := &pipeline.InferenceExtension{InputTokens: 1_000, CacheReadTokens: 99_000}
-	got, ok := promptCost(ps, inf)
+	// A tier-weighted figure, well below the 0.38 a flat input rate would produce for
+	// the same 100k prompt: that gap is why the proxy weights it rather than the UI.
+	e := recordEvent(t, costevent.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414})
+	e.Inference = inf
+	got, ok := promptCost(e)
 	if !ok {
 		t.Fatal("no cost figure")
 	}
-	flat := float64(promptTokens(inf)) * ps.RateInput
-	if got >= flat {
-		t.Errorf("weighted %v should be below flat %v", got, flat)
+	if got != 0.0414 {
+		t.Errorf("promptCost = %v, want the published 0.0414", got)
 	}
-	want := 1_000*3.8e-6 + 99_000*3.8e-7
-	if got < want-1e-12 || got > want+1e-12 {
-		t.Errorf("promptCost = %v, want %v", got, want)
+	if flat := float64(promptTokens(inf)) * 3.8e-6; got >= flat {
+		t.Errorf("published figure %v is not below the flat %v; the weighting was lost", got, flat)
 	}
-	// nil usage yields no figure rather than a zero that reads as free.
-	if _, ok := promptCost(ps, nil); ok {
-		t.Error("nil usage produced a cost figure")
+	// No record, and a record with no prompt figure, both decline rather than showing 0.
+	if _, ok := promptCost(respEvent("", inf)); ok {
+		t.Error("a response with no record produced a cost figure")
+	}
+	if _, ok := promptCost(recordEvent(t, costevent.Event{CostUSD: 0.05, Settled: true})); ok {
+		t.Error("a record with no prompt figure produced one")
 	}
 }
 
@@ -352,5 +368,30 @@ func TestMethodColumnDistinguishesDatedModelIDs(t *testing.T) {
 	mcp := &pipeline.SessionEvent{MCP: &pipeline.MCPExtension{Method: "notifications/initialized"}}
 	if n := len([]rune(eventMethod(*mcp))); n > methodColWidth {
 		t.Errorf("eventMethod = %d cols, want <= %d", n, methodColWidth)
+	}
+}
+
+// Precision IS the estimate marker: an estimated saving renders compact because trailing
+// digits would be false precision, and a counted one renders exact. No extra glyph — "~"
+// already means projected, and every saving published today is estimated, so a marker on
+// every row would distinguish nothing.
+func TestFormatTokensWithSaving_PrecisionMarksTheEstimate(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		projected, estimated bool
+		want                 string
+	}{
+		{"estimated and applied", false, true, "681,300(−9.9k)"},
+		{"estimated and projected", true, true, "681,300(~9.9k)"},
+		// A saving counted by a tokenizer, which nothing publishes yet: exact digits,
+		// because they would be real.
+		{"counted and applied", false, false, "681,300(−9,899)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatTokensWithSaving(681_300, 9_899, tc.projected, tc.estimated)
+			if got != tc.want {
+				t.Errorf("= %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

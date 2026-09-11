@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -21,7 +22,7 @@ import (
 )
 
 // configure builds a BudgetTrack with a temp-dir spend file and the given budget.
-func configure(t *testing.T, maxBudget float64) *BudgetTrack {
+func configure(t *testing.T, maxBudget float64) *billing {
 	t.Helper()
 	p := New()
 	cfg := budgetTrackConfig{
@@ -32,7 +33,9 @@ func configure(t *testing.T, maxBudget float64) *BudgetTrack {
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure() error = %v", err)
 	}
-	return p
+	// No rates: the header path needs none, and a nil resolver is the state a binary
+	// without pricing wiring is in.
+	return &billing{BudgetTrack: p}
 }
 
 // TestOnResponseReadsResponseHeader is the regression guard for the core fix:
@@ -40,7 +43,7 @@ func configure(t *testing.T, maxBudget float64) *BudgetTrack {
 func TestOnResponseReadsResponseHeader(t *testing.T) {
 	p := configure(t, 5.00)
 	pctx := &pipeline.Context{
-		ResponseHeaders: http.Header{responseCostHeader: {"0.0025"}},
+		ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.0025"}},
 	}
 
 	if action := p.OnResponse(context.Background(), pctx); action.Type != pipeline.Continue {
@@ -59,7 +62,7 @@ func TestOnResponseReadsResponseHeader(t *testing.T) {
 func TestOnResponseIgnoresRequestHeader(t *testing.T) {
 	p := configure(t, 5.00)
 	pctx := &pipeline.Context{
-		Headers:         http.Header{responseCostHeader: {"0.0025"}}, // wrong place; must be ignored
+		Headers:         http.Header{costing.ResponseCostHeader: {"0.0025"}}, // wrong place; must be ignored
 		ResponseHeaders: http.Header{},
 	}
 
@@ -74,7 +77,7 @@ func TestOnResponseIgnoresRequestHeader(t *testing.T) {
 func TestOnResponseFallsBackToOriginal(t *testing.T) {
 	p := configure(t, 5.00)
 	pctx := &pipeline.Context{
-		ResponseHeaders: http.Header{responseCostOriginalHeader: {"2.204e-05"}},
+		ResponseHeaders: http.Header{costing.ResponseCostOriginalHeader: {"2.204e-05"}},
 	}
 
 	p.OnResponse(context.Background(), pctx)
@@ -89,8 +92,8 @@ func TestOnResponseBareHeaderWins(t *testing.T) {
 	p := configure(t, 5.00)
 	pctx := &pipeline.Context{
 		ResponseHeaders: http.Header{
-			responseCostHeader:         {"0.001"},
-			responseCostOriginalHeader: {"0.002"},
+			costing.ResponseCostHeader:         {"0.001"},
+			costing.ResponseCostOriginalHeader: {"0.002"},
 		},
 	}
 
@@ -108,9 +111,9 @@ func TestOnResponseIgnoresMissingOrInvalid(t *testing.T) {
 		headers http.Header
 	}{
 		{"missing", http.Header{}},
-		{"zero", http.Header{responseCostHeader: {"0"}}},
-		{"negative", http.Header{responseCostHeader: {"-1"}}},
-		{"unparseable", http.Header{responseCostHeader: {"abc"}}},
+		{"zero", http.Header{costing.ResponseCostHeader: {"0"}}},
+		{"negative", http.Header{costing.ResponseCostHeader: {"-1"}}},
+		{"unparseable", http.Header{costing.ResponseCostHeader: {"abc"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := configure(t, 5.00)
@@ -137,7 +140,7 @@ func TestOnRequestEnforcesBudget(t *testing.T) {
 
 	// Accumulate past the budget via a response.
 	p.OnResponse(context.Background(), &pipeline.Context{
-		ResponseHeaders: http.Header{responseCostHeader: {"0.002"}},
+		ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.002"}},
 	})
 
 	// Over budget: rejected with 429 / budget.exceeded.
@@ -163,12 +166,14 @@ func TestLedgerPersistsAcrossInstances(t *testing.T) {
 	spendFile := filepath.Join(t.TempDir(), "spend.json")
 	raw, _ := json.Marshal(budgetTrackConfig{SpendFile: spendFile, MaxBudget: 5.00})
 
-	p1 := New()
+	// Wrapped, because the plugin no longer prices: something has to settle the cost
+	// before there is anything to persist.
+	p1 := &billing{BudgetTrack: New()}
 	if err := p1.Configure(raw); err != nil {
 		t.Fatalf("Configure() error = %v", err)
 	}
 	p1.OnResponse(context.Background(), &pipeline.Context{
-		ResponseHeaders: http.Header{responseCostHeader: {"0.01"}},
+		ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.01"}},
 	})
 
 	p2 := New()
@@ -249,7 +254,7 @@ func TestConcurrentOnResponse(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			p.OnResponse(context.Background(), &pipeline.Context{
-				ResponseHeaders: http.Header{responseCostHeader: {"0.01"}},
+				ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.01"}},
 			})
 		}()
 	}
@@ -269,7 +274,47 @@ func TestConcurrentOnResponse(t *testing.T) {
 // configurePriced builds a plugin whose rates reach it by injection, as
 // plugins.BuildWithDeps does in production. Rates left at 0 are UNSET, not free:
 // pricing.Cost refuses to price a tier that carried tokens without a rate.
-func configurePriced(t *testing.T, maxBudget float64, perTier map[pricing.Tier]float64) *BudgetTrack {
+// billing is a BudgetTrack plus the rate table the COST OWNER holds in production.
+//
+// The plugin no longer prices anything, so a test that wants a bill has to do what the
+// pipeline does: let the cost owner settle first. settle runs the same authlib/costing
+// entry points inference-parser calls, which keeps these tests about billing — the
+// end-to-end proof that the parser drives them lives in sse_equivalence_test.go and
+// forwardproxy_integration_test.go, both of which run the real parser.
+type billing struct {
+	*BudgetTrack
+	rates pricing.Resolver
+}
+
+// OnResponse and OnResponseFrame settle first, then bill — the order the pipeline produces,
+// since the parser sits later in the chain and the response pass runs in reverse.
+//
+// Overriding them on the wrapper rather than editing every call site keeps these tests
+// reading as they did, which matters: their recorded costs are the equivalence proof that
+// this refactor did not change anybody's bill.
+func (b *billing) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
+	b.settle(pctx)
+	return b.BudgetTrack.OnResponse(ctx, pctx)
+}
+
+func (b *billing) OnResponseFrame(ctx context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
+	if last {
+		b.settle(pctx)
+	}
+	return b.BudgetTrack.OnResponseFrame(ctx, pctx, frame, last)
+}
+
+// settle stands in for the cost owner: price the response, stash the outcome, publish the
+// record.
+func (b *billing) settle(pctx *pipeline.Context) {
+	s := costing.Settle(pctx, b.rates)
+	costing.Store(pctx, s)
+	if s.Priced {
+		costing.Publish(pctx, costing.NewRecord(s, costing.Avoided(pctx, b.rates)))
+	}
+}
+
+func configurePriced(t *testing.T, maxBudget float64, perTier map[pricing.Tier]float64) *billing {
 	t.Helper()
 	p := New()
 	var r pricing.Rates
@@ -284,7 +329,7 @@ func configurePriced(t *testing.T, maxBudget float64, perTier map[pricing.Tier]f
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SetPricingResolver(pricing.NewRegistry(tab))
+	rates := pricing.NewRegistry(tab)
 	raw, _ := json.Marshal(budgetTrackConfig{
 		SpendFile: filepath.Join(t.TempDir(), "spend.json"),
 		MaxBudget: maxBudget,
@@ -292,7 +337,7 @@ func configurePriced(t *testing.T, maxBudget float64, perTier map[pricing.Tier]f
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure() error = %v", err)
 	}
-	return p
+	return &billing{BudgetTrack: p, rates: rates}
 }
 
 // pricedInference seeds the per-tier counts inference-parser would have published,
@@ -359,7 +404,7 @@ func TestStreamingWithoutPricesRecordsZero(t *testing.T) {
 // per-token pricing is ignored.
 func TestHeaderCostWinsOverUsage(t *testing.T) {
 	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.02"}}}
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.02"}}}
 	// single-frame buffered json also carries usage, which must be ignored
 	body := []byte(`data: {"usage":{"prompt_tokens":100,"completion_tokens":40}}`)
 	p.OnResponseFrame(context.Background(), pctx, body, true)
@@ -372,7 +417,7 @@ func TestHeaderCostWinsOverUsage(t *testing.T) {
 // -original present on the terminal frame is still honored.
 func TestOnResponseFrameOriginalFallback(t *testing.T) {
 	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostOriginalHeader: {"6.688e-05"}}}
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostOriginalHeader: {"6.688e-05"}}}
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 	if got := p.ledger.TotalSpend; got < 6.687e-05 || got > 6.689e-05 {
 		t.Errorf("TotalSpend = %v, want 6.688e-05", got)
@@ -445,7 +490,7 @@ func TestNonFiniteCostRejected(t *testing.T) {
 		t.Run(hdr, func(t *testing.T) {
 			p := configure(t, 5.00)
 			p.OnResponse(context.Background(), &pipeline.Context{
-				ResponseHeaders: http.Header{responseCostHeader: {hdr}},
+				ResponseHeaders: http.Header{costing.ResponseCostHeader: {hdr}},
 			})
 			if p.ledger.TotalSpend != 0 || p.ledger.TotalCalls != 0 {
 				t.Errorf("%s: ledger mutated: spend=%v calls=%d", hdr, p.ledger.TotalSpend, p.ledger.TotalCalls)
@@ -494,8 +539,8 @@ func TestOnResponseFrameSettlesOnce(t *testing.T) {
 func TestZeroCostHeaderNonStreamedNotRepriced(t *testing.T) {
 	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
-		responseCostHeader: {"0"},
-		"Content-Type":     {"application/json"},
+		costing.ResponseCostHeader: {"0"},
+		"Content-Type":             {"application/json"},
 	}}
 	p.OnResponseFrame(context.Background(), pctx, []byte(`{"usage":{"input_tokens":100,"output_tokens":40}}`), true)
 	if p.ledger.TotalSpend != 0 || p.ledger.TotalCalls != 0 {
@@ -508,8 +553,8 @@ func TestZeroCostHeaderNonStreamedNotRepriced(t *testing.T) {
 func TestZeroCostHeaderStreamedPricesFromUsage(t *testing.T) {
 	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
-		responseCostHeader: {"0"},
-		"Content-Type":     {"text/event-stream; charset=utf-8"},
+		costing.ResponseCostHeader: {"0"},
+		"Content-Type":             {"text/event-stream; charset=utf-8"},
 	}}
 	pricedInference(pctx, 100, 0, 0, 40)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -552,7 +597,7 @@ func TestPluginNameMatchesCostEventKey(t *testing.T) {
 // build.
 func TestEmitCostWireFormatIsAdditive(t *testing.T) {
 	p := configure(t, 10)
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.25"}}}
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.25"}}}
 	p.OnResponse(context.Background(), pctx)
 
 	ev := getCostEvent(t, pctx)
@@ -605,7 +650,7 @@ func TestEmitCost_ProvenanceOmittedWhenAbsent(t *testing.T) {
 // the ledger's post-add state and DailyMaxUSD from config.
 func TestEmitCost_HeaderPath(t *testing.T) {
 	p := configure(t, 5.00)
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.0025"}}}
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.0025"}}}
 	p.OnResponse(context.Background(), pctx)
 
 	ev := getCostEvent(t, pctx)
@@ -629,7 +674,7 @@ func TestEmitCost_HeaderPath(t *testing.T) {
 	// DailyTotalUSD accumulating while CostUSD stays per-response.
 	// Without this a bug that emitted per-call cost as the daily
 	// total would pass every other assertion here.
-	pctx2 := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.0025"}}}
+	pctx2 := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.0025"}}}
 	p.OnResponse(context.Background(), pctx2)
 	ev2 := getCostEvent(t, pctx2)
 	if ev2 == nil {
@@ -648,8 +693,8 @@ func TestEmitCost_HeaderPath(t *testing.T) {
 func TestEmitCost_UsageFallback(t *testing.T) {
 	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
-		responseCostHeader: {"0"},
-		"Content-Type":     {"text/event-stream; charset=utf-8"},
+		costing.ResponseCostHeader: {"0"},
+		"Content-Type":             {"text/event-stream; charset=utf-8"},
 	}}
 	pricedInference(pctx, 100, 0, 0, 40)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -674,17 +719,26 @@ func TestEmitCost_UsageFallback(t *testing.T) {
 	}
 }
 
-// TestEmitCost_NoEmitWhenUnpriced: an OnResponse call whose header is missing
-// or invalid must NOT emit a cost event (matches the ledger-untouched
-// invariant asserted by TestOnResponseIgnoresMissingOrInvalid).
+// TestEmitCost_NoEmitWhenUnpriced: a response whose header is missing or invalid must NOT
+// emit a cost event (matching the ledger-untouched invariant asserted by
+// TestOnResponseIgnoresMissingOrInvalid).
+//
+// A header of exactly "0" is deliberately NOT in that set. On a non-streamed response it is
+// the gateway saying the call was free — an answer, not an absence — and publishing it as a
+// settled zero is what stops the usage aggregator from re-pricing a free call from its own
+// rate table. See TestSettledZero_OnlyForADeclaredFreeCall.
+//
+// Before cortex #972 this asymmetry existed by accident: OnResponse handled only a positive
+// header, so the settled zero was published on the frame path and silently dropped on the
+// buffered one. The two now share one decision (costing.Settle), so a listener choosing
+// OnResponse no longer reports a different cost from one choosing OnResponseFrame.
 func TestEmitCost_NoEmitWhenUnpriced(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		headers http.Header
 	}{
 		{"missing", http.Header{}},
-		{"zero", http.Header{responseCostHeader: {"0"}}},
-		{"unparseable", http.Header{responseCostHeader: {"abc"}}},
+		{"unparseable", http.Header{costing.ResponseCostHeader: {"abc"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := configure(t, 5.00)
@@ -697,6 +751,33 @@ func TestEmitCost_NoEmitWhenUnpriced(t *testing.T) {
 	}
 }
 
+// A declared-free call publishes a settled zero on BOTH response paths, and adds nothing to
+// the ledger. The two halves matter for different reasons: the event stops the aggregator
+// inventing a cost, and the untouched ledger keeps a free call out of the budget.
+func TestEmitCost_DeclaredZeroIsPublishedOnEitherPath(t *testing.T) {
+	for _, name := range []string{"OnResponse", "OnResponseFrame"} {
+		t.Run(name, func(t *testing.T) {
+			p := configure(t, 5.00)
+			pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0"}}}
+			if name == "OnResponse" {
+				p.OnResponse(context.Background(), pctx)
+			} else {
+				p.OnResponseFrame(context.Background(), pctx, nil, true)
+			}
+			ev := getCostEvent(t, pctx)
+			if ev == nil {
+				t.Fatal("no event for a gateway-declared free call; the aggregator will re-price it")
+			}
+			if !ev.Settled || ev.CostUSD != 0 {
+				t.Errorf("event = %+v, want a settled zero", *ev)
+			}
+			if p.ledger.TotalSpend != 0 || p.ledger.TotalCalls != 0 {
+				t.Errorf("ledger moved on a free call: spend=%v calls=%d", p.ledger.TotalSpend, p.ledger.TotalCalls)
+			}
+		})
+	}
+}
+
 // TestOnRequestRecordsDenyInvocation: the 429 path must record a deny
 // Invocation with the spend snapshot, or phase:"denied" never surfaces.
 func TestOnRequestRecordsDenyInvocation(t *testing.T) {
@@ -704,7 +785,7 @@ func TestOnRequestRecordsDenyInvocation(t *testing.T) {
 
 	// Push past the budget so the next OnRequest denies.
 	p.OnResponse(context.Background(), &pipeline.Context{
-		ResponseHeaders: http.Header{responseCostHeader: {"0.002"}},
+		ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.002"}},
 	})
 
 	// Stamp Plugin+Phase like Pipeline.Run does — without it Record leaves
@@ -785,7 +866,7 @@ func TestEndToEnd_CostReachesUsageAggregator(t *testing.T) {
 	store.AddRecorder(agg)
 
 	// The plugin prices a response, exactly as OnResponse would in a pipeline.
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.0421"}}}
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0.0421"}}}
 	p.OnResponse(context.Background(), pctx)
 
 	// The listener's promotion step, verbatim from forwardproxy/server.go.
@@ -851,5 +932,39 @@ func TestEndToEnd_UnpricedResponseReachesAggregatorUnpriced(t *testing.T) {
 	}
 	if snap.Totals.Tokens != 1000 {
 		t.Errorf("Tokens = %d, want 1000", snap.Totals.Tokens)
+	}
+}
+
+// A request that starts before midnight UTC and settles after it must not stamp yesterday's
+// total onto today's first event.
+//
+// The free-call path is where this bites: it reports the day's total without adding to it, so
+// it reads the ledger directly, and a cache hit is a plausible first request of a new day.
+func TestBill_SettledZeroRollsTheLedgerDate(t *testing.T) {
+	p := configure(t, 5.00)
+	// Yesterday's ledger, as loadLedger would leave it for a process that has been up
+	// across midnight.
+	p.ledger = spendLedger{Date: "2026-09-10", TotalSpend: 4.20, TotalCalls: 7}
+
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0"}}}
+	p.OnResponse(context.Background(), pctx)
+
+	ev := getCostEvent(t, pctx)
+	if ev == nil {
+		t.Fatal("no settled-zero event")
+	}
+	if ev.DailyTotalUSD != 0 {
+		t.Errorf("DailyTotalUSD = %v, want 0 — yesterday's spend leaked into today's event", ev.DailyTotalUSD)
+	}
+	if p.ledger.TotalSpend != 0 || p.ledger.TotalCalls != 0 {
+		t.Errorf("ledger not rolled: %+v", p.ledger)
+	}
+	// Same day, and the total is reported as-is.
+	p2 := configure(t, 5.00)
+	p2.ledger = spendLedger{Date: p2.todayUTC(), TotalSpend: 1.25, TotalCalls: 3}
+	pctx2 := &pipeline.Context{ResponseHeaders: http.Header{costing.ResponseCostHeader: {"0"}}}
+	p2.OnResponse(context.Background(), pctx2)
+	if ev2 := getCostEvent(t, pctx2); ev2 == nil || ev2.DailyTotalUSD != 1.25 {
+		t.Errorf("same-day total = %+v, want 1.25", ev2)
 	}
 }

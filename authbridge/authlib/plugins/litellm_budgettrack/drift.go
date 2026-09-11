@@ -3,10 +3,10 @@ package litellm_budgettrack
 import (
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
@@ -64,32 +64,30 @@ func (p *BudgetTrack) SetDriftLogger(l *slog.Logger) {
 	p.drift.mu.Unlock()
 }
 
-// checkDrift compares an authoritative cost against what the rate table would have
-// modelled, and warns on a material divergence.
+// checkDrift compares the gateway's own cost against what the rate table modelled, and
+// warns on a material divergence.
 //
-// Called only where an authoritative figure exists — a non-streamed response with a
-// usable cost header. A streamed response reports 0 there by design, so there is
-// nothing to compare and silence is correct.
+// Reads BOTH figures off the settled outcome rather than recomputing either. That is the
+// point of the outcome carrying the pair: a drift check that re-derives the modelled figure
+// is comparing its own arithmetic, not the arithmetic that was actually used, and the two
+// can drift apart without anything failing.
 //
-// The ledger keeps using the authoritative figure regardless: drift is a diagnostic
-// about the rate TABLE, never a reason to distrust the gateway's own number.
-func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, authoritative float64) {
-	if authoritative <= 0 || p.rates == nil {
-		return
+// Called only where an authoritative figure exists — a non-streamed response with a usable
+// cost header. A streamed response reports 0 there by design, so there is nothing to compare
+// and silence is correct.
+//
+// The ledger keeps using the authoritative figure regardless: drift is a diagnostic about the
+// rate TABLE, never a reason to distrust the gateway's own number.
+func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled costing.Settled) {
+	authoritative := settled.CostUSD
+	if authoritative <= 0 || !settled.HasModelled {
+		return // unpriced by the table is a coverage gap, already reported as one
 	}
 	inf := pctx.Extensions.Inference
 	if inf == nil || inf.Model == "" {
 		return
 	}
-	u := pricing.UsageFromInference(inf)
-	if u == (pricing.Usage{}) {
-		return
-	}
-	micros, prov, ok := p.costOf(pctx.Host, inf.Model, u)
-	if !ok {
-		return // unpriced is already reported as a coverage gap; not drift
-	}
-	modelled := float64(micros) / 1e6
+	modelled, prov := settled.ModelledUSD, settled.ModelledProv
 	ratio := modelled / authoritative
 	// Inclusive bounds: the contract above says "more than 5%", and a strict compare
 	// warned AT exactly 5%.
@@ -102,7 +100,7 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, authoritative float64) 
 	// layer, and comparing a modelled cost against it would report drift that is really
 	// the operator's own gateway-side adjustment. Skipped rather than guessed at,
 	// because the arithmetic relating the two is not something this code can verify.
-	if !driftComparable(pctx) {
+	if !costing.Comparable(pctx) {
 		return
 	}
 
@@ -150,28 +148,6 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, authoritative float64) 
 		"effect", direction+"stating every request this table prices, including streamed ones where no gateway figure exists",
 		"rates_from", prov.String(),
 		"fix", "set pricing.endpoints[].multiplier for this endpoint (a fraction of list), or per-model rates; `abctl pricing --host <endpoint>` shows what is in effect")
-}
-
-// driftComparable reports whether the gateway's figure can be compared against a modelled
-// one at all.
-//
-// False when the bare header is absent AND LiteLLM's own discount/margin layer is active:
-// the fallback figure is then pre-adjustment while the modelled figure is what the caller
-// pays, so any comparison measures the gateway's adjustment rather than the rate table.
-func driftComparable(pctx *pipeline.Context) bool {
-	if pctx.ResponseHeaders.Get(responseCostHeader) != "" {
-		return true // the effective figure itself; nothing to reconcile
-	}
-	for _, h := range []string{costDiscountAmountHeader, costMarginAmountHeader} {
-		v := pctx.ResponseHeaders.Get(h)
-		if v == "" {
-			continue
-		}
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 // resetDrift clears the dedup set and the cap.

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
@@ -95,7 +96,7 @@ func sseCases() []sseCase {
 
 // runSSE drives one case through the plugin's frame path and returns the settled
 // cost event, if any.
-func runSSE(t *testing.T, p *BudgetTrack, c sseCase) (costevent.Event, bool) {
+func runSSE(t *testing.T, p *billing, c sseCase) (costevent.Event, bool) {
 	t.Helper()
 	pctx := &pipeline.Context{
 		Path:            "/v1/messages?beta=true",
@@ -105,7 +106,10 @@ func runSSE(t *testing.T, p *BudgetTrack, c sseCase) (costevent.Event, bool) {
 	pctx.ResponseHeaders.Set("Content-Type", "text/event-stream")
 	// No cost header: streamed responses always report 0, which is what makes the
 	// usage path load-bearing rather than a fallback nobody hits.
-	primeInference(t, pctx, c.frames)
+	// The parser carries the rate table now, and settles the cost on the terminal
+	// frame. Running it with the resolver is what makes this an end-to-end proof of
+	// the production path rather than a test of a stub.
+	primeInference(t, pctx, c.frames, p.rates)
 
 	for i, f := range c.frames {
 		last := i == len(c.frames)-1
@@ -152,9 +156,9 @@ func TestSSEEquivalence_HeaderCostStillWins(t *testing.T) {
 	p := newPricedBudgetTrack(t)
 	pctx := &pipeline.Context{Path: "/v1/messages", Host: "gw.internal", ResponseHeaders: http.Header{}}
 	pctx.ResponseHeaders.Set("Content-Type", "application/json")
-	pctx.ResponseHeaders.Set(responseCostHeader, "0.25")
+	pctx.ResponseHeaders.Set(costing.ResponseCostHeader, "0.25")
 	frames := []string{`{"usage":{"input_tokens":1000,"output_tokens":500}}`}
-	primeInference(t, pctx, frames)
+	primeInference(t, pctx, frames, p.rates)
 
 	p.OnResponseFrame(context.Background(), pctx, []byte(frames[0]), true)
 
@@ -190,14 +194,15 @@ func spendFile(t *testing.T) string {
 // after, they are the plugin's only source. Keeping the shim identical across the
 // change is what makes the recorded costs a real invariant rather than two
 // unrelated measurements.
-func primeInference(t *testing.T, pctx *pipeline.Context, frames []string) {
+func primeInference(t *testing.T, pctx *pipeline.Context, frames []string, rates pricing.Resolver) {
 	t.Helper()
 	ip := inferenceparser.NewInferenceParser()
+	ip.SetPricingResolver(rates)
 	// The parser needs a request-side extension to fold into, and Stream must be
 	// true or it treats a single last=true frame as a buffered JSON body.
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{
 		Model:  "claude-opus-5",
-		Stream: isEventStream(pctx),
+		Stream: costing.IsEventStream(pctx),
 	}
 	for i, f := range frames {
 		ip.OnResponseFrame(context.Background(), pctx, []byte(f), i == len(frames)-1)
@@ -210,7 +215,7 @@ func primeInference(t *testing.T, pctx *pipeline.Context, frames []string) {
 // does in production. This shim is the only thing in this file that changed with
 // the migration — the recorded costs above were not touched, which is what makes
 // them an equivalence proof rather than a fresh expectation.
-func newPricedBudgetTrack(t *testing.T) *BudgetTrack {
+func newPricedBudgetTrack(t *testing.T) *billing {
 	t.Helper()
 	p := New()
 	raw, err := json.Marshal(map[string]any{
@@ -235,9 +240,8 @@ func newPricedBudgetTrack(t *testing.T) *BudgetTrack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SetPricingResolver(pricing.NewRegistry(tab))
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	return p
+	return &billing{BudgetTrack: p, rates: pricing.NewRegistry(tab)}
 }

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
+	"github.com/rossoctl/cortex/authbridge/authlib/costing"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
@@ -296,18 +298,21 @@ func TestPrune_EnforceCountsPruned(t *testing.T) {
 }
 
 // finish drives OnFinish with a given per-tier usage split.
-func finish(t *testing.T, p *ToolPrune, pctx *pipeline.Context, input, cacheRead, cacheWrite int) {
+func finish(t *testing.T, p *pricedPrune, pctx *pipeline.Context, input, cacheRead, cacheWrite int) {
 	t.Helper()
 	pctx.Extensions.Inference.InputTokens = input
 	pctx.Extensions.Inference.CacheReadTokens = cacheRead
 	pctx.Extensions.Inference.CacheWriteTokens = cacheWrite
+	// The cost owner settles once the response is known, then OnFinish aggregates the
+	// figure it published.
+	p.settle(pctx)
 	p.OnFinish(context.Background(), pctx)
 }
 
-func pruneOnce(t *testing.T, p *ToolPrune) *pipeline.Context {
+func pruneOnce(t *testing.T, p *pricedPrune) *pipeline.Context {
 	t.Helper()
 	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p, pctx)
+	run(t, p.ToolPrune, pctx)
 	if !pctx.BodyMutated() {
 		t.Fatal("expected a prune")
 	}
@@ -318,7 +323,7 @@ func pruneOnce(t *testing.T, p *ToolPrune) *pipeline.Context {
 // no ratio to convert bytes with, so report zero with the reason rather than a
 // number or a NaN.
 func TestMetrics_NoUsageYetReportsZero(t *testing.T) {
-	p := configured(t, "NotebookEdit")
+	p := withRates(t, configured(t, "NotebookEdit"))
 	pruneOnce(t, p)
 	m := findMetric(t, p.Metrics(), "tokens saved")
 	if m.Value != 0 || m.Note != "no response usage seen yet" {
@@ -343,7 +348,7 @@ func TestMetrics_AttributesSavingToTheRightTier(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := configured(t, "NotebookEdit")
+			p := withRates(t, configured(t, "NotebookEdit"))
 			pctx := pruneOnce(t, p)
 			finish(t, p, pctx, tc.input, tc.cacheRead, tc.cacheWrite)
 
@@ -404,7 +409,8 @@ func TestPricing_BundledRatesPriceKnownModels(t *testing.T) {
 // everything. A model in neither the table nor the config is counted, not
 // charged at some other model's rate.
 func TestPricing_UnknownModelStillUnpriced(t *testing.T) {
-	p := configured(t, "NotebookEdit")
+	// No entries: no rate anywhere, which is exactly this test's subject.
+	p := withRates(t, configured(t, "NotebookEdit"))
 	pruneWithModel(t, p, "gcp/gemini-3-pro-preview")
 
 	gap := findMetric(t, p.Metrics(), "requests unpriced")
@@ -423,7 +429,7 @@ func TestPricing_UnknownModelStillUnpriced(t *testing.T) {
 // published ratios, differ by more than an order of magnitude. A flat rate would
 // be wrong by that factor.
 func TestMetrics_TierRatesDifferBy12x(t *testing.T) {
-	cfg := func(t *testing.T) *ToolPrune {
+	cfg := func(t *testing.T) *pricedPrune {
 		// 1.25x input for a write, 0.1x for a read — Anthropic's published ratios.
 		return withRates(t, configured(t, "NotebookEdit"),
 			anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
@@ -661,14 +667,31 @@ func TestPrune_PathMismatchRecordsThePath(t *testing.T) {
 // withRates injects a rate table into p, standing in for what
 // plugins.BuildWithDeps does in production. Rates reach the plugin by injection
 // now, not through its own config, so every pricing test builds a table.
-func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *ToolPrune {
+// pricedPrune is the plugin plus the rate table the COST OWNER holds in production.
+//
+// The plugin has no resolver any more: it publishes what it removed and reads the priced
+// figure back off the record. So a test that wants a dollar figure has to do what the
+// pipeline does — let the cost owner settle first.
+type pricedPrune struct {
+	*ToolPrune
+	rates pricing.Resolver
+}
+
+func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrune {
 	t.Helper()
 	tab, err := pricing.NewTable(entries)
 	if err != nil {
 		t.Fatalf("pricing.NewTable: %v", err)
 	}
-	p.SetPricingResolver(pricing.NewRegistry(tab))
-	return p
+	return &pricedPrune{ToolPrune: p, rates: pricing.NewRegistry(tab)}
+}
+
+// settle stands in for inference-parser: price the response and publish the record,
+// including the saving attributed to this plugin.
+func (p *pricedPrune) settle(pctx *pipeline.Context) {
+	s := costing.Settle(pctx, p.rates)
+	costing.Store(pctx, s)
+	costing.Publish(pctx, costing.NewRecord(s, costing.Avoided(pctx, p.rates)))
 }
 
 // tierRates builds prompt-tier rates from per-token values. Zero means "no rate
@@ -704,12 +727,15 @@ func configuredJSON(t *testing.T, raw string) *ToolPrune {
 
 // pruneWithModel runs one prune and finishes it as the named model, with a
 // cache-write split (the cache-miss shape).
-func pruneWithModel(t *testing.T, p *ToolPrune, model string) {
+func pruneWithModel(t *testing.T, p *pricedPrune, model string) {
 	t.Helper()
 	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p, pctx)
+	run(t, p.ToolPrune, pctx)
 	pctx.Extensions.Inference.Model = model
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	// The cost owner runs between the request and OnFinish, exactly as the pipeline
+	// orders it: the response is what reveals which tier the saving came out of.
+	p.settle(pctx)
 	p.OnFinish(context.Background(), pctx)
 }
 
@@ -980,5 +1006,127 @@ func TestMetrics_RecoveredPanicIsVisible(t *testing.T) {
 	pruneWithModel(t, withRates(t, p, pricing.Bundled()...), "claude-opus-5")
 	if m := findMetric(t, p.Metrics(), "panics recovered"); m.Value != 1 {
 		t.Errorf("panics recovered = %v after traffic, want 1", m.Value)
+	}
+}
+
+// costing reads this plugin's event STRUCTURALLY, by JSON tag, so it can price a saving
+// without importing the plugin. That keeps the dependency pointing the right way — a plugin
+// that shrinks a body should know nothing about pricing — at the cost of a coupling the
+// compiler cannot see.
+//
+// This is that coupling, asserted: rename bytesRemoved, bodyBytesAfter or projected and the
+// saving silently becomes zero, in a figure operators read as money.
+func TestEvent_FieldNamesCostingDependsOn(t *testing.T) {
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := pruneOnce(t, p)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+
+	got := costing.Avoided(pctx, p.rates)
+	if len(got) != 1 {
+		t.Fatalf("costing found %d savings, want 1 — the event's field names have drifted: %+v", len(got), got)
+	}
+	s := got[0]
+	if s.Component != "tool-prune" {
+		t.Errorf("component = %q, want tool-prune", s.Component)
+	}
+	if s.TokensAvoided <= 0 {
+		t.Errorf("tokensAvoided = %d; bytesRemoved or bodyBytesAfter did not decode", s.TokensAvoided)
+	}
+	if s.USD <= 0 {
+		t.Errorf("usd = %v, want a priced saving", s.USD)
+	}
+	if !s.Estimated {
+		t.Error("saving is not marked Estimated; it comes from a byte ratio, not a tokenizer")
+	}
+	if s.Projected {
+		t.Error("saving is marked Projected, but this prune was applied")
+	}
+}
+
+// Observe mode measures without applying, and the saving must say so: those bytes went
+// upstream and were paid for.
+func TestEvent_ObserveModeSavingIsProjected(t *testing.T) {
+	// observe is a PIPELINE policy, not plugin config: the plugin measures and skips
+	// SetBody, so the original bytes go upstream and get billed.
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	run(t, p.ToolPrune, pctx, pipeline.ErrorPolicyObserve)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+
+	got := costing.Avoided(pctx, p.rates)
+	if len(got) != 1 {
+		t.Fatalf("no saving reported in observe mode: %+v", got)
+	}
+	if !got[0].Projected {
+		t.Error("observe-mode saving is not marked Projected; it would read as money not spent")
+	}
+}
+
+// Observe mode measures without applying: those bytes went upstream and were billed. So the
+// dollars belong in a "would save" row, never in the realized "$ saved" total — the readout
+// is the one place an operator reads this as money.
+func TestMetrics_ObserveModeDollarsAreNotRealized(t *testing.T) {
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	run(t, p.ToolPrune, pctx, pipeline.ErrorPolicyObserve)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	p.settle(pctx)
+	p.OnFinish(context.Background(), pctx)
+
+	ms := p.Metrics()
+	for _, m := range ms {
+		if m.Name == "$ saved" {
+			t.Errorf("$ saved = %v in observe mode; that money was spent", m.Value)
+		}
+		if m.Name == "tokens saved: cache write" {
+			t.Errorf("projected tokens landed in a realized tier row: %+v", m)
+		}
+	}
+	would := findMetric(t, ms, "$ would save")
+	if would.Value <= 0 {
+		t.Errorf("$ would save = %v, want the hypothetical figure", would.Value)
+	}
+	if !strings.Contains(would.Note, "NOT applied") {
+		t.Errorf("note does not say the saving was not applied: %q", would.Note)
+	}
+	if tw := findMetric(t, ms, "tokens would save"); tw.Value <= 0 {
+		t.Errorf("tokens would save = %v, want the projected tokens", tw.Value)
+	}
+}
+
+// A tier this build does not recognize is counted, but not as input: defaulting would
+// misattribute by up to 12.5x and read as a real input saving.
+func TestMetrics_UnknownTierIsNotInput(t *testing.T) {
+	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
+	pctx := pruneOnce(t, p)
+	pctx.Extensions.Inference.Model = "claude-opus-5"
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	p.settle(pctx)
+
+	// Rewrite the published record with a tier name from a future build.
+	ev, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix].(costevent.Event)
+	if !ok {
+		t.Fatal("no cost record to rewrite")
+	}
+	if len(ev.Avoided) != 1 {
+		t.Fatalf("expected one saving, got %+v", ev.Avoided)
+	}
+	ev.Avoided[0].Tier = "cache_read_1h"
+	costing.Publish(pctx, ev)
+
+	p.OnFinish(context.Background(), pctx)
+
+	ms := p.Metrics()
+	for _, m := range ms {
+		if m.Name == "tokens saved: input" {
+			t.Errorf("an unknown tier was counted as input: %+v", m)
+		}
+	}
+	unknown := findMetric(t, ms, "tokens saved (tier unknown)")
+	if unknown.Value <= 0 {
+		t.Errorf("tier-unknown row = %v, want the tokens counted", unknown.Value)
 	}
 }

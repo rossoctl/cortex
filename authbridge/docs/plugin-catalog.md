@@ -110,9 +110,30 @@ model to point it at, see
 ## `inference-parser`
 
 Parses outbound OpenAI-compatible LLM inference requests/responses into
-`pctx.Extensions.Inference` for downstream policy plugins.
+`pctx.Extensions.Inference` for downstream policy plugins, **and prices the finished
+response** — it is the one place tokens become dollars.
 
-No configuration — no config struct, does not implement `Configurable`.
+Costing lives here because this is the only component that knows when usage is *final*: it
+owns the three response-finalization paths and the assembled-usage handling (Claude Code's
+`?beta=true` path reports cache counts on `message_delta`, not `message_start`). It also means a
+priced request can no longer be missing its record: previously the figure came from
+`litellm-budget-track`, so a pipeline without that plugin showed tokens and no money, with
+the same field silently meaning "modelled" rather than "authoritative" depending on
+configuration.
+
+A record is not the same as a price. Where no rate resolves for the model, the record is
+still published — carrying the token counts, any avoided cost, and no dollar figure — and the
+gap is named in `/v1/usage`'s `unpricedBy` so an operator knows which `pricing:` entry to
+add. An absent figure is reported as absent, never as `$0.00`.
+
+The arithmetic and the gateway header semantics are in `authlib/costing`, not in the parser:
+a provider-shaped body parser has no business knowing one gateway's header names. The result
+is published as a cost record keyed `cost` on the session event (see
+[Cost records](#cost-records)).
+
+No configuration — no config struct, does not implement `Configurable`. Rates arrive by
+injection from the top-level [`pricing:`](#pricing) section; with none configured the parser
+still parses and reports the traffic as unpriced.
 
 ## `jwt-validation`
 
@@ -159,8 +180,8 @@ denial by a plugin ordered before it emits no spans.
 
 ## `litellm-budget-track`
 
-Tracks the `x-litellm-response-cost` response header and enforces a
-daily spend budget. Full details in
+Keeps the daily spend ledger and enforces a spend budget, from the cost record
+`inference-parser` publishes. Full details in
 [litellm-budgettrack-plugin.md](./litellm-budgettrack-plugin.md).
 
 **Provider-specific:** `x-litellm-response-cost` is emitted only by
@@ -171,7 +192,7 @@ cost is ever accumulated and the budget never trips.
 
 - `spend_file` (string) — path to the JSON spend ledger file; required. The ledger is a small JSON file the plugin creates and rewrites, holding the current UTC date plus the cumulative spend and call count for that day (it resets automatically at midnight UTC) — see [Ledger Format](./litellm-budgettrack-plugin.md#ledger-format).
 - `max_budget` (float64) — daily budget in USD; required, must be > 0.
-- **No rate options.** Rates live in the top-level [`pricing:`](#pricing) section, resolved by `authlib/pricing`, so cost is consistent wherever it is reported. This plugin prices the per-tier token counts `inference-parser` publishes.
+- **No rate options, and no pricing at all.** This plugin bills a figure it does not compute: `inference-parser` settles the cost and publishes the record, and this plugin adds the day's total, enforces the cap, and warns when the rate table disagrees with what the gateway charged. Rates live in the top-level [`pricing:`](#pricing) section.
 - **Requires `inference-parser` LATER in the chain** (`RequiresLater`). The response passes walk the chain in reverse, so the parser must sit at a higher index to fold each frame before this plugin settles the cost. A chain without it — or with it earlier — fails to build.
 
 ## `mcp-parser`
@@ -326,7 +347,9 @@ body-reading plugin (it rewrites the request body). Declares
 
 - `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored. **An empty list is the off switch** — the plugin is inert until a name is added, which is how it ships in the local install.
 - `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
-- **No rate options.** The 12 rate knobs and the built-in family table are gone; rates come from the top-level [`pricing:`](#pricing) section. A figure derived from the bundled table is labelled `bundled`, and a model with no rate anywhere is counted in a `requests unpriced` row rather than charged at another model's rate. There is still no output rate: pruning only shrinks the prompt.
+- **No rates and no pricing.** This plugin reduces tokens; pricing the reduction belongs to whoever owns cost. It publishes what it removed — tool names, byte delta, and whether the prune was applied or only measured — and reads the priced figure back off the cost record to fill its `$ saved` metric. A figure derived from the bundled table is still labelled `bundled`, and a model with no rate anywhere is still counted in a `requests unpriced` row rather than charged at another model's rate. There is still no output rate: pruning only shrinks the prompt.
+
+  The saving has to be priced on the response side, not here: the dollar amount depends on which prompt-cache tier the removed tokens came out of — 1x, 1.25x or 0.1x of the same rate — and only the response reveals that. It is inherently a request-fact times a response-fact.
 
 Generate the list from local transcripts with `abctl tools scan`, which
 proposes only tools it recognises as Claude Code built-ins and never proposes
@@ -338,6 +361,34 @@ called" would then mean every tool it knows. See
 [`tool-prune-plugin.md`](./tool-prune-plugin.md) for the measure-then-enforce
 rollout, the metrics readout, and what the saving does and does not change.
 
+
+## Cost records
+
+Every priced request publishes one record on its response session event, under the key
+`cost`. One producer, one record, one number.
+
+The key names the **concern, not the producer**. It used to be the producing plugin's name
+(`litellm-budget-track`), which made moving costing to the component that actually knows the
+token counts a breaking wire change — for live consumers and for every event already in a
+session store. The framework set that precedent itself: `pipeline/context.go` publishes
+`body-mutation` from the core, "because a switch of plugin names in a future refactor
+shouldn't break operators' dashboards". The legacy key is still written and still read, and
+comes out a release after the rename ships.
+
+| field | meaning |
+|---|---|
+| `cost_usd` | what the request cost. `source` says whether the gateway reported it (`gateway-header`) or it was modelled from token counts (`usage-fallback`); `provenance` says how much to trust the rates behind a modelled figure |
+| `settled` | a figure exists — **including a deliberate zero**, which is the gateway saying the call was free. Without it, "free" and "nobody priced this" were indistinguishable, and a cache hit got re-priced from the rate table |
+| `prompt_usd` | the modelled cost of the prompt alone, tier-weighted. A breakdown, **not** a component of a sum: it is the table's figure even when `cost_usd` is the gateway's |
+| `avoided[]` | cost that was **not** incurred, attributed per component, with `tokensAvoided`, `usd`, the `tier` it came out of, and two honesty flags: `estimated` (derived from a byte ratio, not a tokenizer) and `projected` (measured but never applied — that money *was* spent) |
+| `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
+
+**Nothing in `avoided` is spend.** No consumer may add it to a cost, a budget or a usage
+total; a test in `authlib/usage` asserts the aggregator's totals are unchanged by its
+presence. It is a container rather than a few flat fields because more counterfactuals are
+coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
+`cost_usd` the record would become half-real and half-hypothetical, which is how someone
+eventually sums two fields that must never be summed.
 
 ## `pricing:`
 

@@ -3,7 +3,6 @@ package tui
 import (
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
-	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // costEvent is the litellm-budget-track per-response event.
@@ -40,35 +39,22 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 	return costevent.Decode(e)
 }
 
-// promptCost models what the prompt of one request cost, from the response's
-// per-tier token counts and the rates tool-prune published on the request.
+// promptCost is what the PROMPT of one request cost, read off the cost record.
 //
-// Tier-weighted rather than a flat prompt x single-rate: providers bill a cache
-// read at ~0.1x the uncached input rate and a cache write at ~1.25x, so a
-// cache-heavy turn (the common case for a long-running agent) is overstated by
-// close to an order of magnitude by flat pricing.
+// Not computed here any more. The record carries a prompt-only figure precisely so a
+// request row can show one: the gateway reports a single total for the call and cannot
+// answer "what did the prompt cost", while a flat prompt-times-one-rate figure overstates
+// a cache-heavy turn — the common case for a long-running agent — by close to an order of
+// magnitude, because a cache read bills at ~0.1x input and a write at ~1.25x.
 //
-// The arithmetic is pricing.Cost's, not this file's. This function only supplies
-// inputs; it holds no rates and multiplies nothing.
-//
-// Output is deliberately zeroed. tool-prune publishes no output rate, and Cost
-// refuses to price a tier that carried tokens with no rate — correctly, since a
-// partial total is worse than none. What this figure means is what the PROMPT
-// cost, which is the half tool-prune can speak to.
-//
-// A model with no rates yields ok=false rather than a $0.00 that would read as a
-// free prompt.
-func promptCost(ps pruneSaving, resp *pipeline.InferenceExtension) (usd float64, ok bool) {
-	if resp == nil || ps.RateSource == "none" {
+// False when the proxy could not model it, which is an older proxy or a model with no rate,
+// rather than a $0.00 that would read as a free prompt.
+func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
+	ev, ok := costevent.Record(resp)
+	if !ok || ev.PromptUSD <= 0 {
 		return 0, false
 	}
-	u := pricing.UsageFromInference(resp)
-	u.Output = 0
-	micros, priced := pricing.Cost(ps.publishedRates(), u)
-	if !priced || micros <= 0 {
-		return 0, false
-	}
-	return float64(micros) / 1e6, true
+	return ev.PromptUSD, true
 }
 
 // promptTokens is the request's own billed token count: what the provider
@@ -107,10 +93,19 @@ func savingSign(projected bool) string {
 // responsible for, with what was kept off it in parentheses. A bare total when
 // there was no saving.
 //
-// The total is exact-with-commas and the saving compact, matching how each is
-// already rendered today: the total is a measured count worth reading precisely,
-// the saving a derived estimate where trailing digits would be false precision.
-func formatTokensWithSaving(total int, saved float64, projected bool) string {
+// The total is exact-with-commas and an ESTIMATED saving compact: the total is a measured
+// count worth reading precisely, an estimate a figure where trailing digits would be false
+// precision. That is the estimate marker — precision itself — and it is why a counted saving
+// renders exact instead.
+//
+// No third glyph for estimated. "~" already means projected, and every saving published today
+// is estimated (costing derives them from a byte ratio), so a marker on 100% of rows would
+// distinguish nothing while adding noise to every one. The moment a component reports a
+// saving counted by a tokenizer, it renders differently here without a legend to learn.
+//
+// The record itself carries the flag verbatim, so an operator pressing enter sees
+// "estimated": true regardless of how the cell reads.
+func formatTokensWithSaving(total int, saved float64, projected, estimated bool) string {
 	if total <= 0 {
 		return ""
 	}
@@ -118,7 +113,11 @@ func formatTokensWithSaving(total int, saved float64, projected bool) string {
 	if saved <= 0 {
 		return cell
 	}
-	return cell + "(" + savingSign(projected) + formatCompact(saved) + ")"
+	figure := formatCompact(saved)
+	if !estimated {
+		figure = formatCount(int(saved))
+	}
+	return cell + "(" + savingSign(projected) + figure + ")"
 }
 
 // formatUSDWithSaving is formatTokensWithSaving for money: "$0.2546(−$0.0037)".
