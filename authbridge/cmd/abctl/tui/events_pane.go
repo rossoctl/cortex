@@ -4,12 +4,39 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
+
+// eventKey pins a row to a specific event across rebuilds, so FIFO
+// eviction of older events (session.max_events) doesn't shift the
+// cursor onto a neighbor. The zero value means unpinned.
+type eventKey struct {
+	at        time.Time
+	direction pipeline.Direction
+	phase     pipeline.SessionPhase
+	requestID string
+}
+
+func keyOf(e *pipeline.SessionEvent) eventKey {
+	if e == nil {
+		return eventKey{}
+	}
+	return eventKey{at: e.At, direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
+}
+
+func findByKey(rows []eventRow, k eventKey) int {
+	for i, r := range rows {
+		if keyOf(r.event) == k {
+			return i
+		}
+	}
+	return -1
+}
 
 // newEventsTable builds an empty events table. Uses the shared tableStyles
 // (including the Reverse-based Selected highlight) like the other panes —
@@ -168,9 +195,17 @@ func (m *model) rebuildEventsTable() {
 	//     the rows SHRANK under the cursor — a filter typed, hideInactive toggled.
 	//     SetRows had clamped the index by then, so the cursor was left wherever
 	//     that landed, with an offset nobody reconciled.
+	// Restore precedence: tail-follow, then identity pin, then prevRow.
+	// The pin follows a specific event across FIFO eviction; without it,
+	// row 5 after eviction is a different event than the user picked.
 	target := prevRow
-	if wasAtEnd {
+	switch {
+	case wasAtEnd:
 		target = len(rows) - 1
+	case m.selectedEventKey != (eventKey{}):
+		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
+			target = idx
+		}
 	}
 	setCursorVisible(&m.eventsTbl, target)
 }

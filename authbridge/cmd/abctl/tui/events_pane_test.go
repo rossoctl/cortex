@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1000,5 +1001,79 @@ func TestRowActionSurfacesTunnelReason(t *testing.T) {
 	action, _ = rowAction(eventRow{event: denied}, invs)
 	if action == tunnelAction {
 		t.Error("a denied CONNECT was relabelled 'tunnel'; the deny must headline")
+	}
+}
+
+// eventSeq builds n distinct events with hosts e0..e(n-1) and increasing At.
+func eventSeq(n int, prefix string) []pipeline.SessionEvent {
+	events := make([]pipeline.SessionEvent, n)
+	for i := range events {
+		events[i] = pipeline.SessionEvent{
+			At:        time.Unix(0, int64(i)*int64(time.Millisecond)),
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      fmt.Sprintf("%s%d", prefix, i),
+			Inference: &pipeline.InferenceExtension{Model: "m"},
+		}
+	}
+	return events
+}
+
+func newEventsPaneModel(events []pipeline.SessionEvent) *model {
+	m := &model{
+		pane: paneEvents, selectedSess: "s", bodyHeight: 12,
+		events: map[string][]pipeline.SessionEvent{"s": events},
+	}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+	return m
+}
+
+// TestSelectedEventKey_SurvivesEviction is the #971 reproduction: after
+// FIFO eviction the cursor follows the pinned event, not the row index.
+func TestSelectedEventKey_SurvivesEviction(t *testing.T) {
+	events := eventSeq(10, "e")
+	m := newEventsPaneModel(events)
+	m.eventsTbl.SetCursor(5)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+	want := m.selectedEvent().Host
+
+	m.events["s"] = append(events[3:], eventSeq(5, "n")...)
+	m.rebuildEventsTable()
+
+	if got := m.selectedEvent().Host; got != want {
+		t.Errorf("selection lost: got %s, want %s", got, want)
+	}
+}
+
+// TestSelectedEventKey_TailWinsOverPin — a cursor at the last row keeps
+// tailing on append, so live sessions keep scrolling.
+func TestSelectedEventKey_TailWinsOverPin(t *testing.T) {
+	events := eventSeq(5, "e")
+	m := newEventsPaneModel(events)
+	m.eventsTbl.SetCursor(4)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+
+	m.events["s"] = append(events, eventSeq(2, "n")...)
+	m.rebuildEventsTable()
+
+	if got, want := m.eventsTbl.Cursor(), len(m.eventsTbl.Rows())-1; got != want {
+		t.Errorf("tail didn't follow: cursor=%d, want %d", got, want)
+	}
+}
+
+// TestSelectedEventKey_EvictedPinHoldsRow — when the pinned event is
+// gone, the cursor holds its previous row rather than jumping.
+func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
+	events := eventSeq(10, "e")
+	m := newEventsPaneModel(events)
+	m.eventsTbl.SetCursor(2)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+
+	m.events["s"] = events[5:] // pinned e2 evicted
+	m.rebuildEventsTable()
+
+	if got := m.eventsTbl.Cursor(); got != 2 {
+		t.Errorf("cursor=%d, want 2 (prevRow fallback)", got)
 	}
 }

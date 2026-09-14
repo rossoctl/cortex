@@ -477,6 +477,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				}
 			}
 			m.selectedSess = id
+			m.selectedEventKey = eventKey{}
 			m.pane = paneEvents
 			m.rebuildEventsTable()
 			if !live[id] {
@@ -705,6 +706,7 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 	switch m.pane {
 	case paneEvents:
 		page(&m.eventsTbl)
+		m.selectedEventKey = keyOf(m.selectedEvent())
 	case paneSessions:
 		page(&m.sessionsTbl)
 	case panePipeline:

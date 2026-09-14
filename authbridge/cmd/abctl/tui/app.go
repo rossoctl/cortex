@@ -304,6 +304,10 @@ type model struct {
 	// every rebuild.
 	visibleRows []eventRow
 
+	// selectedEventKey pins the events-pane cursor to an event across
+	// rebuilds (see eventKey). Zero value = unpinned.
+	selectedEventKey eventKey
+
 	// pipeline is the fetched plugin composition. nil until the initial
 	// GetPipeline response arrives; the pipeline pane shows "(loading…)"
 	// until then.
@@ -486,6 +490,7 @@ func (m *model) backToPodsPane() {
 	m.detailEvent = nil
 	m.detailPlugin = nil
 	m.selectedSess = ""
+	m.selectedEventKey = eventKey{}
 	m.filter = ""
 	m.filtering = false
 	// The filter's line comes off the height budget while it is open, so dropping the flag
@@ -1079,6 +1084,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paneEvents:
 		var cmd tea.Cmd
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
+		m.selectedEventKey = keyOf(m.selectedEvent())
 		return m, cmd
 	case paneDetail:
 		var cmd tea.Cmd
