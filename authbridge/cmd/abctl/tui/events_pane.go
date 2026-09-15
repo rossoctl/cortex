@@ -5,7 +5,6 @@ import (
 	"net"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
@@ -16,9 +15,10 @@ import (
 // eventKey pins a row to a specific event across rebuilds, so the
 // cursor follows the same event when the underlying slice shifts:
 // FIFO eviction at session.max_events, filter typed, hideInactive
-// toggled. Zero value = unpinned.
+// toggled. Zero value = unpinned. `at` is UnixNano so struct == is
+// safe against time.Time's monotonic clock and Location pointer.
 type eventKey struct {
-	at        time.Time
+	at        int64
 	direction pipeline.Direction
 	phase     pipeline.SessionPhase
 	requestID string
@@ -28,9 +28,7 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 	if e == nil {
 		return eventKey{}
 	}
-	// Round(0) strips the monotonic clock so struct == matches an event
-	// whose At came from time.Now() against one that survived JSON.
-	return eventKey{at: e.At.Round(0), direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
+	return eventKey{at: e.At.UnixNano(), direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
 }
 
 func findByKey(rows []eventRow, k eventKey) int {
@@ -230,8 +228,10 @@ func (m *model) rebuildEventsTable() {
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
 		} else {
-			// Event evicted — drop the stale pin so internal state
-			// matches what the operator sees.
+			// Event evicted — clamp to the oldest surviving row (row 0),
+			// the nearest edge to where the pin was, and drop the stale
+			// key so internal state matches what the operator sees.
+			target = 0
 			m.selectedEventKey = eventKey{}
 		}
 	}

@@ -1064,20 +1064,23 @@ func TestSelectedEventKey_TailWinsOverPin(t *testing.T) {
 	}
 }
 
-// TestSelectedEventKey_EvictedPinHoldsRow — when the pinned event is
-// gone, the cursor holds its previous row index and the stale pin
-// clears so internal state matches what the operator sees.
-func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
+// TestSelectedEventKey_EvictedPinClampsToOldestSurvivor — when the
+// pinned event is gone, the cursor lands on the oldest surviving row
+// (the nearest edge to where the pin was) and the stale key clears.
+func TestSelectedEventKey_EvictedPinClampsToOldestSurvivor(t *testing.T) {
 	events := eventSeq(10, "e")
 	m := newEventsPaneModel(events)
 	m.eventsTbl.SetCursor(2)
 	m.selectedEventKey = keyOf(m.selectedEvent())
 
-	m.events["s"] = events[5:] // pinned e2 evicted
+	m.events["s"] = events[5:] // pinned e2 evicted; e5 is now oldest
 	m.rebuildEventsTable()
 
-	if got := m.eventsTbl.Cursor(); got != 2 {
-		t.Errorf("cursor=%d, want 2 (prevRow fallback)", got)
+	if got := m.eventsTbl.Cursor(); got != 0 {
+		t.Errorf("cursor=%d, want 0 (oldest survivor)", got)
+	}
+	if got := m.selectedEvent().Host; got != "e5" {
+		t.Errorf("cursor's event = %s, want e5 (oldest survivor)", got)
 	}
 	if m.selectedEventKey != (eventKey{}) {
 		t.Errorf("stale pin retained: %+v", m.selectedEventKey)
@@ -1100,8 +1103,17 @@ func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newEventsPaneModel(eventSeq(10, "e"))
+			// newEventsPaneModel tails to the last row; start at 0 so
+			// KeyDown / PgDn have room to move.
+			m.eventsTbl.SetCursor(0)
+			before := m.eventsTbl.Cursor()
+
 			m2, _ := m.Update(tc.msg)
 			m = m2.(*model)
+
+			if m.eventsTbl.Cursor() == before {
+				t.Fatalf("cursor did not move for %q; test would pass vacuously", tc.name)
+			}
 			if got, want := m.selectedEventKey, keyOf(m.selectedEvent()); got != want {
 				t.Errorf("pin=%+v, want cursor's event %+v", got, want)
 			}
@@ -1109,18 +1121,15 @@ func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
 	}
 }
 
-// TestKeyOf_StripsMonotonicClock — a time.Now() At and its JSON
-// round-tripped form must produce the same eventKey so struct ==
-// matches under findByKey.
-func TestKeyOf_StripsMonotonicClock(t *testing.T) {
-	now := time.Now()            // has monotonic
-	roundTripped := now.Round(0) // stripped
-	if now == roundTripped {
-		t.Skip("time.Time on this platform does not carry monotonic; test is a no-op")
-	}
+// TestKeyOf_SameInstantSameKey — a time.Now() At and its JSON
+// round-tripped form (stripped monotonic + different Location)
+// produce the same eventKey, so findByKey matches under struct ==.
+func TestKeyOf_SameInstantSameKey(t *testing.T) {
+	now := time.Now()
+	roundTripped := now.UTC().Round(0)
 	a := keyOf(&pipeline.SessionEvent{At: now, RequestID: "r"})
 	b := keyOf(&pipeline.SessionEvent{At: roundTripped, RequestID: "r"})
 	if a != b {
-		t.Errorf("keyOf differed by monotonic clock:\n  monotonic: %+v\n  stripped:  %+v", a, b)
+		t.Errorf("keys differ for same instant:\n  a: %+v\n  b: %+v", a, b)
 	}
 }
