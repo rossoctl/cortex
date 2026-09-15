@@ -475,9 +475,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 						delete(m.events, cached)
 					}
 				}
+				// Clear only on an actual session change, so
+				// re-entering the same session keeps the pin.
+				m.selectedEventKey = eventKey{}
 			}
 			m.selectedSess = id
-			m.selectedEventKey = eventKey{}
 			m.pane = paneEvents
 			m.rebuildEventsTable()
 			if !live[id] {

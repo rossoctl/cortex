@@ -227,6 +227,10 @@ func (m *model) rebuildEventsTable() {
 	case m.selectedEventKey != (eventKey{}):
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
+		} else {
+			// Event evicted — drop the stale pin so internal state
+			// matches what the operator sees.
+			m.selectedEventKey = eventKey{}
 		}
 	}
 	setCursorVisible(&m.eventsTbl, target)

@@ -1065,7 +1065,8 @@ func TestSelectedEventKey_TailWinsOverPin(t *testing.T) {
 }
 
 // TestSelectedEventKey_EvictedPinHoldsRow — when the pinned event is
-// gone, the cursor holds its previous row index.
+// gone, the cursor holds its previous row index and the stale pin
+// clears so internal state matches what the operator sees.
 func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 	events := eventSeq(10, "e")
 	m := newEventsPaneModel(events)
@@ -1077,6 +1078,9 @@ func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 
 	if got := m.eventsTbl.Cursor(); got != 2 {
 		t.Errorf("cursor=%d, want 2 (prevRow fallback)", got)
+	}
+	if m.selectedEventKey != (eventKey{}) {
+		t.Errorf("stale pin retained: %+v", m.selectedEventKey)
 	}
 }
 
