@@ -1099,6 +1099,7 @@ func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
 		{"j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
 		{"page-down", tea.KeyMsg{Type: tea.KeyPgDown}},
 		{"f", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")}},
+		{"G", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

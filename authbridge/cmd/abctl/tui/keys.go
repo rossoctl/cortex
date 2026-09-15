@@ -665,6 +665,7 @@ func (m *model) goTop() {
 		setCursorVisible(&m.sessionsTbl, 0)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, 0)
+		m.selectedEventKey = keyOf(m.selectedEvent())
 	case panePipeline:
 		setCursorVisible(&m.pipelineTbl, 0)
 	case paneDetail, panePluginDetail:
@@ -678,6 +679,7 @@ func (m *model) goBottom() {
 		setCursorVisible(&m.sessionsTbl, len(m.sessionsTbl.Rows())-1)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, len(m.eventsTbl.Rows())-1)
+		m.selectedEventKey = keyOf(m.selectedEvent())
 	case panePipeline:
 		setCursorVisible(&m.pipelineTbl, len(m.pipelineTbl.Rows())-1)
 	case paneCatalog:
