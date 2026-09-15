@@ -10,6 +10,7 @@ import (
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
 // #870: users reported the events they were investigating vanishing after a
@@ -258,4 +259,134 @@ func newRetentionModel(t *testing.T, id string, n int) *model {
 	m.sessionsTbl = newSessionsTable()
 	m.rebuildEventsTable()
 	return m
+}
+
+// Retention is unbounded now. abctl used to cut both the snapshot and the live
+// stream to the most recent 1000 events per session, on the stated grounds that this
+// "matches the server's default maxEvents cap so we don't hold more than the server
+// itself does" — the server's default was 500, so it held twice as much, and neither
+// side caps by default any more.
+//
+// The first event matters as much as the count: FIFO eviction takes the BEGINNING of
+// a session, which on a long agent run is where the inbound request that started it
+// lives.
+func TestStreamedEvents_AreRetainedWithoutACap(t *testing.T) {
+	const id = "unbounded"
+	m := newRetentionModel(t, id, 0)
+	m.events[id] = nil
+	// Retention is what is under test, not rendering. Left on the events pane, each of
+	// the 2500 events below would also rebuild the events table — ~1.5ms apiece, so
+	// four seconds of test time to assert something the pane has no part in.
+	m.pane = paneSessions
+
+	const n = 2500 // comfortably past both retired caps
+	first := time.Now()
+	for i := 0; i < n; i++ {
+		m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+			At:        first.Add(time.Duration(i) * time.Millisecond),
+			SessionID: id, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			Host: "api.example.com",
+		}})
+	}
+
+	got := m.events[id]
+	if len(got) != n {
+		t.Errorf("retained %d streamed events, want all %d", len(got), n)
+	}
+	if len(got) > 0 && !got[0].At.Equal(first) {
+		t.Errorf("oldest retained event is at %v, want the very first at %v", got[0].At, first)
+	}
+}
+
+// A snapshot is kept whole for the same reason — it used to be trimmed on arrival,
+// so opening a long session showed a timeline that began wherever the cut fell.
+func TestSnapshot_IsKeptWhole(t *testing.T) {
+	const id = "snapshot"
+	m := newRetentionModel(t, id, 0)
+
+	first := time.Now()
+	evs := make([]pipeline.SessionEvent, 3000)
+	for i := range evs {
+		// Distinct timestamps, so the identity of the oldest survivor can be asserted
+		// as well as the count — the doc comment above promises the timeline still
+		// begins where it did, and identical events cannot show that.
+		evs[i] = pipeline.SessionEvent{
+			At: first.Add(time.Duration(i) * time.Millisecond), SessionID: id,
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h",
+		}
+	}
+	m.Update(snapshotLoadedMsg{id: id, events: evs})
+
+	got := m.events[id]
+	if len(got) != len(evs) {
+		t.Errorf("snapshot of %d events stored as %d", len(evs), len(got))
+	}
+	if len(got) > 0 && !got[0].At.Equal(first) {
+		t.Errorf("oldest stored event is at %v, want the very first at %v", got[0].At, first)
+	}
+}
+
+// The EVENTS column has ONE source: the server's count, refreshed by the sessions
+// poll. It used to have two — the poll wrote the server's number and every streamed
+// event overwrote it with abctl's local cache length — so the cell flipped between
+// them on live traffic, 500 against 1000 back when both sides capped. Uncapping
+// alone would not have fixed that: abctl's buffer holds what it snapshotted plus
+// what it streamed since attaching, which for a session that predates the
+// connection is still a different number from the server's.
+func TestSessionsPane_EventCountDoesNotFlipOnAStreamedEvent(t *testing.T) {
+	const id = "counted"
+	m := newRetentionModel(t, id, 0)
+	m.pane = paneSessions
+	m.sessionsTbl.SetHeight(12)
+
+	// The server's summary, as a poll delivers it: a session older than this
+	// connection, so its count exceeds anything abctl has cached.
+	m.Update(sessionsLoadedMsg{{
+		ID: id, CreatedAt: time.Now(), UpdatedAt: time.Now(), EventCount: 830, Active: true,
+	}})
+	want := sessionsEventsCell(t, m, id)
+	if want != "830" {
+		t.Fatalf("EVENTS after the poll = %q, want %q", want, "830")
+	}
+
+	// Live traffic arrives. The cell must still report the server's count.
+	for i := 0; i < 5; i++ {
+		m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+			At: time.Now(), SessionID: id,
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h",
+		}})
+		if got := sessionsEventsCell(t, m, id); got != want {
+			t.Fatalf("streamed event %d changed EVENTS to %q, want %q", i+1, got, want)
+		}
+	}
+}
+
+// sessionsEventsCell reads the EVENTS column from the sessions row for id.
+//
+// The column is located by TITLE, not by the index it happens to have. Rows are built
+// positionally, so a hardcoded index agrees with the table only until someone inserts a
+// column — after which this would read TOKENS and go on passing against the wrong cell.
+func sessionsEventsCell(t *testing.T, m *model, id string) string {
+	t.Helper()
+	col := -1
+	for i, c := range m.sessionsTbl.Columns() {
+		if c.Title == "EVENTS" {
+			col = i
+			break
+		}
+	}
+	if col < 0 {
+		t.Fatalf("no EVENTS column in %v", m.sessionsTbl.Columns())
+	}
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] != id {
+			continue
+		}
+		if col >= len(r) {
+			t.Fatalf("row for %q has %d cells, EVENTS is column %d: %v", id, len(r), col, r)
+		}
+		return strings.TrimSpace(r[col])
+	}
+	t.Fatalf("no sessions row for %q", id)
+	return ""
 }

@@ -361,27 +361,14 @@ func main() {
 	var sessions *session.Store
 	var usageAgg *usage.Aggregator
 	if cfg.Session.SessionEnabled() {
-		// 0 = never expire on time. This was 30m, and it meant sessions disappeared
-		// while someone was reading them — they had only stepped away. Size caps below
-		// still bound memory, so nothing here was protecting the process. Set
-		// session.ttl to restore a time limit where that is wanted for hygiene.
-		var ttl time.Duration
-		if cfg.Session.TTL != "" {
-			if d, err := time.ParseDuration(cfg.Session.TTL); err == nil {
-				ttl = d
-			} else {
-				slog.Warn("invalid session.ttl, using default", "value", cfg.Session.TTL, "error", err)
-			}
+		// Store parameters come from config.SessionConfig.Limits, which is where the
+		// defaults and the reasoning behind them live — one home for what used to be
+		// this same block in three main packages.
+		lim, err := cfg.Session.Limits()
+		if err != nil {
+			slog.Warn("invalid session.ttl, using default", "value", cfg.Session.TTL, "error", err)
 		}
-		maxEvents := 500 // raised from 100: recording every message (incl. no-plugin-activity) ~doubles volume
-		if cfg.Session.MaxEvents > 0 {
-			maxEvents = cfg.Session.MaxEvents
-		}
-		maxSessions := 100
-		if cfg.Session.MaxSessions > 0 {
-			maxSessions = cfg.Session.MaxSessions
-		}
-		sessions = session.New(ttl, maxEvents, maxSessions)
+		sessions = session.New(lim.TTL, lim.MaxEvents, lim.MaxSessions)
 
 		// Usage aggregation feeds GET /v1/usage. Registered as a store Recorder
 		// so it sees every appended event, and deliberately independent of the
@@ -402,16 +389,10 @@ func main() {
 		// so a pipeline running just inference-parser reported every request
 		// unpriced however many tokens it burned. The registry is the same
 		// long-lived one the plugins hold, so a config reload moves both together.
-		usageAgg = usage.New(usage.WithMaxSessions(maxSessions), usage.WithPricing(pricingRegistry))
+		usageAgg = usage.New(usage.WithMaxSessions(lim.MaxSessions), usage.WithPricing(pricingRegistry))
 		sessions.AddRecorder(usageAgg)
 
-		// "ttl=0s" would read like a misconfiguration rather than the default.
-		ttlDesc := "never"
-		if ttl > 0 {
-			ttlDesc = ttl.String()
-		}
-		slog.Info("session tracking enabled",
-			"expiry", ttlDesc, "maxEvents", maxEvents, "maxSessions", maxSessions)
+		slog.Info("session tracking enabled", lim.LogAttrs()...)
 	} else {
 		slog.Info("session tracking disabled")
 	}

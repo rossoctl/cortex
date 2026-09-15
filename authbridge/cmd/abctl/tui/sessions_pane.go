@@ -61,6 +61,12 @@ func (m *model) rebuildSessionsTable() {
 		rows = append(rows, table.Row{
 			s.ID,
 			relTime(now, s.UpdatedAt),
+			// The server's count, and only ever the server's: it is the complete one.
+			// abctl's own cache holds what it snapshotted plus what it has streamed
+			// since attaching, which for a session older than the connection is a
+			// smaller number — and when handleStreamEvent also wrote this field, the
+			// cell flipped between the two on live traffic. The cached-only rows below
+			// use len(cached) because the server does not list those at all.
 			fmt.Sprintf("%d", s.EventCount),
 			sessionTokens(s.TotalTokens, m.events[s.ID]),
 			active,

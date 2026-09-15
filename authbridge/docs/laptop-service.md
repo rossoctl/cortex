@@ -77,18 +77,23 @@ Some limitations worth knowing:
 
 ## Why traffic disappears from `abctl`
 
-Two limits, and neither is a clock:
+One limit by default, and it is not a clock:
 
 | Limit | Default | Effect |
 |---|---|---|
-| `session.max_events` | 500 per session | oldest events drop, the session stays |
+| `session.max_events` | **unset — unlimited** | when set: oldest events drop, the session stays |
 | `session.max_sessions` | 100 | whole sessions evicted, least-recently-used first |
 
-Both limits changed meaning now that sessions are grouped per Claude Code session:
-
-- `max_events` is **per bucket**, so each session gets its own 500 events rather than
-  sharing one ring with every other session on the machine. Strictly more history.
-- `max_sessions` is now **reachable in normal use**, which it effectively was not before.
+- `max_events` no longer defaults to a cap at all, so a session does not lose its oldest
+  rows while it is alive. It used to trim to 500 per bucket, which made the store lossy on
+  exactly the sessions worth reading — a long run dropped the beginning of its own story,
+  and the trim point was invisible from the timeline. Set it, and it is **per bucket**: each
+  session gets its own allowance rather than sharing one ring with every other session on
+  the machine.
+- With `max_events` unset, `max_sessions` bounds how many sessions are kept and nothing
+  about how large one gets. A single session that never ends grows until the process does;
+  that is the case to set `max_events` (or a `session.ttl`) for.
+- `max_sessions` is **reachable in normal use**, which it effectively was not before.
   Every `claude` invocation mints a new bucket, so the 101st session on a busy machine
   evicts the least-recently-updated one — whole session and all. If an older session has
   vanished from `abctl` entirely rather than just losing its oldest rows, this is why.

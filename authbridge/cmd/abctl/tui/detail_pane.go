@@ -14,6 +14,12 @@ import (
 // JSON and remembers the focused row so yank (y) can find the event and
 // layout() can re-render on resize.
 //
+// resetScroll follows showPluginDetail and syncHelpViewport: true when the pane is
+// being OPENED, false when layout() re-renders what it already shows. The re-render
+// exists to re-wrap the JSON for a new width, and it used to GotoTop as well — so
+// resizing the terminal, or merely pressing "/" to open the filter, threw a reader
+// back to the top of a long event.
+//
 // Marshal with SessionEvent.MarshalJSON first (readable wire form — string
 // enums, durationMs), then filter inference/mcp extensions so request
 // events show only request-side fields and response events show only
@@ -29,7 +35,7 @@ import (
 // origin and the connection-level decision without a separate row. When the
 // event arrived over TLS (SessionEvent.TLS non-nil), a small TLS header
 // block is prepended too. Both absent for plaintext, non-bridged events.
-func (m *model) showDetail(r eventRow) {
+func (m *model) showDetail(r eventRow, resetScroll bool) {
 	e := r.event
 	m.detailRow = r
 	m.detailEvent = e
@@ -52,7 +58,17 @@ func (m *model) showDetail(r eventRow) {
 		content = header + "\n\n" + content
 	}
 	m.detailVp.SetContent(content)
-	m.detailVp.GotoTop()
+	if resetScroll {
+		m.detailVp.GotoTop()
+		return
+	}
+	// Held position, clamped to what the new content and height can show: assigning
+	// viewport.Height moves maxYOffset without touching YOffset, and SetContent only
+	// clamps against the LINE COUNT — so a re-wrap at a wider terminal, or a refresh
+	// whose content shrank, can leave the offset past the bottom and render the body
+	// with dead space beneath it. SetYOffset is the clamping setter; a no-op when the
+	// offset is already in range. Same three lines as syncHelpViewport.
+	m.detailVp.SetYOffset(m.detailVp.YOffset)
 }
 
 // tunnelHeader summarizes the CONNECT tunnel folded into a TLS-bridged

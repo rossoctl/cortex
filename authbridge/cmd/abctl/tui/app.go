@@ -71,11 +71,6 @@ type connStateInfo struct {
 	err       error
 }
 
-// maxEventsPerSession caps per-session event retention in the TUI. Matches
-// the server's default maxEvents cap so we don't hold more than the server
-// itself does.
-const maxEventsPerSession = 1000
-
 // flashDuration is how long a one-shot status message (e.g. yank
 // confirmation) stays in the footer.
 const flashDuration = 3 * time.Second
@@ -533,7 +528,15 @@ func (m *model) syncHelpViewport(resetScroll bool) {
 	m.helpVp.SetContent(body)
 	if resetScroll {
 		m.helpVp.GotoTop()
+		return
 	}
+	// Keeping the reader where they were still means clamping to what the new size
+	// can show. Height is a plain field, so assigning it above moved maxYOffset
+	// without touching YOffset, and SetContent only clamps against the LINE COUNT —
+	// so growing the terminal under a scrolled-down overlay left the offset past the
+	// bottom, rendering the body with dead space below it. SetYOffset is the
+	// clamping setter, and a no-op when the offset is already in range.
+	m.helpVp.SetYOffset(m.helpVp.YOffset)
 }
 
 // Init fires the initial fetch + starts the SSE pump and the tick.
@@ -748,7 +751,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Metrics would still read (none) however long traffic ran.
 		if m.pane == panePluginDetail && m.detailPlugin != nil {
 			if p := m.livePipelinePlugin(m.detailPlugin); p != nil {
-				m.showPluginDetail(p)
+				// A refresh, not an opening: hold the reader's scroll position.
+				m.showPluginDetail(p, false)
 			}
 		}
 		return m, nil
@@ -763,8 +767,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case snapshotLoadedMsg:
+		// Every event the snapshot carried, untrimmed. This used to cut to the most
+		// recent 1000 on the claim that it "matches the server's default cap" — the
+		// server's was 500, so the two never matched, and neither trims now.
+		//
+		// Which leaves m.events unbounded in BOTH dimensions, and worth stating because
+		// it is a laptop's memory: nothing caps depth now that the per-session 1000 is
+		// gone, and entries are only ever released wholesale — on a pod or endpoint
+		// switch (backToPodsPane resets the whole map) or an explicit operator prune — while
+		// cachedOnlySessionIDs deliberately keeps sessions the server has stopped
+		// listing. abctl holds the same full prompt and completion strings the proxy
+		// does, so resident size tracks the traffic it has watched.
+		//
 		// Only update if we're still focused on this session.
-		m.events[msg.id] = trim(msg.events, maxEventsPerSession)
+		m.events[msg.id] = msg.events
 		if m.pane == paneEvents && m.selectedSess == msg.id {
 			m.rebuildEventsTable()
 		}
@@ -1115,18 +1131,23 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 	e := *ev.Event
 	m.eventCt++
-	buf := m.events[e.SessionID]
-	buf = append(buf, e)
-	if len(buf) > maxEventsPerSession {
-		buf = buf[len(buf)-maxEventsPerSession:]
-	}
+	buf := append(m.events[e.SessionID], e)
 	m.events[e.SessionID] = buf
 
 	// Bump updatedAt on the session summary if we already have it.
+	//
+	// UpdatedAt only. This used to also write EventCount = len(buf), which made the
+	// EVENTS column mean two different things depending on which code path last
+	// touched the row: the local cache length here, the server's own count on the
+	// two-second poll. The two disagreed by construction — abctl's buffer holds what
+	// it snapshotted plus what it has streamed since attaching, the server's count is
+	// every event the session produced — so the cell visibly flipped between them, 500
+	// against 1000 back when both sides capped. The server's count is the one that is
+	// complete, so it is the only one that writes here now; the poll refreshes it
+	// within two seconds of anything changing.
 	for i := range m.sessions {
 		if m.sessions[i].ID == e.SessionID {
 			m.sessions[i].UpdatedAt = e.At
-			m.sessions[i].EventCount = len(buf)
 			goto sortAndRebuild
 		}
 	}
@@ -1140,6 +1161,13 @@ sortAndRebuild:
 	})
 	m.rebuildSessionsTable()
 	if m.pane == paneEvents && m.selectedSess == e.SessionID {
+		// TODO: coalesce these rebuilds. Every streamed event rebuilds the whole table
+		// for the session being watched: ~1.5ms flat plus ~0.23ms per 1000 events held
+		// (measured: 3.5ms at 10k, 12ms at 50k, 25ms at 100k). The flat part is this
+		// rebuild-per-event design and predates unbounded retention, which it dominates
+		// below ~5k events; past that the growth term takes over, so a session long
+		// enough will outrun the arrival rate. Rebuilding at most once per tick would
+		// bound it. Left alone because no session anyone has today is near it.
 		m.rebuildEventsTable()
 	}
 }
@@ -1457,17 +1485,6 @@ func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
-}
-
-// trim bounds a slice to the last n elements (drops oldest on overflow).
-// Used when a snapshot arrives with more events than the TUI caps.
-func trim[T any](s []T, n int) []T {
-	if len(s) <= n {
-		return s
-	}
-	out := make([]T, n)
-	copy(out, s[len(s)-n:])
-	return out
 }
 
 // RunOptions selects the entry mode for abctl's TUI.

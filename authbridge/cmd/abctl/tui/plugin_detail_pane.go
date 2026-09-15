@@ -11,12 +11,21 @@ import (
 // Uses a simple labelled block rather than JSON — the values are short
 // and human-readable.
 //
+// resetScroll says whether this is an OPENING of the pane (true — start at the top)
+// or a re-render of what it already shows (false — leave the reader where they are).
+// The pane is re-rendered from the pipeline poll for as long as it is open, so that
+// Metrics counters tick rather than freezing at whatever they were when it opened,
+// and this used to GotoTop every time. Entering the pane fires an immediate fetch as
+// well, so a scrolled reader was thrown back to the top about a second after opening
+// the pane and then every two seconds after that — anything past the first screenful
+// was unreadable. Same shape, and same spelling, as syncHelpViewport's flag.
+//
 // When m.pipeline is non-nil and the plugin's direction is "inbound" or
 // "outbound", the Requires/RequiresAny sections render with ✓/✗
 // indicators against the active chain. For catalog-pane invocations
 // (no live pipeline / direction), those sections render as informational
 // lists without satisfaction status.
-func (m *model) showPluginDetail(p *apiclient.PipelinePlugin) {
+func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) {
 	m.detailPlugin = p
 	counts := m.countEventsPerPlugin()
 	chain := sameDirectionChain(p, m.pipeline)
@@ -91,7 +100,17 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin) {
 	}
 
 	m.detailVp.SetContent(b.String())
-	m.detailVp.GotoTop()
+	if resetScroll {
+		m.detailVp.GotoTop()
+		return
+	}
+	// Held position, clamped to what the new content and height can show: assigning
+	// viewport.Height moves maxYOffset without touching YOffset, and SetContent only
+	// clamps against the LINE COUNT — so a re-wrap at a wider terminal, or a refresh
+	// whose content shrank, can leave the offset past the bottom and render the body
+	// with dead space beneath it. SetYOffset is the clamping setter; a no-op when the
+	// offset is already in range. Same three lines as syncHelpViewport.
+	m.detailVp.SetYOffset(m.detailVp.YOffset)
 }
 
 // livePipelinePlugin re-resolves a plugin against the current pipeline view by

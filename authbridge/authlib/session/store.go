@@ -129,7 +129,10 @@ func (s *Subscription) Drops() uint64 {
 }
 
 // New creates a Store with the given TTL, per-session event limit, and max
-// concurrent sessions. A background goroutine runs cleanup every TTL/2.
+// concurrent sessions. maxEvents <= 0 keeps every event a session produces, which
+// is what the binaries pass unless session.max_events is configured; maxSessions
+// <= 0 likewise keeps every session. A background goroutine runs cleanup every
+// TTL/2.
 // Call Close() during graceful shutdown to stop the background goroutine.
 func New(ttl time.Duration, maxEvents int, maxSessions int) *Store {
 	s := &Store{
@@ -182,8 +185,8 @@ func (s *Store) backgroundCleanup() {
 }
 
 // Append adds an event to the named session. Creates the session if it
-// doesn't exist. Updates activeID to this session. Evicts the oldest event
-// if the session exceeds maxEvents.
+// doesn't exist. Updates activeID to this session. Evicts the oldest event if the
+// session exceeds maxEvents — which by default it cannot, maxEvents being unset.
 func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	if len(sessionID) > MaxSessionIDLen {
 		sessionID = sessionID[:MaxSessionIDLen]
@@ -495,11 +498,18 @@ func (s *Store) evictOldestLocked() {
 func (s *Store) isExpired(sess *entry, now time.Time) bool {
 	// ttl <= 0 means sessions never expire on time, which is the default. Time-based
 	// expiry read as data loss: traffic you were looking at vanished because you
-	// stepped away, not because anything overflowed. Nothing about it was load-bearing
-	// either — memory is bounded by maxSessions x maxEvents, and a session that stops
-	// being used is evicted by the oldest-first rule once maxSessions is exceeded. What
-	// it bought was hygiene (raw prompts not lingering in memory), which is still
-	// available by setting session.ttl explicitly.
+	// stepped away, not because anything overflowed.
+	//
+	// This used to add "and nothing about it was load-bearing either — memory is
+	// bounded by maxSessions x maxEvents". That is no longer true: maxEvents is unset
+	// by default, so the product is unbounded and one session that never goes idle has
+	// no ceiling at all. The default stands on the first reason alone — a clock is the
+	// wrong tool for bounding memory — and the tools for bounding it are an explicit
+	// maxEvents or an explicit ttl. See config.SessionConfig.Limits for the whole
+	// picture; it is where the defaults are resolved and where they are argued.
+	//
+	// What a ttl buys is hygiene: raw prompts not lingering in memory. Still available
+	// by setting session.ttl explicitly.
 	if s.ttl <= 0 {
 		return false
 	}

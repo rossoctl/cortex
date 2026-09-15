@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"time"
 
@@ -98,7 +99,10 @@ func (m *model) rebuildEventsTable() {
 		if h < 3 {
 			h = 3
 		}
-		m.eventsTbl.SetHeight(h)
+		// Through setTableHeight, which reconciles the scroll offset when the height
+		// really changed — the restore at the bottom of this function no longer does
+		// that for us, because not scrolling is now its whole point.
+		setTableHeight(&m.eventsTbl, h)
 	}
 
 	prevRow := m.eventsTbl.Cursor()
@@ -169,15 +173,26 @@ func (m *model) rebuildEventsTable() {
 		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, er)
 	}
-	// Clear, set columns, then set the matching rows.
+	// Columns are re-set only when they actually differ, and the clear that has to
+	// precede that is paid only then too.
 	//
 	// SetColumns calls UpdateViewport, which re-renders whatever rows are loaded,
 	// and bubbles' renderRow walks the ROW's cells while indexing m.cols[i] — so a
 	// row with more cells than there are columns reads past the end and panics
 	// ("index out of range [10] with length 10"). Toggling a column off is exactly
 	// that. Clearing first leaves SetColumns nothing to mis-render.
-	m.eventsTbl.SetRows(nil)
-	m.eventsTbl.SetColumns(tableColumns(cols))
+	//
+	// But SetRows(nil) also empties the viewport's content, which resets its offset
+	// to 0 and parks the cursor at −1: the scroll position is GONE before the
+	// restore below can preserve it. Doing it on every rebuild meant the two-second
+	// sessions poll re-anchored the pane under an operator who was reading it.
+	// The equality check is what makes the poll a no-op — the columns only change
+	// when someone toggles one or the terminal is resized past a fit boundary, and
+	// re-anchoring then is fine.
+	if newCols := tableColumns(cols); !slices.Equal(m.eventsTbl.Columns(), newCols) {
+		m.eventsTbl.SetRows(nil)
+		m.eventsTbl.SetColumns(newCols)
+	}
 	m.eventsTbl.SetRows(rows)
 
 	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise
@@ -195,9 +210,15 @@ func (m *model) rebuildEventsTable() {
 	//     the rows SHRANK under the cursor — a filter typed, hideInactive toggled.
 	//     SetRows had clamped the index by then, so the cursor was left wherever
 	//     that landed, with an offset nobody reconciled.
-	// Restore precedence: tail-follow, then identity pin, then prevRow.
-	// The pin resolves to whatever row currently holds the selected
-	// event, so the cursor tracks the event through FIFO eviction.
+	//
+	// setCursorVisible leaves the scroll offset alone when the cursor is already on
+	// the target row — which on a pane rebuilt by a two-second poll is the common
+	// case, and is what keeps the poll from scrolling the rows out from under a
+	// reader who had arrowed back up from the tail.
+	//
+	// Restore precedence: tail-follow, then identity pin, then prevRow. The pin
+	// resolves to whatever row currently holds the selected event, so the cursor
+	// tracks the event through FIFO eviction at session.max_events.
 	target := prevRow
 	switch {
 	case wasAtEnd:
