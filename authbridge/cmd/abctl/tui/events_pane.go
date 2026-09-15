@@ -12,9 +12,9 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
-// eventKey pins a row to a specific event across rebuilds, so FIFO
-// eviction of older events (session.max_events) doesn't shift the
-// cursor onto a neighbor. The zero value means unpinned.
+// eventKey pins a row to a specific event across rebuilds, so the
+// cursor follows the same event through FIFO eviction at
+// session.max_events. Zero value = unpinned.
 type eventKey struct {
 	at        time.Time
 	direction pipeline.Direction
@@ -196,8 +196,8 @@ func (m *model) rebuildEventsTable() {
 	//     SetRows had clamped the index by then, so the cursor was left wherever
 	//     that landed, with an offset nobody reconciled.
 	// Restore precedence: tail-follow, then identity pin, then prevRow.
-	// The pin follows a specific event across FIFO eviction; without it,
-	// row 5 after eviction is a different event than the user picked.
+	// The pin resolves to whatever row currently holds the selected
+	// event, so the cursor tracks the event through FIFO eviction.
 	target := prevRow
 	switch {
 	case wasAtEnd:

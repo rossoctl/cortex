@@ -1004,12 +1004,14 @@ func TestRowActionSurfacesTunnelReason(t *testing.T) {
 	}
 }
 
-// eventSeq builds n distinct events with hosts e0..e(n-1) and increasing At.
+// eventSeq builds n events with distinct keys — At and RequestID vary
+// per index so keyOf discriminates one from another.
 func eventSeq(n int, prefix string) []pipeline.SessionEvent {
 	events := make([]pipeline.SessionEvent, n)
 	for i := range events {
 		events[i] = pipeline.SessionEvent{
-			At:        time.Unix(0, int64(i)*int64(time.Millisecond)),
+			At:        time.Time{}.Add(time.Duration(i)),
+			RequestID: fmt.Sprintf("%s%d-req", prefix, i),
 			Direction: pipeline.Outbound,
 			Phase:     pipeline.SessionRequest,
 			Host:      fmt.Sprintf("%s%d", prefix, i),
@@ -1029,8 +1031,8 @@ func newEventsPaneModel(events []pipeline.SessionEvent) *model {
 	return m
 }
 
-// TestSelectedEventKey_SurvivesEviction is the #971 reproduction: after
-// FIFO eviction the cursor follows the pinned event, not the row index.
+// TestSelectedEventKey_SurvivesEviction locks in the identity restore:
+// after FIFO eviction the cursor follows the pinned event by key.
 func TestSelectedEventKey_SurvivesEviction(t *testing.T) {
 	events := eventSeq(10, "e")
 	m := newEventsPaneModel(events)
@@ -1063,7 +1065,7 @@ func TestSelectedEventKey_TailWinsOverPin(t *testing.T) {
 }
 
 // TestSelectedEventKey_EvictedPinHoldsRow — when the pinned event is
-// gone, the cursor holds its previous row rather than jumping.
+// gone, the cursor holds its previous row index.
 func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 	events := eventSeq(10, "e")
 	m := newEventsPaneModel(events)
