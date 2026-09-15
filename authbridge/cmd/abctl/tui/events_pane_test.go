@@ -1084,15 +1084,27 @@ func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 	}
 }
 
-// TestSelectedEventKey_UpdatedOnArrowKey — arrow-down through Update
-// refreshes the pin to the new cursor row, so later rebuilds follow it.
-func TestSelectedEventKey_UpdatedOnArrowKey(t *testing.T) {
-	m := newEventsPaneModel(eventSeq(5, "e"))
-
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = m2.(*model)
-
-	if got, want := m.selectedEventKey, keyOf(m.selectedEvent()); got != want {
-		t.Errorf("pin=%+v, want cursor's event %+v", got, want)
+// TestSelectedEventKey_UpdatedOnCursorMotion — every keypress that
+// moves the cursor through Update refreshes the pin to the new row,
+// so later rebuilds follow the user's actual selection.
+func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{"arrow-down", tea.KeyMsg{Type: tea.KeyDown}},
+		{"j", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}},
+		{"page-down", tea.KeyMsg{Type: tea.KeyPgDown}},
+		{"f", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newEventsPaneModel(eventSeq(10, "e"))
+			m2, _ := m.Update(tc.msg)
+			m = m2.(*model)
+			if got, want := m.selectedEventKey, keyOf(m.selectedEvent()); got != want {
+				t.Errorf("pin=%+v, want cursor's event %+v", got, want)
+			}
+		})
 	}
 }
