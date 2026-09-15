@@ -28,7 +28,9 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 	if e == nil {
 		return eventKey{}
 	}
-	return eventKey{at: e.At, direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
+	// Round(0) strips the monotonic clock so struct == matches an event
+	// whose At came from time.Now() against one that survived JSON.
+	return eventKey{at: e.At.Round(0), direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
 }
 
 func findByKey(rows []eventRow, k eventKey) int {

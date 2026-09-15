@@ -1084,9 +1084,9 @@ func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 	}
 }
 
-// TestSelectedEventKey_UpdatedOnCursorMotion — every keypress that
-// moves the cursor through Update refreshes the pin to the new row,
-// so later rebuilds follow the user's actual selection.
+// TestSelectedEventKey_UpdatedOnCursorMotion — every cursor-motion
+// keypress refreshes the pin to the new row. Arrow keys and j/k route
+// through handleKey's paneEvents fallback; page keys via pageActivePane.
 func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1106,5 +1106,21 @@ func TestSelectedEventKey_UpdatedOnCursorMotion(t *testing.T) {
 				t.Errorf("pin=%+v, want cursor's event %+v", got, want)
 			}
 		})
+	}
+}
+
+// TestKeyOf_StripsMonotonicClock — a time.Now() At and its JSON
+// round-tripped form must produce the same eventKey so struct ==
+// matches under findByKey.
+func TestKeyOf_StripsMonotonicClock(t *testing.T) {
+	now := time.Now()            // has monotonic
+	roundTripped := now.Round(0) // stripped
+	if now == roundTripped {
+		t.Skip("time.Time on this platform does not carry monotonic; test is a no-op")
+	}
+	a := keyOf(&pipeline.SessionEvent{At: now, RequestID: "r"})
+	b := keyOf(&pipeline.SessionEvent{At: roundTripped, RequestID: "r"})
+	if a != b {
+		t.Errorf("keyOf differed by monotonic clock:\n  monotonic: %+v\n  stripped:  %+v", a, b)
 	}
 }
