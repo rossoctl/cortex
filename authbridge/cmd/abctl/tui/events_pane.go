@@ -14,8 +14,9 @@ import (
 )
 
 // eventKey pins a row to a specific event across rebuilds, so the
-// cursor follows the same event through FIFO eviction at
-// session.max_events. Zero value = unpinned.
+// cursor follows the same event when the underlying slice shifts:
+// FIFO eviction at session.max_events, filter typed, hideInactive
+// toggled. Zero value = unpinned.
 type eventKey struct {
 	at        time.Time
 	direction pipeline.Direction
