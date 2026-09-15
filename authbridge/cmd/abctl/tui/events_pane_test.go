@@ -1010,7 +1010,7 @@ func eventSeq(n int, prefix string) []pipeline.SessionEvent {
 	events := make([]pipeline.SessionEvent, n)
 	for i := range events {
 		events[i] = pipeline.SessionEvent{
-			At:        time.Time{}.Add(time.Duration(i)),
+			At:        time.Time{}.Add(time.Duration(i) * time.Millisecond),
 			RequestID: fmt.Sprintf("%s%d-req", prefix, i),
 			Direction: pipeline.Outbound,
 			Phase:     pipeline.SessionRequest,
