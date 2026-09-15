@@ -1100,7 +1100,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paneEvents:
 		var cmd tea.Cmd
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
-		m.selectedEventKey = keyOf(m.selectedEvent())
 		return m, cmd
 	case paneDetail:
 		var cmd tea.Cmd

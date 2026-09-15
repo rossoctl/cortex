@@ -603,6 +603,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case paneEvents:
 		var cmd tea.Cmd
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
+		m.selectedEventKey = keyOf(m.selectedEvent())
 		return cmd
 	case paneDetail, panePluginDetail:
 		var cmd tea.Cmd

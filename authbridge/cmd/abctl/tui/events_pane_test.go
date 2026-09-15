@@ -1079,3 +1079,16 @@ func TestSelectedEventKey_EvictedPinHoldsRow(t *testing.T) {
 		t.Errorf("cursor=%d, want 2 (prevRow fallback)", got)
 	}
 }
+
+// TestSelectedEventKey_UpdatedOnArrowKey — arrow-down through Update
+// refreshes the pin to the new cursor row, so later rebuilds follow it.
+func TestSelectedEventKey_UpdatedOnArrowKey(t *testing.T) {
+	m := newEventsPaneModel(eventSeq(5, "e"))
+
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m2.(*model)
+
+	if got, want := m.selectedEventKey, keyOf(m.selectedEvent()); got != want {
+		t.Errorf("pin=%+v, want cursor's event %+v", got, want)
+	}
+}
