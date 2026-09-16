@@ -43,6 +43,14 @@ type EventSettings struct {
 	// The alternative (a list of what is ON) reads more obviously but inverts both
 	// of those, since every column is defaultOn today.
 	Columns []ColumnSetting `yaml:"columns,omitempty"`
+	// SortColumn is the events-table sort column, by the same stable id the picker
+	// shows as a header (#865). Empty — the zero value, and what every file written
+	// before this existed carries — means CHRONOLOGICAL, so an older config restores
+	// exactly today's behaviour.
+	SortColumn string `yaml:"sortColumn,omitempty"`
+	// SortDesc is that sort's direction. Only meaningful with SortColumn set; false
+	// on its own is simply the ascending half of a sort that is not active.
+	SortDesc bool `yaml:"sortDesc,omitempty"`
 }
 
 // ColumnSetting is one column's visibility, keyed by the stable id the picker
@@ -98,6 +106,35 @@ func (u UserSettings) columnSelection() map[eventColumnID]bool {
 	}
 	return out
 }
+
+// sortSelection resolves the persisted sort into the column id the model holds.
+//
+// Validated against eventColumns rather than trusted, the same way columnSelection
+// refuses to build a map key for a name this build does not have: a file naming a
+// column that was renamed or removed — or one hand-edited to a typo — falls back to
+// chronological instead of leaving the table ordered by a column that cannot be
+// found to un-sort it.
+//
+// A column with no sortKey ("#") is refused for the same reason the keypress
+// refuses it: its order already IS chronological.
+func (u UserSettings) sortSelection() (eventColumnID, bool) {
+	if u.Events.SortColumn == "" {
+		return "", false
+	}
+	for _, c := range eventColumns {
+		if string(c.id) == u.Events.SortColumn && c.sortKey != nil {
+			return c.id, u.Events.SortDesc
+		}
+	}
+	return "", false
+}
+
+// sortColumn and sortDescending are the two halves of sortSelection, so the model
+// constructors can seed their fields without breaking their composite literals
+// apart. Both go through sortSelection, so the validation lives in one place.
+func (u UserSettings) sortColumn() eventColumnID { id, _ := u.sortSelection(); return id }
+
+func (u UserSettings) sortDescending() bool { _, desc := u.sortSelection(); return desc }
 
 // columnSettingsFrom is the inverse: the deviations worth writing down.
 //

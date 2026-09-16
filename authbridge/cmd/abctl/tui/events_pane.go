@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -51,7 +52,8 @@ func newEventsTable() table.Model {
 		// made it a hazard: a width changed in one place and not the other produced
 		// no symptom at all. The rationale for the non-obvious widths now lives
 		// beside the widths that actually decide, in eventColumns.
-		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()))),
+		// No sort column: the table is chronological until a model says otherwise.
+		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()), "", false)),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -130,6 +132,23 @@ func (m *model) rebuildEventsTable() {
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
+	// keys is the sort value for each row that survived the filters, parallel to
+	// rows and m.visibleRows. Collected inside the loop because the sortKey funcs
+	// take the same cellContext the cells do — including the chronological index the
+	// TOKENS and COST keys need to reach their paired response — and that context
+	// only exists here. nil when no sort is active, so the default path allocates
+	// nothing.
+	var keys []sortValue
+	var sortCol *eventColumn
+	if m.sortCol != "" {
+		for i := range eventColumns {
+			if eventColumns[i].id == m.sortCol && eventColumns[i].sortKey != nil {
+				sortCol = &eventColumns[i]
+				keys = make([]sortValue, 0, len(eventRows))
+				break
+			}
+		}
+	}
 	for i, er := range eventRows {
 		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
@@ -173,6 +192,20 @@ func (m *model) rebuildEventsTable() {
 		}
 		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, er)
+		// Keyed from the SAME cellContext that just rendered the row, so the value
+		// sorted on and the value displayed cannot come apart. cc.width is whatever
+		// the last column left it at; no sortKey reads it.
+		if sortCol != nil {
+			keys = append(keys, sortCol.sortKey(cc))
+		}
+	}
+	// Sort the OUTPUT, never the input. buildEventRows' tunnel fold, the backward
+	// walk in computeEventPairs and the partner-index lookups in the TOKENS/COST
+	// cells all require arrival order, and every one of them has already run by the
+	// time we get here — so reordering the finished rows leaves the exchange
+	// numbering and the paired figures exactly as they were.
+	if sortCol != nil {
+		sortEventRows(rows, m.visibleRows, keys, m.sortDesc)
 	}
 	// Columns are re-set only when they actually differ, and the clear that has to
 	// precede that is paid only then too.
@@ -190,7 +223,7 @@ func (m *model) rebuildEventsTable() {
 	// The equality check is what makes the poll a no-op — the columns only change
 	// when someone toggles one or the terminal is resized past a fit boundary, and
 	// re-anchoring then is fine.
-	if newCols := tableColumns(cols); !slices.Equal(m.eventsTbl.Columns(), newCols) {
+	if newCols := tableColumns(cols, m.sortCol, m.sortDesc); !slices.Equal(m.eventsTbl.Columns(), newCols) {
 		m.eventsTbl.SetRows(nil)
 		m.eventsTbl.SetColumns(newCols)
 	}
@@ -222,7 +255,14 @@ func (m *model) rebuildEventsTable() {
 	// tracks the event through FIFO eviction at session.max_events.
 	target := prevRow
 	switch {
-	case wasAtEnd:
+	// Tail-follow only while the table is chronological. "Stay at the bottom" means
+	// "follow the newest event" ONLY because the last row is the newest one; under a
+	// DURATION or COST sort the last row is the smallest value, so following it would
+	// drag the cursor to a different event on every streamed message — and away from
+	// the large-value end the operator sorted to look at. With a sort active the
+	// selectedEventKey pin below carries the cursor instead, which is what the
+	// operator actually wants followed.
+	case wasAtEnd && m.sortCol == "":
 		target = len(rows) - 1
 	case m.selectedEventKey != (eventKey{}):
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
@@ -236,6 +276,50 @@ func (m *model) rebuildEventsTable() {
 		}
 	}
 	setCursorVisible(&m.eventsTbl, target)
+}
+
+// sortEventRows reorders the rendered rows by their sort keys (#865).
+//
+// Permutes rows and visible AS A UNIT, because the table cursor indexes both:
+// selectedEventRow reads m.visibleRows[cursor] to answer what the detail pane and
+// yank operate on, so letting the two drift would show the operator one row and
+// act on another.
+//
+// SliceStable, not Slice: ties keep arrival order. That matters most on the
+// columns worth sorting — a session's DURATION column is mostly rows with no
+// duration at all, and an unstable sort would shuffle them on every rebuild, i.e.
+// on every streamed event.
+//
+// Sorts an index permutation rather than swapping three slices in the comparator,
+// so each row's key travels with it without the comparator having to reorder keys
+// as it reads them.
+func sortEventRows(rows []table.Row, visible []eventRow, keys []sortValue, desc bool) {
+	if len(rows) != len(keys) || len(rows) != len(visible) {
+		// Defensive: a length mismatch means the loop above stopped appending to one
+		// of the three in step. Sorting on a short key slice would panic; leaving the
+		// order alone degrades to chronological, which is always a valid view.
+		return
+	}
+	idx := make([]int, len(rows))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		ka, kb := keys[idx[a]], keys[idx[b]]
+		if desc {
+			return kb.less(ka)
+		}
+		return ka.less(kb)
+	})
+
+	outRows := make([]table.Row, len(rows))
+	outVis := make([]eventRow, len(visible))
+	for newPos, oldPos := range idx {
+		outRows[newPos] = rows[oldPos]
+		outVis[newPos] = visible[oldPos]
+	}
+	copy(rows, outRows)
+	copy(visible, outVis)
 }
 
 // selectedEvent returns the event at the cursor row, or nil. The cursor

@@ -3,9 +3,11 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
@@ -1132,5 +1134,308 @@ func TestKeyOf_SameInstantSameKey(t *testing.T) {
 	b := keyOf(&pipeline.SessionEvent{At: roundTripped, RequestID: "r"})
 	if a != b {
 		t.Errorf("keys differ for same instant:\n  a: %+v\n  b: %+v", a, b)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sorting (#865)
+// ---------------------------------------------------------------------------
+
+// sortTestModel builds a model over events with the default columns and an
+// events table, matching what rebuildEventsTable expects.
+func sortTestModel(events []pipeline.SessionEvent) *model {
+	m := &model{
+		selectedSess: "s",
+		events:       map[string][]pipeline.SessionEvent{"s": events},
+		eventColumns: defaultColumnSelection(),
+		width:        200,
+	}
+	m.eventsTbl = newEventsTable()
+	return m
+}
+
+// cellAt reads one rendered cell out of the table by column id, so a test asserts
+// on what the operator sees rather than on an internal index.
+func cellAt(t *testing.T, m *model, row int, id eventColumnID) string {
+	t.Helper()
+	cols, _ := fitColumns(selectedColumns(m.eventColumns), m.width)
+	for i, c := range cols {
+		if c.id == id {
+			rows := m.eventsTbl.Rows()
+			if row >= len(rows) {
+				t.Fatalf("row %d out of range (%d rows)", row, len(rows))
+			}
+			return rows[row][i]
+		}
+	}
+	t.Fatalf("column %s is not visible", id)
+	return ""
+}
+
+func hostsInOrder(m *model) []string {
+	out := make([]string, 0, len(m.visibleRows))
+	for _, r := range m.visibleRows {
+		out = append(out, r.event.Host)
+	}
+	return out
+}
+
+// DURATION must sort NUMERICALLY. This is the column #865 names, and the one where
+// sorting the rendered cell is visibly wrong: durationCell emits "340ms" and
+// "1.20s", which compare lexically as 340ms > 1.20s.
+func TestSort_DurationIsNumericNotLexical(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "mid", Phase: pipeline.SessionResponse, Duration: 340 * time.Millisecond},
+		{Host: "slow", Phase: pipeline.SessionResponse, Duration: 1200 * time.Millisecond},
+		{Host: "fast", Phase: pipeline.SessionResponse, Duration: 90 * time.Millisecond},
+	}
+	m := sortTestModel(events)
+
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	if got, want := hostsInOrder(m), []string{"slow", "mid", "fast"}; !slices.Equal(got, want) {
+		t.Errorf("descending = %v, want %v (a string sort would give mid, fast, slow)", got, want)
+	}
+
+	m.sortDesc = false
+	m.rebuildEventsTable()
+	if got, want := hostsInOrder(m), []string{"fast", "mid", "slow"}; !slices.Equal(got, want) {
+		t.Errorf("ascending = %v, want %v", got, want)
+	}
+
+	// The rendered cells confirm the values really are the ones being compared.
+	if got := cellAt(t, m, 0, colDuration); got != "90ms" {
+		t.Errorf("first ascending DURATION cell = %q, want 90ms", got)
+	}
+	if got := cellAt(t, m, 2, colDuration); got != "1.20s" {
+		t.Errorf("last ascending DURATION cell = %q, want 1.20s", got)
+	}
+}
+
+// STATUS sorts by the integer, so the 5xx rows group at one end rather than
+// collating "200" against "503" as text (which happens to agree here, but does not
+// once statusCell decorates the cell).
+func TestSort_StatusIsNumeric(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "a", Phase: pipeline.SessionResponse, StatusCode: 200},
+		{Host: "b", Phase: pipeline.SessionResponse, StatusCode: 503},
+		{Host: "c", Phase: pipeline.SessionResponse, StatusCode: 404},
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colStatus, true
+	m.rebuildEventsTable()
+	if got, want := hostsInOrder(m), []string{"b", "c", "a"}; !slices.Equal(got, want) {
+		t.Errorf("descending by status = %v, want %v", got, want)
+	}
+}
+
+// HOST sorts lexically, and on the port-stripped host so that "h:443" and "h" land
+// together rather than the port deciding.
+func TestSort_HostIsLexicalAndPortStripped(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "zulu", Phase: pipeline.SessionRequest},
+		{Host: "alpha:443", Phase: pipeline.SessionRequest},
+		{Host: "mike", Phase: pipeline.SessionRequest},
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colHost, false
+	m.rebuildEventsTable()
+	if got, want := hostsInOrder(m), []string{"alpha:443", "mike", "zulu"}; !slices.Equal(got, want) {
+		t.Errorf("ascending by host = %v, want %v", got, want)
+	}
+}
+
+// Ties keep arrival order. Most rows in a real session have no duration at all, and
+// an unstable sort would reshuffle them on every streamed event.
+func TestSort_TiesKeepChronologicalOrder(t *testing.T) {
+	var events []pipeline.SessionEvent
+	for _, h := range []string{"a", "b", "c", "d", "e"} {
+		events = append(events, pipeline.SessionEvent{Host: h, Phase: pipeline.SessionRequest})
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	if got, want := hostsInOrder(m), []string{"a", "b", "c", "d", "e"}; !slices.Equal(got, want) {
+		t.Errorf("all-equal keys reordered: %v, want arrival order %v", got, want)
+	}
+}
+
+// Chronological is the default, and it must be byte-identical to what the table
+// rendered before sorting existed.
+func TestSort_ChronologicalIsUnchanged(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "one", Phase: pipeline.SessionResponse, Duration: 5 * time.Second, StatusCode: 200},
+		{Host: "two", Phase: pipeline.SessionResponse, Duration: time.Millisecond, StatusCode: 500},
+	}
+	m := sortTestModel(events)
+	m.rebuildEventsTable()
+	if m.sortCol != "" {
+		t.Fatalf("default sortCol = %q, want empty (chronological)", m.sortCol)
+	}
+	before := append([]table.Row(nil), m.eventsTbl.Rows()...)
+	hostsBefore := hostsInOrder(m)
+
+	// Sorting and then returning to chronological restores exactly the same rows.
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	m.sortCol, m.sortDesc = "", false
+	m.rebuildEventsTable()
+
+	after := m.eventsTbl.Rows()
+	if len(after) != len(before) {
+		t.Fatalf("row count changed: %d then %d", len(before), len(after))
+	}
+	for i := range before {
+		if !slices.Equal(before[i], after[i]) {
+			t.Errorf("row %d differs after a round trip:\n before %q\n after  %q", i, before[i], after[i])
+		}
+	}
+	if got := hostsInOrder(m); !slices.Equal(got, hostsBefore) {
+		t.Errorf("order after round trip = %v, want %v", got, hostsBefore)
+	}
+}
+
+// The regression that matters most: sorting must not disturb the request/response
+// pairing. computeEventPairs walks the CHRONOLOGICAL slice — its fallback pass
+// searches backward from a response, and it mints the # exchange numbers in
+// first-seen order — and the TOKENS/COST cells reach a request's figures through a
+// partner map keyed by that slice's indices. Sorting reorders only the finished
+// rows, so every one of those values must come out identical.
+func TestSort_PairingAndExchangeFiguresSurvive(t *testing.T) {
+	// Two exchanges, interleaved, with the SLOWER one first so a DURATION sort has
+	// to move rows. Only the responses carry ids/figures, as in production.
+	events := []pipeline.SessionEvent{
+		{Host: "slow", Phase: pipeline.SessionRequest, RequestID: "r1", Direction: pipeline.Outbound},
+		{Host: "fast", Phase: pipeline.SessionRequest, RequestID: "r2", Direction: pipeline.Outbound},
+		{Host: "slow", Phase: pipeline.SessionResponse, RequestID: "r1", Direction: pipeline.Outbound,
+			StatusCode: 200, Duration: 9 * time.Second,
+			Inference: &pipeline.InferenceExtension{InputTokens: 5_000, OutputTokens: 100}},
+		{Host: "fast", Phase: pipeline.SessionResponse, RequestID: "r2", Direction: pipeline.Outbound,
+			StatusCode: 200, Duration: 10 * time.Millisecond,
+			Inference: &pipeline.InferenceExtension{InputTokens: 20, OutputTokens: 7}},
+	}
+
+	// Baseline: chronological. Record each event's # and TOKENS keyed by identity, so
+	// the comparison survives the rows moving.
+	m := sortTestModel(events)
+	m.rebuildEventsTable()
+	type figures struct{ index, tokens string }
+	want := map[eventKey]figures{}
+	for row, er := range m.visibleRows {
+		want[keyOf(er.event)] = figures{
+			index:  cellAt(t, m, row, colIndex),
+			tokens: cellAt(t, m, row, colTokens),
+		}
+	}
+	if len(want) != 4 {
+		t.Fatalf("baseline captured %d rows, want 4", len(want))
+	}
+	// The request row must genuinely have borrowed its paired response's prompt
+	// count, or this test would be asserting that blanks stay blank.
+	reqKey := keyOf(&events[0])
+	if want[reqKey].tokens == "" {
+		t.Fatalf("baseline: slow REQUEST row shows no TOKENS, so pairing was not exercised")
+	}
+
+	for _, tc := range []struct {
+		name string
+		col  eventColumnID
+		desc bool
+	}{
+		{"duration desc", colDuration, true},
+		{"duration asc", colDuration, false},
+		{"tokens desc", colTokens, true},
+		{"host asc", colHost, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m.sortCol, m.sortDesc = tc.col, tc.desc
+			m.rebuildEventsTable()
+			if len(m.visibleRows) != 4 {
+				t.Fatalf("rows = %d, want 4", len(m.visibleRows))
+			}
+			for row, er := range m.visibleRows {
+				k := keyOf(er.event)
+				got := figures{
+					index:  cellAt(t, m, row, colIndex),
+					tokens: cellAt(t, m, row, colTokens),
+				}
+				if got != want[k] {
+					t.Errorf("%s row (now at %d): # = %q tokens = %q, want # = %q tokens = %q",
+						er.event.Host, row, got.index, got.tokens, want[k].index, want[k].tokens)
+				}
+			}
+		})
+	}
+}
+
+// TOKENS sorts on the numeric count, including on a REQUEST row whose figure comes
+// from its paired response — so the sort key has to make the same pairedResponse
+// call the cell does.
+func TestSort_TokensIsNumericAcrossThePair(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "small", Phase: pipeline.SessionRequest, RequestID: "a", Direction: pipeline.Outbound},
+		{Host: "small", Phase: pipeline.SessionResponse, RequestID: "a", Direction: pipeline.Outbound,
+			Inference: &pipeline.InferenceExtension{InputTokens: 900}},
+		{Host: "big", Phase: pipeline.SessionRequest, RequestID: "b", Direction: pipeline.Outbound},
+		{Host: "big", Phase: pipeline.SessionResponse, RequestID: "b", Direction: pipeline.Outbound,
+			Inference: &pipeline.InferenceExtension{InputTokens: 1_048_576}},
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colTokens, true
+	m.rebuildEventsTable()
+
+	// The big REQUEST row leads: 1,048,576 formats with separators, so a string sort
+	// would rank "900" above "1,048,576".
+	first := m.visibleRows[0]
+	if first.event.Host != "big" || first.event.Phase != pipeline.SessionRequest {
+		t.Errorf("first row = %s/%s, want big/request", first.event.Host, first.event.Phase)
+	}
+	if got := cellAt(t, m, 0, colTokens); got != "1,048,576" {
+		t.Errorf("first TOKENS cell = %q, want 1,048,576", got)
+	}
+}
+
+// A row with no figure sorts to the BOTTOM descending, keeping the end the operator
+// sorted toward clear of rows the proxy could not measure.
+func TestSort_BlankFiguresSortLastDescending(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "unmeasured", Phase: pipeline.SessionRequest},
+		{Host: "measured", Phase: pipeline.SessionResponse, Duration: 2 * time.Second},
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	if got := hostsInOrder(m); !slices.Equal(got, []string{"measured", "unmeasured"}) {
+		t.Errorf("descending = %v, want [measured unmeasured]", got)
+	}
+	if got := cellAt(t, m, 1, colDuration); got != "" {
+		t.Errorf("unmeasured DURATION cell = %q, want blank", got)
+	}
+}
+
+// visibleRows must be permuted with the rendered rows, since the table cursor
+// indexes both: selectedEventRow answers what the detail pane and yank act on, so
+// a drift would show one row and operate on another.
+func TestSort_VisibleRowsStayParallelToTheTable(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Host: "a", Phase: pipeline.SessionResponse, Duration: time.Millisecond},
+		{Host: "b", Phase: pipeline.SessionResponse, Duration: 3 * time.Second},
+		{Host: "c", Phase: pipeline.SessionResponse, Duration: 2 * time.Second},
+	}
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+
+	for row := range m.visibleRows {
+		setCursorVisible(&m.eventsTbl, row)
+		er, ok := m.selectedEventRow()
+		if !ok {
+			t.Fatalf("row %d: no selected row", row)
+		}
+		// The HOST cell rendered at this row must belong to the event
+		// selectedEventRow hands back.
+		if got := cellAt(t, m, row, colHost); got != er.event.Host {
+			t.Errorf("row %d: table shows host %q, selectedEventRow gives %q", row, got, er.event.Host)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 
@@ -98,7 +99,60 @@ type eventColumn struct {
 	// the one the user came for (#866). Ranking by defaultOn alone made every
 	// default equally expendable and HOST — last in display order — the first to go.
 	keep int
+	// sortKey extracts the value this column orders by (#865). nil means the column
+	// cannot be sorted on — only "#", whose order IS the chronological order the
+	// exchange numbers are assigned in, so sorting by it is what sorting by nothing
+	// already does.
+	//
+	// Deliberately NOT the rendered cell string. durationCell emits "340ms" and
+	// "1.20s", which compare lexically as 340ms > 1.20s — backwards, and on exactly
+	// the column issue #865 names. TOKENS ("1,048,576(−12.3k)") and COST
+	// ("$0.2546(−$0.0037)") carry thousands separators, a currency sigil and a
+	// parenthesised second figure, none of which sort either.
+	//
+	// Takes a cellContext rather than an event because TOKENS and COST are
+	// exchange-level: a request row's figures live on its paired RESPONSE, reached
+	// through the same pairedResponse(rows, partner, i, ev) call their cells make.
+	// Sharing the input means the key and the cell cannot disagree about which
+	// response a row belongs to.
+	sortKey func(cellContext) sortValue
 }
+
+// sortValue is one row's position along one column.
+//
+// Two fields rather than a single float64: HOST, PLUGIN and METHOD have no numeric
+// reading, and mapping strings onto floats to force one would either collide or
+// need a full collation table. Two rather than an interface{}, because every
+// comparison is between two cells of the SAME column, so exactly one of the fields
+// is ever live and a type switch per comparison buys nothing.
+//
+// The zero value sorts first ascending / last descending, which is where a blank
+// cell belongs: "no figure published" is not "zero dollars", and a descending sort
+// by COST should open with the most expensive call rather than with every row the
+// proxy could not price.
+type sortValue struct {
+	// numeric selects which field decides. Set per column, never per row, so a
+	// column cannot compare a number against a string.
+	numeric bool
+	num     float64
+	str     string
+}
+
+// less orders two cells of one column. Ascending; the caller flips for descending.
+func (a sortValue) less(b sortValue) bool {
+	if a.numeric {
+		return a.num < b.num
+	}
+	return a.str < b.str
+}
+
+// numKey and strKey keep the eventColumns table readable — a column declares what
+// it sorts on, not how sortValue is shaped.
+func numKey[T int | int64 | float64 | time.Duration](n T) sortValue {
+	return sortValue{numeric: true, num: float64(n)}
+}
+
+func strKey(s string) sortValue { return sortValue{str: s} }
 
 // Keep ranks. Only the ordering matters, not the values.
 const (
@@ -118,55 +172,143 @@ var eventColumns = []eventColumn{
 			}
 			return ""
 		}},
+	// UnixNano, not the rendered "15:04:05.00": that string drops the date and
+	// truncates to hundredths, so it collates two events a day apart as equal and
+	// sorts 23:59 above 00:01 from the following morning.
 	{id: colTime, width: 12, defaultOn: true, keep: keepNormal,
-		desc: "wall-clock time the message was recorded",
-		cell: func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") }},
+		desc:    "wall-clock time the message was recorded",
+		cell:    func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") },
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.At.UnixNano()) }},
 	{id: colDir, width: 4, defaultOn: true, keep: keepLow,
-		desc: "in = toward your agent, out = toward an upstream",
-		cell: func(c cellContext) string { return shortDirection(c.row.event.Direction) }},
+		desc:    "in = toward your agent, out = toward an upstream",
+		cell:    func(c cellContext) string { return shortDirection(c.row.event.Direction) },
+		sortKey: func(c cellContext) sortValue { return strKey(shortDirection(c.row.event.Direction)) }},
 	{id: colPhase, width: 7, defaultOn: true, keep: keepNormal,
-		desc: "req, resp, or denied",
-		cell: func(c cellContext) string { return shortPhase(c.row.event.Phase) }},
+		desc:    "req, resp, or denied",
+		cell:    func(c cellContext) string { return shortPhase(c.row.event.Phase) },
+		sortKey: func(c cellContext) sortValue { return strKey(shortPhase(c.row.event.Phase)) }},
+	// c.action, the value the cell shows — not actionRank. The rank orders by
+	// severity for topInvocation's "which invocation headlines this row" question;
+	// a user sorting the ACTION column is grouping like with like, and a severity
+	// order would put rows under a heading whose alphabet they do not follow.
 	{id: colAction, width: actionColWidth, defaultOn: true, keep: keepNormal,
-		desc: "what took effect: deny, modify, observe, allow, or tunnel",
-		cell: func(c cellContext) string { return c.action }},
+		desc:    "what took effect: deny, modify, observe, allow, or tunnel",
+		cell:    func(c cellContext) string { return c.action },
+		sortKey: func(c cellContext) sortValue { return strKey(c.action) }},
+	// Sorts on the FULL plugin name, not the truncated cell: two plugins sharing an
+	// 18-character prefix render identically and would otherwise tie arbitrarily.
 	{id: colPlugin, width: 18, defaultOn: true, keep: keepNormal,
 		desc: "which plugin acted; blank when none did",
 		cell: func(c cellContext) string {
 			p := c.plugin
 			return truncStr(p, c.width)
-		}},
+		},
+		sortKey: func(c cellContext) sortValue { return strKey(c.plugin) }},
 	// methodColWidth rather than 22: the widest realistic value is a model name
 	// ("claude-opus-5"), and the columns freed pay for splitting TOKENS and COST
 	// apart below.
 	{id: colMethod, width: methodColWidth, defaultOn: true, keep: keepNormal,
 		desc: "protocol operation: model name, MCP or A2A method",
-		cell: func(c cellContext) string { return eventMethod(*c.row.event) }},
+		cell: func(c cellContext) string { return eventMethod(*c.row.event) },
+		// eventMethodValue, not eventMethod: the latter is the former truncated to
+		// methodColWidth, and two long model names sharing a prefix must not tie.
+		sortKey: func(c cellContext) sortValue { return strKey(eventMethodValue(*c.row.event)) }},
+	// The integer, not statusCell's string: the cell can carry an error marker, and
+	// a numeric sort is what puts the 5xx rows together at one end.
 	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal,
-		desc: "HTTP status of the response",
-		cell: func(c cellContext) string { return statusCell(*c.row.event) }},
+		desc:    "HTTP status of the response",
+		cell:    func(c cellContext) string { return statusCell(*c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.StatusCode) }},
+	// The Duration itself. This is the column #865 is about ("the events with the
+	// longest duration"), and the one where sorting the rendered string is most
+	// obviously wrong: "340ms" > "1.20s" lexically.
 	{id: colDuration, width: 10, defaultOn: true, keep: keepLow,
-		desc: "how long the exchange took",
-		cell: func(c cellContext) string { return durationCell(*c.row.event) }},
+		desc:    "how long the exchange took",
+		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.Duration) }},
 	// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)". Million-token
 	// contexts are in service, and bubbles truncates a cell at the column width, so
 	// 15 rendered "1,048,576(−1…" — dropping the saving, which is the half of this
 	// cell that appears nowhere else.
 	{id: colTokens, width: 17, defaultOn: true, keep: keepLow,
-		desc: "tokens used, and what tool-prune saved",
-		cell: func(c cellContext) string { return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event) }},
+		desc:    "tokens used, and what tool-prune saved",
+		cell:    func(c cellContext) string { return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(rowTokens(c)) }},
 	// 19 fits the widest cell the formatter can produce: "<$0.0001(−<$0.0001)",
 	// where both halves fell under the four-decimal floor. The ordinary shape is
 	// "$0.2546(−$0.0037)" at 17.
 	{id: colCost, width: 19, defaultOn: true, keep: keepLow,
-		desc: "estimated cost, and what tool-prune saved",
-		cell: func(c cellContext) string { return c.m.costCell(c.rows, c.partner, c.i, c.row.event) }},
+		desc:    "estimated cost, and what tool-prune saved",
+		cell:    func(c cellContext) string { return c.m.costCell(c.rows, c.partner, c.i, c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(rowCostUSD(c)) }},
 	// keepHigh: the column #866 was filed about. Last in display order, so without
 	// a rank it is the first thing a narrow terminal drops — which is how it came
 	// to be declared but never visible.
 	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
 		desc: "host the message was sent to",
-		cell: func(c cellContext) string { return truncStr(c.row.event.Host, c.width) }},
+		cell: func(c cellContext) string { return truncStr(c.row.event.Host, c.width) },
+		// hostOnly, so "api.example.com:443" and "api.example.com" sort together
+		// rather than the port deciding. Full host, not the truncated cell, for the
+		// same reason PLUGIN uses the full name.
+		sortKey: func(c cellContext) sortValue { return strKey(hostOnly(c.row.event.Host)) }},
+}
+
+// rowTokens and rowCostUSD are the numeric readings behind the TOKENS and COST
+// cells, for sorting (#865).
+//
+// They mirror tokensCell / costCell arm for arm, including the pairedResponse
+// guard, because a sort that disagreed with the number on screen would be worse
+// than no sort: the user sorts to find the biggest figure and then reads the cell
+// to see what it was. Kept beside the column definitions rather than folded into
+// the cells, because the cells return preformatted strings — the formatting is the
+// part that cannot be sorted.
+//
+// Zero means "nothing to order by" — no figure published, or a request whose
+// response has not landed — and lands at the bottom of a descending sort.
+func rowTokens(c cellContext) int {
+	ev := c.row.event
+	switch ev.Phase {
+	case pipeline.SessionResponse:
+		if ev.Inference == nil {
+			return 0
+		}
+		if n := ev.Inference.OutputTokens; n > 0 {
+			return n
+		}
+		return ev.Inference.CompletionTokens
+	case pipeline.SessionRequest:
+		resp := pairedResponse(c.rows, c.partner, c.i, ev)
+		if resp == nil {
+			return 0
+		}
+		return promptTokens(resp.Inference)
+	default:
+		return 0
+	}
+}
+
+func rowCostUSD(c cellContext) float64 {
+	ev := c.row.event
+	switch ev.Phase {
+	case pipeline.SessionResponse:
+		usd, ok := outputCost(ev)
+		if !ok {
+			return 0
+		}
+		return usd
+	case pipeline.SessionRequest:
+		resp := pairedResponse(c.rows, c.partner, c.i, ev)
+		if resp == nil {
+			return 0
+		}
+		usd, ok := promptCost(resp)
+		if !ok {
+			return 0
+		}
+		return usd
+	default:
+		return 0
+	}
 }
 
 // defaultColumnSelection is the set shown before the user chooses.
@@ -200,11 +342,38 @@ func selectedColumns(sel map[eventColumnID]bool) []eventColumn {
 	return out
 }
 
-// tableColumns converts the selection into the bubbles column slice.
-func tableColumns(cols []eventColumn) []table.Column {
+// sortGlyphAsc and sortGlyphDesc mark the sorted column in its own header.
+//
+// One column wide each, which is what makes the marker free: measured against
+// bubbles v1.0.0, headersView renders
+// runewidth.Truncate(col.Title, col.Width, "…"), and Truncate leaves a string
+// whose width EQUALS the limit alone. Every header plus one glyph fits its
+// declared width, with STATUS (7 of 7) and DIR (4 of 4) exactly on the boundary —
+// so no column had to be widened and fitColumns' arithmetic is untouched.
+// TestTableColumns_SortGlyphFitsEveryWidth pins that, since a longer header or a
+// tighter width would silently start clipping the column's NAME.
+const (
+	sortGlyphAsc  = "▲"
+	sortGlyphDesc = "▼"
+)
+
+// tableColumns converts the selection into the bubbles column slice, marking the
+// sorted column (#865).
+//
+// sortCol is "" for chronological order, in which case no header carries a glyph —
+// which is what newEventsTable passes, having no sort state to consult.
+func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.Column {
 	out := make([]table.Column, 0, len(cols))
 	for _, c := range cols {
-		out = append(out, table.Column{Title: string(c.id), Width: c.width})
+		title := string(c.id)
+		if sortCol != "" && c.id == sortCol {
+			if desc {
+				title += sortGlyphDesc
+			} else {
+				title += sortGlyphAsc
+			}
+		}
+		out = append(out, table.Column{Title: title, Width: c.width})
 	}
 	return out
 }
@@ -332,7 +501,8 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 // A column that is selected but will not fit the current terminal is marked, so
 // enabling something and seeing no change is explained in place rather than only
 // by the footer's count.
-func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) string {
+func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int,
+	sortCol eventColumnID, sortDesc bool) string {
 	fitted, _ := fitColumns(selectedColumns(sel), width)
 	visible := make(map[eventColumnID]bool, len(fitted))
 	for _, c := range fitted {
@@ -391,7 +561,19 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 		if sel[c.id] {
 			box = "[x]"
 		}
-		name := fmt.Sprintf("%-9s", string(c.id))
+		// The sorted column is marked here as well as in the table header, because
+		// this popup is where the sort is CHOSEN: `s` cycles three states and an
+		// operator pressing it needs to see which one they landed in without closing
+		// the modal to look at the table behind it.
+		name := string(c.id)
+		if sortCol != "" && c.id == sortCol {
+			if sortDesc {
+				name += sortGlyphDesc
+			} else {
+				name += sortGlyphAsc
+			}
+		}
+		name = fmt.Sprintf("%-10s", name)
 
 		// Mark a selection the terminal cannot honour. Without this, turning HOST
 		// on in an 80-column window looks like the checkbox did nothing.
@@ -425,7 +607,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int) s
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
 	b.WriteString(styleHint.Render(fitHintLine(
-		"[↑↓] move  [space]/[x] toggle  [r] reset  [esc]/[enter] close  [q] quit",
+		"[↑↓] move  [space]/[x] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
 		width-borderWidth)))
 
 	// MaxWidth as a backstop. overlayCenter is explicit that bounding the panel is

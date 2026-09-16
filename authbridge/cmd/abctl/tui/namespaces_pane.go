@@ -101,6 +101,8 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		// mirrors New's field initialization, and the events table it reaches after a
 		// port-forward reads both of these.
 		eventColumns: Settings.columnSelection(),
+		sortCol:      Settings.sortColumn(),
+		sortDesc:     Settings.sortDescending(),
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

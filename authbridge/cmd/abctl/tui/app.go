@@ -246,8 +246,19 @@ type model struct {
 	eventColsDropped int
 	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
 	// column within it.
-	colPicker    bool
-	colCursor    int
+	colPicker bool
+	colCursor int
+	// sortCol is the column the events table is ordered by, and sortDesc its
+	// direction (#865). The empty id means CHRONOLOGICAL — arrival order — which is
+	// both the default and what rebuildEventsTable uses internally regardless: the
+	// request/response pairing walks the chronological slice, and only the finished
+	// rows are reordered. See sortEventRows.
+	//
+	// Descending is what a freshly chosen column gets, because the question the
+	// issue asks is "which events took longest / cost most" and that answer belongs
+	// at the top.
+	sortCol      eventColumnID
+	sortDesc     bool
 	selectedSess string
 	// filter is the ACTIVE filter, which is not the same as the saved one:
 	// backToPodsPane clears this on teardown so a filter cannot survive a pod
@@ -422,6 +433,8 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
 		eventColumns: Settings.columnSelection(),
+		sortCol:      Settings.sortColumn(),
+		sortDesc:     Settings.sortDescending(),
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
@@ -1212,7 +1225,8 @@ func (m *model) View() string {
 	// the popup drawn over a pane it does not belong to.
 	if m.colPicker && m.pane == paneEvents {
 		return overlayCenter(base,
-			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height),
+			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height,
+				m.sortCol, m.sortDesc),
 			m.width, m.height)
 	}
 	return base

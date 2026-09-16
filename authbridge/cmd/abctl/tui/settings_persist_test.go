@@ -406,3 +406,151 @@ func TestRestoredFilter_ShowsInTheFooterWhileInactive(t *testing.T) {
 		t.Errorf("footer shows the indicator while the filter box is open:\n%s", got)
 	}
 }
+
+// cursorToColumn moves the picker cursor onto a named column. The picker opens at
+// index 0, and `j` walks down.
+func cursorToColumn(t *testing.T, m *model, id eventColumnID) {
+	t.Helper()
+	for i := 0; i < len(eventColumns); i++ {
+		if eventColumns[m.colCursor].id == id {
+			return
+		}
+		m.handleKey(keyRune('j'))
+	}
+	t.Fatalf("never reached column %s (cursor stuck at %d)", id, m.colCursor)
+}
+
+// `s` in the picker cycles one column through descending → ascending →
+// chronological (#865). Descending first, because "longest duration / highest cost"
+// wants the extreme at the top.
+func TestColumnPicker_SortKeyCyclesThreeStates(t *testing.T) {
+	m := newTestEventsModel(t)
+	resetSettingsForTest(t)
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colDuration)
+
+	m.handleKey(keyRune('s'))
+	if m.sortCol != colDuration || !m.sortDesc {
+		t.Errorf("first press: sortCol=%q desc=%v, want DURATION descending", m.sortCol, m.sortDesc)
+	}
+	m.handleKey(keyRune('s'))
+	if m.sortCol != colDuration || m.sortDesc {
+		t.Errorf("second press: sortCol=%q desc=%v, want DURATION ascending", m.sortCol, m.sortDesc)
+	}
+	m.handleKey(keyRune('s'))
+	if m.sortCol != "" {
+		t.Errorf("third press: sortCol=%q, want chronological", m.sortCol)
+	}
+}
+
+// Pressing `s` on a DIFFERENT column jumps straight to it, descending — a fresh
+// column is a fresh question, not an inheritance of the previous direction.
+func TestColumnPicker_SortOnNewColumnStartsDescending(t *testing.T) {
+	m := newTestEventsModel(t)
+	resetSettingsForTest(t)
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colDuration)
+	m.handleKey(keyRune('s'))
+	m.handleKey(keyRune('s')) // DURATION ascending
+	if m.sortDesc {
+		t.Fatalf("setup: expected DURATION ascending")
+	}
+
+	cursorToColumn(t, m, colHost)
+	m.handleKey(keyRune('s'))
+	if m.sortCol != colHost || !m.sortDesc {
+		t.Errorf("sortCol=%q desc=%v, want HOST descending", m.sortCol, m.sortDesc)
+	}
+}
+
+// "#" has no sort key — its order IS arrival order — so `s` there says so rather
+// than appearing to do nothing inside a modal that swallows every other key.
+func TestColumnPicker_SortOnIndexColumnExplainsItself(t *testing.T) {
+	m := newTestEventsModel(t)
+	resetSettingsForTest(t)
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colIndex)
+	m.handleKey(keyRune('s'))
+
+	if m.sortCol != "" {
+		t.Errorf("sortCol = %q, want unchanged", m.sortCol)
+	}
+	if !strings.Contains(m.flash, string(colIndex)) {
+		t.Errorf("flash = %q, want it to mention %s", m.flash, colIndex)
+	}
+}
+
+// `r` resets the whole view, and chronological is part of the default view for the
+// same reason the default column set is.
+func TestColumnPicker_ResetClearsTheSort(t *testing.T) {
+	m := newTestEventsModel(t)
+	resetSettingsForTest(t)
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colDuration)
+	m.handleKey(keyRune('s'))
+	if m.sortCol == "" {
+		t.Fatal("setup: no sort applied")
+	}
+	m.handleKey(keyRune('r'))
+	if m.sortCol != "" || m.sortDesc {
+		t.Errorf("after reset: sortCol=%q desc=%v, want chronological", m.sortCol, m.sortDesc)
+	}
+}
+
+// The sort rides the same save the column selection does, so it survives a restart.
+func TestColumnPicker_ClosingSavesTheSort(t *testing.T) {
+	m := newTestEventsModel(t)
+	saves := recordSaves(t, m)
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colCost)
+	m.handleKey(keyRune('s')) // COST descending
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if len(*saves) != 1 {
+		t.Fatalf("saves = %d, want 1", len(*saves))
+	}
+	got := (*saves)[0].Events
+	if got.SortColumn != string(colCost) || !got.SortDesc {
+		t.Errorf("saved sortColumn=%q sortDesc=%v, want COST/true", got.SortColumn, got.SortDesc)
+	}
+}
+
+// A file with no sort — every file written before #865 — restores chronological
+// order, and one naming a column this build does not have is ignored rather than
+// leaving the table sorted by something unreachable.
+func TestSortSelection_ValidatesAgainstTheDefinition(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		col      string
+		desc     bool
+		wantCol  eventColumnID
+		wantDesc bool
+	}{
+		{"absent means chronological", "", false, "", false},
+		{"known column", string(colDuration), true, colDuration, true},
+		{"known column ascending", string(colHost), false, colHost, false},
+		{"unknown column is ignored", "WIDGETS", true, "", false},
+		{"# has no sort key", string(colIndex), true, "", false},
+		// A stale direction with no column is not a sort: the zero SortColumn wins.
+		{"direction without a column", "", true, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := UserSettings{Events: EventSettings{SortColumn: tc.col, SortDesc: tc.desc}}
+			col, desc := u.sortSelection()
+			if col != tc.wantCol || desc != tc.wantDesc {
+				t.Errorf("sortSelection() = %q/%v, want %q/%v", col, desc, tc.wantCol, tc.wantDesc)
+			}
+			if got := u.sortColumn(); got != tc.wantCol {
+				t.Errorf("sortColumn() = %q, want %q", got, tc.wantCol)
+			}
+			if got := u.sortDescending(); got != tc.wantDesc {
+				t.Errorf("sortDescending() = %v, want %v", got, tc.wantDesc)
+			}
+		})
+	}
+}

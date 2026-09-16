@@ -62,3 +62,36 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 		})
 	}
 }
+
+// A non-chronological sort is state the operator chose, so the status row names it —
+// the same reasoning as [filter: …]. It matters most on a narrow terminal, where the
+// sorted column may be one fitColumns dropped and there is then no header on screen
+// carrying the glyph.
+func TestFooterShowsActiveSort(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		col     eventColumnID
+		desc    bool
+		want    string
+		notWant string
+	}{
+		{name: "descending", col: colDuration, desc: true, want: "[sort: DURATION" + sortGlyphDesc + "]"},
+		{name: "ascending", col: colDuration, desc: false, want: "[sort: DURATION" + sortGlyphAsc + "]"},
+		{name: "cost", col: colCost, desc: true, want: "[sort: COST" + sortGlyphDesc + "]"},
+		{name: "chronological", col: "", desc: false, notWant: "[sort:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model{
+				pane: paneEvents, width: 200, eventColumns: defaultColumnSelection(),
+				sortCol: tc.col, sortDesc: tc.desc,
+			}
+			got := stripANSI(statusRow(m.footerView()))
+			if tc.want != "" && !strings.Contains(got, tc.want) {
+				t.Errorf("status row = %q, want it to contain %q", got, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(got, tc.notWant) {
+				t.Errorf("status row = %q, want no %q with no sort active", got, tc.notWant)
+			}
+		})
+	}
+}

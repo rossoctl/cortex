@@ -150,7 +150,9 @@ func TestSelectedColumns_EmptySelectionFallsBack(t *testing.T) {
 // cell under the wrong heading.
 func TestTableColumns_MatchesTheDefinition(t *testing.T) {
 	cols := selectedColumns(defaultColumnSelection())
-	tc := tableColumns(cols)
+	// No sort column: headers are the bare ids, exactly as before #865 added the
+	// sort glyph. TestTableColumns_SortGlyph covers the marked case.
+	tc := tableColumns(cols, "", false)
 	if len(tc) != len(cols) {
 		t.Fatalf("tableColumns produced %d for %d columns", len(tc), len(cols))
 	}
@@ -187,7 +189,7 @@ func TestEventColumns_AllHaveCellFuncs(t *testing.T) {
 // what DIR or METHOD meant.
 func TestRenderColumnPicker(t *testing.T) {
 	sel := defaultColumnSelection()
-	out := stripANSI(renderColumnPicker(sel, 0, 160, 40))
+	out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
 
 	for _, c := range eventColumns {
 		if !strings.Contains(out, string(c.id)) {
@@ -217,7 +219,7 @@ func TestRenderColumnPicker(t *testing.T) {
 func TestRenderColumnPicker_ShowsUncheckedBoxes(t *testing.T) {
 	sel := defaultColumnSelection()
 	sel[colHost] = false
-	out := stripANSI(renderColumnPicker(sel, 0, 160, 40))
+	out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
 	if !strings.Contains(out, "[ ]") {
 		t.Errorf("no empty box for a disabled column: %q", out)
 	}
@@ -226,11 +228,11 @@ func TestRenderColumnPicker_ShowsUncheckedBoxes(t *testing.T) {
 // A selected column that cannot fit is marked in place. Without it, ticking HOST in
 // an 80-column window looks like the checkbox did nothing.
 func TestRenderColumnPicker_MarksColumnsThatDoNotFit(t *testing.T) {
-	narrow := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 80, 40))
+	narrow := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 80, 40, "", false))
 	if !strings.Contains(narrow, "no room") {
 		t.Errorf("narrow terminal does not flag unfittable columns: %q", narrow)
 	}
-	wide := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 200, 40))
+	wide := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 200, 40, "", false))
 	if strings.Contains(wide, "no room") {
 		t.Errorf("wide terminal wrongly flags a column as unfittable: %q", wide)
 	}
@@ -487,7 +489,7 @@ func TestColumnPicker_FitsTheTerminal(t *testing.T) {
 	}
 	for _, w := range []int{60, 80, 100, 200} {
 		for _, c := range []int{0, len(eventColumns) - 1} {
-			out := renderColumnPicker(sel, c, w, 40)
+			out := renderColumnPicker(sel, c, w, 40, "", false)
 			for _, ln := range strings.Split(out, "\n") {
 				if n := lipgloss.Width(ln); n > w {
 					t.Errorf("width %d, cursor %d: a row is %d columns wide:\n%s", w, c, n, ln)
@@ -506,7 +508,7 @@ func TestColumnPicker_HintsSurviveAShortTerminal(t *testing.T) {
 	sel := defaultColumnSelection()
 	base := strings.Repeat("row\n", 11)
 	for _, h := range []int{40, 24, 18, 14, 12, 10, 8} {
-		panel := renderColumnPicker(sel, 0, 100, h)
+		panel := renderColumnPicker(sel, 0, 100, h, "", false)
 		if got := len(strings.Split(panel, "\n")); got > h {
 			t.Errorf("height %d: panel is %d lines, so overlayCenter will clip it", h, got)
 		}
@@ -523,7 +525,7 @@ func TestColumnPicker_CursorStaysVisibleWhenClipped(t *testing.T) {
 	sel := defaultColumnSelection()
 	// 12 lines leaves room for only a few column rows.
 	last := len(eventColumns) - 1
-	out := renderColumnPicker(sel, last, 100, 12)
+	out := renderColumnPicker(sel, last, 100, 12, "", false)
 	if !strings.Contains(out, string(eventColumns[last].id)) {
 		t.Errorf("cursor row %q is not rendered in a clipped popup:\n%s", eventColumns[last].id, out)
 	}
@@ -559,7 +561,7 @@ func TestFitColumns_RenderedWidthNeverExceedsTerminal(t *testing.T) {
 				}
 
 				tbl := newEventsTable()
-				tbl.SetColumns(tableColumns(fitted))
+				tbl.SetColumns(tableColumns(fitted, "", false))
 				row := make([]string, len(fitted))
 				for i := range row {
 					row[i] = "x"
@@ -810,5 +812,102 @@ func TestEventColumns_CellsTruncateToTheirOwnWidth(t *testing.T) {
 		if c.Title == "HOST" && n == 0 {
 			t.Error("HOST truncated to nothing; the column width was not plumbed through")
 		}
+	}
+}
+
+// Every column must be sortable, or a column added later is silently unsortable —
+// the checkbox appears in the picker, `s` does nothing on it, and nothing says why.
+// "#" is the one deliberate exception: its order IS arrival order.
+func TestEventColumns_SortKeysPresent(t *testing.T) {
+	for _, c := range eventColumns {
+		if c.id == colIndex {
+			if c.sortKey != nil {
+				t.Errorf("%s should have no sortKey: its order is the chronological order", c.id)
+			}
+			continue
+		}
+		if c.sortKey == nil {
+			t.Errorf("column %s has no sortKey, so `s` cannot order by it", c.id)
+		}
+	}
+}
+
+// The sort glyph must never cost a header its NAME. bubbles renders
+// runewidth.Truncate(Title, Width, "…"), so a header one column over its width
+// loses a letter to an ellipsis — and STATUS (7 of 7) and DIR (4 of 4) sit exactly
+// on the boundary, which is what makes this worth pinning rather than eyeballing.
+func TestTableColumns_SortGlyphFitsEveryWidth(t *testing.T) {
+	for _, c := range eventColumns {
+		if c.sortKey == nil {
+			continue
+		}
+		for _, desc := range []bool{true, false} {
+			tc := tableColumns([]eventColumn{c}, c.id, desc)
+			if len(tc) != 1 {
+				t.Fatalf("%s: tableColumns produced %d entries", c.id, len(tc))
+			}
+			// lipgloss.Width is the same display-width measure bubbles' Truncate
+			// applies; asserting width <= column width is asserting "Truncate leaves
+			// this alone", since Truncate spares a string whose width equals the limit.
+			if w := lipgloss.Width(tc[0].Title); w > c.width {
+				t.Errorf("%s: header %q is %d wide, column is %d — bubbles will clip the name",
+					c.id, tc[0].Title, w, c.width)
+			}
+		}
+	}
+}
+
+// The sorted column is marked, in the direction it is sorted — and only that
+// column.
+func TestTableColumns_SortGlyph(t *testing.T) {
+	cols := selectedColumns(defaultColumnSelection())
+
+	desc := tableColumns(cols, colDuration, true)
+	asc := tableColumns(cols, colDuration, false)
+	for i, c := range cols {
+		switch c.id {
+		case colDuration:
+			if want := string(colDuration) + sortGlyphDesc; desc[i].Title != want {
+				t.Errorf("descending header = %q, want %q", desc[i].Title, want)
+			}
+			if want := string(colDuration) + sortGlyphAsc; asc[i].Title != want {
+				t.Errorf("ascending header = %q, want %q", asc[i].Title, want)
+			}
+		default:
+			if desc[i].Title != string(c.id) {
+				t.Errorf("unsorted column %s got header %q", c.id, desc[i].Title)
+			}
+		}
+	}
+
+	// No sort: every header is bare. This is newEventsTable's path.
+	for i, c := range tableColumns(cols, "", true) {
+		if c.Title != string(cols[i].id) {
+			t.Errorf("with no sort column, header %d = %q, want %q", i, c.Title, cols[i].id)
+		}
+	}
+}
+
+// The picker is where the sort is chosen, so it must name the key and show which
+// column (and direction) is active.
+func TestRenderColumnPicker_ShowsSort(t *testing.T) {
+	sel := defaultColumnSelection()
+
+	if out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false)); !strings.Contains(out, "[s] sort") {
+		t.Errorf("picker hint omits the sort key: %q", out)
+	}
+
+	desc := stripANSI(renderColumnPicker(sel, 0, 160, 40, colDuration, true))
+	if !strings.Contains(desc, string(colDuration)+sortGlyphDesc) {
+		t.Errorf("picker does not mark DURATION as descending: %q", desc)
+	}
+	asc := stripANSI(renderColumnPicker(sel, 0, 160, 40, colDuration, false))
+	if !strings.Contains(asc, string(colDuration)+sortGlyphAsc) {
+		t.Errorf("picker does not mark DURATION as ascending: %q", asc)
+	}
+	// Unsorted: no glyph anywhere.
+	none := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
+	if strings.Contains(none, sortGlyphDesc) || strings.Contains(none, sortGlyphAsc) {
+		t.Errorf("picker marks a sort when none is active: %q", none)
 	}
 }

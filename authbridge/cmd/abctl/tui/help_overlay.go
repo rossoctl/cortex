@@ -81,6 +81,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"/", "filter"},
 			{"s", "toggle passthru/skip rows"},
 			{"c", "column picker (checkboxes + descriptions)"},
+			{"c then s", "sort by a column: desc → asc → chronological"},
 			{"u", "usage charts (this session)"},
 			{"esc / ← / h", "back to sessions"},
 		},

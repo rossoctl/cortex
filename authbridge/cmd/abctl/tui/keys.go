@@ -164,6 +164,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// states they rejected. `q` is not handled here — it falls through to the
 			// global quit above, because quitting is not settling on a selection.
 			Settings.Events.Columns = columnSettingsFrom(m.eventColumns)
+			// The sort rides along on the same save, for the same reason: it is a
+			// deliberate view choice made in this modal, and it would be odd for the
+			// column set to survive a restart while the ordering did not.
+			Settings.Events.SortColumn = string(m.sortCol)
+			Settings.Events.SortDesc = m.sortDesc
 			m.persistSettings()
 			return nil
 		case "up", "k":
@@ -193,8 +198,45 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			m.rebuildEventsTable()
 			return nil
+		case "s":
+			// Sort by the column under the cursor (#865). One key cycles all three
+			// states for that column: descending → ascending → chronological.
+			//
+			// Descending FIRST because the question the issue asks — "the events with
+			// the longest duration or highest token cost" — wants the extreme at the
+			// top; ascending is the follow-up, not the opening move.
+			//
+			// Cycling back through "off" on the same key is how the operator recovers
+			// arrival order without a second binding to discover. Pressing `s` on a
+			// DIFFERENT column jumps straight to that column, descending, rather than
+			// inheriting the previous column's direction — a fresh column is a fresh
+			// question.
+			//
+			// `s` does not collide with the global hideInactive toggle: this modal block
+			// returns before the global switch is reached, the same way its `r` shadows
+			// nothing.
+			id := eventColumns[m.colCursor].id
+			switch {
+			case eventColumns[m.colCursor].sortKey == nil:
+				// "#" has no sort key: its order IS arrival order, so sorting by it is
+				// what sorting by nothing already does. Flash rather than silently
+				// ignoring the key, so a modal that swallows everything else does not
+				// read as broken here.
+				m.setFlash(string(id) + " is the chronological order")
+			case m.sortCol != id:
+				m.sortCol, m.sortDesc = id, true
+			case m.sortDesc:
+				m.sortDesc = false
+			default:
+				m.sortCol, m.sortDesc = "", false
+			}
+			m.rebuildEventsTable()
+			return nil
 		case "r":
 			m.eventColumns = defaultColumnSelection()
+			// Reset means the default VIEW, which is chronological — the same reasoning
+			// that makes this key restore the default column set.
+			m.sortCol, m.sortDesc = "", false
 			m.rebuildEventsTable()
 			return nil
 		default:

@@ -80,6 +80,21 @@ func (m *model) footerView() string {
 	if m.filter != "" && !m.filtering {
 		status.WriteString(styleWarn.Render("   [filter: " + m.filter + "]"))
 	}
+	// A non-chronological sort, for the same reason as [filter: …] above: it is
+	// state the operator chose, and a table in an order the eye does not expect
+	// reads as a bug when nothing on screen names the ordering.
+	//
+	// Here as well as in the column header, because the sorted column may be one
+	// fitColumns dropped on a narrow terminal — and then there is no header on
+	// screen to carry the glyph, which is precisely when the reordering is most
+	// confusing.
+	if m.sortCol != "" {
+		glyph := sortGlyphAsc
+		if m.sortDesc {
+			glyph = sortGlyphDesc
+		}
+		status.WriteString(styleWarn.Render("   [sort: " + string(m.sortCol) + glyph + "]"))
+	}
 
 	// Flash message (e.g. "yanked → ~/.cortex/abctl-events/...").
 	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {

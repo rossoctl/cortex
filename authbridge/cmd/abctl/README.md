@@ -204,6 +204,21 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.
 
+  The picker is also where sorting lives: `s` orders the table by the column
+  under the cursor, descending first, so "which calls took longest" and "which
+  cost the most" are one keystroke from the column that answers them. Press it
+  again for ascending, and a third time to return to arrival order. The sorted
+  column is marked in its header (`DURATION▼`) and named in the footer
+  (`[sort: DURATION▼]`) — the footer matters on a narrow terminal, where the
+  sorted column may be one the table had to drop.
+
+  Numeric columns sort numerically, not by the text in the cell: DURATION orders
+  90ms before 1.20s, and TOKENS orders 900 before 1,048,576. Blank cells — a
+  request whose response has not landed, or a figure the proxy could not model —
+  sort to the bottom of a descending view rather than crowding the end you sorted
+  toward. Sorting never changes the `#` exchange pairing or the per-row token and
+  cost figures; it reorders the finished rows only.
+
   All twelve together need ~168 terminal columns, so the table drops what does
   not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
@@ -305,7 +320,8 @@ Layered on top of all of them:
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits and saves, Esc cancels the edit and saves nothing; clear the box and press Enter to remove a saved filter) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
-| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close); the selection is saved on close |
+| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
+| `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `~/.cortex/abctl-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom |
@@ -327,10 +343,10 @@ Layered on top of all of them:
 
 ## Settings
 
-abctl remembers the events-table column selection and the active filter in
-`~/.cortex/abctl-config.yaml`. Columns are saved when the column picker closes with
-`Esc`/`Enter`/`c` (`q` quits without saving); the filter is saved when you commit it
-with `Enter`. There is no explicit save step.
+abctl remembers the events-table column selection, the sort order, and the active
+filter in `~/.cortex/abctl-config.yaml`. Columns and the sort are saved when the
+column picker closes with `Esc`/`Enter`/`c` (`q` quits without saving); the filter is
+saved when you commit it with `Enter`. There is no explicit save step.
 
 A restored filter is shown in the footer as `[filter: …]` while it is in effect but
 not being edited — otherwise a shortened list would have no explanation on screen.
@@ -355,6 +371,9 @@ events:
       visible: false
     - name: TOKENS
       visible: false
+  # Omit sortColumn (or name a column this build does not have) for arrival order.
+  sortColumn: DURATION
+  sortDesc: true
 filter: github-tool
 ```
 
@@ -533,9 +552,9 @@ results; treat the output accordingly.
 ## Deferred to later PRs
 
 - Native clipboard (currently writes a file under `~/.cortex/abctl-events`).
-- More persisted settings (#954): sort order, pane sizes, theme. Each needs the
-  setting itself before there is anything to persist — the events table has no sort
-  state, pane sizes are recomputed per frame, and there is no theme to choose.
+- More persisted settings (#954): pane sizes, theme. Each needs the setting itself
+  before there is anything to persist — pane sizes are recomputed per frame, and
+  there is no theme to choose. (Sort order is done: see the column picker's `s`.)
 - Fuzzy search beyond substring match.
 - Per-user filtering (`Identity.Subject == X`).
 - Krew plugin packaging.
