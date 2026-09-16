@@ -39,6 +39,31 @@ func SnapshotMCP(ext *MCPExtension) *MCPExtension {
 	return &c
 }
 
+// SnapshotClient returns a copy of the parsed client label.
+//
+// THE ONE EXTENSION THAT WAS NOT COPIED. Every other field on a SessionEvent is snapshotted
+// by one of these helpers precisely so an already-appended event cannot be rewritten later —
+// and Client, alone, was assigned as the live pointer Context.ClientInfo memoizes. Ten
+// recording sites shared it, so one mutation through that pointer relabelled every event of
+// the request, including ones already handed to the session store and being read by the
+// session API.
+//
+// THAT IS AN INTEGRITY CLAIM, not a tidiness one. This label is what attributes spend to a
+// program, and context.go states that a caller lying about itself mis-attributes "that
+// caller's own spend and nothing else". A shared mutable pointer is exactly how that stops
+// being true: a plugin could re-file spend already recorded under another agent's name. The
+// label is still self-reported and still spoofable — nothing here changes that — but it is
+// now fixed at the moment it is recorded, which is what the claim requires.
+//
+// All three fields are strings, so a shallow copy is a deep one.
+func SnapshotClient(c *EventClient) *EventClient {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
 // SnapshotInference returns a shallow copy of ext. Scalar response
 // fields (Completion, FinishReason, *Tokens) get assigned on the live
 // extension during OnResponse; without snapshotting, the request event's

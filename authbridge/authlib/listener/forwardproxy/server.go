@@ -276,6 +276,15 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		Shared:    s.Shared,
 		StartedAt: time.Now(),
 	}
+	// Pin the calling agent HERE, at construction, from the headers as the CLIENT sent
+	// them. Same rule as the session identity below and for the same reason, one step
+	// earlier: pctx.Headers is a clone that plugins write to, and ClientInfo's memo fills
+	// on first READ, which without this line is an event-construction site downstream of
+	// the whole pipeline. A plugin that rewrote User-Agent would re-file this request's
+	// spend under a name of its choosing, and the request and response events could
+	// disagree depending on which asked first. Latent while no plugin touches that header
+	// — and silent on the day one does, which is why it is pinned rather than watched.
+	pctx.ResolveClient()
 
 	// SkipHosts short-circuit: forward as a transparent proxy. No
 	// pipeline run, no body buffering, no session recording, no
@@ -381,6 +390,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			Host:        pctx.Host,
 			HTTPMethod:  pctx.Method,
 			HTTPPath:    pctx.Path,
+			Client:      pctx.ClientInfo(),
 		}
 		// Record EVERY message that reaches the pipeline — even when no
 		// plugin acted and no parser matched (Invocations/MCP/Inference all
@@ -887,6 +897,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		StatusCode:  statusCode,
 		Error:       pipeline.DeriveError(pctx),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
+		Client:      pctx.ClientInfo(),
 	}
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
@@ -1197,6 +1208,7 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 			Code:    code,
 			Message: message,
 		},
+		Client: pctx.ClientInfo(),
 	}
 	s.Sessions.Append(sid, ev)
 }
@@ -1230,6 +1242,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Headers:   r.Header.Clone(),
 		StartedAt: time.Now(),
 	}
+	// At construction, as in serveOutbound: the gate plugins run on this CONNECT before
+	// recordTunnelOpened builds its event, so the pin is what keeps the tunnel row
+	// attributed to the agent that opened it.
+	pctx.ResolveClient()
 
 	// SkipHosts short-circuit: open the tunnel without running the
 	// pipeline or recording a session event. The pipeline never ran,

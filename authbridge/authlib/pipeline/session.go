@@ -210,6 +210,21 @@ type SessionEvent struct {
 	// and treat Invocation.Path as per-invocation context.
 	HTTPMethod string
 	HTTPPath   string
+
+	// Client is the coding agent that made the request, parsed from the request's
+	// User-Agent by Context.ClientInfo. Nil when the request carried none —
+	// ABSENCE, not an agent named "unknown"; EventClient.Label() is the only place
+	// absence becomes a display string, so a consumer that aggregates on Label
+	// gets a reserved bucket rather than a fabricated agent name.
+	//
+	// CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE: an observability and
+	// cost-attribution key, never an authorization subject. Deliberately the same
+	// caveat, in the same words, that Context.Session carries about client-asserted
+	// session ids. Distinct from Identity above, which is the AUTHENTICATED
+	// principal — the two sit on the same event and answer different questions
+	// ("what program is calling" versus "who is calling"), and treating this one as
+	// the other means building authorization on a request header.
+	Client *EventClient
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -361,6 +376,12 @@ type sessionEventWire struct {
 	// predates these fields sees "" and renders what it renders today.
 	HTTPMethod string `json:"httpMethod,omitempty"`
 	HTTPPath   string `json:"httpPath,omitempty"`
+	// omitempty, and a POINTER, so both skew directions are safe and absence stays
+	// absence: an old abctl ignores a key it does not know, an event recorded before
+	// this field existed decodes to nil rather than to an empty struct, and a
+	// request that sent no User-Agent emits no key at all. A value type here would
+	// make "no client" and "a client that named nothing" the same wire bytes.
+	Client *EventClient `json:"client,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -385,6 +406,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		TunnelReason: e.TunnelReason,
 		HTTPMethod:   e.HTTPMethod,
 		HTTPPath:     e.HTTPPath,
+		Client:       e.Client,
 	})
 }
 
@@ -417,6 +439,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		TunnelReason: w.TunnelReason,
 		HTTPMethod:   w.HTTPMethod,
 		HTTPPath:     w.HTTPPath,
+		Client:       w.Client,
 	}
 	return nil
 }

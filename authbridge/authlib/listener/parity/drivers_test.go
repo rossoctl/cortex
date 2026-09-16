@@ -288,12 +288,27 @@ func runExtproc(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *obser
 						"content-type", f.contentType(),
 						"content-length", fmt.Sprintf("%d", len(f.upstreamBody)),
 					),
+					// Envoy sets end_of_stream on the header callback when the
+					// response is over at its headers, and this harness has to say
+					// so too: it is the only signal that distinguishes a body-less
+					// response from one whose body has not arrived yet, and the
+					// listener now keys its dispatch on it.
+					EndOfStream: len(f.upstreamBody) == 0,
 				},
 			},
 		})
-		// Send ResponseBody only when the plugin asked for body buffering.
-		// The header-only path runs RunResponse and records on its own.
-		if spyPipe.NeedsBody() {
+		// Send ResponseBody only when the plugin asked for body buffering AND
+		// THERE IS A BODY.
+		//
+		// The second half is not a tidy-up. This append used to fire on
+		// NeedsBody() alone, so every fixture with an empty upstream body got a
+		// synthetic zero-length ResponseBody message that real Envoy never
+		// sends — which made the body-less shape unrepresentable here and let
+		// extproc drop the cost and the response row for every 204, 304 and
+		// error-status-on-headers while a suite whose entire purpose is catching
+		// per-listener divergence stayed green. A harness that cannot express a
+		// shape cannot notice a listener mishandling it.
+		if spyPipe.NeedsBody() && len(f.upstreamBody) > 0 {
 			reqs = append(reqs, &extprocv3.ProcessingRequest{
 				Request: &extprocv3.ProcessingRequest_ResponseBody{
 					ResponseBody: &extprocv3.HttpBody{Body: f.upstreamBody, EndOfStream: true},

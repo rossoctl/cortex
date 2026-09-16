@@ -13,9 +13,11 @@
 package costing
 
 import (
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
@@ -80,6 +82,13 @@ const (
 	headerZero
 	// headerPositive: a usable figure.
 	headerPositive
+	// headerImplausible: present, parsed, finite, positive — and larger than one
+	// inference call could plausibly cost, on an endpoint this pipeline could not
+	// parse. Refused rather than believed, and refused rather than clamped: see
+	// implausibleUnparsedCost. Distinct from headerUnusable because it is DISCLOSED —
+	// a figure was on the wire and this process declined it, which is a fact an
+	// operator needs and a garbage header is not.
+	headerImplausible
 )
 
 // headerCost returns the cost the gateway reported and what kind of answer it was.
@@ -99,7 +108,80 @@ func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
 	if c == 0 {
 		return 0, headerZero
 	}
+	if implausibleUnparsedCost(pctx, c) {
+		return 0, headerImplausible
+	}
 	return c, headerPositive
+}
+
+// implausibleUnparsedCost is the CAP on what an endpoint nobody could parse is allowed to
+// charge, and the one thing standing between a hostile host and a poisoned ledger.
+//
+// THE HOLE IT CLOSES. This header is an unauthenticated string on a response, validated
+// here for nothing but its numeric shape, and nothing in the pipeline considers the HOST it
+// came from — inference-parser dispatches on the path alone. Cost is now settled on every
+// proxied response including the ones with no inference extension, so before this cap ANY
+// path on ANY host an agent was proxied to could name its own figure and have it published,
+// aggregated, written to the thirty-day ledger, and fed to litellm_budgettrack, which
+// denies with HTTP 429 once the daily total passes MaxBudget. One response from one hostile
+// site could therefore lock an agent out of all further inference and corrupt durable cost
+// reporting. inference-parser is in the default local pipeline, so this is the shipped
+// configuration.
+//
+// GATED ON A NIL EXTENSION, which is exactly the set of responses whose spend was newly
+// admitted — an endpoint off the parser's dialect list, or a body it could not read. Where
+// the extension is present the request WAS parsed: we sent an inference-shaped body to an
+// inference-shaped path and read a model out of it, and today's behaviour is kept unchanged
+// there. That narrower hole — a hostile host serving /v1/chat/completions — predates this
+// and is a host-allowlist problem, which this is not pretending to be.
+//
+// WHAT IT IS NOT. It is a blast-radius cap, NOT AUTHENTICATION. A forged figure UNDER the
+// cap still settles, because a plausible number from an unparsed endpoint is exactly what a
+// gateway-priced /v1/embeddings response looks like and refusing it would break the feature
+// that opened the hole. The stronger fix is an allowlist of hosts whose cost headers are
+// believed at all; it was considered and deprioritised, and this cap was preferred because
+// it also bounds a second disclosed gap (see pricing.MaxCostMicros on the aggregate wrap,
+// which it moves and does not close).
+//
+// REFUSED, NOT CLAMPED. Clamping to the cap would invent a $10,000 charge nobody made and
+// publish it wearing the same label a real figure wears. The refusal is published instead,
+// as costevent.RejectedImplausible on an unpriced record, so the coverage gap stays
+// nameable — that is the whole doctrine here: a wrong number wearing a right label is the
+// worst available outcome.
+func implausibleUnparsedCost(pctx *pipeline.Context, usd float64) bool {
+	if pctx.Extensions.Inference != nil {
+		return false
+	}
+	if pricing.PlausibleRequestCostUSD(usd) {
+		return false
+	}
+	warnImplausibleCost(pctx, usd)
+	return true
+}
+
+// implausibleWarnOnce keeps the operator-facing warning to ONE per process.
+//
+// Not once per host, which is the shape a reader will expect and which cannot be safely
+// built here: pctx.Host is caller-controlled, so a map keyed on it is an unbounded
+// allocation driven by hostile input. Not unconditional either — the warning fires on a
+// path an attacker chooses and would be a log-flood amplifier. One warning names the
+// mechanism and the first host; every occurrence is on the record as
+// costevent.RejectedImplausible, and the Debug line below carries the full trail for
+// whoever is already investigating.
+var implausibleWarnOnce sync.Once
+
+// warnImplausibleCost tells an operator enough to FIND THE HOST: host, path, the figure
+// that was refused, and the bound it exceeded. A warning saying only "implausible cost
+// rejected" would leave the one question that matters unanswerable.
+func warnImplausibleCost(pctx *pipeline.Context, usd float64) {
+	slog.Debug("costing: refused an implausible cost header",
+		"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+		"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
+	implausibleWarnOnce.Do(func() {
+		slog.Warn("costing: refused a cost header larger than any inference call could plausibly be; this endpoint was not parsed, so nothing corroborates the figure and it is recorded as an unpriced coverage gap rather than as spend. Further occurrences are logged at debug level only",
+			"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+			"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
+	})
 }
 
 // IsEventStream reports whether the response is a text/event-stream (SSE) — the
@@ -156,6 +238,47 @@ type Settled struct {
 	// priced.
 	DeclaredFree bool
 
+	// Incomplete marks CostUSD as not an EXACT total, and IncompleteReason says why —
+	// pricing.ReasonOutputUncounted for a figure that is known-low, or
+	// pricing.ReasonSplitUnreported for one that is approximate in no known direction.
+	//
+	// It exists because a truncated stream was priced prompt-only and published as a
+	// complete figure. Prompt counts land on Anthropic's message_start and the output
+	// count only on message_delta, so a stream that dies in between yields real prompt
+	// tokens with output at zero — and Settle priced exactly what it was given, set
+	// Priced, and every consumer downstream read the result as an exact figure: the
+	// usage aggregator counted it in PricedRequests and CostMicros, and a budget
+	// enforced against it. A floor presented as a total understates spend by however
+	// much the completion would have cost, which on a long generation is most of it.
+	//
+	// Honest by DISCLOSURE, not by adjustment. CostUSD keeps the figure and Priced stays
+	// TRUE, deliberately and on both counts:
+	//
+	//   - The figure is the best available. Estimating the missing completion would be
+	//     worse than reporting a known-low number and saying it is low.
+	//   - The request IS priced, so removing it from a priced count would misuse a
+	//     counter that answers a different question — coverage, "did anything price
+	//     this" — and would disclose the same fact twice in two vocabularies. It would
+	//     also send a consumer's own fallback down a rate table to recompute the
+	//     identical prompt-only figure and label THAT one exact.
+	//
+	// Never set on a gateway figure, including a declared-free zero: a reported cost is
+	// what the call actually charged whatever our counters saw, so completeness there is
+	// the gateway's assertion rather than an inference from token tallies.
+	Incomplete       bool
+	IncompleteReason string
+
+	// RejectedReason names a figure that WAS on the wire and was refused —
+	// costevent.RejectedImplausible, set by implausibleUnparsedCost.
+	//
+	// The counterpart to Incomplete, one step further out: Incomplete qualifies a figure
+	// that stands, this one records that there is no figure BECAUSE one was declined.
+	// Priced is false and CostUSD is zero whenever it is set — a refused figure is not a
+	// figure — and it travels onto the record so the gap is nameable instead of silent.
+	// Never set alongside HasReported: refusing the figure and then keeping it for the
+	// drift check would compare the rate table against a forgery.
+	RejectedReason string
+
 	// ReportedUSD is the gateway's own figure, when it gave one.
 	ReportedUSD float64
 	HasReported bool
@@ -197,9 +320,15 @@ type Settled struct {
 	// HasModelled, so a response row can show its own cost on a call where the total came
 	// from the gateway and the table has no opinion on the whole.
 	//
-	// PromptUSD + OutputUSD == ModelledUSD to the micro, by construction: both halves
-	// resolve at the same prompt size over a complementary tier partition, and each rounds
-	// to micros on its own, so the partition can differ from the whole in the last place.
+	// PromptUSD + OutputUSD can differ from ModelledUSD IN THE LAST PLACE, and a caller
+	// comparing them needs a tolerance rather than equality. Both halves resolve at the
+	// same prompt size over a complementary tier partition, so they agree on the
+	// arithmetic — but each is rounded to micros on its own and the whole is rounded
+	// separately, so two rounded halves need not sum to the rounded whole. costing_test.go
+	// uses a 1e-6 tolerance for exactly this reason.
+	//
+	// This paragraph used to open by claiming equality "to the micro, by construction" and
+	// then deny it two lines later. The denial was the true half.
 	// Neither sums to CostUSD, which may be the gateway's; comparing their sum against a
 	// reported total is a drift measurement, and ModelledUSD is the figure kept for it.
 	OutputUSD float64
@@ -226,6 +355,15 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 		out.ReportedUSD, out.HasReported = cost, true
 	} else if state == headerZero && !IsEventStream(pctx) {
 		out.ReportedUSD, out.HasReported = 0, true
+	} else if state == headerImplausible {
+		// DISCLOSED and not charged. Deliberately not fed to ReportedUSD: the figure was
+		// refused, and keeping it as "the gateway's own figure" would let the drift check
+		// measure the rate table against a number nothing corroborates and report the
+		// table as stale. Nothing else about this response changes — a modelled figure
+		// would still win below if one existed, which on this path it never can, since
+		// the cap only applies where the extension is nil and there is therefore no usage
+		// to model.
+		out.RejectedReason = costevent.RejectedImplausible
 	}
 
 	// Modelled alongside, always, so the pair is available for drift even when the
@@ -278,6 +416,22 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 		out.CostUSD, out.Source, out.Provenance, out.Priced =
 			out.ModelledUSD, costevent.SourceUsageFallback, out.ModelledProv, true
 	}
+
+	// Qualify a MODELLED figure whose counters cannot support an exact total. Nothing is
+	// adjusted — see Settled.Incomplete; the figure stands and the claim about it does
+	// not.
+	//
+	// This is the only place in the system that holds both the header state and the
+	// usage, so it is the only place that knows WHICH figure won — and therefore the
+	// only place that can gate the disclosure on the answer being modelled. Gated on the
+	// source rather than on "the header was not positive" because DeclaredFree reaches
+	// here as SourceGatewayHeader too: the gateway stating it charged nothing is an
+	// exact total, and publishing a floor of zero would be a lower bound on nothing.
+	if out.Priced && out.Source == costevent.SourceUsageFallback {
+		if reason := pricing.IncompleteReason(pctx.Extensions.Inference); reason != "" {
+			out.Incomplete, out.IncompleteReason = true, reason
+		}
+	}
 	return out
 }
 
@@ -325,9 +479,20 @@ func Store(pctx *pipeline.Context, s Settled) {
 	pipeline.SetState(pctx, StateKey, &s)
 }
 
-// Load retrieves the outcome. False means no cost owner ran — which, given costing runs in
-// the parser and every consumer declares a hard dependency on it, means this request had no
-// inference in it at all.
+// Load retrieves the outcome. False means the cost owner's RESPONSE PASS never ran for this
+// request — the parser is absent from the pipeline, the request was rejected before the
+// response phase, or no listener delivered a terminal frame.
+//
+// It does NOT mean the request carried no inference, and no longer says anything about the
+// traffic's shape. Store now runs on EVERY proxied response, including the ones this parser
+// has no dialect for, because a gateway reports its own cost in a response header that needs
+// neither a model nor a body — so /v1/embeddings, /mcp, a health check and a CONNECT tunnel
+// all Load TRUE. True therefore says only that a decision was reached; whether the decision
+// was a figure is Settled.Priced, which is false for most of that traffic.
+//
+// The old reading — false means no inference at all — held only while Store was reached from
+// the parsed paths alone, and it is the reading under which a gateway-priced response the
+// parser could not read escaped the ledger entirely.
 func Load(pctx *pipeline.Context) (Settled, bool) {
 	if s := pipeline.GetState[Settled](pctx, StateKey); s != nil {
 		return *s, true
@@ -382,8 +547,18 @@ func NewRecord(s Settled, avoided []costevent.Saving) costevent.Event {
 		Source:     s.Source,
 		Provenance: s.Provenance.String(),
 		Settled:    s.Priced,
-		PromptUSD:  s.PromptUSD,
-		OutputUSD:  s.OutputUSD,
-		Avoided:    avoided,
+		// Carried, not derived. A Settled.Incomplete that NewRecord dropped would be
+		// knowledge that reaches nothing — which is exactly the state this fix found the
+		// parser's "token counts will be incomplete" log line in.
+		Incomplete:       s.Incomplete,
+		IncompleteReason: s.IncompleteReason,
+		// Carried for the same reason: a refusal that reached no record is a coverage gap
+		// nobody can see, which is the state this fix found the implausible-header path
+		// in — it published nothing at all and looked identical to a response that
+		// reported no cost.
+		RejectedReason: s.RejectedReason,
+		PromptUSD:      s.PromptUSD,
+		OutputUSD:      s.OutputUSD,
+		Avoided:        avoided,
 	}
 }

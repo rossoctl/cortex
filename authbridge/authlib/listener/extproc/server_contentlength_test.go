@@ -46,7 +46,7 @@ func TestHandleResponseBody_SetsContentLength(t *testing.T) {
 	srv := &Server{OutboundPipeline: pipeline.NewHolder(p)}
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{"Content-Encoding": {"gzip"}}}
 
-	resp := srv.handleResponseBody(context.Background(), []byte("Replace this!"), pctx, "")
+	resp := srv.handleResponseBody(context.Background(), []byte("Replace this!"), pctx, "", true)
 	hm := resp.GetResponseBody().GetResponse().GetHeaderMutation()
 	if got, want := mutationHeaderValue(hm, "content-length"), strconv.Itoa(len(newBody)); got != want {
 		t.Fatalf("content-length = %q, want %q", got, want)

@@ -10,19 +10,63 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
-// rates builds a table charging 1 micro-dollar per token in every tier, so a token count
-// reads directly as micros and an expectation needs no arithmetic to check.
+// tierMicros is what rates charges per token in each tier, in micro-dollars.
+//
+// DISTINCT PER TIER, and that is the entire point of the numbers. This helper used to
+// charge 1e-6 in all four tiers, which made every expectation built on it a function of
+// the token TOTAL and of nothing else: 1,000 tokens priced as uncached input and 1,000
+// priced as cache reads — a 10x error on the real card, and the exact mistake the
+// four-way split exists to prevent — settled to the identical figure, so no test using
+// this table could see a transposition anywhere between pricing.UsageFromInference and
+// pricing.Cost. Coverage of that rested entirely on ONE other fixture (tieredTable, via
+// the 26 input tokens in the halves test), where the whole margin for an
+// input/cache-read swap is 140 micros in 5.1 million.
+//
+// FOUR PRIMES, no two of which sum to or divide a third, so no transposition can
+// coincide. 1/2/4/8 would not do: a fixture carrying twice as many of the 4-tier's
+// tokens as the 8-tier's prices the same either way round, and a swap of those two would
+// pass. Ordered cache_read < input < cache_write < output so the SHAPE matches a real
+// rate card and nothing here reads as an inverted one; the values themselves are
+// synthetic and are nobody's price list.
+//
+// Pinned end to end by TestSettle_PricesEachTierAtItsOwnRate, which also asserts the
+// four settled figures stay pairwise distinct — the property every other expectation in
+// this package now depends on.
+var tierMicros = map[pricing.Tier]float64{
+	pricing.TierCacheRead:  3,
+	pricing.TierInput:      7,
+	pricing.TierCacheWrite: 11,
+	pricing.TierOutput:     23,
+}
+
+// rates builds a table charging tierMicros per token, so a settled total says WHICH
+// tiers the tokens were priced in and not merely how many there were. Expectations
+// against it are written as explicit per-tier arithmetic — `(1000*7 + 500*23) / 1e6`
+// rather than a bare 0.0185 — so the tier each count is charged at is visible at the
+// assertion.
 func rates(t *testing.T) pricing.Resolver {
 	t.Helper()
 	var r pricing.Rates
-	for _, tier := range []pricing.Tier{pricing.TierInput, pricing.TierCacheWrite, pricing.TierCacheRead, pricing.TierOutput} {
-		r.Base[tier], r.Set[tier] = 1e-6, true
+	for tier, perToken := range tierMicros {
+		r.Base[tier], r.Set[tier] = perToken*1e-6, true
 	}
 	tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return pricing.NewRegistry(tab)
+}
+
+// fallbackUSD is what a ctx(_, input, output) fixture settles to from the rates table:
+// the input count at the INPUT tier's rate plus the output count at the OUTPUT tier's,
+// which for the standard (1000, 500) fixture is 0.0185.
+//
+// Named per tier rather than written as a literal so the expectation says which rate each
+// count is charged at. A bare 0.0185 asserts the arithmetic and not the ATTRIBUTION, and
+// attribution is what a flat table could not express: under the old one-rate helper the
+// same 0.0015 was correct however the two counts were shuffled between tiers.
+func fallbackUSD(input, output int) float64 {
+	return (float64(input)*tierMicros[pricing.TierInput] + float64(output)*tierMicros[pricing.TierOutput]) / 1e6
 }
 
 func ctx(headers map[string]string, input, output int) *pipeline.Context {
@@ -68,10 +112,10 @@ func TestSettle_Precedence(t *testing.T) {
 		wantProv: pricing.ProvAuthoritative,
 		priced:   true,
 	}, {
-		// 1000 + 500 tokens at 1e-6 each.
+		// 1,000 input tokens at the input rate plus 500 output ones at the output rate.
 		name:     "no header at all falls back to the table",
 		headers:  map[string]string{"Content-Type": json},
-		wantCost: 0.0015,
+		wantCost: fallbackUSD(1000, 500),
 		wantSrc:  costevent.SourceUsageFallback,
 		wantProv: pricing.ProvConfigured,
 		priced:   true,
@@ -79,7 +123,7 @@ func TestSettle_Precedence(t *testing.T) {
 		// The zero LiteLLM stamps on every stream is a placeholder, not an answer.
 		name:     "a stream's zero falls back like an absent header",
 		headers:  map[string]string{"Content-Type": "text/event-stream", ResponseCostHeader: "0"},
-		wantCost: 0.0015,
+		wantCost: fallbackUSD(1000, 500),
 		wantSrc:  costevent.SourceUsageFallback,
 		wantProv: pricing.ProvConfigured,
 		priced:   true,
@@ -97,7 +141,7 @@ func TestSettle_Precedence(t *testing.T) {
 		// Garbage is not a figure and not a declaration of free either.
 		name:     "an unusable header falls back to the table",
 		headers:  map[string]string{"Content-Type": json, ResponseCostHeader: "abc"},
-		wantCost: 0.0015,
+		wantCost: fallbackUSD(1000, 500),
 		wantSrc:  costevent.SourceUsageFallback,
 		wantProv: pricing.ProvConfigured,
 		priced:   true,
@@ -130,11 +174,71 @@ func TestSettle_CarriesBothFigures(t *testing.T) {
 	if !got.HasReported || got.ReportedUSD != 0.25 {
 		t.Errorf("reported = %v (has=%v), want 0.25", got.ReportedUSD, got.HasReported)
 	}
-	if !got.HasModelled || got.ModelledUSD != 0.0015 {
-		t.Errorf("modelled = %v (has=%v), want 0.0015", got.ModelledUSD, got.HasModelled)
+	if want := fallbackUSD(1000, 500); !got.HasModelled || got.ModelledUSD != want {
+		t.Errorf("modelled = %v (has=%v), want %v", got.ModelledUSD, got.HasModelled, want)
 	}
 	if got.ModelledProv != pricing.ProvConfigured {
 		t.Errorf("ModelledProv = %v, want configured", got.ModelledProv)
+	}
+}
+
+// A TIER MIX-UP is the error the four-way split exists to prevent, and it is the one
+// arithmetic mistake in this package that costs real money silently: a cache read billed
+// as uncached input is a 10x overcharge on the real card, and for a long-running agent —
+// whose traffic is overwhelmingly cache reads — that is most of the bill.
+//
+// Pinned directly rather than incidentally. One fixture per tier, the same 1,000 tokens in
+// each, each expected at its own rate: a transposition anywhere between
+// InferenceExtension's field names and pricing.Cost's rate lookup moves two of the four
+// figures. Before the rates helper carried distinct per-tier values, every one of these
+// four settled to the identical number and the only thing in the package that could see a
+// swap was 26 input tokens inside another fixture's 641k-token prompt.
+//
+// The pairwise-distinctness check at the end is a guard on the FIXTURE, not on Settle: it
+// is the property that makes every other expectation here tier-sensitive, so a future
+// edit that quietly gives two tiers the same rate has to fail something.
+func TestSettle_PricesEachTierAtItsOwnRate(t *testing.T) {
+	const n = 1000
+	settled := make(map[pricing.Tier]float64, len(tierMicros))
+	for _, tc := range []struct {
+		tier pricing.Tier
+		inf  pipeline.InferenceExtension
+	}{
+		{pricing.TierInput, pipeline.InferenceExtension{InputTokens: n}},
+		{pricing.TierCacheWrite, pipeline.InferenceExtension{CacheWriteTokens: n}},
+		{pricing.TierCacheRead, pipeline.InferenceExtension{CacheReadTokens: n}},
+		{pricing.TierOutput, pipeline.InferenceExtension{OutputTokens: n}},
+	} {
+		t.Run(tc.tier.String(), func(t *testing.T) {
+			inf := tc.inf
+			inf.Model = "claude-opus-5"
+			h := http.Header{}
+			// No cost header: the modelled figure has to be the one that wins, or this
+			// asserts a gateway's number instead of the table's tiers.
+			h.Set("Content-Type", "application/json")
+			got := Settle(&pipeline.Context{
+				Host:            "gw.internal",
+				ResponseHeaders: h,
+				Extensions:      pipeline.Extensions{Inference: &inf},
+			}, rates(t))
+			if !got.Priced || got.Source != costevent.SourceUsageFallback {
+				t.Fatalf("not priced from the table: %+v", got)
+			}
+			if want := float64(n) * tierMicros[tc.tier] / 1e6; got.CostUSD != want {
+				t.Errorf("CostUSD = %v, want %v — %d %s tokens must charge the %s rate (%v/token), and no other tier's",
+					got.CostUSD, want, n, tc.tier, tc.tier, tierMicros[tc.tier]*1e-6)
+			}
+			settled[tc.tier] = got.CostUSD
+		})
+	}
+
+	byCost := make(map[float64]pricing.Tier, len(settled))
+	for tier, usd := range settled {
+		if other, dup := byCost[usd]; dup {
+			t.Errorf("%s and %s both settle %d tokens at %v; two tiers charging one rate makes every expectation in this package blind to a swap between them",
+				tier, other, n, usd)
+		}
+		byCost[usd] = tier
 	}
 }
 

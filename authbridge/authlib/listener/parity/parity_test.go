@@ -184,6 +184,66 @@ func TestParity_ReadsBodySSE(t *testing.T) {
 	assertParity(t, f, pipeline.SessionResponse, inboundListeners)
 }
 
+// TestParity_HeaderOnlyResponse is the shape this suite could not express
+// until the synthetic-body gate in runExtproc was fixed, and the one it
+// existed to catch.
+//
+// A response that ends on its headers — a 204, a 304, an error status with no
+// body — must still reach the terminal RunResponseFrame(nil, true) on every
+// listener, because that dispatch is where a streaming-aware plugin finalizes:
+// where inference-parser settles the cost off the gateway's response header and
+// records its no_response_body Skip. extproc used to reach it on neither branch
+// (its header phase deferred to a body phase Envoy never opened), so on that
+// listener a body-less response settled nothing and recorded no response row at
+// all. The proxies got it right, which is exactly the divergence this suite is
+// for and exactly what it could not see: the old harness handed extproc a
+// zero-length ResponseBody message no Envoy would send, papering over the gap.
+//
+// The anchor is TerminalFrames: 1 with empty content — one finalization, on a
+// response that genuinely carried nothing. Exactly-once matters as much as
+// at-least-once: two terminal dispatches means two charges for one request.
+func TestParity_HeaderOnlyResponse(t *testing.T) {
+	f := fixture{
+		name:      "header-only-response",
+		direction: pipeline.Inbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginAStreaming, spyConfig{
+			ReadsBody:            true,
+			RecordResponseFrames: true,
+		})},
+		method:         "GET",
+		path:           "/parity/no-content",
+		upstreamStatus: 204,
+		upstreamBody:   nil,
+		expectedPluginEvents: map[string]string{
+			spyPluginAStreaming + bodyRespStrippedSuffix: jsonOf(bodyObservation{TerminalFrames: 1}),
+		},
+	}
+	assertParity(t, f, pipeline.SessionResponse, inboundListeners)
+}
+
+// TestParity_OutboundHeaderOnlyResponse mirrors the above on the egress side,
+// which is where the dropped cost actually cost money: agents reach LiteLLM
+// through the outbound pipeline, and a rate-limited or errored turn that ends on
+// its headers still carries the gateway's own charge in a response header.
+func TestParity_OutboundHeaderOnlyResponse(t *testing.T) {
+	f := fixture{
+		name:      "outbound-header-only-response",
+		direction: pipeline.Outbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginAStreaming, spyConfig{
+			ReadsBody:            true,
+			RecordResponseFrames: true,
+		})},
+		method:         "GET",
+		path:           "/parity/no-content",
+		upstreamStatus: 204,
+		upstreamBody:   nil,
+		expectedPluginEvents: map[string]string{
+			spyPluginAStreaming + bodyRespStrippedSuffix: jsonOf(bodyObservation{TerminalFrames: 1}),
+		},
+	}
+	assertParity(t, f, pipeline.SessionResponse, outboundListeners)
+}
+
 // TestParity_InboundRequestBodyOverflow: a body exceeding both
 // listeners' 1 MiB cap must be rejected before the pipeline runs, with
 // the same wire status.

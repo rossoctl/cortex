@@ -98,6 +98,13 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		Shared:    s.Shared,
 		StartedAt: time.Now(),
 	}
+	// Pins ABSENCE here, and that is the point. A transparently redirected connection has
+	// no HTTP request to read a header from, so the honest answer is "no client" — and
+	// without the pin a plugin that wrote a User-Agent into these empty headers would give
+	// the tunnel row an agent that never existed. An invented agent in a cost table reads
+	// as a real program that spent real money, which is the failure
+	// TestForwardProxy_NoUserAgentStaysAbsent exists for.
+	pctx.ResolveClient()
 	defer func() {
 		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
 	}()
@@ -211,6 +218,7 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 		// not, which is why it is a parameter rather than something derived
 		// here from host shape.
 		TunnelReason: reason,
+		Client:       pctx.ClientInfo(),
 	}
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
 	// plugin activity) are still visible. For a TLS-bridged call abctl folds

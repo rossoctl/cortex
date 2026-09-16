@@ -1623,7 +1623,7 @@ func TestExtProc_BufferedJSONResponse_DispatchesToStreamingResponder(t *testing.
 		},
 	}
 	body := []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
-	resp := srv.handleResponseBody(context.Background(), body, pctx, "inbound")
+	resp := srv.handleResponseBody(context.Background(), body, pctx, "inbound", true)
 	if resp.GetImmediateResponse() != nil {
 		t.Fatalf("unexpected immediate response: %+v", resp.GetImmediateResponse())
 	}
@@ -1663,7 +1663,7 @@ func TestExtProc_BufferedSSEResponse_DispatchesPerEvent(t *testing.T) {
 		},
 	}
 	body := []byte("data: {\"id\":1}\n\ndata: {\"id\":2}\n\ndata: {\"id\":3}\n\n")
-	resp := srv.handleResponseBody(context.Background(), body, pctx, "inbound")
+	resp := srv.handleResponseBody(context.Background(), body, pctx, "inbound", true)
 	if resp.GetImmediateResponse() != nil {
 		t.Fatalf("unexpected immediate response: %+v", resp.GetImmediateResponse())
 	}

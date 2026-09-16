@@ -2,6 +2,7 @@ package usage
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -175,20 +176,52 @@ func TestParseResolution(t *testing.T) {
 		{"", time.Hour, BucketWidth, true},
 		{"1m", time.Hour, time.Minute, true},
 		{"5m", time.Hour, 5 * time.Minute, true},
+		// Every pair abctl actually sends, so the divisibility rule below cannot
+		// break a live client: usageWindows is {10m,1m}, {1h,5m}, {6h,30m}, and a
+		// symbolic window omits the parameter entirely and validates 1m against
+		// MaxWindow.
+		{"1m", 10 * time.Minute, time.Minute, true},
+		{"30m", 6 * time.Hour, 30 * time.Minute, true},
+		{"", MaxWindow, BucketWidth, true},
 		{"30s", time.Hour, 0, false}, // finer than storage
 		{"90s", time.Hour, 0, false}, // not a multiple
 		{"2h", time.Hour, 0, false},  // coarser than the window
 		{"garbage", time.Hour, 0, false},
+		// The window must divide by the resolution, or the newest bucket is shorter
+		// than the width every bucket is labelled with. 10m at 3m returned four
+		// buckets of which the last covered ONE minute under bucketSeconds 180, so a
+		// client deriving a burn rate from the newest bar tripled it.
+		{"3m", 10 * time.Minute, 0, false},
+		{"4m", 10 * time.Minute, 0, false},
+		// And a resolution that DOES divide an unusual window is still accepted:
+		// the rule is divisibility, not an allowlist of round numbers.
+		{"7m", 21 * time.Minute, 7 * time.Minute, true},
 	} {
 		got, err := ParseResolution(tc.res, tc.window)
 		if tc.ok && err != nil {
-			t.Errorf("ParseResolution(%q) = %v, want nil", tc.res, err)
+			t.Errorf("ParseResolution(%q, %v) = %v, want nil", tc.res, tc.window, err)
 		}
 		if !tc.ok && err == nil {
-			t.Errorf("ParseResolution(%q) = nil, want an error", tc.res)
+			t.Errorf("ParseResolution(%q, %v) = nil, want an error", tc.res, tc.window)
 		}
 		if tc.ok && got != tc.want {
-			t.Errorf("ParseResolution(%q) = %v, want %v", tc.res, got, tc.want)
+			t.Errorf("ParseResolution(%q, %v) = %v, want %v", tc.res, tc.window, got, tc.want)
+		}
+	}
+}
+
+// The error body must not reflect caller bytes: /v1/usage is unauthenticated, and
+// sessionapi forwards this package's message verbatim. The divisibility message is a
+// fixed literal for that reason, and this pins it — the two operands are not needed
+// to act on it, so there is no reason to interpolate anything.
+func TestParseResolution_DivisibilityErrorIsAFixedLiteral(t *testing.T) {
+	_, err := ParseResolution("3m", 10*time.Minute)
+	if err == nil {
+		t.Fatal("ParseResolution(3m, 10m) = nil, want an error")
+	}
+	for _, leak := range []string{"3m", "10m", "3", "10"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error %q carries %q; this message travels back over an unauthenticated endpoint and must be a fixed literal", err, leak)
 		}
 	}
 }

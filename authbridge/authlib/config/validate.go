@@ -28,7 +28,42 @@ func Validate(cfg *Config) error {
 	if err := validateListeners(cfg); err != nil {
 		return err
 	}
+	if err := validateCostLedger(cfg); err != nil {
+		return err
+	}
 	return validatePricing(cfg)
+}
+
+// validateCostLedger refuses `cost_ledger.enabled: true` alongside
+// `session.enabled: false`.
+//
+// The ledger is not an independent subsystem: it records by being added to the
+// session store as a Recorder (sessions.AddRecorder(costLedger)), so with the store
+// absent there is no path by which an event can reach it. The whole ledger block in
+// authbridge-proxy's main is nested inside `if cfg.Session.SessionEnabled()`, which
+// meant this pair produced no error, no warning, and no log line naming the ledger at
+// all — the operator who turned it on got silence, and the only way to find out was
+// to read main.go.
+//
+// REFUSED rather than warned, because the combination cannot be made to work by any
+// deployment decision: it is not "on but degraded", it is two settings that
+// contradict each other. It is also refused on the EXPLICIT true only. An absent
+// `enabled` means "the caller's default", which is on for a local install and off in
+// Kubernetes (see CostLedgerConfig) — a deployment that legitimately wants sessions
+// off has not asked for a ledger there, and failing its startup over a default it
+// never wrote would be the wrong trade. That case gets a Warn at the call site that
+// knows which default applies, since only the binary knows.
+func validateCostLedger(cfg *Config) error {
+	if cfg.CostLedger == nil || cfg.CostLedger.Enabled == nil || !*cfg.CostLedger.Enabled {
+		return nil
+	}
+	if cfg.Session.SessionEnabled() {
+		return nil
+	}
+	return fmt.Errorf("cost_ledger.enabled: true requires session tracking, but session.enabled is false: " +
+		"the ledger records through the session store (it is registered as a Recorder on it), so with the " +
+		"store off nothing can reach it and no cost history would be written — set session.enabled: true, " +
+		"or drop cost_ledger.enabled")
 }
 
 // validatePricing builds the rate table and discards it, so a fault in the

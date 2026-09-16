@@ -130,6 +130,24 @@ type Context struct {
 	// requestid.go for why it is lazy rather than a constructor argument.
 	requestID string
 
+	// client and clientParsed memoize ClientInfo's answer.
+	//
+	// A separate flag rather than a nil check on client, because nil IS a valid
+	// answer — a request with no User-Agent — and a nil-guard memo would re-parse
+	// on every call for precisely those requests. Each turn calls this at least
+	// twice, once per session event, on the request path.
+	//
+	// Unexported so this stays ONE resolution with one owner. A plugin that could
+	// write it could re-file another program's spend under a name of its choosing,
+	// and a listener that could write it would be a second source of a truth the
+	// context already holds in Headers.
+	//
+	// WHEN the memo is filled is part of the guarantee rather than an implementation
+	// detail: see ResolveClient, which listeners call at construction so the answer
+	// predates every plugin.
+	client       *EventClient
+	clientParsed bool
+
 	Agent    *AgentIdentity
 	Identity Identity // nil before an auth plugin runs
 
@@ -266,6 +284,90 @@ type Context struct {
 	// double-releasing every Finisher's state.
 	finished bool
 }
+
+// ClientInfo returns the calling coding agent, parsed from this request's
+// User-Agent and memoized.
+//
+// CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE — an observability and cost-attribution
+// key, never an authorization subject. See EventClient, and note that this is NOT
+// Identity: that field is the authenticated principal, this one is a self-reported
+// software label.
+//
+// Nil means no User-Agent was sent. Callers do not nil-check: EventClient.Label()
+// is nil-safe and answers "unknown".
+//
+// Resolved HERE — once, on the context — rather than assigned by each listener or
+// re-derived by each consumer. That follows the same doctrine Session states: the
+// value is resolved in one place and never re-derived downstream, because two
+// derivations of one fact are how the two drift apart. Session needs a listener to
+// assign it since it comes from a store lookup; this one does not, because Context
+// already carries the request headers, so an assignment would be a second source
+// of a truth already present. It is also stronger than an assignment for the
+// failure that actually happens: a listener-populated field can be forgotten at
+// one of several context-construction sites and serialize a clean empty value,
+// whereas an accessor over Headers cannot be.
+//
+// "Once" is a claim about WHICH ANSWER, and on its own it is weaker than it sounds:
+// the memo fills on the FIRST CALL, and the first call is at an event-construction
+// site downstream of the pipeline. Headers is mutable and plugins write to it, so a
+// plugin that rewrote User-Agent would change what an event is attributed to, and
+// which recording site asked first would decide the answer. What makes "once" an
+// ordering guarantee too is ResolveClient, which the listeners call at construction:
+// see there for the guarantee in full, and for what holds on a Context that skips it.
+//
+// NOT goroutine-safe, and that is correct: a Context belongs to one request and
+// the pipeline runs its phases sequentially. Said explicitly because the
+// surrounding type does have fields other goroutines read.
+//
+// A nil Headers map is fine and answers nil. A nil RECEIVER panics, unlike
+// PeerCertificate above, and that difference is deliberate rather than an
+// oversight: this mutates the memo, so it cannot be a no-op on nil, and every
+// caller is an event-construction site that already dereferences pctx for Host and
+// Method on adjacent lines. A guard here would convert a programming error into a
+// silently unattributed event instead of a stack trace.
+// A COPY IS RETURNED, NOT THE MEMO. Every caller is an event-construction site that stores
+// the result on a SessionEvent, so handing out the memoized pointer made ten events share one
+// mutable struct: a single write through it relabelled events already appended to the store
+// and already being served by the session API. See SnapshotClient — this is the same rule the
+// other extensions on that event have followed all along, applied to the one field that was
+// missing it. The memo is still what stops the header being parsed ten times; what it no
+// longer does is escape.
+func (c *Context) ClientInfo() *EventClient {
+	if c.clientParsed {
+		return SnapshotClient(c.client)
+	}
+	c.clientParsed = true
+	if c.Headers != nil {
+		c.client = ParseUserAgent(c.Headers.Get("User-Agent"))
+	}
+	return SnapshotClient(c.client)
+}
+
+// ResolveClient pins ClientInfo's answer to the User-Agent AS THE CLIENT SENT IT.
+//
+// Listeners call it immediately after building a Context from the request, and that call
+// is the whole of the ordering guarantee: the label is resolved before the pipeline runs,
+// so no plugin can change what an event is attributed to, and no recording site can get a
+// different answer by asking first or last. Attribution keys cost — see EventClient — and
+// "which program spent this" must not depend on call order.
+//
+// A named call rather than a bare `_ = pctx.ClientInfo()` at each site, so the line reads
+// as the invariant it is and a later reader cannot mistake it for a leftover. Deleting it
+// is a behaviour change, and the tests in forwardproxy's client_test.go say so.
+//
+// It does NOT replace the memo, and the memo is deliberately still lazy. An accessor over
+// Headers answers correctly at a construction site that forgets this call — one answer,
+// for the life of the context, from the headers as they stood when something first asked —
+// where a listener-assigned field would have serialized a clean empty value instead. What
+// a forgotten call costs is only the ordering half: on such a Context the answer is
+// pre-plugin by coincidence rather than by construction.
+//
+// Call it AFTER Headers is populated. Called before, it pins nil and the request's own
+// User-Agent is lost — which is why this is a listener's call to make at construction and
+// not something a constructor could do earlier.
+//
+// Idempotent: the second call is the memo's own no-op.
+func (c *Context) ResolveClient() { _ = c.ClientInfo() }
 
 // PeerCertificate returns the verified peer leaf certificate from
 // the TLS connection state, or nil when the connection was plaintext
