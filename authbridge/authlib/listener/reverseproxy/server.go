@@ -662,6 +662,21 @@ func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipelin
 		upstream: upstream,
 		reader:   sseframe.NewReader(upstream, maxBodySize),
 		ctx:      resp.Request.Context(),
+		// finalCtx is DETACHED from the request, and the terminal last=true dispatch runs on
+		// it. A client that hangs up mid-stream — a cancelled turn, a closed tab, a timeout —
+		// cancels the request context, and pipeline.RunResponseFrame refuses a cancelled
+		// context before calling any plugin: it returns Deny("pipeline.cancelled"). The
+		// terminal frame is the only dispatch that turns a stream's folded state into a
+		// settled cost, so on the request context that spend was silently dropped on the one
+		// event most likely to produce it. Anthropic reports the whole prompt split on
+		// message_start, so the expensive half of a long turn is already on the wire when the
+		// client leaves. forwardproxy detaches for exactly this reason (server.go:958); this
+		// is that fix on the inbound path.
+		//
+		// Mid-stream frames keep the live request context deliberately: those dispatches
+		// happen only while bytes are being copied to a client that is still there, and a
+		// cancelled context there is a real signal to stop.
+		finalCtx: context.WithoutCancel(resp.Request.Context()),
 		pipeline: s.InboundPipeline,
 		pctx:     pctx,
 		onClose: func(statusCode int) {
@@ -722,9 +737,12 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 // (`data: <payload>\n\n`) regardless of how the upstream emitted
 // each frame's data lines.
 type streamingResponseBody struct {
-	upstream   io.ReadCloser
-	reader     *sseframe.Reader
+	upstream io.ReadCloser
+	reader   *sseframe.Reader
+	// ctx is the request context, used for mid-stream frames; finalCtx is its detached
+	// twin, used for every terminal dispatch. See installStreamingResponseBody.
 	ctx        context.Context
+	finalCtx   context.Context
 	pipeline   *pipeline.Holder
 	pctx       *pipeline.Context
 	onClose    func(statusCode int)
@@ -748,7 +766,7 @@ func (b *streamingResponseBody) Read(p []byte) (int, error) {
 	frame, err := b.reader.ReadFrame()
 	if err == io.EOF {
 		// End of upstream. Finalize aggregating plugins.
-		b.pipeline.RunResponseFrame(b.ctx, b.pctx, nil, true)
+		b.pipeline.RunResponseFrame(b.finalCtx, b.pctx, nil, true)
 		b.finished = true
 		return 0, io.EOF
 	}
@@ -756,7 +774,7 @@ func (b *streamingResponseBody) Read(p []byte) (int, error) {
 		// Stream errored mid-flight. Finalize so plugins can record
 		// what they have, then propagate the error so net/http closes
 		// the downstream connection.
-		b.pipeline.RunResponseFrame(b.ctx, b.pctx, nil, true)
+		b.pipeline.RunResponseFrame(b.finalCtx, b.pctx, nil, true)
 		b.finished = true
 		return 0, err
 	}
@@ -767,7 +785,7 @@ func (b *streamingResponseBody) Read(p []byte) (int, error) {
 		// earlier frames are already on the wire, so the cleanest
 		// signal is to abort the read; the client sees a truncated
 		// stream. Finalize first so plugin state is consistent.
-		b.pipeline.RunResponseFrame(b.ctx, b.pctx, nil, true)
+		b.pipeline.RunResponseFrame(b.finalCtx, b.pctx, nil, true)
 		b.finished = true
 		return 0, fmt.Errorf("reverseproxy: streaming response rejected mid-stream")
 	}
@@ -819,7 +837,7 @@ func (b *streamingResponseBody) Close() error {
 	// Ensure plugins finalize even if Read never reached EOF (client
 	// disconnect, ReverseProxy error).
 	if !b.finished {
-		b.pipeline.RunResponseFrame(b.ctx, b.pctx, nil, true)
+		b.pipeline.RunResponseFrame(b.finalCtx, b.pctx, nil, true)
 		b.finished = true
 	}
 	if b.onClose != nil {

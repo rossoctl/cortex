@@ -140,6 +140,60 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	// The Cost pane owns the keyboard while it is up, except for esc/q which the
+	// shared handling below routes.
+	//
+	// `g` for group, unlike the Usage pane's `b` for breakdown. The Usage pane chose a
+	// second-best mnemonic to avoid shadowing the global `g` (go to top), and the
+	// reasoning does not carry here: this pane has no cursor and no table, so goTop and
+	// pageActivePane have no arm for it and both `g` and `G` are already inert. Taking
+	// the right mnemonic for a key that does nothing is not a trade.
+	//
+	// Neither key persists directly. Settings is updated in place and written on the
+	// way OUT of the pane, mirroring the column picker: a user cycling round to the
+	// window they want would otherwise produce a write for every one they passed
+	// through, each describing a state they rejected.
+	if m.pane == paneCost && !m.filtering {
+		switch msg.String() {
+		case "w":
+			m.costPane.cycleWindow()
+			Settings.Cost.Window = m.costPane.window()
+			// Refetch: the window is a server-side query parameter, not a client-side view of
+			// the snapshot in hand, so the current answer has no data for the new span.
+			return m.beginCostFetch()
+		case "g":
+			m.costPane.cycleGroup()
+			Settings.Cost.Group = string(m.costPane.group)
+			// Refetch for the same reason: the breakdown axis is chosen server-side, so the
+			// snapshot in hand carries no series for the newly selected one.
+			return m.beginCostFetch()
+		}
+	}
+
+	// `$` opens the Cost pane, `C` is the alias.
+	//
+	// `$` because `c` is already the events-pane column picker and is unmistakable for
+	// money; `? g G m w b s r l / p y e P q tab n f u` are all bound. `C` is offered
+	// because a shifted letter is easier to find than a symbol on some layouts.
+	//
+	// Scoped on !m.filtering for the reason the column picker's `c` is: the events
+	// pane's `/` filter takes arbitrary text — a model name or a shell-ish session id
+	// can contain a `$` — and an unscoped handler would swallow the character and yank
+	// the user to another pane mid-word.
+	//
+	// Gated on !m.colPicker for the reason `u` above is: the picker is modal, and
+	// changing panes underneath it leaves its `esc` closing onto the wrong pane.
+	if (msg.String() == "$" || msg.String() == "C") && !m.filtering && !m.colPicker &&
+		m.editState.phase == editPhaseDone {
+		switch m.pane {
+		// Every session-view pane, and no scope argument: cost is asked all-sessions and
+		// broken down by the selected axis. There is nothing to scope to — the pane's
+		// session breakdown is one of its groupings.
+		case paneSessions, paneEvents, paneDetail, panePipeline, panePluginDetail, paneUsage, paneCatalog:
+			return m.openCostPane()
+		}
+	}
+
 	// The column picker owns the keyboard while it is up, so ↑↓/space cannot also
 	// move the table cursor underneath it. Checked before pane dispatch for the
 	// same reason the help overlay is.
@@ -402,14 +456,23 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			} else {
 				m.pane = panePipeline
 			}
-			// Returning INTO Usage has to restart its polling chain. The tick
-			// that was in flight when the catalog opened was dropped by the
-			// `m.pane != paneUsage` guard, so without this nothing reschedules
-			// and the 20s auto-refresh is silently dead until the user backs all
-			// the way out and re-enters with `u` — `r` refetches once but starts
-			// no chain.
-			if m.pane == paneUsage {
+			// Returning INTO a polling pane has to restart ITS chain. The tick
+			// that was in flight when the catalog opened was dropped by that
+			// pane's own `m.pane != …` guard, so without this nothing
+			// reschedules and the 20s auto-refresh is silently dead until the
+			// user backs all the way out and re-enters — `r` refetches once but
+			// starts no chain.
+			//
+			// One arm per pane with a chain, and paneCost is the second: with
+			// only the Usage arm here, `$` `P` `esc` came back to a Cost pane
+			// whose chain had been dropped and never rescheduled, its freshness
+			// line counting up ("updated 14m3s ago (every 20s)") against a
+			// figure nothing would ever refresh.
+			switch m.pane {
+			case paneUsage:
 				return m.resumeUsagePolling()
+			case paneCost:
+				return m.resumeCostPolling()
 			}
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
@@ -423,6 +486,33 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			// End the polling chain on the way out.
 			m.usage.tickGen++
+		case paneCost:
+			// Return to whichever pane opened it, from costPaneState's own field, for the
+			// reason usageState.returnPane records: model.previousPane is shared with the
+			// catalog overlay and gets clobbered when the catalog is opened from here.
+			if m.costPane.returnPane != paneNone {
+				m.pane = m.costPane.returnPane
+				m.costPane.returnPane = paneNone
+			} else {
+				m.pane = paneSessions
+			}
+			// End the polling chain on the way out, exactly as paneUsage does: a chain left
+			// running against a backgrounded pane keeps issuing a request every 20s for the
+			// life of the session, with nothing on screen to show for it.
+			m.costPane.tickGen++
+			// Persist here rather than on each `w` / `g` press. Leaving the pane is the
+			// settled choice, the same way closing the column picker is — and it is one write
+			// per visit instead of one per keystroke.
+			m.persistSettings()
+			// And restart the chain of the pane being returned TO, for the reason the
+			// catalog arm above does it. `u` `$` `esc` is the live path: opening Cost from
+			// Usage let the Usage tick in flight fall to its own `m.pane != paneUsage`
+			// guard, so esc landed back on a Usage pane whose 20s refresh was dead — a
+			// REGRESSION to an existing pane, introduced by adding paneCost to the openers,
+			// and bit for bit the failure that arm exists to prevent.
+			if m.pane == paneUsage {
+				return m.resumeUsagePolling()
+			}
 		case paneDetail:
 			m.pane = paneEvents
 		case paneEvents:
@@ -784,9 +874,9 @@ func (m *model) helpView() string {
 		return "[↑↓/jk] nav  [↵] connect  [Esc] back  [r] reload  [?] keys  [q] quit"
 	case paneSessions:
 		if m.parentCtx != nil {
-			return "[↑↓] nav  [↵] drill  [tab] pipeline  [u] usage  [/] filter  [esc] pods  [p] pause  [?] keys  [q] quit"
+			return "[↑↓] nav  [↵] drill  [tab] pipeline  [u] usage  [$] cost  [/] filter  [esc] pods  [p] pause  [?] keys  [q] quit"
 		}
-		return "[↑↓] nav  [↵] drill  [tab] pipeline  [u] usage  [/] filter  [p] pause  [?] keys  [q] quit"
+		return "[↑↓] nav  [↵] drill  [tab] pipeline  [u] usage  [$] cost  [/] filter  [p] pause  [?] keys  [q] quit"
 	case paneEvents:
 		skipHint := "[s] hide passthru/skip"
 		if m.hideInactive {
@@ -798,7 +888,7 @@ func (m *model) helpView() string {
 		// past it, which is the pair a stuck user reaches for. They now sit at the
 		// end, and the escapable/discoverable keys ahead of them, with the
 		// specialised ones first to be lost.
-		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [$] cost  " +
 			skipHint + "  [p] pause  [/] filter  [esc] back"
 
 		// Notices go BEFORE the essential hints, not after.
@@ -821,7 +911,7 @@ func (m *model) helpView() string {
 		}
 		return base + "  [?] keys  [q] quit"
 	case paneDetail:
-		return "[↑↓] scroll  [y] yank  [u] usage  [esc] back  [?] keys  [q] quit"
+		return "[↑↓] scroll  [y] yank  [u] usage  [$] cost  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		var base string
 		if m.parentCtx != nil {
@@ -858,7 +948,12 @@ func (m *model) helpView() string {
 		// No [r]: the pane polls every 20s on its own, so a manual refresh key
 		// bought nothing but a line of footer.
 		return "[m] metric  [w] window" + breakdownHint + scopeHint +
-			"  [esc] back  [?] keys  [q] quit"
+			"  [$] cost  [esc] back  [?] keys  [q] quit"
+	case paneCost:
+		// No [r]: the pane polls every 20s on its own, the same reasoning as the Usage
+		// pane's footer. No [s] either — there is nothing to scope to, because the session
+		// breakdown is one of [g]'s positions rather than a scope.
+		return "[w] window  [g] breakdown  [esc] back  [?] keys  [q] quit"
 	case paneCatalog:
 		if m.catalog == nil {
 			return "loading catalog…  [esc] back  [?] keys  [q] quit"
@@ -869,21 +964,42 @@ func (m *model) helpView() string {
 }
 
 // layout recomputes component sizes to fit the current terminal. Called on
-// every WindowSizeMsg. The footer reserves two lines; the title one.
+// every WindowSizeMsg.
+//
+// Up to FIVE rows can be reserved, not three: the title one, the footer two, the
+// spend strip one more whenever the terminal is tall enough (spendStripReservesRow),
+// and the filter input one more while it is open. This comment said "the footer
+// reserves two lines; the title one" and stopped there — true and complete before
+// either conditional row existed. The exact budget is in the body; keep the two in
+// step, and keep app.go's bodyHeight comment in step with both.
 func (m *model) layout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	// Reserve 3 rows for title + blank + footer lines.
-	bodyH := m.height - 3
-	// And one more while the filter is open: View() prepends filterInput above the body, so
-	// the line exists on screen whether or not the budget admits it. Unreserved, the view came
-	// out one line taller than the terminal at every size, the terminal scrolled, and the
-	// bottom row went missing for as long as the operator was typing a filter — the same
-	// symptom as a mis-sized table, from a line nobody counted.
-	if m.filtering {
-		bodyH--
+	// Reserve 1 row for the title and 2 for the footer (status + hint). Two more
+	// are conditional: the spend strip's, and the filter input's.
+	//
+	// Neither conditional row is BORROWED from the three. An earlier comment here
+	// said "title + blank + footer", but the arithmetic was title(1) + footer(2) = 3
+	// and there was never a blank row to take. Borrowing would leave every table one
+	// row too tall and push the footer off the bottom of the terminal.
+	//
+	// The strip's row is reserved on height alone; see spendStripReservesRow for why
+	// it must not read m.pane, and what that costs the two picker panes.
+	reserved := 3
+	if m.spendStripReservesRow() {
+		reserved++
 	}
+	// The filter's row, whenever it is open: View() prepends filterInput above the
+	// body, so the line exists on screen whether or not the budget admits it.
+	// Unreserved, the view came out one line taller than the terminal at every size,
+	// the terminal scrolled, and the bottom row went missing for as long as the
+	// operator was typing a filter — the same symptom as a mis-sized table, from a
+	// line nobody counted.
+	if m.filtering {
+		reserved++
+	}
+	bodyH := m.height - reserved
 	if bodyH < 4 {
 		bodyH = 4
 	}
@@ -897,9 +1013,39 @@ func (m *model) layout() {
 	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
 	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
 
-	// Through setTableHeight, not SetHeight: a height change re-windows the rows
-	// while the viewport keeps the offset it had for the old height, and these
-	// tables are not rebuilt from here, so nothing else would reconcile it.
+	// Rebuild the sessions ROWS, not just re-fit the columns. AFTER SetColumns above, and
+	// the order is the whole point: rebuildSessionsTable reads the width COST was
+	// actually fitted to (fittedSessionsColumnWidth) to decide whether a dollar figure
+	// fits or has to be elided, so running it first would read the previous width and
+	// change nothing.
+	//
+	// Without this call the columns were re-fitted on every WindowSizeMsg while the rows
+	// kept the formatting chosen for the PREVIOUS width, until the next
+	// sessionsLoadedMsg or streamed event happened to repaint them. For that interval a
+	// just-narrowed terminal showed one clipped figure and a just-widened one a needless
+	// ellipsis — the seam fittedSessionsColumnWidth's own doc names and leaves to this
+	// call site.
+	//
+	// Safe before the first fetch: m.sessions is empty, so it sets an empty row set on an
+	// already-empty table and parks the cursor at 0. It is the same call
+	// rebuildEventsTable a few lines down already makes unconditionally.
+	m.rebuildSessionsTable()
+	// Through setTableHeight, not SetHeight: a height change re-windows the rows while the
+	// viewport keeps the offset it had for the old height, so something has to reconcile
+	// it.
+	//
+	// AFTER the rebuild, and that ordering is load-bearing rather than incidental. Merging
+	// #998 with the rebuild above put two cursor-touching calls next to each other:
+	// rebuildSessionsTable reads Cursor() first, to re-select the same SESSION ID after the
+	// rows are replaced, while setTableHeight moves the cursor (GotoTop, then
+	// setCursorVisible). Height first would hand the rebuild a cursor that had already
+	// moved, so it would preserve whichever row the re-windowing happened to land on
+	// instead of the one the operator had selected. Rows first, then reconcile the offset
+	// against the final row set.
+	//
+	// #998's own justification for this call — "these tables are not rebuilt from here" —
+	// is no longer true of THIS table, though it still holds for the four below. The call
+	// is still wanted here: the rebuild replaces rows, not the viewport's offset.
 	setTableHeight(&m.sessionsTbl, bodyH)
 	m.bodyHeight = bodyH
 	// Picker tables share the same body area as the session tables so the

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costledger"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/redact"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -47,6 +48,12 @@ type Server struct {
 	// nil disables the endpoint (returns 404). The binary wires this to
 	// plugins.Catalog; tests inject a stub provider.
 	catalog CatalogProvider
+	// ledger serves the symbolic windows (window=today, window=7d) that outlive the
+	// aggregator's 6-hour ring. nil is the EXPECTED state in Kubernetes, where
+	// writing files in a pod is the wrong sink and a central collector is the right
+	// one — handleUsage degrades to the ring's maximum rather than erroring, so an
+	// abctl cost view shows what is available there instead of failing.
+	ledger *costledger.Writer
 }
 
 // CatalogEntry is the wire shape for one plugin in /v1/plugins. Mirrors
@@ -109,6 +116,19 @@ func WithPipelines(inbound, outbound *pipeline.Holder) Option {
 // Without it that endpoint 404s.
 func WithUsage(a *usage.Aggregator) Option {
 	return func(s *Server) { s.usage = a }
+}
+
+// WithCostLedger attaches the durable cost ledger so the server can serve
+// window=today and window=7d, which reach further back than the aggregator's
+// in-memory ring.
+//
+// Without it those windows still answer, from the ring's maximum window, and the
+// response reports the window it actually served. That is deliberate: the ledger is
+// on for a local install and off in Kubernetes, so a client must never depend on it
+// being present, and a 400 there would break the cost view for the deployment shape
+// that has no ledger by design.
+func WithCostLedger(l *costledger.Writer) Option {
+	return func(s *Server) { s.ledger = l }
 }
 
 // WithCatalog attaches a CatalogProvider so the server exposes the

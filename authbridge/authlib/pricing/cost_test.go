@@ -1,6 +1,78 @@
 package pricing
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
+
+// TestMicrosFromUSD_RejectsANegativeFigureHoweverSmall is the boundary the sign check
+// exists to hold, walked from both sides of zero.
+//
+// The conversion used to check the sign of the ROUNDED figure, and the sign does not
+// survive the rounding: math.Round(-1e-07 * 1e6) is math.Round(-0.1), which is negative
+// zero, and `-0.0 < 0` is false in Go. Every figure in (-5e-07, 0) therefore came back
+// (0, true) — a priced zero standing in for a wrong-signed figure, which is the one class
+// of arithmetic error this package cannot detect after the fact: a total that says "free"
+// is indistinguishable from a call that was free.
+//
+// -5e-07 is the boundary and it was never the bug: it rounds to -1, so the old check
+// caught it. Both sides are asserted because a fix that rejected the whole neighbourhood
+// of zero would take a genuine free call with it.
+func TestMicrosFromUSD_RejectsANegativeFigureHoweverSmall(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		usd     float64
+		wantOK  bool
+		wantMic int64
+	}{
+		// The hole. Under the old rounded-sign check every one of these was (0, true).
+		{"one tenth of a micro negative", -1e-07, false, 0},
+		{"four tenths of a micro negative", -4e-07, false, 0},
+		{"the largest negative that still rounds to zero", -4.999e-07, false, 0},
+		// The boundary, from the side the old check already caught: math.Round rounds
+		// half AWAY from zero, so -5e-07 becomes -1 rather than -0.
+		{"exactly half a micro negative", -5e-07, false, 0},
+		{"a milli-dollar negative", -0.001, false, 0},
+		// Zero and above must stay priced. -0.0 is a value of ZERO, not a negative
+		// figure: a settled zero is a producer saying the call was free, and refusing it
+		// would move a genuine free call into the coverage gap.
+		{"negative zero is zero", math.Copysign(0, -1), true, 0},
+		{"positive zero", 0, true, 0},
+		{"a tiny positive rounds to a priced zero", 1e-07, true, 0},
+		{"exactly half a micro positive rounds up", 5e-07, true, 1},
+		{"a cent", 0.01, true, 10_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			micros, ok := MicrosFromUSD(tc.usd)
+			if ok != tc.wantOK {
+				t.Errorf("MicrosFromUSD(%v) ok = %v, want %v — the doc promises false for a negative figure, and a tiny one is still negative",
+					tc.usd, ok, tc.wantOK)
+			}
+			if micros != tc.wantMic {
+				t.Errorf("MicrosFromUSD(%v) = %d micros, want %d", tc.usd, micros, tc.wantMic)
+			}
+		})
+	}
+}
+
+// TestMicrosFromUSD_RoundedSignIsNotLoadBearing states the reason the check moved, so a
+// future edit that folds it back onto the rounded value fails with the explanation.
+//
+// Asserts the language fact directly: rounding a tiny negative yields a value whose SIGN
+// BIT is set but which compares equal to zero. Any guard reading that value's sign with
+// `< 0` cannot see the input's sign.
+func TestMicrosFromUSD_RoundedSignIsNotLoadBearing(t *testing.T) {
+	rounded := math.Round(-1e-07 * 1e6)
+	if !math.Signbit(rounded) {
+		t.Fatal("fixture no longer produces negative zero; the rest of this test proves nothing")
+	}
+	if rounded < 0 {
+		t.Fatal("negative zero compared less than zero; the premise of this test is gone")
+	}
+	if _, ok := MicrosFromUSD(-1e-07); ok {
+		t.Error("MicrosFromUSD(-1e-07) reported a usable figure: the sign must be checked on the INPUT, because math.Round(-0.1) is negative zero and `-0.0 < 0` is false")
+	}
+}
 
 // claudeOpus is a fully-priced entry in the published unit.
 func claudeOpus() Rates {

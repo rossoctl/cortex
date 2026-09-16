@@ -1,5 +1,11 @@
 package tui
 
+import (
+	"slices"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/usage"
+)
+
 // Settings is abctl's live user settings, global to the process.
 //
 // One struct rather than the fields it replaces (eventColumns, filter) scattered
@@ -28,6 +34,59 @@ type UserSettings struct {
 	// m.filter: the sessions and events panes share it (sessions_pane.go, and
 	// events_pane.go's matchEventRow).
 	Filter string `yaml:"filter,omitempty"`
+	// Cost is the Cost pane's view state.
+	Cost CostSettings `yaml:"cost,omitempty"`
+}
+
+// CostSettings is the Cost pane's remembered view.
+//
+// Both fields record a DEVIATION from the pane's default, following EventSettings'
+// convention: empty means "whatever the pane defaults to", not "no window". A build
+// that changes the default therefore moves existing users with it, rather than
+// pinning them to a choice they never made — the same reason an events column added
+// in a later build shows up rather than starting hidden.
+//
+// Strings rather than the pane's own types, because this is a FILE format. An index
+// into costPaneWindows would silently mean a different window the day that list grew,
+// and a usage.Group would put a wire enum into a hand-editable file with nothing
+// checking it on the way back in. costView is that check.
+type CostSettings struct {
+	Window string `yaml:"window,omitempty"`
+	Group  string `yaml:"group,omitempty"`
+}
+
+// costView returns the remembered Cost view with anything unusable dropped.
+//
+// Field by field, never the whole section: a hand-edited file with one bad line is not
+// a bad file, and discarding the neighbour would punish the user twice for one typo.
+// A dropped field falls back to the pane's default, which is exactly what an absent
+// field already means.
+//
+// Validated against THIS PANE'S cycles, not merely against usage.ParseGroup.
+// ParseGroup accepts "status" and "plugin" — real axes, for the Usage pane — and this
+// pane has no series for either, so honouring one would leave a permanently empty
+// breakdown under a heading naming it. The same argument covers a window the Usage
+// pane cycles and this one does not: [w] could never return to it, so the pane would
+// sit on a view its own key cannot reach.
+//
+// Validated HERE, at the read, rather than in the loader. The loader lives in package
+// main (loadUserConfig) and is shared with settings that need no validation, and a
+// check there would not cover the other way a bad value arrives — Settings is a
+// package-level var that any future writer can assign to.
+func (u UserSettings) costView() CostSettings {
+	out := u.Cost
+	if out.Window != "" && !slices.Contains(costPaneWindows, out.Window) {
+		out.Window = ""
+	}
+	if out.Group != "" {
+		// ParseGroup first, so an axis no build knows is rejected by the wire vocabulary
+		// rather than by a membership test that cannot explain itself.
+		g, err := usage.ParseGroup(out.Group)
+		if err != nil || !slices.Contains(costPaneGroups, g) {
+			out.Group = ""
+		}
+	}
+	return out
 }
 
 // EventSettings is the events-table view state.

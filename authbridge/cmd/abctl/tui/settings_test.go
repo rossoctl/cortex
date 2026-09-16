@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // resetSettingsForTest clears the package-level Settings and restores it after the
@@ -206,5 +209,87 @@ func TestColumnSettings_RoundTripsADefaultOffColumn(t *testing.T) {
 	got := UserSettings{Events: EventSettings{Columns: written}}.columnSelection()
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("round trip = %v, want %v", got, want)
+	}
+}
+
+// roundTripSettings marshals s and reads it back, which is what "a preference comes
+// back next launch" actually means. The real load path lives in package main
+// (loadUserConfig), so this exercises the shape rather than the file.
+func roundTripSettings(t *testing.T, in UserSettings) UserSettings {
+	t.Helper()
+	b, err := yaml.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out UserSettings
+	if err := yaml.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", b, err)
+	}
+	return out
+}
+
+// loadSettingsFrom parses a hand-written config body, the way a user's editor would
+// leave it.
+func loadSettingsFrom(t *testing.T, body string) UserSettings {
+	t.Helper()
+	var out UserSettings
+	if err := yaml.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("unmarshal %q: %v", body, err)
+	}
+	return out
+}
+
+func TestUserSettings_CostRoundTrips(t *testing.T) {
+	in := UserSettings{Cost: CostSettings{Window: "today", Group: "endpoint"}}
+	out := roundTripSettings(t, in)
+	if out.Cost != in.Cost {
+		t.Errorf("Cost = %+v, want %+v", out.Cost, in.Cost)
+	}
+}
+
+func TestUserSettings_AbsentCostSerializesNoKey(t *testing.T) {
+	// omitempty on the section, so a file written before the Cost pane existed does
+	// not grow a stanza describing a pane its author never opened.
+	b, err := yaml.Marshal(UserSettings{Filter: "x"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte("cost:")) {
+		t.Errorf("absent Cost emitted a stanza: %s", b)
+	}
+}
+
+func TestUserSettings_UnknownCostGroupIsDiscarded(t *testing.T) {
+	// Defence in depth: a hand-edited file must not put the pane into a state
+	// ParseGroup rejects. Validate on the way in; one bad field is not a bad file.
+	got := loadSettingsFrom(t, "cost:\n  window: today\n  group: nonsense\n").costView()
+	if got.Group != "" {
+		t.Errorf("Group = %q, want it discarded", got.Group)
+	}
+	if got.Window != "today" {
+		t.Errorf("Window = %q, want the valid neighbour preserved", got.Window)
+	}
+}
+
+func TestUserSettings_CostGroupOutsideThisPanesCycleIsDiscarded(t *testing.T) {
+	// usage.ParseGroup accepts "status" and "plugin" — they are real axes, for the
+	// Usage pane. This pane has no series for either, so accepting one would leave a
+	// permanently empty breakdown under a heading naming it. Validating against
+	// ParseGroup alone is not enough.
+	got := loadSettingsFrom(t, "cost:\n  group: status\n").costView()
+	if got.Group != "" {
+		t.Errorf("Group = %q, want an axis outside this pane's cycle discarded", got.Group)
+	}
+}
+
+func TestUserSettings_UnknownCostWindowIsDiscarded(t *testing.T) {
+	// The same rule for the other field. "6h" is a window the Usage pane cycles and
+	// this one does not, so honouring it would leave [w] unable to return to it.
+	got := loadSettingsFrom(t, "cost:\n  window: 6h\n  group: endpoint\n").costView()
+	if got.Window != "" {
+		t.Errorf("Window = %q, want it discarded", got.Window)
+	}
+	if got.Group != "endpoint" {
+		t.Errorf("Group = %q, want the valid neighbour preserved", got.Group)
 	}
 }

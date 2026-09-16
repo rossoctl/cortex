@@ -321,9 +321,17 @@ func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
 // and so the one most likely to send someone looking in the wrong place. A reason
 // nobody can look up is barely better than the em dash it replaced.
 func TestTunnelReasonsAreDocumented(t *testing.T) {
+	// A FAILURE, NOT A SKIP. This was t.Skipf("docs not readable from here"), which turned
+	// the only test that checks these strings are documented into a silent pass — and a
+	// test that cannot run is worse than no test, because it reports success. go test runs
+	// in the package directory, so this path resolves for every invocation from anywhere in
+	// the repo; if it ever does not, the doc has moved or been deleted and the reason this
+	// test exists has moved with it.
 	doc, err := os.ReadFile("../../docs/laptop-service.md")
 	if err != nil {
-		t.Skipf("docs not readable from here: %v", err)
+		t.Fatalf("read ../../docs/laptop-service.md: %v — this test's whole subject is that "+
+			"every tunnel reason is documented there; if the file moved, point this at its new "+
+			"home rather than letting the check disappear", err)
 	}
 	for _, reason := range []TunnelReason{
 		TunnelClientRejectedCA, TunnelClientHungUp, TunnelHandshakeFailed,
@@ -334,5 +342,94 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
 				"it in the timeline has nowhere to look it up", reason)
 		}
+	}
+}
+
+// TestSessionEventWireCoversEveryField is a drift guard, not a behaviour test.
+//
+// SessionEvent's JSON form is hand-maintained in four places: the struct,
+// sessionEventWire, MarshalJSON's field list and UnmarshalJSON's. A field added to
+// the struct but missed in the wire mapping compiles, passes every in-process
+// test, and silently never reaches abctl — which decodes these out of process.
+//
+// Comparing field COUNTS rather than names on purpose: the two structs
+// deliberately differ in spelling (Duration vs DurationMs), so a name check would
+// need an exception list that itself goes stale. A count mismatch is the signal
+// that someone added to one and not the other.
+//
+// The count guard is necessary but not sufficient — it cannot see a field that IS
+// in sessionEventWire but was forgotten in MarshalJSON or UnmarshalJSON. That half
+// is covered by the per-field round-trip tests, of which
+// TestSessionEvent_ClientRoundTrips below is one.
+func TestSessionEventWireCoversEveryField(t *testing.T) {
+	got := reflect.TypeOf(SessionEvent{}).NumField()
+	want := reflect.TypeOf(sessionEventWire{}).NumField()
+	if got != want {
+		t.Fatalf("SessionEvent has %d fields, sessionEventWire has %d.\n"+
+			"Add the new field to sessionEventWire AND to both MarshalJSON and "+
+			"UnmarshalJSON, or abctl will never see it.", got, want)
+	}
+}
+
+func TestSessionEvent_ClientRoundTrips(t *testing.T) {
+	in := SessionEvent{
+		At:     time.Now().UTC().Truncate(time.Millisecond),
+		Phase:  SessionResponse,
+		Client: &EventClient{Name: "claude-code", Version: "2.1.14", Raw: "claude-cli/2.1.14"},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out SessionEvent
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Client == nil {
+		t.Fatal("Client was lost in the round trip — check sessionEventWire and both mappings")
+	}
+	if out.Client.Name != "claude-code" || out.Client.Version != "2.1.14" {
+		t.Errorf("Client = %+v, want name/version preserved", out.Client)
+	}
+	// Raw survives too: it is what makes an unrecognised agent nameable, so losing
+	// it on the wire would defeat the reason it is kept at all.
+	if out.Client.Raw != "claude-cli/2.1.14" {
+		t.Errorf("Client.Raw = %q, want the verbatim UA preserved", out.Client.Raw)
+	}
+}
+
+func TestSessionEvent_AbsentClientRoundTripsAsNil(t *testing.T) {
+	// Old events, and any traffic with no User-Agent. Must stay nil rather than
+	// decoding to an empty struct, so "unknown" and "named but empty" differ.
+	raw, err := json.Marshal(SessionEvent{At: time.Now(), Phase: SessionRequest})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"client"`) {
+		t.Errorf("absent client serialized a key: %s", raw)
+	}
+	var out SessionEvent
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Client != nil {
+		t.Errorf("Client = %+v, want nil", out.Client)
+	}
+}
+
+// TestSessionEvent_OldWireFormatDecodesWithNoClient pins the backward half of the
+// additive-on-the-wire promise: an event recorded before this field existed must
+// decode cleanly, with an absent client rather than an error or an empty struct.
+func TestSessionEvent_OldWireFormatDecodesWithNoClient(t *testing.T) {
+	const old = `{"at":"2026-09-13T09:14:30Z","direction":"outbound","phase":"response","host":"gw.example.com","statusCode":200}`
+	var out SessionEvent
+	if err := json.Unmarshal([]byte(old), &out); err != nil {
+		t.Fatalf("unmarshal of a pre-Client event: %v", err)
+	}
+	if out.Client != nil {
+		t.Errorf("Client = %+v, want nil for an event that predates the field", out.Client)
+	}
+	if out.Client.Label() != "unknown" {
+		t.Errorf("Label() = %q, want unknown — consumers call it without a nil check", out.Client.Label())
 	}
 }

@@ -52,6 +52,42 @@ import (
 	// supply session-event context for abctl.
 )
 
+// warnCostLedgerInert says out loud that a cost_ledger block in this binary's config
+// does nothing. Safe to call unconditionally; silent when the block is absent.
+//
+// INERT BY DESIGN, not an oversight, and that is why this is a log line rather than
+// wiring or a refusal:
+//
+//   - Wiring it would be wrong here. authbridge-envoy is an ext_proc sidecar, which
+//     is a Kubernetes shape, and the ledger is deliberately OFF in Kubernetes (see
+//     CostLedgerConfig): a pod's filesystem is ephemeral, one replica's day files are
+//     invisible to the next, and the right sink for fleet-wide spend is a central
+//     collector rather than N per-pod files nobody collects. Wiring it would
+//     manufacture exactly the arrangement the proxy's own comment argues against.
+//
+//   - Refusing it at load would be wrong too. config.Validate is shared by every
+//     binary, and the gap is per-BINARY rather than per-mode — authbridge-cpex runs
+//     proxy-sidecar mode and has no ledger either — so a mode-keyed refusal would
+//     both miss cpex and turn a stray inherited key into a crash-loop over an
+//     observability nicety. main.go already makes that trade the other way for a
+//     ledger it cannot open.
+//
+// What is NOT defensible is what it did before: load the key, validate it, and
+// discard it without a word. The line names the key, says it is inert, and points at
+// the binary that does honour it.
+func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if cfg.CostLedger == nil {
+		return
+	}
+	logger.Warn("cost_ledger is configured but INERT in authbridge-envoy — no cost history will be written",
+		"reason", "this binary wires no cost ledger and no usage aggregator; the ext_proc sidecar is a Kubernetes shape, where per-pod day files are the wrong sink for spend (use a central collector)",
+		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
+		"fix", "remove the cost_ledger block here; for durable local cost history run authbridge-proxy --local, which does honour it")
+}
+
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
@@ -202,6 +238,11 @@ func main() {
 	} else {
 		slog.Info("session tracking disabled")
 	}
+	// This binary builds a session store and stops there — no usage aggregator, no
+	// cost ledger — so a cost_ledger block in its config is loaded, validated, and
+	// thrown away. That is a deliberate absence (see the helper), but silence about
+	// it is not.
+	warnCostLedgerInert(cfg, slog.Default())
 
 	store := shared.New()
 	defer store.Close() // stop the TTL janitor on normal main return

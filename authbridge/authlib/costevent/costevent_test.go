@@ -2,9 +2,11 @@ package costevent
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // eventWith builds a SessionEvent carrying raw JSON under the cost-event key.
@@ -125,6 +127,67 @@ func TestMicros(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := (Event{CostUSD: tc.usd}).Micros(); got != tc.want {
 				t.Errorf("Micros() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// A figure too large for the micros unit is UNPRICED, not saturated.
+//
+// Micros() was `int64(math.Round(CostUSD * 1e6))` with no bound at all, while
+// pricing.Cost guarded the identical conversion and called the unguarded form "a
+// garbage ledger figure". The producer's header path accepts any finite non-negative
+// float, so a gateway reporting 1e13 saturated to MaxInt64 and TWO such requests
+// wrapped usage.Counts.Add to −2 micros. The ring forgets that in six hours; the
+// durable ledger keeps it thirty days with no repair path.
+//
+// The bound stopped the SATURATION and did not stop the wrap: 1024 figures at the bound
+// still wrap that sum. See pricing.TestNoPerRequestBoundClosesTheAccumulationWrap.
+//
+// Not clamped to the bound either. A clamped figure is a wrong number wearing a right
+// label, and Priced() has to agree with Micros() or a consumer adds a zero to its total
+// while counting the request as covered.
+func TestMicros_OutOfRangeIsUnpricedNotSaturated(t *testing.T) {
+	// THE BOUND IS EXCLUSIVE, walked from both sides — one micro under is a figure and
+	// the edge itself is not.
+	//
+	// This assertion is the reverse of what it said before, and the reversal is the fix:
+	// the check was `> MaxCostMicros`, so exactly 2^53 micros was accepted while the doc
+	// called anything above the bound out of range. 2^53 is the first integer float64
+	// cannot follow — 2^53+1 rounds back onto it — so the edge is the one value in the
+	// range that cannot be told apart from a figure past it. Admitting it admitted that
+	// ambiguity; `>=` makes every accepted figure exactly representable and distinct from
+	// its neighbours.
+	// Two micros under, not one: at 2^53 micros the float64 spacing of the USD figure is
+	// wider than a micro, so 2^53-1 rounds back onto the edge and goes out of range with
+	// it. pricing.TestMicrosFromUSD_BoundIsExclusive pins that arithmetic.
+	underBound := Event{CostUSD: float64(pricing.MaxCostMicros-2) / 1e6, Settled: true}
+	if !underBound.Priced() {
+		t.Error("Priced() = false under MaxCostMicros; the bound excludes only its own edge, and this figure is exactly representable")
+	}
+	if got := underBound.Micros(); got != pricing.MaxCostMicros-2 {
+		t.Errorf("Micros() = %d two micros under the bound, want %d", got, pricing.MaxCostMicros-2)
+	}
+
+	// The edge, and one dollar past it. (One MICRO past is unrepresentable: 2^53+1 rounds
+	// back to 2^53 in a float64 — which is exactly why the edge is excluded.)
+	for _, tc := range []struct {
+		name string
+		usd  float64
+	}{
+		{"exactly at the bound", float64(pricing.MaxCostMicros) / 1e6},
+		{"a dollar past the bound", float64(pricing.MaxCostMicros)/1e6 + 1},
+		{"the header figure that saturated MaxInt64", 1e13},
+		{"an infinity", math.Inf(1)},
+		{"not a number", math.NaN()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Event{CostUSD: tc.usd, Settled: true}
+			if e.Priced() {
+				t.Error("Priced() = true for a figure the micros unit cannot hold; it must read as unpriced, not as money")
+			}
+			if got := e.Micros(); got != 0 {
+				t.Errorf("Micros() = %d, want 0 — neither saturated nor clamped to the bound", got)
 			}
 		})
 	}
@@ -266,4 +329,86 @@ func TestRecord_AbsentIsNotAnError(t *testing.T) {
 			t.Errorf("Decode found a cost in %+v", e)
 		}
 	}
+}
+
+// A REFUSED figure is never spend, whatever else the record says.
+//
+// RejectedReason is set by a producer that declined a cost header it could not corroborate
+// (costing.implausibleUnparsedCost). The record is published so the coverage gap is
+// nameable, which means it travels to every consumer that reads a cost — so the predicate
+// they all ask has to answer no.
+//
+// The second row is the one worth having: a reason set ALONGSIDE a figure. No producer
+// writes that today (costing.Settle leaves CostUSD zero when it rejects), and the check is
+// here precisely so a future one that forgets to drop the number cannot turn a refusal into
+// a charge. Fail-closed on money.
+func TestPriced_RefusedFigureIsNeverSpend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   Event
+	}{
+		{"the shape costing publishes", Event{RejectedReason: RejectedImplausible}},
+		{"a reason left beside a figure", Event{CostUSD: 1e9, Settled: true, Source: SourceGatewayHeader, RejectedReason: RejectedImplausible}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.ev.Priced() {
+				t.Error("Priced() = true for a record whose figure was REFUSED; every consumer's admission guard goes through this predicate, so a true here puts a forged figure in the ledger and the budget")
+			}
+			if got := tc.ev.Micros(); got != 0 {
+				t.Errorf("Micros() = %d, want 0 — a refused figure is not clamped to a bound, it is not a figure", got)
+			}
+			e := &pipeline.SessionEvent{Plugins: map[string]json.RawMessage{
+				Key: mustJSON(t, tc.ev),
+			}}
+			if _, ok := Decode(e); ok {
+				t.Error("Decode returned a cost for a refused figure; the aggregator would add it to a dollar total")
+			}
+			// PRESENT, though. That is the point of publishing it: the gap has to be
+			// visible, or a response that reported $9,000,000,000 is the same event as one
+			// that reported nothing.
+			rec, ok := Record(e)
+			if !ok {
+				t.Fatal("Record found nothing; a refusal that reaches no record is a coverage gap nobody can see")
+			}
+			if rec.RejectedReason != RejectedImplausible {
+				t.Errorf("RejectedReason = %q, want %q — the reason must survive the wire or the record cannot say why it carries no figure", rec.RejectedReason, RejectedImplausible)
+			}
+		})
+	}
+}
+
+// TestRejectedFiguresCannotWrapAnAggregate is the accumulation half, at the record level.
+//
+// A refused figure contributes ZERO micros, so no number of them moves a sum at all —
+// which is a stronger property than the plausibility cap has on its own (see
+// pricing.TestNoPerRequestBoundClosesTheAccumulationWrap: the cap moves the wrap threshold
+// from 1,024 requests to 922,337,204 and does not remove it). The count here is 2,048:
+// twice the number of at-bound figures it takes to wrap int64.
+//
+// The forged figure is deliberately IN RANGE for the micros unit — $9 billion converts to
+// 9e15 micros, just under MaxCostMicros — so what zeroes it is the refusal and not the
+// representability bound. Without the refusal these 2,048 additions wrap int64 negative,
+// which is the aggregate this whole disclosure is about.
+func TestRejectedFiguresCannotWrapAnAggregate(t *testing.T) {
+	forged := Event{CostUSD: 9e9, Settled: true, RejectedReason: RejectedImplausible}
+	if _, ok := pricing.MicrosFromUSD(forged.CostUSD); !ok {
+		t.Fatal("the forged fixture is out of range for the micros unit; this test would then pass on the bound rather than on the refusal")
+	}
+	var sum int64
+	for i := 0; i < 2048; i++ {
+		sum += forged.Micros()
+	}
+	if sum != 0 {
+		t.Errorf("2048 refused figures accumulated to %d micros, want 0; a refused figure is not clamped and not saturated, it contributes nothing", sum)
+	}
+}
+
+// mustJSON marshals ev for a session-event fixture.
+func mustJSON(t *testing.T, ev Event) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
 }

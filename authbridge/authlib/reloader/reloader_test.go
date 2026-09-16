@@ -217,6 +217,87 @@ func TestReloader_RefusesListenerChange(t *testing.T) {
 	}
 }
 
+// A cost_ledger edit must be REFUSED, not accepted-and-discarded.
+//
+// This is the defect the guard was added for: the ledger is a *costledger.Writer
+// opened once at startup and handed to the session store as a Recorder, so a reload
+// cannot reach it. Before the guard, editing `enabled: true` to `enabled: false`
+// incremented ReloadsOK, published a new ActiveConfigSHA256 on /reload/status, and
+// made /config serve `enabled: false` while the writer kept appending — three
+// independent signals all telling an operator the edit took effect.
+//
+// Deliberately driven by a REAL config.Load builder rather than the fakeBuilder the
+// tests above use. A fake would only prove validateReloadable compares the field it
+// is handed; this proves the yaml key reaches that comparison, so a wiring mistake
+// (block renamed, field dropped from the struct, guard called with the wrong config)
+// fails here too. The four assertions are the four things an operator would read as
+// confirmation.
+func TestReloader_RefusesCostLedgerChange(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	const before = "mode: envoy-sidecar\ncost_ledger:\n  enabled: true\n  retention_days: 9\n"
+	if err := os.WriteFile(cfgPath, []byte(before), 0o600); err != nil {
+		t.Fatalf("initial WriteFile: %v", err)
+	}
+
+	initialCfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !initialCfg.CostLedger.LedgerEnabled(false) {
+		t.Fatalf("fixture is wrong: the ledger must start ENABLED for the edit below to be the dangerous one")
+	}
+
+	// Built up front, not inside the closure: build() runs on the watch goroutine,
+	// and t.Fatalf from a non-test goroutine is not allowed.
+	newIn, newOut := emptyPipeline(t), emptyPipeline(t)
+	build := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
+		c, lerr := config.Load(cfgPath)
+		if lerr != nil {
+			return nil, nil, nil, lerr
+		}
+		return newIn, newOut, c, nil
+	}
+
+	inH := pipeline.NewHolder(emptyPipeline(t))
+	outH := pipeline.NewHolder(emptyPipeline(t))
+	oldIn, oldOut := inH.Load(), outH.Load()
+
+	r := New(cfgPath, inH, outH, build, initialCfg,
+		WithDebounce(20*time.Millisecond), WithDrainWindow(0), WithStartTimeout(5*time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	shaBefore := r.Status().ActiveConfigSHA256
+
+	// The edit an operator makes to stop writing cost history.
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\ncost_ledger:\n  enabled: false\n  retention_days: 9\n")
+
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to be refused")
+
+	st := r.Status()
+	if !contains(st.LastError, "cost_ledger") {
+		t.Errorf("error must name the section the operator has to restart for, got %q", st.LastError)
+	}
+	if st.ReloadsOK != 0 {
+		t.Errorf("ReloadsOK = %d; a refused reload must not report success", st.ReloadsOK)
+	}
+	if st.ActiveConfigSHA256 != shaBefore {
+		t.Errorf("ActiveConfigSHA256 moved to %q on a refused reload; /reload/status would claim the edit is live",
+			st.ActiveConfigSHA256)
+	}
+	// The one an operator is most likely to check: /config must still show the
+	// ledger the running writer is actually using.
+	if got := r.ConfigProvider(); !got().CostLedger.LedgerEnabled(false) {
+		t.Errorf("/config now reports the ledger disabled while the startup writer is still recording")
+	}
+	if inH.Load() != oldIn || outH.Load() != oldOut {
+		t.Errorf("holders swapped despite a refused reload")
+	}
+}
+
 // PipelineBuilder error (e.g., config.Validate rejects) → reload fails;
 // holders unchanged; error reflected in Status.
 func TestReloader_BuilderError(t *testing.T) {
@@ -240,20 +321,82 @@ func TestReloader_ConfigProviderReflectsSwap(t *testing.T) {
 	r, b, cfgPath, _, _ := setup(t)
 	provider := r.ConfigProvider()
 
-	// Mutate a non-unreloadable field so the swap is accepted. Session
-	// TTL is a plain string field, easy to compare.
+	// Mutate a genuinely reloadable field so the swap is accepted. The plugin
+	// pipeline is what the reloader exists to swap, so it is the honest choice
+	// here. This test used session.ttl until session.* joined the unreloadable
+	// set — which is the point: a TTL edit is now refused, because the store was
+	// constructed with the old one and nothing rebuilds it.
 	newCfg := &config.Config{
-		Mode:    "envoy-sidecar",
-		Session: config.SessionConfig{TTL: "15m"},
+		Mode: "envoy-sidecar",
+		Pipeline: config.PipelineConfig{
+			Outbound: config.PipelineStageConfig{Plugins: []config.PluginEntry{{Name: "inference-parser"}}},
+		},
 	}
 	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: newCfg})
 
-	writeConfig(t, cfgPath, "mode: envoy-sidecar\nsession: {ttl: 15m}\n")
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\npipeline: {outbound: {plugins: [{name: inference-parser}]}}\n")
 	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK >= 1 }, "reload to succeed")
 
 	got := provider()
-	if got.Session.TTL != "15m" {
-		t.Errorf("ConfigProvider: got TTL=%q, want 15m", got.Session.TTL)
+	if len(got.Pipeline.Outbound.Plugins) != 1 || got.Pipeline.Outbound.Plugins[0].Name != "inference-parser" {
+		t.Errorf("ConfigProvider: got outbound plugins %+v, want one inference-parser", got.Pipeline.Outbound.Plugins)
+	}
+}
+
+// A session.* edit must be REFUSED, for the same reason cost_ledger.* is.
+//
+// This one is a correction to the PR description, which claimed session.* was
+// already excluded from reload validation. It was not: validateReloadable guarded
+// mode and listener.* only, and the test above deliberately used session.ttl as its
+// example of a field a reload ACCEPTS. Every consumer reads the block once at
+// startup (session.New in each cmd main, forwardproxy.Server.SessionIDHeaders before
+// ListenAndServe), so an accepted edit changed /config and nothing else.
+//
+// The subtests cover the two fields with the most misleading failure mode: a ttl
+// that appears to bound how long raw prompts sit in memory, and an id_headers list
+// emptied to stop bucketing on a client-asserted header — a trust-boundary change
+// (see SessionConfig.IDHeaders) that would have reported success and kept honouring
+// the header.
+func TestReloader_RefusesSessionChange(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		name string
+		yaml string
+		cfg  config.SessionConfig
+	}{
+		{"ttl", "session: {ttl: 15m}\n", config.SessionConfig{TTL: "15m"}},
+		{"max_events", "session: {max_events: 500}\n", config.SessionConfig{MaxEvents: 500}},
+		{"id_headers emptied", "session: {id_headers: []}\n", config.SessionConfig{IDHeaders: []string{}}},
+		{"enabled false", "session: {enabled: false}\n", config.SessionConfig{Enabled: &off}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, b, cfgPath, inH, outH := setup(t)
+			oldIn, oldOut := inH.Load(), outH.Load()
+			shaBefore := r.Status().ActiveConfigSHA256
+
+			b.set(builderResult{
+				inbound:  emptyPipeline(t),
+				outbound: emptyPipeline(t),
+				cfg:      &config.Config{Mode: "envoy-sidecar", Session: tc.cfg},
+			})
+			writeConfig(t, cfgPath, "mode: envoy-sidecar\n"+tc.yaml)
+
+			waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to be refused")
+
+			st := r.Status()
+			if !contains(st.LastError, "session") {
+				t.Errorf("error must name the section that needs a restart, got %q", st.LastError)
+			}
+			if st.ReloadsOK != 0 {
+				t.Errorf("ReloadsOK = %d; a refused reload must not report success", st.ReloadsOK)
+			}
+			if st.ActiveConfigSHA256 != shaBefore {
+				t.Errorf("ActiveConfigSHA256 moved on a refused reload")
+			}
+			if inH.Load() != oldIn || outH.Load() != oldOut {
+				t.Errorf("holders swapped despite a refused reload")
+			}
+		})
 	}
 }
 

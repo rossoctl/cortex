@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -290,5 +291,90 @@ func TestPipelinePluginDecodesCapabilityMetadata(t *testing.T) {
 	}
 	if p.Description != "Rich plugin" {
 		t.Errorf("Description = %q", p.Description)
+	}
+}
+
+// shortenRESTDefault points restDefaultTimeout at a millisecond value for the two
+// deadline tests below and restores it, so they assert the real mechanism in
+// milliseconds instead of the ten seconds it is configured with.
+//
+// A package var written by a test: these tests must not run in parallel with
+// anything else in the package, and nothing here calls t.Parallel.
+func shortenRESTDefault(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := restDefaultTimeout
+	restDefaultTimeout = d
+	t.Cleanup(func() { restDefaultTimeout = prev })
+}
+
+// TestGetJSON_CallerDeadlineIsNotPreEmpted is the regression this file exists for
+// twice over: a bound the CLIENT imposes must never cut a call short of the budget
+// its CALLER set.
+//
+// The shape is `abctl cost` scaled down. That command allows costFetchTimeout —
+// 15s, because a symbolic window is answered by reading day files off disk — and
+// the client carried a fixed 10s http.Client.Timeout, so every call died at 10s
+// and the 15s could not be reached. Both are hard stops and the shorter always
+// wins, which made the comment stating the 15s describe behaviour that could not
+// happen.
+//
+// Written against the default rather than the old constant so it fails for the
+// mutation in either spelling: a Timeout back on the http.Client, or a
+// context.WithTimeout applied in getJSON unconditionally (WithTimeout shortens and
+// never lengthens, so an unconditional one is the same defect).
+func TestGetJSON_CallerDeadlineIsNotPreEmpted(t *testing.T) {
+	shortenRESTDefault(t, 50*time.Millisecond)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Slower than the client's default and well inside the caller's budget: the
+		// window between the two is exactly where the pre-emption showed up.
+		time.Sleep(250 * time.Millisecond)
+		json.NewEncoder(w).Encode(struct {
+			Sessions []session.SessionSummary `json:"sessions"`
+		}{Sessions: []session.SessionSummary{{ID: "abc"}}})
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := New(ts.URL).ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v — the caller budgeted 5s and the answer took 250ms, so this "+
+			"error is a bound the client imposed on top of the caller's own; a client-side "+
+			"timeout that pre-empts the caller's makes the caller's stated budget unreachable", err)
+	}
+	if len(got) != 1 || got[0].ID != "abc" {
+		t.Errorf("got %+v, want the one session the server sent", got)
+	}
+}
+
+// TestGetJSON_DeadlinelessCallerIsStillBounded is the other half, and the reason the
+// default was not simply deleted. The TUI hands its ROOT context to GetPipeline,
+// GetPluginCatalog, ListSessions and GetSession, so for those four the client's
+// default is the only thing between a dead endpoint and a fetch that never returns.
+//
+// Asserted through a server that answers eventually: without the default the call
+// SUCCEEDS after the sleep, so this fails on the missing error rather than by
+// hanging, and a mutation that drops the default is reported rather than timing out
+// the package.
+func TestGetJSON_DeadlinelessCallerIsStillBounded(t *testing.T) {
+	shortenRESTDefault(t, 50*time.Millisecond)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		json.NewEncoder(w).Encode(struct {
+			Sessions []session.SessionSummary `json:"sessions"`
+		}{Sessions: []session.SessionSummary{{ID: "abc"}}})
+	}))
+	defer ts.Close()
+
+	// No deadline, exactly as the TUI's root context has none.
+	_, err := New(ts.URL).ListSessions(context.Background())
+	if err == nil {
+		t.Fatal("ListSessions returned nil error for a caller with no deadline against a server " +
+			"that answered after 400ms; the 50ms default was not applied, so a dead endpoint " +
+			"would hang the TUI's pipeline and session fetches forever")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error = %v, want context.DeadlineExceeded: the bound must be the default deadline, "+
+			"not some other failure that happens to look like one", err)
 	}
 }

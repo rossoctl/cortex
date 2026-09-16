@@ -52,6 +52,150 @@ type Config struct {
 	// internal usage with no manual setup is the point. Set `pricing.bundled:
 	// false` to price only what you configure. See authlib/pricing.
 	Pricing *pricing.Config `yaml:"pricing,omitempty" json:"pricing,omitempty"`
+	// CostLedger configures the durable per-minute cost ledger (authlib/costledger),
+	// which persists closed minutes so "what did today cost" survives a restart.
+	//
+	// Absent means the caller's default, and the callers differ deliberately: a local
+	// install turns it ON (a laptop has a home directory and a developer who wants
+	// yesterday's number), Kubernetes leaves it OFF (writing files in a pod is the
+	// wrong sink; a central collector is the right one). Set `cost_ledger.enabled:
+	// false` to turn it off locally.
+	CostLedger *CostLedgerConfig `yaml:"cost_ledger,omitempty" json:"cost_ledger,omitempty"`
+}
+
+// CostLedgerConfig configures the durable cost ledger.
+//
+// NOT HOT-RELOADABLE, unlike most of this file. The reloader swaps the plugin pipeline
+// and per-plugin config in place, but the ledger is constructed once at startup and
+// handed to the session store as a recorder, so a running proxy holds whichever writer
+// it opened. Editing anything here — enabled, dir, retention_days — takes effect on
+// RESTART.
+//
+// The edit is REFUSED rather than ignored: reloader.validateReloadable compares this
+// block the way it compares mode and listener.*, so a live edit fails the reload,
+// leaves LastError naming cost_ledger on /reload/status, and asks for a pod restart.
+//
+// It did not always. This doc used to warn that "an operator who edits this to stop
+// writing cost history has every reason to believe it stopped" — and they did, because
+// the edit was ACCEPTED: ReloadsOK incremented, ActiveConfigSHA256 moved, and /config
+// served the new values while the startup writer kept appending under the old
+// retention. Documenting that was the weaker of the two options available; the guard
+// is three lines and the precedent for it was already in the same function. Pinned by
+// reloader.TestReloader_RefusesCostLedgerChange.
+type CostLedgerConfig struct {
+	// Enabled is a POINTER so "unset" and "explicitly false" are different states.
+	// The local default is on, and an operator has to be able to turn it off; with a
+	// plain bool an absent block and `enabled: false` would be the same value, so the
+	// only way to disable it would be to delete the whole block — which also discards
+	// the retention setting beside it.
+	//
+	// Takes effect on restart. See the type doc.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Dir is where day files are written. Empty means the caller's default, which for
+	// a local install is ~/.cortex/cost — kept out of this struct so the config does
+	// not pin a $HOME-derived absolute path into a file that may be copied between
+	// machines.
+	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+	// RetentionDays is how many day files survive. Zero means the package default of
+	// 30, which is roughly 10 MB.
+	//
+	// A non-zero value must be at least minCostLedgerRetentionDays; see there.
+	RetentionDays int `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+}
+
+// minCostLedgerRetentionDays is the floor a NON-ZERO retention_days has to clear.
+//
+// The usage API serves window=7d, and it serves it from these day files. With
+// retention_days: 2, six of the eight local days a 7d window spans have already been
+// deleted, the ledger reads nothing for each of them, and the response still says
+// window:"7d", priced:true over two days of spend. Nothing downstream can tell that
+// figure from a genuinely quiet week — the label is the same, the priced flag is the
+// same, and the number is wrong by however much was pruned.
+//
+// DERIVED FROM THE WINDOW RATHER THAN WRITTEN AS ITS OWN NUMBER, because as its own
+// number it was WRONG. It was the literal 7, on the reading that "7d" spans seven days;
+// but usage.ParseWindowSpec defines 7d as a ROLLING seven times twenty-four hours, and
+// unless that begins exactly at midnight it starts part-way through one date and ends
+// part-way through another, so the ledger opens EIGHT day files to answer it in an ordinary
+// week. A retention of 7 keeps today and the six before it, so the eighth — the oldest, the
+// one the window opens ON — had already been unlinked: retention_days: 7 passed validation
+// and then answered window:"7d" over a partial week, which is exactly the case this floor
+// exists to refuse. The paragraph above was already saying "eight" while the constant said 7.
+//
+// NINE, NOT EIGHT, and the second correction has the same shape as the first. Eight assumed
+// every day in the week is 24 hours long: a spring-forward week is 167 hours, so a 168-hour
+// rolling span reaches an hour further back than a calendar week and touches a NINTH local
+// date — measured at 00:00 on 2026-03-15 in America/New_York as much as in America/Havana,
+// because 7d's From is a duration subtraction and has nothing to do with where in the day a
+// transition falls. At eight, retention_days: 8 passed validation and then answered
+// window:"7d" over a partial week on the two mornings a year that happens. It is
+// usage.Window7dLocalDays, which is now documented as a CEILING rather than a count for
+// exactly this reason; see there for the alternative fix (making 7d calendar-aligned) and why
+// it is a product decision rather than a bound to correct.
+//
+// One surviving file per day retained is exact rather than approximate: store.prune
+// keeps the days in [ref-(retainDays-1), ref], so retainDays IS the number of dates
+// that survive, and clearing usage.Window7dLocalDays means every date the window opens
+// is still on disk.
+//
+// Refused at load rather than clamped, because the operator who chose the number is
+// the one who should learn that the window they will be served does not mean what it
+// says. Zero is untouched by the floor and still means "the package default" (30).
+//
+// This does NOT cover the other half of the same defect: an install younger than the
+// window has no files for the missing days either, and answers window:"7d" over however
+// long it has been running. Retention is not what limits that, so it cannot be fixed
+// here — it needs the response to carry the span actually covered.
+// A LITERAL, with the agreement enforced by a test rather than by an import. Deriving it
+// as usage.Window7dLocalDays read better and cost a layering inversion: this package is the
+// leaf every binary loads to parse its config, and pointing it at the aggregator to learn a
+// number drags that dependency into every binary — including ones that never aggregate
+// anything. TestMinCostLedgerRetentionDays_MatchesTheWindowItProtects asserts the two are
+// equal, so the protection the derivation bought (a window change that outgrows the floor
+// fails loudly instead of silently admitting a partial week) is kept without the import.
+//
+// A test-only dependency is the right shape for a cross-package invariant that is not a
+// runtime relationship: config does not need to KNOW about windows, it needs to AGREE with
+// them, and agreement is a thing to check rather than to compute.
+const minCostLedgerRetentionDays = 9
+
+// LedgerEnabled reports whether the ledger should run, given the default for this
+// deployment shape.
+//
+// A method on the pointer receiver so a nil block — the common case in Kubernetes —
+// answers without every caller writing the same nil check and one of them getting it
+// backwards.
+func (c *CostLedgerConfig) LedgerEnabled(defaultOn bool) bool {
+	if c == nil || c.Enabled == nil {
+		return defaultOn
+	}
+	return *c.Enabled
+}
+
+// Validate is called from the loader when CostLedger != nil.
+func (c *CostLedgerConfig) Validate() error {
+	if c.RetentionDays < 0 {
+		return fmt.Errorf("cost_ledger.retention_days must not be negative, got %d", c.RetentionDays)
+	}
+	if c.RetentionDays > 0 && c.RetentionDays < minCostLedgerRetentionDays {
+		// Says NINE and says why it is not seven: an operator who typed 7 for a seven-day
+		// window is not making a careless mistake, and a message that only quoted the floor
+		// would read as an off-by-one in the software rather than as the rolling span it is.
+		// It names both increments, because 8 is as reasonable a guess as 7 and was the floor
+		// until a spring-forward week was measured against it.
+		// The numbers are spelled out rather than interpolated from authlib/usage, for the
+		// reason minCostLedgerRetentionDays is a literal: this package must not import the
+		// aggregator. Every one of them is pinned against usage's own constants by
+		// TestMinCostLedgerRetentionDays_MatchesTheWindowItProtects, so a window change
+		// makes this message wrong in a test rather than wrong in front of an operator.
+		return fmt.Errorf("cost_ledger.retention_days must be at least %d, or 0 for the default: "+
+			"the usage API serves window=7d from these day files, and that window is a ROLLING "+
+			"7x24h, so it reads 8 local day files rather than 7 — and 9 in a spring-forward "+
+			"week, which is only 167 hours long — a shorter retention reports a partial week "+
+			"as a full one, got %d",
+			minCostLedgerRetentionDays, c.RetentionDays)
+	}
+	return nil
 }
 
 // TLSBridgeConfig configures the outbound TLS bridge (TLS termination of
@@ -766,6 +910,12 @@ func Load(path string) (*Config, error) {
 	}
 	if err := cfg.SPIFFE.Validate(); err != nil {
 		return nil, err
+	}
+
+	if cfg.CostLedger != nil {
+		if err := cfg.CostLedger.Validate(); err != nil {
+			return nil, err
+		}
 	}
 
 	if cfg.TLSBridge != nil {

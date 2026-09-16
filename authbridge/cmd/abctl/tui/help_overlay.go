@@ -31,9 +31,14 @@ var globalKeys = keyGroup{
 	bindings: []keyBinding{
 		{"?", "this help"},
 		{"↑↓ / jk", "scroll this help"},
+		{"$ · C", "cost pane (session views)"},
 		{"P", "plugin catalog (session views)"},
 		{"p", "pause/resume stream"},
-		{"g / G", "jump to top / bottom"},
+		// The Cost pane shadows `g` — keys.go's paneCost arm claims it before the global
+		// dispatch ever runs, and `G` does nothing there at all (no cursor, no table). The
+		// overlay used to advertise both here and "g — cycle breakdown" in the Cost group,
+		// with nothing saying which one wins; a reader could only find out by pressing it.
+		{"g / G", "jump to top / bottom (not in Cost — see [g] there)"},
 		{"b / f", "page up / down"},
 		{"q · ctrl+c", "quit"},
 	},
@@ -121,6 +126,19 @@ var paneKeys = map[paneID]keyGroup{
 			{"esc", "back"},
 		},
 	},
+	paneCost: {
+		title: "COST (this pane)",
+		bindings: []keyBinding{
+			{"w", "cycle window (today/7d/1h)"},
+			// The axis list names every entry of costPaneGroups, agent included — it was
+			// added to the cycle and not to this line, so the overlay under-reported the
+			// pane's own key. And it says out loud that this binding wins over the global
+			// `g`, because the global group two blocks down still lists `g / G`.
+			{"g", "cycle breakdown (model/endpoint/session/agent) — wins over the global [g]"},
+			{"G", "nothing here (no cursor to jump)"},
+			{"esc", "back"},
+		},
+	},
 	paneCatalog: {
 		title: "PLUGIN CATALOG (this pane)",
 		bindings: []keyBinding{
@@ -136,7 +154,7 @@ var paneKeys = map[paneID]keyGroup{
 // the overlay is stable across openings (Go map iteration is random).
 var otherPaneOrder = []paneID{
 	paneNamespaces, panePods, paneSessions, paneEvents,
-	paneDetail, paneUsage, panePipeline, panePluginDetail, paneCatalog,
+	paneDetail, paneUsage, paneCost, panePipeline, panePluginDetail, paneCatalog,
 }
 
 // helpKeyColWidth is the fixed width of the key column so descriptions

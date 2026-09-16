@@ -332,6 +332,57 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 	return "  " + strings.Join(parts, "    ")
 }
 
+// snapshotDamaged reports that the read behind a snapshot's totals was INCOMPLETE — rows
+// the answer needed could not be read at all, so the figures are SHORT by an amount
+// nothing in the response can state.
+//
+// A DIFFERENT CLAIM from usage.Counts.IncompleteRequests, and the two must never be merged
+// or shown under one marker. That counter says a figure the response CARRIES is inexact —
+// a floor from a stream that died before its output count, or a gateway's approximation —
+// and the request is still counted and still priced. This says rows are MISSING FROM THE
+// SUM. One qualifies a number; the other says a number is absent from it.
+// usage.Snapshot.Degraded's own doc draws that line; damagedMarker is the separate glyph it
+// requires.
+//
+// PRESENCE is the claim, not the counters. The field is a pointer precisely so a clean read
+// serialises nothing, so absence means the read was clean and NOTHING may be rendered for
+// it. A present object whose counters are both zero still reports damage: a producer that
+// sent the object is saying it found some, and reading zeros as "checked, fine" is the same
+// class of false reassurance as $0.00 over unpriced traffic.
+//
+// Only a LEDGER-backed window can populate it. The in-memory ring has no lines to fail to
+// decode and no files to abandon, so a duration window leaves it nil and that absence is
+// the truth rather than a gap in the reporting. Which is why two money surfaces do NOT
+// consult it: the sessions COST cell is summed out of the strip's fixed-hour ring window,
+// and renderCostSummary's pane cycles usageWindows, all of which are durations. The strip's
+// TODAY figure, the Cost pane and `abctl cost` are the three that can be ledger-backed, and
+// they are the three that render it.
+//
+// A pointer parameter rather than a *usage.Snapshot, so the strip can ask about the day
+// figure's own disclosure without carrying the whole snapshot into spendSummary.
+func snapshotDamaged(d *usage.Degraded) bool { return d != nil }
+
+// negativeCost reports that a published cost figure cannot be spend, and is the ONE
+// spelling of that test on every money surface in this package.
+//
+// A negative total is not a total. The session API refuses to publish one — cost is a
+// sum of per-request figures that are themselves non-negative — so this can only fire
+// against a broken or hostile producer. THE GUARANTEE IS UPSTREAM, in
+// authlib/sessionapi, and nothing here re-derives it: this is DEFENCE IN DEPTH, a
+// refusal to render a figure that contradicts a promise made on the other side of the
+// wire.
+//
+// It is a function rather than four inline comparisons because it was three inline
+// comparisons short of existing. cost_pane.go restated the guarantee in two places —
+// its TOTAL and its breakdown rows — and "$-5.0000" still reached the spend strip, the
+// sessions table's COST cell and this cell, where a minus sign in a column of costs
+// reads as a refund nobody issued.
+//
+// Every caller treats it as UNPRICED, never as a small or clamped figure. An impossible
+// number is not a number to display, and $0.0000 would assert that the traffic was free
+// — the one claim this whole surface exists to refuse.
+func negativeCost(micros int64) bool { return micros < 0 }
+
 // renderCostSummary is the COST cell, in one of three states.
 //
 // Nothing priced: say so rather than render $0.00, which reads as "this traffic
@@ -343,13 +394,37 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 // endpoint, so a window mixing priced and unpriced requests is the normal case
 // rather than an edge one. Presenting its subtotal as if it were the whole spend
 // is the failure this coverage count exists to prevent.
+//
+// Coverage is not the only way a total can mislead, and this cell used to make the other
+// way invisible: usage.Counts.IncompleteRequests counts priced requests whose figure is a
+// LOWER BOUND (a stream that died before its output count) or an approximation (a gateway
+// reporting only a total). While it is non-zero the dollar total is inexact, so the figure
+// wears inexactMarker and says how many — the exactness caveat before the coverage one,
+// because it qualifies the figure itself where coverage qualifies what the figure is
+// about.
 func renderCostSummary(snap *usage.Snapshot) string {
 	if !snap.Priced {
 		// Not "$0.0000". A zero cost and an unknown cost are different answers, and
 		// only one of them means the traffic was free.
 		return "COST unavailable"
 	}
-	cell := fmt.Sprintf("COST $%.4f", float64(snap.Totals.CostMicros)/1e6)
+	// A negative total is refused the same way an unpriced one is; see negativeCost.
+	// This cell renders through formatUSDCell, which is faithful about the sign, so
+	// "COST $-5.0000" was what the footer showed the reviewer.
+	if negativeCost(snap.Totals.CostMicros) {
+		return "COST unavailable"
+	}
+	// formatUSDCell, not a bare %.4f. The formatter exists to stop exactly what this line
+	// did: it renders anything positive under $0.00005 as "<$0.0001" instead of "$0.0000",
+	// which reads as "this traffic was free". One cache-read-only request is $0.000038 —
+	// 100 cache-read tokens at a typical rate — so a real charge printed as free was one
+	// quiet request away, on the pane whose whole job is to report usage. Both other money
+	// surfaces already route through it; this was the hole.
+	amount := formatUSDCell(float64(snap.Totals.CostMicros) / 1e6)
+	if snap.Totals.IncompleteRequests > 0 {
+		amount = inexactMarker + amount
+	}
+	cell := "COST " + amount
 	// Compared against PRICEABLE requests, not all of them. Requests counts every
 	// proxied response — MCP tool calls, health checks, anything else the sidecar
 	// handled — while only inference can ever be priced, so the old ratio left a
@@ -361,6 +436,14 @@ func renderCostSummary(snap *usage.Snapshot) string {
 	// column showed them identically. Only shown when it tells the reader something —
 	// a single uniform provenance that is authoritative needs no annotation.
 	cell += provenanceNote(snap.PricedBy)
+
+	// Spelled out as well as marked, because this cell has room for a sentence where the
+	// strip and the table have room for a glyph. Only when it is non-zero: a permanent
+	// caveat with nothing to act on is what teaches an operator to ignore the one that
+	// matters.
+	if inc := snap.Totals.IncompleteRequests; inc > 0 {
+		cell += fmt.Sprintf(" (%d of %d inexact)", inc, snap.Totals.PricedRequests)
+	}
 
 	priceable := snap.Totals.PriceableRequests
 	if priceable == 0 || snap.Totals.PricedRequests >= priceable {

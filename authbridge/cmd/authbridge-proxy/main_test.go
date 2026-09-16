@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
@@ -102,5 +105,85 @@ func TestProviderConsumersCoveredByPredicate(t *testing.T) {
 		if !spiffeProviderNeeded(cfg) {
 			t.Errorf("spiffeProviderNeeded must return true for consumer %q with identity.type=spiffe", name)
 		}
+	}
+}
+
+// captureWarns runs fn with a logger recording WARN records as JSON lines.
+func captureWarns(t *testing.T, fn func(*slog.Logger)) []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	fn(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// A cost ledger that is on by DEFAULT and unreachable because sessions are off must
+// say so. This is the residue of the same defect config.Validate now refuses in its
+// explicit form: the whole ledger block in main is nested inside
+// `if cfg.Session.SessionEnabled()`, so with sessions off the operator got no error,
+// no warning, and no log line naming the ledger at all — an empty `abctl usage`
+// history with nothing anywhere to explain it.
+//
+// Local mode is the case that matters: --local turns the ledger on without anyone
+// writing cost_ledger into the config, so this is the one combination that is
+// legitimate, silent, and wrong.
+func TestWarnCostLedgerNeedsSessions_LocalDefaultOn(t *testing.T) {
+	off := false
+	recs := captureWarns(t, func(l *slog.Logger) {
+		warnCostLedgerNeedsSessions(&config.Config{
+			Mode:    config.ModeProxySidecar,
+			Session: config.SessionConfig{Enabled: &off},
+		}, true, l)
+	})
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly 1 warn, got %d: %#v", len(recs), recs)
+	}
+	msg, _ := recs[0]["msg"].(string)
+	if !strings.Contains(msg, "cost ledger") {
+		t.Errorf("warn must name the ledger, got %q", msg)
+	}
+	// Both settings, because the fix is a decision between them and a message naming
+	// one would send the reader to the wrong file.
+	for _, key := range []string{"cost_ledger.enabled", "session.enabled"} {
+		if _, ok := recs[0][key]; !ok {
+			t.Errorf("warn must name %q; got keys %v", key, recs[0])
+		}
+	}
+}
+
+// It must stay quiet when the ledger was not going to run anyway — otherwise every
+// in-cluster deployment with sessions off logs a warning about a feature it never
+// asked for, and the line stops meaning anything.
+func TestWarnCostLedgerNeedsSessions_SilentWhenLedgerIsOff(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		name      string
+		cfg       *config.Config
+		localMode bool
+	}{
+		{"kubernetes default off", &config.Config{Mode: config.ModeProxySidecar, Session: config.SessionConfig{Enabled: &off}}, false},
+		{"explicitly off locally", &config.Config{Mode: config.ModeProxySidecar, Session: config.SessionConfig{Enabled: &off}, CostLedger: &config.CostLedgerConfig{Enabled: &off}}, true},
+		// Sessions on is the normal --local shape: the ledger runs, so there is
+		// nothing to warn about. This is what makes the call site in main safe to
+		// make unconditional instead of hiding it down one arm of an if.
+		{"sessions on locally", &config.Config{Mode: config.ModeProxySidecar}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if recs := captureWarns(t, func(l *slog.Logger) {
+				warnCostLedgerNeedsSessions(tc.cfg, tc.localMode, l)
+			}); len(recs) != 0 {
+				t.Errorf("expected silence, got %#v", recs)
+			}
+		})
 	}
 }

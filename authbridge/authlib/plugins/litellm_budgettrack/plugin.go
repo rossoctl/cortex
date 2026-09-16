@@ -212,10 +212,22 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 
 // bill adds the settled cost to today's ledger, exactly once per request.
 //
-// The idempotence guard stays here even though the parser has one of its own: a listener
-// can dispatch a terminal frame twice (extproc does, once for headers and once for the
-// buffered body), and this is the ledger — double-counting money is not recoverable from a
-// later correction, because the file has already been written.
+// The idempotence guard stays here even though the parser has one of its own, because this
+// is the LEDGER: double-counting money is not recoverable from a later correction, since the
+// file has already been written.
+//
+// WHICH LISTENER REPEATS A TERMINAL FRAME — corrected, because this comment used to say
+// "extproc does, once for headers and once for the buffered body" and that is not what
+// happens. extproc's response-header phase returns early whenever the pipeline needs a body
+// (server.go), which inference-parser's undirected ReadsBody makes true for every shipped
+// pipeline, so the header-only dispatch is unreachable there. What extproc really did was
+// run the whole buffered dispatch once per ResponseBody MESSAGE, which is now gated on
+// end_of_stream at the listener (see dispatchBufferedFrames). The same wrong explanation was
+// corrected in inferenceparser's settleCost; it had been copied here.
+//
+// The guard therefore protects against a repeated terminal frame from any listener rather
+// than a named one — which is the right shape for a plugin that cannot see who is calling
+// it, and is why it stays after the extproc gate.
 func (p *BudgetTrack) bill(pctx *pipeline.Context) {
 	st := pipeline.GetState[settleState](pctx, stateKey)
 	if st == nil {

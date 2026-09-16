@@ -86,7 +86,10 @@ func TestSessionsPicker_ListsCachedOnlySessions(t *testing.T) {
 	if row[2] != "3" {
 		t.Errorf("row event count = %q, want %q", row[2], "3")
 	}
-	if row[4] != "cached" {
+	// [5], not [4]: COST was inserted before ACTIVE so this marker moved right by one.
+	// Reading [4] would still compile and still assert — about the COST cell, which is
+	// blank for a cached row, so the test would pass for entirely the wrong reason.
+	if row[5] != "cached" {
 		t.Errorf("row not marked as cached-only: %v", row)
 	}
 }

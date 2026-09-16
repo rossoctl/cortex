@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // fixedClock returns a controllable now, so bucket boundaries are exact rather
@@ -30,9 +33,42 @@ func respEvent(at time.Time, status int, dur time.Duration, model string, tokens
 	return e
 }
 
-// withCost attaches the cost event litellm-budget-track publishes, exactly as a
-// listener would after SnapshotPlugins. Returns e so it composes with respEvent.
+// withCost attaches a settled cost event under costevent.Key — the key production
+// publishes — exactly as a listener would after SnapshotPlugins. Returns e so it
+// composes with respEvent.
+//
+// inference-parser is what settles and publishes the figure; litellm-budget-track
+// consumes it to enforce a budget.
+//
+// Both keys appear in this package deliberately. Every fixture here used to publish
+// costevent.PluginName, the frozen LEGACY key, which meant the aggregator's whole
+// cost coverage exercised only costevent.Find's FALLBACK branch: deleting its
+// primary Plugins[Key] lookup left this package green while /v1/usage would have
+// reported every request unpriced. The default is now the production key, and
+// withLegacyCost keeps the compatibility path held down rather than untested.
 func withCost(t *testing.T, e *pipeline.SessionEvent, costUSD float64) *pipeline.SessionEvent {
+	t.Helper()
+	return withCostUnderKey(t, e, costUSD, costevent.Key)
+}
+
+// withLegacyCost publishes under costevent.PluginName, the frozen legacy key. Only
+// TestCostOf_DecodesTheLegacyProducerKey should use it; everything else wants the
+// production key.
+func withLegacyCost(t *testing.T, e *pipeline.SessionEvent, costUSD float64) *pipeline.SessionEvent {
+	t.Helper()
+	// The deprecation warning is the POINT here, not an oversight to be silenced
+	// generally: this helper exists to hold the compatibility path down, and reading the
+	// legacy key is exactly what it must keep doing. Switching to costevent.Key would
+	// leave the frozen spelling untested and re-open the coverage hole this helper was
+	// added to close — every cost fixture once exercised only the legacy key, which meant
+	// nothing proved the production key was decoded at all.
+	//nolint:staticcheck // SA1019: deliberately exercising the deprecated key.
+	return withCostUnderKey(t, e, costUSD, costevent.PluginName)
+}
+
+// withCostUnderKey is the shared body, parameterised by key so the two spellings
+// cannot drift in anything but the key itself.
+func withCostUnderKey(t *testing.T, e *pipeline.SessionEvent, costUSD float64, key string) *pipeline.SessionEvent {
 	t.Helper()
 	raw, err := json.Marshal(costevent.Event{
 		CostUSD: costUSD,
@@ -44,16 +80,44 @@ func withCost(t *testing.T, e *pipeline.SessionEvent, costUSD float64) *pipeline
 	if e.Plugins == nil {
 		e.Plugins = map[string]json.RawMessage{}
 	}
-	e.Plugins[costevent.PluginName] = raw
+	e.Plugins[key] = raw
 	return e
+}
+
+// The legacy key must keep decoding: session stores hold events recorded under it,
+// and a sidecar in a mixed-version deployment still publishes it — which is why
+// costevent.PluginName's literal value is frozen.
+//
+// This is the one fixture in the package deliberately left on that key. It exists
+// because the swap to costevent.Key would otherwise have moved the fallback from
+// over-tested to untested in a single commit, and the fallback is a real
+// compatibility guarantee for events already sitting in a store.
+func TestCostOf_DecodesTheLegacyProducerKey(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 30, 0, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+
+	a.Record("s1", withLegacyCost(t, respEvent(now, 200, time.Second, "claude-opus-5", 1000), 0.0421))
+
+	snap := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+	if snap.Totals.CostMicros != 42_100 {
+		t.Errorf("CostMicros = %d, want 42100 — a legacy-key record must still decode", snap.Totals.CostMicros)
+	}
+	if snap.Totals.PricedRequests != 1 {
+		t.Errorf("PricedRequests = %d, want 1", snap.Totals.PricedRequests)
+	}
 }
 
 // TestCountsAddFoldsPricedRequests is why coverage is a counter and not a
 // boolean: buckets are summed when a client asks for a coarser resolution, and
-// a bool cannot express "12 of 40 requests in this window were priced".
+// a bool cannot express "12 of 40 PRICEABLE requests in this window were priced".
+//
+// Priceable, not Requests. The gap a client renders is
+// PriceableRequests-minus-PricedRequests; taking it against Requests counts every
+// health check and tool call as unpriced traffic and never reaches zero. See both
+// fields' godoc.
 func TestCountsAddFoldsPricedRequests(t *testing.T) {
-	a := Counts{Requests: 10, CostMicros: 500, PricedRequests: 4}
-	a.Add(Counts{Requests: 5, CostMicros: 250, PricedRequests: 3})
+	a := Counts{Requests: 10, CostMicros: 500, PricedRequests: 4, PriceableRequests: 9}
+	a.Add(Counts{Requests: 5, CostMicros: 250, PricedRequests: 3, PriceableRequests: 6})
 
 	if a.Requests != 15 {
 		t.Errorf("Requests = %d, want 15", a.Requests)
@@ -64,8 +128,150 @@ func TestCountsAddFoldsPricedRequests(t *testing.T) {
 	if a.PricedRequests != 7 {
 		t.Errorf("PricedRequests = %d, want 7", a.PricedRequests)
 	}
-	if unpriced := a.Requests - a.PricedRequests; unpriced != 8 {
+	if a.PriceableRequests != 15 {
+		t.Errorf("PriceableRequests = %d, want 15", a.PriceableRequests)
+	}
+	if unpriced := a.PriceableRequests - a.PricedRequests; unpriced != 8 {
 		t.Errorf("unpriced = %d, want 8", unpriced)
+	}
+}
+
+// TestCountsAdd_EveryInt64FieldSaturatesAndSaysSo walks Counts BY REFLECTION, which is the
+// only way this test cannot rot.
+//
+// A hand-written table of the fields would have to be extended by whoever adds a field —
+// the same person who would have to remember to use the checked accumulate in Add, and the
+// evidence in Add's own doc is that this is exactly what gets forgotten (an out-of-module
+// copy hand-summed these fields and silently missed PricedRequests). Reflection asks the
+// struct instead of asking a list, so a new int64 field added with a bare `+=` fails here on
+// the day it lands.
+//
+// Both halves are asserted, because either alone is a lie: the clamp (the number must not
+// wrap into a negative) and the disclosure (a clamped total must say it is a floor).
+func TestCountsAdd_EveryInt64FieldSaturatesAndSaysSo(t *testing.T) {
+	rt := reflect.TypeOf(Counts{})
+	checked := 0
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if f.Type.Kind() != reflect.Int64 {
+			continue
+		}
+		checked++
+		t.Run(f.Name, func(t *testing.T) {
+			for _, dir := range []struct {
+				name       string
+				start, add int64
+				want       int64
+			}{
+				{"upward", math.MaxInt64, 1, math.MaxInt64},
+				{"downward", math.MinInt64, -1, math.MinInt64},
+			} {
+				t.Run(dir.name, func(t *testing.T) {
+					var a, b Counts
+					reflect.ValueOf(&a).Elem().Field(i).SetInt(dir.start)
+					reflect.ValueOf(&b).Elem().Field(i).SetInt(dir.add)
+					a.Add(b)
+					if got := reflect.ValueOf(a).Field(i).Int(); got != dir.want {
+						t.Errorf("%s = %d after overflowing %s, want %d — a bare += wraps here, and "+
+							"the wrapped figure then sits in the durable ledger for its full retention",
+							f.Name, got, dir.name, dir.want)
+					}
+					if !a.Saturated {
+						t.Errorf("%s hit the int64 %s bound and Saturated is false; a silently clamped "+
+							"total is the same class of lie as a wrapped one, and a client has no way "+
+							"to know the figure is a floor", f.Name, dir.name)
+					}
+				})
+			}
+		})
+	}
+	// The loop itself must have found the fields, or a rename made this test a no-op that
+	// reports success — which is the failure mode the reflection was chosen to avoid.
+	if checked < 12 {
+		t.Errorf("walked %d int64 fields of Counts, expected at least 12; the struct was "+
+			"renamed or retyped and this test now asserts nothing", checked)
+	}
+}
+
+// TestCountsAdd_TheWrapMeasuredInPricingIsClosed is the disclosure in
+// pricing.MaxCostMicros, executed.
+//
+// That comment states the arithmetic — math.MaxInt64 / MaxCostMicros is 1023, so 1,024
+// requests each priced at the bound wrap the aggregate to -9214364837600034816 — and names
+// Counts.Add as the place that has to close it, because no per-request bound can. This runs
+// exactly that scenario and asserts the total never goes negative.
+//
+// The count is deliberately past 1,024. A test that stopped at the wrap point would pass on
+// an implementation that wraps once and then keeps accumulating from a negative base.
+func TestCountsAdd_TheWrapMeasuredInPricingIsClosed(t *testing.T) {
+	const atBound = int64(pricing.MaxCostMicros) - 1 // the largest figure MicrosFromUSD admits
+	var total Counts
+	for n := 1; n <= 2_000; n++ {
+		total.Add(Counts{Requests: 1, CostMicros: atBound, PricedRequests: 1})
+		if total.CostMicros < 0 {
+			t.Fatalf("CostMicros = %d after %d requests at %d micros: the aggregate wrapped, which "+
+				"is the failure pricing.MaxCostMicros documents and cannot fix",
+				total.CostMicros, n, atBound)
+		}
+	}
+	if total.CostMicros != math.MaxInt64 {
+		t.Errorf("CostMicros = %d, want math.MaxInt64 (%d) — the sum is meant to CLAMP at the "+
+			"ceiling, not to stop accumulating or to reset", total.CostMicros, int64(math.MaxInt64))
+	}
+	if !total.Saturated {
+		t.Error("2,000 requests at the cost bound produced a clamped total that does not disclose " +
+			"it; the number is then a ceiling presented as a sum")
+	}
+	// Requests is 2,000 and exact. The disclosure must not be read as "nothing here is
+	// trustworthy": one field saturated, the others are still sums.
+	if total.Requests != 2_000 {
+		t.Errorf("Requests = %d, want 2000 — saturation on one field must not disturb another",
+			total.Requests)
+	}
+}
+
+// TestCountsAdd_SaturationIsInheritedByAnyTotalContainingIt is why the flag is OR-ed rather
+// than recomputed.
+//
+// Buckets are folded into totals and into coarser buckets, and a fold does not repeat the
+// addition that saturated. If the flag did not travel, the bucket would say its figure is a
+// floor and the window total containing it would say its own figure is exact — the same
+// number, two different claims, and the client reads the one that is wrong.
+func TestCountsAdd_SaturationIsInheritedByAnyTotalContainingIt(t *testing.T) {
+	saturated := Counts{Requests: 1, CostMicros: math.MaxInt64, Saturated: true}
+	total := Counts{Requests: 1, CostMicros: 5}
+	total.Add(saturated)
+	if !total.Saturated {
+		t.Error("a total that folded in a saturated bucket reports itself exact; the floor is " +
+			"inherited by every sum the bucket is part of")
+	}
+	// And the flag is not sticky the other way: folding a clean bucket into a clean total
+	// must not manufacture a caveat, or the disclosure means nothing.
+	clean := Counts{Requests: 1, CostMicros: 5}
+	clean.Add(Counts{Requests: 1, CostMicros: 5})
+	if clean.Saturated {
+		t.Error("an ordinary fold set Saturated; a caveat that appears on clean data trains an " +
+			"operator to ignore it")
+	}
+}
+
+// TestCountsSaturatedOmittedWhenFalse keeps the wire quiet for the overwhelming majority of
+// responses, on the same rule as PricedRequests below: absence is the clean answer.
+func TestCountsSaturatedOmittedWhenFalse(t *testing.T) {
+	b, err := json.Marshal(Counts{Requests: 3, CostMicros: 5})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "saturated") {
+		t.Errorf("a clean Counts serialised the saturation flag, got %s", b)
+	}
+	b, err = json.Marshal(Counts{Requests: 3, Saturated: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"saturated":true`) {
+		t.Errorf("a saturated Counts did not serialise the flag, got %s — the disclosure only "+
+			"works if it reaches the client", b)
 	}
 }
 
@@ -81,8 +287,10 @@ func TestCountsPricedRequestsOmittedWhenZero(t *testing.T) {
 	}
 }
 
-// The cost is taken from the figure litellm-budget-track already settled and
-// published, not modelled here from a rate table.
+// The cost is taken from the figure inference-parser already settled and published.
+// The aggregator does hold a rate table of its own (see WithPricing), but a
+// published figure always wins over a modelled one; no resolver is configured here,
+// so the published path is the only one that can answer.
 func TestRecord_PricesFromCostEvent(t *testing.T) {
 	now := time.Date(2026, 9, 9, 12, 30, 0, 0, time.UTC)
 	a := New(WithClock(fixedClock(now)))
@@ -363,7 +571,7 @@ func TestSnapshot_AllGroupingsPopulatedFromOnePass(t *testing.T) {
 // rendering $0.00 — which would read as "this traffic was free".
 //
 // Formerly TestSnapshot_CostRequiresPricer: the assertions are unchanged, but the
-// source is now the figure litellm-budget-track publishes rather than an injected
+// source is now the figure inference-parser publishes rather than an injected
 // Pricer that no production caller ever supplied.
 func TestSnapshot_CostRequiresACostSource(t *testing.T) {
 	now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
@@ -657,5 +865,507 @@ func TestRecord_LabelLengthIsCapped(t *testing.T) {
 		if len(k) > maxLabelLen {
 			t.Errorf("retained a %d-byte label, cap is %d", len(k), maxLabelLen)
 		}
+	}
+}
+
+// TestTruncateLabel_CutsOnARuneBoundaryAndKeepsTheByteCap is the cap the byte cut was
+// breaking.
+//
+// s[:maxLabelLen] can split a multi-byte sequence, and encoding/json then expands each
+// invalid byte into a 3-byte U+FFFD — so the serialised label came out LONGER than the cap
+// (measured in costledger: 121 bytes cut at 96 serialised at 100). The invalid fragment is
+// the smaller problem; the byte cap silently not holding is the defect.
+//
+// EVERY CASE HAS A ONE-BYTE PREFIX, and that is load-bearing rather than incidental.
+// maxLabelLen is 96, which is divisible by 2, 3 and 4 — so a label of uniform multi-byte
+// runes has a rune boundary exactly AT the cap and the byte cut is accidentally correct. The
+// first version of this test in costledger passed against the unfixed code for precisely that
+// reason. One ASCII byte in front moves the cut to offset 95, which is a boundary for none of
+// the three widths.
+func TestTruncateLabel_CutsOnARuneBoundaryAndKeepsTheByteCap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rune string
+	}{
+		{"two-byte runes", "é"},
+		{"three-byte runes", "€"},
+		{"four-byte runes", "𝄞"},
+		{"the replacement character sanitising produces", "�"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The prefix is what stops 96 from landing on a boundary; see the doc above.
+			in := "a" + strings.Repeat(tc.rune, maxLabelLen)
+			got := truncateLabel(in)
+
+			if len(got) > maxLabelLen {
+				t.Errorf("truncateLabel returned %d bytes, cap is %d", len(got), maxLabelLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateLabel returned invalid UTF-8 (%q): the cut landed inside a rune",
+					got)
+			}
+			// The reason the boundary matters, asserted as the property rather than as UTF-8
+			// validity: a round trip through the encoder must not change the bytes, or the byte
+			// cap this function enforces does not hold on the wire.
+			enc, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var back string
+			if uerr := json.Unmarshal(enc, &back); uerr != nil {
+				t.Fatalf("unmarshal: %v", uerr)
+			}
+			if back != got {
+				t.Errorf("the label changed through encoding/json: %q became %q — an invalid "+
+					"trailing byte was expanded into U+FFFD", got, back)
+			}
+			if len(enc)-2 > maxLabelLen {
+				t.Errorf("the label serialises to %d bytes, past the %d-byte cap it was cut to; "+
+					"the cap does not hold where it is spent", len(enc)-2, maxLabelLen)
+			}
+			// And the cut must not be so eager that it drops a whole rune it could have kept: at
+			// most three bytes of slack, which is the walk-back limit.
+			if maxLabelLen-len(got) > 3 {
+				t.Errorf("truncateLabel returned %d bytes for a %d-byte cap: it walked back further "+
+					"than the longest UTF-8 sequence", len(got), maxLabelLen)
+			}
+		})
+	}
+}
+
+// TestRingLabel_SanitisesBeforeCapping pins the ORDER, which is the half that is easy to get
+// backwards and impossible to notice.
+//
+// Sanitising triples a control byte (one byte becomes a 3-byte U+FFFD), so capping first
+// would let 96 control bytes become 288 and break the bound that exists to make a label's
+// memory and line length predictable.
+func TestRingLabel_SanitisesBeforeCapping(t *testing.T) {
+	got := ringLabel(strings.Repeat("\x1b", maxLabelLen))
+	if len(got) > maxLabelLen {
+		t.Errorf("ringLabel returned %d bytes for %d control bytes, cap is %d: the cap was applied "+
+			"before the rewrite that expands each byte threefold", len(got), maxLabelLen, maxLabelLen)
+	}
+	if strings.ContainsRune(got, 0x1b) {
+		t.Errorf("ringLabel kept an ESC byte: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("ringLabel returned invalid UTF-8: %q — capping split a replacement character", got)
+	}
+}
+
+// TestSnapshot_TheRingDoesNotServeControlBytesInALabel is the gap that mattered more than the
+// cut.
+//
+// The ring did not sanitise AT ALL. The model comes off the parsed request body and the
+// endpoint is the host the workload asked for, so GET /v1/usage served an ANSI escape
+// straight out of memory — while the ledger's copy of the same label was clean, because
+// costledger sanitises on write. Two surfaces, one request, different bytes: group=model
+// showed the label as two series, and only the unfixed surface could reposition an operator's
+// cursor. CWE-150.
+//
+// U+009B IS IN THE TABLE because it is the case a byte scan cannot see: it is the
+// single-character CSI, encoded as 0xC2 0x9B, so nothing about it is below 0x20 and a
+// terminal decoding UTF-8 acts on it exactly as on ESC [.
+func TestSnapshot_TheRingDoesNotServeControlBytesInALabel(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		label string
+	}{
+		{"an ESC-bracket colour sequence", "claude\x1b[31m-opus"},
+		{"a bare carriage return", "claude\r-opus"},
+		{"DEL", "claude\x7f-opus"},
+		{"U+009B, the single-byte CSI a byte scan misses", "claude2J-opus"},
+		{"an invalid UTF-8 byte", "claude\xff-opus"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
+			a := New(WithClock(fixedClock(now)))
+			e := respEvent(now, 200, time.Second, tc.label, 10)
+			// Both axes, because both are set off-host and neither passed through a sanitiser.
+			e.Host = tc.label
+			a.Record("s1", e)
+
+			for _, g := range []Group{GroupMethod, GroupEndpoint} {
+				for k := range mergeSeries(a.Snapshot(time.Minute, BucketWidth, "", g).Buckets) {
+					if hasControlRunes(k) {
+						t.Errorf("group=%s served the label %q, which still carries a control rune: "+
+							"/v1/usage hands it to whatever renders it, and the ledger's copy of the "+
+							"same label is clean", g, k)
+					}
+					if !utf8.ValidString(k) {
+						t.Errorf("group=%s served invalid UTF-8: %q", g, k)
+					}
+					if !strings.Contains(k, "�") {
+						t.Errorf("group=%s served %q with no replacement character: the hostile bytes "+
+							"were DROPPED rather than replaced, which collapses tampering into a "+
+							"plausible-looking label nobody would question", g, k)
+					}
+				}
+			}
+		})
+	}
+}
+
+// inferenceEvent builds a priceable response event with an explicit token split.
+//
+// Separate from respEvent because that helper predates the split fields and takes
+// a single scalar token count: the tests below are about the five-way breakdown,
+// which respEvent cannot express.
+func inferenceEvent(model string, in, cacheRead, cacheWrite, out, reasoning int, kinds uint8) *pipeline.SessionEvent {
+	return &pipeline.SessionEvent{
+		At:         time.Now(),
+		Phase:      pipeline.SessionResponse,
+		StatusCode: 200,
+		Host:       "gw.example.com",
+		Inference: &pipeline.InferenceExtension{
+			Model:            model,
+			InputTokens:      in,
+			CacheReadTokens:  cacheRead,
+			CacheWriteTokens: cacheWrite,
+			OutputTokens:     out,
+			ReasoningTokens:  reasoning,
+			TotalTokens:      in + cacheRead + cacheWrite + out,
+			PresentKinds:     kinds,
+		},
+	}
+}
+
+// TestFoldInto_CarriesEveryCountsField is the STRUCTURAL guard behind the warning in
+// Counts.Add's own doc: a hand-written summation of this struct is where a field added to
+// it goes missing, and the copy that hand-summed the fields once silently dropped
+// PricedRequests under a comment saying every field had to be carried.
+//
+// foldInto still constructs a Counts by hand — the per-request values have to come from
+// somewhere — but it no longer RE-ENUMERATES the token split, which it used to build twice
+// in one function: once as `split` and again field by field inside the literal. Add carries
+// that half now, so a field added to Counts and wired into Add reaches the bucket with no
+// edit here.
+//
+// Reflection rather than a list of names, because a list is the thing that goes stale. One
+// event carrying every countable field non-zero, and every field of the bucket total must
+// come back non-zero: a new field lands here as a failure until it is either populated in
+// the fold or deliberately accounted for.
+func TestFoldInto_CarriesEveryCountsField(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+
+	// Every field at once, which takes one carefully built event: a 5xx (Errors) that
+	// nonetheless carries a full token split (the five token fields, PresentKinds, Tokens)
+	// and a published cost record that is settled, priced and disclosed inexact (CostMicros,
+	// PricedRequests, PriceableRequests, IncompleteRequests). Nothing here is decorative.
+	e := inferenceEvent("claude-opus-5", 100, 2000, 50, 30, 12, 0b11111)
+	e.At = now
+	e.StatusCode = 500
+	raw, err := json.Marshal(costevent.Event{
+		CostUSD: 0.005, Source: costevent.SourceUsageFallback, Provenance: "configured",
+		Settled: true, Incomplete: true, IncompleteReason: pricing.ReasonOutputUncounted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Plugins = map[string]json.RawMessage{costevent.Key: raw}
+
+	a.Record("s1", e)
+	totals := a.Snapshot(10*BucketWidth, BucketWidth, "s1", GroupNone).Totals
+
+	// Saturated is the ONE field one event cannot populate, and it is asserted the other way
+	// round rather than skipped. It is a fault disclosure, not a carried value: it can only
+	// be true if an addition hit the int64 ceiling, which a single event cannot do and which
+	// no real deployment should ever see. Exempting it with a bare `continue` would let it
+	// become permanently true — a caveat on every clean response — with nothing here to
+	// notice, so the exemption is spelled as its own expectation instead.
+	// TestCountsAdd_EveryInt64FieldSaturatesAndSaysSo covers the true case.
+	//
+	// RefusedTokenRequests is exempt on the same footing and for the same reason: this
+	// event's token report is plausible, so refusing it would be the bug. Its non-zero case
+	// is TestFoldInto_RefusesAnImplausibleTokenReportWhicheverFieldCarriesIt.
+	assertedAbsent := map[string]bool{"Saturated": true, "RefusedTokenRequests": true}
+	v := reflect.ValueOf(totals)
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		if assertedAbsent[name] {
+			if !v.Field(i).IsZero() {
+				t.Errorf("Counts.%s is set after folding one ordinary event: it is a fault "+
+					"disclosure and ordinary traffic must leave it clean, or every response "+
+					"carries a caveat that means nothing", name)
+			}
+			continue
+		}
+		if v.Field(i).IsZero() {
+			t.Errorf("Counts.%s came back zero: the fold does not carry it, so this field is absent from every /v1/usage total. Carry it in foldInto (the token split rides along via Counts.Add) or, if one event genuinely cannot populate it, say so in assertedAbsent above.",
+				name)
+		}
+	}
+}
+
+// tokenSources maps each token field of Counts to the pipeline.InferenceExtension field
+// foldInto reads it from.
+//
+// A map rather than a list of cases, so the test below can assert it COVERS the struct: a
+// seventh token field added to Counts and read from a new wire field fails here by name
+// instead of arriving unguarded. That is the whole reason this is not six hand-written
+// subtests — Tokens was unbounded for as long as it was because nothing enumerated the
+// fields that come from the provider.
+var tokenSources = map[string]string{
+	"Tokens":           "TotalTokens",
+	"InputTokens":      "InputTokens",
+	"CacheReadTokens":  "CacheReadTokens",
+	"CacheWriteTokens": "CacheWriteTokens",
+	"OutputTokens":     "OutputTokens",
+	"ReasoningTokens":  "ReasoningTokens",
+}
+
+// countsTokenFields returns the reflect field indexes of Counts' token figures, and fails if
+// any of them has no entry in tokenSources.
+func countsTokenFields(t *testing.T) []int {
+	t.Helper()
+	rt := reflect.TypeOf(Counts{})
+	var out []int
+	for i := range rt.NumField() {
+		name := rt.Field(i).Name
+		if !strings.HasSuffix(name, "Tokens") {
+			continue
+		}
+		if _, ok := tokenSources[name]; !ok {
+			t.Errorf("Counts.%s is a token figure with no entry in tokenSources: it is read from "+
+				"a provider-controlled field and nothing here checks that an implausible value is "+
+				"refused", name)
+			continue
+		}
+		out = append(out, i)
+	}
+	if len(out) != len(tokenSources) {
+		t.Fatalf("matched %d token fields of Counts against %d mapped sources; the map and the "+
+			"struct have diverged and this test no longer covers what it claims",
+			len(out), len(tokenSources))
+	}
+	return out
+}
+
+// TestFoldInto_RefusesAnImplausibleTokenReportWhicheverFieldCarriesIt is the token half of
+// the bound cost already had.
+//
+// Cost is bounded per request twice over and tokens were not bounded at all: every figure
+// came from a provider-controlled `int` on the wire, straight into the aggregate. So the
+// same forged response that could not move the dollar total by more than $10,000 could move
+// the token total by 9.2e18, and a negative one could move it DOWN — making a real bill look
+// smaller, which is the direction that gets exploited.
+//
+// Three shapes per field, because they fail differently: past the ceiling (the plausible
+// case), the whole int64 range (the wrap case, which Counts.Add now clamps but should never
+// see), and negative (the subtraction). Driven by reflection over Counts so a token field
+// added later cannot skip this.
+func TestFoldInto_RefusesAnImplausibleTokenReportWhicheverFieldCarriesIt(t *testing.T) {
+	fields := countsTokenFields(t)
+	rt := reflect.TypeOf(Counts{})
+	for _, i := range fields {
+		name := rt.Field(i).Name
+		wire := tokenSources[name]
+		for _, bad := range []struct {
+			what string
+			v    int
+		}{
+			{"one past the plausible ceiling", maxPlausibleRequestTokens + 1},
+			{"the whole int64 range", math.MaxInt},
+			{"negative, which subtracts from the aggregate", -1},
+		} {
+			t.Run(name+"/"+bad.what, func(t *testing.T) {
+				now := time.Now().Truncate(BucketWidth)
+				a := New(WithClock(func() time.Time { return now }))
+				e := inferenceEvent("claude-opus-5", 10, 20, 30, 40, 5, 0b11111)
+				e.At = now
+				reflect.ValueOf(e.Inference).Elem().FieldByName(wire).SetInt(int64(bad.v))
+				a.Record("s1", e)
+				totals := a.Snapshot(10*BucketWidth, BucketWidth, "s1", GroupNone).Totals
+
+				if totals.RefusedTokenRequests != 1 {
+					t.Errorf("RefusedTokenRequests = %d after %s = %d (%s), want 1 — a dropped "+
+						"figure that is not counted is indistinguishable from traffic that used no "+
+						"tokens", totals.RefusedTokenRequests, wire, bad.v, bad.what)
+				}
+				// The WHOLE report goes, not just the offending field: a believed figure beside a
+				// refused one is a breakdown that cannot be reconciled against its own total.
+				for _, j := range fields {
+					if got := reflect.ValueOf(totals).Field(j).Int(); got != 0 {
+						t.Errorf("Counts.%s = %d, want 0: %s was %s (%d), so no figure in this "+
+							"report is trustworthy", rt.Field(j).Name, got, wire, bad.what, bad.v)
+					}
+				}
+				if totals.PresentKinds != 0 {
+					t.Errorf("PresentKinds = %#b after a refused report, want 0 — those bits assert "+
+						"the provider REPORTED these kinds, which is the claim being refused",
+						totals.PresentKinds)
+				}
+				// The request still happened, and this says nothing about whether it was billed.
+				if totals.Requests != 1 {
+					t.Errorf("Requests = %d, want 1: refusing the token report must not drop the "+
+						"request", totals.Requests)
+				}
+			})
+		}
+	}
+}
+
+// TestFoldInto_AcceptsATokenReportAtTheCeiling is the control that keeps the bound from
+// being a coverage gap dressed as a guard.
+//
+// A refusal is a figure withheld, so a bound set too low is the same defect in the other
+// direction — and one that would only be discovered when a legitimately large context
+// window arrived. The ceiling is INCLUSIVE, and the largest real call anyone can construct
+// today is 5x under it.
+func TestFoldInto_AcceptsATokenReportAtTheCeiling(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+	e := inferenceEvent("claude-opus-5", maxPlausibleRequestTokens, 0, 0, 0, 0, 0b1)
+	e.At = now
+	e.Inference.TotalTokens = maxPlausibleRequestTokens
+	a.Record("s1", e)
+	totals := a.Snapshot(10*BucketWidth, BucketWidth, "s1", GroupNone).Totals
+
+	if totals.RefusedTokenRequests != 0 {
+		t.Errorf("RefusedTokenRequests = %d for a report exactly at the ceiling, want 0: the bound "+
+			"is inclusive, and refusing here withholds a figure that is real",
+			totals.RefusedTokenRequests)
+	}
+	if totals.Tokens != maxPlausibleRequestTokens || totals.InputTokens != maxPlausibleRequestTokens {
+		t.Errorf("Tokens = %d, InputTokens = %d, want %d for both", totals.Tokens,
+			totals.InputTokens, int64(maxPlausibleRequestTokens))
+	}
+}
+
+func TestCounts_CarriesTheTokenSplit(t *testing.T) {
+	a := New()
+	a.Record("s1", inferenceEvent("m", 100, 2000, 50, 30, 0, 0b1111))
+
+	snap := a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupNone)
+
+	if got := snap.Totals.InputTokens; got != 100 {
+		t.Errorf("InputTokens = %d, want 100", got)
+	}
+	if got := snap.Totals.CacheReadTokens; got != 2000 {
+		t.Errorf("CacheReadTokens = %d, want 2000", got)
+	}
+	if got := snap.Totals.CacheWriteTokens; got != 50 {
+		t.Errorf("CacheWriteTokens = %d, want 50", got)
+	}
+	if got := snap.Totals.OutputTokens; got != 30 {
+		t.Errorf("OutputTokens = %d, want 30", got)
+	}
+	// The legacy aggregate must keep working for clients written against it.
+	if got := snap.Totals.Tokens; got != 2180 {
+		t.Errorf("Tokens = %d, want 2180 (unchanged legacy sum)", got)
+	}
+}
+
+func TestCounts_ReasoningIsNotAddedToOutput(t *testing.T) {
+	// ReasoningTokens is a SUBSET of OutputTokens: the provider reports how much
+	// of the generated output was reasoning. Adding them double-counts every
+	// reasoning token, and at the output rate -- the most expensive tier.
+	a := New()
+	a.Record("s1", inferenceEvent("m", 0, 0, 0, 100, 40, 0b11001))
+
+	snap := a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupNone)
+
+	if got := snap.Totals.OutputTokens; got != 100 {
+		t.Errorf("OutputTokens = %d, want 100 -- reasoning must not be added", got)
+	}
+	if got := snap.Totals.ReasoningTokens; got != 40 {
+		t.Errorf("ReasoningTokens = %d, want 40 reported alongside, not folded in", got)
+	}
+}
+
+func TestCounts_SplitAccumulatesAcrossEvents(t *testing.T) {
+	a := New()
+	a.Record("s1", inferenceEvent("m", 10, 100, 5, 3, 0, 0b1111))
+	a.Record("s1", inferenceEvent("m", 20, 200, 7, 4, 0, 0b1111))
+
+	snap := a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupNone)
+
+	if got := snap.Totals.InputTokens; got != 30 {
+		t.Errorf("InputTokens = %d, want 30", got)
+	}
+	if got := snap.Totals.CacheReadTokens; got != 300 {
+		t.Errorf("CacheReadTokens = %d, want 300", got)
+	}
+}
+
+func TestCounts_PresentKindsFoldsByOr(t *testing.T) {
+	// One provider reports cache counters, another reports input/output. A reader of
+	// the window total must be able to tell "no cache writes happened" from "nothing
+	// here reports cache writes" -- otherwise a blank column is unreadable.
+	//
+	// TWO operand shapes, because no single pair pins `|=` on its own and each kills
+	// a different mutation of Counts.Add:
+	//
+	//	disjoint     0b0110, 0b1001 -> 0b1111. Neither operand equals the union, so
+	//	             outright assignment (`|=` -> `=`) dies here. A superset pair --
+	//	             which an earlier version of this test used -- would not even do
+	//	             that, and max() and an `if == 0` guard both survive it.
+	//	overlapping  0b1001, 0b1001 -> 0b1001. `+=` CARRIES into a bit nothing
+	//	             reported (0b10010, the Reasoning bit), so it dies here. Against a
+	//	             disjoint pair `+` and `|` are arithmetically identical, which is
+	//	             why the pair above cannot pin the operator Add's own godoc warns
+	//	             about ("Do not pattern-match on the `+=` below").
+	//
+	// The overlapping case is the one that matters in production: two Output-only
+	// responses in a bucket fold to the Reasoning bit, and a consumer then prints
+	// "reasoning (of output) 0" -- a reported zero where nothing reported reasoning
+	// at all, exactly the set-versus-zero confusion PresentKinds exists to resolve.
+	// Carries can also overflow the uint8 and clear real bits.
+	for _, tc := range []struct {
+		name       string
+		first, snd uint8
+		want       uint8
+	}{
+		{"disjoint kills assignment", 0b0110, 0b1001, 0b1111},
+		{"overlapping kills addition", 0b1001, 0b1001, 0b1001},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := New()
+			a.Record("s1", inferenceEvent("first-reporter", 0, 200, 5, 0, 0, tc.first))
+			a.Record("s1", inferenceEvent("second-reporter", 10, 0, 0, 5, 0, tc.snd))
+
+			snap := a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupNone)
+
+			if got := snap.Totals.PresentKinds; got != tc.want {
+				t.Errorf("PresentKinds = %#b, want %#b (union of what any response reported)", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCounts_PresentKindsZeroWhenNothingReports(t *testing.T) {
+	a := New()
+	a.Record("s1", inferenceEvent("m", 0, 0, 0, 0, 0, 0))
+
+	snap := a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupNone)
+
+	if got := snap.Totals.PresentKinds; got != 0 {
+		t.Errorf("PresentKinds = %#b, want 0", got)
+	}
+}
+
+func TestCounts_SplitSurvivesFolding(t *testing.T) {
+	// fold() is the second place Counts are summed. It delegates to Counts.Add,
+	// so a new field is carried automatically -- but that is exactly the property
+	// that silently broke for PricedRequests once, which is why Add is exported
+	// and why this test exists.
+	a := New()
+	a.Record("s1", inferenceEvent("m", 10, 100, 5, 3, 0, 0b1111))
+
+	snap := a.Snapshot(10*time.Minute, 5*time.Minute, "s1", GroupNone)
+
+	var in, cr int64
+	var kinds uint8
+	for _, b := range snap.Buckets {
+		in += b.InputTokens
+		cr += b.CacheReadTokens
+		kinds |= b.PresentKinds
+	}
+	if in != 10 || cr != 100 {
+		t.Errorf("folded buckets: InputTokens = %d (want 10), CacheReadTokens = %d (want 100)", in, cr)
+	}
+	if kinds != 0b1111 {
+		t.Errorf("folded PresentKinds = %#b, want %#b", kinds, 0b1111)
 	}
 }
