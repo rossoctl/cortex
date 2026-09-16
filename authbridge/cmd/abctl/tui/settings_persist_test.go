@@ -545,12 +545,50 @@ func TestSortSelection_ValidatesAgainstTheDefinition(t *testing.T) {
 			if col != tc.wantCol || desc != tc.wantDesc {
 				t.Errorf("sortSelection() = %q/%v, want %q/%v", col, desc, tc.wantCol, tc.wantDesc)
 			}
-			if got := u.sortColumn(); got != tc.wantCol {
-				t.Errorf("sortColumn() = %q, want %q", got, tc.wantCol)
-			}
-			if got := u.sortDescending(); got != tc.wantDesc {
-				t.Errorf("sortDescending() = %v, want %v", got, tc.wantDesc)
-			}
 		})
+	}
+}
+
+// Hiding the sorted column keeps the sort — a visibility toggle must not silently
+// reorder the table. Pinned because the state is only defensible while it stays
+// discoverable: the footer names the ordering, the picker still lists the hidden
+// column, and both `s` and `r` recover.
+func TestColumnPicker_HidingTheSortedColumnKeepsTheSortRecoverable(t *testing.T) {
+	m := newTestEventsModel(t)
+	resetSettingsForTest(t)
+	m.width = 200
+	m.connState = connStateInfo{phase: connOpen}
+
+	m.handleKey(keyRune('c'))
+	cursorToColumn(t, m, colDuration)
+	m.handleKey(keyRune('s')) // DURATION descending
+	m.handleKey(keyRune(' ')) // hide it
+
+	if m.eventColumns[colDuration] {
+		t.Fatal("space did not hide DURATION")
+	}
+	if m.sortCol != colDuration {
+		t.Errorf("sortCol = %q, want DURATION kept", m.sortCol)
+	}
+	// The footer is the only thing left naming the ordering.
+	if st := stripANSI(strings.Split(m.footerView(), "\n")[0]); !strings.Contains(st, "[sort: DURATION") {
+		t.Errorf("footer does not name the ordering of a hidden sorted column: %q", st)
+	}
+	// The picker still lists it, unchecked, so the cursor can reach it again.
+	pk := stripANSI(renderColumnPicker(m.eventColumns, m.colCursor, 160, 40, m.sortCol, m.sortDesc))
+	if !strings.Contains(pk, "[ ] DURATION") {
+		t.Errorf("picker does not offer the hidden sorted column: %q", pk)
+	}
+	// `s` cycles out of it, and `r` restores both the column and chronological order.
+	m.handleKey(keyRune('s'))
+	m.handleKey(keyRune('s'))
+	if m.sortCol != "" {
+		t.Errorf("s-cycle did not reach chronological: %q", m.sortCol)
+	}
+	m.handleKey(keyRune('s'))
+	m.handleKey(keyRune('r'))
+	if m.sortCol != "" || !m.eventColumns[colDuration] {
+		t.Errorf("after r: sortCol=%q visible=%v, want chronological and visible",
+			m.sortCol, m.eventColumns[colDuration])
 	}
 }

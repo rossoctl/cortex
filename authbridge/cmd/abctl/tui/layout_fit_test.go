@@ -196,3 +196,43 @@ func probeIdentity(subject, client string) pipeline.SessionEvent {
 		Identity: &pipeline.EventIdentity{Subject: subject, ClientID: client},
 	}
 }
+
+// The status row is built by unconditional writes, and only the feedback link ever
+// checked the width — so the optional state markers could overflow it. layout()
+// reserves exactly three rows for title + blank + footer, so a wrapped status row
+// costs the hint line below it, which is the row carrying [?] keys and [q] quit.
+//
+// TestLayout_EveryPaneFitsTheTerminal cannot catch this: it never sets sortCol,
+// filter or paused, so the row it measures has none of the optional markers on it.
+// Measured before fitStatusLine: paused + a restored filter + an active sort rendered
+// 87 columns at width 80.
+func TestLayout_StateRichFooterFitsTheTerminal(t *testing.T) {
+	for _, dim := range fitSizes {
+		for _, tc := range []struct {
+			name    string
+			sortCol eventColumnID
+			filter  string
+			paused  bool
+			flash   string
+		}{
+			{name: "sort only", sortCol: colDuration},
+			{name: "sort+filter", sortCol: colDuration, filter: "github-tool"},
+			{name: "sort+filter+paused", sortCol: colDuration, filter: "github-tool", paused: true},
+			// The longest header, so the indicator itself is at its widest.
+			{name: "widest sort column", sortCol: colDuration, filter: "api.anthropic.com", paused: true},
+			{name: "everything plus a flash", sortCol: colCost, filter: "github-tool", paused: true,
+				flash: "yanked → ~/.cortex/abctl-events/evt-20260916-103000.json"},
+		} {
+			m := fitModel(t, paneEvents, dim[0], dim[1], cursorRowsFixture(60))
+			m.sortCol, m.sortDesc = tc.sortCol, true
+			m.filter = tc.filter
+			m.paused = tc.paused
+			if tc.flash != "" {
+				m.setStickyFlash(tc.flash)
+			}
+			m.connState = connStateInfo{phase: connOpen}
+			m.rebuildEventsTable()
+			assertFits(t, m, fmt.Sprintf("%s %dx%d", tc.name, dim[0], dim[1]))
+		}
+	}
+}

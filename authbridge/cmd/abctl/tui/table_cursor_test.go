@@ -974,3 +974,59 @@ func TestEventsTable_SortKeepsCursorOnItsEvent(t *testing.T) {
 		assertSelectionVisible(t, m.eventsTbl, step.name)
 	}
 }
+
+// A sort restored from the config file is active on the very first rebuild, with no
+// keypress behind it and nothing on screen announcing it. Suppressing tail-follow
+// removes the only restore arm that fires with no pin, so without a seeded pin the
+// cursor falls back to a positional index while arriving events reshuffle every row —
+// landing on a different event each time.
+func TestEventsTable_PersistedSortPinsWithoutAKeypress(t *testing.T) {
+	m := sortCursorModel(t, 12)
+	// Discard the state sortCursorModel's own rebuild established, and start over the
+	// way a fresh process does: a sort from the config file, nothing pinned.
+	m.sortCol, m.sortDesc = colDuration, true
+	m.selectedEventKey = eventKey{}
+	m.rebuildEventsTable()
+
+	if m.selectedEventKey == (eventKey{}) {
+		t.Fatal("an active sort left the pin unseeded, so restore has nothing to follow")
+	}
+	want := keyOf(m.selectedEvent())
+	if want == (eventKey{}) {
+		t.Fatal("no event under the cursor after the first sorted rebuild")
+	}
+
+	// Events arrive, each slower than everything before it — so descending puts each
+	// at row 0 and pushes every existing row down.
+	for i := 1; i <= 3; i++ {
+		next := sortCursorFixture(12 + i)[11+i]
+		next.Duration = time.Duration(i) * time.Hour
+		next.RequestID = fmt.Sprintf("req-incoming-%d", i)
+		m.events["s"] = append(m.events["s"], next)
+		m.rebuildEventsTable()
+		if got := keyOf(m.selectedEvent()); got != want {
+			t.Fatalf("event %d: cursor drifted off its event with no keypress:\n got  %+v\n want %+v",
+				i, got, want)
+		}
+		assertSelectionVisible(t, m.eventsTbl, fmt.Sprintf("after event %d", i))
+	}
+}
+
+// The seed must not overwrite a real pin, including one the eviction branch
+// deliberately cleared to signal "the pinned event is gone".
+func TestEventsTable_SortSeedDoesNotClobberAnExistingPin(t *testing.T) {
+	m := sortCursorModel(t, 12)
+	setCursorVisible(&m.eventsTbl, 5)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+	pinned := m.selectedEventKey
+
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	if m.selectedEventKey != pinned {
+		t.Errorf("turning a sort on replaced the operator's pin:\n got  %+v\n want %+v",
+			m.selectedEventKey, pinned)
+	}
+	if got := keyOf(m.selectedEvent()); got != pinned {
+		t.Errorf("cursor is not on the pinned event after sorting")
+	}
+}

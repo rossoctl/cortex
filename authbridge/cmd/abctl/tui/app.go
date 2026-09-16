@@ -425,6 +425,10 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 	// it for good.
 	ti.SetValue(Settings.Filter)
 
+	// Resolved once: sortSelection walks eventColumns to validate the persisted name,
+	// and the two fields are two halves of one answer.
+	sortCol, sortDesc := Settings.sortSelection()
+
 	return &model{
 		endpoint:     c.Endpoint(),
 		client:       c,
@@ -433,8 +437,8 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
 		eventColumns: Settings.columnSelection(),
-		sortCol:      Settings.sortColumn(),
-		sortDesc:     Settings.sortDescending(),
+		sortCol:      sortCol,
+		sortDesc:     sortDesc,
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

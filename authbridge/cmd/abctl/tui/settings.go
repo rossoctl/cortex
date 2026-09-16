@@ -129,13 +129,6 @@ func (u UserSettings) sortSelection() (eventColumnID, bool) {
 	return "", false
 }
 
-// sortColumn and sortDescending are the two halves of sortSelection, so the model
-// constructors can seed their fields without breaking their composite literals
-// apart. Both go through sortSelection, so the validation lives in one place.
-func (u UserSettings) sortColumn() eventColumnID { id, _ := u.sortSelection(); return id }
-
-func (u UserSettings) sortDescending() bool { _, desc := u.sortSelection(); return desc }
-
 // columnSettingsFrom is the inverse: the deviations worth writing down.
 //
 // Emits only the columns that differ from their own defaultOn, so an untouched

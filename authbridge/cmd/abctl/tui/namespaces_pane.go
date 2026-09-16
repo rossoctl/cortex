@@ -90,6 +90,9 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 	// it for good.
 	ti.SetValue(Settings.Filter)
 
+	// Resolved once, as in New: see the note there.
+	sortCol, sortDesc := Settings.sortSelection()
+
 	return &model{
 		// endpoint and client are set later, when portForwardReadyMsg arrives.
 		parentCtx: parentCtx,
@@ -101,8 +104,8 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		// mirrors New's field initialization, and the events table it reaches after a
 		// port-forward reads both of these.
 		eventColumns: Settings.columnSelection(),
-		sortCol:      Settings.sortColumn(),
-		sortDesc:     Settings.sortDescending(),
+		sortCol:      sortCol,
+		sortDesc:     sortDesc,
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

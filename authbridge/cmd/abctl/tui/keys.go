@@ -185,6 +185,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Toggle. selectedColumns falls back to the defaults when the set is
 			// empty, so turning everything off cannot leave an unrecoverable blank
 			// pane.
+			// Hiding the column the table is SORTED by leaves the sort in place, so the
+			// rows stay ordered by a column that is no longer on screen. Deliberate
+			// rather than overlooked: the operator may well want the ordering without
+			// the column taking up width, and clearing the sort here would make a
+			// visibility toggle silently reorder the whole table. Three things keep it
+			// discoverable — the footer still names the ordering, the picker still lists
+			// the hidden column so the cursor can reach it, and both the `s` cycle and
+			// `r` recover from here.
 			id := eventColumns[m.colCursor].id
 			m.eventColumns[id] = !m.eventColumns[id]
 			// Make that fallback visible in the checkboxes rather than only in the

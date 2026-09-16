@@ -253,6 +253,24 @@ func (m *model) rebuildEventsTable() {
 	// Restore precedence: tail-follow, then identity pin, then prevRow. The pin
 	// resolves to whatever row currently holds the selected event, so the cursor
 	// tracks the event through FIFO eviction at session.max_events.
+	// Seed the pin when a sort is active and nothing has pinned yet.
+	//
+	// Suppressing tail-follow below (see the next comment) removes the only arm that
+	// fires when no event is pinned — and nothing in production sets selectedEventKey
+	// until the operator moves the cursor, so a sort restored from the config file is
+	// live on the very first rebuild with no keypress behind it. Without this, restore
+	// falls through to a positional prevRow while every arriving event reshuffles the
+	// rows underneath it, and the cursor lands on a different event each time with
+	// nothing on screen to explain it.
+	//
+	// Seeded from the row the cursor is on right now, so the operator keeps whatever
+	// the previous rebuild left them looking at. Only when the key is still
+	// zero-valued: a real pin, including one the eviction branch below deliberately
+	// cleared, must not be overwritten.
+	if m.sortCol != "" && m.selectedEventKey == (eventKey{}) {
+		m.selectedEventKey = keyOf(m.selectedEventOn(prevRow))
+	}
+
 	target := prevRow
 	switch {
 	// Tail-follow only while the table is chronological. "Stay at the bottom" means
@@ -260,7 +278,7 @@ func (m *model) rebuildEventsTable() {
 	// DURATION or COST sort the last row is the smallest value, so following it would
 	// drag the cursor to a different event on every streamed message — and away from
 	// the large-value end the operator sorted to look at. With a sort active the
-	// selectedEventKey pin below carries the cursor instead, which is what the
+	// selectedEventKey pin above carries the cursor instead, which is what the
 	// operator actually wants followed.
 	case wasAtEnd && m.sortCol == "":
 		target = len(rows) - 1
@@ -320,6 +338,20 @@ func sortEventRows(rows []table.Row, visible []eventRow, keys []sortValue, desc 
 	}
 	copy(rows, outRows)
 	copy(visible, outVis)
+}
+
+// selectedEventOn returns the event at an arbitrary row of the rows just built, or
+// nil when the row is out of range.
+//
+// Distinct from selectedEvent, which reads the TABLE's cursor: during a rebuild the
+// table has already been handed the new rows but the cursor has not been restored
+// yet, so the only meaningful row index is the one carried over from before the
+// rebuild. Used to seed the sort pin from that row.
+func (m *model) selectedEventOn(row int) *pipeline.SessionEvent {
+	if row < 0 || row >= len(m.visibleRows) {
+		return nil
+	}
+	return m.visibleRows[row].event
 }
 
 // selectedEvent returns the event at the cursor row, or nil. The cursor
