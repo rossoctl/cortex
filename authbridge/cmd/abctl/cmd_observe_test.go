@@ -64,6 +64,26 @@ func TestRootUsage_ListsEverySubcommand(t *testing.T) {
 	}
 }
 
+// The supported spelling must be the one a reader meets first: `configure` is
+// where new agents are added, and `claude-code` survives only for muscle memory and
+// for the installer, which still types it.
+func TestRootUsage_MarksClaudeCodeDeprecated(t *testing.T) {
+	out := usageText(t)
+	if !strings.Contains(out, "abctl configure") {
+		t.Errorf("usage does not mention configure:\n%s", out)
+	}
+	ca := strings.Index(out, "abctl configure")
+	cc := strings.Index(out, "abctl claude-code")
+	if ca < 0 || cc < 0 || ca > cc {
+		t.Errorf("configure should be listed before the deprecated claude-code:\n%s", out)
+	}
+	// The old spelling stays listed — it still dispatches, and a user who types it
+	// needs to find it here — but must not read as the recommended way in.
+	if !strings.Contains(out, `deprecated: same as "abctl configure`) {
+		t.Errorf("usage does not mark claude-code deprecated:\n%s", out)
+	}
+}
+
 // The unknown-subcommand error must name the same set main dispatches, so a typo
 // gets a complete list rather than a stale one.
 func TestUnknownSubcommandMessage_NamesEverySubcommand(t *testing.T) {

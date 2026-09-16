@@ -965,7 +965,7 @@ fi # end of download block
 # succeeds and then cannot run the command it just told you to run is the worst first
 # impression available, and the most common one.
 #
-# Consent, a backup, and a guarded block, matching what `abctl claude-code enable` does
+# Consent, a backup, and a guarded block, matching what `abctl configure claude-code enable` does
 # to settings.json — same pattern, no new concept. Declining keeps the old advice.
 offer_path_setup() {
 	_profile=""
@@ -1218,7 +1218,7 @@ local_cfg="${CORTEX_DIR}/config.yaml"
 # the closing summary, so the middle of the flow carries no side quests.
 if [ -f "${local_cfg}" ] && [ -z "${WIRE_CLAUDE_CODE}" ]; then
 	info "  Point Claude Code at Cortex, then just run \`claude\`:"
-	info "    ${abctl_cmd} claude-code enable"
+	info "    ${abctl_cmd} configure claude-code enable"
 	info ""
 fi
 # --claude-code: hand off to abctl, which owns the JSON merge (a shell-side edit
@@ -1228,9 +1228,9 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 	info ""
 	set +e
 	if [ -n "${ASSUME_YES}" ]; then
-		"${BIN_DIR}/abctl" claude-code enable --yes
+		"${BIN_DIR}/abctl" configure claude-code enable --yes
 	else
-		"${BIN_DIR}/abctl" claude-code enable
+		"${BIN_DIR}/abctl" configure claude-code enable
 	fi
 	cc_status=$?
 	set -e
@@ -1244,9 +1244,9 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			if [ -z "${SUPERVISED}" ]; then
 				info "  kill \$(cat ${PROXY_PIDFILE})   stop Cortex (unsupervised)"
 			else
-				info "  \"${abctl_cmd}\" service stop            stop Cortex"
+				info "  \"${abctl_cmd}\" service stop                    stop Cortex"
 			fi
-			info "  \"${abctl_cmd}\" claude-code disable     undo"
+			info "  \"${abctl_cmd}\" configure claude-code disable   undo"
 			info ""
 			# Claude Code is wired up, but other tools/harnesses on this machine still
 			# need the environment variables — print them so this install is not
@@ -1264,14 +1264,14 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			# the manual instructions below.
 			info ""
 			info "  Claude Code left unchanged. To do it later:"
-			info "    \"${abctl_cmd}\" claude-code enable"
+			info "    \"${abctl_cmd}\" configure claude-code enable"
 			info ""
 			;;
 		*)
 			# Anything else went wrong (a foreign HTTPS_PROXY, unparseable settings).
 			# Reporting that as "left unchanged" and exiting 0 would claim a success
 			# that did not happen.
-			die "abctl claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
+			die "abctl configure claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
 			;;
 	esac
 fi
@@ -1296,14 +1296,14 @@ if [ -n "${ca_fp_after}" ] && [ "${ca_fp_before}" != "${ca_fp_after}" ]; then
 	info "    it tunnels through unparsed instead. Restart them to see their traffic."
 	info ""
 fi
-# The full, harness-agnostic environment block. `abctl claude-code enable` wires
+# The full, harness-agnostic environment block. `abctl configure claude-code enable` wires
 # these into ~/.claude/settings.json for Claude Code specifically; the variables
 # below are what every OTHER tool or agent needs, and are printed unconditionally so
 # this install is never Claude-Code-only.
 print_env_instructions
 info ""
 info "  Wire up Claude Code specifically (writes ~/.claude/settings.json):"
-info "    ${abctl_cmd} claude-code enable"
+info "    ${abctl_cmd} configure claude-code enable"
 info ""
 if [ -n "${SUPERVISED}" ]; then
 	info "  Stop it:         \"${abctl_cmd}\" service stop      (start / restart / status too)"

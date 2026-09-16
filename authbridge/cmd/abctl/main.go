@@ -36,7 +36,7 @@ var version = "dev"
 // One list rather than two: the unknown-subcommand error used to hardcode its own
 // copy, so adding a subcommand meant editing both and forgetting one left a typo
 // getting an incomplete list. A test holds the usage block to this slice.
-var dispatchableSubcommands = []string{"observe", "service", "claude-code", "exec", "tools", "pricing"}
+var dispatchableSubcommands = []string{"observe", "service", "configure", "claude-code", "exec", "tools", "pricing"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -55,12 +55,15 @@ Usage:
   abctl observe              open the traffic viewer (TUI)
   abctl service <action>     run Cortex as a service: install, uninstall,
                              status, stop, start, restart
-  abctl claude-code <action> point Claude Code at Cortex: enable, disable, status
+  abctl configure <agent>    point a coding agent at Cortex: claude-code,
+                             bob, codex, opencode
   abctl exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                              environment, for tools with no settings file
   abctl tools <action>       tool-definition costs: scan
   abctl pricing              show the model rates in effect (--host <gateway>)
 
+  abctl claude-code <action> deprecated: same as "abctl configure claude-code".
+                             Still works; prefer the new spelling.
   abctl                      deprecated: same as "abctl observe". Bare abctl
                              will stop opening the viewer in a future release.
 
@@ -83,7 +86,22 @@ func main() {
 			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))
 		case "pricing":
 			os.Exit(runPricing(os.Args[2:], os.Stdout, os.Stderr))
+		case "configure":
+			os.Exit(runConfigure(os.Args[2:], os.Stdout, os.Stderr))
 		case "claude-code":
+			// The old spelling, kept working and kept discoverable. Same spirit as the
+			// bare-`abctl` notice below: on stderr and not fatal, because anyone with
+			// this in a script or in muscle memory must not have it break under them —
+			// install.sh --claude-code still runs it, and the laptop docs still print it.
+			//
+			// Printed HERE rather than inside runClaudeCode, which is what keeps the
+			// notice in exactly one place: `abctl configure claude-code` reaches
+			// the same function through runConfigure, and a notice inside it would
+			// fire for the new spelling too — telling a user who already typed the right
+			// thing to type something else.
+			fmt.Fprintln(os.Stderr, "abctl: `abctl claude-code` is now "+
+				"`abctl configure claude-code`; the old spelling still works. "+
+				"See `abctl --help`.")
 			os.Exit(runClaudeCode(os.Args[2:], os.Stdout, os.Stderr))
 		case "exec":
 			os.Exit(runExec(os.Args[2:], os.Stdout, os.Stderr))

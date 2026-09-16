@@ -89,8 +89,8 @@ session APIs that aren't in your kube context.
 
 ## Running one command through Cortex (`abctl exec`)
 
-`abctl claude-code enable` works because Claude Code has a settings file:
-the variables can be written once and reach every session on the machine,
+`abctl configure claude-code enable` works because Claude Code has a settings
+file: the variables can be written once and reach every session on the machine,
 background agents included. Nothing else has that. `curl`, `python`,
 `node`, `gh` and your test suite read the process environment and nothing
 else, and the usual workaround — exporting `HTTPS_PROXY` in your shell —
@@ -127,9 +127,9 @@ The CA names split two ways, and the difference matters. `NODE_EXTRA_CA_CERTS`
 pointing them at `ca.crt` would leave the child trusting the bridge and nothing
 else — breaking every host the bridge does not terminate. They get `bundle.crt`
 instead, which Cortex writes beside `ca.crt` on startup (bridge CA + platform
-roots). These are the same values `abctl claude-code enable` writes into
-`settings.json`; `exec` reuses that derivation rather than repeating it, so the
-two commands cannot disagree.
+roots). These are the same values `abctl configure claude-code enable` writes
+into `settings.json`; `exec` reuses that derivation rather than repeating it, so
+the two commands cannot disagree.
 
 Both proxy variables get the **`http://`** URL, deliberately. The scheme
 in a `*_PROXY` variable says how to reach the *proxy*, not what the
@@ -145,9 +145,8 @@ reading a file instead would let the two disagree, since listener addresses are
 not hot-reloaded and a file says nothing about whether anything is listening. A
 Cortex that is down is reported as down rather than yielding an environment that
 points at nothing. The derivation from config to variables is still the one
-`claude-code enable` uses, so the two produce identical values for the same
-Cortex. Nothing is
-exported to your shell and no file is modified.
+`configure claude-code enable` uses, so the two produce identical values for the
+same Cortex. Nothing is exported to your shell and no file is modified.
 
 abctl exits with the child's status (127 if the command was not found,
 128+signum if it was killed), so it is safe in a pipeline or a Makefile.
@@ -170,14 +169,15 @@ long after abctl exits, which is what makes the `eval` form usable.
 `--print` takes no command, and no `--`: it is a complete request on its own.
 Both `abctl exec --print -- curl …` and a bare `abctl exec --print --` are usage
 errors — the first asks for two different things at once, the second promises a
-command and supplies none. The paths `--print` hands out are
-meant to be kept, and are the same ones `abctl claude-code enable` writes into
+command and supplies none. The paths `--print` hands out are meant to be kept,
+and are the same ones `abctl configure claude-code enable` writes into
 `settings.json`; running a command is the opposite, applying them to one process
 for its lifetime. Asking for both in one invocation is a contradiction about
 which you want, so abctl says so rather than picking one.
 
-`abctl claude-code enable` shares this requirement as of the same change: it too
-refuses `tls_bridge.mode: disabled` with a `ca_dir` set, a combination it used to
+`abctl configure claude-code enable` shares this requirement as of the same
+change: it too refuses `tls_bridge.mode: disabled` with a `ca_dir` set, a
+combination it used to
 accept and write into `settings.json`, where the CA bought nothing because the
 bridge terminated no TLS. `enable` also now points its four replacing variables at
 `bundle.crt` rather than the bare `ca.crt`.
@@ -360,7 +360,7 @@ the saved one stays on disk for the next start.
 
 `--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
 config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` and
-`abctl claude-code`.
+`abctl configure claude-code`.
 
 ```yaml
 # abctl user settings. Written by abctl; safe to hand-edit or delete.

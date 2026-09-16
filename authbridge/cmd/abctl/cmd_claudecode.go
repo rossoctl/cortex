@@ -163,12 +163,12 @@ func darwinGoNote(caPath string) string {
 		"    ~/Library/Keychains/login.keychain-db\n\n"
 }
 
-const claudeCodeUsage = `abctl claude-code — route Claude Code through Cortex without shell env vars
+const claudeCodeUsage = `abctl configure claude-code — route Claude Code through Cortex without shell env vars
 
 Usage:
-  abctl claude-code enable  [--yes] [--settings PATH] [--config PATH]
-  abctl claude-code disable [--yes] [--settings PATH]
-  abctl claude-code status  [--settings PATH]
+  abctl configure claude-code enable  [--yes] [--settings PATH] [--config PATH]
+  abctl configure claude-code disable [--yes] [--settings PATH]
+  abctl configure claude-code status  [--settings PATH]
 
 enable writes HTTPS_PROXY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and a set of
 CA variables into the "env" block of ~/.claude/settings.json, reading the
@@ -194,7 +194,7 @@ survives later runs. disable removes only the keys it added, restoring any
 prior value it recorded.
 
 Note: while enabled, Claude Code needs Cortex running — its requests go to the
-proxy address. "abctl claude-code disable" is the off switch.
+proxy address. "abctl configure claude-code disable" is the off switch.
 
 Exit status: 0 applied or already correct, 3 declined (or no terminal to ask
 on), 1 something went wrong.
@@ -211,6 +211,22 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	action := args[0]
+	// `abctl claude-code --help` used to be read as an action name and fall through to
+	// the unknown-action branch below, which sends someone looking for the command
+	// list to the one place that refuses to print it. Same fix, and same reason, as
+	// `abctl service --help`.
+	//
+	// Answered before the flag set is built rather than through fs.Usage: --help asks
+	// for the whole command's usage, and a flag set named "claude-code --help" would
+	// print only the flags of an action that does not exist.
+	//
+	// Explicit help goes to stdout with exit 0; a missing or bad action keeps going to
+	// stderr with exit 2. That split is what makes `--help` pipeable.
+	switch action {
+	case "-h", "--help", "help":
+		fmt.Fprint(stdout, claudeCodeUsage)
+		return 0
+	}
 
 	fs := flag.NewFlagSet("claude-code "+action, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -406,7 +422,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
 				"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
 				"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
-				"  is wrong. Start Cortex, then check with: abctl claude-code status\n\n",
+				"  is wrong. Start Cortex, then check with: abctl configure claude-code status\n\n",
 				want[envCACerts])
 		}
 		// The bundle is checked separately: it is written by a LATER step than

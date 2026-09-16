@@ -130,11 +130,12 @@ client-side settings (`--allowedTools`, disabling unused MCP servers).
 ## If it isn't working
 
 - **Metrics pane empty, every event shows `tunnel`** — Claude Code is not trusting
-  the bridge CA. Check what it is actually using with `abctl claude-code status`;
-  `NODE_EXTRA_CA_CERTS` must be the absolute path to `~/.cortex/ca/ca.crt`. The
-  proxy also warns about this in `~/.cortex/proxy.log` after a few requests,
-  naming the path it expects. `abctl claude-code enable` sets all three variables
-  from your running config, which is the reliable way to get them right.
+  the bridge CA. Check what it is actually using with
+  `abctl configure claude-code status`; `NODE_EXTRA_CA_CERTS` must be the absolute
+  path to `~/.cortex/ca/ca.crt`. The proxy also warns about this in
+  `~/.cortex/proxy.log` after a few requests, naming the path it expects.
+  `abctl configure claude-code enable` sets all three variables from your running
+  config, which is the reliable way to get them right.
 - **`tool-prune` shows `skip`, never `modify`** — expected until you opt in: the
   remove list ships empty. Run the scan above. If it refuses, you have no
   transcript history for it to reason from yet.

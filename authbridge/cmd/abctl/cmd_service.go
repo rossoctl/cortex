@@ -50,7 +50,8 @@ Usage:
 
 install hands the proxy to the OS supervisor — a launchd user agent on macOS, a
 systemd user unit on Linux — so it restarts on failure and comes back at login.
-Claude Code depends on the proxy being up once "abctl claude-code enable" has run,
+Claude Code depends on the proxy being up once "abctl configure claude-code enable"
+has run,
 and nothing else keeps it up.
 
 stop/start/restart exist so there is never a reason to reach for launchctl,
@@ -518,7 +519,8 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "This will stop and remove the %s at:\n  %s\n\n", supervisorName(), p.unitFile)
 	fmt.Fprintf(stdout, "Cortex will no longer start at login. Claude Code stops working whenever\n"+
-		"the proxy is not running — `abctl claude-code disable` removes that dependency.\n\n")
+		"the proxy is not running — `abctl configure claude-code disable` removes that\n"+
+		"dependency.\n\n")
 	if !yes && !confirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -543,7 +545,7 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	// recovery at all. Point back at the supported path.
 	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
 		"  Set it up again with:  abctl service install\n"+
-		"  Or unwire Claude Code: abctl claude-code disable\n"+
+		"  Or unwire Claude Code: abctl configure claude-code disable\n"+
 		"  The config and CA are untouched in %s\n", filepath.Dir(p.configFile))
 	return 0
 }

@@ -215,7 +215,7 @@ proxy. Either start Cortex again or unwire Claude Code (below).
 
 **A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
 its environment when it starts, so it has no way to fall back to a direct connection,
-and `claude-code disable` cannot reach it — that only affects sessions started
+and `configure claude-code disable` cannot reach it — that only affects sessions started
 afterwards. What it needs is Cortex back: `abctl service start`, after which it
 reconnects on its next request without being restarted. `service stop` tells you how
 many connections it cut, for exactly this reason.
@@ -226,7 +226,7 @@ process within seconds, which looks like it refusing to die.
 ### Unwire Claude Code
 
 ```sh
-abctl claude-code disable
+abctl configure claude-code disable
 ```
 
 This removes only the keys Cortex added to `~/.claude/settings.json`
@@ -337,29 +337,29 @@ security delete-certificate -c authbridge-tls-bridge-ca \
 `git`, `curl` and Python are **not** affected on macOS — they read their bundles
 through OpenSSL/LibreSSL, which honours the variables on every platform. And on
 Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
-`abctl claude-code enable` prints this note when it runs on macOS.
+`abctl configure claude-code enable` prints this note when it runs on macOS.
 
-Cortex keeps running; nothing sends traffic to it. `abctl claude-code enable` puts it
-back.
+Cortex keeps running; nothing sends traffic to it. `abctl configure claude-code
+enable` puts it back.
 
 ### Remove it
 
 ```sh
-abctl claude-code disable     # 1. unwire Claude Code
-abctl service uninstall       # 2. stop it and remove the service
-rm -rf ~/.cortex              # 3. config, CA, logs, abctl's UI settings
+abctl configure claude-code disable   # 1. unwire Claude Code
+abctl service uninstall               # 2. stop it and remove the service
+rm -rf ~/.cortex                      # 3. config, CA, logs, abctl's UI settings
 rm -f ~/.local/bin/abctl ~/.local/bin/authbridge-proxy
 ```
 
-Order matters for the first two: `claude-code disable` needs to read the config that
-step 3 deletes.
+Order matters for the first two: `configure claude-code disable` needs to read the
+config that step 3 deletes.
 
 #### Check nothing is left
 
 ```sh
-abctl claude-code status                    # should say "not enabled"
-pgrep -fl authbridge-prox                   # should print nothing
-ls ~/.cortex 2>/dev/null                    # should print nothing
+abctl configure claude-code status   # should say "not enabled"
+pgrep -fl authbridge-prox            # should print nothing
+ls ~/.cortex 2>/dev/null             # should print nothing
 ```
 
 The CA that step 3 removes was only ever trusted through the CA variables in
@@ -434,6 +434,6 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 its tool's trust store rather than adding to it. Leave them behind with the file
 deleted and git, curl and Python fail **every** TLS call — including calls that have
 nothing to do with Cortex — with `error setting certificate verify locations`, on a
-machine you believe you have just cleaned. `abctl claude-code disable` removes all
+machine you believe you have just cleaned. `abctl configure claude-code disable` removes all
 seven in the right order, which is why it is step 1 above; this list is only for when
 that binary is already gone.
