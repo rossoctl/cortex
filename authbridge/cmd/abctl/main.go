@@ -206,7 +206,8 @@ func chooseEndpoint(explicit, local string, localUp, kubernetes bool) string {
 }
 
 // runObserve opens the traffic viewer: the Namespaces → Pods picker, or a direct
-// connection when --endpoint is given or a local Cortex is answering.
+// connection when --endpoint names one, or when a local Cortex is answering and
+// --kubernetes is off. See chooseEndpoint for the precedence.
 //
 // This is the behaviour bare `abctl` has always had, extracted so the subcommand
 // and the deprecated bare invocation cannot drift apart.
@@ -218,7 +219,7 @@ func runObserve(args []string) int {
 	fs.Usage = func() { writeRootUsage(fs) }
 
 	endpoint := fs.String("endpoint", "",
-		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker.")
+		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl opens a Namespaces → Pods picker; with --kubernetes=false it connects to the Cortex on this machine instead, when one is running.")
 	// Named --prefs rather than --config: `abctl service` and `abctl claude-code`
 	// already spell the PROXY's config that way, and one flag name meaning two
 	// different files in one binary is worse than a second word.
@@ -268,14 +269,18 @@ func runObserve(args []string) int {
 	}
 	tui.Settings = loadUserConfig(prefsPath, os.Stderr)
 
-	// With no --endpoint, prefer a Cortex running on this machine. Before this,
-	// a bare `abctl` on a laptop demanded kubectl and opened a cluster picker,
-	// so the local install — the whole quickstart — needed
-	// `--endpoint http://localhost:47601` typed every time.
+	// Locate the Cortex on this machine, if any, and find out whether it is up.
 	//
-	// Only when it is actually answering: a stale config from an install that is
-	// no longer running must not hijack abctl away from the picker for someone
-	// working against a cluster.
+	// Probed rather than assumed from the config: a stale ~/.cortex/config.yaml left
+	// by an install that is no longer running must not hijack abctl away from the
+	// picker, and localUp is also what decides whether [l] gets the configured
+	// address or the in-cluster 9094 default.
+	//
+	// Whether a live local Cortex is CHOSEN is chooseEndpoint's call, not this
+	// block's: under the default --kubernetes it is offered on [l] rather than
+	// connected to. This once preferred it unconditionally, which is why a laptop
+	// user no longer has to type `--endpoint http://localhost:47601` — and why
+	// someone who also works against a cluster needed a way back to the picker.
 	local := localSessionEndpoint()
 	localUp := localSessionAPIUp(local)
 	*endpoint = chooseEndpoint(*endpoint, local, localUp, *kubernetes)
