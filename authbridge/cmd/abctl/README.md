@@ -555,14 +555,15 @@ Column ids, in display order — the same headers the picker shows:
 A narrow terminal also hides columns to fit, with a `→ N more columns` note in the
 footer; that is not saved, and widening the window brings them back.
 
-Settings resolve **flags > this file > built-in defaults**. A missing file is normal
-and silent. An unreadable or malformed one is reported on stderr and ignored in full
-— never partially applied, and never fatal.
+Each setting comes from **this file, or the built-in default** when the file does not
+set it. A missing file is normal and silent. An unreadable or malformed one is
+reported on stderr and ignored in full — never partially applied, and never fatal.
 
-**No environment variable takes part** — there is no `ABCTL_*` variable and
-`XDG_CONFIG_HOME` is not consulted. `--prefs` chooses which file to use; nothing
-overrides an individual setting, so change it in the TUI or edit the YAML. To try a
-layout without disturbing your own, point `--prefs` at a throwaway file.
+Nothing else feeds a setting: there is no environment variable (no `ABCTL_*`, and
+`XDG_CONFIG_HOME` is not consulted) and no flag for an individual setting. `--prefs`
+chooses *which* file, never what is in it — so to try a layout without disturbing
+your own, point it at a throwaway file. Otherwise change the setting in the TUI,
+which saves it, or edit the YAML.
 
 ## Editing the pipeline
 
