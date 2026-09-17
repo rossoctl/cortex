@@ -526,14 +526,16 @@ filter: github-tool
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `events.columns[].name` | string | — | column id, from the table below |
-| `events.columns[].visible` | bool | `true` | show that column |
-| `events.sortColumn` | string | unset | sort by this column; unset means arrival order |
-| `events.sortDesc` | bool | `false` | sort descending |
+| `events.columns[].name` | string | required | column id, from the table below |
+| `events.columns[].visible` | bool | required | show that column — an entry without it reads as `false` |
+| `events.sortColumn` | string | unset | sort by this column; unset means arrival order. `#` is not sortable, being arrival order already |
+| `events.sortDesc` | bool | `false` | sort descending; ignored unless `sortColumn` names a sortable column |
 | `filter` | string | empty | the active filter |
 
-Every key is optional. Only columns you changed are listed, so all twelve are
-visible until you hide one; an unrecognised column id or sort column is ignored.
+List a column only to change it — the twelve are all visible until you hide one, and
+an unrecognised name or sort column is ignored. Inside an entry, always write
+`visible:` explicitly: it is optional to the parser but reads as `false`, so
+`- name: COST` on its own hides COST rather than showing it.
 
 Column ids, in display order — the same headers the picker shows:
 
