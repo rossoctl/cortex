@@ -526,10 +526,54 @@ filter: github-tool
 column added in a later abctl shows up rather than staying hidden because your file
 predates it. A column id this build does not recognise is ignored.
 
-Settings resolve **flags > this file > built-in defaults**. (No environment variable
-feeds any of these today; if one is ever added it sits between the two.) A missing
-file is normal and silent. An unreadable or malformed one is reported on stderr and
-ignored in full — never partially applied, and never fatal.
+All twelve columns are visible by default, so an empty `events.columns` (or no file
+at all) shows every one of them. These are the ids to use under `events.columns`, in
+display order — the same strings the column picker shows as headers:
+
+| Id | Shows |
+|---|---|
+| `#` | exchange number; a request and its response share one |
+| `TIME` | wall-clock time the message was recorded |
+| `DIR` | `in` = toward your agent, `out` = toward an upstream |
+| `PHASE` | `req`, `resp`, or `denied` |
+| `ACTION` | what took effect: `deny`, `modify`, `observe`, `allow`, or `tunnel` |
+| `PLUGIN` | which plugin acted; blank when none did |
+| `METHOD` | protocol operation: model name, MCP or A2A method |
+| `STATUS` | HTTP status of the response |
+| `DURATION` | how long the exchange took |
+| `TOKENS` | tokens used, and what `tool-prune` saved |
+| `COST` | estimated cost, and what `tool-prune` saved |
+| `HOST` | host the message was sent to |
+
+Hiding one means an explicit `visible: false` entry, as in the example above. Note
+that a column absent from the file is visible *because that is its own default*, not
+because absence means visible — so a future column shipped hidden by default would
+stay hidden until you turn it on with `visible: true`.
+
+Being visible in the file is not the same as being on screen: all twelve need ~168
+terminal columns, and a narrower window drops the lowest-ranked ones with a
+`→ N more columns` note in the footer. That is a layout decision, not a setting, and
+widening the terminal brings them back without touching the picker.
+
+Settings resolve **flags > this file > built-in defaults**. A missing file is normal
+and silent. An unreadable or malformed one is reported on stderr and ignored in full
+— never partially applied, and never fatal.
+
+**No environment variable takes part.** This is deliberate, and it is the whole
+chain — there is no `ABCTL_*` variable, and `XDG_CONFIG_HOME` is not consulted:
+
+- **The file's location** comes from `--prefs PATH`, or `~/.cortex/abctl-config.yaml`
+  when that flag is absent. `$HOME` is read (via `os.UserHomeDir`) only to expand the
+  `~`; if it cannot be resolved, abctl says so on stderr and runs with defaults,
+  saving nothing.
+- **The values in it** — visible columns, sort column and direction, filter — can be
+  set only two ways: change them in the TUI, which saves them, or hand-edit the YAML.
+  There is no flag for an individual setting either, so `--prefs` chooses *which*
+  file, never *what is in it*.
+
+So a setting cannot be overridden for one run from the environment or the command
+line. To try a different layout without disturbing your own, point `--prefs` at a
+throwaway file.
 
 ## Editing the pipeline
 
