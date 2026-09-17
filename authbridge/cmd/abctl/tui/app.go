@@ -1624,8 +1624,9 @@ type RunOptions struct {
 	// LocalEndpoint overrides where `[l]` connects. Empty means
 	// defaultLocalEndpoint.
 	LocalEndpoint string
-	// Save persists the user's settings when one changes — the column picker
-	// closing, a filter being committed or cleared. A callback rather than a path
+	// Save persists the user's settings whenever one changes. Deliberately not a
+	// list of the keypresses that trigger it: the list was already stale once, and
+	// the triggers live with the settings they write. A callback rather than a path
 	// keeps $HOME and the YAML out of this package, so its tests need neither.
 	//
 	// Nil disables persistence: what tests pass, and what main passes when there is

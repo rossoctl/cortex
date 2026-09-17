@@ -545,7 +545,7 @@ filter: github-tool
 | `filter` | string | empty | the active filter |
 | `usage.metric` | string | `tokens` | usage-pane metric: `tokens`, `requests`, `errors` or `latency` |
 | `usage.window` | string | `10m0s` | usage-pane window: `10m0s`, `1h0m0s` or `6h0m0s` |
-| `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may name any grouping `/v1/usage` accepts |
+| `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may also use `model`, `endpoint`, `session` or `agent` |
 
 List a column only to change it — the twelve are all visible until you hide one, and
 an unrecognised name or sort column is ignored. Inside an entry, always write
@@ -554,9 +554,11 @@ an unrecognised name or sort column is ignored. Inside an entry, always write
 
 The three `usage.*` keys are the view `[m]`, `[w]` and `[b]` choose, saved as you
 change them, so reopening the pane after a restart lands on the view you left. They
-are stored by name rather than by position, and a name this build does not have
-falls back to that field's default — so an unrecognised value costs you the setting,
-never a broken pane.
+are stored by name rather than by position, and a name this build does not have —
+a typo, or a value from a newer abctl — falls back to that field's default, so it
+costs you the setting and never a broken pane. The four extra groupings above are
+recognised, not defaulted: `[b]` does not cycle to them, but the pane renders them
+and they survive a restart.
 
 Column ids, in display order — the same headers the picker shows:
 
