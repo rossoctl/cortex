@@ -6,18 +6,6 @@ Interactive terminal UI for inspecting AuthBridge's in-memory session store.
 and lets you browse active sessions, follow a session's event stream live,
 and read individual events as pretty-printed JSON.
 
-```
-┌─ abctl · http://localhost:9094 ────────────────────────────────┐
-│ ID                       UPDATED    EVENTS  ACTIVE             │
-│ ► ctx-abc-1234…          3s ago     42      ●                  │
-│   ctx-def-5678…          18m ago    15                         │
-│   default                1h ago     8                          │
-│                                                                 │
-│ ● connected   2.1 ev/s   drops: 0                              │
-│ [↑↓/jk] nav  [↵] drill  [/] filter  [?] keys  [q] quit         │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ## Install
 
 Download a prebuilt `abctl` for your platform (linux/macOS, amd64/arm64) from the
@@ -86,6 +74,35 @@ kubectl port-forward -n team1 pod/weather-agent-xxxx 9094:9094 &
 
 This preserves the pre-picker behavior for scripts, CI, or remote
 session APIs that aren't in your kube context.
+
+### Choosing between a cluster and a local Cortex (`--kubernetes`)
+
+With no `--endpoint`, abctl decides between the cluster picker and the Cortex
+running on this machine (read from `~/.cortex/config.yaml`, and probed first —
+a stale config from an install that is no longer running is ignored).
+
+`--kubernetes` controls that choice and **defaults to true**, so the picker is
+offered even when a local Cortex is answering:
+
+```sh
+./abctl observe                      # picker, even with a local Cortex running
+./abctl observe --kubernetes=false   # connect to the local Cortex instead
+```
+
+The default favours the cluster because it is the case abctl cannot guess:
+reaching a pod otherwise means naming a namespace, a pod and a port-forward by
+hand, whereas the local one is a single `[l]` away on the Namespaces pane. Set
+`--kubernetes=false` if you only ever watch a laptop Cortex.
+
+The flag is ignored when `--endpoint` is given — an explicit address always
+wins. Resolution in full:
+
+| `--endpoint` | Local Cortex answering | `--kubernetes` | Result |
+|---|---|---|---|
+| given | — | — | that endpoint |
+| — | yes | true (default) | Namespaces picker |
+| — | yes | false | the local Cortex |
+| — | no | either | Namespaces picker |
 
 ## Running one command through Cortex (`abctl exec`)
 
@@ -199,7 +216,22 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
-  active marker.
+  tokens, active marker.
+
+  ```
+  abctl · http://localhost:9094 · [Sessions] Pipeline
+
+   ID                                        UPDATED         EVENTS    TOKENS      ACTIVE
+   ctx-abc-1234…                             3s ago          42        48.2k       ●
+   ctx-def-5678…                             18m ago         15        1.2k
+   default                                   1h ago          8
+
+  ● connected   2.1 ev/s   drops: 0
+  [↑↓] nav  [↵] drill  [tab] pipeline  [u] usage  [/] filter  [p] pause  [?] keys  [q] quit
+  ```
+
+  The selected row is reverse-video rather than marked with a glyph, so it is
+  the one thing these listings cannot show.
 - **Events**: per-session event table. `c` opens a column picker — a popup with
   a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.
@@ -234,6 +266,31 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
+
+  All twelve columns, on a terminal wide enough for them. Each `#` appears
+  twice — once for the request, once for its response — which is how a row
+  with no STATUS is read as "still in flight" rather than "failed":
+
+  ```
+  abctl · ctx-abc-1234…
+
+   #     TIME          DIR   PHASE    ACTION    PLUGIN              METHOD              STATUS   DURATION    TOKENS             COST                 HOST
+   1     14:23:07.41   in    req      allow     jwt-validation                                                                                       weather-agent
+   1     14:23:07.52   in    resp     —         —                                       200      118ms                                               weather-agent
+   2     14:23:07.71   out   req      observe   inference-parser    claude-sonnet-5                                            681,300(−9.9k)   $0.2546(−$0.0037)   api.anthropic.com
+   2     14:23:08.91   out   resp     —         —                   claude-sonnet-5     200      1.20s       412                                     api.anthropic.com
+   3     14:23:09.01   out   req      modify    token-exchange      tools/call                                                                       github-tool-mcp
+   3     14:23:09.10   out   resp     —         —                   tools/call          503      96ms                                                github-tool-mcp
+
+  ● connected   2.1 ev/s   drops: 0   [sort: DURATION▼]   [filter: anthropic]
+  [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] filter  [esc] back  ·  → 4 more columns ([c] to choose)  [?] keys  [q] quit
+  ```
+
+  `—` in ACTION and PLUGIN means no plugin acted on that message; a `tunnel`
+  there is an opaque CONNECT, where METHOD and STATUS are blank too because
+  opaque bytes carry no request line. The TOKENS and COST figures on a request
+  row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
+  `~` for a projected one.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
   keys; `y` yanks to `~/.cortex/abctl-events/<timestamp>-<rand>.json` and
   shows the path in the footer until you press another key. The directory is
@@ -276,11 +333,99 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   series past the palette fold into `(other)` — every band drawn has a
   legend entry.
 
+  ```
+  abctl · http://localhost:9094 · usage · all
+
+    USAGE — all sessions — 10m0s @ 1m0s — tokens — by model
+
+     12k                            ▄▄▄▄
+                              ████  ssss
+    9.6k        ▃▃▃▃          ssss  ssss
+                ssss    ▅▅▅▅  ssss  ssss
+    7.2k  ▂▂▂▂  ssss    ssss  ssss  ssss
+          ssss  ssss    hhhh  hhhh  ssss
+    4.8k  ssss  ssss    hhhh  hhhh  hhhh
+          hhhh  hhhh    hhhh  hhhh  hhhh
+    2.4k  hhhh  hhhh    ····  ····  hhhh
+          ····  ····    ····  ····  ····
+       0 ┼────┴────┴────┴────┴────┴────
+         14:23   :25   :27   :29   :31
+        6.1k  8.8k     0  11k   9.9k  12k
+
+    s claude-sonnet-5 (34.2k)   h claude-haiku-4-5 (9.4k)   · (unlabelled) (2.1k)
+
+    REQUESTS 412    ERRORS 3 (0.7%)    TOKENS 48.2k    LATENCY 1.31s    COST $0.9412
+
+    updated 7s ago (every 20s)
+
+  [m] metric  [w] window  [b] breakdown  [s] this session  [esc] back  [?] keys  [q] quit
+  ```
+
+  Under `latency` the bars give way to mean-with-whiskers and the breakdown
+  hint disappears, since the aggregator holds no per-label latency:
+
+  ```
+    USAGE — all sessions — 10m0s @ 1m0s — latency — no breakdown for latency
+
+   2.4s              ┬
+                     │       ┬
+   1.8s        ┬     │       │
+               │     ┼       │
+   1.2s  ┬     ┼     │       ┼
+         ┼     │     ┴       │
+   600ms ┴     ┴           ┴
+       0 ┼────┴────┴────┴────┴────
+         14:23   :25   :27   :29
+        1.2s  1.8s     0  2.1s  1.4s
+
+    ┼ mean   ┬ +1σ   ┴ −1σ   (0 = no measured responses)
+  ```
+
 - **Catalog**: registered-plugin browser, opened by `P` from any
   session-view pane. Lists every plugin the running binary knows how to
   construct, including ones not in the active pipeline. Useful for
   discovering what's available before adding to the pipeline. Sourced
   from `/v1/plugins`.
+
+  REQUIRES lists a plugin's hard dependencies comma-separated; an either-or
+  group appears as one entry joined by `|`. Both are checked against the
+  ACTIVE pipeline in the Pipeline pane's DEPS column, not here — this pane
+  lists what the binary can build, not what is wired up.
+
+  ```
+  abctl · http://localhost:9094 · catalog
+
+   NAME                    REQUIRES                      DESCRIPTION
+   jwt-validation                                        Validate inbound JWTs against JWKS
+   token-exchange                                        RFC 8693 exchange for a target audience
+   mcp-parser                                            Parse MCP JSON-RPC requests and results
+   inference-parser                                      Parse LLM chat/completions traffic
+   ibac                    a2a-parser                    Intent-based access control
+   tool-prune              inference-parser              Drop unused tool definitions
+
+  [↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit
+  ```
+
+- **Kubernetes Namespaces** (optional): the way in when abctl has no endpoint
+  to connect to — one row per namespace holding an AuthBridge agent, then a
+  Pods pane, then an automatic `kubectl port-forward` into the session view.
+  Offered whenever `--endpoint` was not given and `--kubernetes` is on, which
+  it is by default; `[l]` skips it and connects to the Cortex on this machine.
+
+  ```
+  abctl · pick namespace
+
+   NAMESPACE                       PODS
+   team1                           2
+   team2                           1
+   default                         1
+
+  [↑↓/jk] nav  [↵] open  [l] localhost:47601  [r] reload  [?] keys  [q] quit
+  ```
+
+  `--kubernetes=false` connects straight to a running local Cortex instead and
+  never shows this pane. With `--endpoint` the flag is moot: an explicit address
+  always wins.
 
 Layered on top of all of them:
 

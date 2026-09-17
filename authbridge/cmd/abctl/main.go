@@ -177,6 +177,34 @@ func wantsInfoFlagOnly(args []string) bool {
 	return true
 }
 
+// chooseEndpoint decides which session API abctl connects to, or "" for the
+// Namespaces → Pods picker.
+//
+// Split out of runObserve as the one part of that function testable without a
+// terminal: runObserve goes on to open the TUI, so the decision itself had no test
+// until it was a function of its arguments.
+//
+// Precedence: an explicit --endpoint always wins — it names a specific proxy, and
+// second-guessing that would make the flag advisory. Otherwise a local Cortex is
+// taken only when it is ANSWERING and --kubernetes is off.
+//
+// kubernetes defaults true, so a running local Cortex no longer claims the session
+// merely by existing. Before that, someone who ran Cortex on their laptop and also
+// worked against a cluster could not reach the picker at all: the probe won every
+// time, and --endpoint demanded the namespace, pod and port-forward they were using
+// abctl to avoid. The local one stays one keystroke away on [l], which is why
+// preferring the cluster here costs nothing; the reverse is not true, since no key
+// summons a picker that was never wired up.
+func chooseEndpoint(explicit, local string, localUp, kubernetes bool) string {
+	if explicit != "" {
+		return explicit
+	}
+	if localUp && !kubernetes {
+		return local
+	}
+	return ""
+}
+
 // runObserve opens the traffic viewer: the Namespaces → Pods picker, or a direct
 // connection when --endpoint is given or a local Cortex is answering.
 //
@@ -200,6 +228,18 @@ func runObserve(args []string) int {
 	// "-prefs abctl service" instead of "-prefs string".
 	prefs := fs.String("prefs", "",
 		"abctl's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/abctl-config.yaml). Not the Cortex proxy config, which is --config on 'abctl service' and 'abctl configure claude-code'.")
+	// --kubernetes exists because "is a local Cortex answering?" is a poor proxy for
+	// "which Cortex did you mean". Someone who runs Cortex on their laptop AND works
+	// against a cluster had no way to reach the picker: the local probe won, every
+	// time, and --endpoint demands a namespace, a pod and a port-forward they were
+	// using abctl to avoid setting up by hand.
+	//
+	// Default true, so the picker is offered whenever no --endpoint was given — the
+	// cluster is the case abctl cannot guess and the local one is a keystroke away
+	// via [l]. --kubernetes=false restores the older behaviour of preferring a
+	// running local Cortex, which is what a laptop-only user wants.
+	kubernetes := fs.Bool("kubernetes", true,
+		"offer the Namespaces → Pods picker when no --endpoint is given, even if a Cortex is running on this machine. Use --kubernetes=false to connect straight to the local one instead. Ignored when --endpoint is given.")
 	// ExitOnError, so Parse exits 2 itself (0 for -h) rather than returning — there
 	// is no error branch to write here. Chosen over ContinueOnError because a bad
 	// flag has nothing useful to fall back to: the alternative is printing usage and
@@ -238,9 +278,7 @@ func runObserve(args []string) int {
 	// working against a cluster.
 	local := localSessionEndpoint()
 	localUp := localSessionAPIUp(local)
-	if *endpoint == "" && localUp {
-		*endpoint = local
-	}
+	*endpoint = chooseEndpoint(*endpoint, local, localUp, *kubernetes)
 
 	// Friendly check: if picker mode and no kubectl, fail fast with a
 	// clear message instead of a stack trace later.
@@ -249,8 +287,10 @@ func runObserve(args []string) int {
 			msg := "abctl: kubectl not found on PATH; install it or pass --endpoint http://..."
 			// Name the more likely cause first when there is a local install that
 			// simply is not running — "install kubectl" is unhelpful advice to
-			// someone who has never wanted a cluster.
-			if local != "" && !dialable(local) {
+			// someone who has never wanted a cluster. Only under --kubernetes=false,
+			// though: with --kubernetes the user asked for the cluster, and kubectl
+			// really is what is missing.
+			if local != "" && !dialable(local) && !*kubernetes {
 				msg = "abctl: nothing is listening on " + local + " (from ~/.cortex/config.yaml).\n" +
 					"  Start it:  abctl service start   (or: abctl service install)\n" +
 					"  Or pass --endpoint http://... , or install kubectl to browse a cluster."
