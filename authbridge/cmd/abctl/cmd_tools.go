@@ -45,7 +45,6 @@ Transcripts record tools that were called, never tools that were offered, so a
 name abctl does not recognise is never proposed for removal.
 `
 
-// runTools handles the `tools` subcommand. Returns the process exit code.
 // thinEvidenceTools is the number of distinct called tools below which the scan
 // warns that its proposal is aggressive. Chosen as a smell test, not a
 // threshold with meaning: a real session touches Read/Edit/Bash and more within
@@ -53,6 +52,7 @@ name abctl does not recognise is never proposed for removal.
 // the tools I use".
 const thinEvidenceTools = 5
 
+// runTools handles the `tools` subcommand. Returns the process exit code.
 func runTools(args []string, stdout, stderr io.Writer) int {
 	// `abctl tools --help` used to be read as an action name and answered with
 	// "unknown subcommand", which sends someone asking what this command does to the
@@ -73,35 +73,31 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("tools scan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	// Without this, `--help` printed flag.PrintDefaults' bare "Usage of tools scan:"
-	// list — every flag named, nothing saying what scan is for or why anyone would
-	// run it.
+	// Silenced, and printed from the Parse result instead. Without either, `--help`
+	// printed flag.PrintDefaults' bare "Usage of tools scan:" list — every flag
+	// named, nothing saying what scan is for.
 	//
-	// Which STREAM it goes to depends on why it is being printed, so the writer is
-	// chosen per call rather than fixed here. Parse calls Usage for a bad flag too,
-	// and an unconditional stdout there put the whole help text on stdout while the
-	// error went to stderr — splitting one failure across both streams. Only an
-	// explicit -h/--help is a successful answer.
-	usageOut := stderr
-	fs.Usage = func() { fmt.Fprint(usageOut, toolsScanUsage) }
-	for _, a := range args[1:] {
-		if a == "-h" || a == "--help" {
-			usageOut = stdout
-			break
-		}
-	}
+	// Which STREAM it belongs on depends on why it is being printed, and only Parse
+	// knows: it calls Usage for a bad flag as well as for -h. Deciding by scanning
+	// argv for "--help" cannot tell the two apart, because a flag may consume it as
+	// a VALUE — `--dir --help --nosuchflag` then put the whole help text on stdout
+	// while the error went to stderr, splitting one failure across both streams.
+	// ErrHelp is the flag package's own answer to which happened.
+	fs.Usage = func() {}
 	days := fs.Int("days", 30, "window in days")
 	all := fs.Bool("all", false, "consider every transcript, with no recency window")
 	keep := fs.String("keep", "", "comma-separated tool names to keep")
 	dir := fs.String("dir", "", "transcript directory (default ~/.claude/projects)")
 	write := fs.String("write", "", "patch the tool-prune remove: list in this config file")
 	if err := fs.Parse(args[1:]); err != nil {
-		// ErrHelp is what Parse returns when it saw -h/--help and already called
-		// fs.Usage. That is a successful answer, not the usage error every other
-		// parse failure is, so it must not share their exit 2.
+		// ErrHelp means Parse saw -h/--help, which is a successful answer and belongs
+		// on stdout at exit 0. Every other parse failure is a usage error: Parse has
+		// already written its own line to stderr, so the usage joins it there.
 		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, toolsScanUsage)
 			return 0
 		}
+		fmt.Fprint(stderr, toolsScanUsage)
 		return 2
 	}
 	// --days 0 is rejected rather than read as "everything": a zero-width window

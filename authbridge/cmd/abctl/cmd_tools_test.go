@@ -304,6 +304,10 @@ func TestToolsUsageErrors_StayErrors(t *testing.T) {
 		{"no action", nil},
 		{"unknown action", []string{"bogus"}},
 		{"unknown flag", []string{"scan", "--nosuchflag"}},
+		// --dir consumes "--help" as its VALUE, so scanning argv for it cannot tell
+		// a help request from a parse failure. Keying the stream off Parse's ErrHelp
+		// can: this must not put the usage on stdout while the error goes to stderr.
+		{"help eaten as a flag value", []string{"scan", "--dir", "--help", "--nosuchflag"}},
 		{"zero days", []string{"scan", "--days", "0"}},
 		{"all with days", []string{"scan", "--all", "--days", "5"}},
 	} {
