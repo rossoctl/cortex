@@ -541,7 +541,7 @@ Column ids, in display order — the same headers the picker shows:
 
 | Id | Shows |
 |---|---|
-| `#` | exchange number; a request and its response share one |
+| `#` | exchange number; a request and its response share one — quote it as `"#"` in YAML, or it reads as a comment |
 | `TIME` | wall-clock time the message was recorded |
 | `DIR` | `in` = toward your agent, `out` = toward an upstream |
 | `PHASE` | `req`, `resp`, or `denied` |
