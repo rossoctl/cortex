@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
@@ -590,5 +591,106 @@ func TestColumnPicker_HidingTheSortedColumnKeepsTheSortRecoverable(t *testing.T)
 	if m.sortCol != "" || !m.eventColumns[colDuration] {
 		t.Errorf("after r: sortCol=%q visible=%v, want chronological and visible",
 			m.sortCol, m.eventColumns[colDuration])
+	}
+}
+
+// The usage pane's three view choices must reach the file, or the operator picks
+// them again on every start (#953).
+//
+// Each key is asserted separately because each writes a different field, and a
+// helper that saved only the one just changed would leave the other two stale —
+// the failure mode being "two thirds of the view I left".
+func TestUsagePane_ViewChoicesArePersisted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  rune
+		want func(UsageSettings) bool
+		desc string
+	}{
+		{"m cycles the metric", 'm', func(u UsageSettings) bool { return u.Metric != "" }, "Metric"},
+		{"w cycles the window", 'w', func(u UsageSettings) bool { return u.Window != "" }, "Window"},
+		{"b cycles the breakdown", 'b', func(u UsageSettings) bool { return u.Group != "" }, "Group"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestEventsModel(t)
+			saves := recordSaves(t, m)
+			m.pane = paneUsage
+
+			m.handleKey(keyRune(tc.key))
+
+			if len(*saves) == 0 {
+				t.Fatalf("[%c] saved nothing; the choice is lost on restart", tc.key)
+			}
+			last := (*saves)[len(*saves)-1]
+			if !tc.want(last.Usage) {
+				t.Errorf("[%c] did not record %s: %+v", tc.key, tc.desc, last.Usage)
+			}
+		})
+	}
+}
+
+// Whatever the pane holds must survive a round trip through the file, all three
+// fields together: a reader returning expects the view they left.
+func TestUsageSettings_RoundTripsEveryField(t *testing.T) {
+	resetSettingsForTest(t)
+
+	// Every field off its default, so nothing passes by coincidence.
+	saved := captureUsage(metricErrors, 2, usage.GroupHost)
+	if saved.Metric == "" || saved.Window == "" || saved.Group == "" {
+		t.Fatalf("capture dropped a field: %+v", saved)
+	}
+
+	metric, windowIdx, group := UserSettings{Usage: saved}.usageSelection()
+	if metric != metricErrors {
+		t.Errorf("metric = %v, want %v", metric, metricErrors)
+	}
+	if windowIdx != 2 {
+		t.Errorf("windowIdx = %d, want 2", windowIdx)
+	}
+	if group != usage.GroupHost {
+		t.Errorf("group = %q, want %q", group, usage.GroupHost)
+	}
+}
+
+// A pane left as it opened must add nothing to the file, so a config that was
+// never customised stays empty — the same property the column list has.
+func TestUsageSettings_DefaultsRecordNothing(t *testing.T) {
+	if got := captureUsage(metricTokens, 0, usage.GroupNone); got != (UsageSettings{}) {
+		t.Errorf("defaults recorded %+v, want the zero value", got)
+	}
+	// The zero value of the field, i.e. what an older file carries.
+	if got := captureUsage(metricTokens, 0, ""); got != (UsageSettings{}) {
+		t.Errorf("empty group recorded %+v, want the zero value", got)
+	}
+}
+
+// A name this build does not have must fall back to the default rather than
+// leaving the pane on a metric it cannot render or a window index out of range.
+// That covers both an older file and a newer one written by a build that has since
+// dropped a metric.
+func TestUsageSettings_UnknownNamesFallBackToDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   UsageSettings
+	}{
+		{"unknown everything", UsageSettings{Metric: "nosuch", Window: "99h0m0s", Group: "bogus"}},
+		{"empty everything", UsageSettings{}},
+		{"window no longer offered", UsageSettings{Window: "3h0m0s"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			metric, windowIdx, group := UserSettings{Usage: tc.in}.usageSelection()
+			if metric != metricTokens {
+				t.Errorf("metric = %v, want the tokens default", metric)
+			}
+			if windowIdx != 0 {
+				t.Errorf("windowIdx = %d, want 0", windowIdx)
+			}
+			if windowIdx >= len(usageWindows) {
+				t.Errorf("windowIdx %d is out of range for usageWindows", windowIdx)
+			}
+			if group != usage.GroupNone && group != "" {
+				t.Errorf("group = %q, want ungrouped", group)
+			}
+		})
 	}
 }

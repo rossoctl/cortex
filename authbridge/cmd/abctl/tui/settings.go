@@ -1,5 +1,7 @@
 package tui
 
+import "github.com/rossoctl/cortex/authbridge/authlib/usage"
+
 // Settings is abctl's live user settings, global to the process.
 //
 // One struct rather than the fields it replaces (eventColumns, filter) scattered
@@ -24,6 +26,7 @@ var Settings UserSettings
 // has to mean "use the default" for each one.
 type UserSettings struct {
 	Events EventSettings `yaml:"events,omitempty"`
+	Usage  UsageSettings `yaml:"usage,omitempty"`
 	// Filter is the committed substring filter. One field because there is one
 	// m.filter: the sessions and events panes share it (sessions_pane.go, and
 	// events_pane.go's matchEventRow).
@@ -51,6 +54,33 @@ type EventSettings struct {
 	// SortDesc is that sort's direction. Only meaningful with SortColumn set; false
 	// on its own is simply the ascending half of a sort that is not active.
 	SortDesc bool `yaml:"sortDesc,omitempty"`
+}
+
+// UsageSettings is the usage pane's view state: which metric, window and
+// breakdown the operator last chose.
+//
+// Stored by NAME, not by the int the pane holds. usageMetric is an iota and the
+// window is an index into usageWindows, so a raw number would silently change
+// meaning if either list were ever reordered or had an entry inserted — the same
+// trap ColumnSetting avoids by keying on the column id. A name this build does not
+// recognise falls back to the default, which is also what an older file with none
+// of these keys gets.
+type UsageSettings struct {
+	// Metric is the metric name as usageMetric.String() renders it: tokens,
+	// requests, errors or latency. Empty means tokens, the zero value the pane
+	// starts with.
+	Metric string `yaml:"metric,omitempty"`
+	// Window is the window duration as time.Duration.String() renders it (10m0s,
+	// 1h0m0s, 6h0m0s). Empty, or a duration no longer offered, means the first
+	// entry in usageWindows.
+	Window string `yaml:"window,omitempty"`
+	// Group is the breakdown, by the same string the /v1/usage group parameter
+	// takes: none, method, status, plugin or host. Empty means ungrouped.
+	//
+	// Not validated against a list here: usage.ParseGroup already owns which values
+	// are legal, and duplicating that set would be a second place to update when a
+	// grouping is added.
+	Group string `yaml:"group,omitempty"`
 }
 
 // ColumnSetting is one column's visibility, keyed by the stable id the picker
@@ -150,6 +180,53 @@ func columnSettingsFrom(sel map[eventColumnID]bool) []ColumnSetting {
 		if sel[c.id] != c.defaultOn {
 			out = append(out, ColumnSetting{Name: string(c.id), Visible: sel[c.id]})
 		}
+	}
+	return out
+}
+
+// usageSelection resolves the persisted usage view into the three values the pane
+// holds. Anything absent or unrecognised yields that field's default, so an older
+// config file — or one naming a metric this build dropped — restores today's
+// opening view rather than an empty chart.
+func (u UserSettings) usageSelection() (metric usageMetric, windowIdx int, group usage.Group) {
+	for m := usageMetric(0); m < usageMetricCount; m++ {
+		if m.String() == u.Usage.Metric {
+			metric = m
+			break
+		}
+	}
+	// Matched against the window's own String(), not stored as the index: an entry
+	// inserted into usageWindows would otherwise silently move every saved choice.
+	for i, w := range usageWindows {
+		if w.window.String() == u.Usage.Window {
+			windowIdx = i
+			break
+		}
+	}
+	// ParseGroup owns the valid set; its error case is exactly "not a grouping this
+	// build has", which is the fallback this function promises.
+	if g, err := usage.ParseGroup(u.Usage.Group); err == nil {
+		group = g
+	}
+	return metric, windowIdx, group
+}
+
+// captureUsage records the pane's current view for the next start.
+//
+// Writes the empty string for each default rather than the default's name, so a
+// pane left as it opened adds nothing to the file — the same "only deviations are
+// recorded" property the columns have, which keeps a file that was never
+// customised empty.
+func captureUsage(metric usageMetric, windowIdx int, group usage.Group) UsageSettings {
+	var out UsageSettings
+	if metric != usageMetric(0) {
+		out.Metric = metric.String()
+	}
+	if windowIdx > 0 && windowIdx < len(usageWindows) {
+		out.Window = usageWindows[windowIdx].window.String()
+	}
+	if group != "" && group != usage.GroupNone {
+		out.Group = string(group)
 	}
 	return out
 }

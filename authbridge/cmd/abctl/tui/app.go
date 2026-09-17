@@ -469,6 +469,10 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 	// and the two fields are two halves of one answer.
 	sortCol, sortDesc := Settings.sortSelection()
 
+	// The usage pane's view, restored once at startup rather than in openUsage:
+	// re-entering the pane must not reset a choice made during the session.
+	usageMetric, usageWindowIdx, usageGroup := Settings.usageSelection()
+
 	return &model{
 		endpoint:     c.Endpoint(),
 		client:       c,
@@ -479,6 +483,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		eventColumns: Settings.columnSelection(),
 		sortCol:      sortCol,
 		sortDesc:     sortDesc,
+		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

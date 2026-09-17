@@ -543,11 +543,20 @@ filter: github-tool
 | `events.sortColumn` | string | unset | sort by this column; unset means arrival order. `#` is not sortable, being arrival order already |
 | `events.sortDesc` | bool | `false` | sort descending; ignored unless `sortColumn` names a sortable column |
 | `filter` | string | empty | the active filter |
+| `usage.metric` | string | `tokens` | usage-pane metric: `tokens`, `requests`, `errors` or `latency` |
+| `usage.window` | string | `10m0s` | usage-pane window: `10m0s`, `1h0m0s` or `6h0m0s` |
+| `usage.group` | string | `none` | usage-pane breakdown: `none`, `status`, `method`, `plugin` or `host` |
 
 List a column only to change it — the twelve are all visible until you hide one, and
 an unrecognised name or sort column is ignored. Inside an entry, always write
 `visible:` explicitly: it is optional to the parser but reads as `false`, so
 `- name: COST` on its own hides COST rather than showing it.
+
+The three `usage.*` keys are the view `[m]`, `[w]` and `[b]` choose, saved as you
+change them, so reopening the pane after a restart lands on the view you left. They
+are stored by name rather than by position, and a name this build does not have
+falls back to that field's default — so an unrecognised value costs you the setting,
+never a broken pane.
 
 Column ids, in display order — the same headers the picker shows:
 

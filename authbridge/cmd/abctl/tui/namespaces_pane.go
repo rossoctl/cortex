@@ -93,6 +93,10 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 	// Resolved once, as in New: see the note there.
 	sortCol, sortDesc := Settings.sortSelection()
 
+	// The usage pane's view, restored once at startup rather than in openUsage:
+	// re-entering the pane must not reset a choice made during the session.
+	usageMetric, usageWindowIdx, usageGroup := Settings.usageSelection()
+
 	return &model{
 		// endpoint and client are set later, when portForwardReadyMsg arrives.
 		parentCtx: parentCtx,
@@ -106,6 +110,7 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		eventColumns: Settings.columnSelection(),
 		sortCol:      sortCol,
 		sortDesc:     sortDesc,
+		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
 		filter:       Settings.Filter,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

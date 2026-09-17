@@ -82,9 +82,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// the axis, and every other binding here is the first letter of what it
 			// changes.
 			m.usage.cycleMetric()
+			m.persistUsage()
 			return nil
 		case "w":
 			m.usage.cycleWindow()
+			m.persistUsage()
 			return m.beginFetch()
 		case "b":
 			// Breakdown. NOT `g` for "group": `g` is globally "go to top" (see
@@ -104,6 +106,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// client-side filter, so the current snapshot has no series for the
 			// newly selected dimension.
 			m.usage.cycleGroup()
+			m.persistUsage()
 			return m.beginFetch()
 		case "s":
 			// Toggle scope between this session and all sessions. Only offered
@@ -826,6 +829,16 @@ func (m *model) persistSettings() {
 	if err := m.save(Settings); err != nil {
 		m.setFlash("could not save settings: " + err.Error())
 	}
+}
+
+// persistUsage records the usage pane's view, then saves.
+//
+// Its own helper rather than three copies of the two lines: [m], [w] and [b] each
+// change one of the three, and all three belong in the file together — a reader
+// returning to the pane expects the view they left, not two thirds of it.
+func (m *model) persistUsage() {
+	Settings.Usage = captureUsage(m.usage.metric, m.usage.windowIdx, m.usage.group)
+	m.persistSettings()
 }
 
 // setStickyFlash shows a message that stays until the next keypress. For yank,
