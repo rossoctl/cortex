@@ -199,7 +199,7 @@ func runObserve(args []string) int {
 	// backquoted word as the value's NAME, so "`abctl service`" rendered the flag as
 	// "-prefs abctl service" instead of "-prefs string".
 	prefs := fs.String("prefs", "",
-		"abctl's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/abctl-config.yaml). Not the Cortex proxy config, which is --config on 'abctl service' and 'abctl claude-code'.")
+		"abctl's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/abctl-config.yaml). Not the Cortex proxy config, which is --config on 'abctl service' and 'abctl configure claude-code'.")
 	// ExitOnError, so Parse exits 2 itself (0 for -h) rather than returning — there
 	// is no error branch to write here. Chosen over ContinueOnError because a bad
 	// flag has nothing useful to fall back to: the alternative is printing usage and

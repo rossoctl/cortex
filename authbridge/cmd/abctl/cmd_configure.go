@@ -101,7 +101,11 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode", "OpenCode"))
 		return 0
 	default:
+		// The named list is the answer to a typo; the usage block after it is the
+		// answer to "what else can this do", which is what someone who guessed an
+		// agent name wrong most likely wanted. Same pairing as the no-argument case.
 		fmt.Fprintf(stderr, "abctl: unknown agent %q (claude-code, bob, codex, opencode)\n", agent)
+		fmt.Fprint(stderr, configureUsage)
 		return 2
 	}
 }

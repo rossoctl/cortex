@@ -215,10 +215,10 @@ proxy. Either start Cortex again or unwire Claude Code (below).
 
 **A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
 its environment when it starts, so it has no way to fall back to a direct connection,
-and `configure claude-code disable` cannot reach it — that only affects sessions started
-afterwards. What it needs is Cortex back: `abctl service start`, after which it
-reconnects on its next request without being restarted. `service stop` tells you how
-many connections it cut, for exactly this reason.
+and `abctl configure claude-code disable` cannot reach it — that only affects
+sessions started afterwards. What it needs is Cortex back: `abctl service start`,
+after which it reconnects on its next request without being restarted. `service
+stop` tells you how many connections it cut, for exactly this reason.
 
 Use `abctl service stop`, not `kill` or `pkill` — the supervisor restarts the
 process within seconds, which looks like it refusing to die.
@@ -351,8 +351,8 @@ rm -rf ~/.cortex                      # 3. config, CA, logs, abctl's UI settings
 rm -f ~/.local/bin/abctl ~/.local/bin/authbridge-proxy
 ```
 
-Order matters for the first two: `configure claude-code disable` needs to read the
-config that step 3 deletes.
+Order matters for the first two: `abctl configure claude-code disable` needs to
+read the config that step 3 deletes.
 
 #### Check nothing is left
 

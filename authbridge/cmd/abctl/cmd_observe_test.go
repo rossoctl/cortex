@@ -185,7 +185,7 @@ func TestObserveFlags_DocumentThePrefsFile(t *testing.T) {
 	// mentions --config in order to point at the proxy config.
 	if strings.Contains(out, "  -config") {
 		t.Errorf("the viewer grew a -config flag; --config already means the proxy config "+
-			"on 'abctl service' and 'abctl claude-code':\n%s", out)
+			"on 'abctl service' and 'abctl configure claude-code':\n%s", out)
 	}
 }
 
