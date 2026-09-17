@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,10 +10,28 @@ import (
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/toolscan"
 )
 
-const toolsUsage = `abctl tools scan — derive a tool-prune remove list from local transcripts
+const toolsUsage = `abctl tools — read agent logs to measure tool use
 
 Usage:
   abctl tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
+
+Actions:
+  scan   consult local coding agent logs to determine agent tool use
+
+Run "abctl tools scan --help" for the detail.
+`
+
+const toolsScanUsage = `abctl tools scan — consult local coding agent logs to determine agent tool use
+
+Usage:
+  abctl tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
+
+Currently scan only consults Claude Code logs.
+
+Claude Code resends its entire tool manifest on every turn, which can consume
+many tokens, often describing tools the agent will never call. scan measures tool
+use, producing a YAML fragment that can be applied to Cortex configuration
+causing some tools to be redacted from inference, saving token cost.
 
 Flags:
   --days N        window in days to consider a tool "used" (default 30)
@@ -35,6 +54,18 @@ name abctl does not recognise is never proposed for removal.
 const thinEvidenceTools = 5
 
 func runTools(args []string, stdout, stderr io.Writer) int {
+	// `abctl tools --help` used to be read as an action name and answered with
+	// "unknown subcommand", which sends someone asking what this command does to the
+	// one place that refuses to say. Same fix, and the same stdout/exit-0 split, as
+	// `abctl service --help`: an explicit request for help is a successful answer, so
+	// it is pipeable; a missing or wrong action stays an error on stderr.
+	if len(args) > 0 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			fmt.Fprint(stdout, toolsUsage)
+			return 0
+		}
+	}
 	if len(args) == 0 || args[0] != "scan" {
 		fmt.Fprint(stderr, toolsUsage)
 		return 2
@@ -42,12 +73,35 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("tools scan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	// Without this, `--help` printed flag.PrintDefaults' bare "Usage of tools scan:"
+	// list — every flag named, nothing saying what scan is for or why anyone would
+	// run it.
+	//
+	// Which STREAM it goes to depends on why it is being printed, so the writer is
+	// chosen per call rather than fixed here. Parse calls Usage for a bad flag too,
+	// and an unconditional stdout there put the whole help text on stdout while the
+	// error went to stderr — splitting one failure across both streams. Only an
+	// explicit -h/--help is a successful answer.
+	usageOut := stderr
+	fs.Usage = func() { fmt.Fprint(usageOut, toolsScanUsage) }
+	for _, a := range args[1:] {
+		if a == "-h" || a == "--help" {
+			usageOut = stdout
+			break
+		}
+	}
 	days := fs.Int("days", 30, "window in days")
 	all := fs.Bool("all", false, "consider every transcript, with no recency window")
 	keep := fs.String("keep", "", "comma-separated tool names to keep")
 	dir := fs.String("dir", "", "transcript directory (default ~/.claude/projects)")
 	write := fs.String("write", "", "patch the tool-prune remove: list in this config file")
 	if err := fs.Parse(args[1:]); err != nil {
+		// ErrHelp is what Parse returns when it saw -h/--help and already called
+		// fs.Usage. That is a successful answer, not the usage error every other
+		// parse failure is, so it must not share their exit 2.
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	// --days 0 is rejected rather than read as "everything": a zero-width window

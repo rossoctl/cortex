@@ -234,3 +234,90 @@ func TestToolsScan_WarnsOnThinEvidence(t *testing.T) {
 		t.Error("config was not written")
 	}
 }
+
+// `abctl tools --help` was read as an action name and answered with "unknown
+// subcommand" — the one place that refuses to say what the command does (#1001).
+// All three spellings are pinned: -h is what a habit produces, `help` what someone
+// copies from another tool.
+func TestToolsHelp_PrintsUsageOnStdout(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "help"} {
+		t.Run(arg, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if code := runTools([]string{arg}, &out, &errb); code != 0 {
+				t.Errorf("exit = %d, want 0", code)
+			}
+			if !strings.Contains(out.String(), "abctl tools — read agent logs to measure tool use") {
+				t.Errorf("summary line missing from stdout:\n%s", out.String())
+			}
+			// It must name its one action, or the reader learns nothing actionable.
+			if !strings.Contains(out.String(), "scan") {
+				t.Errorf("usage does not mention scan:\n%s", out.String())
+			}
+			// Explicit help is a successful answer, so it has to be pipeable.
+			if errb.Len() != 0 {
+				t.Errorf("stderr not empty: %q", errb.String())
+			}
+		})
+	}
+}
+
+// `abctl tools scan --help` printed flag.PrintDefaults' bare "Usage of tools scan:"
+// flag list with no prose — the second half of #1001. The rationale is asserted in
+// pieces rather than whole so a rewording does not fail the test, but the two facts
+// a reader needs (only Claude Code today; why pruning saves tokens) must survive.
+func TestToolsScanHelp_PrintsRationaleOnStdout(t *testing.T) {
+	for _, arg := range []string{"-h", "--help"} {
+		t.Run(arg, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if code := runTools([]string{"scan", arg}, &out, &errb); code != 0 {
+				t.Errorf("exit = %d, want 0", code)
+			}
+			got := out.String()
+			for _, want := range []string{
+				"abctl tools scan — consult local coding agent logs",
+				"only consults Claude Code logs",
+				"resends its entire tool manifest on every turn",
+				"saving token cost",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q:\n%s", want, got)
+				}
+			}
+			// The bare flag dump this replaced.
+			if strings.Contains(got, "Usage of tools scan:") {
+				t.Errorf("still printing the bare flag dump:\n%s", got)
+			}
+			if errb.Len() != 0 {
+				t.Errorf("stderr not empty: %q", errb.String())
+			}
+		})
+	}
+}
+
+// The help cases must not have widened into swallowing real usage errors: those
+// stay on stderr at exit 2, which is what a script checks.
+func TestToolsUsageErrors_StayErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"no action", nil},
+		{"unknown action", []string{"bogus"}},
+		{"unknown flag", []string{"scan", "--nosuchflag"}},
+		{"zero days", []string{"scan", "--days", "0"}},
+		{"all with days", []string{"scan", "--all", "--days", "5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if code := runTools(tc.args, &out, &errb); code != 2 {
+				t.Errorf("exit = %d, want 2", code)
+			}
+			if errb.Len() == 0 {
+				t.Error("nothing on stderr")
+			}
+			if out.Len() != 0 {
+				t.Errorf("stdout not empty: %q", out.String())
+			}
+		})
+	}
+}
