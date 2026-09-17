@@ -16,6 +16,7 @@ package usage
 import (
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,7 +124,7 @@ type Bucket struct {
 	Series map[string]Counts `json:"series,omitempty"`
 }
 
-// bucket is the internal accumulator. It keeps all three groupings at once so
+// bucket is the internal accumulator. It keeps all four groupings at once so
 // the group= parameter is a read-time choice: an operator cycling groupings in a
 // TUI sees the same history from each angle, instead of each grouping only
 // having data from the moment it was first selected.
@@ -662,8 +663,17 @@ const maxLabelLen = 96
 //
 // net.SplitHostPort, not a Cut on ":": an IPv6 literal is full of colons, and
 // splitting on the first turns "[::1]:9094" into "[". SplitHostPort errors on an
-// authority carrying no port at all (a bare host, or a bare "[::1]"), which is
-// not a problem — that input is already the label, so it is returned unchanged.
+// authority carrying no port at all, so that case falls through to the input.
+//
+// The brackets then have to come off separately, or IPv6 splits the very way this
+// function exists to prevent: SplitHostPort unwraps them when it succeeds
+// ("[::1]:9094" -> "::1"), leaving a port-less "[::1]" as its own band for the
+// same upstream.
+//
+// A port with no host (":443") reduces to "", which the caller treats as absent
+// and folds into the renderer's "(unlabelled)" remainder. That is the right
+// answer for an authority that names no host: there is nothing to label it with,
+// and inventing a band for it would be worse than counting it as unattributed.
 //
 // The same reduction exists in three listeners and in abctl's events pane, each
 // private to its package; this is a fourth rather than a shared helper because
@@ -673,7 +683,9 @@ func hostLabel(authority string) string {
 	if h, _, err := net.SplitHostPort(authority); err == nil {
 		return h
 	}
-	return authority
+	// No port: still strip brackets, so a bare "[::1]" matches the "::1" that the
+	// ported form reduces to.
+	return strings.TrimSuffix(strings.TrimPrefix(authority, "["), "]")
 }
 
 func truncateLabel(s string) string {

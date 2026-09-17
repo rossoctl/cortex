@@ -22,7 +22,7 @@ import (
 //	            arithmetic — see usage.fold for why latency in particular cannot
 //	            be folded naively.
 //	session     session ID; omit for all sessions combined
-//	group       none (default), method, status, plugin
+//	group       none (default), method, status, plugin, host
 //
 // UNAUTHENTICATED, like every endpoint on this listener. Bind it on in-cluster
 // addresses only, never behind ingress — the trust model is documented in

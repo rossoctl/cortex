@@ -725,8 +725,15 @@ func TestRecord_HostGroupingSkipsEmptyHost(t *testing.T) {
 func TestRecord_HostGroupingHandlesIPv6(t *testing.T) {
 	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)
 	for _, tc := range []struct{ authority, want string }{
+		// Every spelling of one address must be one band. SplitHostPort unwraps the
+		// brackets when it finds a port, so the port-less form has to be unwrapped
+		// too — otherwise "[::1]" is its own series for the host "::1", which is the
+		// split this helper exists to prevent.
 		{"[::1]:9094", "::1"},
-		{"[::1]", "[::1]"},
+		{"[::1]", "::1"},
+		{"::1", "::1"},
+		{"[2001:db8::1]:443", "2001:db8::1"},
+		{"[2001:db8::1]", "2001:db8::1"},
 		{"127.0.0.1:47600", "127.0.0.1"},
 	} {
 		t.Run(tc.authority, func(t *testing.T) {
@@ -737,6 +744,37 @@ func TestRecord_HostGroupingHandlesIPv6(t *testing.T) {
 			b := a.Snapshot(time.Minute, BucketWidth, "", GroupHost).Buckets[0]
 			if _, ok := b.Series[tc.want]; !ok {
 				t.Errorf("want key %q; got %v", tc.want, keys(b.Series))
+			}
+		})
+	}
+}
+
+// An authority that carries a port but no host reduces to nothing, so it is
+// treated as absent and joins the "(unlabelled)" remainder rather than keying a
+// band with no name. Reachable from the Host header, so it is worth pinning: the
+// point is that Totals stay whole while the series does not gain a blank key.
+func TestRecord_HostGroupingSkipsAPortWithNoHost(t *testing.T) {
+	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)
+	for _, authority := range []string{":443", ":", "[]"} {
+		t.Run(authority, func(t *testing.T) {
+			a := New(WithClock(fixedClock(now)))
+			good := respEvent(now, 200, time.Second, "", 0)
+			good.Host = "api.anthropic.com"
+			a.Record("s1", good)
+			bad := respEvent(now, 200, time.Second, "", 0)
+			bad.Host = authority
+			a.Record("s1", bad)
+
+			snap := a.Snapshot(time.Minute, BucketWidth, "", GroupHost)
+			if snap.Totals.Requests != 2 {
+				t.Fatalf("Totals.Requests = %d, want 2 — the request still happened", snap.Totals.Requests)
+			}
+			b := snap.Buckets[0]
+			if _, ok := b.Series[""]; ok {
+				t.Error(`a "" key would render as a nameless band`)
+			}
+			if len(b.Series) != 1 {
+				t.Errorf("series = %v, want only the real host", keys(b.Series))
 			}
 		})
 	}
