@@ -75,11 +75,13 @@ type UsageSettings struct {
 	// entry in usageWindows.
 	Window string `yaml:"window,omitempty"`
 	// Group is the breakdown, by the same string the /v1/usage group parameter
-	// takes: none, method, status, plugin or host. Empty means ungrouped.
+	// takes. Empty means ungrouped.
 	//
-	// Not validated against a list here: usage.ParseGroup already owns which values
-	// are legal, and duplicating that set would be a second place to update when a
-	// grouping is added.
+	// Deliberately not enumerated here, and not validated against a local list:
+	// usage.ParseGroup owns which values are legal, and it accepts more than the
+	// [b] cycle visits — a hand-edited file naming one of those is honoured. A copy
+	// of the set here would be a second place to update, and would have been wrong
+	// already: the API gained groupings after this comment would have been written.
 	Group string `yaml:"group,omitempty"`
 }
 

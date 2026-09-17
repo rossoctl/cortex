@@ -545,7 +545,7 @@ filter: github-tool
 | `filter` | string | empty | the active filter |
 | `usage.metric` | string | `tokens` | usage-pane metric: `tokens`, `requests`, `errors` or `latency` |
 | `usage.window` | string | `10m0s` | usage-pane window: `10m0s`, `1h0m0s` or `6h0m0s` |
-| `usage.group` | string | `none` | usage-pane breakdown: `none`, `status`, `method`, `plugin` or `host` |
+| `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may name any grouping `/v1/usage` accepts |
 
 List a column only to change it — the twelve are all visible until you hide one, and
 an unrecognised name or sort column is ignored. Inside an entry, always write
