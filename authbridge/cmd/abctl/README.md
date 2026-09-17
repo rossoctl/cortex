@@ -326,11 +326,18 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   latency renders as mean-with-whiskers (`┼` mean, `┬`/`┴` ±1σ), because
   a bar encodes magnitude from a zero baseline and mean latency has no
   meaningful zero. `b` cycles the breakdown, which stacks each bar by
-  status, model or plugin — each series marked with a letter derived
+  status, model, plugin or host — each series marked with a letter derived
   from its name (`s` for claude-sonnet-5) on a coloured ground, so the
   chart reads without colour too. Statuses ≥400 render red. `b` is not
   offered for latency: the aggregator holds no per-label latency, so
   there is no per-status mean to plot.
+
+  The host breakdown answers "where is my traffic going" — one band per
+  upstream, so two agents sharing one Cortex are told apart by the hosts
+  they call. Ports are folded in, so a bridged `api.anthropic.com:443`
+  and the request inside that tunnel are one band. A request the listener
+  recorded no host for joins the `(unlabelled)` remainder. Hosts are more
+  numerous than models or statuses, so expect `(other)` here sooner.
 
   An idle bucket shows `0` rather than an empty column, so a gap in
   traffic is distinguishable from traffic too small to plot. A bucket

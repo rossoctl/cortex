@@ -174,7 +174,7 @@ func TestUsageState_CyclesWrap(t *testing.T) {
 func TestUsageState_GroupCycleVisitsAllAndReturns(t *testing.T) {
 	var u usageState // zero value is GroupNone ("")
 
-	want := []usage.Group{usage.GroupStatus, usage.GroupMethod, usage.GroupPlugin, usage.GroupNone}
+	want := []usage.Group{usage.GroupStatus, usage.GroupMethod, usage.GroupPlugin, usage.GroupHost, usage.GroupNone}
 	for i, w := range want {
 		u.cycleGroup()
 		if u.group != w {

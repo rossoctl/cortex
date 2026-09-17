@@ -79,6 +79,7 @@ func TestHandleUsage_ParamsReachSnapshot(t *testing.T) {
 		Phase:      pipeline.SessionResponse,
 		StatusCode: 200,
 		Duration:   time.Second,
+		Host:       "api.anthropic.com",
 		Inference:  &pipeline.InferenceExtension{Model: "claude-sonnet-5", TotalTokens: 300},
 	})
 
@@ -112,6 +113,28 @@ func TestHandleUsage_ParamsReachSnapshot(t *testing.T) {
 	}
 	if !found {
 		t.Error("group=method did not key the series by model")
+	}
+
+	// group=host: the same request, keyed by the upstream it went to. Asserted
+	// through the real handler because the bucket's series lookup returns nil for a
+	// group it does not know, and abctl falls back to ungrouped bars on an empty
+	// series set — so a missing arm looks like "this host had no traffic" rather
+	// than like an error.
+	_, body = fetchUsage(t, ts.URL, "?group=host")
+	if err := json.Unmarshal([]byte(body), &snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.Group != usage.GroupHost {
+		t.Errorf("group = %q, want host", snap.Group)
+	}
+	found = false
+	for _, b := range snap.Buckets {
+		if _, ok := b.Series["api.anthropic.com"]; ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("group=host did not key the series by host")
 	}
 
 	// session: scoping must filter, and echo back which session it covers.

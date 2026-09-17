@@ -30,13 +30,16 @@ import (
 //
 // This response is less sensitive than /v1/sessions, which serves raw prompts,
 // completions and tool results. It carries no message content at all: only
-// counts, timings and cost. But it is not free of information either, and two
+// counts, timings and cost. But it is not free of information either, and three
 // groupings leak deployment shape to anyone who can reach the port:
 //
 //   - group=method exposes the model names in use (claude-sonnet-5, and any
 //     internal or preview model an operator is testing against).
 //   - group=plugin exposes the active pipeline composition — though /v1/pipeline
 //     already publishes that in full, so this adds no new exposure.
+//   - group=host exposes which upstreams this workload calls (the LLM endpoint,
+//     each MCP tool, any internal service), which sketches the deployment's
+//     dependency graph.
 //
 // Cost figures also disclose spend, which is business-sensitive in a way raw
 // request counts are not. None of this changes the listener's existing posture;

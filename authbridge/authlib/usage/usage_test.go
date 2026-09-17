@@ -329,7 +329,7 @@ func TestRecord_IgnoresRequestPhase(t *testing.T) {
 	}
 }
 
-// All three groupings accumulate simultaneously, so an operator cycling the
+// All four groupings accumulate simultaneously, so an operator cycling the
 // group parameter sees the same history from each angle rather than each
 // grouping starting empty when first selected.
 func TestSnapshot_AllGroupingsPopulatedFromOnePass(t *testing.T) {
@@ -337,6 +337,7 @@ func TestSnapshot_AllGroupingsPopulatedFromOnePass(t *testing.T) {
 	a := New(WithClock(fixedClock(now)))
 
 	e := respEvent(now, 200, time.Second, "claude-sonnet-5", 500)
+	e.Host = "api.anthropic.com"
 	e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-parser"}}}
 	a.Record("s1", e)
 
@@ -347,6 +348,7 @@ func TestSnapshot_AllGroupingsPopulatedFromOnePass(t *testing.T) {
 		{GroupMethod, "claude-sonnet-5"},
 		{GroupStatus, "200"},
 		{GroupPlugin, "inference-parser"},
+		{GroupHost, "api.anthropic.com"},
 	} {
 		b := a.Snapshot(time.Minute, BucketWidth, "", tc.group).Buckets[0]
 		if _, ok := b.Series[tc.key]; !ok {
@@ -657,5 +659,85 @@ func TestRecord_LabelLengthIsCapped(t *testing.T) {
 		if len(k) > maxLabelLen {
 			t.Errorf("retained a %d-byte label, cap is %d", len(k), maxLabelLen)
 		}
+	}
+}
+
+// One upstream must be one band. A CONNECT tunnel-open records the authority
+// from the request line, port included, while the request parsed inside that
+// tunnel records the bare host — so without stripping, "api.anthropic.com:443"
+// and "api.anthropic.com" are two series for one host, and neither carries the
+// real total.
+func TestRecord_HostGroupingStripsThePort(t *testing.T) {
+	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+
+	for _, h := range []string{"api.anthropic.com:443", "api.anthropic.com", "api.anthropic.com:443"} {
+		e := respEvent(now, 200, time.Second, "claude-sonnet-5", 100)
+		e.Host = h
+		a.Record("s1", e)
+	}
+
+	b := a.Snapshot(time.Minute, BucketWidth, "", GroupHost).Buckets[0]
+	if len(b.Series) != 1 {
+		t.Fatalf("one host must be one series; got %v", keys(b.Series))
+	}
+	got, ok := b.Series["api.anthropic.com"]
+	if !ok {
+		t.Fatalf("series not keyed by the bare host; got %v", keys(b.Series))
+	}
+	if got.Requests != 3 {
+		t.Errorf("Requests = %d, want 3 — the band must carry every request to that host", got.Requests)
+	}
+}
+
+// An event the listener left host-less must not invent a band. It stays out of
+// the series and abctl renders the difference as "(unlabelled)", which is what
+// the other groupings already do for events they skip.
+func TestRecord_HostGroupingSkipsEmptyHost(t *testing.T) {
+	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+
+	withHost := respEvent(now, 200, time.Second, "claude-sonnet-5", 100)
+	withHost.Host = "github-tool-mcp"
+	a.Record("s1", withHost)
+	a.Record("s1", respEvent(now, 200, time.Second, "claude-sonnet-5", 100)) // Host unset
+
+	snap := a.Snapshot(time.Minute, BucketWidth, "", GroupHost)
+	if snap.Totals.Requests != 2 {
+		t.Fatalf("Totals.Requests = %d, want 2", snap.Totals.Requests)
+	}
+	b := snap.Buckets[0]
+	if len(b.Series) != 1 {
+		t.Fatalf("host-less event must not add a band; got %v", keys(b.Series))
+	}
+	if _, ok := b.Series[""]; ok {
+		t.Error(`a "" key would render as a nameless band`)
+	}
+	// The banded total is deliberately less than the bucket total: that shortfall
+	// is what the renderer names "(unlabelled)".
+	if got := b.Series["github-tool-mcp"].Requests; got != 1 {
+		t.Errorf("Requests = %d, want 1", got)
+	}
+}
+
+// IPv6 authorities must survive: SplitHostPort understands the bracketed form,
+// and a bare literal with no port is already the label.
+func TestRecord_HostGroupingHandlesIPv6(t *testing.T) {
+	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ authority, want string }{
+		{"[::1]:9094", "::1"},
+		{"[::1]", "[::1]"},
+		{"127.0.0.1:47600", "127.0.0.1"},
+	} {
+		t.Run(tc.authority, func(t *testing.T) {
+			a := New(WithClock(fixedClock(now)))
+			e := respEvent(now, 200, time.Second, "", 0)
+			e.Host = tc.authority
+			a.Record("s1", e)
+			b := a.Snapshot(time.Minute, BucketWidth, "", GroupHost).Buckets[0]
+			if _, ok := b.Series[tc.want]; !ok {
+				t.Errorf("want key %q; got %v", tc.want, keys(b.Series))
+			}
+		})
 	}
 }

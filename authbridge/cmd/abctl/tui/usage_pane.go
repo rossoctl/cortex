@@ -122,6 +122,8 @@ func (u *usageState) cycleGroup() {
 		u.group = usage.GroupMethod
 	case usage.GroupMethod:
 		u.group = usage.GroupPlugin
+	case usage.GroupPlugin:
+		u.group = usage.GroupHost
 	default:
 		u.group = usage.GroupNone
 	}

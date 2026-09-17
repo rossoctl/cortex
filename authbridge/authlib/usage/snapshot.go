@@ -15,6 +15,7 @@ const (
 	GroupMethod Group = "method"
 	GroupStatus Group = "status"
 	GroupPlugin Group = "plugin"
+	GroupHost   Group = "host"
 )
 
 // ParseGroup validates a group parameter. Empty means GroupNone.
@@ -28,12 +29,14 @@ func ParseGroup(s string) (Group, error) {
 		return GroupStatus, nil
 	case GroupPlugin:
 		return GroupPlugin, nil
+	case GroupHost:
+		return GroupHost, nil
 	}
 	// Deliberately does NOT echo the caller's value: this message is returned
 	// over an unauthenticated endpoint, and reflecting arbitrary query input
 	// into a response body is how a reflected-content issue starts. The valid
 	// set is short enough that naming it is more useful than quoting the input.
-	return "", errors.New("unknown group (want none, method, status or plugin)")
+	return "", errors.New("unknown group (want none, method, status, plugin or host)")
 }
 
 // Snapshot is the wire shape of GET /v1/usage.
@@ -326,6 +329,8 @@ func (b *bucket) series(g Group) map[string]Counts {
 		src = b.byStatus
 	case GroupPlugin:
 		src = b.byPlugin
+	case GroupHost:
+		src = b.byHost
 	default:
 		return nil
 	}

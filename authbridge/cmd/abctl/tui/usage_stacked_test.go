@@ -87,6 +87,19 @@ func TestSeriesLetter(t *testing.T) {
 		{"429", '4'},
 		{"(other)", 'o'},
 		{"", '?'},
+		// Hosts, since group=host feeds this the same way. The letters are weaker
+		// mnemonics than a model name's: seriesLetter splits on "." too, so
+		// "api.anthropic.com" yields 'a' from the leading "api" rather than from
+		// the vendor, and an in-cluster FQDN yields the letter of whatever token
+		// follows a vendor-looking first one. Pinned as it is, not as it might
+		// ideally be — assignLetters still guarantees distinct letters within one
+		// chart, and the legend always names the host in full.
+		{"api.anthropic.com", 'a'},
+		{"api.openai.com", 'a'}, // same letter as above; assignLetters breaks the tie
+		{"github-tool-mcp", 'g'},
+		{"litellm.svc.cluster.local", 's'}, // "litellm" is a vendor token, so skipped
+		{"localhost", 'l'},
+		{"10.0.0.5", '1'}, // no letters: first character, as with a status code
 	} {
 		if got := seriesLetter(tc.label); got != tc.want {
 			t.Errorf("seriesLetter(%q) = %q, want %q", tc.label, string(got), string(tc.want))
@@ -141,6 +154,7 @@ func TestRenderStacked_ErrorSeriesDecision(t *testing.T) {
 		// chart must not turn red because a label happens to look like a status.
 		{"429", usage.GroupMethod, false},
 		{"500", usage.GroupPlugin, false},
+		{"429", usage.GroupHost, false}, // a host is never a status, whatever it is named
 		{"claude-sonnet-5", usage.GroupMethod, false},
 	} {
 		if got := isErrorSeries(tc.label, tc.group); got != tc.want {
