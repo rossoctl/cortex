@@ -27,12 +27,18 @@ var sessionTotals = []int{
 // nothing narrower, while the argument for compacting rather than widening the column is
 // precisely that the fit budget matters.
 //
-// 40 columns is the floor this can promise: formatCompact's widest output is six runes
+// 44 columns is the floor this can promise: formatCompact's widest output is six runes
 // ("999.9M"), so a cell of six or more always holds it. Below that the cell is five and
 // the value cannot fit however it is formatted — recorded by the last case rather than
 // left as a surprise.
+//
+// That floor was 40 until the TITLE column was added. It is not the formatter that moved:
+// one more column costs its own width plus bubbles' two of padding out of the same budget,
+// so TOKENS reaches six four columns later than it used to. Between 40 and 43 a total now
+// truncates where it once fitted — the accepted price of naming the rows, at widths where
+// the id itself is already down to four or five characters.
 func TestSessionTokens_FitsEveryFittedWidth(t *testing.T) {
-	for _, term := range []int{200, 90, 60, 50, 46, 42, 40} {
+	for _, term := range []int{200, 90, 60, 50, 46, 44} {
 		width := 0
 		for _, c := range fitTableColumns(sessionsColumns(), term) {
 			if c.Title == "TOKENS" {
@@ -52,13 +58,18 @@ func TestSessionTokens_FitsEveryFittedWidth(t *testing.T) {
 	}
 }
 
-// The floor, stated rather than discovered: at 36 columns the cell is five wide and
+// The floor, stated rather than discovered: at 43 columns the cell is five wide and
 // formatCompact's widest output is six, so it truncates. That is the fit budget running
 // out, not the formatter — worth a test so a future change to either is measured against
 // it instead of assumed.
-func TestSessionTokens_BelowFortyColumnsTheCellIsTooNarrow(t *testing.T) {
+//
+// 43 rather than 36 because adding a column moved the floor; see the note on
+// TestSessionTokens_FitsEveryFittedWidth. Asserting at the width just below the floor,
+// rather than at a fixed narrow number, is what makes this test track the boundary instead
+// of a point far below it.
+func TestSessionTokens_BelowTheFloorTheCellIsTooNarrow(t *testing.T) {
 	width := 0
-	for _, c := range fitTableColumns(sessionsColumns(), 36) {
+	for _, c := range fitTableColumns(sessionsColumns(), 43) {
 		if c.Title == "TOKENS" {
 			width = c.Width
 		}

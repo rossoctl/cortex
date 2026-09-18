@@ -204,13 +204,37 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 	return renderBars(snap.Buckets, m, width)
 }
 
+// usageScopeMax is the room the header line can give the scope label at this width.
+//
+// The rest of that line — " USAGE — ", the window, the resolution, the metric and the
+// grouping — runs to about 50 columns, so the label gets what is left. Floored at 24 so a
+// narrow terminal still shows the end of the label rather than nothing, and left unbounded
+// above: a wide terminal has the room, and the label is the only thing on the line an
+// operator cannot reconstruct from the pane itself.
+func usageScopeMax(width int) int {
+	const otherFields = 50
+	if room := width - otherFields; room > 24 {
+		return room
+	}
+	return 24
+}
+
 // renderUsage draws the pane.
 func (m *model) renderUsage(width, height int) string {
 	var b strings.Builder
 
 	scope := "all sessions"
 	if m.usage.session != "" {
-		scope = "session: " + m.usage.session
+		// No "session: " prefix: the pane is reached by pressing u on a session, and the
+		// label already reads as one. Titled, it said "session: <uuid>" where the operator
+		// had just selected a name — the id restated, and the name nowhere.
+		//
+		// Clipped, unlike the id it replaces. This line is one unwrapped Sprintf, and it
+		// already overflowed an 80-column terminal by 13 with a bare id — adding a title
+		// would have taken that to 78 over, wrapping the header and pushing the chart down
+		// a line. Truncated from the left for the reason sessionTitleCell is: the tail of
+		// the label carries the leaf directory and the whole id.
+		scope = truncLeft(m.sessionLabel(m.usage.session), usageScopeMax(width))
 	}
 	window, resolution := m.usage.window()
 	// The header must not claim a breakdown the chart is not showing. Latency has

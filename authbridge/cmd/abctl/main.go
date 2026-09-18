@@ -36,7 +36,7 @@ var version = "dev"
 // One list rather than two: the unknown-subcommand error used to hardcode its own
 // copy, so adding a subcommand meant editing both and forgetting one left a typo
 // getting an incomplete list. A test holds the usage block to this slice.
-var dispatchableSubcommands = []string{"observe", "service", "configure", "claude-code", "exec", "tools", "pricing", "cost"}
+var dispatchableSubcommands = []string{"observe", "service", "configure", "claude-code", "exec", "tools", "pricing", "cost", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -62,6 +62,8 @@ Usage:
   abctl tools <action>       tool-definition costs: scan
   abctl pricing              show the model rates in effect (--host <gateway>)
   abctl cost                 what your agents have spent (--window today|7d|1h)
+  abctl experimental <action>
+                             unstable helpers: read-claude-sessions
 
   abctl claude-code <action> deprecated: same as "abctl configure claude-code".
                              Still works; prefer the new spelling.
@@ -85,6 +87,8 @@ func main() {
 		switch os.Args[1] {
 		case "tools":
 			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))
+		case "experimental":
+			os.Exit(runExperimental(os.Args[2:], os.Stdout, os.Stderr))
 		case "pricing":
 			os.Exit(runPricing(os.Args[2:], os.Stdout, os.Stderr))
 		case "cost":

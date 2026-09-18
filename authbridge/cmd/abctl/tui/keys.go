@@ -1023,9 +1023,19 @@ func (m *model) layout() {
 	// than an 80-column terminal, wrapping every row. Applied from the constructors' own
 	// definitions each time rather than to the live columns, so widening the terminal back up
 	// restores what a narrower one took away.
-	m.sessionsTbl.SetColumns(fitTableColumns(sessionsColumns(), m.width))
+	// Through sessionsColumnsFor, not fitTableColumns directly: TITLE also GROWS into the
+	// slack a wide terminal leaves, which fitTableColumns alone never does.
+	m.sessionsTbl.SetColumns(sessionsColumnsFor(m.width))
 	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
 	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
+
+	// The TITLE cells were truncated to fit the width the columns had a moment ago, so the
+	// rows have to be rebuilt now that the width has changed — nothing else reconciles them,
+	// and a WindowSizeMsg reaches layout() without touching the rows. Skipped when the table
+	// is empty so this does not run before the first session list has arrived.
+	if len(m.sessionsTbl.Rows()) > 0 {
+		m.rebuildSessionsTable()
+	}
 
 	// Through setTableHeight, not SetHeight: a height change re-windows the rows
 	// while the viewport keeps the offset it had for the old height, and these

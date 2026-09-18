@@ -325,11 +325,20 @@ type model struct {
 	// Data caches.
 	sessions []session.SessionSummary
 	events   map[string][]pipeline.SessionEvent // sessionID → ring buffer
-	eventCt  uint64                             // monotonic counter
-	lastTick time.Time
-	lastCt   uint64
-	rate     float64
-	drops    uint64
+	// sessionsData is what an agent knows about its own sessions that the proxy does
+	// not — a title, mostly. Read once at startup from ~/.cortex/session-metadata.json,
+	// which `abctl experimental read-claude-sessions` writes; empty when that has never
+	// run, which renders as an empty TITLE column rather than as a failure.
+	//
+	// Keyed by the same session id the proxy buckets on, so a lookup is direct. Nil-safe
+	// by construction: a read on a nil map yields the zero SessionMetadata, so an
+	// unharvested session, an unknown id and an absent file all render the same.
+	sessionsData map[string]SessionMetadata
+	eventCt      uint64 // monotonic counter
+	lastTick     time.Time
+	lastCt       uint64
+	rate         float64
+	drops        uint64
 
 	// Connection status.
 	connState connStateInfo
@@ -587,6 +596,10 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 	// re-entering the pane must not reset a choice made during the session.
 	usageMetric, usageWindowIdx, usageGroup := Settings.usageSelection()
 
+	// Read once here, not per refresh: the file changes only when someone runs the
+	// harvester, and the sessions list refreshes every two seconds.
+	sessionMeta := loadSessionMetadataForModel()
+
 	return &model{
 		endpoint:     c.Endpoint(),
 		client:       c,
@@ -599,6 +612,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		sortDesc:     sortDesc,
 		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
 		filter:       Settings.Filter,
+		sessionsData: sessionMeta,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
@@ -1528,13 +1542,17 @@ func (m *model) paneView() string {
 		title = fmt.Sprintf("abctl · %s · %s", m.endpoint, viewTabs(paneSessions))
 		body = m.sessionsTbl.View()
 	case paneEvents:
-		title = fmt.Sprintf("abctl · %s", trunc(m.selectedSess, 36))
+		// Fitted to the terminal rather than to a fixed 36: a bare UUID is 36 characters, so
+		// the old constant truncated a titled session ALWAYS and an untitled one never —
+		// and it clipped "0e61b82d-8578-4d16-a18e…" on a 200-column terminal with room to
+		// spare. sessionHeader measures the room actually available.
+		title = m.sessionHeader(m.selectedSess, "")
 		body = m.eventsTbl.View()
 		if banner := identityBanner(m.events[m.selectedSess], m.width); banner != "" {
 			body = banner + "\n" + body
 		}
 	case paneDetail:
-		title = fmt.Sprintf("abctl · %s · event", trunc(m.selectedSess, 24))
+		title = m.sessionHeader(m.selectedSess, "event")
 		body = m.detailVp.View()
 	case panePipeline:
 		title = fmt.Sprintf("abctl · %s · %s", m.endpoint, viewTabs(panePipeline))
@@ -1577,6 +1595,36 @@ func (m *model) paneView() string {
 		body,
 		m.footerView(),
 	)
+}
+
+// sessionHeader renders a session-scoped title bar: "abctl · <label>" plus an optional
+// suffix ("event"), clipped only if the terminal genuinely cannot hold it.
+//
+// Clipping against m.width rather than a per-pane constant. The constants it replaced were 36
+// and 24 — 36 being exactly the length of a UUID, so the events header truncated every titled
+// session and no untitled one, while the detail header clipped the id itself at 24 on a
+// terminal of any size. Neither number was a fact about the screen.
+//
+// The label is clipped from the LEFT, so what survives a narrow terminal is the id and the end
+// of the title, not the "abctl · " that is on every screen anyway. Same reasoning as
+// sessionTitleCell: the distinguishing end of both a path and a UUID-suffixed label is the
+// right one.
+func (m *model) sessionHeader(id, suffix string) string {
+	label := m.sessionLabel(id)
+	head := "abctl · "
+	tail := ""
+	if suffix != "" {
+		tail = " · " + suffix
+	}
+	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
+	// it: the header is the only thing on screen naming which session these events belong to.
+	if room := m.width - lipgloss.Width(head) - lipgloss.Width(tail); room > 0 {
+		if room < 12 {
+			room = 12
+		}
+		label = truncLeft(label, room)
+	}
+	return head + label + tail
 }
 
 // viewTabs renders the top-level tab strip "[Sessions] Pipeline" with the

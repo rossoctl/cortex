@@ -83,10 +83,14 @@ func TestSessionsPicker_ListsCachedOnlySessions(t *testing.T) {
 		t.Fatal("no picker row for a session whose events are still cached — " +
 			"the retained history is unreachable")
 	}
-	if row[2] != "3" {
-		t.Errorf("row event count = %q, want %q", row[2], "3")
+	// By column title, not by a hardcoded index: rows are built positionally, so the
+	// literal 2 and 4 this used to carry both moved when TITLE was inserted after ID —
+	// and an index that is merely stale keeps asserting, on the wrong cell, quietly.
+	// Same reasoning as sessions_tokens_test.go's cellByTitle.
+	if got := sessionsCell(t, m, row, "EVENTS"); got != "3" {
+		t.Errorf("row event count = %q, want %q", got, "3")
 	}
-	if row[4] != "cached" {
+	if got := sessionsCell(t, m, row, "ACTIVE"); got != "cached" {
 		t.Errorf("row not marked as cached-only: %v", row)
 	}
 }
@@ -388,5 +392,25 @@ func sessionsEventsCell(t *testing.T, m *model, id string) string {
 		return strings.TrimSpace(r[col])
 	}
 	t.Fatalf("no sessions row for %q", id)
+	return ""
+}
+
+// sessionsCell reads one cell of a sessions row by its column title.
+//
+// The sessions table is built positionally, so every index in a test here is a fact about
+// the column ORDER rather than about the cell it means to check — and inserting a column
+// leaves such an index pointing at a neighbour, still asserting and still passing. Looking
+// the title up costs a line and removes that whole failure mode.
+func sessionsCell(t *testing.T, m *model, row []string, title string) string {
+	t.Helper()
+	for i, c := range m.sessionsTbl.Columns() {
+		if c.Title == title {
+			if i >= len(row) {
+				t.Fatalf("row has %d cells, no index %d for column %q: %v", len(row), i, title, row)
+			}
+			return row[i]
+		}
+	}
+	t.Fatalf("no %q column in the sessions table", title)
 	return ""
 }
