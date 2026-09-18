@@ -260,6 +260,12 @@ func main() {
 	// Same per-session bucketing as authbridge-proxy: a client-supplied session
 	// id beats the global ActiveSession(), so concurrent agent sessions stay
 	// separable. Falls back to the previous behavior when absent.
+	//
+	// The default list is shared with the laptop binary, so it applies in-cluster
+	// too — where the headers are client-asserted by whatever can reach this proxy
+	// rather than by an agent the operator started. session.id_headers: [] is the
+	// off switch wherever attribution is a trust boundary; see
+	// session.IDFromHeaders.
 	fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
 	rpHTTP, err := runtimeutil.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
 	if err != nil {

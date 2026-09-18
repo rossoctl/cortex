@@ -19,6 +19,30 @@ import (
 // silently fatal — see IDFromHeaders for why we read the header only.
 const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 
+// BobSessionHeader is the request header the Bob coding agent sets to name the
+// task a request belongs to. Two differences from ClaudeCodeSessionHeader are
+// worth knowing before reading a bucket keyed on it: it is not verified against a
+// released client, and the value is a task id rather than a session uuid — so it
+// is stable for as long as Bob reuses that task, which may span what a user would
+// call several sessions, or none.
+//
+// UNNAMESPACED, and in the default list, which is the one property here worth a
+// second thought. X-Task-Id is a name any client might plausibly send for its own
+// reasons, and nothing ties it to Bob — so unrelated traffic that happens to use
+// it captures a bucket named after its value, rather than falling through to
+// ActiveSession() as it did before this header was consulted. That is a
+// mis-grouping, not an escalation: IDFromHeaders already treats every id as
+// client-asserted and untrusted (see its TRUST section), and a caller able to
+// send this header could equally send the Claude Code one. Accepted because the
+// alternative — Bob traffic silently pooling in the shared bucket — is the
+// problem this solves, and session.id_headers is the per-deployment override
+// either way.
+//
+// Canonical HTTP casing is required here even though IDFromHeaders reads via
+// http.Header.Get, which canonicalizes: tests construct http.Header map literals
+// directly from these constants, and a raw map literal does not.
+const BobSessionHeader = "X-Task-Id"
+
 // IDFromHeaders returns the first usable session id found in h among names,
 // in order, or "" when none is present. Callers treat "" as "fall back to
 // whatever bucketing you did before" — never as an error, so a client that

@@ -882,7 +882,8 @@ func main() {
 		// Per-session bucketing. Without it every coding-agent session on the
 		// machine records into one shared bucket: two Claude Code windows
 		// interleave and per-session cost cannot be computed at all. Defaults to
-		// the Claude Code session header; session.id_headers: [] turns it off.
+		// the supported agents' session headers (config.SessionIDHeaders);
+		// session.id_headers: [] turns it off.
 		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
 		fpHTTP, herr := runtimeutil.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
 		if herr != nil {

@@ -63,10 +63,14 @@ different repos are two buckets, and resuming a session (`claude --resume`) file
 into the original one rather than starting a new one.
 
 This works because Claude Code puts `X-Claude-Code-Session-Id` on every inference
-request. Traffic that carries no such header falls back to the previous behavior — the
-most recently active session, or the `default` bucket. In practice `default` collects
-Claude Code's own connectivity probe (`HEAD /api/hello`) and anything else that egresses
-through the proxy without announcing a session.
+request. Bob, our internal coding agent (not the `bob` demo user), is grouped the same
+way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
+session uuid, so one bucket covers however long Bob reuses that task. Note that
+`X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
+under its value too. Traffic that carries no such header falls back to the previous
+behavior — the most recently active session, or the `default` bucket. In practice
+`default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
+else that egresses through the proxy without announcing a session.
 
 Some limitations worth knowing:
 
@@ -74,8 +78,9 @@ Some limitations worth knowing:
   header, so they are filed under whichever session was most recently active. That is
   right when sessions take turns and can misattribute when two are genuinely
   interleaved. Inference traffic — where the tokens and the cost are — is always exact.
-- **Other agents need to be named.** Set `session.id_headers` to a list of headers to
-  consult in precedence order if you run a client with its own session header. An
+- **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
+  to a list of headers to consult in precedence order if you run a client with its own
+  session header; naming any replaces the built-in list rather than adding to it. An
   explicit empty list (`session.id_headers: []`) turns grouping off and puts everything
   back in one bucket.
 - **Bucket names are taken on trust.** The id comes from the client's own header and is

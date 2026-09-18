@@ -511,17 +511,21 @@ func TestSessionConfig_SessionEnabled(t *testing.T) {
 
 // TestSessionConfig_SessionIDHeaders covers the nil-versus-empty distinction
 // that decides whether per-session bucketing is on. Unset must default to the
-// Claude Code header — the feature is useless to the operator who never heard
-// of it if they have to name a header first. An explicit empty list is the off
-// switch, mirroring how tls_bridge.passthrough_hosts treats an empty list as a
-// deliberate instruction rather than "unset".
+// headers of the agents we support — the feature is useless to the operator who
+// never heard of it if they have to name a header first. An explicit empty list
+// is the off switch, mirroring how tls_bridge.passthrough_hosts treats an empty
+// list as a deliberate instruction rather than "unset".
+//
+// The default list is asserted in order, because the order is a precedence rule
+// over clients: a request carrying both headers must bucket under the Claude
+// Code id. Adding an agent appends to this list rather than reordering it.
 func TestSessionConfig_SessionIDHeaders(t *testing.T) {
 	tests := []struct {
 		name string
 		cfg  SessionConfig
 		want []string
 	}{
-		{"unset defaults to the Claude Code header", SessionConfig{}, []string{session.ClaudeCodeSessionHeader}},
+		{"unset defaults to the supported agent headers, Claude Code first", SessionConfig{}, []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}},
 		{"explicit empty list disables bucketing", SessionConfig{IDHeaders: []string{}}, nil},
 		{"explicit list is used verbatim", SessionConfig{IDHeaders: []string{"X-Other-Agent-Session"}}, []string{"X-Other-Agent-Session"}},
 	}
