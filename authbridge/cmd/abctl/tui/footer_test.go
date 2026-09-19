@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // statusRow returns the first line of the footer — the status row, where the
@@ -68,6 +69,13 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 // sorted column may be one fitColumns dropped and there is then no header on screen
 // carrying the glyph.
 func TestFooterShowsActiveSort(t *testing.T) {
+	// The indicator is styleWarn-rendered and CI has no TTY, so without forcing a
+	// profile every assertion below runs against unstyled text and the styled path —
+	// the one users see — is never exercised. stripANSI then does real work.
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+
 	for _, tc := range []struct {
 		name    string
 		pane    paneID

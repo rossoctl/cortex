@@ -38,17 +38,21 @@ func mkSeriesBuckets(perBucket []map[string]int64) []usage.Bucket {
 //
 // By CONTENT, not by width: a test that hardcoded "wide terminals have one extra line"
 // would silently go wrong the day the caption's width gate moves, and it would go wrong
-// in the direction of asserting against the caption itself rather than the chart. The
-// caption is the only line with no bar glyphs and no axis rule, which is what this
-// recognises.
+// in the direction of asserting against the caption itself rather than the chart.
+//
+// The vocabulary is DERIVED from usageMetric.unit rather than restated, so renaming a
+// unit cannot leave this helper silently matching nothing — which would not fail here,
+// it would fail in whichever test indexes a row by position and quietly gets the
+// caption instead of the top plot row.
 func plotLines(lines []string) []string {
 	if len(lines) == 0 {
 		return lines
 	}
 	first := strings.TrimSpace(stripANSI(lines[0]))
-	switch first {
-	case "tok", "req", "err", "ms", "USD":
-		return lines[1:]
+	for m := usageMetric(0); m < usageMetricCount; m++ {
+		if first == m.unit() {
+			return lines[1:]
+		}
 	}
 	return lines
 }

@@ -48,7 +48,7 @@ const (
 	metricLatency
 	metricCost
 
-	// usageMetricCount bounds the [t] cycle. Kept adjacent to the iota block so
+	// usageMetricCount bounds the [m] cycle. Kept adjacent to the iota block so
 	// adding a metric means editing one line here.
 	//
 	// It derives the count from its OWN position, so a metric has to be added above
@@ -89,11 +89,24 @@ func (m usageMetric) isCost() bool { return m == metricCost }
 // ONE function behind all four of those surfaces, because the failure mode when they
 // disagree is silent: cost reaching humanizeCount renders 1_200_000 micros as "1.2M",
 // which is a plausible-looking token count rather than $1.20.
+//
+// TRUNCATES rather than trusting its formatters, because an over-wide label does not
+// look like a formatting bug when it reaches the screen. The axis writes labels with
+// "%5s ", which WIDENS to six columns rather than clipping, so one long label shifts
+// every bar on that row one column right of the rows above it and the axis rule below;
+// the value row, laid out at barStride 6, runs its label into its neighbour instead.
+// Both read as a chart-drawing bug a long way from the formatter that caused it — and
+// three cost branches did exactly this before their bounds were fixed. A clipped label
+// is wrong in one cell and obvious; a shifted chart is wrong everywhere and is not.
 func (m usageMetric) label(v int64) string {
+	s := humanizeCount(v)
 	if m.isCost() {
-		return humanizeCostMicros(v)
+		s = humanizeCostMicros(v)
 	}
-	return humanizeCount(v)
+	if len([]rune(s)) > maxCountLabelLen {
+		return string([]rune(s)[:maxCountLabelLen])
+	}
+	return s
 }
 
 // valueOf extracts this metric from a per-label Counts. Bucket embeds Counts, so
@@ -197,11 +210,13 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width int) []string {
 	// Plot rows, top down. Each row is a threshold; a bar fills the row when its
 	// value reaches the row's ceiling, and renders a partial block when it lands
 	// inside the row.
+	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder
 		// Label every other row, matching the axis tick density below.
-		if row%2 == 0 && peak > 0 {
-			sb.WriteString(fmt.Sprintf("%5s ", m.label(peak*int64(row)/int64(plotRows))))
+		if label := m.label(peak * int64(row) / int64(plotRows)); row%2 == 0 && peak > 0 && label != lastAxisLabel {
+			lastAxisLabel = label
+			sb.WriteString(fmt.Sprintf("%5s ", label))
 		} else {
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
@@ -639,7 +654,8 @@ func negativeCost(micros int64) bool { return micros < 0 }
 // and the sharing now runs through that. Note the sub-cent and negative cases are
 // screened ABOVE, so the only inputs reaching it are the non-negative ones its own doc
 // requires — and its cents output is at most "$9.99", five characters, inside the gutter's
-// promise only because the branch is bounded at $10.
+// promise only because that branch stops half a cent BELOW $10 rather than at it; see
+// the bound comment inside the switch.
 func humanizeCostMicros(micros int64) string {
 	switch {
 	case negativeCost(micros):
@@ -654,20 +670,25 @@ func humanizeCostMicros(micros int64) string {
 		// "<$.01", a character narrower than formatUSDTotalMicros' own "<$0.01" floor,
 		// because five is all the gutter has. Same rule, spelled for the width.
 		return "<$.01"
-	case micros < 10_000_000: // under $10: cents matter
+	// EVERY BOUND BELOW IS SET WHERE ROUNDING OVERFLOWS, not at the round number above
+	// it. Each branch divides and rounds to nearest, so a value just under a power of ten
+	// rounds UP ACROSS it: $9.995 through the cents branch is "$10.00", and $999,500k is
+	// "$1000k" — six characters against a five-character gutter. Bounding at the round
+	// number tests as correct for every value except the handful that actually break.
+	//
+	// The rule: subtract half the unit the branch rounds to. Same lesson as
+	// humanizeDurationMs's 9.95ms, applied at every bound rather than one.
+	case micros < 9_995_000: // under $10: cents matter
 		return formatUSDTotalMicros(micros)
-	case micros < 1_000_000_000: // $10..$999
+	case micros < 999_500_000: // $10..$999
 		return fmt.Sprintf("$%d", (micros+500_000)/1_000_000)
-	// Bounded at 9.95k, not 10k: %.1f rounds $9,990 up to "$10.0k", which is six
-	// characters and breaks the width promise the gutter is laid out against. Same
-	// lesson as humanizeDurationMs, and the same bound one decade up.
 	case micros < 9_950_000_000: // $1.0k..$9.9k
 		return fmt.Sprintf("$%.1fk", float64(micros)/1e9)
-	case micros < 1_000_000_000_000: // $10k..$999k
+	case micros < 999_500_000_000: // $10k..$999k
 		return fmt.Sprintf("$%dk", (micros+500_000_000)/1_000_000_000)
 	case micros < 9_950_000_000_000: // $1.0M..$9.9M
 		return fmt.Sprintf("$%.1fM", float64(micros)/1e12)
-	case micros < 1_000_000_000_000_000: // $10M..$999M
+	case micros < 999_500_000_000_000: // $10M..$999M
 		return fmt.Sprintf("$%dM", (micros+500_000_000_000)/1_000_000_000_000)
 	default:
 		// Past $999M an int64 of micros has little room left; clamp rather than
