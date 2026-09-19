@@ -46,9 +46,14 @@ const (
 	metricRequests
 	metricErrors
 	metricLatency
+	metricCost
 
-	// usageMetricCount bounds the [t] cycle. Kept adjacent to the iota block so
+	// usageMetricCount bounds the [m] cycle. Kept adjacent to the iota block so
 	// adding a metric means editing one line here.
+	//
+	// It derives the count from its OWN position, so a metric has to be added above
+	// this line. One added below compiles, cycles nowhere, and is reachable only by
+	// editing the config file by hand.
 	usageMetricCount = iota
 )
 
@@ -60,6 +65,8 @@ func (m usageMetric) String() string {
 		return "errors"
 	case metricLatency:
 		return "latency"
+	case metricCost:
+		return "cost"
 	default:
 		return "tokens"
 	}
@@ -70,6 +77,38 @@ func (m usageMetric) String() string {
 // different form — see the comment on the whisker glyphs.
 func (m usageMetric) isLatency() bool { return m == metricLatency }
 
+// isCost reports whether this metric's values are money rather than a count, so
+// every label surface formats them as money. Cost still plots as BARS — it is a
+// magnitude from zero, unlike latency — so this gates formatting only, never the
+// choice of renderer.
+func (m usageMetric) isCost() bool { return m == metricCost }
+
+// label renders one value of this metric for an axis tick, a value row or a legend
+// entry, in at most maxCountLabelLen characters.
+//
+// ONE function behind all four of those surfaces, because the failure mode when they
+// disagree is silent: cost reaching humanizeCount renders 1_200_000 micros as "1.2M",
+// which is a plausible-looking token count rather than $1.20.
+//
+// TRUNCATES rather than trusting its formatters, because an over-wide label does not
+// look like a formatting bug when it reaches the screen. The axis writes labels with
+// "%5s ", which WIDENS to six columns rather than clipping, so one long label shifts
+// every bar on that row one column right of the rows above it and the axis rule below;
+// the value row, laid out at barStride 6, runs its label into its neighbour instead.
+// Both read as a chart-drawing bug a long way from the formatter that caused it — and
+// three cost branches did exactly this before their bounds were fixed. A clipped label
+// is wrong in one cell and obvious; a shifted chart is wrong everywhere and is not.
+func (m usageMetric) label(v int64) string {
+	s := humanizeCount(v)
+	if m.isCost() {
+		s = humanizeCostMicros(v)
+	}
+	if len([]rune(s)) > maxCountLabelLen {
+		return string([]rune(s)[:maxCountLabelLen])
+	}
+	return s
+}
+
 // valueOf extracts this metric from a per-label Counts. Bucket embeds Counts, so
 // value below delegates here — one place decides what each metric means, and a
 // stacked segment can never disagree with the bar it sits inside.
@@ -79,6 +118,8 @@ func (m usageMetric) valueOf(c usage.Counts) int64 {
 		return c.Requests
 	case metricErrors:
 		return c.Errors
+	case metricCost:
+		return c.CostMicros
 	default:
 		return c.Tokens
 	}
@@ -87,6 +128,48 @@ func (m usageMetric) valueOf(c usage.Counts) int64 {
 // value extracts this metric from a bucket.
 func (m usageMetric) value(b usage.Bucket) int64 {
 	return m.valueOf(b.Counts)
+}
+
+// unit is the abbreviated unit for this metric's values, for the axis caption.
+//
+// Abbreviated because it has to fit the axis gutter, which is axisLabel wide and laid
+// out against a 5-character label promise — "requests" would not fit and widening the
+// gutter shifts every bar, time label and value in all three renderers.
+func (m usageMetric) unit() string {
+	switch m {
+	case metricRequests:
+		return "req"
+	case metricErrors:
+		return "err"
+	case metricLatency:
+		return "ms"
+	case metricCost:
+		return "USD"
+	default:
+		return "tok"
+	}
+}
+
+// axisCaptionWidth is the terminal width at which the unit caption appears.
+//
+// Chosen so the caption costs no bars: below it, every column is already spoken for by
+// the chart itself, and a row spent naming the unit is a row not spent on data. 66 is
+// the width the bar geometry is documented against — ten bars at stride 6 plus the
+// gutter — so at or above it the caption is free.
+const axisCaptionWidth = 66
+
+// axisCaption is the unit caption line, or "" when the terminal is too narrow to
+// spend a row on it.
+//
+// Right-aligned INTO the gutter rather than centred over it: the labels below are
+// rendered with %5s in a 6-column field, so aligning to their right edge puts the unit
+// directly over the digits it qualifies. Shared by the bar and whisker renderers so the
+// unit cannot appear on three metrics and vanish on the fourth.
+func axisCaption(m usageMetric, width int) string {
+	if width < axisCaptionWidth {
+		return ""
+	}
+	return fmt.Sprintf("%*s", maxCountLabelLen, m.unit())
 }
 
 // renderBars draws the ungrouped bar chart: a y-axis with humanized labels, one
@@ -119,16 +202,21 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width int) []string {
 		}
 	}
 
-	out := make([]string, 0, plotRows+3)
+	out := make([]string, 0, plotRows+4)
+	if caption := axisCaption(m, width); caption != "" {
+		out = append(out, caption)
+	}
 
 	// Plot rows, top down. Each row is a threshold; a bar fills the row when its
 	// value reaches the row's ceiling, and renders a partial block when it lands
 	// inside the row.
+	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder
 		// Label every other row, matching the axis tick density below.
-		if row%2 == 0 && peak > 0 {
-			sb.WriteString(fmt.Sprintf("%5s ", humanizeCount(peak*int64(row)/int64(plotRows))))
+		if label := m.label(peak * int64(row) / int64(plotRows)); row%2 == 0 && peak > 0 && label != lastAxisLabel {
+			lastAxisLabel = label
+			sb.WriteString(fmt.Sprintf("%5s ", label))
 		} else {
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
@@ -247,7 +335,7 @@ func renderValues(buckets []usage.Bucket, m usageMetric) string {
 		v := m.value(b)
 		label := "0" // an idle bucket is stated, never blank
 		if v != 0 {
-			label = humanizeCount(v)
+			label = m.label(v)
 		}
 		at := axisLabel - 1 + i*barStride
 		if at+len(label) <= len(row) {
@@ -365,11 +453,7 @@ func renderCostSummary(snap *usage.Snapshot) string {
 	case micros > 0 && micros < 5_000:
 		cell = "COST <$0.01"
 	default:
-		cents := micros / 10_000
-		if micros%10_000 >= 5_000 {
-			cents++
-		}
-		cell = fmt.Sprintf("COST $%d.%02d", cents/100, cents%100)
+		cell = "COST " + formatDollarsCents(micros)
 	}
 	// Compared against PRICEABLE requests, not all of them. Requests counts every
 	// proxied response — MCP tool calls, health checks, anything else the sidecar
@@ -552,3 +636,71 @@ func snapshotDamaged(d *usage.Degraded) bool { return d != nil }
 // number is not a number to display, and $0.0000 would assert that the traffic was free
 // — the one claim this whole surface exists to refuse.
 func negativeCost(micros int64) bool { return micros < 0 }
+
+// formatDollarsCents renders micros as "$1.20", rounding to the nearest cent with
+// integer arithmetic.
+//
+// Integer, not %.2f on float64(micros)/1e6: 1_005_000 micros is exactly $1.005 but
+// the float is 1.0049999… so %.2f prints $1.00. Shared by renderCostSummary and the
+// chart label below so the summary line and the bar it sits under cannot round a
+// figure two different ways.
+//
+// Assumes a non-negative input — Go's / and % truncate toward zero, so a negative
+// renders "$0.-1". Both callers screen for that through negativeCost first.
+func formatDollarsCents(micros int64) string {
+	cents := micros / 10_000
+	if micros%10_000 >= 5_000 {
+		cents++
+	}
+	return fmt.Sprintf("$%d.%02d", cents/100, cents%100)
+}
+
+// humanizeCostMicros renders a cost in at most maxCountLabelLen characters, for the
+// chart's axis ticks, value row and legend.
+//
+// Same money rules as renderCostSummary — negatives are not spend, and a positive
+// sub-cent figure must not read as free — but a chart cannot spend five columns on
+// the word "unavailable", so each of those states gets a glyph the gutter can hold.
+//
+// The magnitudes above a dollar abbreviate rather than widen, for the reason
+// humanizeCount's doc gives: the gutter is laid out against a 5-character promise and
+// a wider label wraps the chart. That costs precision on the axis, which is the right
+// trade — the exact total is one line below in the summary.
+func humanizeCostMicros(micros int64) string {
+	switch {
+	case negativeCost(micros):
+		// Not "$0.00": an impossible figure is not a small one. Through the shared
+		// predicate so this and the summary agree on what impossible means.
+		return "  --"
+	case micros == 0:
+		// Zero micros is "nothing here could be priced", NOT "this was free" — see
+		// usage.Counts.CostMicros. A bare "$0.00" would assert the second.
+		return "   0"
+	case micros < 5_000:
+		return "<$.01"
+	// EVERY BOUND BELOW IS SET WHERE ROUNDING OVERFLOWS, not at the round number above
+	// it. Each branch divides and rounds to nearest, so a value just under a power of ten
+	// rounds UP ACROSS it: $9.995 through the cents branch is "$10.00", and $999,500k is
+	// "$1000k" — six characters against a five-character gutter. Bounding at the round
+	// number tests as correct for every value except the handful that actually break.
+	//
+	// The rule: subtract half the unit the branch rounds to. Same lesson as
+	// humanizeDurationMs's 9.95ms, applied at every bound rather than one.
+	case micros < 9_995_000: // under $10: cents matter
+		return formatDollarsCents(micros)
+	case micros < 999_500_000: // $10..$999
+		return fmt.Sprintf("$%d", (micros+500_000)/1_000_000)
+	case micros < 9_950_000_000: // $1.0k..$9.9k
+		return fmt.Sprintf("$%.1fk", float64(micros)/1e9)
+	case micros < 999_500_000_000: // $10k..$999k
+		return fmt.Sprintf("$%dk", (micros+500_000_000)/1_000_000_000)
+	case micros < 9_950_000_000_000: // $1.0M..$9.9M
+		return fmt.Sprintf("$%.1fM", float64(micros)/1e12)
+	case micros < 999_500_000_000_000: // $10M..$999M
+		return fmt.Sprintf("$%dM", (micros+500_000_000_000)/1_000_000_000_000)
+	default:
+		// Past $999M an int64 of micros has little room left; clamp rather than
+		// widen, as humanizeCount does.
+		return ">$1G"
+	}
+}

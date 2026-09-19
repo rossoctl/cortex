@@ -100,7 +100,7 @@ func (u *usageState) window() (window, resolution time.Duration) {
 	return w.window, w.resolution
 }
 
-// cycleMetric advances [t] across the count metrics and latency. Latency uses a
+// cycleMetric advances [m] across the count metrics, latency and cost. Latency uses a
 // different renderer (mean-with-whiskers) because a bar encodes magnitude from a
 // zero baseline and mean latency has no meaningful zero.
 func (u *usageState) cycleMetric() {

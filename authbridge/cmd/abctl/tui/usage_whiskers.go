@@ -90,6 +90,11 @@ func renderWhiskers(buckets []usage.Bucket, width int) []string {
 	}
 
 	out := make([]string, 0, plotRows+4)
+	// NO UNIT CAPTION HERE, unlike the bar renderers. humanizeDurationMs already puts
+	// the unit in every label and picks it per magnitude — "4.1s", "820ms" — so a
+	// fixed "ms" caption above them is not merely redundant, it contradicts the labels
+	// it sits over as soon as the axis reaches a second. The caption exists for the
+	// count metrics, whose labels are bare numbers.
 	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder

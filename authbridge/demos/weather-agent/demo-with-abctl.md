@@ -70,7 +70,7 @@ automatically and drops you into the **Sessions** pane:
 │  ID                                       UPDATED    EVENTS  TOKENS   ACTIVE  │
 │  (no sessions yet)                                                             │
 │                                                                                │
-│  ● connected   0.0 ev/s   drops: 0                                             │
+│  ● connected   0.0 events/sec                                                  │
 │  [↑↓] nav  [↵] drill  [tab] pipeline  [/] filter  [p] pause  [?] help  [q]    │
 ╰────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -240,7 +240,7 @@ Back in the Sessions or Events pane, everything is **streamed via SSE** from the
 - The `TOKENS` column grows by ~200 per inference call.
 - New rows appear in the events pane if you've drilled in; auto-follow keeps you at the bottom unless you've scrolled up.
 
-The bottom-footer rate indicator (`3.2 ev/s`) is a live smoothed events-per-second gauge — useful to tell if traffic is flowing or something upstream is stuck.
+The bottom-footer rate indicator (`3.2 events/sec`) is a live events-per-second gauge — useful to tell if traffic is flowing or something upstream is stuck. It is the count over the last tick, not a smoothed average, so it moves abruptly.
 
 ## 8. Filter and search
 

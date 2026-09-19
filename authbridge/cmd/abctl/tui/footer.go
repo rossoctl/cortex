@@ -61,14 +61,13 @@ func (m *model) footerView() string {
 
 	status.WriteString(styleMuted.Render("  "))
 
-	// Rate + drops.
-	status.WriteString(styleMuted.Render(fmt.Sprintf("%.1f ev/s", m.rate)))
-	status.WriteString(styleMuted.Render("   "))
-	if m.drops > 0 {
-		status.WriteString(styleWarn.Render(fmt.Sprintf("drops: %d", m.drops)))
-	} else {
-		status.WriteString(styleMuted.Render("drops: 0"))
-	}
+	// Rate. Spelled out rather than "ev/s", which reads as a unit the operator has to
+	// decode before it tells them anything.
+	//
+	// A "drops: N" counter used to sit beside it. Nothing ever incremented it, so it
+	// displayed a hardcoded zero — which is worse than showing nothing, because it
+	// teaches that no event is ever dropped. Removed with its field; see #1060.
+	status.WriteString(styleMuted.Render(fmt.Sprintf("%.1f events/sec", m.rate)))
 	if m.paused {
 		status.WriteString(styleWarn.Render("   [paused]"))
 	}
@@ -88,7 +87,16 @@ func (m *model) footerView() string {
 	// fitColumns dropped on a narrow terminal — and then there is no header on
 	// screen to carry the glyph, which is precisely when the reordering is most
 	// confusing.
-	if m.sortCol != "" {
+	//
+	// Gated on the pane as well as the column, because sortCol is model-global and
+	// restored from settings at startup: it survives into panes that hold no sortable
+	// table, where "[sort: COST▼]" names an ordering nothing on screen has. The Usage
+	// pane is a chart in time order and that is the case #1060 reports.
+	//
+	// paneEvents alone, not a list of panes: the events table is the only sortable one
+	// in the TUI — sessions_pane.go never reads sortCol, and the [s]/[d] keys that set
+	// it are handled under paneEvents only.
+	if m.sortCol != "" && m.pane == paneEvents {
 		glyph := sortGlyphAsc
 		if m.sortDesc {
 			glyph = sortGlyphDesc

@@ -294,7 +294,7 @@ func TestYankAcceptsACleanDir(t *testing.T) {
 
 // The reported symptom: on a ~72-column terminal the footer read
 //
-//	● connected  0.0 ev/s   drops: 0   yanked → /Users/snible/.cortex/abctl-
+//	● connected  0.0 events/sec   yanked → /Users/snible/.cortex/abctl-
 //
 // and the filename — the part you retype — was off the right edge. A sticky flash
 // now gets the whole line from column 0, and truncates from the LEFT so the tail
@@ -381,7 +381,7 @@ func TestTimedFlash_KeepsTheStatusPrefix(t *testing.T) {
 	m.setFlash("hot-reload succeeded")
 
 	line := strings.SplitN(m.footerView(), "\n", 2)[0]
-	if !strings.Contains(line, "ev/s") {
+	if !strings.Contains(line, "events/sec") {
 		t.Errorf("a timed flash lost the status prefix: %q", line)
 	}
 	if !strings.Contains(line, "hot-reload succeeded") {

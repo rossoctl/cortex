@@ -322,10 +322,10 @@ type drawerRow struct {
 // the one with the most requests — a handful of opus calls outranks hundreds of haiku ones.
 //
 // Which is why this does NOT rank through collectSeries, the Usage pane's ranking. That
-// function ranks by a usageMetric, and the metrics are tokens, requests, errors and latency
-// — there is no cost metric, and adding one would put a fifth entry in the pane's [t] cycle
-// and in its persisted settings to serve a surface that is not the pane. Ranking here is
-// four lines; the alternative was reshaping a shared enum around this drawer.
+// function ranks by a usageMetric over the pane's own visible buckets — a window and
+// resolution the operator chose for a chart, not the fixed-hour ring this drawer reads.
+// The pane does now carry a cost metric (#1060), so the shared enum is no longer the
+// obstacle; the window is. Ranking here is four lines.
 //
 // The FOLD is still foldTailSeries, which is the part worth sharing: it merges the tail into
 // "(other)" AND merges any "(other)" the aggregator already produced by its own label
