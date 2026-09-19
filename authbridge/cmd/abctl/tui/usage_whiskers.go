@@ -89,7 +89,14 @@ func renderWhiskers(buckets []usage.Bucket, width int) []string {
 		}
 	}
 
-	out := make([]string, 0, plotRows+4)
+	out := make([]string, 0, plotRows+5)
+	// metricLatency explicitly rather than a parameter: this renderer serves exactly
+	// that metric (renderUsageChart dispatches on isLatency), so threading one through
+	// would add an argument every caller must get right to say what the function name
+	// already says.
+	if caption := axisCaption(metricLatency, width); caption != "" {
+		out = append(out, caption)
+	}
 	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder

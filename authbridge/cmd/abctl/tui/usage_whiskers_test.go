@@ -47,7 +47,7 @@ func TestRenderWhiskers_UnmeasuredBucketIsStated(t *testing.T) {
 		{2000, 100, 5},
 		{0, 0, 0}, // requests happened but none carried a duration
 	}), 80)
-	values := lines[plotRows+2] // the value row, after axis + time labels
+	values := plotLines(lines)[plotRows+2] // the value row, after axis + time labels
 
 	if !strings.Contains(values, "0") {
 		t.Errorf("value row does not mark the unmeasured bucket:\n%q", values)

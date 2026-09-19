@@ -46,7 +46,7 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 		model *model
 	}{
 		{"plain connected", &model{width: width, pane: paneSessions, connState: connStateInfo{phase: connOpen}}},
-		{"with drops and paused", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, drops: 12, paused: true}},
+		{"paused", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, paused: true}},
 		// The timed (non-sticky) flash path also appends to the status row before
 		// the feedback link, so it is the tightest case. flashUntil in the future
 		// keeps the flash live.
@@ -70,19 +70,24 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 func TestFooterShowsActiveSort(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
+		pane    paneID
 		col     eventColumnID
 		desc    bool
 		want    string
 		notWant string
 	}{
-		{name: "descending", col: colDuration, desc: true, want: "[sort: DURATION" + sortGlyphDesc + "]"},
-		{name: "ascending", col: colDuration, desc: false, want: "[sort: DURATION" + sortGlyphAsc + "]"},
-		{name: "cost", col: colCost, desc: true, want: "[sort: COST" + sortGlyphDesc + "]"},
-		{name: "chronological", col: "", desc: false, notWant: "[sort:"},
+		{name: "descending", pane: paneEvents, col: colDuration, desc: true, want: "[sort: DURATION" + sortGlyphDesc + "]"},
+		{name: "ascending", pane: paneEvents, col: colDuration, desc: false, want: "[sort: DURATION" + sortGlyphAsc + "]"},
+		{name: "cost", pane: paneEvents, col: colCost, desc: true, want: "[sort: COST" + sortGlyphDesc + "]"},
+		{name: "chronological", pane: paneEvents, col: "", desc: false, notWant: "[sort:"},
+		// sortCol is model-global and restored from settings, so it is set here exactly
+		// as it would be after sorting the events table and pressing [u]. The Usage pane
+		// is a chart in time order: naming an ordering it does not have is #1060.
+		{name: "not on the usage pane", pane: paneUsage, col: colCost, desc: true, notWant: "[sort:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &model{
-				pane: paneEvents, width: 200, eventColumns: defaultColumnSelection(),
+				pane: tc.pane, width: 200, eventColumns: defaultColumnSelection(),
 				sortCol: tc.col, sortDesc: tc.desc,
 			}
 			got := stripANSI(statusRow(m.footerView()))

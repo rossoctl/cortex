@@ -259,11 +259,14 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 	// same thing in every bucket and in the legend.
 	letters := assignLetters(legendSeries)
 
-	out := make([]string, 0, plotRows+4)
+	out := make([]string, 0, plotRows+5)
+	if caption := axisCaption(m, width); caption != "" {
+		out = append(out, caption)
+	}
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder
 		if row%2 == 0 && peak > 0 {
-			sb.WriteString(fmt.Sprintf("%5s ", humanizeCount(peak*int64(row)/int64(plotRows))))
+			sb.WriteString(fmt.Sprintf("%5s ", m.label(peak*int64(row)/int64(plotRows))))
 		} else {
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
@@ -278,7 +281,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 	out = append(out, renderTimeLabels(buckets))
 	out = append(out, renderValues(buckets, m))
 	out = append(out, "")
-	out = append(out, renderLegend(legendSeries, group, letters, rank, width)...)
+	out = append(out, renderLegend(legendSeries, group, m, letters, rank, width)...)
 	return out
 }
 
@@ -465,7 +468,7 @@ func paintSegment(text, label string, group usage.Group) string {
 // ("claude-haiku-4-5-20251001") that three of them do not fit 80 columns on one
 // line. Only series past maxNamedSeries fold into a count, and those share a
 // colour anyway.
-func renderLegend(series []seriesKey, group usage.Group,
+func renderLegend(series []seriesKey, group usage.Group, m usageMetric,
 	letters map[string]rune, rank map[string]int, width int) []string {
 	const sep = "   "
 	const indent = "  "
@@ -492,7 +495,7 @@ func renderLegend(series []seriesKey, group usage.Group,
 	for _, s := range named {
 		mark := seriesStyle(rank[s.label], isErrorSeries(s.label, group)).
 			Render(string(letters[s.label]))
-		text := fmt.Sprintf(" %s (%s)", s.label, humanizeCount(s.total))
+		text := fmt.Sprintf(" %s (%s)", s.label, m.label(s.total))
 		// Measured on the plain text: the mark is one column however many bytes of
 		// escape sequence it carries.
 		cost := 1 + len([]rune(text))

@@ -33,6 +33,26 @@ func mkSeriesBuckets(perBucket []map[string]int64) []usage.Bucket {
 
 // stripANSI removes escape sequences so glyph assertions are not defeated by
 // colour codes.
+// plotLines drops the unit caption when the renderer emitted one, so a test can index
+// plot rows from zero the way it did before the caption existed.
+//
+// By CONTENT, not by width: a test that hardcoded "wide terminals have one extra line"
+// would silently go wrong the day the caption's width gate moves, and it would go wrong
+// in the direction of asserting against the caption itself rather than the chart. The
+// caption is the only line with no bar glyphs and no axis rule, which is what this
+// recognises.
+func plotLines(lines []string) []string {
+	if len(lines) == 0 {
+		return lines
+	}
+	first := strings.TrimSpace(stripANSI(lines[0]))
+	switch first {
+	case "tok", "req", "err", "ms", "USD":
+		return lines[1:]
+	}
+	return lines
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); {
@@ -264,7 +284,7 @@ func TestRenderStacked_SmallBucketStillDraws(t *testing.T) {
 		{"200": 1}, // 1/10000 of the peak
 	})
 	lines := renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80)
-	bottom := stripANSI(lines[plotRows-1]) // last plot row
+	bottom := stripANSI(plotLines(lines)[plotRows-1]) // last plot row
 	if strings.Count(bottom, "2") < barWidth*2 {
 		t.Errorf("the tiny bucket drew no segment:\n%q", bottom)
 	}
@@ -355,6 +375,11 @@ func TestRenderStacked_EveryDrawnBandIsInTheLegend(t *testing.T) {
 		labels[fmt.Sprintf("series-%c", 'a'+i)] = int64(100 - i*5)
 	}
 	lines := renderStackedBars(mkSeriesBuckets([]map[string]int64{labels}), metricRequests, usage.GroupMethod, 120)
+
+	// plotLines first, then split: the unit caption sits above the axis, so leaving it in
+	// the chart half would collect the letters of "req" as though they were series marks
+	// — and "q" is no series's mark, so the test would fail on its own caption.
+	lines = plotLines(lines)
 
 	// Split chart rows from legend rows at the axis.
 	var axisAt int
@@ -473,7 +498,7 @@ func TestRenderLegend_WrapsRatherThanElidingPresentSeries(t *testing.T) {
 		rank[s.label] = i
 	}
 
-	lines := renderLegend(series, usage.GroupMethod, letters, rank, 80)
+	lines := renderLegend(series, usage.GroupMethod, metricTokens, letters, rank, 80)
 	joined := stripANSI(strings.Join(lines, "\n"))
 	for _, s := range series {
 		if !strings.Contains(joined, s.label) {
@@ -499,7 +524,7 @@ func TestRenderLegend_BoundsALoneOverWideEntry(t *testing.T) {
 	rank := map[string]int{series[0].label: 0}
 
 	for _, width := range []int{10, 16, 20, 40, 80} {
-		lines := renderLegend(series, usage.GroupMethod, letters, rank, width)
+		lines := renderLegend(series, usage.GroupMethod, metricTokens, letters, rank, width)
 		for _, l := range lines {
 			if got := len([]rune(stripANSI(l))); got > width {
 				t.Errorf("width %d: legend line is %d columns:\n%q", width, got, stripANSI(l))
@@ -530,7 +555,7 @@ func TestRenderLegend_NamesEverySeriesAtEveryWidth(t *testing.T) {
 	}
 
 	for width := 30; width <= 100; width++ {
-		lines := renderLegend(series, usage.GroupMethod, letters, rank, width)
+		lines := renderLegend(series, usage.GroupMethod, metricTokens, letters, rank, width)
 		joined := stripANSI(strings.Join(lines, "\n"))
 		for _, s := range series {
 			if !strings.Contains(joined, s.label) {
@@ -562,7 +587,7 @@ func TestRenderLegend_KeepsTheFoldedBand(t *testing.T) {
 	for i, s := range kept {
 		rank[s.label] = i
 	}
-	joined := stripANSI(strings.Join(renderLegend(kept, usage.GroupMethod, letters, rank, 120), "\n"))
+	joined := stripANSI(strings.Join(renderLegend(kept, usage.GroupMethod, metricTokens, letters, rank, 120), "\n"))
 	if !strings.Contains(joined, tailLabel) {
 		t.Errorf("legend dropped the folded band:\n%s", joined)
 	}

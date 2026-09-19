@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -355,5 +356,96 @@ func TestRenderCostSummary(t *testing.T) {
 				t.Errorf("renderCostSummary() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHumanizeCostMicros_NeverExceedsWidth is the money twin of
+// TestHumanizeCount_NeverExceedsWidth, and exists for the same reason: the axis gutter
+// is laid out against maxCountLabelLen and a wider label wraps the whole chart.
+//
+// Sweeps every magnitude rather than the plausible ones. A cost axis is the surface
+// most likely to meet a number nobody predicted — a mispriced model, a gateway header
+// in the wrong unit — and the failure is a broken layout, not a wrong number.
+func TestHumanizeCostMicros_NeverExceedsWidth(t *testing.T) {
+	vals := []int64{0, -1, -1_000_000, 1, 4_999, 5_000, math.MaxInt64}
+	for _, base := range []int64{1, 7, 999} {
+		for mag := int64(1); mag <= 1_000_000_000_000_000_000; mag *= 10 {
+			if base <= (1<<62)/mag {
+				vals = append(vals, base*mag)
+			}
+		}
+	}
+	for _, v := range vals {
+		got := humanizeCostMicros(v)
+		if len([]rune(got)) > maxCountLabelLen {
+			t.Errorf("humanizeCostMicros(%d) = %q (%d chars), cap is %d",
+				v, got, len([]rune(got)), maxCountLabelLen)
+		}
+	}
+}
+
+// TestHumanizeCostMicros_DistinguishesFreeFromUnpriced pins the three states a money
+// label has to keep apart, because collapsing any two of them reads as a fact.
+//
+// Zero micros means "nothing here could be priced" and NOT "this was free" — see
+// usage.Counts.CostMicros — so it must not render as "$0.00". A negative total is not
+// spend at all. And a positive sub-cent figure must not round down into either one.
+func TestHumanizeCostMicros_DistinguishesFreeFromUnpriced(t *testing.T) {
+	tests := []struct {
+		name   string
+		micros int64
+		want   string
+	}{
+		{"unpriced reads as neither free nor spent", 0, "   0"},
+		{"a negative total is not spend", -5_000_000, "  --"},
+		{"a sub-cent charge is not free", 1, "<$.01"},
+		{"just under a cent", 4_999, "<$.01"},
+		{"a cent", 5_000, "$0.01"},
+		{"dollars and cents", 1_200_000, "$1.20"},
+		{"the float-rounding case renderCostSummary documents", 1_005_000, "$1.01"},
+		{"tens of dollars round to whole", 12_400_000, "$12"},
+		{"thousands abbreviate", 1_500_000_000, "$1.5k"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := humanizeCostMicros(tt.micros); got != tt.want {
+				t.Errorf("humanizeCostMicros(%d) = %q, want %q", tt.micros, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRenderBars_CostFormatsEverySurface is the four-call-site guard.
+//
+// humanizeCount has four callers — the two y-axes, the value row and the stacked legend
+// — and routing only the axis through money formatting is the easy mistake: the axis is
+// the visible half, so cost looks right while the value row under each bar still reads
+// "1.2M" for $1.20. Asserts the axis and the value row in one render, since both come
+// out of renderBars.
+func TestRenderBars_CostFormatsEverySurface(t *testing.T) {
+	// A cost fixture rather than mkBuckets, which populates Tokens only — a cost chart
+	// over it plots nothing and the assertions below would pass against an empty chart.
+	base := time.Date(2026, 9, 4, 23, 24, 0, 0, time.UTC)
+	buckets := []usage.Bucket{ // $1.20 then $0.60, in micros
+		{At: base, Counts: usage.Counts{Requests: 1, CostMicros: 1_200_000}},
+		{At: base.Add(time.Minute), Counts: usage.Counts{Requests: 1, CostMicros: 600_000}},
+	}
+	lines := renderBars(buckets, metricCost, 80)
+	out := stripANSI(strings.Join(lines, "\n"))
+
+	if !strings.Contains(out, "$") {
+		t.Fatalf("a cost chart rendered no money anywhere:\n%s", out)
+	}
+	// The value row carries each bucket's own figure.
+	if !strings.Contains(out, "$1.20") {
+		t.Errorf("value row did not render $1.20 — cost reached humanizeCount:\n%s", out)
+	}
+	// And the axis names the unit rather than leaving the reader to guess.
+	if !strings.Contains(out, "USD") {
+		t.Errorf("chart did not caption its unit:\n%s", out)
+	}
+	// A raw micros count must appear nowhere: 1_200_000 through humanizeCount is "1.2M".
+	if strings.Contains(out, "1.2M") {
+		t.Errorf("micros leaked through the count formatter:\n%s", out)
 	}
 }

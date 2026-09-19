@@ -329,7 +329,6 @@ type model struct {
 	lastTick time.Time
 	lastCt   uint64
 	rate     float64
-	drops    uint64
 
 	// Connection status.
 	connState connStateInfo
@@ -708,7 +707,6 @@ func (m *model) backToPodsPane() {
 	m.eventCt = 0
 	m.lastCt = 0
 	m.rate = 0
-	m.drops = 0
 	m.pipeline = nil
 	// Drop the cached /v1/plugins snapshot too — a different pod is a
 	// different framework instance with potentially different plugin
