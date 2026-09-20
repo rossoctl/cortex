@@ -322,7 +322,7 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens
   the editor. Outside the viewer, `abctl pipeline get` prints the same
-  composition — plus each plugin's config — and `--json` emits
+  composition — plus each plugin's description and config — and `--json` emits
   `/v1/pipeline`'s own shape for a script. It has no DEPS or event count:
   one is derived from the chain rather than reported by the proxy, the other
   counts invocations in cached session events, which a one-shot command has

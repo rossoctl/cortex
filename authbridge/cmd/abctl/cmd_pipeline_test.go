@@ -29,11 +29,17 @@ func fakePipelineServer(t *testing.T, body string) *httptest.Server {
 	}))
 }
 
+// twoChainPipeline deliberately mixes a plugin that declares a description with one that
+// does not, and gives the description-less one a config: the row layout and the config
+// block both change shape on that field, so a fixture where every plugin has one would
+// leave half the rendering untested.
 const twoChainPipeline = `{"inbound":[{"name":"jwt-validation","direction":"inbound",` +
-	`"position":1,"readsBody":false,"config":{"issuer":"http://idp.example/realms/r"}}],` +
-	`"outbound":[{"name":"inference-parser","direction":"outbound","position":1,"readsBody":true},` +
+	`"position":1,"readsBody":false,"description":"Inbound JWT validation against JWKS.",` +
+	`"config":{"issuer":"http://idp.example/realms/r"}}],` +
+	`"outbound":[{"name":"inference-parser","direction":"outbound","position":1,"readsBody":true,` +
+	`"description":"Parses LLM completions into pctx.Extensions.Inference."},` +
 	`{"name":"token-exchange","direction":"outbound","position":2,"readsBody":false,` +
-	`"requires":["jwt-validation"]}]}`
+	`"requires":["jwt-validation"],"config":{"default_policy":"passthrough"}}]}`
 
 // TestRunPipelineGet_PrintsBothChainsAndTheDivider covers the shape of the human output:
 // every plugin from both directions, its body flag, and the application between the
@@ -50,9 +56,11 @@ func TestRunPipelineGet_PrintsBothChainsAndTheDivider(t *testing.T) {
 	for _, want := range []string{
 		"jwt-validation", "inference-parser", "token-exchange",
 		"inbound", "outbound",
-		"(app)",  // the divider between the chains
-		"yes",    // inference-parser reads the body
-		"issuer", // the config, indented under its plugin
+		"(app)",        // the divider between the chains
+		"yes",          // inference-parser reads the body
+		"issuer",       // the config, indented under its plugin
+		"DESCRIPTION",  // the column header
+		"against JWKS", // and a plugin's own description
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
@@ -199,5 +207,39 @@ func TestRunPipelineGet_MissingEndpointBlamesTheEndpointNotTheProxy(t *testing.T
 	}
 	if strings.Contains(got, "abctl service status") {
 		t.Errorf("a reachable proxy was blamed on Cortex not running:\n%s", got)
+	}
+}
+
+// TestRunPipelineGet_DescriptionIsOptionalAndCostsNothingWhenAbsent covers the two things
+// that broke while the DESCRIPTION column was being added, both invisible on a terminal.
+//
+// A description is omitempty on the wire, so the row layout has to change shape on it. The
+// first version padded BODY to a fixed width unconditionally, which left a run of trailing
+// spaces on every plugin declaring no description — nothing to see on screen, but it lands
+// in a redirected file and in a diff, and no hook in this repo inspects a program's output
+// for it. The second version fixed that with an early return, which skipped the config
+// block underneath for exactly those plugins.
+func TestRunPipelineGet_DescriptionIsOptionalAndCostsNothingWhenAbsent(t *testing.T) {
+	// One plugin, no description, with a config — the combination the early return dropped.
+	srv := fakePipelineServer(t, `{"inbound":[],"outbound":[{"name":"token-exchange",`+
+		`"direction":"outbound","position":1,"readsBody":false,`+
+		`"config":{"default_policy":"passthrough"}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPipeline([]string{"get", "--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	// The config still renders when the description above it is absent.
+	if !strings.Contains(got, "default_policy") {
+		t.Errorf("a plugin with config but no description lost its config:\n%s", got)
+	}
+	// And no line ends in whitespace.
+	for i, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d ends in whitespace: %q", i, line)
+		}
 	}
 }
