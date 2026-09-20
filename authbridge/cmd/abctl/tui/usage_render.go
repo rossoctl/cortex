@@ -99,9 +99,11 @@ func (m usageMetric) isCost() bool { return m == metricCost }
 // three cost branches did exactly this before their bounds were fixed. A clipped label
 // is wrong in one cell and obvious; a shifted chart is wrong everywhere and is not.
 func (m usageMetric) label(v int64) string {
-	s := humanizeCount(v)
+	var s string
 	if m.isCost() {
 		s = humanizeCostMicros(v)
+	} else {
+		s = humanizeCount(v)
 	}
 	if len([]rune(s)) > maxCountLabelLen {
 		return string([]rune(s)[:maxCountLabelLen])

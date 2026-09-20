@@ -300,20 +300,54 @@ func TestUsageChart_FitsTheChartBudget(t *testing.T) {
 	}
 }
 
-// TestUsagePane_FitsAt80x24 is the case this branch actually broke, asserted on the
-// COMPOSED view rather than on the chart alone.
+// TestUsagePane_CaptionCostsNoRowsAtAnyFitSize is the case this branch actually broke,
+// asserted on the COMPOSED view rather than on the chart alone.
 //
-// 80x24 is the tightest size in fitSizes where the pane fits at all on main, and it is
-// the size where the caption's row was the difference: 65 columns fit, 66 overflowed, and
-// nothing about columns changed between them. Asserting the budget arithmetic instead
-// would not have caught it — a wrong subtraction moves this size out of whichever branch
-// the assertion reads, and the test keeps passing while the terminal scrolls.
+// RELATIVE, not absolute, and it did not start that way. The first version asserted that
+// the pane fits 80x24 outright, which held when written: 80x24 was then the tightest size
+// in fitSizes where the pane fit at all, and the caption's row was exactly the difference
+// — 65 columns fit, 66 did not, with nothing about columns changing between them. A later
+// change on main added a row above the body (the spend strip's lifetime line) without the
+// pane's budget following, so the pane now overflows 80x24 by one row with no caption in
+// the picture: measured at 25 lines on the merge-base, where axisCaption does not exist.
 //
-// The filter-open case is deliberately not here: it overflows by one row on main too.
-func TestUsagePane_FitsAt80x24(t *testing.T) {
-	m := fitModel(t, paneUsage, 80, 24, cursorRowsFixture(60))
-	if got := len(strings.Split(m.View(), "\n")); got > 24 {
-		t.Errorf("usage pane is %d lines for a 24-line terminal (%d too many)", got, got-24)
+// Rewriting it to skip 80x24 would have left the gate unguarded at the one size that
+// exercises it. Asserting the budget arithmetic instead is what this replaced, because a
+// wrong subtraction moves a size out of whichever branch the assertion reads and the test
+// keeps passing while the terminal scrolls. So it measures the caption's own contribution:
+// render each size twice, once with the pane's real budget and once with the budget forced
+// open, and require that the difference is never more than the one row the caption is
+// allowed to cost — and zero wherever the budget is too tight to afford it.
+func TestUsagePane_CaptionCostsNoRowsAtAnyFitSize(t *testing.T) {
+	for _, dim := range fitSizes {
+		m := fitModel(t, paneUsage, dim[0], dim[1], cursorRowsFixture(60))
+		budget := usageChartHeight(m.bodyHeight)
+		withBudget := renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, m.width, budget)
+		// height 0 means "unknown", which the renderers read as "not measuring a
+		// terminal" and caption unconditionally above axisCaptionWidth.
+		unbounded := renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, m.width, 0)
+
+		cost := len(unbounded) - len(withBudget)
+		if cost < 0 || cost > 1 {
+			t.Errorf("%dx%d: the budget changed the chart by %d rows; the caption may cost 1 at most",
+				dim[0], dim[1], cost)
+		}
+
+		// The chart against what the pane can actually afford: its row budget less the
+		// rows renderUsage spends on the header, the blanks and the summary. This is the
+		// assertion that fails on a wrong subtraction — comparing the two renders above
+		// does not, because a looser budget captions BOTH of them and the difference stays
+		// zero. Verified by mutation: dropping either term of usageChartHeight's
+		// subtraction fails here and nowhere else.
+		//
+		// Skipped where the chart's own floor already exceeds the affordance, which is
+		// 60x20: plotRows+3 is irreducible, so that overflow is the pane's to fix (it
+		// reproduces on the merge-base) and no caption decision reaches it.
+		afford := m.bodyHeight - usagePaneChromeRows
+		if afford >= chartRowsWithoutCaption && len(withBudget) > afford {
+			t.Errorf("%dx%d: chart is %d rows against %d affordable (bodyHeight %d less %d chrome)",
+				dim[0], dim[1], len(withBudget), afford, m.bodyHeight, usagePaneChromeRows)
+		}
 	}
 }
 

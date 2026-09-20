@@ -710,7 +710,11 @@ func TestRenderStacked_FullyUnlabelledBucketMatchesItsLegend(t *testing.T) {
 	// The second bar's column: axisLabel + 1*barStride.
 	col := axisLabel + barStride
 	var secondBar string
-	for _, l := range lines[:plotRows] {
+	// plotLines first: at width 80 this chart carries a unit caption, and indexing from
+	// the front without dropping it shifts the window up a row — the scan then stops one
+	// short of the bottom plot row and still passes, which is the silent weakening the
+	// helper exists to prevent rather than a failure anyone would notice.
+	for _, l := range plotLines(lines)[:plotRows] {
 		r := []rune(stripANSI(l))
 		if len(r) > col && r[col] != ' ' {
 			secondBar += string(r[col])

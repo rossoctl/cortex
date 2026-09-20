@@ -66,10 +66,21 @@ func TestRenderBars_SmallValueStillDrawsAGlyph(t *testing.T) {
 // Output must fit the terminal it was given. A line wider than the width wraps
 // and destroys the chart.
 func TestRenderBars_FitsWidth(t *testing.T) {
-	for _, width := range []int{80, 100, 60, 40} {
+	// 65 and 66 straddle axisCaptionWidth, which the original sweep stepped over — the one
+	// pair of widths where the output changes shape. metricCost runs beside metricTokens
+	// because the cost labels are a different formatter with its own width promise, and
+	// pinning it here checks it inside the renderer rather than only in its unit test.
+	for _, width := range []int{80, 100, 65, 66, 60, 40} {
 		vals := make([]int64, 10)
 		for i := range vals {
 			vals[i] = int64(10000 * (i + 1))
+		}
+		for _, m := range []usageMetric{metricTokens, metricCost} {
+			for _, line := range renderBars(mkBuckets(vals), m, width, 0) {
+				if got := len([]rune(line)); got > width {
+					t.Errorf("metric %s width %d: line is %d columns wide:\n%q", m, width, got, line)
+				}
+			}
 		}
 		for _, line := range renderBars(mkBuckets(vals), metricTokens, width, 0) {
 			if got := len([]rune(line)); got > width {

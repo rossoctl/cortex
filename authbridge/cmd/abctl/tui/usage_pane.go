@@ -207,12 +207,16 @@ func usageChartHeight(paneHeight int) int {
 	if paneHeight <= 0 {
 		return 0
 	}
-	// One row held back beyond the chrome. renderUsage's own output fits bodyHeight
-	// exactly at 80x24 and the view still came out a row past the terminal, because the
-	// budget is shared with the spend strip's reserved row — so a chart that spends every
-	// row it is offered leaves the composed view no slack. The caption is the only
-	// optional row here, which makes it the right thing to drop.
-	if h := paneHeight - usagePaneChromeRows - 1; h > 0 {
+	// Exactly the chrome, with nothing held back. An earlier version subtracted one more
+	// row: at the time renderUsage's output fit bodyHeight exactly at 80x24 while the
+	// composed view still came out a row past the terminal, and dropping the caption was
+	// what closed it. That is no longer what happens — the pane overflows 80x24 by one row
+	// on the merge-base too, with no caption in existence there, because a row was added
+	// above the body without the budget following. So the extra subtraction now fixes
+	// nothing and costs the chart a row it can afford. Removed rather than kept as
+	// insurance: a budget that is not the real affordance is a number no later reader can
+	// check against anything.
+	if h := paneHeight - usagePaneChromeRows; h > 0 {
 		return h
 	}
 	// A budget this small cannot fit the chart at all; 1 is enough to say "no room to
