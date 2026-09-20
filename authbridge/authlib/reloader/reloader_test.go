@@ -458,7 +458,7 @@ func setupAt(t *testing.T, cfgPath string) (*Reloader, *fakeBuilder, *pipeline.H
 
 // A symlinked config, written THROUGH the link — the shape abctl's editor
 // produces for a config pointed at a dotfiles repo, and what `abctl tools scan
-// --write` / `abctl config migrate` do too.
+// --write` / `abctl service install`'s config migration do too.
 //
 // Watching only filepath.Dir(configPath) misses this on Linux, where inotify
 // reports directory-entry changes and the link's directory has none: the reload

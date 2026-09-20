@@ -350,7 +350,8 @@ func TestFileStore_ApplyingTheFetchedBytesRestoresTheFile(t *testing.T) {
 }
 
 // The operator sits in $EDITOR while something else writes the same file —
-// `abctl tools scan --write`, `abctl config migrate`, a second session. Apply
+// `abctl tools scan --write`, `abctl service install`'s config migration, a
+// second session. Apply
 // renames a whole file built from the Fetch-time bytes, so without a check that
 // write vanishes silently, including the parts outside the pipeline subtree.
 func TestFileStore_ApplyRefusesAConcurrentWrite(t *testing.T) {

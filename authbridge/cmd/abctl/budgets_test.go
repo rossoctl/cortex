@@ -33,6 +33,7 @@ func TestCallerBudgets_FitUnderTheHeaderBackstop(t *testing.T) {
 		// The only budget in this binary that exceeds apiclient's own deadline-less default,
 		// and the one the defect bit.
 		{name: "abctl cost (costFetchTimeout)", budget: costFetchTimeout},
+		{name: "abctl pipeline get (pipelineFetchTimeout)", budget: pipelineFetchTimeout},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			if b.budget >= apiclient.HeaderTimeout {

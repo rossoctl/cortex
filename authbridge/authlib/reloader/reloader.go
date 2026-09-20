@@ -165,7 +165,8 @@ func (r *Reloader) Start(ctx context.Context) error {
 	// in this directory. On Linux, inotify reports directory-entry changes, so
 	// no event arrives and the reload never happens: abctl's editor then times
 	// out and rolls a correct edit back two minutes later, and `abctl tools
-	// scan --write` / `abctl config migrate` land silently unreloaded. (macOS
+	// scan --write` / the migration `abctl service install` runs land silently
+	// unreloaded. (macOS
 	// happens to survive this: kqueue watches the resolved file, so replacing
 	// it reports on the link. Relying on that is relying on the platform.)
 	//

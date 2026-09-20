@@ -321,7 +321,12 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 - **Pipeline**: the active plugin chain in inbound + outbound order.
   Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens
-  the editor.
+  the editor. Outside the viewer, `abctl pipeline get` prints the same
+  composition — plus each plugin's config — and `--json` emits
+  `/v1/pipeline`'s own shape for a script. It has no DEPS or event count:
+  one is derived from the chain rather than reported by the proxy, the other
+  counts invocations in cached session events, which a one-shot command has
+  none of.
 - **Plugin detail**: drill-into-row for Pipeline or Catalog. Shows
   description, position, reads/writes, body access, plugin config, and
   per-dependency satisfaction status against the active chain.
@@ -699,7 +704,8 @@ upgrading the proxy. abctl cannot detect the mismatch — nothing the proxy
 exposes describes its watcher — so this is a note rather than a check.
 
 **A concurrent write aborts the apply.** This file has other writers — `abctl
-tools scan --write`, `abctl config migrate`, a second abctl session — and
+tools scan --write`, the config migration `abctl service install` runs, a second
+abctl session — and
 `$EDITOR` can be open for minutes. The apply re-reads the file first and refuses
 if it moved, rather than renaming a whole file built from stale bytes over
 somebody else's change. The refusal names the likely culprits; re-open the edit

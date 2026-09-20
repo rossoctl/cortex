@@ -36,7 +36,7 @@ var version = "dev"
 // One list rather than two: the unknown-subcommand error used to hardcode its own
 // copy, so adding a subcommand meant editing both and forgetting one left a typo
 // getting an incomplete list. A test holds the usage block to this slice.
-var dispatchableSubcommands = []string{"observe", "service", "configure", "claude-code", "exec", "tools", "pricing", "cost", "experimental"}
+var dispatchableSubcommands = []string{"observe", "service", "configure", "claude-code", "exec", "tools", "pipeline", "pricing", "cost", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -60,6 +60,7 @@ Usage:
   abctl exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                              environment, for tools with no settings file
   abctl tools <action>       tool-definition costs: scan
+  abctl pipeline <action>    the plugin pipeline in effect: get
   abctl pricing              show the model rates in effect (--host <gateway>)
   abctl cost                 what your agents have spent (--window today|7d|1h)
   abctl experimental <action>
@@ -87,6 +88,8 @@ func main() {
 		switch os.Args[1] {
 		case "tools":
 			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))
+		case "pipeline":
+			os.Exit(runPipeline(os.Args[2:], os.Stdout, os.Stderr))
 		case "experimental":
 			os.Exit(runExperimental(os.Args[2:], os.Stdout, os.Stderr))
 		case "pricing":
