@@ -33,6 +33,22 @@ func mkSeriesBuckets(perBucket []map[string]int64) []usage.Bucket {
 
 // stripANSI removes escape sequences so glyph assertions are not defeated by
 // colour codes.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			i++ // skip the 'm'
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 // plotLines drops the unit caption when the renderer emitted one, so a test can index
 // plot rows from zero the way it did before the caption existed.
 //
@@ -57,22 +73,6 @@ func plotLines(lines []string) []string {
 	return lines
 }
 
-func stripANSI(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		if s[i] == 0x1b {
-			for i < len(s) && s[i] != 'm' {
-				i++
-			}
-			i++ // skip the 'm'
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
-}
-
 // Each series must get a distinct mark, so the chart is readable with no colour
 // at all — a terminal without colour support, a colour-vision deficiency, or a
 // screenshot in an issue. Shaded blocks failed this in practice: █ against ▓ is
@@ -81,7 +81,7 @@ func TestRenderStacked_DistinctMarksPerSeries(t *testing.T) {
 	buckets := mkSeriesBuckets([]map[string]int64{
 		{"200": 10, "429": 5, "500": 2},
 	})
-	plot := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80), "\n"))
+	plot := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80, 0), "\n"))
 
 	// Status labels have no letters, so their marks are the leading digits.
 	for _, want := range []string{"2", "4", "5"} {
@@ -224,9 +224,9 @@ func TestRenderStacked_SeriesOrderIsStable(t *testing.T) {
 	buckets := mkSeriesBuckets([]map[string]int64{
 		{"a": 5, "b": 5, "c": 5}, // equal totals: ties must break deterministically
 	})
-	first := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80), "\n"))
+	first := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80, 0), "\n"))
 	for i := 0; i < 5; i++ {
-		again := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80), "\n"))
+		again := stripANSI(strings.Join(renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80, 0), "\n"))
 		if again != first {
 			t.Fatal("render is not deterministic for equal-total series")
 		}
@@ -240,7 +240,7 @@ func TestRenderStacked_NoSeriesFallsBackToBars(t *testing.T) {
 	buckets := []usage.Bucket{
 		{At: base, Counts: usage.Counts{Requests: 3, Tokens: 300}}, // no Series
 	}
-	lines := renderStackedBars(buckets, metricTokens, usage.GroupStatus, 80)
+	lines := renderStackedBars(buckets, metricTokens, usage.GroupStatus, 80, 0)
 	if !strings.ContainsAny(strings.Join(lines, "\n"), "▁▂▃▄▅▆▇█") {
 		t.Error("no bars drawn when Series is absent; the frame is empty")
 	}
@@ -254,7 +254,7 @@ func TestRenderStacked_FitsWidth(t *testing.T) {
 		{"200": 80, "429": 40},
 	})
 	for _, width := range []int{80, 100, 60} {
-		for _, line := range renderStackedBars(buckets, metricRequests, usage.GroupStatus, width) {
+		for _, line := range renderStackedBars(buckets, metricRequests, usage.GroupStatus, width, 0) {
 			if got := len([]rune(stripANSI(line))); got > width {
 				t.Errorf("width %d: line is %d columns:\n%q", width, got, stripANSI(line))
 			}
@@ -269,7 +269,7 @@ func TestRenderStacked_OverflowSeriesAreMarked(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		labels[string(rune('a'+i))] = int64(12 - i)
 	}
-	lines := renderStackedBars(mkSeriesBuckets([]map[string]int64{labels}), metricRequests, usage.GroupMethod, 80)
+	lines := renderStackedBars(mkSeriesBuckets([]map[string]int64{labels}), metricRequests, usage.GroupMethod, 80, 0)
 	joined := stripANSI(strings.Join(lines, "\n"))
 	// Series past the palette fold into one named band. A "(+N more)" count would
 	// be worse: the band is drawn, so it needs a key, not a tally.
@@ -287,7 +287,7 @@ func TestRenderStacked_SmallBucketStillDraws(t *testing.T) {
 		{"200": 10000},
 		{"200": 1}, // 1/10000 of the peak
 	})
-	lines := renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80)
+	lines := renderStackedBars(buckets, metricRequests, usage.GroupStatus, 80, 0)
 	bottom := stripANSI(plotLines(lines)[plotRows-1]) // last plot row
 	if strings.Count(bottom, "2") < barWidth*2 {
 		t.Errorf("the tiny bucket drew no segment:\n%q", bottom)
@@ -307,7 +307,7 @@ func TestRenderStacked_TinySeriesIsStillVisible(t *testing.T) {
 		"claude-opus-5":             1050,
 		"claude-haiku-4-5-20251001": 9, // 0.04% of the bucket
 	}})
-	plot := stripANSI(strings.Join(renderStackedBars(buckets, metricTokens, usage.GroupMethod, 80), "\n"))
+	plot := stripANSI(strings.Join(renderStackedBars(buckets, metricTokens, usage.GroupMethod, 80, 0), "\n"))
 
 	for _, want := range []string{"s", "o", "h"} {
 		if !strings.Contains(plot, strings.Repeat(want, barWidth)) {
@@ -378,7 +378,7 @@ func TestRenderStacked_EveryDrawnBandIsInTheLegend(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		labels[fmt.Sprintf("series-%c", 'a'+i)] = int64(100 - i*5)
 	}
-	lines := renderStackedBars(mkSeriesBuckets([]map[string]int64{labels}), metricRequests, usage.GroupMethod, 120)
+	lines := renderStackedBars(mkSeriesBuckets([]map[string]int64{labels}), metricRequests, usage.GroupMethod, 120, 0)
 
 	// plotLines first, then split: the unit caption sits above the axis, so leaving it in
 	// the chart half would collect the letters of "req" as though they were series marks
@@ -650,7 +650,7 @@ func TestUnlabelledTotal_OnlyCountsDrawnBands(t *testing.T) {
 		t.Errorf("unlabelledTotal = %d for a sub-row shortfall, want 0", got)
 	}
 	// And the rendered legend agrees.
-	joined := stripANSI(strings.Join(renderStackedBars([]usage.Bucket{b}, metricRequests, usage.GroupMethod, 80), "\n"))
+	joined := stripANSI(strings.Join(renderStackedBars([]usage.Bucket{b}, metricRequests, usage.GroupMethod, 80, 0), "\n"))
 	if strings.Contains(joined, unlabelledLabel) {
 		t.Errorf("legend names %q for a band that is never drawn:\n%s", unlabelledLabel, joined)
 	}
@@ -705,7 +705,7 @@ func TestRenderStacked_FullyUnlabelledBucketMatchesItsLegend(t *testing.T) {
 		}}
 	unlabelled := usage.Bucket{At: base.Add(time.Minute), Counts: usage.Counts{Requests: 900}}
 
-	lines := renderStackedBars([]usage.Bucket{labelled, unlabelled}, metricRequests, usage.GroupPlugin, 80)
+	lines := renderStackedBars([]usage.Bucket{labelled, unlabelled}, metricRequests, usage.GroupPlugin, 80, 0)
 
 	// The second bar's column: axisLabel + 1*barStride.
 	col := axisLabel + barStride

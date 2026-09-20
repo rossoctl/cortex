@@ -408,14 +408,15 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   `m` cycles the metric. Counts (tokens/requests/errors) and cost render
   as bars; latency renders as mean-with-whiskers (`┼` mean, `┬`/`┴` ±1σ),
   because a bar encodes magnitude from a zero baseline and mean latency
-  has no meaningful zero. On a wide enough terminal the y-axis is
-  captioned with the metric's unit (`tok`, `req`, `err`, `ms`, `USD`). `b`
-  cycles the breakdown, which stacks each bar by status, model, plugin or
-  host — each series marked with a letter derived from its name (`s` for
-  claude-sonnet-5) on a coloured ground, so the chart reads without colour
-  too. Statuses ≥400 render red. `b` is not offered for latency: the
-  aggregator holds no per-label latency, so there is no per-status mean to
-  plot.
+  has no meaningful zero. On a terminal with room to spare the bar chart
+  captions its y-axis with the metric's unit (`tok`, `req`, `err`, `USD`);
+  latency has no caption, because its own labels carry the unit per
+  magnitude (`820ms`, `4.1s`). `b` cycles the breakdown, which stacks each
+  bar by status, model, plugin or host — each series marked with a letter
+  derived from its name (`s` for claude-sonnet-5) on a coloured ground, so
+  the chart reads without colour too. Statuses ≥400 render red. `b` is not
+  offered for latency: the aggregator holds no per-label latency, so there
+  is no per-status mean to plot.
 
   The host breakdown answers "where is my traffic going" — one band per
   upstream, so two agents sharing one Cortex are told apart by the hosts

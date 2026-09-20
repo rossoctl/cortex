@@ -203,7 +203,7 @@ func TestRenderUsageChart_PicksTheRightForm(t *testing.T) {
 	}}}
 
 	// Latency -> whisker glyphs, never block glyphs.
-	latency := strings.Join(renderUsageChart(snap, metricLatency, usage.GroupNone, 80), nl)
+	latency := strings.Join(renderUsageChart(snap, metricLatency, usage.GroupNone, 80, 0), nl)
 	if !strings.ContainsRune(latency, whiskerMean) {
 		t.Error("latency did not use the whiskers renderer")
 	}
@@ -211,17 +211,17 @@ func TestRenderUsageChart_PicksTheRightForm(t *testing.T) {
 		t.Error("latency drew bars")
 	}
 	// Latency ignores grouping: there is no per-label latency to break down.
-	grouped := strings.Join(renderUsageChart(snap, metricLatency, usage.GroupStatus, 80), nl)
+	grouped := strings.Join(renderUsageChart(snap, metricLatency, usage.GroupStatus, 80, 0), nl)
 	if grouped != latency {
 		t.Error("grouping changed the latency chart, implying a breakdown that does not exist")
 	}
 
 	// Grouped counts -> a legend; ungrouped -> none.
-	stacked := strings.Join(renderUsageChart(snap, metricTokens, usage.GroupStatus, 80), nl)
+	stacked := strings.Join(renderUsageChart(snap, metricTokens, usage.GroupStatus, 80, 0), nl)
 	if !strings.Contains(stripANSI(stacked), "200 (") {
 		t.Error("grouped chart has no legend")
 	}
-	plain := strings.Join(renderUsageChart(snap, metricTokens, usage.GroupNone, 80), nl)
+	plain := strings.Join(renderUsageChart(snap, metricTokens, usage.GroupNone, 80, 0), nl)
 	if strings.Contains(plain, "200 (") {
 		t.Error("ungrouped chart rendered a legend")
 	}

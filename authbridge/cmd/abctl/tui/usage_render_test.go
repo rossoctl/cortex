@@ -6,9 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
-
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
@@ -33,7 +30,7 @@ func mkBuckets(vals []int64) []usage.Bucket {
 // traffic indistinguishable from traffic too small to plot — the exact confusion
 // an operator hits when usage looks wrong.
 func TestRenderBars_ZeroBucketIsStatedNotBlank(t *testing.T) {
-	lines := renderBars(mkBuckets([]int64{4100, 0, 300}), metricTokens, 80)
+	lines := renderBars(mkBuckets([]int64{4100, 0, 300}), metricTokens, 80, 0)
 	values := lines[len(lines)-1]
 
 	if !strings.Contains(values, "0") {
@@ -54,7 +51,7 @@ func TestRenderBars_ZeroBucketIsStatedNotBlank(t *testing.T) {
 // would hide real traffic; the partial blocks exist for exactly this.
 func TestRenderBars_SmallValueStillDrawsAGlyph(t *testing.T) {
 	// 50 against a 50000 peak is 1/1000 — well under one full row.
-	lines := renderBars(mkBuckets([]int64{50000, 50}), metricTokens, 80)
+	lines := renderBars(mkBuckets([]int64{50000, 50}), metricTokens, 80, 0)
 	bottom := lines[len(lines)-4] // last plot row before the axis
 
 	// Two bars: the tall one full, the short one a partial block.
@@ -74,7 +71,7 @@ func TestRenderBars_FitsWidth(t *testing.T) {
 		for i := range vals {
 			vals[i] = int64(10000 * (i + 1))
 		}
-		for _, line := range renderBars(mkBuckets(vals), metricTokens, width) {
+		for _, line := range renderBars(mkBuckets(vals), metricTokens, width, 0) {
 			if got := len([]rune(line)); got > width {
 				t.Errorf("width %d: line is %d columns wide:\n%q", width, got, line)
 			}
@@ -86,7 +83,7 @@ func TestRenderBars_FitsWidth(t *testing.T) {
 // cares about now, not about the start of the window.
 func TestRenderBars_NarrowKeepsNewest(t *testing.T) {
 	vals := []int64{111, 222, 333, 444, 555, 666, 777, 888, 999, 1000}
-	lines := renderBars(mkBuckets(vals), metricTokens, 30)
+	lines := renderBars(mkBuckets(vals), metricTokens, 30, 0)
 	values := lines[len(lines)-1]
 
 	// 1000 humanizes to "1.0k".
@@ -100,7 +97,7 @@ func TestRenderBars_NarrowKeepsNewest(t *testing.T) {
 
 // All-zero data must render without panicking or dividing by a zero peak.
 func TestRenderBars_AllZeroIsSafe(t *testing.T) {
-	lines := renderBars(mkBuckets([]int64{0, 0, 0}), metricTokens, 80)
+	lines := renderBars(mkBuckets([]int64{0, 0, 0}), metricTokens, 80, 0)
 	if len(lines) == 0 {
 		t.Fatal("no output for an all-idle window")
 	}
@@ -111,7 +108,7 @@ func TestRenderBars_AllZeroIsSafe(t *testing.T) {
 }
 
 func TestRenderBars_EmptyInput(t *testing.T) {
-	if got := renderBars(nil, metricTokens, 80); len(got) != 1 {
+	if got := renderBars(nil, metricTokens, 80, 0); len(got) != 1 {
 		t.Errorf("renderBars(nil) = %v, want a single placeholder line", got)
 	}
 }
@@ -216,7 +213,7 @@ func runeIndexAny(s, set string) int {
 // lengths, neither of which changes when a whole row shifts sideways. This
 // asserts the column positions that actually make the chart readable.
 func TestRenderBars_AxisAlignsWithBars(t *testing.T) {
-	lines := renderBars(mkBuckets([]int64{50000, 40000, 30000}), metricTokens, 80)
+	lines := renderBars(mkBuckets([]int64{50000, 40000, 30000}), metricTokens, 80, 0)
 
 	// Find the first bar glyph column from a plot row, and the axis row.
 	barCol := -1
@@ -265,7 +262,7 @@ func TestRenderBars_TicksFallOnBarBoundaries(t *testing.T) {
 	for i := range vals {
 		vals[i] = int64(1000 * (i + 1))
 	}
-	lines := renderBars(mkBuckets(vals), metricTokens, 80)
+	lines := renderBars(mkBuckets(vals), metricTokens, 80, 0)
 
 	var axis []rune
 	for _, l := range lines {
@@ -388,15 +385,20 @@ func TestHumanizeCostMicros_NeverExceedsWidth(t *testing.T) {
 			}
 		}
 	}
-	// Every branch bound in humanizeCostMicros, with the granularity it rounds at.
+	// Every branch bound in humanizeCostMicros AS THE CODE WRITES THEM, with the
+	// granularity that branch rounds at. Copied from the switch rather than rounded to
+	// the nearest power of ten: the bounds are deliberately half a unit below the round
+	// number (that is the fix this test drove), so a table listing the round numbers
+	// would only reach the real bound by way of its own ±3 steps — passing for a reason
+	// unrelated to what it claims to sweep.
 	for _, b := range []struct{ bound, step int64 }{
 		{5_000, 1},
-		{10_000_000, 10_000},                       // cents
-		{1_000_000_000, 1_000_000},                 // whole dollars
-		{9_950_000_000, 100_000_000},               // $0.1k
-		{1_000_000_000_000, 1_000_000_000},         // $1k
-		{9_950_000_000_000, 100_000_000_000},       // $0.1M
-		{1_000_000_000_000_000, 1_000_000_000_000}, // $1M
+		{9_995_000, 10_000},                      // cents
+		{999_500_000, 1_000_000},                 // whole dollars
+		{9_950_000_000, 100_000_000},             // $0.1k
+		{999_500_000_000, 1_000_000_000},         // $1k
+		{9_950_000_000_000, 100_000_000_000},     // $0.1M
+		{999_500_000_000_000, 1_000_000_000_000}, // $1M
 	} {
 		for k := int64(-3); k <= 3; k++ {
 			if v := b.bound + k*b.step; v > 0 {
@@ -429,8 +431,8 @@ func TestHumanizeCostMicros_DistinguishesFreeFromUnpriced(t *testing.T) {
 		micros int64
 		want   string
 	}{
-		{"unpriced reads as neither free nor spent", 0, "   0"},
-		{"a negative total is not spend", -5_000_000, "  --"},
+		{"unpriced reads as neither free nor spent", 0, "0"},
+		{"a negative total is not spend", -5_000_000, "--"},
 		{"a sub-cent charge is not free", 1, "<$.01"},
 		{"just under a cent", 4_999, "<$.01"},
 		{"a cent", 5_000, "$0.01"},
@@ -456,13 +458,12 @@ func TestHumanizeCostMicros_DistinguishesFreeFromUnpriced(t *testing.T) {
 // "1.2M" for $1.20. Asserts the axis and the value row in one render, since both come
 // out of renderBars.
 func TestRenderBars_CostFormatsEverySurface(t *testing.T) {
-	// Forced profile for the same reason as TestFooterShowsActiveSort: bars and labels
-	// are styled, CI has no TTY, and an unstyled run would not exercise the path a user
-	// sees — nor prove stripANSI is pulling escapes out of these assertions.
-	orig := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
-
+	// NO forced color profile here, unlike TestFooterShowsActiveSort. renderBars emits
+	// plain glyphs and fmt.Sprintf output with no lipgloss styling of its own, so forcing
+	// a profile changes nothing about what this asserts — verified by checking the render
+	// for escape bytes with ANSI256 forced and finding none. The footer genuinely styles
+	// its indicator, which is why the pin belongs there and not here.
+	//
 	// A cost fixture rather than mkBuckets, which populates Tokens only — a cost chart
 	// over it plots nothing and the assertions below would pass against an empty chart.
 	base := time.Date(2026, 9, 4, 23, 24, 0, 0, time.UTC)
@@ -470,7 +471,7 @@ func TestRenderBars_CostFormatsEverySurface(t *testing.T) {
 		{At: base, Counts: usage.Counts{Requests: 1, CostMicros: 1_200_000}},
 		{At: base.Add(time.Minute), Counts: usage.Counts{Requests: 1, CostMicros: 600_000}},
 	}
-	lines := renderBars(buckets, metricCost, 80)
+	lines := renderBars(buckets, metricCost, 80, 0)
 	out := stripANSI(strings.Join(lines, "\n"))
 
 	if !strings.Contains(out, "$") {
@@ -487,5 +488,44 @@ func TestRenderBars_CostFormatsEverySurface(t *testing.T) {
 	// A raw micros count must appear nowhere: 1_200_000 through humanizeCount is "1.2M".
 	if strings.Contains(out, "1.2M") {
 		t.Errorf("micros leaked through the count formatter:\n%s", out)
+	}
+}
+
+// TestRenderBars_RepeatedAxisLabelIsSuppressed pins the de-duplication the bar axis
+// gained alongside cost, which applies to every metric rather than only to money.
+//
+// With a peak of 1 every gridline rounds to the same string, and the axis used to print
+// that string on each labelled row — a column of identical numbers that reads as a
+// rendering bug rather than as a scale too coarse to divide. renderWhiskers has always
+// suppressed the repeat; the bar renderers now match it.
+func TestRenderBars_RepeatedAxisLabelIsSuppressed(t *testing.T) {
+	lines := renderBars(mkBuckets([]int64{1, 1}), metricTokens, 80, 0)
+
+	// Collect the gutter labels of the plot rows, dropping the axis rule, time labels
+	// and value row at the bottom. With a peak of 1 the ten gridlines round to "1" then
+	// "0" nine times, so the assertion is that no label repeats — not that only one
+	// appears, which would also forbid the legitimate 1-then-0 pair.
+	var labels []string
+	for _, l := range plotLines(lines)[:len(plotLines(lines))-3] {
+		// Lines are TrimRight-ed, so an unlabelled row can be shorter than the gutter —
+		// slicing to axisLabel unconditionally panics on exactly the rows being counted.
+		plain := stripANSI(l)
+		if len(plain) > axisLabel {
+			plain = plain[:axisLabel]
+		}
+		if g := strings.TrimSpace(plain); g != "" {
+			labels = append(labels, g)
+		}
+	}
+	seen := map[string]bool{}
+	for _, g := range labels {
+		if seen[g] {
+			t.Errorf("axis label %q appears more than once (labels: %v):\n%s",
+				g, labels, stripANSI(strings.Join(lines, "\n")))
+		}
+		seen[g] = true
+	}
+	if len(labels) == 0 {
+		t.Fatal("no axis labels at all — the fixture is not exercising the gutter")
 	}
 }

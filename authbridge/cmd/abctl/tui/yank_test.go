@@ -373,7 +373,7 @@ func TestStickyFlash_FitsWithWideRunes(t *testing.T) {
 }
 
 // The full-width takeover applies to sticky flashes only. A timed flash keeps the
-// connection state, rate and drops beside it — ten other producers use that path
+// connection state and rate beside it — ten other producers use that path
 // and none of them is a path the user is about to retype.
 func TestTimedFlash_KeepsTheStatusPrefix(t *testing.T) {
 	m := newTestDetailModel(t)

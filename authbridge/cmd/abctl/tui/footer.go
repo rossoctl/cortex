@@ -18,7 +18,7 @@ import (
 // This is the same destination the docs point at (see rossoctl#977).
 const feedbackURL = "https://github.com/rossoctl/cortex/issues/new/choose"
 
-// footerView renders the bottom two lines: status (connection + rate + drops
+// footerView renders the bottom two lines: status (connection + rate
 // + optional transient flash, then a muted feedback link) and a
 // context-sensitive keybinding hint. No lipgloss borders; parent view handles
 // the frame.
@@ -29,7 +29,7 @@ func (m *model) footerView() string {
 	//
 	// Yank is the case this exists for: the path is the longest thing the footer
 	// ever carries, and appending it after the ~32 columns of connection state,
-	// rate and drops pushed it off the right edge on a narrow terminal — the user
+	// rate pushed it off the right edge on a narrow terminal — the user
 	// saw "yanked → /Users/you/.cortex/abctl-" and could not read the filename,
 	// which is the whole point of showing it. Dropping the prefix while the notice
 	// is up buys those columns back; the prefix returns on the next keypress, and
@@ -110,7 +110,7 @@ func (m *model) footerView() string {
 	}
 
 	// Feedback link, quiet and last on the status line. It has the weakest claim
-	// on the columns — the connection state, rate, drops and any flash are what a
+	// on the columns — the connection state, rate and any flash are what a
 	// user is actively debugging with — so it is the first thing to drop when the
 	// line would otherwise overflow the terminal and wrap onto a third row. It is
 	// dropped whole rather than truncated: half a URL is not clickable and reads
@@ -136,8 +136,8 @@ func (m *model) footerView() string {
 //
 // Truncates from the RIGHT, unlike fitHintLine's drop-from-the-front. The two lines
 // rank their contents oppositely: the hint line's last entries are the escape hatches
-// a stuck operator needs, while this row leads with the connection state, rate and
-// drops — what someone is actively debugging with — and trails into optional state
+// a stuck operator needs, while this row leads with the connection state and the
+// rate — what someone is actively debugging with — and trails into optional state
 // markers. So the tail is what should go.
 func fitStatusLine(status string, width int) string {
 	if width <= 0 || lipgloss.Width(status) <= width {

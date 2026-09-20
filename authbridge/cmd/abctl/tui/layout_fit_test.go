@@ -13,6 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
+	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
@@ -64,6 +65,30 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 			Description: "a one-line operator-facing description of the plugin",
 		})
 	}
+	// A populated usage snapshot, for exactly the reason the catalog above needs one:
+	// without it paneUsage renders its one-line "(no data)" branch and the fit invariant
+	// never measures the CHART. That is how a unit caption costing one row of height
+	// shipped green past this test while overflowing 80x24 — one of fitSizes — by that
+	// one row.
+	//
+	// NOT YET REACHED BY TestLayout_EveryPaneFitsTheTerminal, which skips paneUsage: with
+	// this snapshot in place the pane overflows at 60x20 (by 4) and at 80x24 with the
+	// filter open (by 1), and BOTH reproduce unchanged on the commit this branch started
+	// from — the pane does not respect bodyHeight in general. Measuring the chart is what
+	// makes that visible; fixing it is a separate change. TestUsageChart_FitsTheChartBudget
+	// below covers the part this branch is responsible for.
+	usageSnap := &usage.Snapshot{Window: "today", BucketSeconds: 60, Group: usage.GroupNone}
+	usageBase := time.Now().Add(-10 * time.Minute)
+	for i := 0; i < 10; i++ {
+		usageSnap.Buckets = append(usageSnap.Buckets, usage.Bucket{
+			At:     usageBase.Add(time.Duration(i) * time.Minute),
+			Counts: usage.Counts{Requests: 5, Tokens: int64(1000 * (i + 1)), CostMicros: int64(1000 * (i + 1))},
+		})
+	}
+	usageSnap.Totals = usage.Counts{Requests: 50, Tokens: 55_000, CostMicros: 55_000}
+	m.usage.snap = usageSnap
+	m.usage.lastFetch = time.Now()
+
 	m.pipeline = &apiclient.PipelineView{}
 	for i := 0; i < 8; i++ {
 		m.pipeline.Inbound = append(m.pipeline.Inbound, apiclient.PipelinePlugin{
@@ -109,6 +134,12 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	}
 	for _, dim := range fitSizes {
 		for name, p := range panes {
+			if p == paneUsage {
+				// See fitModel's usage-snapshot comment: this pane overflows at two of
+				// fitSizes on main as well as here, so asserting it would fail on a
+				// pre-existing bug rather than on anything this test is guarding.
+				continue
+			}
 			for _, filtering := range []bool{false, true} {
 				m := fitModel(t, p, dim[0], dim[1], cursorRowsFixture(60))
 				if filtering {
@@ -234,5 +265,71 @@ func TestLayout_StateRichFooterFitsTheTerminal(t *testing.T) {
 			m.rebuildEventsTable()
 			assertFits(t, m, fmt.Sprintf("%s %dx%d", tc.name, dim[0], dim[1]))
 		}
+	}
+}
+
+// TestUsageChart_FitsTheChartBudget covers the half of the usage pane's height this
+// branch is responsible for: the unit caption is optional, costs a row, and must not
+// appear when the pane cannot spare one.
+//
+// Narrower than the whole-pane invariant above on purpose. That one cannot be asserted
+// for paneUsage without first fixing a pre-existing overflow (see fitModel), and a test
+// that waits for an unrelated fix is a test that guards nothing in the meantime. This
+// one holds the caption to its budget today.
+func TestUsageChart_FitsTheChartBudget(t *testing.T) {
+	for _, dim := range fitSizes {
+		m := fitModel(t, paneUsage, dim[0], dim[1], cursorRowsFixture(60))
+		budget := usageChartHeight(m.bodyHeight)
+		lines := renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, m.width, budget)
+
+		// Against the chart's own floor, not against the budget. plotRows+3 is
+		// irreducible — ten plot rows, the axis rule, the time labels, the value row —
+		// and at 60x20 the budget is already below it, which is a pre-existing pane
+		// overflow no caption decision can fix. What must hold is that the OPTIONAL row
+		// is not taken when the budget is tight: the chart is then exactly its floor.
+		if budget > 0 && budget <= chartRowsWithoutCaption && len(lines) > chartRowsWithoutCaption {
+			t.Errorf("%dx%d: budget %d leaves no room to spare, but the chart took %d rows "+
+				"— the caption should have been dropped:\n%s",
+				dim[0], dim[1], budget, len(lines), stripANSI(strings.Join(lines, "\n")))
+		}
+		// And where the budget does have room, the caption may take one row but no more.
+		if budget > chartRowsWithoutCaption && len(lines) > chartRowsWithoutCaption+1 {
+			t.Errorf("%dx%d: chart is %d rows, more than the floor %d plus one caption row",
+				dim[0], dim[1], len(lines), chartRowsWithoutCaption)
+		}
+	}
+}
+
+// TestUsagePane_FitsAt80x24 is the case this branch actually broke, asserted on the
+// COMPOSED view rather than on the chart alone.
+//
+// 80x24 is the tightest size in fitSizes where the pane fits at all on main, and it is
+// the size where the caption's row was the difference: 65 columns fit, 66 overflowed, and
+// nothing about columns changed between them. Asserting the budget arithmetic instead
+// would not have caught it — a wrong subtraction moves this size out of whichever branch
+// the assertion reads, and the test keeps passing while the terminal scrolls.
+//
+// The filter-open case is deliberately not here: it overflows by one row on main too.
+func TestUsagePane_FitsAt80x24(t *testing.T) {
+	m := fitModel(t, paneUsage, 80, 24, cursorRowsFixture(60))
+	if got := len(strings.Split(m.View(), "\n")); got > 24 {
+		t.Errorf("usage pane is %d lines for a 24-line terminal (%d too many)", got, got-24)
+	}
+}
+
+// TestUsageChartHeight_MatchesTheRenderedChrome keeps usagePaneChromeRows equal to what
+// renderUsage actually spends outside the chart.
+//
+// The constant is what the caption's height gate subtracts, so a row added to the header
+// or the summary block without updating it puts the gate one row out and the caption
+// reappears where it does not fit — the exact bug this branch shipped once already, in a
+// form no test could see.
+func TestUsageChartHeight_MatchesTheRenderedChrome(t *testing.T) {
+	m := fitModel(t, paneUsage, 100, 40, cursorRowsFixture(60))
+	body := strings.Split(strings.TrimRight(m.renderUsage(m.width, 0), "\n"), "\n")
+	chart := renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, m.width, 0)
+	if got := len(body) - len(chart); got != usagePaneChromeRows {
+		t.Errorf("renderUsage spends %d rows outside the chart, usagePaneChromeRows says %d\n"+
+			"  body=%d chart=%d", got, usagePaneChromeRows, len(body), len(chart))
 	}
 }

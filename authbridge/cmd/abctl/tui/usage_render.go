@@ -142,6 +142,11 @@ func (m usageMetric) unit() string {
 	case metricErrors:
 		return "err"
 	case metricLatency:
+		// UNREACHABLE AS A CAPTION and kept anyway: renderUsageChart routes latency to
+		// renderWhiskers, which draws no caption because humanizeDurationMs puts the unit
+		// in every label already. Kept so unit() is total over the enum — plotLines in the
+		// tests iterates every metric to recognise a caption line, and a metric with no
+		// unit would make that iteration lie rather than fail.
 		return "ms"
 	case metricCost:
 		return "USD"
@@ -152,21 +157,43 @@ func (m usageMetric) unit() string {
 
 // axisCaptionWidth is the terminal width at which the unit caption appears.
 //
-// Chosen so the caption costs no bars: below it, every column is already spoken for by
-// the chart itself, and a row spent naming the unit is a row not spent on data. 66 is
-// the width the bar geometry is documented against — ten bars at stride 6 plus the
-// gutter — so at or above it the caption is free.
+// Chosen so the caption costs no COLUMNS: below it, every column is already spoken for
+// by the chart itself. 66 is the width the bar geometry is documented against — ten bars
+// at stride 6 plus the gutter — so at or above it the caption fits horizontally.
 const axisCaptionWidth = 66
 
-// axisCaption is the unit caption line, or "" when the terminal is too narrow to
-// spend a row on it.
+// chartRowsWithoutCaption is how many rows a bar chart occupies before any caption: the
+// plot rows plus the axis rule, the time labels and the value row.
+const chartRowsWithoutCaption = plotRows + 3
+
+// axisCaption is the unit caption line, or "" when the terminal cannot spare it.
 //
 // Right-aligned INTO the gutter rather than centred over it: the labels below are
 // rendered with %5s in a 6-column field, so aligning to their right edge puts the unit
-// directly over the digits it qualifies. Shared by the bar and whisker renderers so the
-// unit cannot appear on three metrics and vanish on the fourth.
-func axisCaption(m usageMetric, width int) string {
+// directly over the digits it qualifies.
+//
+// GATED ON HEIGHT AS WELL AS WIDTH, because the caption costs a ROW and the pane has a
+// fixed row budget. Width alone was the first version and it broke the repo's own fit
+// invariant at 80x24 — one of fitSizes — by exactly the one row it adds. The width gate
+// made that look safe: 65 columns fit and 66 did not, which is the caption appearing
+// rather than anything about columns.
+//
+// The height passed in is the rows available TO THE CHART, not the pane's whole budget:
+// renderUsage spends rows on its header, its blank lines and the summary beneath, and at
+// 80x24 that remainder leaves the chart exactly its own height with nothing spare. The
+// caller subtracts what it spends; see usageChartHeight.
+//
+// A height of 0 means "unknown", which is what every pure renderer test passes; those
+// get the caption, since a test measuring columns is not measuring a terminal.
+//
+// Not called by renderWhiskers, deliberately — humanizeDurationMs already carries the
+// unit in every label, so a fixed "ms" above them would contradict labels reading
+// "4.1s". See the comment at the top of that renderer.
+func axisCaption(m usageMetric, width, height int) string {
 	if width < axisCaptionWidth {
+		return ""
+	}
+	if height > 0 && height < chartRowsWithoutCaption+1 {
 		return ""
 	}
 	return fmt.Sprintf("%*s", maxCountLabelLen, m.unit())
@@ -181,7 +208,7 @@ func axisCaption(m usageMetric, width int) string {
 // otherwise only visible by eye, and the two cases that matter most (an idle
 // bucket versus a very small one; a fractional top cell) are precisely the ones
 // eyes skip over.
-func renderBars(buckets []usage.Bucket, m usageMetric, width int) []string {
+func renderBars(buckets []usage.Bucket, m usageMetric, width, height int) []string {
 	if len(buckets) == 0 {
 		return []string{"  (no data)"}
 	}
@@ -203,7 +230,7 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width int) []string {
 	}
 
 	out := make([]string, 0, plotRows+4)
-	if caption := axisCaption(m, width); caption != "" {
+	if caption := axisCaption(m, width, height); caption != "" {
 		out = append(out, caption)
 	}
 
@@ -213,11 +240,18 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width int) []string {
 	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder
-		// Label every other row, matching the axis tick density below.
-		if label := m.label(peak * int64(row) / int64(plotRows)); row%2 == 0 && peak > 0 && label != lastAxisLabel {
-			lastAxisLabel = label
-			sb.WriteString(fmt.Sprintf("%5s ", label))
-		} else {
+		// Label every other row, matching the axis tick density below. The label is
+		// formatted only on the rows that can carry one — the guard used to sit after the
+		// call, formatting ten values to use five.
+		labelled := false
+		if row%2 == 0 && peak > 0 {
+			if label := m.label(peak * int64(row) / int64(plotRows)); label != lastAxisLabel {
+				lastAxisLabel = label
+				sb.WriteString(fmt.Sprintf("%5s ", label))
+				labelled = true
+			}
+		}
+		if !labelled {
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
 		sb.WriteString(barCellsForRow(buckets, m, peak, row))
@@ -661,11 +695,17 @@ func humanizeCostMicros(micros int64) string {
 	case negativeCost(micros):
 		// Not "$0.00": an impossible figure is not a small one. Through the shared
 		// predicate so this and the summary agree on what impossible means.
-		return "  --"
+		//
+		// UNPADDED, like every other branch. These two used to return "  --" and "   0",
+		// right-aligned for the axis — which the axis does not need, since it writes
+		// labels with "%5s", and which the other two surfaces got wrong: renderValues and
+		// the legend place the string themselves, so copy(row[at:], label) copied the
+		// padding too and put "--" two columns right of the bar it labels.
+		return "--"
 	case micros == 0:
 		// Zero micros is "nothing here could be priced", NOT "this was free" — see
 		// usage.Counts.CostMicros. A bare "$0.00" would assert the second.
-		return "   0"
+		return "0"
 	case micros < 5_000:
 		// "<$.01", a character narrower than formatUSDTotalMicros' own "<$0.01" floor,
 		// because five is all the gutter has. Same rule, spelled for the width.

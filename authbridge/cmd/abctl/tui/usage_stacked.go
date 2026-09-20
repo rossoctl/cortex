@@ -205,7 +205,7 @@ func isErrorStatus(label string) bool {
 // a segment boundary, so the ungrouped renderer keeps sub-row precision and this
 // one trades it for the breakdown. That is the reason "ungrouped" is its own
 // cycle state rather than a special case of grouping.
-func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group, width int) []string {
+func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group, width, height int) []string {
 	if len(buckets) == 0 {
 		return []string{"  (no data)"}
 	}
@@ -222,7 +222,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 		// Grouped view with no labelled traffic yet: fall back to the ungrouped
 		// bars rather than an empty frame, so the pane still shows the volume it
 		// does know about.
-		return renderBars(buckets, m, width)
+		return renderBars(buckets, m, width, height)
 	}
 
 	// Fold everything past maxNamedSeries into one band BEFORE drawing, so every
@@ -260,14 +260,24 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 	letters := assignLetters(legendSeries)
 
 	out := make([]string, 0, plotRows+5)
-	if caption := axisCaption(m, width); caption != "" {
+	if caption := axisCaption(m, width, height); caption != "" {
 		out = append(out, caption)
 	}
+	lastAxisLabel := ""
 	for row := plotRows; row >= 1; row-- {
 		var sb strings.Builder
+		// Suppressing a repeat, as renderBars and renderWhiskers both do: when the peak
+		// is small every gridline rounds to the same string, and a column of identical
+		// labels reads as a bug rather than as a collapsed scale.
+		labelled := false
 		if row%2 == 0 && peak > 0 {
-			sb.WriteString(fmt.Sprintf("%5s ", m.label(peak*int64(row)/int64(plotRows))))
-		} else {
+			if label := m.label(peak * int64(row) / int64(plotRows)); label != lastAxisLabel {
+				lastAxisLabel = label
+				sb.WriteString(fmt.Sprintf("%5s ", label))
+				labelled = true
+			}
+		}
+		if !labelled {
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
 		for _, b := range buckets {

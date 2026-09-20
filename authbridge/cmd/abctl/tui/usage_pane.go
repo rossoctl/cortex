@@ -191,7 +191,36 @@ func (m *model) resumeUsagePolling() tea.Cmd {
 // sub-row precision; a stack trades that precision for a breakdown, since a
 // fractional top cell cannot also encode a segment boundary; and latency is a
 // distribution whose zero is meaningless, so it gets marks and a range instead.
-func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, width int) []string {
+// usagePaneChromeRows is how many of the pane's rows are spent outside the chart: the
+// header line and its blank above, and the blank, summary and refresh note below.
+//
+// Measured, not estimated — TestUsageChartHeight_MatchesTheRenderedChrome keeps it equal
+// to what renderUsage actually spends, so the caption's height gate cannot drift out of
+// agreement with the layout it is protecting.
+const usagePaneChromeRows = 6
+
+// usageChartHeight converts the pane's row budget into the rows available to the chart.
+//
+// Zero (an unknown budget) passes straight through as zero, which the renderers read as
+// "not measuring a terminal" and render at full fidelity.
+func usageChartHeight(paneHeight int) int {
+	if paneHeight <= 0 {
+		return 0
+	}
+	// One row held back beyond the chrome. renderUsage's own output fits bodyHeight
+	// exactly at 80x24 and the view still came out a row past the terminal, because the
+	// budget is shared with the spend strip's reserved row — so a chart that spends every
+	// row it is offered leaves the composed view no slack. The caption is the only
+	// optional row here, which makes it the right thing to drop.
+	if h := paneHeight - usagePaneChromeRows - 1; h > 0 {
+		return h
+	}
+	// A budget this small cannot fit the chart at all; 1 is enough to say "no room to
+	// spare" without claiming a negative height.
+	return 1
+}
+
+func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, width, height int) []string {
 	if m.isLatency() {
 		// Grouping is ignored here: the aggregator carries no per-label latency,
 		// so a "by status" latency chart would silently show the bucket-wide mean
@@ -199,9 +228,9 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		return renderWhiskers(snap.Buckets, width)
 	}
 	if group != "" && group != usage.GroupNone {
-		return renderStackedBars(snap.Buckets, m, group, width)
+		return renderStackedBars(snap.Buckets, m, group, width, height)
 	}
-	return renderBars(snap.Buckets, m, width)
+	return renderBars(snap.Buckets, m, width, height)
 }
 
 // renderUsage draws the pane.
@@ -242,7 +271,7 @@ func (m *model) renderUsage(width, height int) string {
 	case m.usage.snap == nil:
 		b.WriteString("  (no data)\n")
 	default:
-		for _, line := range renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, width) {
+		for _, line := range renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, width, usageChartHeight(height)) {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
