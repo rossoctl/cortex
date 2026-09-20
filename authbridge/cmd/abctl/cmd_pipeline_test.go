@@ -259,11 +259,9 @@ func bodyColumn(line string) int {
 	// columns while still passing. That weakens the one test protecting alignment, which is
 	// the property two shipped bugs already slipped past.
 	//
-	// The row's cells are separated by two or more spaces and BODY is the last cell on a
-	// row with no description, so splitting on runs of whitespace and taking the field that
-	// IS "no" or "yes" identifies it without depending on what the name happens to contain.
 	// This command writes no escape sequences — see writePipelineTable's plain-text comment
 	// — so there is nothing to strip before measuring.
+	//
 	// The LAST such cell, not the first. A plugin may legitimately be named "no", and then
 	// a first-match scan reports the name's column — 17 against BODY's real 30 — and
 	// compares two wrong columns while still passing. BODY is the final cell on a row that
@@ -373,6 +371,12 @@ func TestRunPipelineGet_DividerOnlyBetweenTwoChains(t *testing.T) {
 		{"inbound only", `{"inbound":[{"name":"jwt-validation","direction":"inbound","position":1,` +
 			`"readsBody":false}],"outbound":[]}`, false},
 		{"both chains", twoChainPipeline, true},
+		// A direction wider than "DIRECTION" widens that column, which is what the
+		// divider's indent has to follow. The fixtures above cannot catch a hardcoded
+		// indent, because 9-cell directions make the old literal accidentally right.
+		{"both chains, wide direction", `{"inbound":[{"name":"aa","direction":"a-very-long-direction",` +
+			`"position":1,"readsBody":false}],"outbound":[{"name":"bb","direction":"outbound",` +
+			`"position":2,"readsBody":true}]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := fakePipelineServer(t, tc.body)
@@ -384,6 +388,25 @@ func TestRunPipelineGet_DividerOnlyBetweenTwoChains(t *testing.T) {
 			}
 			if got := strings.Contains(out.String(), "(app)"); got != tc.wantDivide {
 				t.Errorf("divider present = %v, want %v:\n%s", got, tc.wantDivide, out.String())
+			}
+			if !tc.wantDivide {
+				return
+			}
+			// And it lines up under PLUGIN. Neither divider case checked the indent, which
+			// was a literal 17 — correct only while DIRECTION stayed the widest value in
+			// its own column, and Direction comes from the server.
+			var dividerCol, pluginCol int
+			for _, line := range strings.Split(out.String(), "\n") {
+				if i := strings.Index(line, "──"); i >= 0 {
+					dividerCol = lipgloss.Width(line[:i])
+				}
+				if i := strings.Index(line, "PLUGIN"); i >= 0 {
+					pluginCol = lipgloss.Width(line[:i])
+				}
+			}
+			if dividerCol != pluginCol {
+				t.Errorf("divider starts at column %d, PLUGIN at %d:\n%s",
+					dividerCol, pluginCol, out.String())
 			}
 		})
 	}

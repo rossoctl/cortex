@@ -246,7 +246,11 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 	// before or after the application when none do. The whole-table guard above catches
 	// only the case where BOTH chains are empty.
 	if len(view.Inbound) > 0 && len(view.Outbound) > 0 {
-		fmt.Fprintln(stdout, "                 ── (app) ──")
+		// Indent derived, not a literal: it lands under PLUGIN, whose column starts at
+		// 2 + 2 + 2 + directionW + 2. The literal 17 was right only while directionW stayed
+		// at len("DIRECTION"), and Direction is server-supplied — a wider one widened the
+		// column and left the divider short of it.
+		fmt.Fprintln(stdout, strings.Repeat(" ", 8+directionW)+"── (app) ──")
 	}
 	for _, p := range view.Outbound {
 		writePipelineRow(p, nameW, directionW, stdout)
@@ -271,6 +275,12 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 // shorter string that means something else. Same rule and reasoning as tui.sanitizeLabel,
 // which is unexported there; duplicated rather than exported, because widening another
 // package's API is not this change's business.
+//
+// C0 AND DEL ONLY — the C1 range U+0080–U+009F passes through, and U+009B is an 8-bit CSI,
+// which is this doc's own threat one encoding up. Left as it is deliberately: the rule
+// matches tui.sanitizeLabel's exactly, and a UTF-8 terminal receives that codepoint as the
+// two bytes 0xC2 0x9B rather than as a CSI introducer. Widening it is a change to both
+// copies at once, not to this one.
 //
 // LATENT against an honest proxy, which sends neither: plugin names come from a registry
 // and plugins/deps.go rejects an unknown one at startup. It is reachable from a hostile or
