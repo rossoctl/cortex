@@ -69,15 +69,21 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 		"emit the pipeline as JSON, in /v1/pipeline's own shape and field names")
 	endpoint := fs.String("endpoint", "",
 		"session API URL of the proxy (default: the Cortex installed on this machine)")
-	fs.Usage = func() {
-		fmt.Fprint(stderr, pipelineUsage)
-		fs.PrintDefaults()
-	}
+	// SILENCED, and printed from the Parse result instead — the shape cmd_tools.go uses and
+	// the reason it uses it. Left to write the usage itself, fs.Usage fires on BOTH a help
+	// request and a parse error, and it has only one stream to write to: pointing it at
+	// stderr put `pipeline get --help` entirely on stderr with nothing on stdout, which is
+	// the opposite of what the comment above this function claims. ErrHelp is the flag
+	// package's own answer to which of the two happened, so the branch below can send help
+	// to stdout and a usage error to stderr.
+	fs.Usage = func() {}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			// Parse has already written the usage block. Help is not a usage error.
+			writeGetUsage(stdout, fs)
 			return 0
 		}
+		// Parse has already written its own line to stderr; the usage joins it there.
+		writeGetUsage(stderr, fs)
 		return 2
 	}
 	// REFUSED, not ignored, and the consequence is worse than a stray word. flag.Parse
@@ -125,6 +131,18 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 	}
 	writePipelineTable(view, stdout)
 	return 0
+}
+
+// writeGetUsage prints `pipeline get`'s usage plus its flag list to w.
+//
+// The flag list comes from the FlagSet that parsed the arguments, so it cannot drift from
+// the flags actually accepted.
+func writeGetUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprint(w, pipelineUsage)
+	out := fs.Output()
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+	fs.SetOutput(out)
 }
 
 // writePipelineJSON emits the view in /v1/pipeline's own shape.
@@ -180,17 +198,43 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 	// tui/spend_strip.go:513 states and the bug footer.go records: a width counted in
 	// bytes and then padded as display columns overflows on any wide character. Measured
 	// here before the fix, a CJK plugin name drifted every column to its right by 8.
-	nameW := lipgloss.Width("PLUGIN")
-	for _, p := range append(append([]apiclient.PipelinePlugin{}, view.Inbound...), view.Outbound...) {
-		if n := lipgloss.Width(p.Name); n > nameW {
-			nameW = n
+	//
+	// Two sequential loops rather than concatenating the chains into a third slice: the scan
+	// reads two fields and copying every plugin to iterate them was work for nothing.
+	//
+	// The SANITISED value is measured, because that is the string the row will print — a
+	// name whose control characters become U+FFFD is a different width from the raw one.
+	nameW, directionW := lipgloss.Width("PLUGIN"), lipgloss.Width("DIRECTION")
+	for _, chain := range [][]apiclient.PipelinePlugin{view.Inbound, view.Outbound} {
+		for _, p := range chain {
+			if n := lipgloss.Width(sanitizeCell(p.Name)); n > nameW {
+				nameW = n
+			}
+			if d := lipgloss.Width(sanitizeCell(p.Direction)); d > directionW {
+				directionW = d
+			}
 		}
 	}
 
-	fmt.Fprintf(stdout, "  %-2s  %-9s  %s  %-4s  %s\n",
-		"#", "DIRECTION", padCells("PLUGIN", nameW), "BODY", "DESCRIPTION")
+	// DESCRIPTION is headed only when something will fill it: a pipeline whose plugins all
+	// declare none would otherwise carry a labelled column with nothing under it.
+	anyDescription := false
+	for _, chain := range [][]apiclient.PipelinePlugin{view.Inbound, view.Outbound} {
+		for _, p := range chain {
+			if p.Description != "" {
+				anyDescription = true
+			}
+		}
+	}
+	if anyDescription {
+		fmt.Fprintf(stdout, "  %-2s  %s  %s  %-4s  %s\n",
+			"#", padCells("DIRECTION", directionW), padCells("PLUGIN", nameW), "BODY", "DESCRIPTION")
+	} else {
+		fmt.Fprintf(stdout, "  %-2s  %s  %s  %s\n",
+			"#", padCells("DIRECTION", directionW), padCells("PLUGIN", nameW), "BODY")
+	}
 	for _, p := range view.Inbound {
-		writePipelineRow(p, nameW, stdout)
+		writePipelineRow(p, nameW, directionW, stdout)
 	}
 	// The application sits BETWEEN the two chains, which is what makes the ordering
 	// readable: inbound plugins run before it, outbound ones after. The pane draws the
@@ -205,28 +249,35 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 		fmt.Fprintln(stdout, "                 ── (app) ──")
 	}
 	for _, p := range view.Outbound {
-		writePipelineRow(p, nameW, stdout)
+		writePipelineRow(p, nameW, directionW, stdout)
 	}
 }
 
-// sanitizeDescription replaces control characters in a plugin description so one row stays
-// one row.
+// sanitizeCell replaces control characters in a server-supplied string so one row stays one
+// row.
 //
-// Descriptions arrive over /v1/*, which is unauthenticated, and are interpolated straight
-// into a line of a table. A newline splits the row in two and the continuation lands
-// unindented, carrying whatever trailing whitespace preceded it — which defeats the
-// no-trailing-whitespace property the unpadded-BODY branch below exists to hold. An ESC
-// sequence is worse: it repositions the cursor or recolours the pane from a string the
-// proxy never vouched for.
+// NAME AND DIRECTION AS WELL AS DESCRIPTION. All three arrive in the same unauthenticated
+// /v1/* response and land in the same Fprintf, so sanitising only the description proved
+// less than its own comment claimed: a newline in a NAME split the row and left a fragment
+// reading "BODY-FAKE  no", which looks like a legitimate row rather than like damage. A
+// name also feeds the column-width scan, so one hostile value perturbs every other row.
 //
-// U+FFFD rather than dropping the rune, so a mangled description reads as mangled instead
-// of as a shorter sentence that means something else. Same rule and same reasoning as
-// tui.sanitizeLabel, which is unexported in that package; duplicated rather than exported,
-// because widening another package's API is not this change's business.
+// A newline splits the row and the continuation lands unindented, carrying whatever
+// trailing whitespace preceded it — which defeats the no-trailing-whitespace property the
+// unpadded-BODY branch below exists to hold. An ESC sequence is worse: it repositions the
+// cursor or recolours the pane from a string the proxy never vouched for.
 //
-// Every shipped description is a single line today. This is about what the wire permits,
-// not about what the plugins currently send.
-func sanitizeDescription(s string) string {
+// U+FFFD rather than dropping the rune, so a mangled value reads as mangled instead of as a
+// shorter string that means something else. Same rule and reasoning as tui.sanitizeLabel,
+// which is unexported there; duplicated rather than exported, because widening another
+// package's API is not this change's business.
+//
+// LATENT against an honest proxy, which sends neither: plugin names come from a registry
+// and plugins/deps.go rejects an unknown one at startup. It is reachable from a hostile or
+// impersonating endpoint, which --endpoint accepts by name and which the session API's own
+// trust model admits — no authentication, and a wildcard bind unless bind_loopback_only is
+// set. This is about what the wire permits, not what the plugins currently send.
+func sanitizeCell(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -252,7 +303,7 @@ func padCells(s string, w int) string {
 }
 
 // writePipelineRow prints one plugin's row, and its config beneath when it has one.
-func writePipelineRow(p apiclient.PipelinePlugin, nameW int, stdout io.Writer) {
+func writePipelineRow(p apiclient.PipelinePlugin, nameW, directionW int, stdout io.Writer) {
 	body := "no"
 	if p.ReadsBody {
 		body = "yes"
@@ -273,11 +324,15 @@ func writePipelineRow(p apiclient.PipelinePlugin, nameW int, stdout io.Writer) {
 	// trailing run of spaces on every plugin that declares none — invisible on screen,
 	// but it lands in a redirected file and in a diff, and nothing in the repo's hooks
 	// inspects a program's output for it.
-	fmt.Fprintf(stdout, "  %-2d  %-9s  %s  ", p.Position, p.Direction, padCells(p.Name, nameW))
+	// Every server-supplied cell goes through sanitizeCell, and every one that is padded
+	// goes through padCells: "%-9s" on Direction was the same byte-counting mistake the
+	// comment on nameW rejects, measured at 2 columns of drift on a wide value.
+	fmt.Fprintf(stdout, "  %-2d  %s  %s  ",
+		p.Position, padCells(sanitizeCell(p.Direction), directionW), padCells(sanitizeCell(p.Name), nameW))
 	if p.Description == "" {
 		fmt.Fprintln(stdout, body)
 	} else {
-		fmt.Fprintf(stdout, "%-4s  %s\n", body, sanitizeDescription(p.Description))
+		fmt.Fprintf(stdout, "%-4s  %s\n", body, sanitizeCell(p.Description))
 	}
 	if len(p.Config) == 0 {
 		return
@@ -286,6 +341,12 @@ func writePipelineRow(p apiclient.PipelinePlugin, nameW int, stdout io.Writer) {
 	// line per plugin is the shape this command exists to improve on. Failure to indent
 	// falls back to the bytes as they arrived — a config is worth showing even when it
 	// is not worth reformatting.
+	// NOT routed through sanitizeCell, and that is safe rather than an omission. This path
+	// re-indents JSON, which cannot carry a raw control byte — one inside a string literal
+	// makes the document invalid and the decode fails upstream, long before here — and an
+	// ESCAPED control character stays escaped through json.Indent, so "\u001b" reaches the
+	// terminal as those six characters and not as an ESC. The row fields above have no such
+	// encoding protecting them, which is why they need the sanitiser and this does not.
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, p.Config, "        ", "  "); err != nil {
 		fmt.Fprintf(stdout, "        %s\n", strings.TrimSpace(string(p.Config)))

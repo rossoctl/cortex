@@ -253,14 +253,44 @@ func TestRunPipelineGet_DescriptionIsOptionalAndCostsNothingWhenAbsent(t *testin
 // where a cell LANDS on a terminal, and a byte offset says something different the moment a
 // name is not ASCII — which is the whole bug this pins.
 func bodyColumn(line string) int {
-	// This command writes no escape sequences — see writePipelineTable's plain-text
-	// comment — so there is nothing to strip before measuring.
-	for _, body := range []string{"  no", "  yes"} {
-		if i := strings.Index(line, body); i >= 0 {
-			return lipgloss.Width(line[:i+2])
+	// Anchored on the FIELD, not on a substring. Searching for "  no" found the first
+	// occurrence anywhere on the line, so a plugin named "no" made this report the name's
+	// column instead of BODY's — 17 against the real 30 — and then compared two wrong
+	// columns while still passing. That weakens the one test protecting alignment, which is
+	// the property two shipped bugs already slipped past.
+	//
+	// The row's cells are separated by two or more spaces and BODY is the last cell on a
+	// row with no description, so splitting on runs of whitespace and taking the field that
+	// IS "no" or "yes" identifies it without depending on what the name happens to contain.
+	// This command writes no escape sequences — see writePipelineTable's plain-text comment
+	// — so there is nothing to strip before measuring.
+	// The LAST such cell, not the first. A plugin may legitimately be named "no", and then
+	// a first-match scan reports the name's column — 17 against BODY's real 30 — and
+	// compares two wrong columns while still passing. BODY is the final cell on a row that
+	// carries no description, and on a row that has one the description follows, so taking
+	// the last "no"/"yes" cell is right in both shapes: a description equal to exactly "no"
+	// with nothing else on it is not a case worth contorting for.
+	//
+	// Cells are runs of non-space, walked with the gaps between them, rather than split on a
+	// fixed two-space separator: a padded cell is followed by MORE than two spaces, which a
+	// fixed split turns into empty fields.
+	col, i, found := 0, 0, -1
+	r := []rune(line)
+	for i < len(r) {
+		for i < len(r) && r[i] == ' ' { // the gap before this cell
+			col++
+			i++
 		}
+		start := i
+		for i < len(r) && r[i] != ' ' { // the cell itself
+			i++
+		}
+		if cell := string(r[start:i]); cell == "no" || cell == "yes" {
+			found = col
+		}
+		col += lipgloss.Width(string(r[start:i]))
 	}
-	return -1
+	return found
 }
 
 // TestRunPipelineGet_ColumnsAlignAcrossRows is the assertion the first version of this suite
@@ -287,6 +317,16 @@ func TestRunPipelineGet_ColumnsAlignAcrossRows(t *testing.T) {
 		// "日本語" is 3 cells wide and 9 bytes long against a 14-cell column.
 		{"a wide-character name that needs padding", `{"inbound":[{"name":"日本語","direction":"inbound",` +
 			`"position":1,"readsBody":false},{"name":"jwt-validation","direction":"inbound","position":2,` +
+			`"readsBody":true}],"outbound":[]}`},
+		// DIRECTION is server-controlled too, and was padded with "%-9s" — the same
+		// byte-counting verb, 2 columns of drift on a wide value.
+		{"a wide-character direction", `{"inbound":[{"name":"aa","direction":"日本","position":1,` +
+			`"readsBody":false},{"name":"bb","direction":"inbound","position":2,"readsBody":true}],` +
+			`"outbound":[]}`},
+		// A plugin named exactly "no" is what broke the bodyColumn helper: a first-match
+		// substring scan reported the NAME's column and then compared two wrong ones.
+		{"a plugin named no", `{"inbound":[{"name":"no","direction":"inbound","position":1,` +
+			`"readsBody":false},{"name":"longer-name","direction":"inbound","position":2,` +
 			`"readsBody":true}],"outbound":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -383,6 +423,37 @@ func TestRunPipelineGet_AbsentChainIsAnEmptyArrayNotNull(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "null") {
 		t.Errorf("an omitted chain became null rather than []:\n%s", out.String())
+	}
+}
+
+// TestRunPipelineGet_AHostileNameCannotSplitTheRow — Name arrives in the same
+// unauthenticated response as Description and lands in the same Fprintf, so sanitising only
+// the description left the row splittable: a newline in a name produced a fragment reading
+// "BODY-FAKE  no", which looks like a legitimate row rather than like damage. A name also
+// feeds the column-width scan, so one hostile value perturbs every other row.
+func TestRunPipelineGet_AHostileNameCannotSplitTheRow(t *testing.T) {
+	// The newline is a JSON \n escape, not a raw byte: a raw newline inside a JSON string
+	// is invalid and the decoder rejects the response before this command renders anything,
+	// which is a different (and already handled) failure from the one under test.
+	srv := fakePipelineServer(t, `{"inbound":[],"outbound":[{"name":"evil\nBODY-FAKE",`+
+		`"direction":"outbound","position":1,"readsBody":false},`+
+		`{"name":"ok","direction":"outbound","position":2,"readsBody":true}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPipeline([]string{"get", "--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	// Header plus two rows: a split row would make four.
+	if n := len(strings.Split(strings.TrimRight(got, "\n"), "\n")); n != 3 {
+		t.Errorf("output is %d lines, want 3 — a name split its row:\n%q", n, got)
+	}
+	for _, r := range got {
+		if r != '\n' && (r == 0x7f || r < 0x20) {
+			t.Errorf("a control character reached the output: %q", got)
+			break
+		}
 	}
 }
 
