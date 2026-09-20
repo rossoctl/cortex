@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
 
@@ -78,6 +80,17 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	// REFUSED, not ignored, and the consequence is worse than a stray word. flag.Parse
+	// stops at the first non-flag argument, so `pipeline get typo --endpoint URL --json`
+	// parsed NEITHER flag: it fell back to the local proxy and answered about a different
+	// one than the operator named, as a human table for a caller that asked for JSON, and
+	// exited 0 with nothing on stderr. Silently reporting the wrong proxy's pipeline is
+	// not a thing to do quietly.
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "abctl pipeline get: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, "  flags must come before any other argument; see `abctl pipeline --help`")
+		return 2
+	}
 
 	target := *endpoint
 	if target == "" {
@@ -121,9 +134,23 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 // answer. PipelinePlugin.Config is json.RawMessage, so a plugin's config passes through
 // byte-for-byte as the proxy redacted it.
 func writePipelineJSON(view *apiclient.PipelineView, stdout, stderr io.Writer) int {
+	// An absent chain is [] on the wire, never null. The server treats that as a contract
+	// — sessionapi/server_test.go pins "Empty slices, not null — the UI expects []" — but
+	// this re-encodes a decoded struct whose slices carry no omitempty, so a response that
+	// OMITS a key decodes to a nil slice and marshals back as null. A compliant proxy never
+	// omits one; an older or non-compliant one does, and that is the same population the
+	// 404 branch above already handles separately. Normalising here keeps --json's promise
+	// to speak the endpoint's shape true for both.
+	out := *view
+	if out.Inbound == nil {
+		out.Inbound = []apiclient.PipelinePlugin{}
+	}
+	if out.Outbound == nil {
+		out.Outbound = []apiclient.PipelinePlugin{}
+	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(view); err != nil {
+	if err := enc.Encode(&out); err != nil {
 		fmt.Fprintf(stderr, "abctl pipeline get: writing JSON: %v\n", err)
 		return 1
 	}
@@ -148,25 +175,80 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 
 	// One width for both chains, so the inbound and outbound halves line up under one
 	// header rather than reading as two unrelated tables.
-	nameW := len("PLUGIN")
+	//
+	// lipgloss.Width, never len() and never a rune count — the convention
+	// tui/spend_strip.go:513 states and the bug footer.go records: a width counted in
+	// bytes and then padded as display columns overflows on any wide character. Measured
+	// here before the fix, a CJK plugin name drifted every column to its right by 8.
+	nameW := lipgloss.Width("PLUGIN")
 	for _, p := range append(append([]apiclient.PipelinePlugin{}, view.Inbound...), view.Outbound...) {
-		if n := len(p.Name); n > nameW {
+		if n := lipgloss.Width(p.Name); n > nameW {
 			nameW = n
 		}
 	}
 
-	fmt.Fprintf(stdout, "  %-2s  %-9s  %-*s  %-4s  %s\n",
-		"#", "DIRECTION", nameW, "PLUGIN", "BODY", "DESCRIPTION")
+	fmt.Fprintf(stdout, "  %-2s  %-9s  %s  %-4s  %s\n",
+		"#", "DIRECTION", padCells("PLUGIN", nameW), "BODY", "DESCRIPTION")
 	for _, p := range view.Inbound {
 		writePipelineRow(p, nameW, stdout)
 	}
-	// The application sits between the two chains, which is what makes the ordering
+	// The application sits BETWEEN the two chains, which is what makes the ordering
 	// readable: inbound plugins run before it, outbound ones after. The pane draws the
 	// same divider.
-	fmt.Fprintln(stdout, "                 ── (app) ──")
+	//
+	// Only when there is something on both sides of it. A pipeline with one chain empty is
+	// ordinary — demos/context-guru/k8s/authbridge-config.yaml ships `inbound.plugins: []`
+	// — and printing the divider there put it first or last, asserting that plugins run
+	// before or after the application when none do. The whole-table guard above catches
+	// only the case where BOTH chains are empty.
+	if len(view.Inbound) > 0 && len(view.Outbound) > 0 {
+		fmt.Fprintln(stdout, "                 ── (app) ──")
+	}
 	for _, p := range view.Outbound {
 		writePipelineRow(p, nameW, stdout)
 	}
+}
+
+// sanitizeDescription replaces control characters in a plugin description so one row stays
+// one row.
+//
+// Descriptions arrive over /v1/*, which is unauthenticated, and are interpolated straight
+// into a line of a table. A newline splits the row in two and the continuation lands
+// unindented, carrying whatever trailing whitespace preceded it — which defeats the
+// no-trailing-whitespace property the unpadded-BODY branch below exists to hold. An ESC
+// sequence is worse: it repositions the cursor or recolours the pane from a string the
+// proxy never vouched for.
+//
+// U+FFFD rather than dropping the rune, so a mangled description reads as mangled instead
+// of as a shorter sentence that means something else. Same rule and same reasoning as
+// tui.sanitizeLabel, which is unexported in that package; duplicated rather than exported,
+// because widening another package's API is not this change's business.
+//
+// Every shipped description is a single line today. This is about what the wire permits,
+// not about what the plugins currently send.
+func sanitizeDescription(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == 0x7f || r < 0x20 {
+			b.WriteRune('\uFFFD')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// padCells right-pads s to w DISPLAY COLUMNS.
+//
+// Not "%-*s", which pads to a byte count: a CJK name is three bytes per two columns, so
+// the verb stops padding long before the column is filled and every column to its right
+// shifts. lipgloss.Width is the module's own answer for this — see the comment on nameW.
+func padCells(s string, w int) string {
+	if pad := w - lipgloss.Width(s); pad > 0 {
+		return s + strings.Repeat(" ", pad)
+	}
+	return s
 }
 
 // writePipelineRow prints one plugin's row, and its config beneath when it has one.
@@ -191,11 +273,11 @@ func writePipelineRow(p apiclient.PipelinePlugin, nameW int, stdout io.Writer) {
 	// trailing run of spaces on every plugin that declares none — invisible on screen,
 	// but it lands in a redirected file and in a diff, and nothing in the repo's hooks
 	// inspects a program's output for it.
-	fmt.Fprintf(stdout, "  %-2d  %-9s  %-*s  ", p.Position, p.Direction, nameW, p.Name)
+	fmt.Fprintf(stdout, "  %-2d  %-9s  %s  ", p.Position, p.Direction, padCells(p.Name, nameW))
 	if p.Description == "" {
 		fmt.Fprintln(stdout, body)
 	} else {
-		fmt.Fprintf(stdout, "%-4s  %s\n", body, p.Description)
+		fmt.Fprintf(stdout, "%-4s  %s\n", body, sanitizeDescription(p.Description))
 	}
 	if len(p.Config) == 0 {
 		return

@@ -705,8 +705,8 @@ exposes describes its watcher — so this is a note rather than a check.
 
 **A concurrent write aborts the apply.** This file has other writers — `abctl
 tools scan --write`, the config migration `abctl service install` runs, a second
-abctl session — and
-`$EDITOR` can be open for minutes. The apply re-reads the file first and refuses
+abctl session — and `$EDITOR` can be open for minutes. The apply re-reads the file
+first and refuses
 if it moved, rather than renaming a whole file built from stale bytes over
 somebody else's change. The refusal names the likely culprits; re-open the edit
 to work from the current file. This is a compare, not a lock, so a writer

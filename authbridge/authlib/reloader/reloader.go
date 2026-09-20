@@ -164,10 +164,9 @@ func (r *Reloader) Start(ctx context.Context) error {
 	// what preserves a config symlinked into a dotfiles repo — changes nothing
 	// in this directory. On Linux, inotify reports directory-entry changes, so
 	// no event arrives and the reload never happens: abctl's editor then times
-	// out and rolls a correct edit back two minutes later, and `abctl tools
-	// scan --write` / the migration `abctl service install` runs land silently
-	// unreloaded. (macOS
-	// happens to survive this: kqueue watches the resolved file, so replacing
+	// out and rolls a correct edit back two minutes later, and `abctl tools scan
+	// --write` / the migration `abctl service install` runs land silently unreloaded.
+	// (macOS happens to survive this: kqueue watches the resolved file, so replacing
 	// it reports on the link. Relying on that is relying on the platform.)
 	//
 	// ADDITIVE on purpose — the watch and filter above are untouched. A

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // fakePipelineServer answers GET /v1/pipeline with body and 404s everything else, so a
@@ -237,6 +239,179 @@ func TestRunPipelineGet_DescriptionIsOptionalAndCostsNothingWhenAbsent(t *testin
 		t.Errorf("a plugin with config but no description lost its config:\n%s", got)
 	}
 	// And no line ends in whitespace.
+	for i, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+		if line != strings.TrimRight(line, " \t") {
+			t.Errorf("line %d ends in whitespace: %q", i, line)
+		}
+	}
+}
+
+// bodyColumn returns the display column at which a row's BODY cell starts, or -1 when the
+// line carries no recognisable row.
+//
+// Display columns via lipgloss.Width, not a byte or rune index: the property under test is
+// where a cell LANDS on a terminal, and a byte offset says something different the moment a
+// name is not ASCII — which is the whole bug this pins.
+func bodyColumn(line string) int {
+	// This command writes no escape sequences — see writePipelineTable's plain-text
+	// comment — so there is nothing to strip before measuring.
+	for _, body := range []string{"  no", "  yes"} {
+		if i := strings.Index(line, body); i >= 0 {
+			return lipgloss.Width(line[:i+2])
+		}
+	}
+	return -1
+}
+
+// TestRunPipelineGet_ColumnsAlignAcrossRows is the assertion the first version of this suite
+// did not have, and its absence is why two alignment bugs shipped past it.
+//
+// Every other test here is strings.Contains or strings.Index, so replacing both format
+// strings with completely unpadded versions left all seven passing — the command's whole
+// design argument is that the columns line up, and nothing checked it. This compares the
+// display column of BODY across rows, which is the one thing that must hold whatever the
+// names are.
+//
+// The CJK case is the point. Padding with "%-*s" counts BYTES while the terminal counts
+// CELLS, so a three-byte two-column rune stops the padding early and shifts every column to
+// its right — measured at 8 columns of drift before the fix. An ASCII-only fixture cannot
+// see it, which is why one is not used here.
+func TestRunPipelineGet_ColumnsAlignAcrossRows(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"ascii names", `{"inbound":[{"name":"jwt-validation","direction":"inbound","position":1,"readsBody":false},` +
+			`{"name":"a2a-parser","direction":"inbound","position":2,"readsBody":true}],"outbound":[]}`},
+		// The wide name must be SHORTER in display cells than the longest name, so the
+		// column genuinely needs padding. A wide name that is also the longest needs none,
+		// and then a byte-counting pad computes a negative width, adds nothing, and lands
+		// on the right column by accident — which a len()-vs-Width mutation survives.
+		// "日本語" is 3 cells wide and 9 bytes long against a 14-cell column.
+		{"a wide-character name that needs padding", `{"inbound":[{"name":"日本語","direction":"inbound",` +
+			`"position":1,"readsBody":false},{"name":"jwt-validation","direction":"inbound","position":2,` +
+			`"readsBody":true}],"outbound":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakePipelineServer(t, tc.body)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runPipeline([]string{"get", "--endpoint", srv.URL}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			var cols []int
+			for _, line := range strings.Split(out.String(), "\n") {
+				if c := bodyColumn(line); c >= 0 {
+					cols = append(cols, c)
+				}
+			}
+			if len(cols) < 2 {
+				t.Fatalf("found %d BODY cells, need at least 2 to compare:\n%s", len(cols), out.String())
+			}
+			for _, c := range cols[1:] {
+				if c != cols[0] {
+					t.Errorf("BODY starts at columns %v — the rows do not line up:\n%s", cols, out.String())
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestRunPipelineGet_DividerOnlyBetweenTwoChains — the divider asserts that plugins run
+// before and after the application, so it must not appear when one side is empty.
+//
+// Not hypothetical: demos/context-guru/k8s/authbridge-config.yaml in this repo ships
+// `inbound.plugins: []` with an outbound chain, and against that the divider printed as the
+// FIRST row of the table.
+func TestRunPipelineGet_DividerOnlyBetweenTwoChains(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantDivide bool
+	}{
+		{"outbound only", `{"inbound":[],"outbound":[{"name":"inference-parser","direction":"outbound",` +
+			`"position":1,"readsBody":true}]}`, false},
+		{"inbound only", `{"inbound":[{"name":"jwt-validation","direction":"inbound","position":1,` +
+			`"readsBody":false}],"outbound":[]}`, false},
+		{"both chains", twoChainPipeline, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakePipelineServer(t, tc.body)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runPipeline([]string{"get", "--endpoint", srv.URL}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			if got := strings.Contains(out.String(), "(app)"); got != tc.wantDivide {
+				t.Errorf("divider present = %v, want %v:\n%s", got, tc.wantDivide, out.String())
+			}
+		})
+	}
+}
+
+// TestRunPipelineGet_RejectsAPositionalArgument — flag.Parse stops at the first non-flag
+// argument, so a stray word used to swallow every flag after it: the command fell back to
+// the local proxy, answered about a different one than the operator named, printed a human
+// table for a caller that asked for JSON, and exited 0.
+func TestRunPipelineGet_RejectsAPositionalArgument(t *testing.T) {
+	var out, errOut strings.Builder
+	// An endpoint that cannot be reached, so a wrong exit code cannot come from a
+	// successful fetch: the only way to exit 2 here is the argument check.
+	code := runPipeline([]string{"get", "typo", "--json", "--endpoint", "http://127.0.0.1:1"}, &out, &errOut)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	if got := errOut.String(); !strings.Contains(got, "typo") {
+		t.Errorf("stderr does not name the offending argument:\n%s", got)
+	}
+	if out.String() != "" {
+		t.Errorf("wrote to stdout despite refusing:\n%q", out.String())
+	}
+}
+
+// TestRunPipelineGet_AbsentChainIsAnEmptyArrayNotNull — the server states [] for an empty
+// chain and pins it ("Empty slices, not null — the UI expects []"). This command re-encodes
+// a decoded struct, so a response that OMITS a key would marshal back as null and break the
+// shape --json promises. A compliant proxy never omits one; an older one does.
+func TestRunPipelineGet_AbsentChainIsAnEmptyArrayNotNull(t *testing.T) {
+	srv := fakePipelineServer(t, `{"outbound":[{"name":"x","direction":"outbound","position":1,"readsBody":false}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPipeline([]string{"get", "--endpoint", srv.URL, "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("an omitted chain became null rather than []:\n%s", out.String())
+	}
+}
+
+// TestRunPipelineGet_ADescriptionCannotSplitTheRow — descriptions arrive over an
+// unauthenticated endpoint and are interpolated into a table row. A newline splits the row
+// and leaves an unindented continuation carrying trailing whitespace, which is exactly the
+// property the unpadded-BODY branch exists to hold; an ESC sequence reaches the terminal.
+func TestRunPipelineGet_ADescriptionCannotSplitTheRow(t *testing.T) {
+	// "first\nsecond   \x1b[31mred" — built with explicit escapes so the fixture stays
+	// readable and this file stays free of literal control bytes.
+	srv := fakePipelineServer(t, `{"inbound":[],"outbound":[{"name":"x","direction":"outbound",`+
+		`"position":1,"readsBody":false,"description":"first\nsecond   \u001b[31mred"}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPipeline([]string{"get", "--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	// One header line plus one row: a split row would make three.
+	if n := len(strings.Split(strings.TrimRight(got, "\n"), "\n")); n != 2 {
+		t.Errorf("output is %d lines, want 2 — the description split the row:\n%q", n, got)
+	}
+	for _, r := range got {
+		if r != '\n' && (r == 0x7f || r < 0x20) {
+			t.Errorf("a control character reached the output: %q", got)
+			break
+		}
+	}
 	for i, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
 		if line != strings.TrimRight(line, " \t") {
 			t.Errorf("line %d ends in whitespace: %q", i, line)

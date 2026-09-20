@@ -92,9 +92,8 @@ func (s FileStore) Describe() Target {
 // toolscan/patch.go, which the config's own comments tell you to run
 // (`abctl tools scan --write <this file>`), plus the config migration that runs
 // from `abctl service install`, and a second abctl session. Apply renames a whole
-// file built from the Fetch-time
-// bytes, so without this a concurrent write is lost silently and completely,
-// including the parts outside the pipeline subtree.
+// file built from the Fetch-time bytes, so without this a concurrent write is lost
+// silently and completely, including the parts outside the pipeline subtree.
 //
 // A compare rather than a lock. It is not airtight — a writer landing between
 // this read and the rename still wins — but it converts the realistic case,
