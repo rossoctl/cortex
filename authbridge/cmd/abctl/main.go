@@ -15,12 +15,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/observe/claude"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/edit"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
@@ -187,6 +189,26 @@ func wantsInfoFlagOnly(args []string) bool {
 	return true
 }
 
+// harvestClaudeMetadata reads Claude Code's transcripts so the viewer can name sessions,
+// reporting a failure on warn and otherwise saying nothing.
+//
+// NEVER FATAL, and that is the whole reason it is a function returning nothing rather than
+// an error the caller handles. The viewer is the tool you reach for when everything else is
+// broken, and a harvest is a convenience: a ~/.claude that cannot be read, an unwritable
+// ~/.cortex, or a corrupt metadata file must cost a TITLE column and nothing more. That is
+// the posture LoadSessionMetadata already takes on the same file, and the one
+// SweepStaleTempfiles and the prefs-path failure take a few lines above.
+//
+// Deliberately quieter than the subcommand, which prints counts, a partial-read list and a
+// "No transcripts under ..." hint. None of that belongs above a viewer nobody asked to
+// harvest, so only a failure says anything — and the same corrupt file that exits 1 under
+// `read-claude-sessions` is one warning line here.
+func harvestClaudeMetadata(warn io.Writer) {
+	if _, err := claude.Harvest(claude.Options{Merge: true, Incremental: true}); err != nil {
+		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n", err)
+	}
+}
+
 // chooseEndpoint decides which session API abctl connects to, or "" for the
 // Namespaces → Pods picker.
 //
@@ -223,6 +245,8 @@ type observeFlags struct {
 	endpoint   *string
 	prefs      *string
 	kubernetes *bool
+	// skipClaudeMetadata turns off the implicit harvest. See registerObserveFlags.
+	skipClaudeMetadata *bool
 }
 
 // registerObserveFlags declares the viewer's flags on fs and returns the pointers.
@@ -261,6 +285,18 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 		// a local Cortex that is down still falls through to the picker.
 		kubernetes: fs.Bool("kubernetes", false,
 			"open the Namespaces → Pods picker even when a Cortex is running on this machine. Without it, a running local Cortex is connected to directly and the picker appears only if none is answering. Ignored when --endpoint is given."),
+		// Default FALSE, so a bare `abctl observe` names its sessions with no flag at
+		// all: a viewer showing bare UUIDs is the problem the metadata file exists to
+		// solve, and nobody will run a separate subcommand first to get titles.
+		//
+		// Affordable as a default only because the harvest is INCREMENTAL here — it
+		// parses the transcripts that changed since the last run, measured at 2 of 124
+		// files and 5.1 of 207 MB on a real tree. A full scan is 0.73-1.18s, which is
+		// what `abctl experimental read-claude-sessions` still does and what this flag
+		// exists to decline: a machine where even the incremental read is unwanted, or
+		// where ~/.claude should simply not be touched.
+		skipClaudeMetadata: fs.Bool("skip-claude-metadata", false,
+			"do not read Claude Code's transcripts before opening the viewer. By default abctl harvests session titles from CLAUDE_CONFIG_DIR / ~/.claude into ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID; pass this to skip that and show ids only."),
 	}
 }
 
@@ -305,6 +341,22 @@ func runObserve(args []string) int {
 		}
 	}
 	tui.Settings = loadUserConfig(prefsPath, os.Stderr)
+
+	// Name the sessions before the viewer opens.
+	//
+	// Here, and not inside tui: both model constructors read the metadata file while
+	// building the model (loadSessionMetadataForModel), so a harvest that finished any
+	// later would populate the file for the NEXT run and this one would still show bare
+	// UUIDs. Here rather than further down for the reason the settings load is here —
+	// once tea.NewProgram takes the alt screen, anything written to the terminal
+	// corrupts the frame instead of reaching anyone.
+	//
+	// Incremental, unlike `abctl experimental read-claude-sessions`: that command's
+	// subject IS the harvest, so it re-reads everything and can afford to. This one runs
+	// on every launch, where a full scan measured 0.73-1.18s over 207MB of transcripts.
+	if !*f.skipClaudeMetadata {
+		harvestClaudeMetadata(os.Stderr)
+	}
 
 	// Locate the Cortex on this machine, if any, and find out whether it is up.
 	//
