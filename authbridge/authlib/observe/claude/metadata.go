@@ -83,7 +83,14 @@ type SessionMetadata struct {
 	// Optional, like every other field, and its zero value is the safe answer: an
 	// entry written before this field existed has no timestamp, cannot vouch for its
 	// transcript, and is therefore re-parsed rather than trusted.
-	LogModTime time.Time `json:"logModTime,omitempty"`
+	//
+	// NOT omitempty, unlike every field above, because it could not work: encoding/json
+	// treats only empty scalars, maps and slices as empty, so a zero time.Time is a struct
+	// and gets written out as "0001-01-01T00:00:00Z" regardless. Tagging it omitempty would
+	// have read as a promise this file does not keep — every entry carries a timestamp,
+	// which is why the rule that matters is stated on the READING side: harvestedAt treats
+	// the zero value as "cannot tell" and re-parses.
+	LogModTime time.Time `json:"logModTime"`
 }
 
 // SessionMetadataRel is the harvested metadata file, relative to the user's home.

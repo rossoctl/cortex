@@ -418,10 +418,8 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 			return title
 		}
 		// From the RIGHT for prose, which reads left-to-right — the opposite of a path, whose
-		// tail is the distinguishing end. trunc counts runes rather than display columns, which
-		// is wrong for CJK prose in the same way truncLeft was; bounding it at all is the fix
-		// here, and narrowing that gap is a change to trunc's other callers too.
-		return trunc(title, titleW)
+		// tail is the distinguishing end.
+		return truncRight(title, titleW)
 	}
 	// THE WIDTH IS PASSED IN, not read back off the live table. The rows are built before
 	// SetColumns installs the new header, so reading the table gave the PREVIOUS width: on a
@@ -436,6 +434,45 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 		return title
 	}
 	return truncLeft(title, titleW)
+}
+
+// truncRight clips s to n DISPLAY COLUMNS keeping the LEFT end, marking the cut with a
+// trailing ellipsis.
+//
+// The mirror of truncLeft, for prose: a title reads left-to-right, so the opening words are
+// the distinguishing end and the tail is what goes.
+//
+// Its own function rather than a fix to trunc, which this replaced at one call site: trunc
+// counts RUNES and has four other callers (session ids, an events line, a test helper) that
+// budget in characters and would change behaviour under a column-aware rewrite. Measured, the
+// rune count is wrong by about 2x for the input this path actually gets: an 11-column budget
+// returned 21 columns of CJK and 14 of emoji. Narrowing trunc's own gap is a separate change
+// to those callers; this one bounds the cell that harvested titles flow into.
+//
+// The symptom it fixes is over-truncation, not a broken frame: the table's fixed-width box
+// re-cuts an over-wide cell, so the line stayed at terminal width — a CJK title just lost
+// characters it had budget for, and lost them at a point the renderer chose. Titles are
+// model-generated text, so CJK and emoji are expected rather than exotic.
+func truncRight(s string, n int) string {
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	if n < 1 {
+		return ""
+	}
+	// Runes are dropped from the end until the remainder fits the budget. One at a time
+	// rather than by arithmetic, for truncLeft's reason: a rune is 1 or 2 columns wide, so
+	// there is no index that can be computed from the total.
+	//
+	// The ELLIPSIS PLUS THE HEAD is measured, not the head plus one, so a trailing combining
+	// mark that fuses onto the ellipsis cannot push the result over budget.
+	r := []rune(s)
+	for i := len(r); i > 0; i-- {
+		if out := string(r[:i]) + "…"; lipgloss.Width(out) <= n {
+			return out
+		}
+	}
+	return "…"
 }
 
 // truncLeft clips s to n runes keeping the RIGHT end, marking the cut with a leading ellipsis.

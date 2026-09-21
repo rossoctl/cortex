@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -204,9 +205,22 @@ func wantsInfoFlagOnly(args []string) bool {
 // harvest, so only a failure says anything — and the same corrupt file that exits 1 under
 // `read-claude-sessions` is one warning line here.
 func harvestClaudeMetadata(warn io.Writer) {
-	if _, err := claude.Harvest(claude.Options{Merge: true, Incremental: true}); err != nil {
-		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n", err)
+	_, err := claude.Harvest(claude.Options{Merge: true, Incremental: true})
+	if err == nil {
+		return
 	}
+	// A corrupt metadata file is the one failure that will not clear itself: every launch
+	// reads the same bad file and prints the same line, so a warning that names no fix is a
+	// message the user cannot act on and cannot stop. Harvest exports the sentinel precisely
+	// so a caller can say what to do about it, and this caller has to say something different
+	// from the subcommand's advice — --merge=false is not a flag `abctl observe` has.
+	if errors.Is(err, claude.ErrCorruptMetadata) {
+		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
+			"  Fix or move the file, or rebuild it:\n"+
+			"    abctl experimental read-claude-sessions --merge=false\n", err)
+		return
+	}
+	fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n", err)
 }
 
 // chooseEndpoint decides which session API abctl connects to, or "" for the

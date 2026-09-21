@@ -184,17 +184,40 @@ func TestSessionsPane_PathTitleTruncatesFromTheLeft(t *testing.T) {
 	}
 }
 
-// Prose is not truncated from the left: it reads from the beginning.
+// Prose keeps its HEAD: it is cut from the right, the opposite side from a path.
 func TestSessionsPane_ProseTitleTruncatesFromTheRight(t *testing.T) {
 	const prose = "Investigate the flaky reloader debounce test"
 	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: prose}}, "s1")
 	m.sessionsTbl.SetColumns(sessionsColumnsFor(116))
 	m.rebuildSessionsTable()
 
-	// Handed to bubbles whole: it is under no obligation to arrive pre-truncated, because
-	// bubbles' own right-truncation is already the correct side for prose.
-	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != prose {
-		t.Errorf("TITLE = %q, want the untouched title %q", got, prose)
+	// Arrives whole HERE because it fits here, not because prose is exempt. The comment this
+	// replaced claimed the cell was "handed to bubbles whole" and "under no obligation to
+	// arrive pre-truncated", which stopped being true when every cell became bounded — it
+	// passed only because a 116-column fixture leaves this 43-character title room to spare.
+	// Asserting equality is still the right check at this width; what was wrong was the reason
+	// given for it, which invited someone to widen the title and conclude the code had broken.
+	got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE")
+	if got != prose {
+		t.Errorf("TITLE = %q, want the untouched title %q — it fits this width", got, prose)
+	}
+
+	// And at a width where it does NOT fit, the cut takes the tail and keeps the opening
+	// words, which is the side this test is named for.
+	titleW := sessionsColumnWidth(sessionsColumnsFor(90), "TITLE")
+	cut := m.sessionTitleCell("s1", titleW)
+	if lipgloss.Width(cut) > titleW {
+		t.Errorf("TITLE is %d columns against a %d-column cell: %q", lipgloss.Width(cut), titleW, cut)
+	}
+	// "Investi…" at the narrow end — the opening words, however few fit. Checked as a prefix of
+	// the original rather than against a fixed string, so the assertion says "the head
+	// survived" without hard-coding what this width happens to allow.
+	head := strings.TrimSuffix(cut, "…")
+	if head == "" || !strings.HasPrefix(prose, head) {
+		t.Errorf("prose lost its head: %q is not the start of %q", cut, prose)
+	}
+	if !strings.HasSuffix(cut, "…") {
+		t.Errorf("the cut is not marked: %q", cut)
 	}
 }
 
@@ -523,5 +546,61 @@ func TestSessionsTitle_WidthNeverShrinksAsTheTerminalGrows(t *testing.T) {
 			t.Errorf("widening %d to %d shrank TITLE from %d to %d columns", w-1, w, prev, got)
 		}
 		prev = got
+	}
+}
+
+// truncRight budgets in display columns, the same rule TestTruncLeft_BudgetsInDisplayColumns
+// pins for its sibling.
+//
+// The prose branch of sessionTitleCell used trunc, which counts RUNES, so a CJK or emoji title
+// measured roughly twice its budget: 11 columns returned 21 of CJK and 14 of emoji. The frame
+// stayed intact — the table's fixed-width box re-cuts an over-wide cell — so the symptom was
+// cosmetic over-truncation at a point the renderer picked rather than a broken line. Worth
+// fixing anyway, and worth a test: the sibling had one and this path had none, and making the
+// harvest default-on newly exposes it to every user.
+func TestTruncRight_BudgetsInDisplayColumns(t *testing.T) {
+	for _, s := range []string{
+		"fix the parser bug and add a regression test",
+		"日本語のセッションタイトルです日本語のセッション",
+		"🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉",
+		"mixed 日本語 and ascii together",
+		// Combining marks and variation selectors, for the reason the sibling lists them: both
+		// are zero-width and fuse onto what precedes them, so measuring the head PLUS the
+		// ellipsis is the only way to be sure of the result.
+		"é́́fghijklmnop prose",
+		"✈️✈️defghijklmnop prose",
+	} {
+		for _, n := range []int{1, 2, 5, 11, 14, 24, 40} {
+			got := truncRight(s, n)
+			if w := lipgloss.Width(got); w > n {
+				t.Errorf("truncRight(%q, %d) is %d display columns — over budget: %q", s, n, w, got)
+			}
+		}
+	}
+	// And the HEAD is what survives, which is why prose truncates from the right. 13 columns
+	// of it, not 14: the ellipsis marking the cut occupies one of the budgeted columns.
+	if got := truncRight("distinguishing-start of some prose", 14); !strings.HasPrefix(got, "distinguishin") {
+		t.Errorf("truncRight dropped the head: %q", got)
+	}
+	if got := truncRight("distinguishing-start of some prose", 14); !strings.HasSuffix(got, "…") {
+		t.Errorf("truncRight did not mark the cut: %q", got)
+	}
+}
+
+// A CJK prose title reaches the table cell already inside its budget.
+//
+// The unit test above pins truncRight; this pins that sessionTitleCell actually ROUTES prose
+// through it. The two used to disagree: the cell called the rune-counting helper, so the
+// function was right and the caller was not.
+func TestSessionTitleCell_BoundsCJKProse(t *testing.T) {
+	const id = "cjk-prose"
+	m := newTitleModel(t, map[string]SessionMetadata{
+		id: {Title: "日本語のセッションタイトルです日本語のセッション"},
+	}, id)
+	for _, w := range []int{11, 14, 20} {
+		got := m.sessionTitleCell(id, w)
+		if cw := lipgloss.Width(got); cw > w {
+			t.Errorf("sessionTitleCell(%d) is %d display columns: %q", w, cw, got)
+		}
 	}
 }

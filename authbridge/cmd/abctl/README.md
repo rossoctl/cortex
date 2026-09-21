@@ -133,7 +133,9 @@ This happens by default; `--skip-claude-metadata` turns it off:
 
 The startup harvest is **incremental**: a transcript whose mtime has not moved
 since it was last read is skipped, because a file that has not changed cannot
-have grown a new title. On a tree of 124 transcripts totalling 207 MB, a launch
+have grown a new title. A rewrite that *preserves* mtime — `rsync -t`, a restore
+from backup — therefore keeps whatever title the entry already had; re-run the
+explicit command below to force a re-read. On a tree of 124 transcripts totalling 207 MB, a launch
 that follows a recent one re-reads 2 of them, which is milliseconds rather than
 the ~0.7s a full scan costs. Pass `--skip-claude-metadata` when even that is
 unwanted, or when `~/.claude` should simply not be touched.

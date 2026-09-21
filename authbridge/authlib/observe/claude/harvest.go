@@ -137,7 +137,6 @@ func Harvest(opts Options) (Result, error) {
 		meta = existing
 	}
 	res.Total = len(meta)
-	res.Kept = res.Total - res.Harvested
 
 	if err := SaveMetadata(path, meta); err != nil {
 		return res, fmt.Errorf("writing %s: %w", path, err)
@@ -160,6 +159,11 @@ func Harvest(opts Options) (Result, error) {
 		res.Recovered = recovered
 		res.Total = len(meta)
 	}
+	// Derived last, from the final map, so the three numbers the caller prints on one line
+	// actually add up. Computed before the recovery step, Kept went stale the moment
+	// recovery added an entry: Total was refreshed and Kept was not, so a run that recovered
+	// anything reported total != harvested + kept.
+	res.Kept = res.Total - res.Harvested
 	return res, nil
 }
 
@@ -263,7 +267,25 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 			// that cannot be validated — absent, no LogFile, a LogFile naming some other
 			// path, or one that no longer exists — is NOT skipped. Skipping is the
 			// optimisation; parsing is the correct default.
+			//
+			// KNOWN GAP: mtime is the only signal, so a rewrite that PRESERVES it — rsync -t,
+			// a restore from backup, a clock stepping back — defeats the skip and pins
+			// whatever title the entry already had. Recording the transcript's SIZE alongside
+			// the mtime would narrow it to same-mtime-and-same-size rewrites for one extra
+			// int64 per entry, and the Stat here already has it. Deliberately not done in this
+			// change: it is a second on-disk field for a case the explicit subcommand already
+			// answers, and the field added here needs to prove itself first.
 			if since != nil && !st.ModTime().After(harvestedAt(since[id], path)) {
+				// A skipped transcript still WON this id: the entry being kept from `since`
+				// carries its title. So claim it, and drop any weaker claim an older
+				// duplicate already staked in an earlier directory — ReadDir is
+				// alphabetical, not chronological, so the loser may well have been seen
+				// first. Without both halves the older transcript's title survived in the
+				// result and overwrote the newer one on merge, alternating the displayed
+				// title between the two names on consecutive launches instead of
+				// converging.
+				won[id] = st.ModTime()
+				delete(out, id)
 				skipped++
 				continue
 			}
@@ -484,6 +506,16 @@ func SaveMetadata(path string, meta map[string]SessionMetadata) error {
 	// err, not a fresh `err :=`: a scoped one would be discarded and Close and Rename
 	// would then see success, renaming a truncated file over the good one. The bug
 	// saveUserConfig's comment records having made.
+	//
+	// TRIPWIRE LOST IN THE MOVE, recorded rather than left silent: in package main this was
+	// `writeAll(f, body)`, an indirected io.Writer.Write that a test could swap for a failing
+	// one — added because the shadowing bug above is invisible to every test that writes to a
+	// working filesystem. That var stays in cmd/abctl for saveUserConfig, which is what its
+	// own test swaps, and it cannot travel here without duplicating it across two modules. No
+	// test ever reached it through the harvest path (the write-failure test uses an
+	// unwritable directory instead), so nothing regressed today — but the injection point is
+	// gone, so a future edit that reintroduces the shadowing has one fewer way to be caught.
+	// Restoring it is three lines if that ever feels too thin.
 	_, err = f.Write(body)
 	if cerr := f.Close(); err == nil {
 		err = cerr

@@ -198,21 +198,13 @@ func TestObserveFlags_DocumentThePrefsFile(t *testing.T) {
 // process — which is fine for a child and fatal for a test binary.
 func runObserveHelp(t *testing.T) string {
 	t.Helper()
-	if os.Getenv("ABCTL_HELP_CHILD") == "1" {
-		// Re-exec'd child: be abctl.
-		os.Args = []string{"abctl", "observe", "--help"}
-		main()
-		return ""
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=TestObserveFlags_DocumentThePrefsFile")
-	cmd.Env = append(os.Environ(), "ABCTL_HELP_CHILD=1")
-	out, err := cmd.CombinedOutput()
+	out, err := runAbctlChild(t, nil, "observe", "--help")
 	// -h exits 0 through ExitOnError, but the test binary wrapping it may report
 	// otherwise; the output is what matters.
 	if len(out) == 0 && err != nil {
 		t.Fatalf("child produced no output: %v", err)
 	}
-	return string(out)
+	return out
 }
 
 // --skip-claude-metadata must default to false, so a bare `abctl observe` names its
@@ -309,15 +301,11 @@ func TestObserve_HarvestsClaudeMetadataUnlessSkipped(t *testing.T) {
 			if tc.extraArg != "" {
 				args = append(args, tc.extraArg)
 			}
-			cmd := exec.Command(os.Args[0], "-test.run=TestObserve_HarvestsClaudeMetadataUnlessSkipped")
-			cmd.Env = append(os.Environ(),
-				"ABCTL_OBSERVE_CHILD=1",
-				"ABCTL_OBSERVE_ARGS="+strings.Join(args, " "),
-				"HOME="+home,
-				"USERPROFILE="+home,
-				"CLAUDE_CONFIG_DIR="+cfg,
-			)
-			out, _ := cmd.CombinedOutput()
+			out, _ := runAbctlChild(t, []string{
+				"HOME=" + home,
+				"USERPROFILE=" + home,
+				"CLAUDE_CONFIG_DIR=" + cfg,
+			}, args...)
 
 			path := filepath.Join(home, tui.SessionMetadataRel)
 			_, err := os.Stat(path)
@@ -337,15 +325,96 @@ func TestObserve_HarvestsClaudeMetadataUnlessSkipped(t *testing.T) {
 	}
 }
 
-// TestMain lets the subprocess above re-enter this binary as abctl.
+// childSentinel marks a re-exec of this test binary that should behave as abctl instead of
+// running tests, and childArgs carries the argv to hand it.
 //
-// Keyed on an env var rather than on an argument, so the parent can pass the child a
-// -test.run filter and its own abctl argv independently.
+// ONE sentinel for every subprocess test here, checked in one place. There used to be two at
+// different layers — runObserveHelp's own, read inside the test, and this one, read in
+// TestMain — and TestMain runs BEFORE any test-name filtering, so whichever is checked there
+// wins for every test in the package. Two of them is a trap: the outer one silently decides
+// what the inner one was trying to control.
+const (
+	childSentinel = "ABCTL_TEST_CHILD"
+	childArgs     = "ABCTL_TEST_CHILD_ARGS"
+)
+
+// argSep separates argv entries in childArgs.
+//
+// A unit separator (0x1F), not a space: splitting on whitespace could not carry an argument
+// that CONTAINS one — a --prefs path with a space in it, say — and would have silently torn it
+// into two. Nothing here passes such an argument today, which is exactly why the limit was
+// worth removing rather than documenting.
+//
+// Not NUL, which would be the obvious choice and is rejected outright: exec refuses an
+// environment variable containing one ("environment variable contains NUL"). 0x1F is legal in
+// an env var, is what it means, and cannot appear in a flag or path anyone would type.
+const argSep = "\x1f"
+
+// runAbctlChild re-execs this test binary as abctl with the given argv, returning its combined
+// output. extraEnv entries are appended to the parent's environment as "K=V".
+//
+// The child runs no tests: TestMain hands control to main() before the test framework starts,
+// so no -test.run filter is passed. Passing one would be inert — and looked meaningful, which
+// is worse.
+func runAbctlChild(t *testing.T, extraEnv []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(),
+		childSentinel+"=1",
+		childArgs+"="+strings.Join(args, argSep),
+	)
+	cmd.Env = append(cmd.Env, extraEnv...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// TestMain lets runAbctlChild re-enter this binary as abctl.
+//
+// Keyed on an env var rather than on an argument, so the child's argv is abctl's own and
+// carries no test-framework flags.
 func TestMain(m *testing.M) {
-	if os.Getenv("ABCTL_OBSERVE_CHILD") == "1" {
-		os.Args = append([]string{"abctl"}, strings.Fields(os.Getenv("ABCTL_OBSERVE_ARGS"))...)
+	if os.Getenv(childSentinel) == "1" {
+		argv := []string{"abctl"}
+		if raw := os.Getenv(childArgs); raw != "" {
+			argv = append(argv, strings.Split(raw, argSep)...)
+		}
+		os.Args = argv
 		main()
 		return
 	}
 	os.Exit(m.Run())
+}
+
+// The child argv round-trips an argument containing a space.
+//
+// The scheme this replaced joined on spaces and split with strings.Fields, so a --prefs path
+// with a space in it would have arrived as two arguments and the flag would have taken the
+// first half. Nothing in the suite passes such an argument today; this keeps the separator
+// honest, since a regression would otherwise surface only in whatever future test first needs
+// one.
+//
+// Asserted on the ENCODING, not on abctl's behaviour: a torn --prefs is observably silent —
+// `observe` ignores stray positionals and an unreadable prefs path degrades to defaults by
+// design — so a test driven through the child cannot tell the two apart and would pass either
+// way (confirmed by reverting the separator and watching it still pass). The encoding is the
+// thing that changed, so the encoding is what gets pinned.
+func TestChildArgs_RoundTripsAnArgumentWithASpace(t *testing.T) {
+	want := []string{"observe", "--prefs", "/tmp/a directory with spaces/abctl-config.yaml"}
+
+	// Exactly what runAbctlChild puts in the env, and what TestMain takes back out.
+	encoded := strings.Join(want, argSep)
+	got := strings.Split(encoded, argSep)
+
+	if len(got) != len(want) {
+		t.Fatalf("round-tripped %d args, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("arg %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// And the separator has to be legal in an environment variable, which NUL is not.
+	if strings.Contains(argSep, "\x00") {
+		t.Error("argSep contains NUL, which exec rejects outright")
+	}
 }

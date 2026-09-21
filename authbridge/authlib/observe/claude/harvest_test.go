@@ -316,3 +316,190 @@ func TestRecoverConcurrentEntries_CorruptFileIsNotFatal(t *testing.T) {
 		t.Errorf("recovered = %d, want 0", recovered)
 	}
 }
+
+// A duplicated session id keeps the NEWEST transcript's title even when the newer one is
+// skipped as unchanged.
+//
+// The skip used to `continue` before recording the id's claim, so a skipped transcript left
+// `won` empty for that id and the next directory's OLDER transcript looked like a first
+// sighting and overwrote it. Two project directories holding one id is rare (0 duplicates in
+// 109 local sessions) but the failure is worse than rare: the title alternates between the
+// two names on consecutive launches instead of converging, which is exactly the "stale title
+// that looks authoritative" the newest-wins rule exists to prevent.
+//
+// "-a" sorts before "-b", so ReadDir hands over the directories in that order and the fix
+// has to hold the claim across the skip rather than rely on iteration order.
+func TestReadSessions_IncrementalSkipStillHonoursNewestWins(t *testing.T) {
+	cfg := t.TempDir()
+	const id = "11111111-0000-0000-0000-000000000001"
+	older := filepath.Join(cfg, "projects", "-a")
+	newer := filepath.Join(cfg, "projects", "-b")
+	writeSessionTranscript(t, older, id+".jsonl", `{"type":"ai-title","aiTitle":"older"}`)
+	writeSessionTranscript(t, newer, id+".jsonl", `{"type":"ai-title","aiTitle":"newer"}`)
+
+	base := time.Now().Add(-24 * time.Hour)
+	touch(t, filepath.Join(older, id+".jsonl"), base)
+	touch(t, filepath.Join(newer, id+".jsonl"), base.Add(time.Hour))
+
+	// since holds the NEWER transcript at its current mtime, so that one is skipped as
+	// unchanged while the older one, which since cannot vouch for, is parsed.
+	since := map[string]SessionMetadata{id: {
+		Title:      "newer",
+		LogFile:    filepath.Join(newer, id+".jsonl"),
+		LogModTime: base.Add(time.Hour),
+	}}
+
+	out, _, skipped, err := ReadSessions(cfg, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the newer transcript)", skipped)
+	}
+	// The older transcript must NOT claim the id: the newer one already holds it, and
+	// leaving it out is what lets Harvest's merge keep the newer title from `since`.
+	if got, ok := out[id]; ok && got.Title == "older" {
+		t.Errorf("the older transcript overwrote the newer title: got %q", got.Title)
+	}
+}
+
+// The same guarantee in the other direction: the SKIPPED transcript is visited first, so
+// the older duplicate arrives afterwards and must not displace it.
+//
+// Both orders are tested because ReadDir is alphabetical, not chronological — which of the
+// two a real tree hands over first is an accident of directory naming, and the rule has to
+// hold either way. "-a" holds the newer file here, the reverse of the test above.
+func TestReadSessions_IncrementalSkipWinsWhenSeenFirst(t *testing.T) {
+	cfg := t.TempDir()
+	const id = "22222222-0000-0000-0000-000000000002"
+	newer := filepath.Join(cfg, "projects", "-a")
+	older := filepath.Join(cfg, "projects", "-b")
+	writeSessionTranscript(t, newer, id+".jsonl", `{"type":"ai-title","aiTitle":"newer"}`)
+	writeSessionTranscript(t, older, id+".jsonl", `{"type":"ai-title","aiTitle":"older"}`)
+
+	base := time.Now().Add(-24 * time.Hour)
+	touch(t, filepath.Join(older, id+".jsonl"), base)
+	touch(t, filepath.Join(newer, id+".jsonl"), base.Add(time.Hour))
+
+	since := map[string]SessionMetadata{id: {
+		Title:      "newer",
+		LogFile:    filepath.Join(newer, id+".jsonl"),
+		LogModTime: base.Add(time.Hour),
+	}}
+
+	out, _, skipped, err := ReadSessions(cfg, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the newer transcript)", skipped)
+	}
+	if got, ok := out[id]; ok && got.Title == "older" {
+		t.Errorf("the older transcript overwrote the newer title: got %q", got.Title)
+	}
+}
+
+// The reported numbers balance: total == harvested + kept, even on a run that recovers
+// entries another process wrote concurrently.
+//
+// Kept used to be computed before the recovery step while Total was refreshed after it, so any
+// run that recovered anything reported a breakdown that did not add up — and the command
+// prints all three on one line ("Wrote N ... (H from DIR, K kept ...)"), so the arithmetic is
+// visible to whoever reads it.
+//
+// Driven through recoverConcurrentEntries rather than through Harvest, for the reason
+// TestRecoverConcurrentEntries gives: the window is INSIDE one run, between its read and its
+// rename, and planting the entry beforehand tests nothing — the ordinary merge picks it up and
+// Recovered stays 0 (confirmed: a fixture that seeds the file first reports recovered=0). Here
+// the map stands for "what this run decided to write" and the file for "what the other run
+// left behind".
+//
+// HONEST LIMIT: with no seam inside Harvest there is no way to open that window from a test,
+// so the last two assertions recompute the arithmetic rather than reading it off a Result.
+// This pins that recovery grows the map — which is what made Kept stale — and documents the
+// invariant Harvest must preserve; it does not by itself fail if someone moves Kept back
+// above the recovery step. Reordering that line is guarded by review and by the comment on
+// it, not by this test. An injectable post-save hook would close the gap and is not worth a
+// production seam for one arithmetic line.
+func TestHarvest_CountsBalanceAfterRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+
+	// What this run harvested (1) plus what it kept from the file (1).
+	harvested := 1
+	meta := map[string]SessionMetadata{
+		"ours":           {Title: "ours"},
+		"theirs-earlier": {Title: "from an earlier run"},
+	}
+	if err := SaveMetadata(path, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another run lands an entry this one never saw.
+	onDisk := map[string]SessionMetadata{
+		"ours":              {Title: "ours"},
+		"theirs-earlier":    {Title: "from an earlier run"},
+		"theirs-concurrent": {Title: "written by another run"},
+	}
+	if err := SaveMetadata(path, onDisk); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := recoverConcurrentEntries(path, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1 — the fixture is not exercising recovery", recovered)
+	}
+
+	// Harvest derives both from the final map, in this order.
+	total := len(meta)
+	kept := total - harvested
+	if total != harvested+kept {
+		t.Errorf("total %d != harvested %d + kept %d", total, harvested, kept)
+	}
+	if total != len(readMetadataFile(t, path)) {
+		t.Errorf("total = %d but the file holds %d entries", total, len(readMetadataFile(t, path)))
+	}
+}
+
+// An entry from the previous on-disk format — no recorded mtime — is re-parsed rather than
+// trusted, so the upgrade path cannot pin a stale title.
+//
+// The zero time is what every such entry decodes to, and harvestedAt reads it as "cannot
+// tell". That is the whole upgrade story, and it had no test: a regression here would be
+// invisible until someone's titles silently stopped updating after an abctl upgrade.
+func TestHarvest_IncrementalReparsesPreUpgradeEntries(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "s1.jsonl", `{"type":"ai-title","aiTitle":"current"}`)
+	// Backdated, so a skip keyed on mtime alone would fire.
+	touch(t, filepath.Join(proj, "s1.jsonl"), time.Now().Add(-time.Hour))
+
+	path, err := SessionMetadataPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written as the OLD format did: the three original fields, no logModTime at all.
+	old := `{"s1":{"title":"stale","agentType":"Claude Code","logFile":"` +
+		filepath.Join(proj, "s1.jsonl") + `"}}`
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Harvested != 1 || res.Skipped != 0 {
+		t.Errorf("harvested/skipped = %d/%d, want 1/0: an entry with no recorded time must be re-parsed",
+			res.Harvested, res.Skipped)
+	}
+	if got := readMetadataFile(t, res.Path)["s1"].Title; got != "current" {
+		t.Errorf("title = %q, want the freshly-parsed %q", got, "current")
+	}
+}
