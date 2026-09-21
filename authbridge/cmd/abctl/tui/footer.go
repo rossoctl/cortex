@@ -76,7 +76,17 @@ func (m *model) footerView() string {
 	// silently truncated the list with nothing on screen explaining it. Shown here
 	// rather than in the hint line because it is state, not a keybinding — the same
 	// reason [paused] sits above.
-	if m.filter != "" && !m.filtering {
+	//
+	// Pane-gated for the same reason as [sort: …] below, and it is the same defect:
+	// m.filter is model-global and restored from settings, so it survived onto panes
+	// that filter nothing — the Usage pane fetches an aggregate the filter never
+	// reaches, so "[filter: github-tool]" there claims the chart is narrowed when
+	// every bucket in it is unfiltered.
+	//
+	// Two panes rather than one, unlike the sort indicator: sessions_pane.go and
+	// events_pane.go both read m.filter (the namespaces picker has its own model and
+	// its own copy). Nothing else in the tree does.
+	if m.filter != "" && !m.filtering && (m.pane == paneSessions || m.pane == paneEvents) {
 		status.WriteString(styleWarn.Render("   [filter: " + m.filter + "]"))
 	}
 	// A non-chronological sort, for the same reason as [filter: …] above: it is

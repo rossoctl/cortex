@@ -108,3 +108,38 @@ func TestFooterShowsActiveSort(t *testing.T) {
 		})
 	}
 }
+
+// The [filter: …] indicator has the same defect the sort indicator above was fixed for:
+// m.filter is model-global and restored from settings, so it survived onto panes that
+// filter nothing. The Usage pane fetches an aggregate the filter never reaches.
+//
+// Two panes want it rather than one, which is the difference from sort: sessions_pane.go
+// and events_pane.go both read m.filter.
+func TestFooterShowsFilterOnlyWhereItApplies(t *testing.T) {
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+
+	for _, tc := range []struct {
+		name string
+		pane paneID
+		want bool
+	}{
+		{name: "sessions filters its list", pane: paneSessions, want: true},
+		{name: "events filters its table", pane: paneEvents, want: true},
+		{name: "usage plots an unfiltered aggregate", pane: paneUsage, want: false},
+		{name: "pipeline has nothing to filter", pane: panePipeline, want: false},
+		{name: "catalog has nothing to filter", pane: paneCatalog, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model{
+				pane: tc.pane, width: 200, eventColumns: defaultColumnSelection(),
+				filter: "github-tool",
+			}
+			got := stripANSI(statusRow(m.footerView()))
+			if has := strings.Contains(got, "[filter: github-tool]"); has != tc.want {
+				t.Errorf("status row = %q; indicator present=%v, want %v", got, has, tc.want)
+			}
+		})
+	}
+}

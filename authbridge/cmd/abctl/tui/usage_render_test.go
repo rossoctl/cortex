@@ -63,6 +63,31 @@ func TestRenderBars_SmallValueStillDrawsAGlyph(t *testing.T) {
 	}
 }
 
+// mkCostBuckets is mkBuckets for money: the same shape, with the values in CostMicros
+// instead of Tokens.
+//
+// A separate fixture rather than widening mkBuckets, because mkBuckets' callers assert on
+// Tokens and a bucket carrying both would let a cost assertion pass while reading the
+// token column. The trap this avoids is the reverse one: a cost chart over a
+// Tokens-only fixture plots an all-zero frame, so every label is "0" and a test claiming
+// to pin cost label widths pins nothing — see TestRenderBars_CostFormatsEverySurface,
+// which diagnoses the same trap for its own fixture.
+func mkCostBuckets(micros []int64) []usage.Bucket {
+	base := time.Date(2026, 9, 6, 23, 24, 0, 0, time.UTC)
+	out := make([]usage.Bucket, 0, len(micros))
+	for i, v := range micros {
+		var reqs int64
+		if v > 0 {
+			reqs = 1
+		}
+		out = append(out, usage.Bucket{
+			At:     base.Add(time.Duration(i) * time.Minute),
+			Counts: usage.Counts{Requests: reqs, CostMicros: v},
+		})
+	}
+	return out
+}
+
 // Output must fit the terminal it was given. A line wider than the width wraps
 // and destroys the chart.
 func TestRenderBars_FitsWidth(t *testing.T) {
@@ -75,16 +100,25 @@ func TestRenderBars_FitsWidth(t *testing.T) {
 		for i := range vals {
 			vals[i] = int64(10000 * (i + 1))
 		}
-		for _, m := range []usageMetric{metricTokens, metricCost} {
-			for _, line := range renderBars(mkBuckets(vals), m, width, 0) {
-				if got := len([]rune(line)); got > width {
-					t.Errorf("metric %s width %d: line is %d columns wide:\n%q", m, width, got, line)
-				}
-			}
-		}
 		for _, line := range renderBars(mkBuckets(vals), metricTokens, width, 0) {
 			if got := len([]rune(line)); got > width {
-				t.Errorf("width %d: line is %d columns wide:\n%q", width, got, line)
+				t.Errorf("tokens width %d: line is %d columns wide:\n%q", width, got, line)
+			}
+		}
+		// Cost over a cost fixture. Three magnitudes, because humanizeCostMicros switches
+		// format by magnitude and each branch has its own width: cents ("$1.20"), whole
+		// dollars ("$12") and abbreviated thousands ("$1.5k"). Over the Tokens-only
+		// fixture above every one of these labels would be "0".
+		for _, peak := range []int64{1_200_000, 12_400_000, 1_500_000_000} {
+			micros := make([]int64, 10)
+			for i := range micros {
+				micros[i] = peak / 10 * int64(i+1)
+			}
+			for _, line := range renderBars(mkCostBuckets(micros), metricCost, width, 0) {
+				if got := len([]rune(line)); got > width {
+					t.Errorf("cost peak %d width %d: line is %d columns wide:\n%q",
+						peak, width, got, line)
+				}
 			}
 		}
 	}

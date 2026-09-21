@@ -164,9 +164,18 @@ func (m usageMetric) unit() string {
 // at stride 6 plus the gutter — so at or above it the caption fits horizontally.
 const axisCaptionWidth = 66
 
-// chartRowsWithoutCaption is how many rows a bar chart occupies before any caption: the
-// plot rows plus the axis rule, the time labels and the value row.
-const chartRowsWithoutCaption = plotRows + 3
+// The irreducible height of each renderer that can carry a caption, in rows, BEFORE the
+// caption's own row. Each renderer passes its own — a single shared floor is what the
+// first version of the height gate used, and the stacked renderer is two rows taller
+// than the bar one, so the gate opened at a budget of 14 for a renderer needing 15 and
+// the caption tipped the pane past the terminal at 66x25, 66x27 and 80x27.
+const (
+	// barChartFloor: ten plot rows plus the axis rule, the time labels and the value row.
+	barChartFloor = plotRows + 3
+	// stackedChartFloor: the same, plus the blank separator and at least one legend line.
+	// renderLegend emits one line per wrap and never zero, so one is its minimum.
+	stackedChartFloor = barChartFloor + 2
+)
 
 // axisCaption is the unit caption line, or "" when the terminal cannot spare it.
 //
@@ -188,14 +197,17 @@ const chartRowsWithoutCaption = plotRows + 3
 // A height of 0 means "unknown", which is what every pure renderer test passes; those
 // get the caption, since a test measuring columns is not measuring a terminal.
 //
+// floor is the CALLER's irreducible height, not a shared constant: see barChartFloor /
+// stackedChartFloor for why one shared number was wrong.
+//
 // Not called by renderWhiskers, deliberately — humanizeDurationMs already carries the
 // unit in every label, so a fixed "ms" above them would contradict labels reading
 // "4.1s". See the comment at the top of that renderer.
-func axisCaption(m usageMetric, width, height int) string {
+func axisCaption(m usageMetric, width, height, floor int) string {
 	if width < axisCaptionWidth {
 		return ""
 	}
-	if height > 0 && height < chartRowsWithoutCaption+1 {
+	if height > 0 && height < floor+1 {
 		return ""
 	}
 	return fmt.Sprintf("%*s", maxCountLabelLen, m.unit())
@@ -232,7 +244,7 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width, height int) []stri
 	}
 
 	out := make([]string, 0, plotRows+4)
-	if caption := axisCaption(m, width, height); caption != "" {
+	if caption := axisCaption(m, width, height, barChartFloor); caption != "" {
 		out = append(out, caption)
 	}
 
@@ -284,6 +296,16 @@ func barCell(v, peak int64, row int) string {
 		return strings.Repeat(" ", barWidth)
 	}
 	// Height in eighths of a row, so a bar shorter than one row still shows.
+	//
+	// NOT OVERFLOW-GUARDED, deliberately and after checking. The product overflows int64
+	// past MaxInt64/80 ≈ 1.15e17, which for the cost metric is a single bucket holding
+	// $115 billion of spend and for tokens is 1.15e17 tokens in one window — neither is
+	// reachable from any aggregator this reads. The expression is byte-identical to what
+	// the merge-base computes; adding cost as a metric did not widen the domain, because
+	// CostMicros shares the same int64 range every other count already had. Left alone
+	// rather than wrapped in a saturating multiply: a guard here would be untestable
+	// except by constructing the unreachable input, and it would read to a later reader
+	// as evidence that something once overflowed in practice.
 	totalEighths := v * int64(plotRows) * 8 / peak
 	// Floor at one eighth: integer division truncates a small-but-nonzero value
 	// to nothing (50 against a 50k peak is 0.08 eighths), which would render

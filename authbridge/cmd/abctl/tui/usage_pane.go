@@ -184,13 +184,6 @@ func (m *model) resumeUsagePolling() tea.Cmd {
 	return tea.Batch(m.beginFetch(), usageTick(m.usage.tickGen))
 }
 
-// renderUsageChart picks the form the data calls for.
-//
-// Three renderers rather than one parameterised one, because the forms differ in
-// kind and not just in decoration: bars encode a magnitude from zero with
-// sub-row precision; a stack trades that precision for a breakdown, since a
-// fractional top cell cannot also encode a segment boundary; and latency is a
-// distribution whose zero is meaningless, so it gets marks and a range instead.
 // usagePaneChromeRows is how many of the pane's rows are spent outside the chart: the
 // header line and its blank above, and the blank, summary and refresh note below.
 //
@@ -224,11 +217,27 @@ func usageChartHeight(paneHeight int) int {
 	return 1
 }
 
+// renderUsageChart picks the form the data calls for.
+//
+// Three renderers rather than one parameterised one, because the forms differ in
+// kind and not just in decoration: bars encode a magnitude from zero with
+// sub-row precision; a stack trades that precision for a breakdown, since a
+// fractional top cell cannot also encode a segment boundary; and latency is a
+// distribution whose zero is meaningless, so it gets marks and a range instead.
 func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, width, height int) []string {
 	if m.isLatency() {
 		// Grouping is ignored here: the aggregator carries no per-label latency,
 		// so a "by status" latency chart would silently show the bucket-wide mean
 		// under a heading implying otherwise.
+		//
+		// HEIGHT IS DROPPED HERE, deliberately and not silently: renderWhiskers is a
+		// fixed plotRows+5 frame with no optional row to trade away, so there is nothing
+		// for a budget to decide. It predates the budget mechanism and ignored the
+		// terminal's height before this branch existed too, so a latency chart overflows
+		// a short pane exactly as much as it always did — pre-existing, tracked with the
+		// other half of the pane's height debt (see fitModel's paneUsage note), and not
+		// something a caption gate can reach. Passing height in to be discarded inside
+		// the renderer would only move the discard somewhere less visible.
 		return renderWhiskers(snap.Buckets, width)
 	}
 	if group != "" && group != usage.GroupNone {

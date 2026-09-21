@@ -7,6 +7,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
@@ -248,17 +251,43 @@ func TestRenderStacked_NoSeriesFallsBackToBars(t *testing.T) {
 
 // Every line must fit the terminal, colour codes excluded — they occupy no
 // columns but do inflate len().
+//
+// RUN TWICE, once with the colour profile forced. CI has no TTY, so lipgloss falls back
+// to Ascii and every Render() is the identity — which means the unforced arm asserts
+// against plain text, stripANSI has nothing to strip, and renderLegend's "the mark is
+// one column however many bytes of escape it carries" accounting is never tested at all.
+// The styled arm is the one users see and the only one where these two can disagree.
 func TestRenderStacked_FitsWidth(t *testing.T) {
 	buckets := mkSeriesBuckets([]map[string]int64{
 		{"200": 100, "429": 50, "500": 25, "503": 10, "418": 5},
 		{"200": 80, "429": 40},
 	})
-	for _, width := range []int{80, 100, 60} {
-		for _, line := range renderStackedBars(buckets, metricRequests, usage.GroupStatus, width, 0) {
-			if got := len([]rune(stripANSI(line))); got > width {
-				t.Errorf("width %d: line is %d columns:\n%q", width, got, stripANSI(line))
+	for _, styled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "styled"}[styled], func(t *testing.T) {
+			if styled {
+				orig := lipgloss.ColorProfile()
+				lipgloss.SetColorProfile(termenv.ANSI256)
+				t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
 			}
-		}
+			for _, width := range []int{80, 100, 66, 65, 60} {
+				lines := renderStackedBars(buckets, metricRequests, usage.GroupStatus, width, 0)
+				sawEscape := false
+				for _, line := range lines {
+					if strings.Contains(line, "\x1b[") {
+						sawEscape = true
+					}
+					if got := len([]rune(stripANSI(line))); got > width {
+						t.Errorf("width %d: line is %d columns:\n%q", width, got, stripANSI(line))
+					}
+				}
+				// The forced arm has to actually produce escapes, or it is a duplicate of
+				// the plain one and the coverage it claims is imaginary.
+				if styled && !sawEscape {
+					t.Errorf("width %d: forced ANSI256 and the render carries no escape "+
+						"sequences — stripANSI is doing no work here", width)
+				}
+			}
+		})
 	}
 }
 

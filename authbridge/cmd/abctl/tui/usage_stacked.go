@@ -260,7 +260,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 	letters := assignLetters(legendSeries)
 
 	out := make([]string, 0, plotRows+5)
-	if caption := axisCaption(m, width, height); caption != "" {
+	if caption := axisCaption(m, width, height, stackedChartFloor); caption != "" {
 		out = append(out, caption)
 	}
 	lastAxisLabel := ""

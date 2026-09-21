@@ -133,7 +133,7 @@ the same visual weight, and the spend figures interleave labels with values
   ecb7387f…    40s ago      105      7.0M    $5.8344    ~$0.2917  ●
   default      18h ago        1         —          —           —
 
- ● live · 2.1 ev/s · polled 2m ago    [$] spend  [u] usage  [q] quit
+ ● live · 2.1 events/sec · polled 2m ago    [$] spend  [u] usage  [q] quit
 ```
 
 Labels sit **above** values rather than beside them. This is the change that fixes
@@ -157,7 +157,7 @@ the band is the table's own top border, not a spent row.
   ecb7387f…    40s ago      105      7.0M    $5.8344    ~$0.2917  ●
   default      18h ago        1         —          —           —
 
- ● live · 2.1 ev/s · polled 2m ago    [$] close  [u] usage  [q] quit
+ ● live · 2.1 events/sec · polled 2m ago    [$] close  [u] usage  [q] quit
 ```
 
 Tier bars appear only when expanded: `$` remains the gesture that reveals cost
