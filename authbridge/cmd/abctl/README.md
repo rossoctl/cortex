@@ -115,6 +115,44 @@ wins. Resolution in full:
 | — | yes | passed | Namespaces picker |
 | — | no | either | Namespaces picker |
 
+### Naming sessions from Claude Code (`--skip-claude-metadata`)
+
+Cortex buckets traffic by session id, and a session id is a UUID. Claude Code
+knows more about the same session: it writes a transcript per session carrying a
+model-generated title and the directory the session ran in. `abctl observe`
+reads those transcripts on startup and writes what it finds to
+`~/.cortex/session-metadata.json`, so the sessions table can show a `TITLE`
+column instead of a bare id.
+
+This happens by default; `--skip-claude-metadata` turns it off:
+
+```sh
+./abctl observe                            # harvest titles, then open the viewer
+./abctl observe --skip-claude-metadata     # skip the scan; sessions show ids only
+```
+
+The startup harvest is **incremental**: a transcript whose mtime has not moved
+since it was last read is skipped, because a file that has not changed cannot
+have grown a new title. On a tree of 124 transcripts totalling 207 MB, a launch
+that follows a recent one re-reads 2 of them, which is milliseconds rather than
+the ~0.7s a full scan costs. Pass `--skip-claude-metadata` when even that is
+unwanted, or when `~/.claude` should simply not be touched.
+
+A harvest that cannot run is never fatal — a missing, unreadable or corrupt file
+costs the `TITLE` column and nothing else, and the viewer still opens. Failures
+print one line to stderr before the viewer starts; success says nothing.
+
+The config directory is `CLAUDE_CONFIG_DIR` when set, and `~/.claude`
+otherwise. To read a different directory, or to force a full re-read of every
+transcript — the way to repair entries that are wrong — run the harvest
+explicitly:
+
+```sh
+./abctl experimental read-claude-sessions              # full scan, reports counts
+./abctl experimental read-claude-sessions --dir PATH   # a different config dir
+./abctl experimental read-claude-sessions --merge=false  # rebuild, dropping stale entries
+```
+
 ## Running one command through Cortex (`abctl exec`)
 
 `abctl configure claude-code enable` works because Claude Code has a settings
@@ -226,9 +264,12 @@ trust to a bundle with no bridge CA in it.
 The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 
 - **Sessions** (default): table of active sessions in the store, most
-  recently updated first. Columns: session (truncated), updated (relative),
-  event count, tokens, cost, saved, context. Numerics are right-aligned so the
-  digits line up between rows.
+  recently updated first. Columns: session (truncated), title, updated
+  (relative), event count, tokens, cost, saved, context. `TITLE` is populated
+  from Claude Code's transcripts — see
+  [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
+  — and is empty for a session nothing has harvested. Numerics are right-aligned
+  so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the session's context was on
   its **latest** request, against a fixed one-million-token window. The
