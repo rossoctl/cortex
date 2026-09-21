@@ -112,6 +112,7 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		sortDesc:     sortDesc,
 		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
 		filter:       Settings.Filter,
+		sessionsData: loadSessionMetadataForModel(),
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),

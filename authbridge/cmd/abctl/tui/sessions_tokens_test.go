@@ -32,11 +32,22 @@ var sessionTotals = []int{
 // the width that can hold them, and this test walks the set the pane really gets.
 //
 // 40 columns is the floor this can promise: formatCompact's widest output is six runes
-// ("999.9M"), so a cell of six or more always holds it. Below that the cell is five and
-// the value cannot fit however it is formatted — recorded by the last case rather than
+// ("999.9M"), so a cell of six or more always holds it. Below that the cell is five and the
+// value cannot fit however it is formatted — recorded by the companion test below rather than
 // left as a surprise.
+//
+// THE FLOOR DID NOT MOVE WHEN TITLE ARRIVED, and an earlier revision of this branch claimed
+// it had — raising the narrowest case to 44 and deleting 40 and 42 on that reasoning. TITLE
+// is dropped entirely below terminal width 73 (see sessionsShowTitle), so at 40 and 42 the
+// column set is byte-identical to the one this test was written against. Measured: TOKENS is
+// 6 at 40 and 7 at 42, unchanged. Those two were also the ONLY cases exercising a six-column
+// cell, which is the boundary the paragraph above says this test exists to pin, so removing
+// them dropped the coverage while appearing to update it.
 func TestSessionTokens_FitsEveryFittedWidth(t *testing.T) {
-	for _, term := range []int{200, 90, 60, 50, 46, 42, 40} {
+	// 80, 81 and 82 are in the sweep because they are the widths this layout changes — where
+	// TITLE arrives and the money columns yield — and skipping them is what let an unenforced
+	// TITLE floor go unnoticed there.
+	for _, term := range []int{200, 90, 82, 81, 80, 60, 50, 46, 42, 40} {
 		width := 0
 		for _, c := range fitTableColumns(sessionsColumnsFor(term), term) {
 			if c.Title == "TOKENS" {
@@ -56,15 +67,18 @@ func TestSessionTokens_FitsEveryFittedWidth(t *testing.T) {
 	}
 }
 
-// The floor, stated rather than discovered: at 36 columns the cell is five wide and
-// formatCompact's widest output is six, so it truncates. That is the fit budget running
-// out, not the formatter — worth a test so a future change to either is measured against
-// it instead of assumed.
+// The floor, stated rather than discovered: below 37 columns the cell is five wide and
+// formatCompact's widest output is six, so it truncates. That is the fit budget running out,
+// not the formatter — worth a test so a future change to either is measured against it instead
+// of assumed.
+//
+// Measured: five columns between 32 and 36, six at 37, seven by 43. An earlier revision of this
+// comment named 43 as the five-column width while the body below kept using the right one, so
+// the prose and the assertion disagreed.
 //
 // Through sessionsColumnsFor, so the floor is the one the PANE has. 36 columns is far below
-// the width that affords COST and SAVED, so they are dropped and the budget is the same five
-// columns this floor was measured against — which is why the number below did not move when
-// they arrived. Against the declared seven it would read 4.
+// the width that affords COST and SAVED, so they are dropped — and TITLE does not grow, since
+// there is no slack at 36 — leaving the same budget this floor was measured against.
 func TestSessionTokens_BelowFortyColumnsTheCellIsTooNarrow(t *testing.T) {
 	width := 0
 	for _, c := range fitTableColumns(sessionsColumnsFor(36), 36) {

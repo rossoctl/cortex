@@ -83,28 +83,21 @@ func TestSessionsPicker_ListsCachedOnlySessions(t *testing.T) {
 		t.Fatal("no picker row for a session whose events are still cached — " +
 			"the retained history is unreachable")
 	}
-	// TRIMMED, because EVENTS is right-aligned: the cell is padded into its fitted column
-	// width so digits line up between rows, and this test is about the COUNT rather than the
-	// padding. Addressing the value through the padding is the same mistake the comment
-	// below records about addressing ACTIVE by a fixed index.
-	if got := strings.TrimSpace(row[2]); got != "3" {
+	// By column title, not by a hardcoded index: rows are built positionally, so the literal
+	// 2 and 4 this used to carry both moved when TITLE was inserted after SESSION — and an
+	// index that is merely stale keeps asserting, on the wrong cell, quietly. That already
+	// happened once when COST and SAVED were inserted ahead of ACTIVE.
+	//
+	// TrimSpace because EVENTS is right-aligned: the cell is padded into its fitted width so
+	// digits line up between rows, and this test is about the COUNT rather than the padding.
+	if got := strings.TrimSpace(sessionsCell(t, m, row, "EVENTS")); got != "3" {
 		t.Errorf("row event count = %q, want %q", got, "3")
 	}
 	// FOUND BY COLUMN, not by position. The marker used to ride in ACTIVE, addressed here as
-	// the last cell — which broke once before when COST and SAVED were inserted ahead of it, and
-	// again when ACTIVE was replaced by CONTEXT(1M) and the marker moved into UPDATED. What this
-	// test is about is the marker, not where the row happens to keep it.
-	col := -1
-	for i, c := range m.sessionsTbl.Columns() {
-		if headerTitle(c) == "UPDATED" {
-			col = i
-			break
-		}
-	}
-	if col < 0 {
-		t.Fatalf("no UPDATED column in %v", m.sessionsTbl.Columns())
-	}
-	if got := strings.TrimSpace(row[col]); got != cachedMarker {
+	// the last cell — which broke once when COST and SAVED were inserted ahead of it, and again
+	// when ACTIVE was replaced by CONTEXT(1M) and the marker moved into UPDATED. What this test
+	// is about is the marker, not where the row happens to keep it.
+	if got := strings.TrimSpace(sessionsCell(t, m, row, "UPDATED")); got != cachedMarker {
 		t.Errorf("row not marked as cached-only (UPDATED cell %q): %v", got, row)
 	}
 }
@@ -408,5 +401,28 @@ func sessionsEventsCell(t *testing.T, m *model, id string) string {
 		return strings.TrimSpace(r[col])
 	}
 	t.Fatalf("no sessions row for %q", id)
+	return ""
+}
+
+// sessionsCell reads one cell of a sessions row by its column title.
+//
+// The sessions table is built positionally, so every index in a test here is a fact about
+// the column ORDER rather than about the cell it means to check — and inserting a column
+// leaves such an index pointing at a neighbour, still asserting and still passing. Looking
+// the title up costs a line and removes that whole failure mode.
+func sessionsCell(t *testing.T, m *model, row []string, title string) string {
+	t.Helper()
+	for i, c := range m.sessionsTbl.Columns() {
+		// Through headerTitle: the numeric headings are right-aligned into their fitted
+		// widths, so a stored title is "  EVENTS" rather than "EVENTS" and an exact compare
+		// finds nothing.
+		if headerTitle(c) == title {
+			if i >= len(row) {
+				t.Fatalf("row has %d cells, no index %d for column %q: %v", len(row), i, title, row)
+			}
+			return row[i]
+		}
+	}
+	t.Fatalf("no %q column in the sessions table", title)
 	return ""
 }

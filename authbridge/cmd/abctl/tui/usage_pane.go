@@ -246,13 +246,60 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 	return renderBars(snap.Buckets, m, width, height)
 }
 
+// usageScopeMax is the room the header line can give the scope label at this width.
+//
+// The rest of that line — "  USAGE — ", the window, the resolution, the metric and the
+// grouping — is not a fixed cost. Swept across every metric, every entry in usageWindows and
+// every grouping string renderUsage actually emits, it runs to 65 columns, widest on the
+// latency metric at the 6h window: latency renders "no breakdown for latency", which is 24
+// columns on its own, and 6h renders as "6h0m0s @ 30m0s".
+//
+// An earlier revision said 59 and measured it against grouping strings the renderer never
+// produces ("no breakdown", "by model" without its prefix) while omitting the longest one it
+// does. The allowance must be the WIDEST reachable remainder, not an average: too small and it
+// fails to truncate, and the line wraps.
+//
+// EVEN AT 65 THIS DOES NOT PREVENT OVERFLOW, and an earlier comment claimed it did. The floor
+// below wins on a narrow terminal — at 80 columns a 65-column header leaves 15, under the
+// floor's 24 — so the label is truncated to 24 and the line runs past the terminal. The floor
+// is deliberate: the tail of the label carries the leaf directory and the session id, and a
+// scope nobody can read is worse than a wrapped line. What this does is reduce a pre-existing
+// overflow, not remove it.
+func usageScopeMax(width int) int {
+	// The widest reachable non-scope remainder. Pinned by
+	// TestUsageScopeMax_CoversTheWidestHeader, which recomputes it from usageWindows, the
+	// metric enum and renderUsage's own grouping branches rather than trusting this number.
+	const otherFields = 65
+	if room := width - otherFields; room > 24 {
+		return room
+	}
+	return 24
+}
+
 // renderUsage draws the pane.
 func (m *model) renderUsage(width, height int) string {
 	var b strings.Builder
 
 	scope := "all sessions"
 	if m.usage.session != "" {
-		scope = "session: " + m.usage.session
+		// No "session: " prefix: the pane is reached by pressing u on a session, and the
+		// label already reads as one. Titled, it said "session: <uuid>" where the operator
+		// had just selected a name — the id restated, and the name nowhere.
+		//
+		// Clipped, unlike the id it replaces. This line is one unwrapped Sprintf, and it
+		// already overflowed an 80-column terminal by 13 with a bare id — a title added
+		// whole would have taken that to 78 over.
+		//
+		// CLIPPING REDUCES THAT OVERFLOW; IT DOES NOT REMOVE IT. On the latency metric at the
+		// 6h window the line is still 8 columns past an 80-column terminal, first fitting at
+		// 88, because usageScopeMax's floor wins there and hands back more room than the line
+		// has. See its doc, which states the same thing — an earlier revision of this comment
+		// framed the clipping as what avoids the wrap, which would leave a reader believing 80
+		// columns is safe.
+		//
+		// Truncated from the left for the reason sessionTitleCell is: the tail of the label
+		// carries the leaf directory and the whole id.
+		scope = truncLeft(m.sessionLabel(m.usage.session), usageScopeMax(width))
 	}
 	window, resolution := m.usage.window()
 	// The header must not claim a breakdown the chart is not showing. Latency has

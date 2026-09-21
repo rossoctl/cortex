@@ -500,9 +500,19 @@ func TestSessionsMoneyCells_UseTheFittedWidthNotTheDeclaredOne(t *testing.T) {
 				"built against the declared width", termWidth, row, wide, len([]rune(wide)), budget)
 		}
 	}
-	if shrunken == 0 {
-		t.Fatal("no width shrinks COST below its declared size, so this test asserted nothing " +
-			"about the fitted budget")
+	// ASSERTED, not logged. The loop above cannot fail on any input — COST is never fitted below
+	// its declared width, so its body is unreachable — and a t.Logf left this test with no
+	// runtime signal at all. The property that actually holds is the stronger one, so state it:
+	// sessionsShowMoney requires TITLE's floor to survive alongside the money columns, so they
+	// render only from the width where the whole set holds its minimums, and there is no band
+	// left where COST is admitted and then squeezed.
+	//
+	// The loop stays as the tripwire for the reverse: if a change lets COST in under its declared
+	// width again, `shrunken` goes positive, this fails, and the assertions above start doing
+	// their original job.
+	if shrunken != 0 {
+		t.Errorf("COST was fitted below its declared width at %d terminal width(s) — the money "+
+			"columns are being admitted into room they do not have", shrunken)
 	}
 }
 
