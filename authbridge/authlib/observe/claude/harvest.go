@@ -407,6 +407,12 @@ func harvestedAt(m SessionMetadata, want string) time.Time {
 // directory it ran in, otherwise "". Both are LAST-wins: a session can be titled more
 // than once and can change directory, and the newest claim is the current one.
 //
+// TWO LINE KINDS CARRY A TITLE — {"type":"ai-title","aiTitle":…} and
+// {"type":"agent-name","agentName":…} — and both feed the same last-wins value. Which one an
+// install writes varies: one local config dir had agent-name in 16 transcripts and ai-title in
+// only 2, with no overlap, so reading ai-title alone left most of those sessions named by their
+// working directory instead of their real title.
+//
 // Returns "" rather than an error for an unreadable or malformed transcript. A
 // missing title costs a label; refusing the whole harvest over one bad file would
 // cost every other name. That is the opposite of toolscan's choice on the same files,
@@ -433,13 +439,26 @@ func titleFromTranscript(path string) (string, error) {
 	// toolscan.scanFile.
 	sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
 
-	var title, cwd string
+	// THREE GRADES OF PROMPT, best first. Each is last-wins within its own grade, so a later turn
+	// of the same quality replaces an earlier one but never a better one.
+	//
+	//   human  — origin.kind == "human" AND string content. What the person typed, stated by
+	//            Claude Code rather than inferred. 640 such turns across 128 measured transcripts,
+	//            every one of them a string.
+	//   str    — string content with no origin field, the shape older transcripts use. Still a
+	//            prompt in practice, just unattributed.
+	//   blocks — text extracted from a content ARRAY. Last resort: these are where the harness
+	//            injects, and a "Base directory for this skill: …" title came from one.
+	var title, cwd, human, str, blocks string
 	for sc.Scan() {
 		line := sc.Bytes()
 		// Hot path: most lines are conversation turns carrying neither field. A
 		// substring test over the raw bytes is far cheaper than parsing them, and
 		// bytes.Contains avoids the copy that strings.Contains(string(line), …) makes.
-		if !bytes.Contains(line, []byte(`"aiTitle"`)) && !bytes.Contains(line, []byte(`"cwd"`)) {
+		if !bytes.Contains(line, []byte(`"aiTitle"`)) &&
+			!bytes.Contains(line, []byte(`"agentName"`)) &&
+			!bytes.Contains(line, []byte(`"cwd"`)) &&
+			!bytes.Contains(line, []byte(`"role":"user"`)) {
 			continue
 		}
 		var e transcriptMeta
@@ -454,6 +473,58 @@ func titleFromTranscript(path string) (string, error) {
 		if e.Type == "ai-title" && e.AiTitle != "" {
 			title = e.AiTitle
 		}
+		// The other spelling, treated as equal rather than as a fallback. Both feed the same
+		// last-wins `title`, so whichever line appears later in the transcript is the current
+		// name — the same rule that already applies between two ai-title lines. Where a
+		// transcript carries both kinds they agree anyway (measured: 16 of 16), so ordering
+		// them against each other would be inventing a distinction the data does not have.
+		if e.Type == "agent-name" && e.AgentName != "" {
+			title = e.AgentName
+		}
+		// LAST-WINS on the user's own prompts, kept as a third tier below both title kinds. Only
+		// consulted when neither fired, so a titled session is never renamed by its transcript.
+		//
+		// Guarded on both the line type and the message role: an assistant turn is not a prompt,
+		// and `"role"` appears on every turn either way. Tool output and Claude Code's own
+		// bracketed markers are filtered by the two helpers rather than here, so this stays a
+		// statement about WHICH turn counts.
+		if e.Type == "user" && e.Message != nil && e.Message.Role == "user" {
+			kind := ""
+			if e.Origin != nil {
+				kind = e.Origin.Kind
+			}
+			text, wasString := promptFromMessage(e.Message.Content)
+			switch {
+			case text == "":
+				// Nothing typed: a tool_result array, or blocks with no text.
+			case kind == "human" && wasString:
+				// ATTRIBUTED, so the text is taken as-is. No synthetic-prompt filter here: a
+				// slash command the user really typed arrives as
+				// "<command-message>review</command-message>…", which the structural filter
+				// would reject — and origin already settles authorship, so guessing from the
+				// text would only overrule better evidence. The envelopes a typed turn arrives in
+				// are unwrapped rather than filtered, for the same reason: the user did type it,
+				// so the answer is to render what they typed rather than to drop the turn.
+				// ORDER MATTERS. The command envelope is read FIRST: it is a multi-tag structure
+				// whose <command-args> sit past the first tag, so stripping a leading wrapper
+				// beforehand threw the arguments away and left a bare "/review". Only a turn that
+				// is not a command envelope reaches the wrapper strip.
+				human = unwrapCommandEnvelope(text)
+				if human == text {
+					human = stripWrapperTag(text)
+				}
+			case kind != "" && kind != "human":
+				// Explicitly NOT human — "task-notification" or "peer". Discarded outright;
+				// this is the traffic the text heuristics existed to catch.
+			case isSyntheticPrompt(text):
+				// Unattributed and looks machine-written. Still filtered, because transcripts
+				// with no origin field at all have nothing better to go on.
+			case wasString:
+				str = text
+			default:
+				blocks = text
+			}
+		}
 	}
 	// Reported, not discarded. A truncated read still yields whatever was found before the
 	// stop — which is why the title is returned alongside the error rather than dropped —
@@ -461,10 +532,239 @@ func titleFromTranscript(path string) (string, error) {
 	// last-wins is the rule here, so the name returned may be an old one. The buffer above
 	// makes this rare; silence made it invisible.
 	err = sc.Err()
-	if title != "" {
+	// THREE TIERS, in descending confidence: a title Claude Code generated, then the last thing
+	// the user actually typed, then the directory the session ran in. The prompt tier is what
+	// takes a tree from "mostly paths" to "mostly readable" — measured on one config dir, 110 of
+	// 128 sessions had no title line of either kind and fell through to a cwd, and every one of
+	// those has a usable prompt.
+	//
+	// Clipped at the source. A prompt is unbounded and a title is a table cell; see maxTitleLen.
+	// NORMALISED BEFORE the switch, not inside each arm. A whitespace-only candidate passes a
+	// bare `!= ""` and clipTitle then empties it, so the tier below was skipped and the cell came
+	// out blank — testing the clipped value is what makes each guard mean "this tier has
+	// something to show".
+	title, human, str = clipTitle(title), clipTitle(human), clipTitle(str)
+	blocks = clipTitle(blocks)
+	switch {
+	case title != "":
 		return title, err
+	case human != "":
+		return human, err
+	case str != "":
+		return str, err
+	case blocks != "":
+		return blocks, err
 	}
-	return cwd, err
+	// THE CWD IS NOT CLIPPED. A path's distinguishing end is its LEAF, and clipping keeps the
+	// head: two sibling worktrees under a prefix of 80 runes or more clip to byte-identical
+	// titles, so the column stops telling them apart — exactly what it is for. Clipping the cwd
+	// was also a regression against the behaviour before this change, which never truncated here.
+	//
+	// Safe to leave long because the renderer already truncates a path FROM THE LEFT, keeping the
+	// tail (see the viewer's truncLeft): the cap exists to bound prompts, which are unbounded free
+	// text, not paths, which are bounded by the filesystem. Whitespace is still collapsed, so a
+	// cwd cannot carry a control character into a cell.
+	return strings.Join(strings.Fields(cwd), " "), err
+}
+
+// maxTitleLen caps a harvested title, in RUNES.
+//
+// A prompt is unbounded — the longest on the measured tree ran to several KB — and a title is a
+// table cell. Clipping at the source keeps the metadata file small and stops every consumer having
+// to defend itself; the viewer truncates again to whatever the column allows, which is narrower
+// still. Runes, not bytes, so a multi-byte prompt is not cut mid-character.
+//
+// NOT A DISPLAY-COLUMN BUDGET. 80 runes of CJK occupy 160 columns, so nothing may treat this as a
+// width. It is safe only because every renderer re-truncates by display width — the sessions
+// pane measures with lipgloss.Width — and the guard for that relationship is a test in this
+// package, not this comment.
+const maxTitleLen = 80
+
+// clipTitle trims s and caps it at maxTitleLen runes.
+//
+// No ellipsis: this is not the display truncation — the TITLE column applies its own, measured in
+// display columns — and a marker added here would be re-truncated downstream, leaving a cell with
+// two of them.
+func clipTitle(s string) string {
+	// ONE LINE. A prompt is free text and may hold newlines or tabs; a title is a table cell, and
+	// the viewer sanitises control characters into U+FFFD rather than dropping them, so a raw
+	// newline would reach the cell as a visible replacement glyph. Collapsing runs of whitespace
+	// also stops a wrapped prompt spending its 80 characters on indentation.
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= maxTitleLen {
+		return s
+	}
+	return strings.TrimSpace(string(r[:maxTitleLen]))
+}
+
+// promptFromMessage returns the text a person typed in one user turn, and whether the content was
+// a plain STRING rather than an array of blocks.
+//
+// Two shapes, because Claude Code writes both: a bare string, or an array of blocks of which only
+// `text` is human input. A tool_result array yields "" — it is tool output, and titling a session
+// with a grep dump was the thing this function exists to prevent.
+//
+// The shape is returned because it grades the result. Every one of the 640 attributed human turns
+// on the measured tree had string content and none had an array, while the arrays are where the
+// harness injects — a "Base directory for this skill: …" title came from one. So a string is
+// evidence about authorship, not just an encoding detail, and the caller ranks on it.
+func promptFromMessage(raw json.RawMessage) (text string, wasString bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var plain string
+	if err := json.Unmarshal(raw, &plain); err == nil {
+		return plain, true
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return "", false
+	}
+	var b strings.Builder
+	for _, blk := range blocks {
+		if blk.Type != "text" || blk.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(blk.Text)
+	}
+	return b.String(), false
+}
+
+// unwrapCommandEnvelope renders a slash-command turn as the command the user typed, or returns s
+// unchanged when it is not one.
+//
+// The turn is genuinely the user's — origin.kind is "human" — but the text is an envelope:
+// "<command-message>review</command-message><command-name>/review</command-name>
+// <command-args>some/path.md</command-args>". Measured, 28 of 128 transcripts ended with one, so
+// left alone they are the commonest title shape and every one reads as markup. Worse, 27 of those 28
+// share the same command, so they would all carry an identical title.
+//
+// Yields "/review some/path.md": the line the person would recognise, and one that tells the 28
+// apart by their arguments. <command-message> is dropped as a duplicate of the name.
+//
+// Hand-parsed rather than by regexp, and deliberately: the obvious pattern for a tag pair wants a
+// BACKREFERENCE to match the closing tag, which RE2 does not support — `regexp.MustCompile` panics
+// at init on `\1`, which compiles clean and dies on first use. Two literal scans need no such
+// trick.
+func unwrapCommandEnvelope(s string) string {
+	if !strings.Contains(s, "<command-name>") {
+		return s
+	}
+	name := between(s, "<command-name>", "</command-name>")
+	if name == "" {
+		return s
+	}
+	if args := between(s, "<command-args>", "</command-args>"); args != "" {
+		return name + " " + args
+	}
+	return name
+}
+
+// between returns the text bracketed by open and closing, trimmed, or "".
+//
+// The second parameter is `closing`, not `close`: that would shadow the predeclared builtin, which
+// go vet does not report and this module's lint step (go fmt + go vet) would therefore never catch.
+func between(s, open, closing string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, closing)
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:j])
+}
+
+// stripWrapperTag removes a leading harness wrapper from text the user really typed, keeping what
+// is inside it.
+//
+// Pasted input arrives as `<pasted_content id="2e21">\n…the actual text…`, on a turn whose
+// origin.kind is "human" — so it must not be filtered like injected traffic, but the wrapper is
+// still markup and left alone it became the title. Unlike a slash command there is nothing to
+// reconstruct: the content after the tag IS the prompt.
+//
+// Only a LEADING tag, and only one. A "<" further in is ordinary prose ("is 3 < 5 in Go?"), and
+// stripping repeatedly would start eating text that merely looks like markup.
+func stripWrapperTag(s string) string {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "<") {
+		return s
+	}
+	i := strings.IndexByte(t, '>')
+	if i < 0 {
+		return s
+	}
+	// Reuse the same tag-name test the synthetic filter applies, so "looks like a harness tag"
+	// means one thing in this file.
+	if !isSyntheticPrompt(t[:i+1] + "x") {
+		return s
+	}
+	inner := strings.TrimSpace(t[i+1:])
+	if inner == "" {
+		return s
+	}
+	// A closing tag at the end is dropped too, so "<x>body</x>" yields "body".
+	if j := strings.LastIndex(inner, "</"); j > 0 && strings.HasSuffix(inner, ">") {
+		if trimmed := strings.TrimSpace(inner[:j]); trimmed != "" {
+			return trimmed
+		}
+	}
+	return inner
+}
+
+// isSyntheticPrompt reports whether s is a marker Claude Code inserted rather than something the
+// user typed.
+//
+// Both observed families open with a bracket and are machine-written: "[Request interrupted...]"
+// (46 occurrences on the measured tree) and "[Image: original 2100x200, displayed at...]" (11).
+// Neither describes what a session is about, and the interrupt one is especially misleading as a
+// LAST prompt, since it is exactly what a transcript ends with when someone stopped a tool call.
+//
+// Matched by prefix rather than by an exact set: these strings are Claude Code's, not ours, and a
+// reworded variant should keep being skipped. The cost of the loose rule is that a genuine prompt
+// beginning "[" is skipped too, which is rare and costs a fallback to the previous prompt.
+func isSyntheticPrompt(s string) bool {
+	t := strings.TrimSpace(s)
+	if strings.HasPrefix(t, "[Request interrupted") || strings.HasPrefix(t, "[Image:") {
+		return true
+	}
+	// A HARNESS BLOCK, which arrives on the user turn because that is the channel the tool
+	// harness speaks on, but which nobody typed: <task-notification>, <bash-stdout>,
+	// <system-reminder>, <command-name> and friends. Measured, 27 of 128 transcripts ended with
+	// one, so without this the commonest title on a real tree is a notification envelope.
+	//
+	// Detected structurally — opens with an XML-ish tag — rather than by listing the tags, which
+	// are the harness's vocabulary and grow. A prompt that genuinely opens with "<" is skipped
+	// too; that costs a fallback to the previous prompt, which is the safe direction.
+	if strings.HasPrefix(t, "<") {
+		if i := strings.IndexByte(t, '>'); i > 1 {
+			// THE TAG NAME ONLY, cut at the first space or slash. An opening tag may carry
+			// attributes — a real transcript produced a title of raw
+			// `<pasted_content id="...">` markup — and the space, `=` and `"` all failed the
+			// character check below, so every attributed tag went undetected. Self-closing
+			// tags are cut the same way.
+			tag := t[1:i]
+			if j := strings.IndexAny(tag, " \t/"); j >= 0 {
+				tag = tag[:j]
+			}
+			// Lowercased before checking: every tag observed on a real tree is lowercase, so
+			// this is latent rather than a live bug, but it costs one call and the alternative
+			// is a filter that a capitalised variant walks straight through.
+			tag = strings.ToLower(tag)
+			if tag != "" && strings.IndexFunc(tag, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z') && r != '-' && r != '_'
+			}) == -1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // transcriptMeta is the minimum shape needed from a transcript line. Decoding only
@@ -472,7 +772,43 @@ func titleFromTranscript(path string) (string, error) {
 type transcriptMeta struct {
 	Type    string `json:"type"`
 	AiTitle string `json:"aiTitle"`
-	Cwd     string `json:"cwd"`
+	// AgentName is the title Claude Code records as {"type":"agent-name","agentName":…}.
+	//
+	// A SECOND SPELLING of the same idea, not a different field: some installs write ai-title
+	// lines, some write agent-name, and some write both. Measured locally: of 128 transcripts
+	// under one config dir, 16 carried agent-name and 2 carried ai-title with no overlap, while
+	// another dir had 26 ai-title and 16 agent-name — and in all 16 of those the two values were
+	// IDENTICAL. So this is a naming variant to accept, not a competing claim to arbitrate.
+	AgentName string `json:"agentName"`
+	Cwd       string `json:"cwd"`
+	// Message is the turn body, decoded only far enough to recover a typed prompt.
+	//
+	// Content is json.RawMessage because Claude Code writes it two ways: a plain string for a
+	// simple prompt, and an array of blocks otherwise. Decoding it as either concrete type would
+	// silently drop the other — measured on one config dir, 1026 strings against 9718 arrays.
+	Message *struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+	// Origin says who produced the turn, and it is the only authoritative answer available.
+	//
+	// Measured across 128 transcripts: kind is "human" on 640 turns, absent on 9940, and
+	// "task-notification" (151) or "peer" (33) on the rest. Those last two are precisely the
+	// harness-injected traffic that heuristics here used to guess at from the text — so where the
+	// field is present it replaces the guessing rather than supplementing it.
+	Origin *struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+}
+
+// contentBlock is one element of a message's content array.
+//
+// Only text blocks carry anything a person typed. The overwhelming majority are tool_result —
+// 9576 of 9718 arrays on the measured tree — which is tool OUTPUT: grep hits, build logs, a
+// CSpell summary. Titling a session with those was the failure mode this shape exists to avoid.
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // ReadMetadata reads the existing file, distinguishing absent from unreadable.
