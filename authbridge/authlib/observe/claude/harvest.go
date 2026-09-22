@@ -74,15 +74,25 @@ type Result struct {
 	// Kept counts entries retained from the existing file that this harvest did not see.
 	// Always zero unless Options.Merge, and excludes Recovered — an entry another run wrote
 	// concurrently was not in the file this run read, so it is not "kept" from it.
-	// Total = Harvested + Kept + Recovered.
+	//
+	// Total = Harvested + Kept + Recovered. Replaced is NOT a term: it counts keys overwritten in
+	// place, which do not change Total, so including it would drive this negative.
 	Kept int
 	// Total counts the entries written.
 	Total int
 	// Partial names transcripts whose read ended early, so their titles may be stale.
 	// Not an error: those sessions are still in the map with the best title found.
 	Partial []string
-	// Recovered counts entries another run wrote concurrently and this one put back.
+	// Recovered counts entries another run wrote concurrently that this one ADDED back — ids it
+	// did not have. Counts only the shape that grows the map, so it can be subtracted from Total;
+	// see Replaced for the other one.
 	Recovered int
+	// Replaced counts shared ids where another run's copy was fresher and this one adopted it.
+	//
+	// Its own field rather than folded into Recovered because it REPLACES a key: the map does not
+	// grow, so counting it as recovered drove Kept negative and the subcommand printed
+	// "-1 kept from the existing file". Not part of the Total identity below for the same reason.
+	Replaced int
 	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
 	// otherwise. Keyed by session id.
 	//
@@ -202,11 +212,12 @@ func Harvest(opts Options) (Result, error) {
 	// adopted rather than overwritten. Both are strictly better than nothing, which is why the
 	// pass is kept rather than deleted once the lock existed.
 	if opts.Merge {
-		recovered, rerr := recoverConcurrentEntries(path, meta)
+		added, replaced, rerr := recoverConcurrentEntries(path, meta)
 		if rerr != nil {
 			return res, fmt.Errorf("writing %s: %w", path, rerr)
 		}
-		res.Recovered = recovered
+		res.Recovered = added
+		res.Replaced = replaced
 		res.Total = len(meta)
 	}
 	// Set after recovery, like Kept below, so it is the map that is actually on disk.
@@ -220,7 +231,12 @@ func Harvest(opts Options) (Result, error) {
 	// "kept from the existing file". An entry another run wrote while this one worked was not in
 	// the file this run read, so counting it as kept attributed it to the wrong source; the
 	// arithmetic balanced either way, which is exactly why the label could drift unnoticed.
-	// Total = Harvested + Kept + Recovered.
+	//
+	// Total = Harvested + Kept + Recovered, and ONLY those three. Recovered counts ids ADDED by the
+	// recovery pass; a shared id whose fresher copy it adopted lands in Replaced instead, because
+	// overwriting a key leaves Total unchanged and subtracting it here made Kept negative — an
+	// incremental run with Total=1, Harvested=1 and one adopted title printed "-1 kept from the
+	// existing file". Anything added to this expression has to grow the map.
 	res.Kept = res.Total - res.Harvested - res.Recovered
 	return res, nil
 }
@@ -523,18 +539,18 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 // disk is valid and this is a best-effort recovery of someone else's entries. A write error is
 // fatal, because at that point the file on disk is missing entries this function set out to
 // put back.
-func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (int, error) {
+func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (added, replaced int, err error) {
 	after, err := ReadMetadata(path)
 	if err != nil {
-		return 0, nil
+		return 0, 0, nil
 	}
-	recovered := 0
 	for id, theirs := range after {
 		ours, have := meta[id]
 		if !have {
-			// An id only they harvested. The original and still the main case.
+			// An id only they harvested. GROWS the map, so it counts toward Recovered, which the
+			// caller's arithmetic treats as a new entry.
 			meta[id] = theirs
-			recovered++
+			added++
 			continue
 		}
 		// A SHARED id, and this is the half that was missing. Taking ours unconditionally wrote
@@ -547,22 +563,25 @@ func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (int
 		// side carrying a time, which is also what pre-upgrade entries look like): there is no
 		// basis for preferring theirs, and this run at least knows its own provenance.
 		//
-		// Counted in `recovered`, which is what forces the save below — without it the map would
-		// hold the fresher title and never write it. The count is therefore "entries this pass
-		// took from the other run", which covers both shapes; the caller prints it as
-		// "written concurrently by another run", still true of a shared id it just adopted.
+		// Counted SEPARATELY, because this branch REPLACES a key rather than adding one: len(meta)
+		// is unchanged. Folding it into the same counter made the caller's
+		// Kept = Total - Harvested - Recovered go negative — an incremental run that harvested one
+		// transcript and adopted one fresher shared title reported Total=1, Harvested=1,
+		// Recovered=1, so Kept=-1, and the subcommand printed "-1 kept from the existing file".
+		// Two shapes, two counters; only the one that grows the map may be subtracted from a total.
 		if theirs.LogModTime.After(ours.LogModTime) {
 			meta[id] = theirs
-			recovered++
+			replaced++
 		}
 	}
-	if recovered == 0 {
-		return 0, nil
+	if added == 0 && replaced == 0 {
+		return 0, 0, nil
 	}
+	// Either shape needs the save: the map now differs from what we were about to write.
 	if err := SaveMetadata(path, meta); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return recovered, nil
+	return added, replaced, nil
 }
 
 // SaveMetadata writes the map atomically, creating ~/.cortex if needed.

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -275,12 +276,15 @@ func TestRecoverConcurrentEntries(t *testing.T) {
 	// In hand: what this run was about to save, which knows nothing of theirs.
 	meta := map[string]SessionMetadata{ours: {Title: "Ours"}}
 
-	recovered, err := recoverConcurrentEntries(path, meta)
+	recovered, replaced, err := recoverConcurrentEntries(path, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if recovered != 1 {
 		t.Errorf("recovered = %d, want 1", recovered)
+	}
+	if replaced != 0 {
+		t.Errorf("replaced = %d, want 0 — this shape ADDS an id, it does not overwrite one", replaced)
 	}
 	got := readMetadataFile(t, path)
 	if w := got[theirs].Title; w != "From another run" {
@@ -291,12 +295,13 @@ func TestRecoverConcurrentEntries(t *testing.T) {
 	}
 
 	// Idempotent: a second pass finds nothing to do and must not rewrite the file.
-	again, err := recoverConcurrentEntries(path, meta)
+	again, againReplaced, err := recoverConcurrentEntries(path, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again != 0 {
-		t.Errorf("second pass recovered %d, want 0 — the merge is not idempotent", again)
+	if again != 0 || againReplaced != 0 {
+		t.Errorf("second pass recovered %d/replaced %d, want 0/0 — the merge is not idempotent",
+			again, againReplaced)
 	}
 }
 
@@ -311,12 +316,12 @@ func TestRecoverConcurrentEntries_CorruptFileIsNotFatal(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := recoverConcurrentEntries(path, map[string]SessionMetadata{"a": {}})
+	recovered, replaced, err := recoverConcurrentEntries(path, map[string]SessionMetadata{"a": {}})
 	if err != nil {
 		t.Errorf("err = %v, want nil — the harvest already succeeded", err)
 	}
-	if recovered != 0 {
-		t.Errorf("recovered = %d, want 0", recovered)
+	if recovered != 0 || replaced != 0 {
+		t.Errorf("recovered = %d, replaced = %d, want 0/0", recovered, replaced)
 	}
 }
 
@@ -447,12 +452,15 @@ func TestHarvest_CountsBalanceAfterRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, err := recoverConcurrentEntries(path, meta)
+	recovered, replaced, err := recoverConcurrentEntries(path, meta)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if recovered != 1 {
 		t.Fatalf("recovered = %d, want 1 — the fixture is not exercising recovery", recovered)
+	}
+	if replaced != 0 {
+		t.Errorf("replaced = %d, want 0 — this fixture only ADDS an id", replaced)
 	}
 
 	// Harvest derives these from the final map, in this order.
@@ -550,6 +558,13 @@ func TestReadMetadata_IsBounded(t *testing.T) {
 	}
 }
 
+// childTimeout bounds a harvester subprocess.
+//
+// Its own constant rather than a shared one, since cmd_observe_test.go's namesake is in a different
+// module. Generous enough that a loaded CI machine running six children against one lock does not
+// flake, short enough that a wedge fails the test instead of the package.
+const childTimeout = 60 * time.Second
+
 // A concurrent run's FRESHER title for a shared id survives this run's recovery pass.
 //
 // recoverConcurrentEntries only pulled in ids this run did not have (`if _, ours := meta[id];
@@ -583,8 +598,27 @@ func TestRecoverConcurrentEntries_KeepsTheFresherTitleForASharedID(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if _, err := recoverConcurrentEntries(path, ours); err != nil {
+	added, replaced, err := recoverConcurrentEntries(path, ours)
+	if err != nil {
 		t.Fatal(err)
+	}
+	// THE COUNTS, not just the file. This test discarded them (`if _, err := ...`), which is
+	// exactly how a shared-id adoption came to be counted as a recovery: it replaces a key rather
+	// than adding one, so folding it into Recovered drove the caller's
+	// Kept = Total - Harvested - Recovered negative. Asserting the shapes separately here is what
+	// stops that returning.
+	if added != 1 {
+		t.Errorf("added = %d, want 1 (s3, an id only they have)", added)
+	}
+	if replaced != 1 {
+		t.Errorf("replaced = %d, want 1 (s1, adopted because theirs is fresher)", replaced)
+	}
+	// And the caller's arithmetic stays non-negative on this shape, which is the bug's own symptom:
+	// one harvested entry plus one adopted title used to report Kept = -1.
+	harvested := 2 // ours held s1 and s2
+	if kept := len(ours) - harvested - added; kept < 0 {
+		t.Errorf("Kept = %d, negative: the subcommand would print %q",
+			kept, "-1 kept from the existing file")
 	}
 
 	got := readMetadataFile(t, path)
@@ -619,8 +653,15 @@ func TestRecoverConcurrentEntries_KeepsOursWhenNeitherIsComparable(t *testing.T)
 	if err := SaveMetadata(path, onDisk); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recoverConcurrentEntries(path, ours); err != nil {
+	added, replaced, err := recoverConcurrentEntries(path, ours)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1 (s3)", added)
+	}
+	if replaced != 0 {
+		t.Errorf("replaced = %d, want 0 — an incomparable pair keeps ours", replaced)
 	}
 	got := readMetadataFile(t, path)
 	if got["s1"].Title != "ours" {
@@ -686,7 +727,15 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 			wg.Add(1)
 			go func(dir string) {
 				defer wg.Done()
-				cmd := exec.Command(os.Args[0], "-test.run=TestHarvest_ConcurrentRunsLoseNothing")
+				// BOUNDED, and it matters more here than the usual "tests should have timeouts".
+				// Every child shares one HOME, so they contend on a single blocking
+				// syscall.Flock(LOCK_EX) — lock_unix.go takes it with no timeout, deliberately. A
+				// child wedged holding it would block cmd.Wait(), then wg.Wait(), and with three
+				// attempts times six children the package would hit its own timeout with nothing
+				// saying which child stuck. Same two lines cmd_observe_test.go's runAbctlChild uses.
+				ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHarvest_ConcurrentRunsLoseNothing")
 				cmd.Env = append(os.Environ(),
 					"CLAUDE_HARVEST_CHILD="+dir,
 					"HOME="+home, "USERPROFILE="+home,
@@ -699,6 +748,11 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 				}
 				<-start
 				if err := cmd.Wait(); err != nil {
+					if ctx.Err() != nil {
+						t.Errorf("child for %s did not exit within %s — likely wedged on the metadata lock",
+							dir, childTimeout)
+						return
+					}
 					t.Errorf("child for %s failed: %v", dir, err)
 				}
 			}(dirs[i])
