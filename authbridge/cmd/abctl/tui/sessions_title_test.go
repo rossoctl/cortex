@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -602,5 +603,71 @@ func TestSessionTitleCell_BoundsCJKProse(t *testing.T) {
 		if cw := lipgloss.Width(got); cw > w {
 			t.Errorf("sessionTitleCell(%d) is %d display columns: %q", w, cw, got)
 		}
+	}
+}
+
+// A background harvest that lands after the UI is up names the sessions already on screen.
+//
+// This is the whole point of running the scan async: the viewer opens immediately with whatever
+// the metadata file held, and a session the harvest newly names gets its title when the scan
+// finishes rather than at the next launch. Without the rebuild in the harvestedMsg handler the
+// map would update and the table would keep showing the old cells until the next poll.
+func TestHarvestedMsg_NamesSessionsAlreadyOnScreen(t *testing.T) {
+	const id = "late-named"
+	m := newTitleModel(t, map[string]SessionMetadata{}, id)
+	if got := m.sessionTitle(id); got != "" {
+		t.Fatalf("title = %q before the harvest, want empty", got)
+	}
+
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{
+		id: {Title: "arrived late"},
+	}})
+
+	if got := m.sessionTitle(id); got != "arrived late" {
+		t.Errorf("title = %q after the harvest, want %q", got, "arrived late")
+	}
+	// And it is in the rendered cell, not merely in the map.
+	if got := sessionsCell(t, m, titleRow(t, m, id), "TITLE"); !strings.Contains(got, "arrived late") {
+		t.Errorf("TITLE cell = %q, want it to carry the harvested title", got)
+	}
+}
+
+// A harvest MERGES rather than replaces, so it cannot blank a title the viewer already shows.
+//
+// The map it merges into was loaded from a file that may hold entries from another config dir or
+// from a transcript since pruned — the same reason the harvester itself upserts. An incremental
+// harvest also returns the merged file rather than only what it re-read, but this handler must
+// not depend on that.
+func TestHarvestedMsg_DoesNotBlankExistingTitles(t *testing.T) {
+	const kept, renamed = "keep-me", "rename-me"
+	m := newTitleModel(t, map[string]SessionMetadata{
+		kept:    {Title: "from another config dir"},
+		renamed: {Title: "old name"},
+	}, kept, renamed)
+
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{
+		renamed: {Title: "new name"},
+	}})
+
+	if got := m.sessionTitle(kept); got != "from another config dir" {
+		t.Errorf("an entry the harvest did not see was lost: %q", got)
+	}
+	if got := m.sessionTitle(renamed); got != "new name" {
+		t.Errorf("the harvest did not win for a session it re-read: %q", got)
+	}
+}
+
+// A failed or empty harvest changes nothing and says nothing.
+//
+// There is nowhere to report by then — the alt screen is up — so the cost of a failure is a
+// column that stays as it was. main warns about what it can before the viewer starts.
+func TestHarvestedMsg_FailureLeavesTitlesAlone(t *testing.T) {
+	const id = "s1"
+	m := newTitleModel(t, map[string]SessionMetadata{id: {Title: "existing"}}, id)
+
+	m.Update(harvestedMsg{err: errors.New("no such config dir")})
+
+	if got := m.sessionTitle(id); got != "existing" {
+		t.Errorf("a failed harvest disturbed the title: %q", got)
 	}
 }

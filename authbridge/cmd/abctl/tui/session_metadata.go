@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/rossoctl/cortex/authbridge/authlib/observe/claude"
 )
 
@@ -109,4 +111,45 @@ func (m *model) sessionLabel(id string) string {
 		return title + " (" + id + ")"
 	}
 	return id
+}
+
+// HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.
+//
+// A function on RunOptions rather than a direct call into authlib/observe/claude, so this
+// package keeps knowing nothing about where titles come from: it renders a map. main supplies
+// the Claude Code implementation, and a test supplies a stub without needing a transcript tree
+// on disk.
+//
+// Returning the map rather than writing the file is deliberate. The harvester still persists
+// to ~/.cortex/session-metadata.json — that is what makes the NEXT launch instant — but the
+// running viewer must not have to re-read a file it already has a newer version of in memory.
+type HarvestFunc func() (map[string]SessionMetadata, error)
+
+// harvestedMsg carries a finished background harvest.
+//
+// err is kept rather than dropped so the model can decide: a failed harvest is silent here,
+// because the viewer is already open and there is nowhere to print without corrupting the
+// frame. main reports what it can before the alt screen; this is the part that cannot.
+type harvestedMsg struct {
+	meta map[string]SessionMetadata
+	err  error
+}
+
+// harvestCmd runs the harvest off the UI goroutine.
+//
+// This is the whole reason the startup scan no longer blocks: bubbletea runs a tea.Cmd in its
+// own goroutine and delivers the result as a message, so the picker paints immediately and the
+// titles land whenever the scan finishes. A full scan of a large ~/.claude is ~0.7s, which is
+// dead time in front of an empty screen if done before tea.NewProgram.
+//
+// Returns nil when no harvester was supplied, which is what a test and `--skip-claude-metadata`
+// both produce; bubbletea treats a nil Cmd as nothing to do.
+func harvestCmd(h HarvestFunc) tea.Cmd {
+	if h == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		meta, err := h()
+		return harvestedMsg{meta: meta, err: err}
+	}
 }

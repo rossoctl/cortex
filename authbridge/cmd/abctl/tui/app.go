@@ -334,10 +334,12 @@ type model struct {
 	// by construction: a read on a nil map yields the zero SessionMetadata, so an
 	// unharvested session, an unknown id and an absent file all render the same.
 	sessionsData map[string]SessionMetadata
-	eventCt      uint64 // monotonic counter
-	lastTick     time.Time
-	lastCt       uint64
-	rate         float64
+	// harvest refreshes sessionsData in the background once the UI is up. Nil disables it.
+	harvest  HarvestFunc
+	eventCt  uint64 // monotonic counter
+	lastTick time.Time
+	lastCt   uint64
+	rate     float64
 
 	// Connection status.
 	connState connStateInfo
@@ -794,12 +796,17 @@ func (m *model) syncHelpViewport(resetScroll bool) {
 // Init fires the initial fetch + starts the SSE pump and the tick.
 // In picker mode (paneNamespaces), it loads the agent list instead.
 func (m *model) Init() tea.Cmd {
+	// The harvest runs alongside whatever the pane loads, never before it. It is the one
+	// startup task with no bearing on what the first frame shows: the metadata file already on
+	// disk names every session the last run saw, so a harvest only ever ADDS titles — and
+	// reading a large ~/.claude takes about as long as everything else at startup put
+	// together. Batched rather than sequenced so neither waits on the other.
 	if m.pane == paneNamespaces {
 		// Picker mode — load agents, then idle until user picks a pod.
 		m.loading = true
-		return loadAgentsCmd(m.ctx, m.lister)
+		return tea.Batch(loadAgentsCmd(m.ctx, m.lister), harvestCmd(m.harvest))
 	}
-	return m.initSessionView()
+	return tea.Batch(m.initSessionView(), harvestCmd(m.harvest))
 }
 
 // loadPipelineCmd fetches /v1/pipeline. The plugin composition is static for
@@ -942,6 +949,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildSessionsTable()
 		if m.pane == paneEvents {
 			m.rebuildEventsTable()
+		}
+		return m, nil
+
+	case harvestedMsg:
+		// Merge, never replace. The harvest sees one agent's config dir, while the map it is
+		// merging into was loaded from a file that may carry entries from another dir or from a
+		// transcript since pruned — the same reason the harvester itself upserts. Replacing
+		// would blank titles the viewer is already showing.
+		//
+		// A failed harvest is silent: the viewer is open, so there is nowhere to report without
+		// corrupting the frame, and the cost is a column that stays as it was. main warns about
+		// what it can before the alt screen goes up.
+		if len(msg.meta) > 0 {
+			if m.sessionsData == nil {
+				m.sessionsData = map[string]SessionMetadata{}
+			}
+			for id, meta := range msg.meta {
+				m.sessionsData[id] = meta
+			}
+			// Repaint what names sessions. The sessions table is the only place a title is
+			// rendered into a cell; every other user of sessionLabel builds its text on each
+			// View, so those pick the new names up on the next frame with nothing to do here.
+			m.rebuildSessionsTable()
 		}
 		return m, nil
 
@@ -1979,6 +2009,13 @@ type RunOptions struct {
 	// Nil disables persistence: what tests pass, and what main passes when there is
 	// no resolvable home directory to write to.
 	Save func(UserSettings) error
+	// Harvest reads session titles from a coding agent's own transcripts, in the
+	// background, once the UI is up.
+	//
+	// Nil means no harvest: what tests pass, and what main passes under
+	// --skip-claude-metadata. The viewer then shows whatever the metadata file already
+	// held — the titles from the last run — so this only ever ADDS names.
+	Harvest HarvestFunc
 }
 
 // Run starts the bubbletea program. See RunOptions for mode selection.
@@ -1999,6 +2036,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// After the constructor branch, so the two paths cannot disagree about it:
 	// newPickerModel and New would otherwise each need their own copy.
 	m.save = opts.Save
+	m.harvest = opts.Harvest
 	defer func() {
 		if m.activePF != nil {
 			_ = m.activePF.Close()

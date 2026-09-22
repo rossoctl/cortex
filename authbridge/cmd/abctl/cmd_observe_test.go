@@ -230,12 +230,13 @@ func TestSkipClaudeMetadataFlag_DefaultsToFalse(t *testing.T) {
 	}
 }
 
-// harvestClaudeMetadata writes the metadata file, and says nothing when it worked.
+// The background harvester writes the metadata file and returns the merged map, saying nothing
+// on the way through.
 //
-// The silence is half the point: this runs on every `abctl observe`, immediately above a
-// viewer that is about to take the alt screen, so a success line would be noise on every
-// single launch.
-func TestHarvestClaudeMetadata_WritesTheFileQuietly(t *testing.T) {
+// The silence matters more now than it did: the harvest runs while the viewer is up, so anything
+// printed from it would land on the alt screen and corrupt the frame. Only failures knowable
+// BEFORE the TUI starts get a word, and claudeHarvester checks those itself.
+func TestClaudeHarvester_WritesTheFileQuietly(t *testing.T) {
 	home := prefsHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")
 	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
@@ -243,83 +244,173 @@ func TestHarvestClaudeMetadata_WritesTheFileQuietly(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 
 	var warn bytes.Buffer
-	harvestClaudeMetadata(&warn)
-
-	if warn.Len() != 0 {
-		t.Errorf("a successful harvest wrote to stderr: %q", warn.String())
+	h := claudeHarvester(&warn)
+	if h == nil {
+		t.Fatal("claudeHarvester returned nil on a healthy tree")
 	}
-	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
-	if got["s1"].Title != "named by the harvest" {
-		t.Errorf("title = %q, want %q", got["s1"].Title, "named by the harvest")
+	if warn.Len() != 0 {
+		t.Errorf("claudeHarvester complained before running: %q", warn.String())
+	}
+
+	meta, err := h()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The map it RETURNS is what names sessions in the running viewer, so the title has to be
+	// in there and not only in the file.
+	if meta["s1"].Title != "named by the harvest" {
+		t.Errorf("returned title = %q, want %q", meta["s1"].Title, "named by the harvest")
+	}
+	if got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel)); got["s1"].Title != "named by the harvest" {
+		t.Errorf("file title = %q, want %q", got["s1"].Title, "named by the harvest")
 	}
 }
 
-// A harvest that cannot work must not stop the viewer: no panic, no exit, and the
-// caller gets on with opening the TUI.
+// An incremental pass still returns every title, not just the ones it re-read.
 //
-// The viewer is the tool you reach for when everything else is broken, so a missing or
-// unreadable ~/.claude costs a TITLE column and nothing more.
-func TestHarvestClaudeMetadata_SurvivesAnUnreadableConfigDir(t *testing.T) {
+// The harvest parses only changed transcripts, so its own result map is nearly empty on a warm
+// tree — returning that would have blanked the TITLE column for every session it skipped, which
+// is most of them. It returns the merged file instead. This is the regression that would have
+// made the whole async change look like it broke titles.
+func TestClaudeHarvester_ReturnsEveryTitleNotJustTheReparsedOnes(t *testing.T) {
+	prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "old.jsonl", `{"type":"ai-title","aiTitle":"harvested earlier"}`)
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+
+	// First pass records it.
+	if _, err := claudeHarvester(io.Discard)(); err != nil {
+		t.Fatal(err)
+	}
+	// Second pass skips it as unchanged, and must still name it.
+	meta, err := claudeHarvester(io.Discard)()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta["old"].Title != "harvested earlier" {
+		t.Errorf("a skipped session lost its title: got %q", meta["old"].Title)
+	}
+}
+
+// A harvest that cannot work must not stop the viewer: no panic, no exit, and an empty result
+// rather than a refusal.
+//
+// The viewer is the tool you reach for when everything else is broken, so a missing ~/.claude
+// costs a TITLE column and nothing more.
+func TestClaudeHarvester_SurvivesAnUnreadableConfigDir(t *testing.T) {
 	prefsHome(t)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "nonexistent"))
 
 	var warn bytes.Buffer
-	harvestClaudeMetadata(&warn)
-
-	// A config dir that simply is not there is not a failure worth a word: a machine that
-	// has never run Claude Code legitimately has none.
+	h := claudeHarvester(&warn)
+	if h == nil {
+		t.Fatal("a missing config dir must not disable the harvest outright")
+	}
+	if _, err := h(); err != nil {
+		t.Errorf("a missing config dir was reported as an error: %v", err)
+	}
+	// Not worth a word: a machine that has never run Claude Code legitimately has none.
 	if warn.Len() != 0 {
 		t.Errorf("a missing config dir was reported as a problem: %q", warn.String())
 	}
 }
 
-// `abctl observe` harvests implicitly, and --skip-claude-metadata stops it.
+// A corrupt metadata file names the repair, and disables the harvest rather than running it.
 //
-// The only test that pins the CALL rather than the function: the two above would both keep
-// passing if the harvest were deleted from runObserve. A subprocess because runObserve
-// opens a TUI — the same reason and the same mechanism as runObserveHelp.
+// Checked BEFORE the TUI starts precisely so the message can be printed at all: the harvest now
+// runs after the alt screen goes up, where a warning would corrupt the frame. It is also the one
+// failure that cannot clear itself, since every launch reads the same bad file. observe has to
+// name a different repair from the subcommand's --merge=false, which is not a flag it has.
 //
-// --endpoint names a port nothing listens on, so the child fails to connect and exits
-// instead of taking the alt screen. That is harmless here: the harvest runs before the
-// endpoint is ever dialled, so the file is already written by the time connecting fails.
-func TestObserve_HarvestsClaudeMetadataUnlessSkipped(t *testing.T) {
+// (This test existed before the async change and was lost in an edit; restored here in the
+// factory's shape, which is also where it belongs now that the check moved.)
+func TestClaudeHarvester_CorruptFileNamesTheRepair(t *testing.T) {
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var warn bytes.Buffer
+	if h := claudeHarvester(&warn); h != nil {
+		t.Error("a corrupt file must disable the harvest, not be silently merged over")
+	}
+	got := warn.String()
+	if !strings.Contains(got, "read-claude-sessions --merge=false") {
+		t.Errorf("the warning does not name the repair:\n%s", got)
+	}
+	// The command it names must be runnable as printed, on its own line.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "abctl experimental") && !strings.HasPrefix(strings.TrimSpace(line), "abctl experimental") {
+			t.Errorf("the repair command is not on a line of its own: %q", line)
+		}
+	}
+}
+
+// `abctl observe` wires the harvest to the flag: on by default, off with
+// --skip-claude-metadata.
+//
+// Asserted through observeHarvester, the function runObserve actually calls, rather than by watching
+// a child process write a file. That used to work, when the harvest blocked startup. It cannot
+// now: the harvest is a tea.Cmd, so it runs on bubbletea's goroutine after the program starts,
+// and a headless child dies on "could not open a new TTY" before the scan finishes. Waiting on a
+// race in a subprocess would be a flaky test of the wrong thing; the decision this test exists
+// to pin is whether a harvester is HANDED OVER, and that is synchronous and local.
+//
+// The harvester's own behaviour is covered by the TestClaudeHarvester_* tests above, and that
+// the TUI runs what it is handed by TestHarvestedMsg_* in the tui package.
+func TestObserve_WiresTheHarvestToTheFlag(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
-		extraArg    string
+		args        []string
 		wantHarvest bool
 	}{
-		{"implicit by default", "", true},
-		{"suppressed by the flag", "--skip-claude-metadata", false},
+		{"implicit by default", nil, true},
+		{"suppressed by the flag", []string{"--skip-claude-metadata"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := prefsHome(t)
+			prefsHome(t)
 			cfg := filepath.Join(t.TempDir(), "claude")
 			writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
 				`{"type":"ai-title","aiTitle":"from the observe path"}`)
+			t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 
-			args := []string{"observe", "--endpoint", "http://127.0.0.1:1"}
-			if tc.extraArg != "" {
-				args = append(args, tc.extraArg)
+			fs := flag.NewFlagSet("abctl", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			f := registerObserveFlags(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatal(err)
 			}
-			out, _ := runAbctlChild(t, []string{
-				"HOME=" + home,
-				"USERPROFILE=" + home,
-				"CLAUDE_CONFIG_DIR=" + cfg,
-			}, args...)
 
-			path := filepath.Join(home, tui.SessionMetadataRel)
-			_, err := os.Stat(path)
+			// The SAME function runObserve calls, not a copy of its condition: a test that
+			// restated the `if` passed with the real wiring deleted.
+			h := observeHarvester(f, io.Discard)
+
 			if tc.wantHarvest {
-				if err != nil {
-					t.Fatalf("observe did not harvest: %v\nchild output:\n%s", err, out)
+				if h == nil {
+					t.Fatal("observe handed the viewer no harvester, so sessions would never be named")
 				}
-				if got := readMetadataFile(t, path)["s1"].Title; got != "from the observe path" {
-					t.Errorf("title = %q, want %q", got, "from the observe path")
+				// And what it hands over really does name sessions.
+				meta, err := h()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if meta["s1"].Title != "from the observe path" {
+					t.Errorf("title = %q, want %q", meta["s1"].Title, "from the observe path")
 				}
 				return
 			}
-			if err == nil {
-				t.Errorf("--skip-claude-metadata still harvested: %s exists\nchild output:\n%s", path, out)
+			if h != nil {
+				t.Error("--skip-claude-metadata still handed over a harvester")
 			}
 		})
 	}
