@@ -487,7 +487,7 @@ func TestServedAsRequested(t *testing.T) {
 // TestSpanReadings_StalenessIsMeasuredAgainstEachSpansOwnCadence.
 //
 // THE THRESHOLD HAS TO BE PER SPAN, exactly like the readings are, and the plumbing landed
-// without it: spanReadings compared every chain's age to the global spendStaleAfter, which is
+// without it: spanReadings compared every chain's age to ONE GLOBAL THRESHOLD, which is
 // twice the HOUR's twenty-second cadence — forty seconds. The month and the week poll every
 // five minutes, so for about 87% of every healthy polling cycle they were dated "MONTH 3m",
 // which reads as a wedged chain on a chain that answered three minutes ago and is not due for

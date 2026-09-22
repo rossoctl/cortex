@@ -253,3 +253,125 @@ func TestSpanReadings_CarryTheLedgersDisclosuresToTheCell(t *testing.T) {
 		})
 	}
 }
+
+// A FAILED CHAIN MUST NOT BLANK THE OTHERS, which is the whole reason the chains were split and
+// the whole reason spendSummary stopped being a wrapper.
+//
+// The derivation this replaced returned early on a failed hour poll, so the other three spans
+// were never read; a wrapper existed purely to fill them outside it. spanReadings walks every
+// chain unconditionally.
+//
+// WITH REAL MODEL STATE, which is the gap this closes. The comment on spendSummary claimed the
+// bug was fixed and nothing asserted it: reintroducing the early return left the suite green,
+// because TestSpanReadings_FailureAndEmptinessAreDistinct only asserts a LATER span is not
+// Failed — which a zero-value entry satisfies — and the band's OneChainsFailureLeavesTheOthers
+// builds its summary by hand and never calls spanReadings at all. The one test that pinned it
+// through the model was deleted with the dead path.
+func TestSpanReadings_AFailedChainDoesNotBlankTheOthers(t *testing.T) {
+	m := &model{}
+	// The FIRST chain fails, which is the one an early return would exit on.
+	m.spend.chains[spanHour].err = errors.New("dial tcp: connection refused")
+	// Every later span answered, and with distinct figures so a reading cannot pass by
+	// accidentally holding its neighbour's.
+	for span, usd := range map[spendSpan]int64{
+		spanToday: 18_800_000, span7d: 216_440_000, spanMonth: 703_180_000,
+	} {
+		def := spendSpanDefs[span]
+		m.spend.chains[span].snap = &usage.Snapshot{
+			Window: def.window,
+			Totals: usage.Counts{Requests: 10, CostMicros: usd, PricedRequests: 10, PriceableRequests: 10},
+			Priced: true,
+		}
+	}
+
+	got := m.spanReadings()
+
+	if !got[spanHour].Failed {
+		t.Error("the failed chain is not marked Failed")
+	}
+	for span, want := range map[spendSpan]float64{
+		spanToday: 18.8, span7d: 216.44, spanMonth: 703.18,
+	} {
+		r := got[span]
+		if !r.Priced {
+			t.Errorf("%s: Priced = false — the hour's failure took this span's answer with it, "+
+				"which is the early return spanReadings exists to have removed",
+				spendSpanDefs[span].label)
+		}
+		if r.USD != want {
+			t.Errorf("%s: USD = %v, want %v", spendSpanDefs[span].label, r.USD, want)
+		}
+	}
+	// And on screen: three figures beside one em dash, not four em dashes.
+	line := strings.Join(renderSpendBand(m.spendSummary(), 200), "\n")
+	for _, want := range []string{"$18.80", "$216.44", "$703.18"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("band lost %s over the hour's failure:\n%s", want, line)
+		}
+	}
+}
+
+// The inexact count reaches the cell. Re-pinned per span: the deleted
+// TestSpendSummary_CarriesTheInexactCountFromBothSnapshots asserted the summary-level field, so
+// it never covered this propagation either — forcing r.Incomplete = 0 survived the whole suite.
+func TestSpanReadings_CarryTheInexactCount(t *testing.T) {
+	for span := spendSpan(0); span < numSpendSpans; span++ {
+		def := spendSpanDefs[span]
+		t.Run(def.label, func(t *testing.T) {
+			m := &model{}
+			m.spend.chains[span].snap = &usage.Snapshot{
+				Window: def.window,
+				Totals: usage.Counts{
+					Requests: 10, CostMicros: 4_040_000,
+					PricedRequests: 10, PriceableRequests: 10,
+					IncompleteRequests: 7,
+				},
+				Priced: true,
+			}
+			if got := m.spanReadings()[span]; got.Incomplete != 7 {
+				t.Errorf("%s: Incomplete = %d, want 7", def.label, got.Incomplete)
+			}
+			// And it earns the marker that says the figure is a lower bound.
+			line := strings.Join(renderSpendBand(m.spendSummary(), 200), "\n")
+			if !strings.Contains(line, inexactMarker) {
+				t.Errorf("%s: a figure with 7 inexact requests drew no %q marker:\n%s",
+					def.label, inexactMarker, line)
+			}
+		})
+	}
+}
+
+// A CHAIN THAT HAS NEVER ANSWERED IS NOT STALE — it is empty, which the band says differently.
+//
+// Re-pinned for the same reason: the deleted TestSpendSummary_NoFetchYetIsNotStale asserted the
+// summary field, so replacing the `!c.lastFetch.IsZero()` guard with `true` survived the suite.
+// Without the guard a zero lastFetch makes the age the time since the epoch.
+func TestSpanReadings_AChainThatNeverAnsweredIsNotStale(t *testing.T) {
+	m := &model{}
+	// A snapshot with no lastFetch: the state between a fetch being issued and its reply.
+	m.spend.chains[spanToday].snap = &usage.Snapshot{
+		Window: usage.WindowToday,
+		Totals: usage.Counts{Requests: 1, CostMicros: 1_000_000, PricedRequests: 1, PriceableRequests: 1},
+		Priced: true,
+	}
+	got := m.spanReadings()
+	for span := spendSpan(0); span < numSpendSpans; span++ {
+		r := got[span]
+		if r.Stale {
+			t.Errorf("%s: Stale = true with a zero lastFetch — the age would be measured from "+
+				"the epoch", spendSpanDefs[span].label)
+		}
+		if r.Age != 0 {
+			t.Errorf("%s: Age = %v with a zero lastFetch", spendSpanDefs[span].label, r.Age)
+		}
+	}
+	// And no cell carries a timestamp, which is what a reader would see.
+	line := strings.Join(renderSpendBand(spendSummary{Spans: got}, 200), "\n")
+	for _, span := range []spendSpan{spanHour, spanToday, span7d, spanMonth} {
+		if strings.Contains(line, spendSpanDefs[span].label+" ") &&
+			!strings.Contains(line, spendSpanDefs[span].label+"  ") {
+			t.Errorf("%s appears with a suffix on a band that has never polled:\n%s",
+				spendSpanDefs[span].label, line)
+		}
+	}
+}

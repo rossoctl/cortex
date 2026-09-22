@@ -19,9 +19,9 @@ const esc = "\x1b"
 // proxy answering {"window":"<ESC>[2J1h"} could clear the screen, and one answering a newline
 // could add a line to a two-row reservation and push the footer off the bottom of the terminal.
 //
-// THESE TESTS EXISTED AND WERE DELETED AS COLLATERAL.
-// TestSpendSummary_SanitisesTheServersWindowLabel and its escape-sequence sibling went out in a
-// sweep aimed at TestRenderSpendStrip_*, because they were named TestSpendSummary_*. The
+// THESE TESTS EXISTED AND WERE DELETED AS COLLATERAL. Two of them — this property and its
+// escape-sequence sibling — went out in a sweep aimed at the strip's tests, because they were
+// named for the summary rather than for the property they asserted. The
 // PROPERTY outlived renderSpendStrip: sanitizeLabel is live on the drawer's caption, on the
 // band's per-span served-window comparison, and on the drawer's error text. Nothing else in the
 // package feeds a control character into a spend label, so deleting any of those calls breaks no

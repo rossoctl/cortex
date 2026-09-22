@@ -463,11 +463,11 @@ func (m *model) drawerLabels() (usage.Group, string) {
 	if l := sanitizeLabel(string(snap.Group)); l != "" {
 		axis = usage.Group(l)
 	}
-	// FROM THE DRAWER'S OWN SNAPSHOT, not from spendSummary. It used to read
-	// spendSummary().WindowLabel, which was right while the drawer and the band shared one
-	// poll and is wrong now that they do not: the summary's label describes the BAND's hour,
-	// so a drawer showing a month would have been captioned "1h" — the mislabel this
-	// function exists to prevent, arriving through the function meant to prevent it.
+	// FROM THE DRAWER'S OWN SNAPSHOT, never from the band's. Reading the band's label was right
+	// while the drawer and the band shared one poll and is wrong now that they do not: that label
+	// describes the BAND's hour, so a drawer showing a month would have been captioned "1h" — the
+	// mislabel this function exists to prevent, arriving through the function meant to prevent
+	// it.
 	//
 	// Sanitised because snap.Window is server-supplied and reaches the terminal verbatim, and
 	// compacted through the same parse-then-format the summary used: the server answers a

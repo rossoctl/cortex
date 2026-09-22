@@ -708,7 +708,8 @@ func TestRenderSpendDrawer_AFullyUnpricedSeriesSaysItsCostIsUnknown(t *testing.T
 
 // A NEGATIVE SERIES TOTAL must not print, on the rule every other money surface in this package
 // already follows through negativeCost: spendSummary refuses it for the window figure,
-// applyTodayFigure for the day, renderCostSummary for the pane, sessionMoneyCell for the column.
+// spanReadings for each band span, renderCostSummary for the pane, sessionMoneyCell for the
+// column.
 // The drawer was the newest money surface and the only one that did not inherit the guard, so a
 // series with priced requests and an impossible sum rendered "$-5.0000" — a credit nobody issued
 // in a column of costs.

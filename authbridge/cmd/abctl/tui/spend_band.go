@@ -214,9 +214,10 @@ func bandWidth(cells [numSpendSpans]bandCell, dropped [numSpendSpans]bool) int {
 // bandSpanCell is one span's cell: its label, and its figure or an em dash.
 //
 // THE LABEL CARRIES THE STALENESS, when there is any. A wedged chain holding a good old figure
-// is otherwise indistinguishable from a current reading — the failure spendStaleAfter exists to
-// name, and one this band could not report at all between the strip's deletion and this change:
-// spendSummary computed Age and Stale and no renderer read either.
+// is otherwise indistinguishable from a current reading, and one this band could not report at
+// all between the strip's deletion and the four-span change: the summary computed Age and Stale
+// and no renderer read either. Each span's threshold is twice its own cadence; see
+// spanReadings.
 //
 // ON THE LABEL RATHER THAN THE VALUE, and not as a fourth marker glyph. The value's markers all
 // qualify the FIGURE — it is a floor, it is inexact, it is short — while an age qualifies the
