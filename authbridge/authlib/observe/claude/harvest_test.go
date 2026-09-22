@@ -1263,10 +1263,11 @@ func TestIsSyntheticPrompt_HandlesAttributesAndCase(t *testing.T) {
 
 // maxTitleLen is a RUNE cap, and the renderer is what bounds display width.
 //
-// 80 runes of CJK occupy 160 columns, so nothing may read this constant as a width budget. The
-// relationship is safe only because the sessions pane re-truncates by lipgloss.Width; this pins the
-// half that lives in this package, so a later reader cannot mistake the cap for a column bound
-// without a test failing.
+// 80 runes of CJK occupy 160 columns, so nothing may read this constant as a width budget. This
+// pins ONLY the half that lives in this package: that the cap counts runes rather than bytes or
+// columns. The other half — that the sessions pane re-truncates by lipgloss.Width — is in
+// cmd/abctl/tui and tested there; no test in either module fails if that truncation is removed while
+// this constant stays, so the cross-module invariant rests on the comments, not on this test.
 func TestMaxTitleLen_IsARuneCapNotAWidthBudget(t *testing.T) {
 	dir := t.TempDir()
 	body, err := json.Marshal(strings.Repeat("日", 200))
@@ -1485,6 +1486,123 @@ func TestTitleFromTranscript_MarkupSurvivingOneStripFallsThrough(t *testing.T) {
 			}
 			if strings.ContainsAny(got, "<>") {
 				t.Errorf("title carries markup: %q", got)
+			}
+		})
+	}
+}
+
+// Harness markup never reaches the title, wherever in the turn it sits.
+//
+// Two leaks, both reaching rendered output before this:
+//
+//   - a harness BLOCK alongside the user's real text in a multi-block turn. promptFromMessage joined
+//     every text block and the guard is anchored at the start, so the join began with prose and the
+//     markup passed intact. Filtered per block now.
+//   - markup APPENDED after prose in a string turn, which no anchored check can see. Measured on a
+//     real tree: 7 of 130 transcripts. Cut at the first known harness tag.
+func TestTitleFromTranscript_NoHarnessMarkupInTitles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			"a harness block beside real text is dropped",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"my real question"},{"type":"text","text":"<system-reminder>hidden</system-reminder>"}]}}`},
+			"my real question",
+		},
+		{
+			"a harness block BEFORE real text is dropped",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"<system-reminder>hidden</system-reminder>"},{"type":"text","text":"my real question"}]}}`},
+			"my real question",
+		},
+		{
+			"markup appended after prose is cut",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"my real question\n<system-reminder>do not mention this</system-reminder>"}}`},
+			"my real question",
+		},
+		{
+			"a recorded lastPrompt is cut the same way",
+			[]string{`{"type":"last-prompt","lastPrompt":"recorded ask\n<system-reminder>hidden</system-reminder>"}`},
+			"recorded ask",
+		},
+		{
+			// Only KNOWN harness tags cut, so a prompt that quotes markup survives — the cut
+			// removes text mid-prompt, so a loose rule would truncate legitimate questions.
+			"a prompt quoting unknown markup is untouched",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"why does <div> break my layout?"}}`},
+			"why does <div> break my layout?",
+		},
+		{
+			"a prompt mentioning generics is untouched",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"how do I write List<String> in Go?"}}`},
+			"how do I write List<String> in Go?",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl", tc.lines...)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "<system-reminder") || strings.Contains(got, "</system-reminder") {
+				t.Errorf("harness markup reached the title: %q", got)
+			}
+		})
+	}
+}
+
+// The byte prefilter does not depend on how the writer spaces its JSON.
+//
+// Every other fixture in this file is hand-written COMPACT JSON, so the suite could not see a
+// prefilter term that embedded a key-value pair: `"role":"user"` skipped a line written
+// `"role": "user"` before it ever reached the decoder, silently losing the prompt. The terms are bare
+// keys again, and this is the only test that writes the spaced form — which is the point of it.
+func TestTitleFromTranscript_PrefilterIgnoresJSONSpacing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"spaced user turn",
+			`{"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": "a spaced ask"}}`,
+			"a spaced ask",
+		},
+		{
+			"spaced last-prompt",
+			`{"type": "last-prompt", "lastPrompt": "a spaced record"}`,
+			"a spaced record",
+		},
+		{
+			"spaced agent-name",
+			`{"type": "agent-name", "agentName": "spaced-name"}`,
+			"spaced-name",
+		},
+		{
+			"spaced ai-title",
+			`{"type": "ai-title", "aiTitle": "a spaced title"}`,
+			"a spaced title",
+		},
+		{
+			"spaced cwd",
+			`{"type": "user", "cwd": "/w/spaced"}`,
+			"/w/spaced",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl", tc.line)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q — the prefilter skipped a spaced line", got, tc.want)
 			}
 		})
 	}

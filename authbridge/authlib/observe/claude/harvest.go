@@ -457,11 +457,20 @@ func titleFromTranscript(path string) (string, error) {
 		// Hot path: most lines are conversation turns carrying neither field. A
 		// substring test over the raw bytes is far cheaper than parsing them, and
 		// bytes.Contains avoids the copy that strings.Contains(string(line), …) makes.
+		//
+		// BARE KEYS ONLY. `"role":"user"` is more selective — it matched 22% of lines against 59%
+		// for `"role"` — but it embeds a key-value PAIR and so assumes compact JSON: a line written
+		// as `"role": "user"` would be skipped before decoding, silently losing the prompt. Every
+		// other term here is a bare key for that reason, and the role is re-checked after the
+		// decode anyway, so the narrow form bought selectivity at the cost of depending on the
+		// writer's spacing. Measured on a real tree it also did not pay: 1.29s against 1.19s for
+		// the bare key, because the scan is dominated by a few very large lines rather than by how
+		// many lines reach the decoder.
 		if !bytes.Contains(line, []byte(`"aiTitle"`)) &&
 			!bytes.Contains(line, []byte(`"agentName"`)) &&
 			!bytes.Contains(line, []byte(`"cwd"`)) &&
 			!bytes.Contains(line, []byte(`"lastPrompt"`)) &&
-			!bytes.Contains(line, []byte(`"role":"user"`)) {
+			!bytes.Contains(line, []byte(`"role"`)) {
 			continue
 		}
 		var e transcriptMeta
@@ -497,9 +506,10 @@ func titleFromTranscript(path string) (string, error) {
 		// put through the same unwrap and synthetic checks, since the value is the prompt text and
 		// a slash command is recorded in its envelope form there too.
 		if e.Type == "last-prompt" && e.LastPrompt != "" {
-			if p := unwrapCommandEnvelope(e.LastPrompt); !isSyntheticPrompt(p) {
-				lastPrompt = p
-			} else if p := stripWrapperTag(e.LastPrompt); !isSyntheticPrompt(p) {
+			// ONE SHAPE, shared with the human branch below via promptCandidate, so a later fix to
+			// the unwrap order cannot land in only one of them. The two used to spell the same
+			// intent differently.
+			if p, ok := promptCandidate(e.LastPrompt); ok {
 				lastPrompt = p
 			}
 		}
@@ -524,18 +534,8 @@ func titleFromTranscript(path string) (string, error) {
 				// whose <command-args> sit past the first tag, so stripping a leading wrapper
 				// beforehand threw the arguments away and left a bare "/review". Only a turn that
 				// is not a command envelope reaches the wrapper strip.
-				candidate := unwrapCommandEnvelope(text)
-				if candidate == text {
-					candidate = stripWrapperTag(text)
-				}
-				// RE-TESTED after unwrapping, which is the step that was missing. Both helpers
-				// return their input unchanged when they cannot make sense of it — an empty-bodied
-				// wrapper, a malformed envelope, a nested tag — and assigning that straight to
-				// `human` put raw markup in the title. Checking here rather than inside the helpers
-				// keeps them pure string transforms and puts the one decision at the one place that
-				// has to make it.
-				if !isSyntheticPrompt(candidate) {
-					human = candidate
+				if p, ok := promptCandidate(text); ok {
+					human = p
 				}
 			case kind != "" && kind != "human":
 				// Explicitly NOT human — "task-notification" or "peer". Discarded outright;
@@ -603,9 +603,14 @@ func titleFromTranscript(path string) (string, error) {
 // still. Runes, not bytes, so a multi-byte prompt is not cut mid-character.
 //
 // NOT A DISPLAY-COLUMN BUDGET. 80 runes of CJK occupy 160 columns, so nothing may treat this as a
-// width. It is safe only because every renderer re-truncates by display width — the sessions
-// pane measures with lipgloss.Width — and the guard for that relationship is a test in this
-// package, not this comment.
+// width. It is safe only because every renderer re-truncates by display width — the sessions pane
+// measures with lipgloss.Width.
+//
+// THAT RELATIONSHIP IS NOT GUARDED BY ANY SINGLE TEST, and an earlier version of this comment
+// implied otherwise. It spans two modules: this package has no width library, so its test asserts
+// only that the cap is a rune count and not a byte or width bound, while the re-truncation lives in
+// cmd/abctl/tui and is tested there against its own column budgets. Nothing fails if someone
+// removes the renderer's truncation and leaves this constant alone.
 const maxTitleLen = 80
 
 // clipTitle trims s and caps it at maxTitleLen runes.
@@ -652,6 +657,13 @@ func promptFromMessage(raw json.RawMessage) (text string, wasString bool) {
 	var b strings.Builder
 	for _, blk := range blocks {
 		if blk.Type != "text" || blk.Text == "" {
+			continue
+		}
+		// FILTERED PER BLOCK, not after joining. A harness block can arrive ALONGSIDE the user's
+		// real text — "my question" and "<system-reminder>…" as two text blocks of one turn — and
+		// testing only the joined string let the markup through, because the guard is anchored at
+		// the start and the join begins with the prose.
+		if isSyntheticPrompt(blk.Text) {
 			continue
 		}
 		if b.Len() > 0 {
@@ -767,8 +779,87 @@ func stripWrapperTag(s string) string {
 	return inner
 }
 
-// isSyntheticPrompt reports whether s is a marker Claude Code inserted rather than something the
-// user typed.
+// promptCandidate turns one raw prompt string into a usable title, reporting whether anything
+// survived.
+//
+// ONE implementation for both callers — the recorded last-prompt line and the attributed human turn
+// — because they want exactly the same thing and used to say so in two different shapes. Verified
+// behaviourally identical at the time, which is precisely the state in which a later fix lands in
+// only one of them.
+//
+// Order is load-bearing:
+//
+//  1. the command envelope first, because it is a multi-tag structure whose <command-args> sit past
+//     the first tag — stripping a leading wrapper beforehand threw the arguments away;
+//  2. otherwise a leading wrapper, keeping what it contains;
+//  3. then trailing harness markup, which neither of the above sees since both are anchored;
+//  4. then the synthetic test, because every helper returns its input UNCHANGED when it cannot make
+//     sense of it, and assigning that verbatim is what put raw markup in titles.
+func promptCandidate(text string) (string, bool) {
+	candidate := unwrapCommandEnvelope(text)
+	if candidate == text {
+		candidate = stripWrapperTag(text)
+	}
+	candidate = cutTrailingHarness(candidate)
+	if isSyntheticPrompt(candidate) {
+		return "", false
+	}
+	return candidate, true
+}
+
+// harnessTagNames are the wrapper tags observed on real transcripts, for the trailing-markup cut.
+//
+// A NAMED SET here, unlike isSyntheticPrompt's structural test, and deliberately: that one asks
+// "does this text BEGIN as markup", where a false positive costs one fallback. This one cuts text
+// off mid-prompt, so it may only fire on tags known to be the harness's. Matching any "<word>"
+// would truncate a prompt that quotes HTML or generics.
+var harnessTagNames = []string{
+	"<system-reminder",
+	"<task-notification",
+	"<pasted_content",
+	"<bash-stdout",
+	"<bash-stderr",
+	"<local-command-caveat",
+	"<command-message",
+	"<command-name",
+	"<command-args",
+	"<agent-message",
+	"<user-prompt-submit-hook",
+}
+
+// cutTrailingHarness drops a harness block appended AFTER the user's prose.
+//
+// Measured, 7 of 130 transcripts had a string turn shaped "…real question…<system-reminder>…", which
+// the anchored guard cannot see because the line starts with prose. Left alone the tag reached the
+// title and was clipped mid-tag at 80 runes.
+//
+// Cuts at the FIRST known tag and keeps what precedes it — the prompt is the part the user typed, and
+// everything the harness appends comes after. Returns s unchanged when nothing precedes the tag, so a
+// turn that is markup all the way through still falls to isSyntheticPrompt rather than becoming "".
+func cutTrailingHarness(s string) string {
+	cut := -1
+	for _, tag := range harnessTagNames {
+		if i := strings.Index(s, tag); i >= 0 && (cut < 0 || i < cut) {
+			cut = i
+		}
+	}
+	if cut <= 0 {
+		return s
+	}
+	if head := strings.TrimSpace(s[:cut]); head != "" {
+		return head
+	}
+	return s
+}
+
+// isSyntheticPrompt reports whether s READS AS markup Claude Code inserted rather than as something
+// the user typed.
+//
+// A TEST, not a policy. What callers do with a positive answer differs, and the distinction matters
+// because an earlier version of this comment claimed harness blocks are "dropped": some are, but a
+// wrapper around text the user really pasted has its body kept (stripWrapperTag), and a slash command
+// is re-rendered rather than discarded (unwrapCommandEnvelope). This function only answers the
+// question; promptCandidate decides.
 //
 // Both observed families open with a bracket and are machine-written: "[Request interrupted...]"
 // (46 occurrences on the measured tree) and "[Image: original 2100x200, displayed at...]" (11).
