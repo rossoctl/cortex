@@ -1327,9 +1327,15 @@ func TestTitleFromTranscript_StripsPastedContentWrapper(t *testing.T) {
 			"is 3 < 5 in Go?",
 		},
 		{
-			"a wrapper with nothing after it is left as-is rather than emptied",
+			// Falls through rather than titling with markup. An earlier version of this test
+			// expected the raw tag back, on the reasoning that returning the input unchanged is
+			// the safe default — but the caller now re-tests the result against the synthetic
+			// guard, so "unchanged" means "rejected" and the tier below is used instead. With no
+			// cwd in this fixture that leaves "", which is the honest answer for a turn whose
+			// entire content was a wrapper.
+			"a wrapper with nothing inside it yields no title",
 			`<pasted_content id="x">`,
-			`<pasted_content id="x">`,
+			"",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1346,6 +1352,139 @@ func TestTitleFromTranscript_StripsPastedContentWrapper(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Claude Code's own last-prompt record outranks anything reconstructed from user turns.
+//
+// {"type":"last-prompt","lastPrompt":…} is the agent stating what the prompt was, rather than this
+// package inferring it and then filtering harness traffic back out. Measured, 129 of 130 transcripts
+// carry one.
+func TestTitleFromTranscript_PrefersLastPromptRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			"last-prompt beats a reconstructed human turn",
+			[]string{
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"a reconstructed ask"}}`,
+				`{"type":"last-prompt","lastPrompt":"the recorded ask"}`,
+			},
+			"the recorded ask",
+		},
+		{
+			// Both title kinds still outrank it: a generated title is a summary, this is raw input.
+			"a title line still outranks last-prompt",
+			[]string{
+				`{"type":"last-prompt","lastPrompt":"the recorded ask"}`,
+				`{"type":"agent-name","agentName":"sept-15-rossoctl"}`,
+			},
+			"sept-15-rossoctl",
+		},
+		{
+			"last-wins among last-prompt lines",
+			[]string{
+				`{"type":"last-prompt","lastPrompt":"earlier"}`,
+				`{"type":"last-prompt","lastPrompt":"later"}`,
+			},
+			"later",
+		},
+		{
+			// A slash command is recorded in its envelope form here too.
+			"a recorded slash command is unwrapped",
+			[]string{
+				`{"type":"last-prompt","lastPrompt":"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>some/path.md</command-args>"}`,
+			},
+			"/review some/path.md",
+		},
+		{
+			// Three of 2223 real lines carried a null, which decodes to "".
+			"a null lastPrompt falls through",
+			[]string{
+				`{"type":"user","cwd":"/w/real"}`,
+				`{"type":"last-prompt","lastPrompt":null}`,
+			},
+			"/w/real",
+		},
+		{
+			// A WRAPPED record is unwrapped, not discarded: the body is the prompt, same as for a
+			// pasted-content turn. Only a record that is markup all the way down falls through.
+			"a wrapped lastPrompt is stripped to its body",
+			[]string{
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"the real ask"}}`,
+				`{"type":"last-prompt","lastPrompt":"<task-notification>body</task-notification>"}`,
+			},
+			"body",
+		},
+		{
+			"a lastPrompt that is markup all the way down falls through",
+			[]string{
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"the real ask"}}`,
+				`{"type":"last-prompt","lastPrompt":"<a><b>x</b></a>"}`,
+			},
+			"the real ask",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl", tc.lines...)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Markup that survives one leading-tag strip falls through instead of becoming the title.
+//
+// Three shapes, one root cause — a single strip is not enough, so the result is re-tested against
+// the synthetic guard:
+//
+//   - an EMPTY body leaves the closing tag at index 0, which a `j > 0` guard skipped, yielding a
+//     bare "</pasted_content>";
+//   - a MALFORMED command envelope makes the unwrapper bail on the empty name, so control reaches
+//     the wrapper strip and leaves "</command-name> real text";
+//   - a NESTED wrapper has only its outer tag removed, leaving "<b>real prompt</b>".
+//
+// The nested case has no occurrence on real data (0 of 645 human string turns), but all three are the
+// same defect and the fix is one check.
+func TestTitleFromTranscript_MarkupSurvivingOneStripFallsThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+	}{
+		{"empty-bodied wrapper", `<pasted_content id="x"></pasted_content>`},
+		{"malformed command envelope", `<command-name></command-name> real text`},
+		{"nested wrapper", `<a><b>real prompt</b></a>`},
+		{"bare closing tag", `</pasted_content>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body, err := json.Marshal(tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A cwd is present, so falling through has somewhere to land and the assertion
+			// distinguishes "fell through" from "returned empty".
+			writeSessionTranscript(t, dir, "s.jsonl",
+				`{"type":"user","cwd":"/w/real"}`,
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":`+string(body)+`}}`)
+			got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if gerr != nil {
+				t.Fatal(gerr)
+			}
+			if got != "/w/real" {
+				t.Errorf("title = %q, want the cwd fallback — markup reached the title", got)
+			}
+			if strings.ContainsAny(got, "<>") {
+				t.Errorf("title carries markup: %q", got)
 			}
 		})
 	}

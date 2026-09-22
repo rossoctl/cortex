@@ -439,7 +439,9 @@ func titleFromTranscript(path string) (string, error) {
 	// toolscan.scanFile.
 	sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
 
-	// THREE GRADES OF PROMPT, best first. Each is last-wins within its own grade, so a later turn
+	// lastPrompt is Claude Code's own record and outranks every reconstruction below it.
+	//
+	// THREE GRADES OF RECONSTRUCTED PROMPT, best first. Each is last-wins within its own grade, so a later turn
 	// of the same quality replaces an earlier one but never a better one.
 	//
 	//   human  — origin.kind == "human" AND string content. What the person typed, stated by
@@ -449,7 +451,7 @@ func titleFromTranscript(path string) (string, error) {
 	//            prompt in practice, just unattributed.
 	//   blocks — text extracted from a content ARRAY. Last resort: these are where the harness
 	//            injects, and a "Base directory for this skill: …" title came from one.
-	var title, cwd, human, str, blocks string
+	var title, cwd, lastPrompt, human, str, blocks string
 	for sc.Scan() {
 		line := sc.Bytes()
 		// Hot path: most lines are conversation turns carrying neither field. A
@@ -458,6 +460,7 @@ func titleFromTranscript(path string) (string, error) {
 		if !bytes.Contains(line, []byte(`"aiTitle"`)) &&
 			!bytes.Contains(line, []byte(`"agentName"`)) &&
 			!bytes.Contains(line, []byte(`"cwd"`)) &&
+			!bytes.Contains(line, []byte(`"lastPrompt"`)) &&
 			!bytes.Contains(line, []byte(`"role":"user"`)) {
 			continue
 		}
@@ -488,6 +491,18 @@ func titleFromTranscript(path string) (string, error) {
 		// and `"role"` appears on every turn either way. Tool output and Claude Code's own
 		// bracketed markers are filtered by the two helpers rather than here, so this stays a
 		// statement about WHICH turn counts.
+		// Claude Code's own record of the last prompt. Preferred over anything reconstructed from
+		// user turns below: same information, stated by the agent instead of inferred, and it
+		// arrives already free of the tool output and harness envelopes those turns carry. Still
+		// put through the same unwrap and synthetic checks, since the value is the prompt text and
+		// a slash command is recorded in its envelope form there too.
+		if e.Type == "last-prompt" && e.LastPrompt != "" {
+			if p := unwrapCommandEnvelope(e.LastPrompt); !isSyntheticPrompt(p) {
+				lastPrompt = p
+			} else if p := stripWrapperTag(e.LastPrompt); !isSyntheticPrompt(p) {
+				lastPrompt = p
+			}
+		}
 		if e.Type == "user" && e.Message != nil && e.Message.Role == "user" {
 			kind := ""
 			if e.Origin != nil {
@@ -509,9 +524,18 @@ func titleFromTranscript(path string) (string, error) {
 				// whose <command-args> sit past the first tag, so stripping a leading wrapper
 				// beforehand threw the arguments away and left a bare "/review". Only a turn that
 				// is not a command envelope reaches the wrapper strip.
-				human = unwrapCommandEnvelope(text)
-				if human == text {
-					human = stripWrapperTag(text)
+				candidate := unwrapCommandEnvelope(text)
+				if candidate == text {
+					candidate = stripWrapperTag(text)
+				}
+				// RE-TESTED after unwrapping, which is the step that was missing. Both helpers
+				// return their input unchanged when they cannot make sense of it — an empty-bodied
+				// wrapper, a malformed envelope, a nested tag — and assigning that straight to
+				// `human` put raw markup in the title. Checking here rather than inside the helpers
+				// keeps them pure string transforms and puts the one decision at the one place that
+				// has to make it.
+				if !isSyntheticPrompt(candidate) {
+					human = candidate
 				}
 			case kind != "" && kind != "human":
 				// Explicitly NOT human — "task-notification" or "peer". Discarded outright;
@@ -532,8 +556,9 @@ func titleFromTranscript(path string) (string, error) {
 	// last-wins is the rule here, so the name returned may be an old one. The buffer above
 	// makes this rare; silence made it invisible.
 	err = sc.Err()
-	// THREE TIERS, in descending confidence: a title Claude Code generated, then the last thing
-	// the user actually typed, then the directory the session ran in. The prompt tier is what
+	// FOUR TIERS, in descending confidence: a title Claude Code generated, then its own record of
+	// the last prompt, then the last prompt this package reconstructs from user turns, then the
+	// directory the session ran in. The prompt tier is what
 	// takes a tree from "mostly paths" to "mostly readable" — measured on one config dir, 110 of
 	// 128 sessions had no title line of either kind and fell through to a cwd, and every one of
 	// those has a usable prompt.
@@ -543,11 +568,14 @@ func titleFromTranscript(path string) (string, error) {
 	// bare `!= ""` and clipTitle then empties it, so the tier below was skipped and the cell came
 	// out blank — testing the clipped value is what makes each guard mean "this tier has
 	// something to show".
-	title, human, str = clipTitle(title), clipTitle(human), clipTitle(str)
+	title, lastPrompt = clipTitle(title), clipTitle(lastPrompt)
+	human, str = clipTitle(human), clipTitle(str)
 	blocks = clipTitle(blocks)
 	switch {
 	case title != "":
 		return title, err
+	case lastPrompt != "":
+		return lastPrompt, err
 	case human != "":
 		return human, err
 	case str != "":
@@ -710,10 +738,31 @@ func stripWrapperTag(s string) string {
 		return s
 	}
 	// A closing tag at the end is dropped too, so "<x>body</x>" yields "body".
-	if j := strings.LastIndex(inner, "</"); j > 0 && strings.HasSuffix(inner, ">") {
-		if trimmed := strings.TrimSpace(inner[:j]); trimmed != "" {
-			return trimmed
-		}
+	//
+	// `j >= 0`, not `j > 0`: an EMPTY-bodied wrapper leaves the closing tag at index 0, so the
+	// stricter guard skipped the trim and this returned a bare "</pasted_content>".
+	//
+	// REDUNDANT for the caller as it stands — the call site re-tests the result against
+	// isSyntheticPrompt, which rejects a bare closing tag either way, and reverting this to `j > 0`
+	// breaks no test. Kept so the helper is right on its own terms rather than only in the company
+	// of that check: a second caller would otherwise inherit the bug.
+	if j := strings.LastIndex(inner, "</"); j >= 0 && strings.HasSuffix(inner, ">") {
+		inner = strings.TrimSpace(inner[:j])
+	}
+	// RE-TESTED against the same guard, which is what closes the whole family rather than one
+	// shape of it. Three ways markup survived a single leading strip:
+	//
+	//   - an empty body, leaving a bare closing tag;
+	//   - a malformed command envelope ("<command-name></command-name> real text"), where the
+	//     unwrapper bails on the empty name and control falls through to here;
+	//   - a nested wrapper ("<a><b>x</b></a>"), where only the outer tag is removed.
+	//
+	// Any of them leaves something that still opens with a tag, so asking the guard again is both
+	// the narrowest fix and the one that does not need a list of shapes. Returning s unchanged on
+	// a still-markup result hands the caller a value its own synthetic filter will reject, so the
+	// turn falls through to the next tier instead of titling a session with markup.
+	if inner == "" || isSyntheticPrompt(inner) {
+		return s
 	}
 	return inner
 }
@@ -743,6 +792,14 @@ func isSyntheticPrompt(s string) bool {
 	// are the harness's vocabulary and grow. A prompt that genuinely opens with "<" is skipped
 	// too; that costs a fallback to the previous prompt, which is the safe direction.
 	if strings.HasPrefix(t, "<") {
+		// A CLOSING tag counts too. A malformed command envelope —
+		// "<command-name></command-name> real text" — bails out of the unwrapper on the empty
+		// name, falls through to the wrapper strip, and leaves "</command-name> real text": a
+		// dangling close that is still markup and still not a title. Skipping the slash here means
+		// one guard recognises both halves of a tag pair.
+		if strings.HasPrefix(t, "</") {
+			t = "<" + t[2:]
+		}
 		if i := strings.IndexByte(t, '>'); i > 1 {
 			// THE TAG NAME ONLY, cut at the first space or slash. An opening tag may carry
 			// attributes — a real transcript produced a title of raw
@@ -780,7 +837,14 @@ type transcriptMeta struct {
 	// another dir had 26 ai-title and 16 agent-name — and in all 16 of those the two values were
 	// IDENTICAL. So this is a naming variant to accept, not a competing claim to arbitrate.
 	AgentName string `json:"agentName"`
-	Cwd       string `json:"cwd"`
+	// LastPrompt is Claude Code's own record of the session's last prompt, written as
+	// {"type":"last-prompt","lastPrompt":…}.
+	//
+	// The most direct answer available: it is the agent stating what the prompt WAS, rather than
+	// this package reconstructing it from user turns and then filtering harness traffic back out.
+	// Measured, 129 of 130 transcripts carry one, so it is the usual case rather than a bonus.
+	LastPrompt string `json:"lastPrompt"`
+	Cwd        string `json:"cwd"`
 	// Message is the turn body, decoded only far enough to recover a typed prompt.
 	//
 	// Content is json.RawMessage because Claude Code writes it two ways: a plain string for a
