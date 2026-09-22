@@ -1412,14 +1412,26 @@ func TestTitleFromTranscript_PrefersLastPromptRecord(t *testing.T) {
 			"/w/real",
 		},
 		{
-			// A WRAPPED record is unwrapped, not discarded: the body is the prompt, same as for a
-			// pasted-content turn. Only a record that is markup all the way down falls through.
-			"a wrapped lastPrompt is stripped to its body",
+			// A HARNESS-OUTPUT wrapper falls through: its body is the harness's own text, not the
+			// user's, so promoting it would put a notification in the title. An earlier version of
+			// this test asserted the opposite — that the body becomes the title — which
+			// contradicted isSyntheticPrompt's own stated purpose and let
+			// `<bash-stdout>total 40</bash-stdout>` render as "total 40".
+			"a harness-output lastPrompt falls through",
 			[]string{
 				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"the real ask"}}`,
 				`{"type":"last-prompt","lastPrompt":"<task-notification>body</task-notification>"}`,
 			},
-			"body",
+			"the real ask",
+		},
+		{
+			// A CONTENT-BEARING wrapper is still unwrapped: the user pasted what is inside it.
+			"a pasted-content lastPrompt is stripped to its body",
+			[]string{
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"the real ask"}}`,
+				`{"type":"last-prompt","lastPrompt":"<pasted_content id=\"x\">the pasted body</pasted_content>"}`,
+			},
+			"the pasted body",
 		},
 		{
 			"a lastPrompt that is markup all the way down falls through",
@@ -1603,6 +1615,101 @@ func TestTitleFromTranscript_PrefilterIgnoresJSONSpacing(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("title = %q, want %q — the prefilter skipped a spaced line", got, tc.want)
+			}
+		})
+	}
+}
+
+// A harness-output wrapper never has its body promoted to a title.
+//
+// stripWrapperTag used to unwrap anything tag-shaped, so `<bash-stdout>total 40</bash-stdout>` became
+// the title "total 40" and a `<system-reminder>` body became a title — the grep-dump outcome
+// isSyntheticPrompt's doc says it exists to prevent. Only wrappers whose CONTENT IS THE USER'S are
+// unwrapped now; see contentBearingWrappers.
+func TestTitleFromTranscript_HarnessOutputWrappersFallThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{"bash-stdout", `<bash-stdout>total 40</bash-stdout>`, "/w/fallback"},
+		{"bash-stderr", `<bash-stderr>No such file</bash-stderr>`, "/w/fallback"},
+		{"system-reminder", `<system-reminder>do not mention this</system-reminder>`, "/w/fallback"},
+		{"task-notification", `<task-notification>agent finished</task-notification>`, "/w/fallback"},
+		{"local-command-caveat", `<local-command-caveat>Caveat: generated</local-command-caveat>`, "/w/fallback"},
+		// The one wrapper whose body IS the user's, so it is still unwrapped.
+		{"pasted_content is still unwrapped", `<pasted_content id="x">the pasted body</pasted_content>`, "the pasted body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body, err := json.Marshal(tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeSessionTranscript(t, dir, "s.jsonl",
+				`{"type":"user","cwd":"/w/fallback"}`,
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":`+string(body)+`}}`)
+			got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if gerr != nil {
+				t.Fatal(gerr)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Prose that MENTIONS a known harness tag is not truncated; only a tag starting a line is a cut.
+//
+// THE COVERAGE GAP THIS CLOSES: every previous "untouched prose" case used an UNKNOWN tag — <div>,
+// List<String>, "3 < 5" — so they all took isSyntheticPrompt's structural path and never reached
+// cutTrailingHarness's named set. Nothing put a known tag inside real prose, which is exactly how
+// "how do I use <command-args> in a skill?" came to be truncated to "how do I use".
+func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, want string
+	}{
+		{
+			"known tag mid-sentence",
+			"how do I use <command-args> in a skill?",
+			"how do I use <command-args> in a skill?",
+		},
+		{
+			"known tag mid-sentence, different tag",
+			"why does <system-reminder> show up in my logs?",
+			"why does <system-reminder> show up in my logs?",
+		},
+		{
+			"known tag after a space is not a line start",
+			"see <task-notification> for details",
+			"see <task-notification> for details",
+		},
+		{
+			// The real shape: the harness appends on its own line, which IS a cut.
+			"a tag starting a line is still cut",
+			"my real question\n<system-reminder>hidden</system-reminder>",
+			"my real question",
+		},
+		{
+			// Every occurrence is examined, so an inline mention does not mask a later real block.
+			"an inline mention does not hide a later appended block",
+			"how do I use <command-args>?\n<system-reminder>hidden</system-reminder>",
+			"how do I use <command-args>?",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body, err := json.Marshal(tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeSessionTranscript(t, dir, "s.jsonl",
+				`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":`+string(body)+`}}`)
+			got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if gerr != nil {
+				t.Fatal(gerr)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -721,8 +721,42 @@ func between(s, open, closing string) string {
 	return strings.TrimSpace(rest[:j])
 }
 
-// stripWrapperTag removes a leading harness wrapper from text the user really typed, keeping what
-// is inside it.
+// contentBearingWrappers are the harness tags whose BODY is the user's own text.
+//
+// The distinction that matters for stripWrapperTag: a `<pasted_content>` block holds something the
+// user pasted, so its body is a prompt and unwrapping it recovers a real title. A `<bash-stdout>`,
+// `<system-reminder>` or `<task-notification>` block holds the harness's own output, so its body is
+// not a prompt at any depth and the turn must fall through instead.
+//
+// An allowlist rather than a denylist because the failure directions are not symmetric: omitting a
+// content-bearing tag costs one fallback to the previous prompt, while omitting a harness tag puts
+// tool output in the title.
+var contentBearingWrappers = []string{
+	"pasted_content",
+}
+
+// isContentBearingWrapper reports whether tag — a full opening tag, "<name …>" — is one whose body
+// is the user's own text.
+func isContentBearingWrapper(tag string) bool {
+	name := strings.TrimPrefix(strings.TrimSpace(tag), "<")
+	if j := strings.IndexAny(name, " \t/>"); j >= 0 {
+		name = name[:j]
+	}
+	name = strings.ToLower(name)
+	for _, want := range contentBearingWrappers {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// stripWrapperTag removes a leading CONTENT-BEARING wrapper from text the user really typed, keeping
+// what is inside it.
+//
+// Content-bearing means the body belongs to the user — see contentBearingWrappers. A wrapper holding
+// the harness's own output is left alone, so the caller's synthetic test rejects it and the turn
+// falls through rather than titling a session with tool stdout.
 //
 // Pasted input arrives as `<pasted_content id="2e21">\n…the actual text…`, on a turn whose
 // origin.kind is "human" — so it must not be filtered like injected traffic, but the wrapper is
@@ -740,9 +774,17 @@ func stripWrapperTag(s string) string {
 	if i < 0 {
 		return s
 	}
-	// Reuse the same tag-name test the synthetic filter applies, so "looks like a harness tag"
-	// means one thing in this file.
-	if !isSyntheticPrompt(t[:i+1] + "x") {
+	// AN ALLOWLIST, not the structural test. Unwrapping anything tag-shaped promoted the body of
+	// whatever the harness had wrapped: `<bash-stdout>total 40</bash-stdout>` became the title
+	// "total 40", and a `<system-reminder>` body became a title — the grep-dump outcome
+	// isSyntheticPrompt's own doc says it exists to prevent, and a contradiction of this PR's claim
+	// that markup all the way through falls through.
+	//
+	// Only wrappers whose CONTENT IS THE USER'S qualify. `<pasted_content>` is the one: the user
+	// pasted what is inside it, so the body is a prompt. Everything else the harness emits is its
+	// own output — tool stdout, a reminder, a notification — and belongs to the next tier down, not
+	// in the title.
+	if !isContentBearingWrapper(t[:i+1]) {
 		return s
 	}
 	inner := strings.TrimSpace(t[i+1:])
@@ -833,14 +875,38 @@ var harnessTagNames = []string{
 // the anchored guard cannot see because the line starts with prose. Left alone the tag reached the
 // title and was clipped mid-tag at 80 runes.
 //
-// Cuts at the FIRST known tag and keeps what precedes it — the prompt is the part the user typed, and
-// everything the harness appends comes after. Returns s unchanged when nothing precedes the tag, so a
-// turn that is markup all the way through still falls to isSyntheticPrompt rather than becoming "".
+// Cuts at the first known tag THAT STARTS A LINE, and keeps what precedes it — the prompt is the part
+// the user typed, and everything the harness appends comes after, on its own line. The positional
+// constraint is what stops prose being truncated for merely mentioning a tag: the named set alone was
+// not enough, and "how do I use <command-args> in a skill?" came out as "how do I use".
+//
+// Returns s unchanged when nothing precedes the tag, so a turn that is markup all the way through
+// still falls to isSyntheticPrompt rather than becoming "".
 func cutTrailingHarness(s string) string {
 	cut := -1
 	for _, tag := range harnessTagNames {
-		if i := strings.Index(s, tag); i >= 0 && (cut < 0 || i < cut) {
-			cut = i
+		for from := 0; ; {
+			i := strings.Index(s[from:], tag)
+			if i < 0 {
+				break
+			}
+			i += from
+			from = i + len(tag)
+			// POSITIONAL. The harness appends its block on a line of its own, so a known tag only
+			// counts when it STARTS A LINE. Without this, prose that merely mentions a tag was
+			// truncated mid-sentence — "how do I use <command-args> in a skill?" became "how do I
+			// use" — which is the very outcome the named set was chosen to avoid, and the comment
+			// above claimed it did.
+			//
+			// Every occurrence is examined, not just the first: a prompt may mention a tag inline
+			// and still have a real appended block after it.
+			if i > 0 && s[i-1] != '\n' && s[i-1] != '\r' {
+				continue
+			}
+			if cut < 0 || i < cut {
+				cut = i
+			}
+			break
 		}
 	}
 	if cut <= 0 {
