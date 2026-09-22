@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
 )
@@ -198,7 +201,7 @@ func TestObserveFlags_DocumentThePrefsFile(t *testing.T) {
 // process — which is fine for a child and fatal for a test binary.
 func runObserveHelp(t *testing.T) string {
 	t.Helper()
-	out, err := runAbctlChild(t, nil, "observe", "--help")
+	out, err := runAbctlChild(t, "observe", "--help")
 	// -h exits 0 through ExitOnError, but the test binary wrapping it may report
 	// otherwise; the output is what matters.
 	if len(out) == 0 && err != nil {
@@ -427,6 +430,15 @@ func TestObserve_WiresTheHarvestToTheFlag(t *testing.T) {
 const (
 	childSentinel = "ABCTL_TEST_CHILD"
 	childArgs     = "ABCTL_TEST_CHILD_ARGS"
+	// childEcho makes the child print the argv it decoded and exit, instead of being abctl.
+	//
+	// Exists so the argv encoding can be tested across the REAL process boundary. Asserting
+	// strings.Split(strings.Join(x)) in-process is a property of the standard library and holds
+	// with runAbctlChild and TestMain both deleted, which is what the review caught.
+	childEcho = "ABCTL_TEST_CHILD_ECHO"
+	// echoSep delimits the echoed argv. A record separator, distinct from argSep, so a round trip
+	// cannot pass by accident just because both sides split on the same byte.
+	echoSep = "\x1e"
 )
 
 // argSep separates argv entries in childArgs.
@@ -441,21 +453,37 @@ const (
 // an env var, is what it means, and cannot appear in a flag or path anyone would type.
 const argSep = "\x1f"
 
+// childTimeout bounds a re-exec'd child.
+//
+// Needed because not every argv exits on its own. `observe --help` does, through
+// flag.ExitOnError, which is the only reason CombinedOutput did not hang before — but an argv
+// that reaches tui.Run leaves the child blocking on TTY acquisition, and an unbounded
+// CombinedOutput would then hang the whole package to its test timeout with no clue why.
+// Generous enough that a slow machine does not flake, short enough to fail fast.
+const childTimeout = 30 * time.Second
+
 // runAbctlChild re-execs this test binary as abctl with the given argv, returning its combined
-// output. extraEnv entries are appended to the parent's environment as "K=V".
+// output.
 //
 // The child runs no tests: TestMain hands control to main() before the test framework starts,
 // so no -test.run filter is passed. Passing one would be inert — and looked meaningful, which
 // is worse.
-func runAbctlChild(t *testing.T, extraEnv []string, args ...string) (string, error) {
+//
+// Takes no extra environment: callers that need one set it with t.Setenv, which the child
+// inherits through os.Environ() below. An extraEnv parameter existed and every caller passed nil.
+func runAbctlChild(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0])
+	ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0])
 	cmd.Env = append(os.Environ(),
 		childSentinel+"=1",
 		childArgs+"="+strings.Join(args, argSep),
 	)
-	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("child did not exit within %s; argv=%q output:\n%s", childTimeout, args, out)
+	}
 	return string(out), err
 }
 
@@ -470,41 +498,53 @@ func TestMain(m *testing.M) {
 			argv = append(argv, strings.Split(raw, argSep)...)
 		}
 		os.Args = argv
+		// Echo mode: report what the decode produced and stop. Checked BEFORE main() so the
+		// argv under test is the one abctl would have received, not one main() has consumed.
+		if os.Getenv(childEcho) == "1" {
+			fmt.Print(strings.Join(os.Args[1:], echoSep))
+			return
+		}
 		main()
 		return
 	}
 	os.Exit(m.Run())
 }
 
-// The child argv round-trips an argument containing a space.
+// The child argv round-trips an argument containing a space, ACROSS the process boundary.
 //
-// The scheme this replaced joined on spaces and split with strings.Fields, so a --prefs path
-// with a space in it would have arrived as two arguments and the flag would have taken the
-// first half. Nothing in the suite passes such an argument today; this keeps the separator
-// honest, since a regression would otherwise surface only in whatever future test first needs
-// one.
+// The scheme this replaced joined on spaces and split with strings.Fields, so a --prefs path with
+// a space in it arrived as two arguments and the flag took the first half.
 //
-// Asserted on the ENCODING, not on abctl's behaviour: a torn --prefs is observably silent —
-// `observe` ignores stray positionals and an unreadable prefs path degrades to defaults by
-// design — so a test driven through the child cannot tell the two apart and would pass either
-// way (confirmed by reverting the separator and watching it still pass). The encoding is the
-// thing that changed, so the encoding is what gets pinned.
+// Driven through a real child, because the obvious in-process version — asserting
+// strings.Split(strings.Join(x, argSep), argSep) == x — is a property of the standard library and
+// passes with runAbctlChild and TestMain both deleted. That was the earlier version of this test
+// and it pinned nothing; the review was right about it. This one fails if either side of the
+// encoding breaks.
+//
+// Also not driven through abctl's own behaviour: a torn --prefs is observably silent, since
+// `observe` ignores stray positionals and an unreadable prefs path degrades to defaults by design.
+// The child echoes its decoded argv instead.
 func TestChildArgs_RoundTripsAnArgumentWithASpace(t *testing.T) {
+	t.Setenv(childEcho, "1")
 	want := []string{"observe", "--prefs", "/tmp/a directory with spaces/abctl-config.yaml"}
 
-	// Exactly what runAbctlChild puts in the env, and what TestMain takes back out.
-	encoded := strings.Join(want, argSep)
-	got := strings.Split(encoded, argSep)
+	out, err := runAbctlChild(t, want...)
+	if err != nil {
+		t.Fatalf("child failed: %v\noutput:\n%s", err, out)
+	}
 
+	got := strings.Split(out, echoSep)
 	if len(got) != len(want) {
-		t.Fatalf("round-tripped %d args, want %d: %q", len(got), len(want), got)
+		t.Fatalf("child decoded %d args, want %d: %q", len(got), len(want), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("arg %d = %q, want %q", i, got[i], want[i])
 		}
 	}
-	// And the separator has to be legal in an environment variable, which NUL is not.
+	// And the separator has to be legal in an environment variable, which NUL is not: exec
+	// rejects it outright ("environment variable contains NUL"). A real constraint on the
+	// constant, worth keeping whatever shape the rest of this test takes.
 	if strings.Contains(argSep, "\x00") {
 		t.Error("argSep contains NUL, which exec rejects outright")
 	}

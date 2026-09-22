@@ -256,10 +256,11 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		if err != nil {
 			return nil, err
 		}
-		// Read back what the harvest just wrote, rather than returning only what it parsed: an
-		// incremental pass parses just the transcripts that changed, so its own map is nearly
-		// empty and would name almost nothing. The file is the merged whole.
-		return claude.ReadMetadata(res.Path)
+		// The MERGED map, not just what this pass parsed: an incremental pass parses only the
+		// transcripts that changed, so its own harvest is nearly empty and would name almost
+		// nothing. Result.Meta is the whole thing Harvest wrote, which is also why this no
+		// longer re-reads the file — that was a third read of one file in a single launch.
+		return res.Meta, nil
 	}
 }
 
@@ -343,14 +344,14 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 		// all: a viewer showing bare UUIDs is the problem the metadata file exists to
 		// solve, and nobody will run a separate subcommand first to get titles.
 		//
-		// Affordable as a default only because the harvest is INCREMENTAL here — it
-		// parses the transcripts that changed since the last run, measured at 2 of 124
-		// files and 5.1 of 207 MB on a real tree. A full scan is 0.73-1.18s, which is
-		// what `abctl experimental read-claude-sessions` still does and what this flag
-		// exists to decline: a machine where even the incremental read is unwanted, or
-		// where ~/.claude should simply not be touched.
+		// The harvest is also INCREMENTAL — it parses the transcripts that changed since
+		// the last run, measured at 2 of 124 files and 5.1 of 207 MB on a real tree —
+		// but that is no longer why the default is affordable: since the scan moved to a
+		// background tea.Cmd it costs no startup time either way. What is left for this
+		// flag to decline is narrower, and it is the reason to keep it: a machine where
+		// ~/.claude should simply not be touched.
 		skipClaudeMetadata: fs.Bool("skip-claude-metadata", false,
-			"do not read Claude Code's transcripts before opening the viewer. By default abctl harvests session titles from CLAUDE_CONFIG_DIR / ~/.claude into ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID; pass this to skip that and show ids only."),
+			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID; pass this to skip the scan and show ids only."),
 	}
 }
 

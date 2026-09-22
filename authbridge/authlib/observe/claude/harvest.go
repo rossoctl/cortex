@@ -68,6 +68,17 @@ type Result struct {
 	Partial []string
 	// Recovered counts entries another run wrote concurrently and this one put back.
 	Recovered int
+	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
+	// otherwise. Keyed by session id.
+	//
+	// Returned because the caller usually wants it and Harvest already holds it. Without
+	// this a caller had to re-read the file it just wrote — a third read of the same file
+	// in one launch, and subtly not the same thing either: a re-read returns whatever is
+	// on disk when it lands, so a concurrent run's union can arrive instead of this run's
+	// result. Harmless under merge semantics, but it made the function say less than it knew.
+	//
+	// The map is the one that was saved, not a copy, so a caller must not mutate it.
+	Meta map[string]SessionMetadata
 }
 
 // Harvest reads configDir's transcripts and writes ~/.cortex/session-metadata.json.
@@ -147,10 +158,21 @@ func Harvest(opts Options) (Result, error) {
 	// entries that are unrecoverable once Claude Code prunes the transcript they came from.
 	//
 	// Closed by re-reading and re-merging rather than by an interprocess lock. A lock is the
-	// textbook answer and is what the review asked for, but there is no file locking anywhere
-	// in this repo and golang.org/x/sys is only an indirect dependency, so it would add a
-	// primitive and promote a dependency for a race that needs two harvests running at once.
-	// This costs one extra read of a small file on every run and needs neither.
+	// textbook answer and is what review asked for twice, but there is no file locking anywhere
+	// in this tree, so it would introduce a primitive on the shared write path of two commands.
+	// This costs one extra read of a small file per run and introduces nothing.
+	//
+	// HOW OFTEN: more often than an earlier version of this comment claimed. "A race that needs
+	// two harvests running at once" was fair when only `abctl experimental read-claude-sessions`
+	// harvested, and nobody runs that twice concurrently. Every `abctl observe` now harvests by
+	// default, and several viewers open at once is ordinary on a machine with one session per
+	// branch — so the window is narrow, not exotic.
+	//
+	// What still makes it acceptable is the shape of the data, not the odds: the merge is
+	// commutative on distinct keys, two runs over the same config dir agree on every shared key
+	// anyway, and the only lossy case — an entry one run holds and the other does not — is
+	// exactly what the pass below restores. The worst outcome is a title that has to be
+	// harvested again, not a corrupt file.
 	if opts.Merge {
 		recovered, rerr := recoverConcurrentEntries(path, meta)
 		if rerr != nil {
@@ -159,6 +181,8 @@ func Harvest(opts Options) (Result, error) {
 		res.Recovered = recovered
 		res.Total = len(meta)
 	}
+	// Set after recovery, like Kept below, so it is the map that is actually on disk.
+	res.Meta = meta
 	// Derived last, from the final map, so the three numbers the caller prints on one line
 	// actually add up. Computed before the recovery step, Kept went stale the moment
 	// recovery added an entry: Total was refreshed and Kept was not, so a run that recovered

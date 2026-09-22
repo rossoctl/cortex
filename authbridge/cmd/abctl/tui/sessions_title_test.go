@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -657,17 +656,19 @@ func TestHarvestedMsg_DoesNotBlankExistingTitles(t *testing.T) {
 	}
 }
 
-// A failed or empty harvest changes nothing and says nothing.
+// A harvest that brought nothing back changes nothing.
 //
-// There is nowhere to report by then — the alt screen is up — so the cost of a failure is a
-// column that stays as it was. main warns about what it can before the viewer starts.
-func TestHarvestedMsg_FailureLeavesTitlesAlone(t *testing.T) {
+// One case, not two: a FAILED harvest and an EMPTY one are the same message here, because
+// harvestedMsg carries no error — there is nowhere to report one by the time this arrives, so
+// the handler has nothing to distinguish. A test named for failure alone would have promised
+// more than it checked, which is what the review pointed out.
+func TestHarvestedMsg_EmptyResultLeavesTitlesAlone(t *testing.T) {
 	const id = "s1"
 	m := newTitleModel(t, map[string]SessionMetadata{id: {Title: "existing"}}, id)
 
-	m.Update(harvestedMsg{err: errors.New("no such config dir")})
+	m.Update(harvestedMsg{})
 
 	if got := m.sessionTitle(id); got != "existing" {
-		t.Errorf("a failed harvest disturbed the title: %q", got)
+		t.Errorf("an empty harvest disturbed the title: %q", got)
 	}
 }

@@ -958,9 +958,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// transcript since pruned — the same reason the harvester itself upserts. Replacing
 		// would blank titles the viewer is already showing.
 		//
-		// A failed harvest is silent: the viewer is open, so there is nowhere to report without
-		// corrupting the frame, and the cost is a column that stays as it was. main warns about
-		// what it can before the alt screen goes up.
+		// A failed or empty harvest is silent and identical: the viewer is open, so there is
+		// nowhere to report without corrupting the frame, and the cost is a column that stays as
+		// it was. main warns about what it can before the alt screen goes up.
 		if len(msg.meta) > 0 {
 			if m.sessionsData == nil {
 				m.sessionsData = map[string]SessionMetadata{}

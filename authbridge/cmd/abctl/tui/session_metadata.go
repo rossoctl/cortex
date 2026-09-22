@@ -127,12 +127,13 @@ type HarvestFunc func() (map[string]SessionMetadata, error)
 
 // harvestedMsg carries a finished background harvest.
 //
-// err is kept rather than dropped so the model can decide: a failed harvest is silent here,
-// because the viewer is already open and there is nowhere to print without corrupting the
-// frame. main reports what it can before the alt screen; this is the part that cannot.
+// The result only, with no error field: a harvest that failed is indistinguishable here from one
+// that found nothing, because the viewer is already open and there is nowhere to print without
+// corrupting the frame. Carrying an error the handler could not act on only made the struct claim
+// otherwise. main reports the failures that are knowable before the alt screen goes up; this is
+// the part that cannot be reported at all.
 type harvestedMsg struct {
 	meta map[string]SessionMetadata
-	err  error
 }
 
 // harvestCmd runs the harvest off the UI goroutine.
@@ -149,7 +150,10 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		meta, err := h()
-		return harvestedMsg{meta: meta, err: err}
+		// The error is dropped HERE, at the one place that could still have reported it, and
+		// deliberately: see harvestedMsg. A failed harvest costs the TITLE column and nothing
+		// else, which is the same posture LoadSessionMetadata takes on the same file.
+		meta, _ := h()
+		return harvestedMsg{meta: meta}
 	}
 }

@@ -55,7 +55,8 @@ metadata for anything else it had — another config directory, or a session who
 transcript Claude Code has since pruned. --merge=false rebuilds the file from this
 harvest alone, which is the way to drop stale entries on purpose.
 
-Nothing in Cortex reads the file yet.
+abctl observe reads this file to name sessions in the sessions table; see
+"abctl observe --help".
 
 Flags:
   --dir PATH     config directory to read instead of ` + claude.ConfigDirEnv + ` / ~/.claude
