@@ -641,13 +641,12 @@ func TestRecoverConcurrentEntries_KeepsOursWhenNeitherIsComparable(t *testing.T)
 // Each child harvests a config dir only IT has, so a correct outcome is the union: every session
 // from both trees present afterwards. Any entry missing means one rename clobbered the other's work.
 //
-// Deliberately more children than the two the comment on recoverConcurrentEntries reasons about,
-// and repeated, because a single pair passes by luck often enough to be a useless regression test.
+// Deliberately more children than a single pair, and repeated, because one pair passes by luck often
+// enough to be a useless regression test.
+//
+// The child branch is in TestMain, not here: it os.Exit()s before m.Run(), so a child never reaches
+// a test body at all. A guard at the top of this function would be dead code.
 func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
-	if os.Getenv("CLAUDE_HARVEST_CHILD") != "" {
-		// Child: harvest the dir named for us, then exit. Runs before any test does.
-		return
-	}
 	if testing.Short() {
 		t.Skip("spawns subprocesses")
 	}

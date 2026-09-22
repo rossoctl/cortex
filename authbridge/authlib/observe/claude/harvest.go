@@ -184,26 +184,23 @@ func Harvest(opts Options) (Result, error) {
 		return res, fmt.Errorf("writing %s: %w", path, err)
 	}
 
-	// A concurrent Merge run could have written between our read and our rename, and
-	// os.Rename would have replaced its entries with a map that never contained them —
-	// entries that are unrecoverable once Claude Code prunes the transcript they came from.
+	// SECOND LINE OF DEFENCE, not the concurrency mechanism. lockMetadata above is what actually
+	// serialises concurrent harvests; this pass runs behind it and matters only where the lock
+	// could not be taken — a filesystem that cannot flock, or a !unix build, where lockMetadata is
+	// a no-op.
 	//
-	// Closed by re-reading and re-merging rather than by an interprocess lock. A lock is the
-	// textbook answer and is what review asked for twice, but there is no file locking anywhere
-	// in this tree, so it would introduce a primitive on the shared write path of two commands.
-	// This costs one extra read of a small file per run and introduces nothing.
+	// An earlier version of this comment argued the lock was unnecessary and that re-reading was
+	// enough. It is not, and the argument was wrong in a way worth recording so it is not made
+	// again: the merge does commute on distinct keys, but only if both writers' maps reach disk,
+	// and os.Rename makes the last writer total. Measured with the lock removed, two concurrent
+	// harvests over distinct config dirs left 2 of 6 sessions on disk — and six left the same.
+	// This pass is a SINGLE re-read by construction, so it cannot converge when a rename lands
+	// inside its own window; it narrows the race, it does not close it.
 	//
-	// HOW OFTEN: more often than an earlier version of this comment claimed. "A race that needs
-	// two harvests running at once" was fair when only `abctl experimental read-claude-sessions`
-	// harvested, and nobody runs that twice concurrently. Every `abctl observe` now harvests by
-	// default, and several viewers open at once is ordinary on a machine with one session per
-	// branch — so the window is narrow, not exotic.
-	//
-	// What still makes it acceptable is the shape of the data, not the odds: the merge is
-	// commutative on distinct keys, two runs over the same config dir agree on every shared key
-	// anyway, and the only lossy case — an entry one run holds and the other does not — is
-	// exactly what the pass below restores. The worst outcome is a title that has to be
-	// harvested again, not a corrupt file.
+	// What it does buy on an unlocked path is the one-writer-each case: an entry the other run
+	// holds and this one does not is restored here, and a shared id whose other copy is fresher is
+	// adopted rather than overwritten. Both are strictly better than nothing, which is why the
+	// pass is kept rather than deleted once the lock existed.
 	if opts.Merge {
 		recovered, rerr := recoverConcurrentEntries(path, meta)
 		if rerr != nil {
@@ -506,13 +503,21 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	return m, nil
 }
 
-// recoverConcurrentEntries re-reads the just-written file and restores any entry another
-// process added while this one was working. Returns how many it restored.
+// recoverConcurrentEntries re-reads the just-written file and takes back anything another process
+// left there while this one was working. Returns how many entries it adopted.
 //
-// Correct because the merge is idempotent and commutative on distinct keys: re-merging what is
-// now on disk over what we just wrote yields the union either way, whichever process renamed
-// last. Bounded to a single pass — a second collision means someone is running this in a loop,
-// and the entries survive in the transcripts for the next run.
+// A NARROWING, NOT A FIX. Callers serialise with lockMetadata; this runs behind that lock and earns
+// its keep only where the lock could not be taken. Re-merging what is on disk over what we just
+// wrote does yield the union when exactly one other writer is involved and its rename already
+// landed — but it is a single pass, so a rename inside its own window is still lost, and with the
+// lock removed two concurrent harvests measurably lose entries (2 of 6). Do not reintroduce the
+// argument that this makes the write path safe on its own.
+//
+// Two shapes are adopted: an id only the other run has, and a shared id whose copy on disk is
+// FRESHER by LogModTime. The second was missing and mattered more than it looks — the run that
+// skipped a transcript holds the older title, so without it a rename recorded by the other run was
+// written straight back out, and stayed reverted until the transcript changed again. Ties and
+// incomparable pairs keep ours: no basis for preferring theirs, and we know our own provenance.
 //
 // A read error here is deliberately NOT fatal: our own save already succeeded, so the file on
 // disk is valid and this is a best-effort recovery of someone else's entries. A write error is
