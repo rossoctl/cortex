@@ -10,47 +10,23 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
-// spendPollInterval is the band's FASTEST cadence — the hour's — and the figure
-// spendStaleAfter is derived from. Matches the Usage pane's: the band is glanceable chrome,
+// spendPollInterval is the band's FASTEST cadence: spendSpanDefs[spanHour].interval IS this
+// constant, and each span's staleness threshold is twice its own interval. Matches the Usage
+// pane's cadence, because the band is glanceable chrome,
 // not a live meter, and a faster poll would spend requests to move a figure nobody is
 // watching move.
 //
-// EACH SPAN'S OWN CADENCE LIVES IN spendSpanDefs, because they differ by fifteen times and
-// for a reason that belongs beside the span rather than in a constant here: the hour is a
-// ring read, the month is a walk over up to thirty-one day files.
+// EACH SPAN'S OWN CADENCE LIVES IN spendSpanDefs, because they differ by fifteen times and for
+// a reason that belongs beside the span rather than in a constant here: the hour is a ring
+// read, the month is a walk over up to thirty-one day files. There is no longer a single
+// staleness constant for them to contradict — the one that existed was twice THIS interval and
+// described only the hour.
 const spendPollInterval = 20 * time.Second
 
 // spendFetchTimeout bounds one poll. Generous enough for a ledger walk over a month of day
 // files on an operator-configured path — the slowest thing any of these ask for — and short
 // enough that a wedged endpoint surfaces as staleness rather than as a stuck chain.
 const spendFetchTimeout = 5 * time.Second
-
-// spendStaleAfter is how old the window figure has to be before the strip says so.
-//
-// Twice the poll interval, so one dropped or slow reply is not an alarm and a wedged
-// chain is. Shown only past that threshold, never always: a timestamp beside a healthy
-// figure is noise on a line whose entire budget is width, and noise on an always-on
-// indicator is how a real signal gets ignored.
-//
-// The alternative was what the strip did with spendState.lastFetch, which is maintained
-// on every accepted reply and asserted by six tests: nothing rendered it. A poll chain
-// that stops answering therefore looked exactly like a current reading — no error, no
-// staleness, the last good figure sitting there indefinitely.
-//
-// EVERY CHAIN IS TIMED, and the age reported is the OLDEST. Only the window chain used to be,
-// which put the gap on the worst possible figure: the day outranks the hour, polls far more
-// slowly, and is among the last things the fitter drops — so the most prominent reading was the
-// one that could silently go hours stale while the hour beside it carried a "polled Nm ago".
-// One age for the band rather than one per figure, because this qualifies the freshness of the
-// whole answer, and taking the oldest is what stops a fresh hour poll vouching for a wedged
-// month poll.
-//
-// DERIVED FROM THE FASTEST CADENCE, which is the hour's. A threshold set against the SLOWEST
-// would make a wedged hour chain look healthy for ten minutes; set against the fastest, a
-// healthy month chain is briefly "stale" between its own polls — so the renderer reports the
-// age rather than an alarm, and the reader sees a figure with a timestamp rather than a
-// warning about nothing.
-const spendStaleAfter = 2 * spendPollInterval
 
 // spendResolution asks for a span as a SINGLE bucket. One bucket means the server folds and the
 // client does no arithmetic over buckets — a client-side sum would be a second implementation of
@@ -193,7 +169,7 @@ func (d spendSpanDef) pollInterval() time.Duration {
 
 var spendSpanDefs = [numSpendSpans]spendSpanDef{
 	// The only ring-served span, and therefore the only cheap one: no disk, no day files.
-	spanHour: {window: "1h", resolution: time.Hour, label: "LAST 1H", interval: 20 * time.Second},
+	spanHour: {window: "1h", resolution: time.Hour, label: "LAST 1H", interval: spendPollInterval},
 	// One day file. Fast enough for a minute's cadence, and the day figure is the one an
 	// operator watches most closely after the hour.
 	spanToday: {window: usage.WindowToday, label: "TODAY", interval: time.Minute},
@@ -308,447 +284,41 @@ type spendDrawerLoadedMsg struct {
 
 type spendDrawerTickMsg struct{ gen uint64 }
 
-// spendSummary is what the strip renders.
+// spendSummary is what the band renders.
 //
-// Optional fields rather than a narrower struct, because a figure can be genuinely
-// unavailable rather than zero. "Today" is now measurable — the durable cost ledger
-// supplies it, and applyTodayFigure sets HasToday only when the server actually
-// served the "today" window AND priced it. "Saved" is measurable now too, from
-// usage.Counts.AvoidedMicros; it was not when this struct was written, and HasSaved is
-// still a separate flag rather than a SavedUSD > 0 test, because a deployment without
-// tool-prune must show NOTHING there rather than "saved $0.00" — which would assert that
-// pruning saved nothing when the truth is that nothing pruned.
+// ONE FIELD, and it used to be twenty-seven. The other twenty-six described the hour-and-day
+// band that the four budget spans replaced: WindowUSD and TodayUSD and their coverage, inexact
+// and clamp twins, plus the savings aggregate, the cache-hit rate and the token and error
+// counts. renderSpendBand reads Spans and nothing else, and spendSummary has exactly one
+// non-test caller, so every one of them was write-only — computed on every frame and discarded.
+//
+// THEY WERE DELETED AS A SEPARATE CHANGE from the one that orphaned them, deliberately: the
+// four-span band is a behaviour change and this is not, and a thousand lines of deletion inside
+// a feature diff hides both. What made the deletion safe rather than hopeful is that the rules
+// those fields enforced were re-pinned against spanReadings FIRST — see
+// TestSpanReadings_ANegativeTotalIsUnpricedNotARefund and its siblings.
+//
+// Nothing was lost in the move. The day figure used to be withheld on exactly four conditions —
+// no snapshot or a failed poll, a served window that was not "today", an unpriced answer, a
+// negative total — and spanReadings carries all four per span, the second of them with a better
+// disclosure than before: servedAsRequested names it Unanswerable, so the band draws an em dash
+// AND the reason is knowable, where the old path simply published nothing.
 type spendSummary struct {
-	WindowUSD   float64
-	WindowLabel string
-	// Tokens and Errors are the window's own counters, shown because they are what a
-	// reader checks the money against: a dollar figure with no idea of the volume behind
-	// it cannot be judged, and an error count is the cheapest signal that some of that
-	// spend bought nothing.
-	//
-	// NO PER-MINUTE RATE beside them, and its absence is a decision rather than an
-	// omission. The window figure is already "$2.91 /1h", so a burn rate derived from the
-	// same quotient says the same thing in smaller units — and a rate is a quotient of a
-	// total that may itself be partial, so it inherited every caveat on the line while
-	// adding no reading of its own.
-	Tokens int64
-	Errors int64
-	// CacheHitPct is cache-read tokens as a percentage of the window's PROMPT tokens, and
-	// HasCacheHit reports that the figure means anything at all.
-	//
-	// It earns a place on a line this narrow because it is the leading indicator of the
-	// bill for an agent: a cache read bills at roughly 0.1x uncached input, so for
-	// long-running agent traffic the hit rate IS the shape of the spend, and it moves
-	// before the dollar figure does.
-	//
-	// PROMPT tokens as the denominator — input + cache-read + cache-write — never the
-	// window's total. Output tokens are generated rather than read, so they cannot be
-	// served from a cache and including them would report a ceiling no traffic could reach.
-	//
-	// HasCacheHit is false when the provider REPORTED no prompt breakdown, which is a
-	// different answer from a breakdown that was genuinely zero. usage.Counts.PresentKinds
-	// carries that distinction and this flag preserves it: a gateway reporting only
-	// total_tokens would otherwise render "cache 0%" for traffic that may be entirely
-	// cache reads.
-	CacheHitPct float64
-	HasCacheHit bool
-	// Priced reports whether ANY request in the window produced a cost. False
-	// means render "cost unavailable" — never $0.00, which reads as free traffic.
-	Priced bool
-	// Failed reports that the last poll did not answer at all — a broken, absent or
-	// unauthorised /v1/usage.
-	//
-	// Distinct from Priced == false, which means the endpoint DID answer and
-	// nothing in the window carried a cost. Both render "cost unavailable", but
-	// only this one can be true with no counters at all, so the renderer must not
-	// infer it from Priceable == 0: doing that made a failing endpoint render an
-	// empty strip forever, with the row still reserved and nothing saying why.
-	Failed bool
-	// Unpriced is how many PRICEABLE requests carry no figure, and Priceable is
-	// the denominator that makes it readable.
-	Unpriced  int64
-	Priceable int64
-	// Incomplete is how many of the window's PRICED requests carry a figure that is not
-	// EXACT: a stream that died before its output count, so the amount is a LOWER BOUND,
-	// or a gateway that reported only a total.
-	//
-	// A SUBSET of the priced requests, never a deduction from them — the dollars are in
-	// WindowUSD and belong there. It answers a different question from Unpriced:
-	// coverage asks how much of the traffic the figure covers, exactness asks whether
-	// the figure it does cover is the real number. Both can be true at once.
-	//
-	// This branch carries a commit titled "Stop publishing a truncated stream's floor as
-	// an exact total", and cmd_cost.go was its only consumer in cmd/abctl: the strip, the
-	// sessions table's COST cell and the Usage pane's cost cell all republished exactly
-	// that floor as an exact figure. Carried here so the strip can mark it.
-	Incomplete int64
-	// Clamped reports that an addition into the window's totals reached the int64 ceiling
-	// and was CLAMPED rather than allowed to wrap, so WindowUSD — and the counters beside it —
-	// are FLOORS by an amount nothing in the response can state.
-	//
-	// NOT NAMED "Saturated", after the wire field it carries, and the reason is the guard.
-	// snapshot_consumers_test.go's Counts half matches a selector by field NAME anywhere in
-	// cmd/abctl, because a Counts is read through short-lived locals with no naming convention
-	// and there is no base hint to key on. A view-model field spelled Saturated would therefore
-	// satisfy the guard for usage.Counts.Saturated ALL BY ITSELF — `s.Saturated` in
-	// renderSpendBand is a selector of that name — and the guard would go on passing after
-	// every genuine read was deleted. MEASURED, not theorised: with all five real reads removed
-	// the guard passed, and renaming this is what makes it fail again. It is the same collision
-	// snapshotBaseHint exists to prevent on the Snapshot half, where `cs.Window` on CostSettings
-	// would otherwise stand in for Snapshot.Window.
-	//
-	// A rename costs nothing here because this struct is a VIEW MODEL, not the schema: Incomplete
-	// above already drops "Requests", WindowUSD is CostMicros divided out, and Unpriced is a
-	// subtraction the wire does not carry. "Clamped" is also the verb the rendering uses
-	// (saturatedNote reads "clamped, figures are floors"), so the field is named after what it
-	// will say.
-	//
-	// A FOURTH claim about the window figure, and the one that is neither coverage, exactness
-	// nor damage. Coverage says how much of the traffic the figure covers, exactness says
-	// whether the figures it covers are the real ones, damage says rows are missing from the
-	// sum — and this says the sum itself stopped being able to hold the answer. See
-	// usage.Counts.Saturated, whose doc argues that the clamp is only acceptable BECAUSE this
-	// flag travels with it.
-	//
-	// It is on the ROLLING window as well as the day, unlike TodayDegraded, because the flag
-	// lives on usage.Counts rather than on the ledger's read: Counts.Add is where the clamp
-	// happens, and the in-memory ring sums with the same method. A field carried for the day
-	// alone would leave the strip's other reading able to publish a clamped figure bare.
-	Clamped bool
-	// HasSnapshot reports that a poll actually answered.
-	//
-	// It is what separates "we looked, and there was no inference traffic" from
-	// "we have not looked yet" — identical in every counter, opposite in meaning.
-	// The first is a finding worth a row; the second is honest silence that
-	// self-corrects on the next poll. Without this the renderer had to guess from
-	// Priceable == 0 and got both wrong the same way.
-	HasSnapshot bool
-
-	// TodayUSD is spend since local midnight, from the durable cost ledger.
-	//
-	// HasToday false means NO figure, never zero — see applyTodayFigure for the two
-	// ways that happens (the server degraded to a ring window because it has no
-	// ledger, or the window priced nothing).
-	TodayUSD float64
-	HasToday bool
-
-	// TodayUnpriced and TodayPriceable are the TODAY figure's OWN coverage counters,
-	// and they are the reason the fields above are not enough.
-	//
-	// Unpriced/Priceable come from the 1h ring snapshot and describe the HOUR. While
-	// the today figure had no counters of its own, the strip's only coverage note was
-	// built from those two and rendered at the end of the line — so a ledger day with
-	// one priced request out of four hundred printed "$0.0031 today" with no marker at
-	// all, and a fully-priced day beside a gappy hour printed "$4.1700 today  $1.1200
-	// /1h  40 of 40 unpriced", where the warning reads as qualifying the DAY and
-	// describes the HOUR. Both are the same defect: a figure wearing another figure's
-	// caveat, or none.
-	//
-	// Populated on the ledger path — the ledger's Row embeds usage.Counts and Fold sums
-	// them — and /v1/usage's own godoc says the ledger leaves MORE requests
-	// priceable-but-unpriced than the ring does, which makes "today" the figure MORE
-	// likely to be partial and, until now, the only one with no indicator.
-	TodayUnpriced  int64
-	TodayPriceable int64
-	// TodayIncomplete is the day's own exactness counter, separate from Incomplete for
-	// the same reason its coverage counters are separate from the window's: it is a
-	// different question about a different span, and one figure must never wear another's
-	// qualification.
-	TodayIncomplete int64
-	// TodayDegraded is the ledger's own disclosure that the read behind TodayUSD was
-	// INCOMPLETE: rows the day needed could not be read at all, so the figure is SHORT by
-	// an amount nothing in the response can state. nil means the read was clean.
-	//
-	// A THIRD claim about the day's figure, not a variant of the other two, and the one
-	// nothing in cmd/abctl consumed. usage.Snapshot.Degraded was added, the server populates
-	// it, and it reached no client — so a damaged read still printed a figure
-	// byte-identical to a clean one, which is the failure its own doc says it exists to
-	// prevent. It matters most HERE: this is the strip's only ledger-backed reading, and the
-	// only window that can populate the field at all.
-	//
-	// Carried as the wire's own POINTER rather than unpacked into counters, so absence keeps
-	// meaning "the read was clean" all the way to the renderer. See snapshotDamaged for why
-	// presence rather than the counters is the claim.
-	//
-	// Set only alongside HasToday, so an unpriced or ring-served day leaves it nil: those
-	// paths publish no figure, so there is no total for it to qualify. A damaged read of a
-	// day that priced nothing is therefore disclosed by the Cost pane and `abctl cost` and
-	// not by the strip — the strip has no reading to attach it to, and an unattached caveat
-	// on this line is the misattribution moneyFigure exists to end.
-	TodayDegraded *usage.Degraded
-	// TodayClamped is the day figure's own clamp disclosure, separate from Clamped for the
-	// reason every other Today* counter is separate from its window twin: it is a different
-	// question about a different span, and one figure must never wear another's qualification.
-	TodayClamped bool
-
-	// SavedUSD is the WINDOW's avoided spend, and it is the FALLBACK reading — see
-	// TodaySavedUSD, which outranks it whenever the day has a figure of its own.
-	SavedUSD float64
-	HasSaved bool
-
-	// TodaySavedUSD is the DAY's avoided spend, and HasTodaySaved reports that it exists.
-	//
-	// A TWIN of SavedUSD rather than a span discriminator on one field, which is the shape
-	// every other pair on this struct already has: TodayUnpriced/Unpriced,
-	// TodayIncomplete/Incomplete, TodayClamped/Clamped. Their common reason applies here
-	// unchanged — it is a different question about a different span, and one figure must never
-	// wear another's qualification.
-	//
-	// IT EXISTS BECAUSE THE STRIP RENDERS THE SAVING AS THE HEADLINE'S PARTNER: renderSpendBand
-	// puts it directly after the today figure on the stated grounds that "the pair is the
-	// reading: what it cost and what it would have cost". The saving was read from the 1h ring,
-	// so the pair spanned two windows and only one of them was labelled — measured on a local
-	// proxy, "$64.1765 today  saved ~$1.0291" beside a day that had really avoided $2.1891,
-	// understating the figure next to it by 2.1x.
-	//
-	// FREE TO CARRY: usage.Counts.AvoidedMicros is on the same Totals applyTodayFigure already
-	// reads CostMicros from, so this is a field off a reply in hand rather than a second request.
-	//
-	// Set only alongside HasToday, so an unpriced or ring-served day leaves it unset. That is the
-	// rule TodayDegraded states for itself: those paths publish no cost figure, so there is
-	// nothing for a saving to be the partner of, and an unpartnered saving on this line is read
-	// as the window's.
-	TodaySavedUSD float64
-	HasTodaySaved bool
-
-	// Age is how long ago the window figure was fetched, and Stale reports that it is
-	// old enough to be worth saying — see spendStaleAfter. Age is only meaningful when
-	// Stale is set; a fresh figure reports neither, because the band must not carry a
-	// permanent timestamp.
-	//
-	// THE BAND READS Spans[i].Age INSTEAD, per span and against that span's own cadence.
-	//
-	// AND NOTHING READS THESE TWO. That is not a caveat, it is a defect this struct is full of:
-	// spendSummary has ONE non-test caller (paneView -> renderSpendBand) and that renderer reads
-	// only Spans, so every other field here is write-only in production. An earlier revision of
-	// this comment claimed "the summary's other consumers still read them" — there are no other
-	// consumers, and the claim was simply false.
-	//
-	// It is the same defect the per-span readings were introduced to fix. Age and Stale were
-	// computed and rendered nowhere, so a wedged chain looked current; now they are computed,
-	// rendered nowhere, AND duplicated by Spans. The fields below them are worse, because the
-	// features they describe (the savings aggregate, the cache-hit rate, the token and error
-	// counts) left the band with the four-span change and have no surface at all.
-	//
-	// DELETING THEM IS A SEPARATE CHANGE, deliberately, and tracked rather than done here: it
-	// removes spendHourAndDaySummary, applyTodayFigure, applyAges and cacheHitPct along with
-	// roughly thirty of this package's tests, which is a thousand-line no-behaviour-change diff
-	// on top of a feature PR. What is NOT deferred is saying so accurately.
-	//
-	// AND spendStaleAfter GOES WITH THEM, which an earlier version of this list left out.
-	// applyAges is its only reader, so the constant is dead by the same route as the fields it
-	// fills: the band derives its own threshold per span from that span's cadence — see
-	// spendSpanDef.pollInterval — because one shared threshold cannot describe four cadences
-	// that differ by fifteen times.
-	Age   time.Duration
-	Stale bool
-
-	// Spans is what the band renders: one reading per budget span, indexed by spendSpan.
-	//
-	// THE ONLY FIELD WITH A READER. renderSpendBand takes this and nothing else, so a figure is
-	// on the band if and only if it is here. The Window*/Today* fields above are dead — see
-	// Age/Stale for why they are still present and what removing them costs.
+	// Spans is one reading per budget span, indexed by spendSpan.
 	Spans [numSpendSpans]spanReading
 }
 
-// spendSummary derives the strip's figures from the last snapshot.
-// spendSummary is the whole answer: the per-span readings the band draws, plus the hour and
-// day views the summary's older consumers read.
+// spendSummary is the whole answer the band draws from.
 //
-// A WRAPPER, so Spans is filled OUTSIDE every branch of the hour-and-day derivation below.
-// That derivation returns early for a failed hour poll and for a snapshot that has not
-// arrived, and both describe the HOUR chain only — the month chain can be perfectly healthy
-// while the hour is erroring. Filling the readings here is what stops the band losing three
-// spans because a fourth failed, which is the independence the chains were split for.
+// A ONE-LINE FUNCTION NOW, and it was a wrapper around a hundred-line derivation whose early
+// returns described the HOUR chain only — so a failed hour poll returned before the other three
+// spans were read, and the wrapper existed to fill them outside it. spanReadings walks every
+// chain unconditionally, which is the independence the chains were split for, expressed once
+// instead of worked around. Pinned by
+// TestSpanReadings_AFailedChainDoesNotBlankTheOthers, which reintroduces that early return and
+// fails on it.
 func (m *model) spendSummary() spendSummary {
-	out := m.spendHourAndDaySummary()
-	out.Spans = m.spanReadings()
-	return out
-}
-
-func (m *model) spendHourAndDaySummary() spendSummary {
-	// An errored poll is an UNKNOWN cost, and the strip must SAY so. Reporting it
-	// as the zero value made the renderer fall through to its "nothing to say"
-	// path, so a broken or absent /v1/usage produced no figure, no explanation and
-	// no diagnostic on every poll forever — while layout() went on reserving the
-	// row, leaving a permanent blank line above the footer. Rendering nothing and
-	// having nothing notice is the exact failure this whole strip exists to end.
-	if m.spend.chains[spanHour].err != nil {
-		// Failed describes the WINDOW poll ONLY, and the today figure is carried through it.
-		//
-		// That is the invariant spendState.todaySnap gives as the reason for splitting the two
-		// chains: "the two can fail independently — an older proxy answers the window fine and
-		// 400s on window=today — and one broken figure must not blank the other." It held in one
-		// direction and not the other, because the renderer returned on Failed before reading
-		// any figure, so a wedged window poll discarded a perfectly good day total. The Failed
-		// branch yields to the figures now, which is what that fix was waiting on.
-		out := spendSummary{Failed: true}
-		m.applyTodayFigure(&out)
-		m.applyAges(&out)
-		return out
-	}
-	snap := m.spend.chains[spanHour].snap
-	if snap == nil {
-		out := spendSummary{}
-		m.applyTodayFigure(&out)
-		return out
-	}
-	out := spendSummary{
-		// sanitizeLabel, because snap.Window is server-supplied JSON that reaches the
-		// terminal verbatim whenever parseWindowSpan below cannot read it as a duration.
-		// Sanitised at the boundary rather than guarded at each use: the band's whole width
-		// guarantee is expressed in rune counts and lipgloss.Width, and
-		// lipgloss.Width("abc\nabcdef") is 6 — it measures the WIDEST LINE. So a label
-		// carrying a newline passes the budget check and then renders as an EXTRA line.
-		// layout() reserves exactly spendBandLines rows and paneView pads to them, so a
-		// third line is not merely untidy: the view comes out taller than the terminal and
-		// the footer goes off the bottom. Control characters and DEL become U+FFFD (one
-		// column, so the arithmetic still holds) rather than being dropped, so tampering
-		// shows.
-		WindowLabel: sanitizeLabel(snap.Window),
-		Priced:      snap.Priced,
-		Priceable:   snap.Totals.PriceableRequests,
-		// Carried whether or not the window is priced: a snapshot cannot report an inexact
-		// figure without reporting a priced one, but reading it unconditionally means the
-		// renderer decides what to do with it in one place rather than two.
-		Incomplete: snap.Totals.IncompleteRequests,
-		// Read unconditionally for the same reason, and NOT gated on Priced: a clamp says every
-		// counter in this Counts is a floor, and Requests overflowing is enough on its own —
-		// there need be no dollars involved for the answer to have stopped fitting.
-		Clamped:     snap.Totals.Saturated,
-		HasSnapshot: true,
-	}
-	// A negative total is refused HERE, before anything derives a figure from it, which
-	// is what makes one guard cover the amount and the burn rate at once. See
-	// negativeCost: the guarantee is upstream in authlib/sessionapi and this is defence
-	// in depth. Reported as UNPRICED rather than clamped, so the strip renders "cost
-	// unavailable" — the same treatment the Cost pane already chose, because "$-5.0000
-	// /1h" on the strip reads as a refund nobody issued.
-	if negativeCost(snap.Totals.CostMicros) {
-		out.Priced = false
-	}
-	// Priceable minus priced, NOT requests minus priced. Requests counts every
-	// proxied response — MCP calls, health checks — while only inference can ever
-	// be priced, so the wrong denominator left a correctly configured deployment
-	// reading a permanent warning with nothing to act on.
-	if gap := snap.Totals.PriceableRequests - snap.Totals.PricedRequests; gap > 0 {
-		out.Unpriced = gap
-	}
-	// The label comes from the span the SNAPSHOT reports, never from the window that was
-	// REQUESTED. The request and the answer are not the same promise — labelling the answer with
-	// the request is a wrong number wearing a right-looking label, which is worse than no number.
-	//
-	// It also fixes a mismatch that is live today rather than hypothetical: the aggregator
-	// sets Window from time.Duration.String(), so a one-hour request comes back as
-	// "1h0m0s". Parsing it lets the label render as "1h".
-	//
-	// This used to feed a per-minute burn rate as well, which is gone: the window figure is
-	// already "$2.91 /1h" and a rate off the same quotient said the same thing in smaller
-	// units. The span is still needed for the label.
-	span, spanOK := parseWindowSpan(snap.Window)
-	if spanOK {
-		out.WindowLabel = formatWindowLabel(span)
-	}
-	m.applyAges(&out)
-	m.applyTodayFigure(&out)
-	// out.Priced, not snap.Priced: the negative-total refusal above lives in out, and
-	// reading the wire flag here would hand the renderer a figure the summary has
-	// already declined to publish.
-	if out.Priced {
-		out.WindowUSD = float64(snap.Totals.CostMicros) / 1e6
-	}
-	// The volume figures are read OUTSIDE the Priced guard: tokens, errors and the cache
-	// ratio are counted for traffic nothing could price, and suppressing them alongside
-	// the money would blank the only readings a deployment with no rate table has.
-	out.Tokens = snap.Totals.Tokens
-	out.Errors = snap.Totals.Errors
-	out.CacheHitPct, out.HasCacheHit = cacheHitPct(snap.Totals)
-	// Savings, likewise outside it, and for the reason usage.Counts.AvoidedMicros gives:
-	// a saving is counted whether or not the response could be priced. A window that
-	// priced nothing and pruned something reports "cost unavailable" beside a real saved
-	// figure, and both are true.
-	//
-	// > 0 rather than != 0: the aggregate is a sum of non-negative figures, so a negative
-	// here means a broken producer, and the same defence-in-depth negativeCost applies to
-	// spend applies to this. A zero leaves HasSaved false, which is what makes the strip
-	// silent on a deployment that does not prune.
-	if av := snap.Totals.AvoidedMicros; av > 0 {
-		out.SavedUSD = float64(av) / 1e6
-		out.HasSaved = true
-	}
-	return out
-}
-
-// cacheHitPct is cache-read tokens over PROMPT tokens, as a percentage.
-//
-// ok is false when the provider reported no prompt breakdown at all, which is why this
-// consults PresentKinds rather than testing the denominator: prompt == 0 has two readings
-// — "no prompt tokens" and "nothing reported them" — and only the flags can tell them
-// apart. See usage.Counts.PresentKinds, whose own doc is about exactly this ambiguity.
-//
-// TWO BITS ARE REQUIRED, NOT THREE. KindCacheRead alone would divide by a denominator nobody
-// reported; KindInput alone would report 0% for a gateway that reports input and not cache
-// reads, which is a claim about caching made from an absence of evidence. Those are the two
-// terms that must be proven.
-//
-// THE CACHE-WRITE TERM IS ADDED WITHOUT PROOF, and that is safe for a specific reason rather
-// than by indifference: the two parsers in this repo omit the bit exactly when the prompt has no
-// cache-write tokens in it, so adding zero is not an approximation, it is the right answer.
-//
-//   - The OpenAI-compatible path NEVER sets it, because OpenAI bills cache writes as ordinary
-//     input (inferenceparser.toNeutral says so). It reports Input = prompt_tokens − cached and
-//     CacheRead = cached, so input + cacheRead already IS prompt_tokens exactly.
-//   - The Anthropic path sets it whenever cache_creation_input_tokens is on the wire, so an
-//     absent bit there means the response reported no cache creation.
-//
-// REQUIRING IT WAS A REGRESSION, and a total one: with three bits demanded, HasCacheHit was
-// structurally false for every OpenAI-dialect response and the cache figure never rendered on
-// that path at all — over arithmetic that was already correct. It was tightened to close the
-// opposite hole, a producer whose unreported cache writes shrink the denominator and inflate the
-// ratio. That hole is real but no producer here has it, and suppressing a whole parser's figure
-// to guard against a producer that does not exist is the worse trade. A third parser that
-// reports cache writes and forgets the bit would read high; this comment is the warning.
-func cacheHitPct(t usage.Counts) (float64, bool) {
-	const promptKinds = usage.KindInput | usage.KindCacheRead
-	if t.PresentKinds&promptKinds != promptKinds {
-		return 0, false
-	}
-	prompt := t.InputTokens + t.CacheReadTokens + t.CacheWriteTokens
-	// 0/0 is NaN, and "cache NaN%" is the one output worse than no figure. Reachable: a
-	// response can report the kinds and then carry zero counters.
-	if prompt <= 0 {
-		return 0, false
-	}
-	return float64(t.CacheReadTokens) / float64(prompt) * 100, true
-}
-
-// applyAges sets the one staleness reading on the line, from the OLDER of the two poll chains.
-//
-// Read from the clock here rather than recorded on a snapshot because staleness is a property of
-// NOW, not of the reply: a figure fetched once and rendered for ten minutes gets older every
-// frame.
-//
-// THE OLDER OF THE TWO, which is the whole point — see spendStaleAfter. A chain that has never
-// answered is skipped rather than treated as infinitely old: today is unavailable on a proxy
-// with no ledger, and reporting that absence as staleness would put a permanent age on every
-// Kubernetes deployment's strip.
-func (m *model) applyAges(out *spendSummary) {
-	var oldest time.Duration
-	for _, at := range []time.Time{m.spend.chains[spanHour].lastFetch, m.spend.chains[spanToday].lastFetch} {
-		if at.IsZero() {
-			continue
-		}
-		// NEGATIVE AGES DISCARDED. time.Since goes negative if the wall clock steps backwards
-		// between the fetch and this read — an NTP correction is the realistic cause — and
-		// formatSpendAge would render that as "polled -5s ago". Cosmetic and unlikely, and a
-		// nonsense figure on an always-on line is the kind a reader stops trusting the rest of.
-		if age := time.Since(at); age > oldest && age > 0 {
-			oldest = age
-		}
-	}
-	if oldest > spendStaleAfter {
-		out.Age, out.Stale = oldest, true
-	}
+	return spendSummary{Spans: m.spanReadings()}
 }
 
 // parseWindowSpan interprets a snapshot's Window string as a duration.
@@ -972,94 +542,6 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 	}
 }
 
-// applyTodayFigure fills in the strip's "today" headline from the ledger-backed
-// poll, or leaves it unset.
-//
-// Two conditions, and both are load-bearing:
-//
-// The response's window must actually BE "today". A proxy with no durable cost
-// ledger — Kubernetes by design, or a local install with it turned off — answers
-// window=today from the in-memory ring's maximum span and reports that span as the
-// window it served. Setting HasToday from the request rather than from the answer
-// would label a six-hour total as a day's, which is a wrong number wearing a right
-// label. This is the one case where the honest answer is to show less: the strip
-// falls back to its rolling-window figure, which is correctly labelled.
-//
-// And the answer must be PRICED. renderSpendBand guards its window figure on
-// Priced but renders the today figure whenever HasToday is set, so an unpriced day
-// admitted here would print "$0.0000 today" — a settled zero for a cost nobody
-// knows, the one thing the strip is forbidden to do. Guarded here rather than there
-// because the renderer already handles both fields and this commit is data-only.
-//
-// The day's own COVERAGE counters come out with the figure, and they are not optional
-// decoration. This read CostMicros and threw PriceableRequests away, so a day the
-// ledger could price one request of four hundred rendered as a complete total: the
-// headline figure of this whole branch, published as exact, with the only gap marker on
-// screen built from a different window's numbers. See spendSummary.TodayUnpriced.
-func (m *model) applyTodayFigure(out *spendSummary) {
-	snap := m.spend.chains[spanToday].snap
-	if snap == nil || m.spend.chains[spanToday].err != nil {
-		return
-	}
-	if snap.Window != usage.WindowToday {
-		return
-	}
-	if !snap.Priced {
-		return
-	}
-	// And it must not be NEGATIVE. Declined by leaving HasToday unset, which is this
-	// field's own spelling of "no figure" and the same treatment the window figure and the
-	// Cost pane give an impossible number — the strip then falls back to its rolling
-	// figure rather than printing "$-5.0000 today". See negativeCost: the guarantee is
-	// upstream in authlib/sessionapi, and this is defence in depth.
-	if negativeCost(snap.Totals.CostMicros) {
-		return
-	}
-	out.TodayUSD = float64(snap.Totals.CostMicros) / 1e6
-	out.HasToday = true
-	// Priceable minus priced, for the reason the window figure's gap is computed that
-	// way: Requests counts traffic that could never carry a price, so it never reaches
-	// parity and would leave a correct deployment reading a permanent warning.
-	out.TodayPriceable = snap.Totals.PriceableRequests
-	if gap := snap.Totals.PriceableRequests - snap.Totals.PricedRequests; gap > 0 {
-		out.TodayUnpriced = gap
-	}
-	// And the day's exactness, which is a different claim from its coverage: a day can be
-	// fully covered and still be a floor, because one truncated stream is enough.
-	out.TodayIncomplete = snap.Totals.IncompleteRequests
-	// And the ledger's own damage disclosure, which is a THIRD claim: coverage says how much
-	// of the traffic the figure covers, exactness says whether the figure it covers is the
-	// real number, and this says rows are missing from the sum entirely. A day can be fully
-	// covered, wholly exact, and still short — a skipped line is spend that happened and is
-	// not in the total.
-	//
-	// Copied as the pointer, so nil keeps meaning "the read was clean" rather than becoming
-	// zeros the renderer has to interpret. This is the one field on this whole path that
-	// only a ledger-backed window can populate, which is why it hangs off the today figure
-	// and off nothing else. See spendSummary.TodayDegraded.
-	out.TodayDegraded = snap.Degraded
-	// And the day's own clamp, which is a FOURTH claim and the only one of the four that says
-	// the arithmetic itself ran out of room. A day can be fully covered, wholly exact, read
-	// cleanly, and still be a floor — see usage.Counts.Saturated.
-	out.TodayClamped = snap.Totals.Saturated
-	// And the day's SAVING, which is not a claim about the figure above it but a second figure —
-	// the one the strip renders as its partner. Read here rather than in spendSummary's window
-	// block because it has to come off THIS reply: the window block reads the ring, and the ring
-	// is an hour.
-	//
-	// INSIDE every guard above, which is what keeps the pair honest in both directions. A day
-	// that published no cost must publish no saving either, or the saving renders next to the
-	// WINDOW's figure and reads as the window's.
-	//
-	// > 0 rather than != 0, and for the reason the window's own read gives: the aggregate is a sum
-	// of non-negative figures, so a negative one means a broken producer, and a zero must leave
-	// the flag unset so a deployment that prunes nothing says nothing rather than "saved $0.00".
-	if av := snap.Totals.AvoidedMicros; av > 0 {
-		out.TodaySavedUSD = float64(av) / 1e6
-		out.HasTodaySaved = true
-	}
-}
-
 // spanReading is one band cell's data: the figure, whether it can be shown at all, and every
 // caveat that rides on it.
 //
@@ -1161,9 +643,10 @@ func (m *model) spanReadings() [numSpendSpans]spanReading {
 		// uniform cell width, so two permanently-dated cells pushed the band from 34 columns to
 		// 42 and dropped 7 DAYS at a width where all four had fitted.
 		//
-		// TWICE THE INTERVAL, which is what spendStaleAfter means for the hour: one dropped or
-		// slow reply is not an alarm and a wedged chain is. Derived per span rather than shared,
-		// so a retuned cadence carries its own threshold with it.
+		// TWICE THE INTERVAL, so one dropped or slow reply is not an alarm and a wedged chain is.
+		// Derived per span rather than shared, so a retuned cadence carries its own threshold
+		// with it — and there is no named constant left to go stale against it, which is what
+		// one shared threshold had become once the four cadences diverged by fifteen times.
 		if !c.lastFetch.IsZero() {
 			if age := now.Sub(c.lastFetch); age > 2*def.pollInterval() {
 				r.Age, r.Stale = age, true

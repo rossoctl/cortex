@@ -669,7 +669,7 @@ func sanitizeLabel(s string) string {
 // the ones that render it.
 //
 // A pointer parameter rather than a *usage.Snapshot, so the strip can ask about the day
-// figure's own disclosure without carrying the whole snapshot into spendSummary.
+// figure's own disclosure without carrying the whole snapshot into a span reading.
 func snapshotDamaged(d *usage.Degraded) bool { return d != nil }
 
 // negativeCost reports that a published cost figure cannot be spend, and is the ONE
