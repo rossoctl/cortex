@@ -133,7 +133,7 @@ This happens by default; `--skip-claude-metadata` turns it off:
 
 ```sh
 ./abctl observe                            # open the viewer; titles arrive as they scan
-./abctl observe --skip-claude-metadata     # skip the scan; sessions show ids only
+./abctl observe --skip-claude-metadata     # skip the scan; previously-recorded titles still show
 ```
 
 The scan is also **incremental**: a transcript whose mtime has not moved since it was
@@ -148,7 +148,10 @@ it did not save, and the next launch scans again. The window is the ~0.7s of a f
 full scan, and milliseconds once the file exists.
 
 Pass `--skip-claude-metadata` when the scan is unwanted, or when `~/.claude` should
-simply not be touched.
+simply not be touched. It suppresses only the *scan*: the viewer still reads
+`~/.cortex/session-metadata.json`, so titles recorded by earlier runs keep rendering and
+only sessions new or renamed since the last scan show as bare ids. There is no flag that
+hides titles already on disk — delete the file for that.
 
 A harvest that cannot run is never fatal — a missing, unreadable or corrupt file
 costs the `TITLE` column and nothing else, and the viewer still opens. The failures

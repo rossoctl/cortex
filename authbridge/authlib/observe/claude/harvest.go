@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,8 +59,10 @@ type Result struct {
 	// Skipped counts transcripts left unparsed because they had not changed. Always
 	// zero unless Options.Incremental.
 	Skipped int
-	// Kept counts entries retained from the existing file that this harvest did not
-	// see. Always zero unless Options.Merge.
+	// Kept counts entries retained from the existing file that this harvest did not see.
+	// Always zero unless Options.Merge, and excludes Recovered — an entry another run wrote
+	// concurrently was not in the file this run read, so it is not "kept" from it.
+	// Total = Harvested + Kept + Recovered.
 	Kept int
 	// Total counts the entries written.
 	Total int
@@ -183,11 +186,17 @@ func Harvest(opts Options) (Result, error) {
 	}
 	// Set after recovery, like Kept below, so it is the map that is actually on disk.
 	res.Meta = meta
-	// Derived last, from the final map, so the three numbers the caller prints on one line
-	// actually add up. Computed before the recovery step, Kept went stale the moment
-	// recovery added an entry: Total was refreshed and Kept was not, so a run that recovered
-	// anything reported total != harvested + kept.
-	res.Kept = res.Total - res.Harvested
+	// Derived last, from the final map, so the numbers the caller prints on one line actually
+	// add up. Computed before the recovery step, Kept went stale the moment recovery added an
+	// entry: Total was refreshed and Kept was not, so a run that recovered anything reported
+	// total != harvested + kept.
+	//
+	// Recovered is subtracted rather than folded in, so Kept means what the caller CALLS it —
+	// "kept from the existing file". An entry another run wrote while this one worked was not in
+	// the file this run read, so counting it as kept attributed it to the wrong source; the
+	// arithmetic balanced either way, which is exactly why the label could drift unnoticed.
+	// Total = Harvested + Kept + Recovered.
+	res.Kept = res.Total - res.Harvested - res.Recovered
 	return res, nil
 }
 
@@ -436,11 +445,27 @@ type transcriptMeta struct {
 // A file holding JSON `null` decodes to a nil map, which is indistinguishable from an
 // empty object for merging purposes, so it is normalised rather than refused.
 func ReadMetadata(path string) (map[string]SessionMetadata, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // operator-supplied path
+	f, err := os.Open(path) //nolint:gosec // operator-supplied path
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string]SessionMetadata{}, nil
 		}
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	// BOUNDED, the same 16 MiB the viewer's own reader of this file uses. Both now cap it, and
+	// for the same reason: a stray large file at this path would otherwise be read whole and
+	// decoded before the viewer starts — `abctl observe` calls this synchronously to check the
+	// file is readable, so an unbounded read stalls startup with nothing on screen to say why.
+	// Far past any real metadata file: the measured 192-session file is 74 KB.
+	//
+	// Truncation surfaces as a JSON error rather than as silent data loss, which is the right
+	// outcome here: this reader's caller refuses to merge over a file it cannot parse, so a
+	// file too large to read is treated like any other unreadable one instead of quietly
+	// becoming a smaller map.
+	const maxMetadataBytes = 16 << 20
+	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes))
+	if err != nil {
 		return nil, err
 	}
 	var m map[string]SessionMetadata

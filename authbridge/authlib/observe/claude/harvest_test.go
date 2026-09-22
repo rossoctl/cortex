@@ -452,11 +452,18 @@ func TestHarvest_CountsBalanceAfterRecovery(t *testing.T) {
 		t.Fatalf("recovered = %d, want 1 — the fixture is not exercising recovery", recovered)
 	}
 
-	// Harvest derives both from the final map, in this order.
+	// Harvest derives these from the final map, in this order.
 	total := len(meta)
-	kept := total - harvested
-	if total != harvested+kept {
-		t.Errorf("total %d != harvested %d + kept %d", total, harvested, kept)
+	kept := total - harvested - recovered
+	// THREE terms, not two. Kept excludes Recovered so that it means what the caller prints it
+	// as — "kept from the existing file" — since an entry another run wrote while this one worked
+	// was never in the file this run read. Folding it in balanced the arithmetic while
+	// attributing the entry to the wrong source, which is why the drift went unnoticed.
+	if total != harvested+kept+recovered {
+		t.Errorf("total %d != harvested %d + kept %d + recovered %d", total, harvested, kept, recovered)
+	}
+	if kept != 1 {
+		t.Errorf("kept = %d, want 1 (the earlier-run entry only, not the concurrent one)", kept)
 	}
 	if total != len(readMetadataFile(t, path)) {
 		t.Errorf("total = %d but the file holds %d entries", total, len(readMetadataFile(t, path)))
@@ -501,5 +508,41 @@ func TestHarvest_IncrementalReparsesPreUpgradeEntries(t *testing.T) {
 	}
 	if got := readMetadataFile(t, res.Path)["s1"].Title; got != "current" {
 		t.Errorf("title = %q, want the freshly-parsed %q", got, "current")
+	}
+}
+
+// ReadMetadata is bounded, like the viewer's own reader of the same file.
+//
+// `abctl observe` calls this synchronously before the TUI starts, to check the file is readable,
+// so an unbounded read would stall startup on a stray large file with nothing on screen to say
+// why. A truncated read surfaces as a JSON error, which is the right outcome: the caller refuses
+// to merge over a file it cannot parse, so "too large" behaves like any other unreadable file
+// rather than silently becoming a smaller map.
+func TestReadMetadata_IsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	// One entry, then padding past the 16 MiB cap inside a string value so the file stays valid
+	// JSON right to its end — a file that is only malformed would prove nothing about the bound.
+	f, err := os.Create(path) //nolint:gosec // test-controlled path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"s1":{"title":"real","agentType":"pad-`); err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("x", 1<<20)
+	for i := 0; i < 17; i++ { // 17 MiB of padding, past the 16 MiB cap
+		if _, err := f.WriteString(pad); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.WriteString(`"}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ReadMetadata(path); err == nil {
+		t.Error("a file past the cap was accepted; the read is unbounded")
 	}
 }

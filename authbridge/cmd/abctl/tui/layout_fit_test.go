@@ -46,12 +46,38 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.catalogTbl = newCatalogTable()
 	m.namespacesTbl = newNamespacesTable()
 	m.podsTbl = newPodsTable()
+	// TITLES, not just ids. This is the ONLY test that renders m.View() through bubbles'
+	// fixed-width padding, so it is the only place the "no line wider than the terminal"
+	// invariant is measured on real output — and with sessionsData left empty every TITLE cell
+	// was blank, so the widest column in the sessions pane was never in the measurement. The
+	// new width tests around truncRight are all pre-render and cannot see padding.
+	//
+	// Deliberately hostile content: a long path (left-truncated), long prose (right-truncated),
+	// and CJK plus emoji, which are two display columns per rune and are exactly what a
+	// rune-counting truncation gets wrong.
+	//
+	// WHAT THIS DOES AND DOES NOT CATCH. It closes a coverage gap — a wide title is now inside
+	// the only rendered-output measurement in the suite — but it cannot detect over-truncation
+	// on its own: bubbles re-cuts an over-wide cell to the column width, so the LINE stays at
+	// terminal width either way. Verified by reverting the prose branch to the rune-counting
+	// helper, which leaves this green. What it does pin is that a title cell can never push a
+	// rendered line past the terminal, whatever a future truncation change does upstream; the
+	// column-budget assertions live in sessions_title_test.go, which measures before padding.
+	m.sessionsData = map[string]SessionMetadata{}
+	titles := []string{
+		"/Users/somebody/src/cortex/.worktrees/a-very-long-worktree-name/authbridge",
+		"Investigate the flaky reloader debounce test and write up the findings",
+		"日本語のセッションタイトルです日本語のセッションタイトルです",
+		"🎉🎉🎉 ship the release 🎉🎉🎉 and then celebrate at some length 🎉🎉🎉",
+	}
 	for i := 0; i < 40; i++ {
+		// A realistic id: long enough to exercise the ID column's budget.
+		id := fmt.Sprintf("agent-%02d.team1.svc.cluster.local:8080", i)
 		m.sessions = append(m.sessions, session.SessionSummary{
-			// A realistic id: long enough to exercise the ID column's budget.
-			ID:        fmt.Sprintf("agent-%02d.team1.svc.cluster.local:8080", i),
+			ID:        id,
 			UpdatedAt: time.Now(), EventCount: 12, TotalTokens: 641011,
 		})
+		m.sessionsData[id] = SessionMetadata{Title: titles[i%len(titles)]}
 	}
 	// A populated catalog, not just a nil one. Without this the catalog pane rendered
 	// its "loading catalog…" line at every size, so the fit invariant never measured

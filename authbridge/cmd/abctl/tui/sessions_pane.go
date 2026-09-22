@@ -415,7 +415,13 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 	// not get to assume their shape.
 	if !strings.HasPrefix(title, "/") {
 		if titleW <= 0 {
-			return title
+			// FAIL SAFE, not wide. A non-positive budget means the caller could not tell us how
+			// much room there is, and returning the full title then hands an unbounded cell to a
+			// table that has to cut it somewhere — the one thing every other branch here exists
+			// to prevent. Traces as unreachable today (the column is admitted with a floor, and
+			// layout only shrinks to it), which is precisely why it should not be the branch that
+			// quietly reintroduces an unbudgeted cell if that ever changes.
+			return ""
 		}
 		// From the RIGHT for prose, which reads left-to-right — the opposite of a path, whose
 		// tail is the distinguishing end.
@@ -431,7 +437,8 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 	// Passing it in also removes the header lookup, which had to go through headerTitle and
 	// silently returned the untruncated title if it ever found nothing.
 	if titleW <= 0 {
-		return title
+		// Same as the prose branch above: no budget means no cell, not an unbounded one.
+		return ""
 	}
 	return truncLeft(title, titleW)
 }

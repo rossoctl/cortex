@@ -672,3 +672,112 @@ func TestHarvestedMsg_EmptyResultLeavesTitlesAlone(t *testing.T) {
 		t.Errorf("an empty harvest disturbed the title: %q", got)
 	}
 }
+
+// sanitizeLabel neutralizes every control class that can disturb a rendered label.
+//
+// Titles are LLM-generated transcript text read from a file nothing authenticates, so the
+// question is not whether a hostile title is likely but what one can do. C0 and DEL were already
+// handled; C1 controls and the bidi overrides were not, and the bidi ones are the ones that
+// actually render — each is zero-width, so the width math stays self-consistent and the frame
+// holds, but the terminal REORDERS the surrounding text and the title displays in an order that
+// is not the order of its bytes.
+func TestSanitizeLabel_NeutralizesControlClasses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"C0 newline", "two\nlines"},
+		{"C0 escape", "colour\x1b[31mshift"},
+		{"DEL", "del\x7fete"},
+		{"C1 NEL", "next\u0085line"},
+		{"C1 CSI", "csi\u009bm"},
+		{"bidi RLO", "report‮gnp.exe"},
+		{"bidi LRO", "a‭b"},
+		{"bidi isolate", "a⁦b⁩c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeLabel(tc.in)
+			if got == tc.in {
+				t.Errorf("sanitizeLabel passed it through unchanged: %q", got)
+			}
+			if !strings.ContainsRune(got, '�') {
+				t.Errorf("no replacement character in %q", got)
+			}
+		})
+	}
+
+	// Legitimate content is untouched — including the CJK and emoji that real titles carry, which
+	// must not be swept up by a rule aimed at controls.
+	for _, ok := range []string{
+		"fix the parser bug",
+		"日本語のセッションタイトル",
+		"🎉 ship it",
+		"/Users/somebody/src/cortex",
+		"café naïve",
+	} {
+		if got := sanitizeLabel(ok); got != ok {
+			t.Errorf("sanitizeLabel altered legitimate text %q -> %q", ok, got)
+		}
+	}
+}
+
+// A non-positive budget yields no cell, not an unbounded one.
+//
+// Unreachable today — the column is admitted with a floor and layout only shrinks to it — but it
+// used to return the FULL title, which is an unbudgeted cell handed to a table that then has to
+// cut it somewhere. Every other branch of sessionTitleCell exists to stop exactly that, so if
+// this one ever becomes reachable it should fail in the safe direction.
+func TestSessionTitleCell_NonPositiveWidthYieldsNothing(t *testing.T) {
+	const prose, path = "prose-id", "path-id"
+	m := newTitleModel(t, map[string]SessionMetadata{
+		prose: {Title: "Investigate the flaky reloader debounce test"},
+		path:  {Title: "/Users/somebody/src/cortex/.worktrees/long-name"},
+	}, prose, path)
+
+	for _, id := range []string{prose, path} {
+		for _, w := range []int{0, -1} {
+			if got := m.sessionTitleCell(id, w); got != "" {
+				t.Errorf("sessionTitleCell(%q, %d) = %q, want \"\"", id, w, got)
+			}
+		}
+	}
+}
+
+// trunc budgets in display columns, and is unchanged on the ASCII its callers pass today.
+//
+// It counted RUNES, with four live callers — session ids, and the identity block's JWT subject,
+// client and scope claims, which are remote-controlled rather than ASCII-guaranteed. Measured
+// before the fix: an 11-column budget returned 21 columns of CJK.
+//
+// The ASCII half of this test is what makes the fix safe to make as a redirect rather than a
+// rewrite: if the two ever diverge on the input today's callers actually pass, this fails and the
+// redirect is not behaviour-preserving after all.
+func TestTrunc_BudgetsInDisplayColumnsAndKeepsASCIIIdentical(t *testing.T) {
+	for _, s := range []string{
+		"日本語のセッションタイトルです",
+		"🎉🎉🎉🎉🎉🎉🎉🎉",
+		"mixed 日本語 and ascii",
+	} {
+		for _, n := range []int{1, 2, 8, 11, 14, 40} {
+			if w := lipgloss.Width(trunc(s, n)); w > n {
+				t.Errorf("trunc(%q, %d) is %d display columns: %q", s, n, w, trunc(s, n))
+			}
+		}
+	}
+
+	// Unchanged for the shapes the live callers pass: session ids, a UUID, a JWT-ish claim line.
+	for _, s := range []string{
+		"agent-07.team1.svc.cluster.local:8080",
+		"3eb6d5ce-0000-0000-0000-000000000001",
+		"subject  alice@example.com",
+	} {
+		for _, n := range []int{8, 14, 20, 40} {
+			if got, want := trunc(s, n), truncRight(s, n); got != want {
+				t.Errorf("trunc(%q, %d) = %q, want %q", s, n, got, want)
+			}
+			if w := lipgloss.Width(trunc(s, n)); w > n {
+				t.Errorf("trunc(%q, %d) is %d columns, over budget", s, n, w)
+			}
+		}
+	}
+}

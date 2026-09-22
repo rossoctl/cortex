@@ -351,7 +351,7 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 		// flag to decline is narrower, and it is the reason to keep it: a machine where
 		// ~/.claude should simply not be touched.
 		skipClaudeMetadata: fs.Bool("skip-claude-metadata", false,
-			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID; pass this to skip the scan and show ids only."),
+			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID. This skips the scan; titles already recorded by earlier runs are still shown, so only sessions new or renamed since the last scan appear as bare ids."),
 	}
 }
 

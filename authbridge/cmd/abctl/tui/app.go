@@ -1807,19 +1807,23 @@ func viewTabs(active paneID) string {
 	return sess + " " + pipe
 }
 
-// trunc clips a string to n runes with an ellipsis. Used for title truncation.
-// truncStr in events_pane.go is the byte-indexed variant for fixed-width
-// ASCII table cells — if that ever needs to handle multi-byte input, merge
-// the two into a single rune-aware helper.
+// trunc clips a string to n DISPLAY COLUMNS with a trailing ellipsis.
+//
+// Columns, not runes, since every caller budgets in columns: a table cell's fitted width, a
+// detail pane's inner width. A rune count is a different number the moment the input is not
+// ASCII — measured, an 11-column budget returned 21 columns of CJK and 14 of emoji — and the
+// callers are not all ASCII-guaranteed: the identity block truncates JWT subject, client and
+// scope claims, which are remote-controlled.
+//
+// Latent rather than observed, which is why the fix is a redirect and not a rewrite: on ASCII
+// this is byte-for-byte what the old rune-counting version returned, so no current caller
+// changes behaviour (there is a probe for that equivalence in the sessions title tests). The
+// column-aware implementation lives in sessions_pane.go beside its left-truncating mirror.
+//
+// truncStr in events_pane.go is the byte-indexed variant for fixed-width ASCII table cells — if
+// that ever needs to handle multi-byte input, point it here too.
 func trunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n < 1 {
-		return ""
-	}
-	return string(r[:n-1]) + "…"
+	return truncRight(s, n)
 }
 
 // yankDirRel is the yank output directory, relative to the user's home. It

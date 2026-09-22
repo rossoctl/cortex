@@ -636,6 +636,20 @@ func sanitizeLabel(s string) string {
 		switch {
 		case r == 0x7f, r < 0x20:
 			b.WriteRune('\uFFFD')
+		// C1 controls (U+0080-U+009F). Mostly inert in a UTF-8 terminal, since they arrive as
+		// two bytes rather than as the single bytes an escape parser acts on — but they are
+		// controls, they are not printable, and there is no reason for one to survive into a
+		// label. Replaced for the same reason as C0.
+		case r >= 0x80 && r <= 0x9f:
+			b.WriteRune('\uFFFD')
+		// BIDI OVERRIDES AND ISOLATES: U+202A-U+202E and U+2066-U+2069. These are the ones that
+		// actually render: each is zero-width, so the width math stays self-consistent and the
+		// frame never breaks, but the terminal REORDERS the text around it. A title can then
+		// display in an order that is not the order of its bytes — "report\u202Egnp.exe" reads as
+		// something else entirely — and these titles are LLM-generated transcript text from an
+		// unauthenticated-by-nature file, so their content is not ours to trust.
+		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+			b.WriteRune('\uFFFD')
 		default:
 			b.WriteRune(r)
 		}

@@ -36,8 +36,8 @@ Cortex buckets traffic by session id, and a session id is a UUID. Claude Code kn
 more about the same session: it writes a transcript per session under its config
 directory, carrying a model-generated title and the directory the session ran in.
 This reads those transcripts and writes what it finds to
-~/.cortex/session-metadata.json, keyed by the same UUID Cortex uses — so a later
-reader can put a name next to a row.
+~/.cortex/session-metadata.json, keyed by the same UUID Cortex uses — so a reader can
+put a name next to a row. "abctl observe" is that reader, and does this by default.
 
 Each entry carries a title, the agent type ("Claude Code"), the config directory it
 came from, and the transcript it was read from. The title is the transcript's
