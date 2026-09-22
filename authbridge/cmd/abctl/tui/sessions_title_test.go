@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -549,6 +550,21 @@ func TestSessionsTitle_WidthNeverShrinksAsTheTerminalGrows(t *testing.T) {
 	}
 }
 
+// forceColor makes styling real for the duration of a test.
+//
+// CI has no TTY, so lipgloss defaults to Ascii and every Render is a no-op there — which means a
+// width assertion measures plain text locally AND in CI, and never sees the escape sequences a real
+// terminal gets. That is the gap this closes: a style that emitted an unterminated sequence, or
+// padding computed from a styled string's byte length, would be invisible to every one of these
+// tests. Same idiom as event_retention_test.go and footer_test.go, which force it for the same
+// reason.
+func forceColor(t *testing.T) {
+	t.Helper()
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+}
+
 // truncRight budgets in display columns, the same rule TestTruncLeft_BudgetsInDisplayColumns
 // pins for its sibling.
 //
@@ -559,6 +575,7 @@ func TestSessionsTitle_WidthNeverShrinksAsTheTerminalGrows(t *testing.T) {
 // fixing anyway, and worth a test: the sibling had one and this path had none, and making the
 // harvest default-on newly exposes it to every user.
 func TestTruncRight_BudgetsInDisplayColumns(t *testing.T) {
+	forceColor(t)
 	for _, s := range []string{
 		"fix the parser bug and add a regression test",
 		"日本語のセッションタイトルです日本語のセッション",
@@ -593,6 +610,7 @@ func TestTruncRight_BudgetsInDisplayColumns(t *testing.T) {
 // through it. The two used to disagree: the cell called the rune-counting helper, so the
 // function was right and the caller was not.
 func TestSessionTitleCell_BoundsCJKProse(t *testing.T) {
+	forceColor(t)
 	const id = "cjk-prose"
 	m := newTitleModel(t, map[string]SessionMetadata{
 		id: {Title: "日本語のセッションタイトルです日本語のセッション"},
@@ -682,6 +700,7 @@ func TestHarvestedMsg_EmptyResultLeavesTitlesAlone(t *testing.T) {
 // holds, but the terminal REORDERS the surrounding text and the title displays in an order that
 // is not the order of its bytes.
 func TestSanitizeLabel_NeutralizesControlClasses(t *testing.T) {
+	forceColor(t)
 	for _, tc := range []struct {
 		name string
 		in   string
@@ -728,6 +747,7 @@ func TestSanitizeLabel_NeutralizesControlClasses(t *testing.T) {
 // cut it somewhere. Every other branch of sessionTitleCell exists to stop exactly that, so if
 // this one ever becomes reachable it should fail in the safe direction.
 func TestSessionTitleCell_NonPositiveWidthYieldsNothing(t *testing.T) {
+	forceColor(t)
 	const prose, path = "prose-id", "path-id"
 	m := newTitleModel(t, map[string]SessionMetadata{
 		prose: {Title: "Investigate the flaky reloader debounce test"},
@@ -753,6 +773,7 @@ func TestSessionTitleCell_NonPositiveWidthYieldsNothing(t *testing.T) {
 // rewrite: if the two ever diverge on the input today's callers actually pass, this fails and the
 // redirect is not behaviour-preserving after all.
 func TestTrunc_BudgetsInDisplayColumnsAndKeepsASCIIIdentical(t *testing.T) {
+	forceColor(t)
 	for _, s := range []string{
 		"日本語のセッションタイトルです",
 		"🎉🎉🎉🎉🎉🎉🎉🎉",

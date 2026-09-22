@@ -161,6 +161,12 @@ var fitSizes = [][2]int{{60, 20}, {80, 24}, {100, 30}, {120, 40}, {200, 50}}
 
 // Every pane, at every size, with and without the filter open.
 func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
+	// Styling real, not a no-op. CI has no TTY, so lipgloss defaults to Ascii and every Render
+	// returns its input — which is the wrong thing to measure here of all places, since this is the
+	// only test that checks rendered LINE width and padding is exactly what styling adds. Without
+	// it a style emitting an unterminated escape, or padding computed off a styled string's byte
+	// length, passes in CI and wraps on a real terminal.
+	forceColor(t)
 	panes := map[string]paneID{
 		"sessions": paneSessions, "events": paneEvents, "pipeline": panePipeline,
 		"detail": paneDetail, "catalog": paneCatalog, "usage": paneUsage,

@@ -256,6 +256,20 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		if err != nil {
 			return nil, err
 		}
+		// res.Partial IS DISCARDED HERE, and that is a real gap rather than an oversight: a
+		// transcript whose read ended early still yields whatever title was found before the stop,
+		// so the affected session shows a confidently-wrong — possibly stale — name with nothing
+		// marking it. `abctl experimental read-claude-sessions` prints a bounded summary of exactly
+		// this; the background path cannot.
+		//
+		// Why not: by the time this returns, tea.NewProgram owns the screen, and there is no log
+		// sink in abctl to divert to — anything written to the terminal corrupts the frame. Marking
+		// the rows would be the right answer instead of reporting, but Partial carries formatted
+		// "path: err" strings rather than session ids, so the ids are not recoverable here without
+		// widening the type and threading a per-entry flag into SessionMetadata and the TITLE cell.
+		// That is a bigger change than this pass is for; the honest interim is that the explicit
+		// subcommand is where a truncated transcript is visible, and it re-reads everything.
+		//
 		// The MERGED map, not just what this pass parsed: an incremental pass parses only the
 		// transcripts that changed, so its own harvest is nearly empty and would name almost
 		// nothing. Result.Meta is the whole thing Harvest wrote, which is also why this no

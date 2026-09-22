@@ -3,9 +3,12 @@ package claude
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -545,4 +548,185 @@ func TestReadMetadata_IsBounded(t *testing.T) {
 	if _, err := ReadMetadata(path); err == nil {
 		t.Error("a file past the cap was accepted; the read is unbounded")
 	}
+}
+
+// A concurrent run's FRESHER title for a shared id survives this run's recovery pass.
+//
+// recoverConcurrentEntries only pulled in ids this run did not have (`if _, ours := meta[id];
+// !ours`), so a shared id kept OUR value and the save wrote it back over the other run's. Under
+// Incremental that is the common shape rather than an exotic one: the run that skipped a
+// transcript holds the OLD title for it, the run that re-read it holds the NEW one, and whichever
+// finishes second used to win regardless of which was fresher — so a renamed session's title
+// silently reverted and stayed reverted until the transcript changed again.
+//
+// Resolved by LogModTime, the same field the incremental skip uses, so "fresher" means the same
+// thing in both places. An entry that cannot be compared (no recorded time on either side) keeps
+// ours, since this run at least knows its own provenance.
+func TestRecoverConcurrentEntries_KeepsTheFresherTitleForASharedID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	base := time.Now().Add(-time.Hour)
+
+	// What this run decided to write: a stale title for s1 (it skipped that transcript), plus one
+	// entry only it has.
+	ours := map[string]SessionMetadata{
+		"s1": {Title: "old name", LogFile: "/t/s1.jsonl", LogModTime: base},
+		"s2": {Title: "ours only", LogFile: "/t/s2.jsonl", LogModTime: base},
+	}
+	// What another run left on disk: a fresher title for s1, plus one entry only it has. The
+	// second entry matters — without an id to recover, the pass never saves and the revert cannot
+	// be observed, which is how this hid.
+	onDisk := map[string]SessionMetadata{
+		"s1": {Title: "NEW name", LogFile: "/t/s1.jsonl", LogModTime: base.Add(30 * time.Minute)},
+		"s3": {Title: "theirs only", LogFile: "/t/s3.jsonl", LogModTime: base},
+	}
+	if err := SaveMetadata(path, onDisk); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := recoverConcurrentEntries(path, ours); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readMetadataFile(t, path)
+	if got["s1"].Title != "NEW name" {
+		t.Errorf("s1 = %q, want the fresher %q — the concurrent run's rename was reverted",
+			got["s1"].Title, "NEW name")
+	}
+	// And nothing is lost in either direction.
+	if got["s2"].Title != "ours only" {
+		t.Errorf("s2 = %q, want this run's own entry kept", got["s2"].Title)
+	}
+	if got["s3"].Title != "theirs only" {
+		t.Errorf("s3 = %q, want the other run's entry recovered", got["s3"].Title)
+	}
+}
+
+// Ours wins when neither side can prove which is fresher.
+//
+// No recorded time on either entry means no basis for preferring theirs, and this run at least
+// knows where its own value came from. Also the pre-upgrade shape: entries written before
+// LogModTime existed carry the zero time.
+func TestRecoverConcurrentEntries_KeepsOursWhenNeitherIsComparable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	ours := map[string]SessionMetadata{
+		"s1": {Title: "ours"},
+		"s2": {Title: "ours only"},
+	}
+	onDisk := map[string]SessionMetadata{
+		"s1": {Title: "theirs"},
+		"s3": {Title: "theirs only"},
+	}
+	if err := SaveMetadata(path, onDisk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoverConcurrentEntries(path, ours); err != nil {
+		t.Fatal(err)
+	}
+	got := readMetadataFile(t, path)
+	if got["s1"].Title != "ours" {
+		t.Errorf("s1 = %q, want %q when neither entry carries a time", got["s1"].Title, "ours")
+	}
+	if got["s3"].Title != "theirs only" {
+		t.Errorf("s3 = %q, want the other run's entry recovered anyway", got["s3"].Title)
+	}
+}
+
+// Two Harvests running at once lose nothing, driven as real OS processes.
+//
+// A SUBPROCESS test because the race is between processes, not goroutines: the window is one run's
+// read-modify-rename interleaving with another's, and -race sees nothing because there is no shared
+// memory to instrument. In-process goroutines would exercise the same functions but not the same
+// hazard — os.Rename is what makes the last writer total.
+//
+// Each child harvests a config dir only IT has, so a correct outcome is the union: every session
+// from both trees present afterwards. Any entry missing means one rename clobbered the other's work.
+//
+// Deliberately more children than the two the comment on recoverConcurrentEntries reasons about,
+// and repeated, because a single pair passes by luck often enough to be a useless regression test.
+func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
+	if os.Getenv("CLAUDE_HARVEST_CHILD") != "" {
+		// Child: harvest the dir named for us, then exit. Runs before any test does.
+		return
+	}
+	if testing.Short() {
+		t.Skip("spawns subprocesses")
+	}
+
+	// THE WINDOW HAS TO BE WIDE ENOUGH TO HIT. A harvest of a one-file tree takes ~3ms while
+	// spawning a process takes tens of ms, so children released "together" in fact run one after
+	// another and every entry survives no matter what the recovery pass does — the first version of
+	// this test passed with recovery deleted outright. Each child therefore gets a tree big enough
+	// that its read-modify-rename spans the others' spawn latency: the scan is the slow part, so
+	// bulk in the transcripts is what buys the overlap.
+	const (
+		children   = 6
+		padLines   = 400
+		padPerLine = 4 << 10
+	)
+	pad := strings.Repeat("y", padPerLine)
+
+	for attempt := 0; attempt < 3; attempt++ {
+		home := t.TempDir()
+		dirs := make([]string, children)
+		for i := range dirs {
+			dirs[i] = filepath.Join(t.TempDir(), fmt.Sprintf("claude-%d", i))
+			lines := make([]string, 0, padLines+1)
+			for j := 0; j < padLines; j++ {
+				// Lines the title scan must read past. "cwd" makes each one a line
+				// titleFromTranscript actually parses rather than skips on the byte test.
+				lines = append(lines, fmt.Sprintf(`{"type":"user","cwd":"/w/%s"}`, pad))
+			}
+			lines = append(lines, fmt.Sprintf(`{"type":"ai-title","aiTitle":"title %d"}`, i))
+			writeSessionTranscript(t, filepath.Join(dirs[i], "projects", "-p"),
+				fmt.Sprintf("sess-%d.jsonl", i), lines...)
+		}
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range dirs {
+			wg.Add(1)
+			go func(dir string) {
+				defer wg.Done()
+				cmd := exec.Command(os.Args[0], "-test.run=TestHarvest_ConcurrentRunsLoseNothing")
+				cmd.Env = append(os.Environ(),
+					"CLAUDE_HARVEST_CHILD="+dir,
+					"HOME="+home, "USERPROFILE="+home,
+				)
+				// Started BEFORE the barrier so the spawn cost is paid in parallel; the barrier
+				// then releases the harvests themselves as close together as this can manage.
+				if err := cmd.Start(); err != nil {
+					t.Errorf("spawning child for %s: %v", dir, err)
+					return
+				}
+				<-start
+				if err := cmd.Wait(); err != nil {
+					t.Errorf("child for %s failed: %v", dir, err)
+				}
+			}(dirs[i])
+		}
+		close(start)
+		wg.Wait()
+
+		path := filepath.Join(home, SessionMetadataRel)
+		got := readMetadataFile(t, path)
+		for i := range dirs {
+			id := fmt.Sprintf("sess-%d", i)
+			if got[id].Title != fmt.Sprintf("title %d", i) {
+				t.Fatalf("attempt %d: %s missing or wrong after %d concurrent harvests: %q (file holds %d of %d)",
+					attempt, id, children, got[id].Title, len(got), children)
+			}
+		}
+	}
+}
+
+// TestMain lets the test above re-enter this binary as a harvester.
+func TestMain(m *testing.M) {
+	if dir := os.Getenv("CLAUDE_HARVEST_CHILD"); dir != "" {
+		if _, err := Harvest(Options{ConfigDir: dir, Merge: true}); err != nil {
+			fmt.Fprintln(os.Stderr, "child harvest:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
 }

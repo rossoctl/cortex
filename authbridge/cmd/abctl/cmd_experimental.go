@@ -55,6 +55,13 @@ metadata for anything else it had — another config directory, or a session who
 transcript Claude Code has since pruned. --merge=false rebuilds the file from this
 harvest alone, which is the way to drop stale entries on purpose.
 
+Two consequences worth knowing. Under the default, an entry stays once written: a session
+whose transcript Claude Code has pruned keeps its title indefinitely, because no later
+harvest sees it again to notice it is gone, so the file grows with sessions-ever-seen.
+--merge=false is what prunes it -- and it drops every entry this run did not see, including
+entries harvested from a different --dir, so running it with a narrower --dir than the one
+that built the file discards the difference.
+
 abctl observe reads this file to name sessions in the sessions table; see
 "abctl observe --help".
 

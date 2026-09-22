@@ -35,6 +35,18 @@ type Options struct {
 	// A harvest only ever sees the sessions its config dir holds, so replacing would
 	// silently drop entries the file already had — another config directory, or a
 	// session whose transcript Claude Code has since pruned.
+	//
+	// THE TWO SIDES OF THAT, both deliberate and neither free:
+	//
+	//   - Merge KEEPS an entry forever once written. A session whose transcript Claude Code has
+	//     pruned keeps its title in the file indefinitely, since no harvest ever sees it again to
+	//     notice it is gone. The file therefore grows monotonically with sessions-ever-seen rather
+	//     than sessions-that-exist. Cheap — one small JSON object per session — but it means the
+	//     file is a cache with no eviction, and `--merge=false` is the only thing that prunes it.
+	//   - Merge:false DROPS every entry this harvest did not see, which includes entries from any
+	//     OTHER config dir and any session pruned since. That is what makes it the way to rebuild a
+	//     wrong file, and also why it is not the default: run it with a --dir narrower than the one
+	//     that produced the file and it discards the difference without asking.
 	Merge bool
 	// Incremental skips transcripts no newer than the entry already recorded for
 	// them, so only recently-touched sessions are parsed.
@@ -112,6 +124,22 @@ func Harvest(opts Options) (Result, error) {
 		return res, err
 	}
 	res.Path = path
+
+	// SERIALISE THE WHOLE READ-MODIFY-WRITE under Merge. This has to cover the transcript scan
+	// too, not just the read and the save: the scan is the slow part, and it is what another run's
+	// rename lands inside. Measured before this existed, two concurrent Harvests over distinct
+	// config dirs left 2 of 6 sessions on disk, and the recovery pass below cannot close it — it is
+	// a single re-read by construction, so it cannot converge when a rename lands inside its own
+	// window. It is kept as the second line of defence, for the unlocked paths.
+	//
+	// Best-effort: a filesystem that cannot flock still harvests, unlocked, on the footing every
+	// platform had before this. Not taken without Merge, where there is nothing to lose — that path
+	// replaces the file by definition.
+	if opts.Merge {
+		if unlock, lerr := lockMetadata(path); lerr == nil {
+			defer unlock()
+		}
+	}
 
 	// Read first, so an incremental harvest knows what it already has. Under Merge this
 	// same map is also what unseen entries are kept from, so it is read once and used
@@ -496,9 +524,30 @@ func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (int
 		return 0, nil
 	}
 	recovered := 0
-	for id, m := range after {
-		if _, ours := meta[id]; !ours {
-			meta[id] = m
+	for id, theirs := range after {
+		ours, have := meta[id]
+		if !have {
+			// An id only they harvested. The original and still the main case.
+			meta[id] = theirs
+			recovered++
+			continue
+		}
+		// A SHARED id, and this is the half that was missing. Taking ours unconditionally wrote
+		// our value back over theirs, so a run holding a STALE title for a session — which under
+		// Incremental is simply the run that skipped that transcript — reverted a rename the other
+		// run had just recorded, and it stayed reverted until the transcript changed again.
+		//
+		// Resolved by LogModTime, the same field the incremental skip compares, so "fresher" means
+		// one thing across this package. Ours wins every tie and every incomparable pair (neither
+		// side carrying a time, which is also what pre-upgrade entries look like): there is no
+		// basis for preferring theirs, and this run at least knows its own provenance.
+		//
+		// Counted in `recovered`, which is what forces the save below — without it the map would
+		// hold the fresher title and never write it. The count is therefore "entries this pass
+		// took from the other run", which covers both shapes; the caller prints it as
+		// "written concurrently by another run", still true of a shared id it just adopted.
+		if theirs.LogModTime.After(ours.LogModTime) {
+			meta[id] = theirs
 			recovered++
 		}
 	}

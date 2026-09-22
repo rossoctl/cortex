@@ -1811,9 +1811,12 @@ func viewTabs(active paneID) string {
 //
 // Columns, not runes, since every caller budgets in columns: a table cell's fitted width, a
 // detail pane's inner width. A rune count is a different number the moment the input is not
-// ASCII — measured, an 11-column budget returned 21 columns of CJK and 14 of emoji — and the
-// callers are not all ASCII-guaranteed: the identity block truncates JWT subject, client and
-// scope claims, which are remote-controlled.
+// ASCII — measured, an 11-column budget returned 21 columns of CJK and 14 of emoji.
+//
+// Three production callers: the sessions table's id cell (twice, both hex-ish ids) and the events
+// pane's identity block, whose `line` helper wraps the JWT `subject`, `client` and `scopes` claims
+// at events_pane.go:1058. Those claims are remote-controlled, so "ASCII in practice" is an
+// observation about today's tokens rather than a guarantee.
 //
 // Latent rather than observed, which is why the fix is a redirect and not a rewrite: on ASCII
 // this is byte-for-byte what the old rune-counting version returned, so no current caller

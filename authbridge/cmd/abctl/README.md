@@ -169,6 +169,17 @@ explicitly:
 ./abctl experimental read-claude-sessions --merge=false  # rebuild, dropping stale entries
 ```
 
+Both the background scan and the default subcommand run **upsert**, so an entry stays once
+written: a session whose transcript Claude Code has pruned keeps its title indefinitely,
+and the file grows with sessions-ever-seen rather than sessions-that-exist. That is what
+`--merge=false` is for — but it drops every entry the run did not see, including entries
+harvested from a different `--dir`, so pass it with the same `--dir` that built the file.
+
+Only the explicit subcommand reports a transcript it could not read to the end. Such a
+session still gets whatever title was found before the stop, which may be an older one, and
+the background scan has nowhere to say so once the viewer owns the screen — so re-run the
+subcommand if a title looks wrong.
+
 ## Running one command through Cortex (`abctl exec`)
 
 `abctl configure claude-code enable` works because Claude Code has a settings
