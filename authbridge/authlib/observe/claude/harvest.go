@@ -998,16 +998,44 @@ func stripHarnessSpans(s string) string {
 	return s
 }
 
-// stripTags removes every <...> span from s, wherever it appears.
+// stripTags NEUTERS every tag-name-shaped span in s: the angle brackets go, the text between them
+// stays.
 //
 // POSITION-INDEPENDENT, which is the point: the shape-by-shape filters above it each guard one
 // placement, and review found a new placement each round. This one cannot be flanked.
 //
-// Unbalanced or nested markup is handled by construction, since it only ever deletes from a "<" to
-// the next ">" and leaves a lone "<" alone. That last part is deliberate: "is 3 < 5 in Go?" and
-// "List<String>" are the shapes a real prompt carries, and the first must survive. The second is
-// sacrificed — a prompt that genuinely quotes a tag loses it — which is the trade this asks for:
-// titles are plain, and a plain title cannot also faithfully quote markup.
+// IT USED TO DELETE THE WHOLE SPAN, and that cost more than the trade it was justified by. The
+// argument was that a plain title cannot also faithfully quote markup, so a prompt quoting a tag
+// loses it — one token, for an unflankable guarantee. Measured, two shapes cost far more than a
+// token:
+//
+//	"compare a<b and c>d"       ->  "compare ad"
+//	"why does List<String> fail"  ->  "why does List fail"
+//
+// Neither is markup. The first is two comparisons, and everything between them matched the
+// name-then-anything rule, so six words of prose went with it. Swallowing a line is not a plain-text
+// guarantee, it is data loss.
+//
+// NOT FIXED HERE, and deliberately: "the <system-reminder> tag is what I mean" still titles as "the".
+// That span carries a KNOWN name, so stripHarnessSpans has already consumed it and everything after
+// it before this pass runs — an unclosed harness tag is treated as running to end-of-string, because
+// "prose <system-reminder>INJECTED payload" has the identical shape and truncating at the ">" would
+// leak the payload. Telling a legitimate mention from an injection means guessing which trailing text
+// is prose, and guessing wrong on the second is the failure this whole file exists to prevent. A
+// truncated title for a prompt about the harness is the cheaper error.
+//
+// So the brackets are what goes. Prose keeps its words, and nothing tag-shaped survives — which is
+// the property that matters downstream and the one the plainness test asserts generically.
+//
+// WHY THIS IS STILL SAFE for the case the deletion existed for: a harness block never reaches here.
+// stripHarnessSpans runs first and removes every name in harnessTagNames TOGETHER WITH ITS BODY, so
+// an injected instruction is already gone. What is left for this pass is markup with a name nobody
+// enumerated, and for that, inert-but-noisy beats swallowing the line:
+//
+//	"<unknown-tag>X</unknown-tag>"  ->  "unknown-tag X /unknown-tag"
+//
+// A lone "<" is still left alone, so "is 3 < 5 in Go?" and "List<String>" both survive whole — the
+// second now intact rather than sacrificed.
 func stripTags(s string) string {
 	if !strings.ContainsRune(s, '<') {
 		return s
@@ -1033,6 +1061,30 @@ func stripTags(s string) string {
 		// and is kept, and each span is judged on its own.
 		if n := tagSpanLen(s[i:]); n > 0 {
 			b.WriteString(s[:i])
+			// THE INTERIOR, UNLESS IT IS ATTRIBUTE SYNTAX. Both extremes lose real text, and the
+			// middle is measurable rather than a guess.
+			//
+			// Keeping everything surfaced machine syntax: `<a href="x>y">link</a>` neutered to
+			// `a href="x>y" link /a`, putting quotes and a ">" back into a title meant to be plain.
+			// Keeping only the NAME was worse — it read `b and c` in "compare a<b and c>d" as a name
+			// plus attributes and dropped "and c", which is the data loss this change exists to
+			// undo.
+			//
+			// Measured on 857 string user turns from two real config dirs: 6615 bare "<name>" spans,
+			// 126 attribute-bearing, and 45 whose interior is prose. EVERY one of the 126 carries an
+			// "=" or a quote (`from="a505…"`, `id="2e21"`, `pasted_content id=…`) and none of the 45
+			// does. So that is the test: an interior holding "=", a double or a single quote is
+			// machine syntax and only the name survives; anything else is text the user may have
+			// typed and is kept whole.
+			//
+			// FENCED WITH SPACES, because the brackets were the only thing separating the span from
+			// its neighbours and dropping them silently joined words: "List<String>" became
+			// "ListString" and "compare a<b and c>d" became "compare ab and cd". Two tokens a reader
+			// can see beats one word that never existed. scrubRunes collapses the runs and trims the
+			// ends, so a fence at the start or between adjacent spans costs nothing.
+			b.WriteByte(' ')
+			b.WriteString(neuteredSpan(s[i : i+n]))
+			b.WriteByte(' ')
 			s = s[i+n:]
 			continue
 		}
@@ -1053,6 +1105,31 @@ func stripTags(s string) string {
 // version of this got wrong by scanning for the first ">" byte. `<a href="x>y">link</a>` closed the
 // span at the ">" in the URL, and the rest — `y">link` — survived into the title as residual
 // markup. Both quote characters are tracked, since either may contain the other unescaped.
+// neuteredSpan returns what survives of the tag span s once its brackets are gone.
+//
+// s must be exactly one span as measured by tagSpanLen. The interior, minus the brackets and any
+// leading slash — except that an interior carrying attribute syntax ("=", a double or single quote)
+// keeps only the tag name, since such an interior is machine-generated rather than typed. See
+// stripTags for the measurement behind that rule.
+//
+//	"<div>"              -> "div"
+//	"</div>"             -> "div"
+//	"<b and c>"          -> "b and c"     (prose between two comparisons)
+//	`<a href="x>y">`     -> "a"           (attribute syntax: name only)
+func neuteredSpan(s string) string {
+	in := strings.TrimPrefix(strings.TrimSuffix(strings.TrimPrefix(s, "<"), ">"), "/")
+	if !strings.ContainsAny(in, `="'`) {
+		return in
+	}
+	if i := strings.IndexFunc(in, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '-' && r != '_'
+	}); i >= 0 {
+		return in[:i]
+	}
+	return in
+}
+
 func tagSpanLen(s string) int {
 	if len(s) < 2 || s[0] != '<' {
 		return 0

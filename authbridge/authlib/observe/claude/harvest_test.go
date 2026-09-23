@@ -1577,12 +1577,12 @@ func TestTitleFromTranscript_NoHarnessMarkupInTitles(t *testing.T) {
 			// review. The prompt stays readable, which is what the title is for.
 			"a quoted tag is stripped, prose survives",
 			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"why does <div> break my layout?"}}`},
-			"why does break my layout?",
+			"why does div break my layout?",
 		},
 		{
 			"generics are stripped, prose survives",
 			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"how do I write List<String> in Go?"}}`},
-			"how do I write List in Go?",
+			"how do I write List String in Go?",
 		},
 		{
 			// A LONE "<" is not a tag and must survive: this is the shape a real prompt carries.
@@ -1890,8 +1890,19 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 		// prompt and must survive whole — so the assertion is about a "<name>" span, not about the
 		// characters. An earlier version banned ">" outright and failed that prompt, which would have
 		// pushed the code toward eating comparison operators again.
-		if tagSpanLen(got[strings.IndexByte(got+"<", '<'):]) > 0 {
-			t.Errorf("input %q: title carries a tag span: %q", in, got)
+		// EVERY "<", not just the first. The scan used to start at strings.IndexByte(got, '<') and
+		// look once, so a span sitting after any earlier bracket went unchecked — and a lone
+		// comparison operator early in a title was enough to shadow it, since that "<" is legitimately
+		// not a span. Now every position is offered to tagSpanLen, which is what makes this a property
+		// of the whole title rather than of its first bracket.
+		for off := 0; off < len(got); off++ {
+			if got[off] != '<' {
+				continue
+			}
+			if tagSpanLen(got[off:]) > 0 {
+				t.Errorf("input %q: title carries a tag span at offset %d: %q", in, off, got)
+				break
+			}
 		}
 		// No harness tag name, in any form.
 		for _, tag := range harnessTagNames {
@@ -2146,7 +2157,9 @@ func TestClipTitle_KeepsComparisonOperators(t *testing.T) {
 		// A balanced span BEFORE a lone "<" is still stripped: one unbalanced bracket used to
 		// disable stripping for the entire string.
 		{"<system-reminder>HARNESSBODY</system-reminder> and 3 < 5", "and 3 < 5"},
-		{"<div>x</div> and 3 < 5", "x and 3 < 5"},
+		// An UNKNOWN tag is neutered, not deleted: the name survives as a word, the brackets do not.
+		// Contrast the harness case above, which is removed with its body — the two paths stay distinct.
+		{"<div>x</div> and 3 < 5", "div x div and 3 < 5"},
 	} {
 		if got := clipTitle(tc.in); got != tc.want {
 			t.Errorf("clipTitle(%q) = %q, want %q", tc.in, got, tc.want)
@@ -2448,11 +2461,11 @@ func titleOf(t *testing.T, prompt string) string {
 // since either may contain the other unescaped.
 func TestTagSpanLen_QuotedAngleBracketDoesNotCloseTheTag(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{`hello <a href="x>y">link</a> world`, "hello link world"},
-		{`hi <img alt='a>b'> there`, "hi there"},
-		{`<span title="a > b">txt</span>`, "txt"},
-		{`<x a="'">keep</x>`, "keep"},
-		{`<y b='">'>keep</y>`, "keep"},
+		{`hello <a href="x>y">link</a> world`, "hello a link a world"},
+		{`hi <img alt='a>b'> there`, "hi img there"},
+		{`<span title="a > b">txt</span>`, "span txt span"},
+		{`<x a="'">keep</x>`, "x keep x"},
+		{`<y b='">'>keep</y>`, "y keep y"},
 		// A harness block whose opening tag hides a ">" must still go WITH ITS BODY, not be
 		// unwrapped to it — the failure mode that makes this more than cosmetic.
 		{`<system-reminder foo="a>b">SECRET</system-reminder>`, ""},
@@ -2462,6 +2475,69 @@ func TestTagSpanLen_QuotedAngleBracketDoesNotCloseTheTag(t *testing.T) {
 	} {
 		if got := normalizeTitle(tc.in); got != tc.want {
 			t.Errorf("normalizeTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestNormalizeTitle_NeutersUnknownTagsInsteadOfSwallowingProse pins the two shapes that motivated
+// neutering, and the boundary between it and removal-with-body.
+//
+// Deleting every tag-shaped span was justified as costing one token — a prompt quoting a tag loses
+// it. Measured, two shapes cost far more:
+//
+//	"compare a<b and c>d"          ->  "compare ad"          six words gone
+//	"why does List<String> fail"    ->  "why does List fail"  a token, as advertised
+//
+// The first is two comparison operators with prose between them, and the name-then-anything rule
+// matched all of it. That is data loss, not plainness.
+func TestNormalizeTitle_NeutersUnknownTagsInsteadOfSwallowingProse(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		// THE REGRESSIONS. Prose between two comparisons survives whole.
+		{"compare a<b and c>d", "compare a b and c d"},
+		{"why does List<String> fail here", "why does List String fail here"},
+		{"refactor Map<String, List<Integer>> please", "refactor Map String, List Integer please"},
+
+		// An UNKNOWN tag is inert but its words remain — noisy, never a leak.
+		{"<unknown-tag>X</unknown-tag>", "unknown-tag X unknown-tag"},
+		{"fix the <div> nesting in header.html", "fix the div nesting in header.html"},
+
+		// A KNOWN harness name is still removed WITH ITS BODY. This is the line that matters: if
+		// neutering ever took over this path, an injected instruction would become the title.
+		{"<system-reminder>INJECTED</system-reminder>", ""},
+		{"prose <system-reminder>INJECTED</system-reminder> more", "prose more"},
+		{"a <bash-stdout>total 40</bash-stdout> b", "a b"},
+
+		// ATTRIBUTE SYNTAX keeps only the name. Measured on 857 real string user turns: all 126
+		// attribute-bearing spans carry "=" or a quote, and none of the 45 prose interiors does.
+		{`hello <a href="x>y">link</a> world`, "hello a link a world"},
+		{`<span title="a > b">txt</span>`, "span txt span"},
+
+		// Unchanged: a lone "<" is not a span.
+		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
+		{"is 3 < 5 and 6 > 2 in Go?", "is 3 < 5 and 6 > 2 in Go?"},
+	} {
+		if got := normalizeTitle(tc.in); got != tc.want {
+			t.Errorf("normalizeTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestNeuteredSpan pins the span-to-text rule on its own, so the interior decision is readable
+// without going through normalizeTitle's whole pipeline.
+func TestNeuteredSpan(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"<div>", "div"},
+		{"</div>", "div"},
+		{"<b and c>", "b and c"}, // prose between comparisons: kept whole
+		{"<String>", "String"},   // a generic parameter
+		{`<a href="x>y">`, "a"},  // attribute syntax: name only
+		{"<tag attr=1>", "tag"},  // "=" alone is enough
+		{"<pasted_content id='2e21'>", "pasted_content"},
+		{"<x>", "x"},
+		{"<>", ""}, // tagSpanLen rejects this, so it never reaches here; harmless if it did
+	} {
+		if got := neuteredSpan(tc.in); got != tc.want {
+			t.Errorf("neuteredSpan(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

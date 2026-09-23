@@ -824,14 +824,46 @@ func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
 		"ship it 🎉",
 	} {
 		m := newTitleModel(t, map[string]SessionMetadata{id: {Title: title}}, id)
+
+		// The WIDTH half, on the helper. This one is real here: sessionTitleCell does the truncation,
+		// so a budget it fails to honour is its own bug.
 		for _, w := range []int{11, 20, 40} {
 			got := m.sessionTitleCell(id, w)
-			if strings.ContainsRune(got, 0x1b) {
-				t.Errorf("title cell carries an escape byte at width %d: %q", w, got)
-			}
 			if lipgloss.Width(got) > w {
 				t.Errorf("title cell is %d columns against a %d-column budget: %q",
 					lipgloss.Width(got), w, got)
+			}
+		}
+
+		// The ESCAPE half, on the STORED CELL — the string this package hands to bubbles.
+		//
+		// It used to assert on sessionTitleCell's return, which makes no Render call, so it held by
+		// construction. The stored row cell is one step further along and is the value that actually
+		// matters for the hazard MaxTitleLen's doc comment describes: bubbles renders every cell as
+		// styles.Cell.Render(style.Render(runewidth.Truncate(value, width, "…"))) — table.go:435 in
+		// v1.0.0 — and runewidth is NOT ANSI-aware. So escape bytes in `value` are charged against
+		// the column budget and a narrow cell collapses to a lone ellipsis. Asserting on the stored
+		// value is asserting on runewidth's input, which is where the contract lives.
+		//
+		// NOT the rendered View(): that string legitimately contains escapes — tableStyles sets
+		// Selected to bold-on-background and DefaultStyles pads every cell — so a scan for 0x1b
+		// there would fail on correct output and says nothing about the title.
+		//
+		// forceColor is above, so lipgloss emits real escapes and a styled title is caught.
+		for _, termW := range []int{80, 100, 200} {
+			m.width = termW
+			m.sessionsTbl.SetColumns(sessionsColumnsFor(termW))
+			m.rebuildSessionsTable()
+			cell := sessionsCell(t, m, titleRow(t, m, id), "TITLE")
+			if strings.ContainsRune(cell, 0x1b) {
+				t.Errorf("stored TITLE cell carries an escape byte at terminal width %d: %q — "+
+					"bubbles measures this value with runewidth, which counts escape bytes against "+
+					"the column budget and would collapse a narrow cell to an ellipsis", termW, cell)
+			}
+			titleW := sessionsColumnWidth(sessionsColumnsFor(termW), "TITLE")
+			if lipgloss.Width(cell) > titleW {
+				t.Errorf("at terminal width %d: stored TITLE cell is %d columns against a "+
+					"%d-column column: %q", termW, lipgloss.Width(cell), titleW, cell)
 			}
 		}
 	}
