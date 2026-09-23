@@ -184,27 +184,30 @@ const localProbeTimeout = 2 * time.Second
 // stub sessions would otherwise linger in the TUI.
 const refreshInterval = 2 * time.Second
 
-// reharvestInterval is how often the NAMESPACES and PODS panes re-read the coding agent's transcripts.
+// pickerHarvestOnce records that the NAMESPACES and PODS panes harvest ONCE PER VISIT, on
+// arrival, with no interval at all. There is no constant here because there is no longer a
+// cadence to name — the visit itself is the trigger.
 //
-// The picker is where someone sits while deciding which pod to open, and a session started in another
-// terminal meanwhile has no title until something re-reads the logs. Three minutes rather than the 2s
-// refresh tick: a harvest walks a transcript tree, and the incremental pass only skips work for files
-// whose mtime has not moved — so polling it at the session cadence would re-stat the whole tree ninety
-// times a minute for a change that arrives every few minutes at best.
+// OPPORTUNISTIC, NOT NEEDED BY THE PANE. This is the reasoning that removed the interval, and
+// it is not the reasoning the interval was written under. The picker is rarely visited, and the
+// only reason to walk a transcript tree from it is that the system is otherwise idle waiting for
+// someone to choose a pod — so the scan is work taken while nothing else wants the machine, not
+// work the pane depends on. Idle-time work belongs at the moment you arrive; pacing it on a
+// clock set by some earlier harvest gets the timing exactly backwards.
 //
-// THIS INTERVAL IS THE NAMESPACES/PODS CADENCE ONLY, and it is no longer the only trigger. The
-// sessions LIST harvests on its own terms — see untitledSettleDelay — because that pane is a
-// picker too: it gains a row whenever a session appears and cannot name it without re-reading
-// the transcripts. An earlier version of this paragraph said the re-harvest was "only while the
-// PICKER is open" because "once a session view is up the titles on screen are already loaded",
-// which was true of a session's own events pane and false of the list it is picked from. That
-// reasoning is what left a new session showing a bare UUID for as long as an operator watched it.
+// A 3-MINUTE INTERVAL USED TO GUARD THIS, and once pickerHarvested existed it did nothing but
+// SUPPRESS the single scan each visit was allowed: entering the picker less than three minutes
+// after any other harvest skipped the visit's only walk, with nothing left to retry it until the
+// operator left and came back after the clock aged out. An earlier version of this paragraph
+// justified the interval by saying a harvest is expensive enough that polling it at the 2s
+// session cadence would re-stat the whole tree ninety times a minute — true, and the reason the
+// interval was right when it was the only thing limiting repeats. pickerHarvested limits them
+// now, so the clock only ever cost a scan.
 //
-// Still a fixed clock here, unlike the sessions list, and that is the remaining gap rather than a
-// decision: lastHarvest is stamped when a harvest STARTS, so nothing on this path consults whether
-// any transcript actually moved. The namespaces and pods panes hold no session rows to key off,
-// which is why they poll instead — not because polling is the better trigger.
-const reharvestInterval = 3 * time.Minute
+// The sessions LIST harvests on entirely separate terms — see untitledSettleDelay and
+// untitledBackoff — because it gains a row whenever a session appears and can tell an unnamed
+// row from a named one. These panes hold no session rows at all, which is why one scan per visit
+// is the most they can sensibly ask for.
 
 // untitledSettleDelay is how long a session must be quiet before an unnamed row triggers a
 // re-harvest, and it is the whole reason this poll is affordable.
@@ -222,10 +225,10 @@ const untitledSettleDelay = 5 * time.Second
 
 // untitledBackoffCap bounds the exponential backoff on fruitless sessions-pane harvests.
 //
-// Three minutes so the worst case lands on reharvestInterval, the cadence the picker panes
-// already considered acceptable for walking this tree — a session that can never be named
-// then costs what the old code spent unconditionally, rather than a tree walk every
-// untitledSettleDelay forever.
+// Three minutes because that is what the picker panes used to spend on this tree
+// unconditionally, back when a fixed interval paced them — a cadence nobody objected to for
+// walking a transcript tree. A session that can never be named now costs that at worst, rather
+// than a tree walk every untitledSettleDelay forever.
 const untitledBackoffCap = 3 * time.Minute
 
 // untitledBackoff is how long to wait before the next sessions-pane harvest, given how many
@@ -1131,10 +1134,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// An incremental harvest returns the whole merged map — every session it has ever seen —
 		// so len(msg.meta) > 0 is true on every call once the file exists, and counting that as
 		// progress would leave the backoff permanently reset and the loop intact.
-		if m.harvestNamedSomething(msg.meta) {
-			m.untitledMisses = 0
-		} else {
-			m.untitledMisses++
+		// SCORED ONLY WHEN THERE ARE ROWS TO SCORE IT AGAINST. harvestNamedSomething asks whether
+		// this result names a session m.sessions holds and could not name, so with that list empty
+		// the answer is false no matter how much the harvest learned. Counting it would move the
+		// backoff on no evidence, and it is the common case rather than a corner: Init harvests
+		// before the session fetch it is batched alongside has returned, and backing out to the
+		// picker sets m.sessions to nil, so every picker-mode harvest lands with zero rows. The
+		// picker now harvests on arrival, which is the normal way in — so without this guard the
+		// ordinary path to a session list would inflate untitledMisses several steps before the
+		// first row was ever drawn, and the backoff would start already widened.
+		//
+		// UNSCOREABLE IS NEITHER, so the counter holds rather than resetting: a harvest nobody
+		// could judge is no reason to believe the tree started producing titles either.
+		if len(m.sessions) > 0 {
+			if m.harvestNamedSomething(msg.meta) {
+				m.untitledMisses = 0
+			} else {
+				m.untitledMisses++
+			}
 		}
 		// Merge, never replace. The harvest sees one agent's config dir, while the map it is
 		// merging into was loaded from a file that may carry entries from another dir or from a
@@ -1210,16 +1227,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// easier to reason about than two with different periods, and this branch already
 			// returns on every tick.
 			//
-			// AT MOST ONCE PER VISIT TO THIS PANE, which is what pickerHarvested tracks. These
-			// panes hold no session rows, so there is nothing here to tell a fruitless walk from
-			// a useful one — the interval alone would keep re-walking the tree for as long as the
-			// operator sits here, and the sessions pane's own backoff cannot help because this
-			// path does not consult it. One walk per visit is what the pane actually needs: it
-			// exists so a session started elsewhere is named by the time the operator scrolls to
-			// it, and that is answered by a single scan. Cleared on entry to the pane, so coming
-			// back later harvests again.
-			if m.harvest != nil && !m.harvesting && !m.pickerHarvested &&
-				time.Since(m.lastHarvest) >= reharvestInterval {
+			// EXACTLY ONCE PER VISIT, ON ARRIVAL, which is what pickerHarvested tracks — there is
+			// no interval here on purpose; see pickerHarvestOnce. These panes hold no session rows,
+			// so nothing here can tell a fruitless walk from a useful one, and the sessions pane's
+			// backoff cannot help because this path does not consult it. Cleared on entry to the
+			// pane, so coming back later harvests again.
+			if m.harvest != nil && !m.harvesting && !m.pickerHarvested {
 				m.harvesting = true
 				m.pickerHarvested = true
 				m.lastHarvest = time.Now()

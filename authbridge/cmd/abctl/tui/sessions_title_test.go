@@ -1082,13 +1082,18 @@ func runBatch(t *testing.T, cmd tea.Cmd) {
 	}
 }
 
-// The session picker re-harvests periodically, so a session started elsewhere gets named.
+// The session picker harvests on arrival, so a session started elsewhere gets named.
 //
-// The picker is the one pane where someone may sit for minutes with nothing refreshing the titles:
-// the 2s tick skips the session fetch there (m.client may be nil), and the harvest previously ran
-// once at Init. A session started in another terminal meanwhile stayed nameless until the viewer was
-// restarted.
-func TestPicker_ReHarvestsOnAnInterval(t *testing.T) {
+// The picker is the one pane where someone may sit with nothing refreshing the titles: the 2s tick
+// skips the session fetch there (m.client may be nil), and the harvest once ran only at Init, so a
+// session started in another terminal stayed nameless until the viewer was restarted.
+//
+// ON ARRIVAL, NOT ON AN INTERVAL, which is what this test was renamed from. The interval it used to
+// assert has been removed: once pickerHarvested capped the pane at one scan per visit, the clock
+// could only SUPPRESS that scan — entering the picker soon after any other harvest skipped the
+// visit's only walk. What remains worth pinning here is the in-flight stacking guard, which is why
+// that part of the test is unchanged.
+func TestPicker_HarvestsOnArrival(t *testing.T) {
 	newPicker := func(harvest HarvestFunc) *model {
 		m := newTitleModel(t, map[string]SessionMetadata{})
 		m.pane = paneNamespaces
@@ -1101,38 +1106,28 @@ func TestPicker_ReHarvestsOnAnInterval(t *testing.T) {
 		return map[string]SessionMetadata{"s1": {Title: "found later"}}, nil
 	}
 
-	// Not yet due: the stamp is fresh, so the tick only re-arms the timer.
+	// A FRESH STAMP MUST NOT SUPPRESS THE SCAN. This is the removed interval, stated as the
+	// assertion it now fails: lastHarvest is seconds old — as it is on arriving in the picker just
+	// after startup — and the visit's harvest must still run.
 	m := newPicker(harvest)
 	m.lastHarvest = time.Now()
-	if _, cmd := m.Update(refreshTickMsg(time.Now())); cmd == nil {
-		t.Fatal("the refresh ticker was not re-armed")
-	}
-	if called != 0 {
-		t.Errorf("harvested %d times while not due, want 0", called)
-	}
-
-	// Due: the returned command must include the harvest, which we run to observe it.
-	m = newPicker(harvest)
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
 	_, cmd := m.Update(refreshTickMsg(time.Now()))
 	if cmd == nil {
-		t.Fatal("no command returned when a re-harvest was due")
+		t.Fatal("the refresh ticker was not re-armed")
 	}
-	// tea.Batch returns a BatchMsg holding the member commands rather than running them, so the
-	// members have to be invoked to reach the harvest closure.
 	runBatch(t, cmd)
-	if called == 0 {
-		t.Error("a due re-harvest did not run the harvester")
+	if called != 1 {
+		t.Fatalf("harvested %d times on arrival with a fresh stamp, want 1", called)
 	}
 	if !m.harvesting {
 		t.Error("the in-flight guard was not set, so a second tick could stack a harvest")
 	}
 
-	// While one is in flight, a further tick must not start another — even once the interval has
-	// elapsed again. Backdating the stamp is what makes this test the guard's: without it the tick is
-	// simply not due, so the assertion passed with the guard removed (confirmed by mutation).
+	// While one is in flight, a further tick must not start another. Clearing pickerHarvested is
+	// what makes this test the GUARD's: leaving it set would stop the second tick by itself, so the
+	// assertion would pass with the in-flight check removed.
 	before := called
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	m.pickerHarvested = false
 	_, stacked := m.Update(refreshTickMsg(time.Now()))
 	runBatch(t, stacked)
 	if called != before {
@@ -1150,7 +1145,6 @@ func TestPicker_ReHarvestsOnAnInterval(t *testing.T) {
 
 	// A nil harvester (--skip-claude-metadata) must never be called.
 	m = newPicker(nil)
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
 	if _, c := m.Update(refreshTickMsg(time.Now())); c == nil {
 		t.Error("the ticker must stay armed even with no harvester")
 	}
@@ -1481,7 +1475,6 @@ func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 		return nil, nil
 	}
 
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
 	_, cmd := m.Update(refreshTickMsg(time.Now()))
 	runBatch(t, cmd)
 	if called != 1 {
@@ -1489,8 +1482,7 @@ func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 	}
 	m.Update(harvestedMsg{})
 
-	// A second due tick in the same visit must not walk the tree again.
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	// A second tick in the same visit must not walk the tree again.
 	_, again := m.Update(refreshTickMsg(time.Now()))
 	runBatch(t, again)
 	if called != 1 {
@@ -1502,7 +1494,6 @@ func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 	m.pane = paneSessions
 	m.Update(refreshTickMsg(time.Now()))
 	m.pane = paneNamespaces
-	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
 	_, revisit := m.Update(refreshTickMsg(time.Now()))
 	runBatch(t, revisit)
 	if called != 2 {
@@ -1545,21 +1536,78 @@ func TestUntitledSettled_BlankAndUnknownRows(t *testing.T) {
 	}
 }
 
-// TestHarvestNamedSomething_IgnoresAlreadyKnown pins the backoff's notion of progress.
+// TestHarvestNamedSomething_JudgesOnlyRowsOnScreen pins the backoff's notion of progress.
 //
-// An incremental harvest returns the whole MERGED map — every session it has ever seen, not just
-// what this pass parsed — so len(meta) > 0 is true on every call once the file exists. Counting
-// that as progress would leave the backoff permanently reset and the retry loop intact.
-func TestHarvestNamedSomething_IgnoresAlreadyKnown(t *testing.T) {
+// Two ways to get this wrong, and the function had the second one. len(meta) > 0 is true on every
+// call once the file exists, because an incremental harvest returns the whole MERGED map. Walking
+// that map and asking "is this id unnamed here?" fails the same way for a subtler reason: the map
+// carries every session the harvester has ever seen — ~180 on a laptop against the few a pod serves
+// — so the first historical id the model has no metadata for answers yes, every time, pinning the
+// backoff at zero.
+func TestHarvestNamedSomething_JudgesOnlyRowsOnScreen(t *testing.T) {
 	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: "known"}}, "s1")
 
 	if m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "known"}}) {
 		t.Error("a map repeating a title this model already had counted as progress")
 	}
-	if m.harvestNamedSomething(map[string]SessionMetadata{"s2": {Title: "  "}}) {
+	// THE HISTORICAL-SESSIONS CASE. "old" is not a row on screen, so naming it is not progress
+	// toward naming what the viewer is showing — this is the assertion that fails if the function
+	// goes back to iterating the result map.
+	if m.harvestNamedSomething(map[string]SessionMetadata{"old": {Title: "some session from last week"}}) {
+		t.Error("a title for a session that is not on screen counted as progress")
+	}
+
+	// An unnamed row on screen, which the harvest can make progress on.
+	m = newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	if m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "  "}}) {
 		t.Error("a blank title counted as naming a session")
 	}
-	if !m.harvestNamedSomething(map[string]SessionMetadata{"s2": {Title: "new name"}}) {
-		t.Error("a title for a session this model could not name was not counted")
+	if m.harvestNamedSomething(map[string]SessionMetadata{"old": {Title: "elsewhere"}}) {
+		t.Error("a title for the wrong session counted as naming the row on screen")
+	}
+	if !m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "new name"}}) {
+		t.Error("a title for the unnamed row on screen was not counted")
+	}
+}
+
+// TestHarvestedMsg_UnscoreableHarvestsDoNotMoveTheBackoff pins fix A.
+//
+// harvestNamedSomething asks whether a result names a session m.sessions holds and could not name,
+// so with that list EMPTY the answer is false however much the harvest learned. Counting it moved
+// the backoff on no evidence — and it is the ordinary path, not a corner: Init harvests before the
+// session fetch batched alongside it returns, backing out to the picker sets m.sessions to nil, and
+// the picker harvests on arrival. So the normal route into a session list used to inflate
+// untitledMisses several steps before the first row was drawn, starting the backoff already widened.
+func TestHarvestedMsg_UnscoreableHarvestsDoNotMoveTheBackoff(t *testing.T) {
+	// A harvest arriving with no session rows: neither progress nor a miss.
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.sessions = nil
+	for i := 0; i < 3; i++ {
+		m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "learned plenty"}}})
+	}
+	if m.untitledMisses != 0 {
+		t.Errorf("harvests with no rows to judge moved the counter to %d, want 0", m.untitledMisses)
+	}
+
+	// HOLDS, rather than resetting. A harvest nobody could judge is no evidence the tree started
+	// producing titles either, so an already-widened backoff must not be cleared by one.
+	m.untitledMisses = 4
+	m.sessions = nil
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "learned plenty"}}})
+	if m.untitledMisses != 4 {
+		t.Errorf("an unscoreable harvest reset the counter to %d, want it held at 4", m.untitledMisses)
+	}
+
+	// With rows present the scoring is unchanged — the guard narrows when counting happens, not
+	// what counting means.
+	m = newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: time.Now()}}
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"other": {Title: "not on screen"}}})
+	if m.untitledMisses != 1 {
+		t.Errorf("a fruitless harvest with rows present left untitledMisses = %d, want 1", m.untitledMisses)
+	}
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "named"}}})
+	if m.untitledMisses != 0 {
+		t.Errorf("a harvest that named a visible row left untitledMisses = %d, want 0", m.untitledMisses)
 	}
 }

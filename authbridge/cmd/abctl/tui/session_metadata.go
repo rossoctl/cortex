@@ -163,15 +163,15 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 // untitledSettled reports whether some session on screen has no title yet and has been
 // quiet long enough that its transcript is probably complete on disk.
 //
-// THE SESSIONS LIST IS A PICKER TOO, which is what this exists for. reharvestInterval was
-// written for the namespaces/pods panes on the reasoning that "once a session view is
-// up the titles on screen are already loaded" — true of a session's own events pane, and
-// false of the list you choose a session FROM, which gains a row whenever a new session
-// appears and cannot name it without re-reading the transcripts.
+// THE SESSIONS LIST IS A PICKER TOO, which is what this exists for. The namespaces/pods
+// re-harvest was written on the reasoning that "once a session view is up the titles on
+// screen are already loaded" — true of a session's own events pane, and false of the list
+// you choose a session FROM, which gains a row whenever a new session appears and cannot
+// name it without re-reading the transcripts.
 //
 // KEYED OFF TRAFFIC, not off a wall clock. A session with events has a transcript being
 // appended to, so a harvest triggered by its own updates arrives seconds after the title
-// becomes readable instead of up to reharvestInterval later. The settle delay is what makes
+// becomes readable instead of minutes later. The settle delay is what makes
 // this cheap: without it every event on a still-unnamed session would trigger a scan, and
 // with it a busy session is harvested once, after it pauses.
 //
@@ -213,19 +213,25 @@ func (m *model) sessionHasTitle(id string) bool {
 	return strings.TrimSpace(m.sessionTitle(id)) != ""
 }
 
-// harvestNamedSomething reports whether a finished harvest named a session this model could not
-// name before.
+// harvestNamedSomething reports whether a finished harvest named a session that is ON SCREEN and
+// was unnamed.
 //
-// NOT len(meta) > 0. An incremental harvest returns the whole merged map — every session it has
-// ever seen, not just what this pass parsed — so a non-empty result says nothing about progress
-// and would keep the backoff permanently reset. The question is whether any entry names a session
-// that was unnamed here, which is also what the operator would call progress.
+// ITERATES m.sessions, NOT THE RESULT MAP, and that distinction is the whole function. An
+// incremental harvest returns the whole merged map — every session it has ever seen, roughly 180
+// entries on a developer laptop against the handful a pod is currently serving. Walking the result
+// and asking "is this id unnamed here?" therefore answers yes on the first historical session the
+// model has no metadata for, on every single call, which pins the backoff at zero and defeats it
+// just as surely as len(meta) > 0 would. An earlier version did exactly that.
+//
+// So the question is asked from the screen inward: for each row the viewer is showing and cannot
+// name, does this result name it? That is also what an operator would call progress — a title
+// arriving for a session nobody is looking at is not why the backoff exists.
 func (m *model) harvestNamedSomething(meta map[string]SessionMetadata) bool {
-	for id, md := range meta {
-		if strings.TrimSpace(sanitizeLabel(md.Title)) == "" {
+	for _, sess := range m.sessions {
+		if m.sessionHasTitle(sess.ID) {
 			continue
 		}
-		if !m.sessionHasTitle(id) {
+		if strings.TrimSpace(sanitizeLabel(meta[sess.ID].Title)) != "" {
 			return true
 		}
 	}
