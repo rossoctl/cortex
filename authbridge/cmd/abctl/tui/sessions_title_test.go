@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/observe/claude"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
@@ -830,6 +831,130 @@ func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
 				t.Errorf("title cell is %d columns against a %d-column budget: %q",
 					lipgloss.Width(got), w, got)
 			}
+		}
+	}
+}
+
+// THE CROSS-MODULE CONTRACT: the harvester's rune cap is safe only because this package
+// re-truncates by display width.
+//
+// Each side was tested independently and neither held the relationship. authlib/observe/claude can
+// assert only that MaxTitleLen counts runes — it has no width library — and this package asserts only
+// that cells fit their column. So deleting the renderer's truncation broke no test, while the
+// harvester's own comment warned that 80 runes of CJK occupy 160 columns.
+//
+// This closes it from the side that can see both: it takes a title at exactly the harvester's cap,
+// in the worst case for the mismatch, and requires the rendered cell to fit a narrow column anyway.
+// It fails if either the cap stops being a rune count or the renderer stops measuring in columns.
+func TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures(t *testing.T) {
+	forceColor(t)
+
+	// A title the harvester would emit at its limit: MaxTitleLen runes of CJK, which is twice that
+	// in display columns.
+	title := strings.Repeat("日", claude.MaxTitleLen)
+	if n := len([]rune(title)); n != claude.MaxTitleLen {
+		t.Fatalf("fixture is %d runes, want %d", n, claude.MaxTitleLen)
+	}
+	if w := lipgloss.Width(title); w <= claude.MaxTitleLen {
+		t.Fatalf("fixture is %d columns for %d runes — it no longer exercises the mismatch, so "+
+			"either MaxTitleLen has become a width budget or this fixture needs wider characters",
+			w, claude.MaxTitleLen)
+	}
+
+	const id = "s1"
+	m := newTitleModel(t, map[string]SessionMetadata{id: {Title: title}}, id)
+	for _, w := range []int{11, 14, 20, 40} {
+		got := m.sessionTitleCell(id, w)
+		if cw := lipgloss.Width(got); cw > w {
+			t.Errorf("a %d-rune title rendered %d columns into a %d-column cell: %q — the "+
+				"harvester's cap is a RUNE count, so this package must re-truncate by width",
+				claude.MaxTitleLen, cw, w, got)
+		}
+	}
+
+	// And the same through the rendered row, so the guard covers what a reader actually sees rather
+	// than only the cell helper.
+	//
+	// The budget has to come from the model's OWN width. An earlier version of this test installed a
+	// 100-column header while the fixture model was 200 wide, then asserted against the 100-column
+	// budget — rebuildSessionsTable reads the width it is about to install, so it correctly produced
+	// a 107-column cell and the test called that a bug. The failure was in the fixture.
+	for _, termW := range []int{80, 100, 200} {
+		m.width = termW
+		m.sessionsTbl.SetColumns(sessionsColumnsFor(termW))
+		m.rebuildSessionsTable()
+		titleW := sessionsColumnWidth(sessionsColumnsFor(termW), "TITLE")
+		cell := sessionsCell(t, m, titleRow(t, m, id), "TITLE")
+		if lipgloss.Width(cell) > titleW {
+			t.Errorf("at terminal width %d: rendered TITLE cell is %d columns against a %d-column "+
+				"column: %q", termW, lipgloss.Width(cell), titleW, cell)
+		}
+	}
+}
+
+// A slash command keeps its COMMAND NAME; a filesystem path keeps its leaf.
+//
+// The discriminator was a bare leading "/", which was the whole story until session titles started
+// coming from the user's own prompts. A typed slash command begins with one too, so
+// "/review <url> carefully" was left-truncated to "…pull/1101 carefully" — discarding the command
+// name, the one part a reader needs, and inverting this file's own rule that prose reads
+// left-to-right.
+func TestSessionTitleCell_SlashCommandIsNotAPath(t *testing.T) {
+	forceColor(t)
+	const id = "s1"
+	for _, tc := range []struct {
+		name, title string
+		keepHead    bool
+	}{
+		{"slash command with args", "/review https://github.com/rossoctl/cortex/pull/1101 carefully", true},
+		{"slash command with a path arg", "/fix-ocr some/path.md and then report", true},
+		{"slash command alone", "/clear", true},
+		// A real cwd: more than one segment, no space before the second "/", so the leaf is what
+		// identifies it and left-truncation is right.
+		{"absolute path", "/Users/somebody/src/cortex/.worktrees/alpha/authbridge", false},
+		{"short absolute path", "/tmp/build/output/artifacts/final", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
+			const w = 20
+			got := m.sessionTitleCell(id, w)
+			if lipgloss.Width(got) > w {
+				t.Fatalf("cell is %d columns against a %d-column budget: %q", lipgloss.Width(got), w, got)
+			}
+			if tc.keepHead {
+				if !strings.HasPrefix(got, tc.title[:5]) {
+					t.Errorf("command name lost: %q from %q", got, tc.title)
+				}
+				if strings.HasPrefix(got, "…") {
+					t.Errorf("a slash command was truncated from the LEFT: %q", got)
+				}
+				return
+			}
+			if !strings.HasSuffix(got, tc.title[len(tc.title)-5:]) {
+				t.Errorf("path leaf lost: %q from %q", got, tc.title)
+			}
+		})
+	}
+}
+
+// looksLikePath itself, so the rule is pinned independently of how a cell renders.
+func TestLooksLikePath(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"/Users/somebody/src/cortex", true},
+		{"/tmp/build/out", true},
+		{"/a/b", true},
+		{"/review some/path.md", false}, // a space before the second slash
+		{"/clear", false},               // one segment
+		{"/fix-ocr", false},
+		{"how do I build abctl?", false},
+		{"src/cortex/authbridge", false}, // no leading slash
+		{"", false},
+	} {
+		if got := looksLikePath(tc.in); got != tc.want {
+			t.Errorf("looksLikePath(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }

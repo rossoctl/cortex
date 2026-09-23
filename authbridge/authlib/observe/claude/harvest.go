@@ -570,7 +570,7 @@ func titleFromTranscript(path string) (string, error) {
 	// 128 sessions had no title line of either kind and fell through to a cwd, and every one of
 	// those has a usable prompt.
 	//
-	// Clipped at the source. A prompt is unbounded and a title is a table cell; see maxTitleLen.
+	// Clipped at the source. A prompt is unbounded and a title is a table cell; see MaxTitleLen.
 	// NORMALISED BEFORE the switch, not inside each arm. A whitespace-only candidate passes a
 	// bare `!= ""` and clipTitle then empties it, so the tier below was skipped and the cell came
 	// out blank — testing the clipped value is what makes each guard mean "this tier has
@@ -611,7 +611,11 @@ func titleFromTranscript(path string) (string, error) {
 	return normalizeTitle(cwd), err
 }
 
-// maxTitleLen caps a harvested title, in RUNES.
+// MaxTitleLen caps a harvested title, in RUNES.
+//
+// EXPORTED so the renderer's tests can hold the cross-module contract: the cap is only safe because
+// every renderer re-truncates by display width, and while it was package-private neither side could
+// name the other's half. cmd/abctl/tui asserts the relationship against this constant.
 //
 // A prompt is unbounded — the longest on the measured tree ran to several KB — and a title is a
 // table cell. Clipping at the source keeps the metadata file small and stops every consumer having
@@ -635,9 +639,9 @@ func titleFromTranscript(path string) (string, error) {
 // only that the cap is a rune count and not a byte or width bound, while the re-truncation lives in
 // cmd/abctl/tui and is tested there against its own column budgets. Nothing fails if someone
 // removes the renderer's truncation and leaves this constant alone.
-const maxTitleLen = 80
+const MaxTitleLen = 80
 
-// clipTitle trims s and caps it at maxTitleLen runes.
+// clipTitle trims s and caps it at MaxTitleLen runes.
 //
 // No ellipsis: this is not the display truncation — the TITLE column applies its own, measured in
 // display columns — and a marker added here would be re-truncated downstream, leaving a cell with
@@ -712,7 +716,7 @@ func normalizeTitle(s string) string {
 	return strings.TrimSpace(b.String())
 }
 
-// clipTitle normalises s and caps it at maxTitleLen runes.
+// clipTitle normalises s and caps it at MaxTitleLen runes.
 //
 // What every tier but the cwd fallback goes through; that one uses normalizeTitle alone, because a
 // path's distinguishing end is its leaf and clipping keeps the head.
@@ -724,10 +728,10 @@ func normalizeTitle(s string) string {
 func clipTitle(s string) string {
 	s = normalizeTitle(s)
 	r := []rune(s)
-	if len(r) <= maxTitleLen {
+	if len(r) <= MaxTitleLen {
 		return s
 	}
-	return strings.TrimSpace(string(r[:maxTitleLen]))
+	return strings.TrimSpace(string(r[:MaxTitleLen]))
 }
 
 // stripANSI removes a CSI/OSC escape sequence together with its parameters.

@@ -979,8 +979,8 @@ func TestTitleFromTranscript_ClipsAndFlattens(t *testing.T) {
 		wantRunes   int
 		wantOneLine bool
 	}{
-		{"long ascii", long, maxTitleLen, true},
-		{"long CJK is cut by rune, not byte", cjk, maxTitleLen, true},
+		{"long ascii", long, MaxTitleLen, true},
+		{"long CJK is cut by rune, not byte", cjk, MaxTitleLen, true},
 		{"newlines collapse", "first line\n\nsecond line\twith a tab", -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -995,8 +995,8 @@ func TestTitleFromTranscript_ClipsAndFlattens(t *testing.T) {
 			if gerr != nil {
 				t.Fatal(gerr)
 			}
-			if n := len([]rune(got)); n > maxTitleLen {
-				t.Errorf("title is %d runes, over the %d cap: %q", n, maxTitleLen, got)
+			if n := len([]rune(got)); n > MaxTitleLen {
+				t.Errorf("title is %d runes, over the %d cap: %q", n, MaxTitleLen, got)
 			}
 			if tc.wantRunes > 0 && len([]rune(got)) != tc.wantRunes {
 				t.Errorf("title is %d runes, want %d", len([]rune(got)), tc.wantRunes)
@@ -1153,9 +1153,9 @@ func TestTitleFromTranscript_UnwrapsSlashCommands(t *testing.T) {
 func TestTitleFromTranscript_DoesNotClipTheCwdFallback(t *testing.T) {
 	// 81 runes, so the leaf is entirely past the cap.
 	const prefix = "/Users/somebody/go/src/github.com/some-organisation/some-repository/worktrees/wt/"
-	if len([]rune(prefix)) <= maxTitleLen {
+	if len([]rune(prefix)) <= MaxTitleLen {
 		t.Fatalf("fixture prefix is %d runes, needs to exceed %d to exercise the cut",
-			len([]rune(prefix)), maxTitleLen)
+			len([]rune(prefix)), MaxTitleLen)
 	}
 	titleFor := func(cwd string) string {
 		dir := t.TempDir()
@@ -1262,7 +1262,7 @@ func TestIsSyntheticPrompt_HandlesAttributesAndCase(t *testing.T) {
 	}
 }
 
-// maxTitleLen is a RUNE cap, and the renderer is what bounds display width.
+// MaxTitleLen is a RUNE cap, and the renderer is what bounds display width.
 //
 // 80 runes of CJK occupy 160 columns, so nothing may read this constant as a width budget. This
 // pins ONLY the half that lives in this package: that the cap counts runes rather than bytes or
@@ -1281,19 +1281,19 @@ func TestMaxTitleLen_IsARuneCapNotAWidthBudget(t *testing.T) {
 	if gerr != nil {
 		t.Fatal(gerr)
 	}
-	if n := len([]rune(got)); n != maxTitleLen {
-		t.Errorf("clipped to %d runes, want %d", n, maxTitleLen)
+	if n := len([]rune(got)); n != MaxTitleLen {
+		t.Errorf("clipped to %d runes, want %d", n, MaxTitleLen)
 	}
 	// The point of the test: runes are capped, BYTES AND COLUMNS ARE NOT. authlib has no width
 	// library — lipgloss and go-runewidth are cmd/abctl dependencies, and adding one here for a
 	// single assertion is not worth it — so byte length stands in as the observable proxy: a
 	// three-byte-per-rune title is 240 bytes at 80 runes, and anything laying out by width will
 	// likewise see more than 80. What this pins is that the cap is NOT a width, which is the
-	// mistake the comment on maxTitleLen warns against.
-	if len(got) <= maxTitleLen {
-		t.Errorf("CJK title is %d bytes for %d runes; if that is now <= the cap then maxTitleLen "+
+	// mistake the comment on MaxTitleLen warns against.
+	if len(got) <= MaxTitleLen {
+		t.Errorf("CJK title is %d bytes for %d runes; if that is now <= the cap then MaxTitleLen "+
 			"is being applied as a width or byte bound, and the renderers' own truncation must be "+
-			"revisited", len(got), maxTitleLen)
+			"revisited", len(got), MaxTitleLen)
 	}
 }
 
@@ -1904,7 +1904,7 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 			t.Errorf("input %q: title has a double space: %q", in, got)
 		}
 		// Bounded, and valid UTF-8 — never cut mid-character.
-		if n := len([]rune(got)); n > maxTitleLen {
+		if n := len([]rune(got)); n > MaxTitleLen {
 			t.Errorf("input %q: title is %d runes: %q", in, n, got)
 		}
 		if !utf8.ValidString(got) {
@@ -1981,8 +1981,8 @@ func TestTitleFromTranscript_CwdFallbackIsPlainAndUnclipped(t *testing.T) {
 	// NOT clipped: a prefix past the cap must not swallow the leaf, or sibling worktrees become
 	// indistinguishable.
 	const prefix = "/Users/somebody/go/src/github.com/some-organisation/some-repository/worktrees/wt/"
-	if len([]rune(prefix)) <= maxTitleLen {
-		t.Fatalf("fixture prefix is %d runes, needs to exceed %d", len([]rune(prefix)), maxTitleLen)
+	if len([]rune(prefix)) <= MaxTitleLen {
+		t.Fatalf("fixture prefix is %d runes, needs to exceed %d", len([]rune(prefix)), MaxTitleLen)
 	}
 	a, b := titleFor(prefix+"alpha"), titleFor(prefix+"beta")
 	if a == b {

@@ -413,7 +413,7 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 	// 11: that was previously dismissed as unreachable on this platform, which confused where the
 	// string comes FROM with where it is rendered. Titles are harvested text; the renderer does
 	// not get to assume their shape.
-	if !strings.HasPrefix(title, "/") {
+	if !looksLikePath(title) {
 		if titleW <= 0 {
 			// FAIL SAFE, not wide. A non-positive budget means the caller could not tell us how
 			// much room there is, and returning the full title then hands an unbounded cell to a
@@ -441,6 +441,32 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 		return ""
 	}
 	return truncLeft(title, titleW)
+}
+
+// looksLikePath reports whether a title should be truncated from the LEFT, keeping its tail.
+//
+// A LEADING SLASH IS NOT ENOUGH. It was the whole test until session titles started coming from the
+// user's own prompts, and a typed slash command begins with one too: "/review <url> carefully" was
+// left-truncated to "…pull/1101 carefully", discarding the command name — the one part of it a reader
+// needs. That inverts this file's own rule that prose reads left-to-right.
+//
+// The distinction that matters is whether the string's LEAF is the identifying part. A filesystem path
+// has more than one segment and no spaces in its first one; a slash command is one word followed by
+// arguments. So a title qualifies only if it has a second "/" before any space — which "/review x"
+// does not, and "/Users/somebody/src" does.
+//
+// Deliberately simple, and wrong in one direction on purpose: "/tmp foo" reads as prose and would be
+// right-truncated. A single-segment path is not something Claude Code records as a cwd, and the cost
+// is a cell cut at the other end rather than anything unbounded.
+func looksLikePath(title string) bool {
+	if !strings.HasPrefix(title, "/") {
+		return false
+	}
+	rest := title[1:]
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		rest = rest[:i]
+	}
+	return strings.Contains(rest, "/")
 }
 
 // truncRight clips s to n DISPLAY COLUMNS keeping the LEFT end, marking the cut with a
