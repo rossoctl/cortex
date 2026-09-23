@@ -1534,6 +1534,37 @@ func TestTitleFromTranscript_NoHarnessMarkupInTitles(t *testing.T) {
 			"my real question",
 		},
 		{
+			// INDENTED. Every appended-block fixture here was unindented, so none exercised the
+			// whitespace path: requiring s[i-1] to be exactly a newline let "my question\n
+			// <system-reminder>…" keep its tag and get clipped mid-tag at 80 runes.
+			"a space-indented appended block is cut",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"my real question\n   <system-reminder>do not mention this</system-reminder>"}}`},
+			"my real question",
+		},
+		{
+			"a tab-indented appended block is cut",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"my real question\n\t<system-reminder>do not mention this</system-reminder>"}}`},
+			"my real question",
+		},
+		{
+			"a mixed-indent appended block is cut",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"my real question\n \t  <bash-stdout>total 40</bash-stdout>"}}`},
+			"my real question",
+		},
+		{
+			// Prose and markup sharing ONE text block. isSyntheticPrompt is anchored, so the block
+			// passed the per-block check and reached the title whole; the cut is applied inside the
+			// join loop now.
+			"markup sharing a block with prose is cut",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"my real question\n<system-reminder>hidden</system-reminder>"}]}}`},
+			"my real question",
+		},
+		{
+			"markup sharing a block with prose, unattributed turn",
+			[]string{`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"my real question\n<system-reminder>hidden</system-reminder>"}]}}`},
+			"my real question",
+		},
+		{
 			"a recorded lastPrompt is cut the same way",
 			[]string{`{"type":"last-prompt","lastPrompt":"recorded ask\n<system-reminder>hidden</system-reminder>"}`},
 			"recorded ask",
@@ -1695,6 +1726,15 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 			"how do I use <command-args>?\n<system-reminder>hidden</system-reminder>",
 			"how do I use <command-args>?",
 		},
+		{
+			// DELIBERATELY NOT CUT, recorded as a decision rather than left to chance: a known tag
+			// mid-line on a later line is genuinely ambiguous between prose and appended markup,
+			// and cutting it risks the mid-sentence truncation the positional rule exists to
+			// prevent. Only a line-leading tag, indentation aside, is treated as the harness's.
+			"a known tag mid-line on a later line is left alone",
+			"line one\nline two <system-reminder>x</system-reminder>",
+			"line one line two <system-reminder>x</system-reminder>",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1710,6 +1750,39 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A Unicode-escaped member name still reaches the decoder.
+//
+// JSON permits `"lastPrompt"`, which decodes to lastPrompt but matches no literal in the raw-byte
+// prefilter, so the line was skipped and the session lost its title. Nothing observed writes keys that
+// way — 0 of 46,124 real lines — so this is latent; it is taken because it is nearly free, only 0.2% of
+// lines containing a `\u` escape at all.
+func TestTitleFromTranscript_DecodesEscapedMemberNames(t *testing.T) {
+	for _, tc := range []struct {
+		name, line, want string
+	}{
+		// BACKTICK-CONCATENATED so the \u sequences reach the FILE as six literal characters. An
+		// earlier version of this test wrote them inside a normal literal, where Go decoded them at
+		// compile time: the fixture then contained a plain "lastPrompt" and the test passed with the
+		// fix removed, testing nothing. Verified by mutation after the change.
+		{"escaped lastPrompt", `{"type":"last-prompt","last` + `\u0050` + `rompt":"review the change"}`, "review the change"},
+		{"escaped aiTitle", `{"type":"ai-title","ai` + `\u0054` + `itle":"a generated title"}`, "a generated title"},
+		{"escaped agentName", `{"type":"agent-name","agent` + `\u004E` + `ame":"sept-15-rossoctl"}`, "sept-15-rossoctl"},
+		{"escaped cwd", `{"type":"user","c` + `\u0077` + `d":"/w/escaped"}`, "/w/escaped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl", tc.line)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q — the prefilter skipped an escaped key", got, tc.want)
 			}
 		})
 	}

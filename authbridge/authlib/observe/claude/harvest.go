@@ -470,7 +470,13 @@ func titleFromTranscript(path string) (string, error) {
 			!bytes.Contains(line, []byte(`"agentName"`)) &&
 			!bytes.Contains(line, []byte(`"cwd"`)) &&
 			!bytes.Contains(line, []byte(`"lastPrompt"`)) &&
-			!bytes.Contains(line, []byte(`"role"`)) {
+			!bytes.Contains(line, []byte(`"role"`)) &&
+			// A UNICODE-ESCAPED member name would not match any literal above: JSON permits
+			// `"last\u0050rompt"`, which decodes to lastPrompt but is skipped by a raw-byte scan.
+			// Nothing observed writes keys that way — 0 of 46,124 real lines — so this is latent,
+			// and it is taken only because it is nearly free: just 0.2% of lines contain a `\u`
+			// escape at all, so admitting them costs a decode on one line in five hundred.
+			!bytes.Contains(line, []byte(`\u`)) {
 			continue
 		}
 		var e transcriptMeta
@@ -666,10 +672,18 @@ func promptFromMessage(raw json.RawMessage) (text string, wasString bool) {
 		if isSyntheticPrompt(blk.Text) {
 			continue
 		}
+		// AND WITHIN the block. isSyntheticPrompt is anchored, so a block holding prose followed by
+		// markup — "my question\n<system-reminder>…" as ONE block — passed the check and reached
+		// the title intact. Cut here rather than after the join, so a later block cannot be
+		// mistaken for the appended markup of an earlier one.
+		text := cutTrailingHarness(blk.Text)
+		if text == "" {
+			continue
+		}
 		if b.Len() > 0 {
 			b.WriteByte(' ')
 		}
-		b.WriteString(blk.Text)
+		b.WriteString(text)
 	}
 	return b.String(), false
 }
@@ -898,10 +912,27 @@ func cutTrailingHarness(s string) string {
 			// use" — which is the very outcome the named set was chosen to avoid, and the comment
 			// above claimed it did.
 			//
+			// LEADING WHITESPACE STILL COUNTS AS LINE-LEADING. Requiring s[i-1] to be exactly a
+			// newline let an INDENTED block through: "my question\n   <system-reminder>…" kept the
+			// tag and was clipped mid-tag at 80 runes, which is the failure this function's own doc
+			// describes. Only spaces and tabs are skipped, so the constraint still holds against
+			// anything with real text before it on the line.
+			//
+			// A known tag mid-line on a LATER line — "line one\nline two <system-reminder>x" — is
+			// deliberately left alone: it is genuinely ambiguous between prose and appended markup,
+			// and cutting it would risk the mid-sentence truncation the positional rule exists to
+			// prevent.
+			//
 			// Every occurrence is examined, not just the first: a prompt may mention a tag inline
 			// and still have a real appended block after it.
-			if i > 0 && s[i-1] != '\n' && s[i-1] != '\r' {
-				continue
+			if i > 0 {
+				j := i - 1
+				for j >= 0 && (s[j] == ' ' || s[j] == '\t') {
+					j--
+				}
+				if j >= 0 && s[j] != '\n' && s[j] != '\r' {
+					continue
+				}
 			}
 			if cut < 0 || i < cut {
 				cut = i
