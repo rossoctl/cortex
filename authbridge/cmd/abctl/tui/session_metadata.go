@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -156,4 +157,33 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 		meta, _ := h()
 		return harvestedMsg{meta: meta}
 	}
+}
+
+// untitledSettled reports whether some session on screen has no title yet and has been
+// quiet long enough that its transcript is probably complete on disk.
+//
+// THE SESSIONS LIST IS A PICKER TOO, which is what this exists for. reharvestInterval was
+// written for the namespaces/pods panes on the reasoning that "once a session view is
+// up the titles on screen are already loaded" — true of a session's own events pane, and
+// false of the list you choose a session FROM, which gains a row whenever a new session
+// appears and cannot name it without re-reading the transcripts.
+//
+// KEYED OFF TRAFFIC, not off a wall clock. A session with events has a transcript being
+// appended to, so a harvest triggered by its own updates arrives seconds after the title
+// becomes readable instead of up to reharvestInterval later. The settle delay is what makes
+// this cheap: without it every event on a still-unnamed session would trigger a scan, and
+// with it a busy session is harvested once, after it pauses.
+//
+// Only sessions the metadata does NOT name are considered, so the steady state — every row
+// titled — triggers nothing at all and costs one map lookup per row per tick.
+func (m *model) untitledSettled(now time.Time) bool {
+	for _, s := range m.sessions {
+		if m.sessionsData[s.ID].Title != "" {
+			continue
+		}
+		if now.Sub(s.UpdatedAt) >= untitledSettleDelay {
+			return true
+		}
+	}
+	return false
 }

@@ -1317,3 +1317,77 @@ func TestZeroWidthFree(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionsPane_ReHarvestsSettledUntitledSessions pins the sessions LIST as a pane that
+// re-harvests, which it was not.
+//
+// The re-harvest was gated on paneNamespaces/panePods, so an operator sitting on the sessions
+// list — the pane they pick a session FROM — watched a new session stay a bare UUID
+// indefinitely: every other cell in the row refreshes on the 2s poll, so the row looked live
+// while sessionsData was frozen at whatever startup loaded. Reported from exactly that.
+//
+// Keyed off UpdatedAt rather than a wall clock, since traffic on a session is what says its
+// transcript is being appended to.
+//
+// ASSERTS ON m.harvesting, NOT by running the returned batch. The sessions pane's tick also
+// batches loadSessionsCmd, which dereferences a nil apiclient in a unit model — so running the
+// batch panics on the fetch rather than testing the harvest. The in-flight guard is set in the
+// same branch that creates the harvest command and is what the next tick reads, so it is the
+// honest observable here; TestPicker_ReHarvestsOnAnInterval covers the closure actually running.
+func TestSessionsPane_ReHarvestsSettledUntitledSessions(t *testing.T) {
+	newSessions := func(updatedAt time.Time, meta map[string]SessionMetadata) *model {
+		m := newTitleModel(t, meta, "s1")
+		m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: updatedAt}}
+		m.harvest = func() (map[string]SessionMetadata, error) {
+			return map[string]SessionMetadata{"s1": {Title: "named at last"}}, nil
+		}
+		// Backdated so the settle delay is the only thing under test; the tick's own floor
+		// reuses lastHarvest and would otherwise mask it.
+		m.lastHarvest = time.Now().Add(-time.Hour)
+		return m
+	}
+
+	// Settled and unnamed: the harvest starts.
+	m := newSessions(time.Now().Add(-2*untitledSettleDelay), map[string]SessionMetadata{})
+	if _, cmd := m.Update(refreshTickMsg(time.Now())); cmd == nil {
+		t.Fatal("no command returned; the refresh ticker must stay armed")
+	}
+	if !m.harvesting {
+		t.Error("a settled untitled session did not trigger a re-harvest")
+	}
+	// And an arriving result clears the guard and reaches the table, which is the point.
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "named at last"}}})
+	if m.harvesting {
+		t.Error("harvestedMsg did not clear the in-flight guard")
+	}
+	if got := m.sessionTitle("s1"); got != "named at last" {
+		t.Errorf("harvested title did not reach the model: %q", got)
+	}
+
+	// STILL BEING WRITTEN: an event landed just now, so the transcript's last turn may be
+	// mid-write and the tiers read the LAST prompt. No harvest.
+	m = newSessions(time.Now(), map[string]SessionMetadata{})
+	m.Update(refreshTickMsg(time.Now()))
+	if m.harvesting {
+		t.Error("harvested an unsettled session, whose transcript may still be mid-write")
+	}
+
+	// ALREADY NAMED: the steady state must cost nothing, or this poll would scan the
+	// transcript tree every two seconds forever.
+	m = newSessions(time.Now().Add(-2*untitledSettleDelay),
+		map[string]SessionMetadata{"s1": {Title: "known"}})
+	m.Update(refreshTickMsg(time.Now()))
+	if m.harvesting {
+		t.Error("harvested with every row already named")
+	}
+
+	// A nil harvester (--skip-claude-metadata) is never called, and the ticker stays armed.
+	m = newSessions(time.Now().Add(-2*untitledSettleDelay), map[string]SessionMetadata{})
+	m.harvest = nil
+	if _, c := m.Update(refreshTickMsg(time.Now())); c == nil {
+		t.Error("the ticker must stay armed with no harvester")
+	}
+	if m.harvesting {
+		t.Error("claimed a harvest was in flight with no harvester")
+	}
+}

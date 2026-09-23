@@ -184,7 +184,7 @@ const localProbeTimeout = 2 * time.Second
 // stub sessions would otherwise linger in the TUI.
 const refreshInterval = 2 * time.Second
 
-// reharvestInterval is how often the session picker re-reads the coding agent's transcripts.
+// reharvestInterval is how often the NAMESPACES and PODS panes re-read the coding agent's transcripts.
 //
 // The picker is where someone sits while deciding which pod to open, and a session started in another
 // terminal meanwhile has no title until something re-reads the logs. Three minutes rather than the 2s
@@ -192,9 +192,33 @@ const refreshInterval = 2 * time.Second
 // whose mtime has not moved — so polling it at the session cadence would re-stat the whole tree ninety
 // times a minute for a change that arrives every few minutes at best.
 //
-// Only while the PICKER is open. Once a session view is up the titles on screen are already loaded,
-// and a background harvest there would compete with the event stream for no visible gain.
+// THIS INTERVAL IS THE NAMESPACES/PODS CADENCE ONLY, and it is no longer the only trigger. The
+// sessions LIST harvests on its own terms — see untitledSettleDelay — because that pane is a
+// picker too: it gains a row whenever a session appears and cannot name it without re-reading
+// the transcripts. An earlier version of this paragraph said the re-harvest was "only while the
+// PICKER is open" because "once a session view is up the titles on screen are already loaded",
+// which was true of a session's own events pane and false of the list it is picked from. That
+// reasoning is what left a new session showing a bare UUID for as long as an operator watched it.
+//
+// Still a fixed clock here, unlike the sessions list, and that is the remaining gap rather than a
+// decision: lastHarvest is stamped when a harvest STARTS, so nothing on this path consults whether
+// any transcript actually moved. The namespaces and pods panes hold no session rows to key off,
+// which is why they poll instead — not because polling is the better trigger.
 const reharvestInterval = 3 * time.Minute
+
+// untitledSettleDelay is how long a session must be quiet before an unnamed row triggers a
+// re-harvest, and it is the whole reason this poll is affordable.
+//
+// New traffic means the transcript is being APPENDED TO, so harvesting the instant an event
+// lands would read a file the agent is still writing — and the title tiers read the LAST
+// prompt, which is exactly the part still arriving. Waiting for a pause means the read sees a
+// complete turn.
+//
+// Five seconds because it only has to outlast the gap between events within one turn, not the
+// turn itself: the harvest is incremental and re-reads only transcripts whose mtime moved, so
+// being early costs a re-scan of one file rather than of the tree. Longer would make a brand
+// new session sit nameless for no benefit; shorter would harvest mid-write repeatedly.
+const untitledSettleDelay = 5 * time.Second
 
 // Tea messages.
 type tickMsg time.Time
@@ -1113,6 +1137,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, refreshTickCmd()
 		}
+		// RE-HARVEST FOR THE SESSIONS LIST, which is a picker as much as the two panes below
+		// are: it gains a row whenever a session appears and cannot name it without re-reading
+		// the transcripts. Gated on a row that is actually unnamed AND settled, so a list whose
+		// titles are all known triggers nothing — see untitledSettled.
+		//
+		// STARTED HERE, NOT RETURNED FROM HERE. This pane's tick must still reach the session
+		// fetch at the bottom of this branch, so the harvest is batched into that return rather
+		// than short-circuiting it — returning early instead would trade the titles for the
+		// 2s refresh of every other cell in the row.
+		var harvestNow tea.Cmd
+		if m.pane == paneSessions && m.harvest != nil && !m.harvesting &&
+			time.Since(m.lastHarvest) >= untitledSettleDelay && m.untitledSettled(time.Now()) {
+			m.harvesting = true
+			m.lastHarvest = time.Now()
+			harvestNow = harvestCmd(m.harvest)
+		}
 		// Refresh the pipeline view too while a pane that displays plugin
 		// Metrics is open, so counters tick rather than sitting at whatever
 		// they were when the session was first opened. Skipped elsewhere:
@@ -1123,9 +1163,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// requests and keep adding one every tick.
 		if (m.pane == panePluginDetail || m.pane == panePipeline) && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd())
+			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd(), harvestNow)
 		}
-		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd())
+		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd(), harvestNow)
 
 	case pipelineLoadedMsg:
 		m.pipelineFetching = false
