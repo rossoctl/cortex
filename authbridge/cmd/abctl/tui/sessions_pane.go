@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
@@ -458,12 +459,19 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 // Deliberately simple, and wrong in one direction on purpose: "/tmp foo" reads as prose and would be
 // right-truncated. A single-segment path is not something Claude Code records as a cwd, and the cost
 // is a cell cut at the other end rather than anything unbounded.
+//
+// ANY UNICODE SPACE SEPARATES, not just " " and "\t". An earlier IndexAny(rest, " \t") saw no
+// separator in "/review\u00a0docs/plan.md", found the second "/", and left-truncated the slash
+// command — the exact regression above, reachable through a non-breaking space, an ideographic space,
+// or any of the U+2000 block. Only from a stale or hand-edited metadata file today, since the
+// harvester now folds every unicode space to U+0020 before writing; this does not rely on that,
+// because a renderer should not assume its input came from the current harvester.
 func looksLikePath(title string) bool {
 	if !strings.HasPrefix(title, "/") {
 		return false
 	}
 	rest := title[1:]
-	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+	if i := strings.IndexFunc(rest, unicode.IsSpace); i >= 0 {
 		rest = rest[:i]
 	}
 	return strings.Contains(rest, "/")

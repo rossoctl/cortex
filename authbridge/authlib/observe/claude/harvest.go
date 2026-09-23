@@ -692,63 +692,120 @@ func normalizeTitle(s string) string {
 	// So the rule here is positional-independent and applies to every tier: a title carries no tags
 	// at all. Callers still unwrap envelopes and drop harness-output wrappers, because those
 	// decisions are about WHICH TEXT to use; this is about what may appear in the result.
+	//
 	// ORDER, AND THEN A FIXED POINT.
 	//
-	// stripANSI runs FIRST because an escape sequence inside a tag name hides that tag from the only
-	// pass that removes a block together with its body: "<system-\x1b[0mreminder>INJECTED</...>"
-	// was invisible to stripHarnessSpans, and stripTags then unwrapped it to bare "INJECTED".
-	// Removing the escapes first makes the tag whole again.
+	// Every pass here REWRITES the string, so any of them can expose work for another, and the
+	// exposure runs in every direction — which is why they are applied until nothing changes rather
+	// than once each in a hand-picked order.
 	//
-	// And the three are applied until nothing changes, rather than once each. Every one of them
-	// REWRITES the string, so any of them can expose work for another: removing an escape can join a
-	// tag name, and removing a harness span can bring two halves of prose together.
+	// stripANSI PRECEDES scrubRunes, and scrubRunes PRECEDES the markup passes. Both orderings are
+	// forced, in opposite directions, which is why this sequence is not arbitrary.
 	//
-	// REDUNDANT TODAY, and recorded as such rather than left to look load-bearing: with the order
-	// above, one pass handles every input tried, including escapes nested inside tags inside escapes
-	// — pinning the loop to a single iteration fails no test. It is kept because the argument for
-	// one pass being enough is an argument about orderings, and "the orderings someone thought of"
-	// is exactly what six rounds of review kept flanking. Bounded because each pass only ever
-	// deletes, so the length strictly decreases until it stabilises.
+	// stripANSI must see the ESC byte intact, because it consumes a whole sequence as a unit and
+	// scrubRunes would otherwise delete just the ESC and leave the payload as text: "\x1b[31mred"
+	// became "[31mred", and inside a tag name "<system-\x1b[0mreminder>" became
+	// "<system-[0mreminder>" — still not the tag, so its body still leaked.
+	//
+	// scrubRunes is INSIDE the loop, and that placement is the whole point. It used to run after the
+	// loop had converged, and deleting a rune is exactly the kind of rewrite that exposes work:
+	//
+	//	"<\u200bsystem-reminder>BODY</\u200bsystem-reminder>"  ->  the tag name is split, so no
+	//	pass recognised it; dropping the zero-width space then RE-JOINED "<" with its tag name and
+	//	the output was intact markup, "<system-reminder>BODY</system-reminder>".
+	//
+	// Any invisible rune did it — zero-width space, bidi override, combining mark, variation
+	// selector — and the file is what consumers other than the TUI read. The mid-NAME variant was
+	// worse than the mid-bracket one: "hello <sys\u200btem-reminder>SECRET</...>" came out as
+	// "hello SECRET world", which reads as ordinary prose while a harness block's body has been
+	// promoted into the title with nothing visible to flag it.
+	//
+	// stripANSI precedes the markup passes for the same reason one order down: an escape sequence
+	// inside a tag name hides that tag from the only pass that removes a block together with its
+	// body, and stripTags would then unwrap it to its bare body.
+	//
+	// Bounded because each pass only ever deletes, so the length strictly decreases until it
+	// stabilises. Looping past convergence is cheap; the passes are linear and titles are short.
 	for i := 0; i < maxNormalizePasses; i++ {
 		before := s
 		s = stripANSI(s)
+		s = scrubRunes(s)
 		s = stripHarnessSpans(s)
 		s = stripTags(s)
 		if s == before {
 			break
 		}
 	}
+	return strings.TrimSpace(s)
+}
 
-	// ONE LINE, and only characters that print as themselves.
-	//
-	// The old version collapsed whitespace and stopped there, leaving ESC sequences, C1 controls,
-	// bidi overrides and zero-width characters in the written file. That was safe only because the
-	// viewer runs sanitizeLabel over every cell — so the guarantee lived in one consumer, and
-	// anything else reading ~/.cortex/session-metadata.json got the raw bytes. A title is meant to
-	// be plain text with nothing hidden in it, which has to be true of the FILE, not of one reader.
-	//
-	// An ALLOWLIST, not a denylist of known-bad ranges: unicode.IsGraphic is false for every
-	// control, format, surrogate and unassigned code point, so a category nobody enumerated cannot
-	// leak through. Whitespace is normalised to a single space and everything else non-graphic is
-	// dropped rather than replaced, since a run of U+FFFD tells a reader nothing.
+// scrubRunes reduces s to one line of characters that print as themselves.
+//
+// Split out of normalizeTitle so it can run INSIDE that loop rather than after it; see the ordering
+// argument there for what running it last allowed through.
+//
+// The old version collapsed whitespace and stopped, leaving ESC sequences, C1 controls, bidi
+// overrides and zero-width characters in the written file. That was safe only because the viewer
+// runs sanitizeLabel over every cell — so the guarantee lived in one consumer, and anything else
+// reading ~/.cortex/session-metadata.json got the raw bytes. A title is meant to be plain text with
+// nothing hidden in it, which has to be true of the FILE, not of one reader.
+//
+// An ALLOWLIST, not a denylist of known-bad ranges: unicode.IsGraphic is false for every control,
+// format, surrogate and unassigned code point, so a category nobody enumerated cannot leak through.
+//
+// EVERY space becomes U+0020. unicode.IsSpace covers the exotic ones — U+00A0, U+3000, the U+2000
+// block — and they are normalised rather than preserved, so a title holds no whitespace a reader
+// cannot see for what it is. That also removes them as a way to smuggle shape past a consumer that
+// splits on ASCII space; see looksLikePath, which had that bug.
+// isSeparatorSpace reports whether r is whitespace that should become a single space rather than be
+// dropped outright.
+//
+// The printing spaces, plus the three ASCII separators that structure prose: newline, carriage return
+// and tab. Deliberately NOT unicode.IsSpace, which also claims U+000B, U+000C and U+0085 — see the
+// non-graphic arm in scrubRunes for why those three are dropped instead.
+func isSeparatorSpace(r rune) bool {
+	switch r {
+	case '\n', '\r', '\t':
+		return true
+	}
+	return unicode.IsSpace(r) && unicode.IsGraphic(r)
+}
+
+func scrubRunes(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	prevSpace := true // leading whitespace is dropped
 	for _, r := range s {
 		switch {
-		case unicode.IsSpace(r):
+		case isSeparatorSpace(r):
+			// FOLDS TO U+0020. Two disjoint groups reach here and both are real gaps a reader sees or
+			// a writer typed: the printing spaces (U+0020, U+00A0, U+3000, the U+2000 block), and the
+			// LINE AND TAB separators, which do not print themselves but separate words in prose that
+			// was never one line to begin with. Dropping those joined words — "line one\nline two"
+			// became "line oneline two" — so they fold rather than vanish.
 			if !prevSpace {
 				b.WriteByte(' ')
 				prevSpace = true
 			}
 		case !unicode.IsGraphic(r):
+			// EVERY OTHER non-printing rune is DROPPED, including the ones unicode.IsSpace also
+			// claims: U+000B, U+000C and U+0085 (NEL). That overlap is the subtle part. Folding them
+			// to a space turned "<\u0085system-reminder>BODY</...>" into
+			// "< system-reminder>BODY</ system-reminder>" — and a space is not a name character, so
+			// tagSpanLen correctly declined to call that a tag, the block was never removed with its
+			// body, and the body became the title. They are vanishingly rare in prose and a tag-name
+			// splitter in the adversarial case, so they go.
 			// Controls (C0/C1/DEL), format characters — bidi overrides and isolates, ZWJ, ZWSP,
 			// variation selectors — surrogates and unassigned code points. None of these print as
 			// themselves, and the bidi ones actively reorder what surrounds them.
+			//
+			// Dropping a line break rather than folding it to a space is deliberate: a title is one
+			// line, and the passes above have already removed the markup whose body a break might
+			// have separated from surrounding prose.
 		case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r), unicode.Is(unicode.Sk, r):
 			// COMBINING AND MODIFYING characters: non-spacing marks, enclosing marks, and modifier
 			// symbols (skin tones). Dropped rather than kept, which is what lets the length cut
-			// below be a plain rune slice.
+			// in clipTitle be a plain rune slice.
 			//
 			// They only ever attach to the character before them, so a cut that lands between the
 			// two leaves a dangling mark on whatever now precedes it — or a base character shorn of
@@ -768,7 +825,7 @@ func normalizeTitle(s string) string {
 			prevSpace = false
 		}
 	}
-	return strings.TrimSpace(b.String())
+	return b.String()
 }
 
 // clipTitle normalises s and caps it at MaxTitleLen runes.
@@ -987,10 +1044,15 @@ func stripTags(s string) string {
 
 // tagSpanLen returns the length of the tag starting at s[0], or 0 if s does not start with one.
 //
-// A tag is "<", an optional "/", a name of letters, digits, "-" or "_", then anything up to the
-// first ">". That is deliberately narrow: "< 5" and "<" at end-of-string are not tags, so a
+// A tag is "<", an optional "/", a name of letters, digits, "-" or "_", then attributes up to the
+// closing ">". That is deliberately narrow: "< 5" and "<" at end-of-string are not tags, so a
 // comparison operator in a real prompt survives, while "<div>", "</system-reminder>" and
 // "<a href=\"x\">" do not.
+//
+// A ">" INSIDE A QUOTED ATTRIBUTE VALUE does not close the tag, which HTML permits and the first
+// version of this got wrong by scanning for the first ">" byte. `<a href="x>y">link</a>` closed the
+// span at the ">" in the URL, and the rest — `y">link` — survived into the title as residual
+// markup. Both quote characters are tracked, since either may contain the other unescaped.
 func tagSpanLen(s string) int {
 	if len(s) < 2 || s[0] != '<' {
 		return 0
@@ -1011,8 +1073,18 @@ func tagSpanLen(s string) int {
 	if i == nameStart {
 		return 0 // no name: "< 5", "<>", "<="
 	}
-	if j := strings.IndexByte(s[i:], '>'); j >= 0 {
-		return i + j + 1
+	var quote byte // 0 outside a quoted value, else the quote character awaiting its match
+	for ; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '>':
+			return i + 1
+		}
 	}
 	// An opening tag with no ">" anywhere. Not a span, so the "<" is kept as text — the alternative
 	// is swallowing the rest of the string on a stray bracket.

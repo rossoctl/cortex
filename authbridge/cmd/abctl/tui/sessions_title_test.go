@@ -863,16 +863,37 @@ func TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures(t *testing.T) {
 			w, claude.MaxTitleLen)
 	}
 
-	const id = "s1"
-	m := newTitleModel(t, map[string]SessionMetadata{id: {Title: title}}, id)
-	for _, w := range []int{11, 14, 20, 40} {
-		got := m.sessionTitleCell(id, w)
-		if cw := lipgloss.Width(got); cw > w {
-			t.Errorf("a %d-rune title rendered %d columns into a %d-column cell: %q — the "+
-				"harvester's cap is a RUNE count, so this package must re-truncate by width",
-				claude.MaxTitleLen, cw, w, got)
+	// BOTH BRANCHES, because the cap meets a different truncator depending on the title's shape and
+	// this test named only one of them. The prose fixture above has no leading "/", so looksLikePath
+	// is false and it exercises truncRight alone — mutating truncLeft to a passthrough left this test
+	// green while ten others in the package failed. A path-shaped fixture at the same cap routes down
+	// the other branch, so the constant's doc comment can claim the relationship is guarded here.
+	pathTitle := "/" + strings.Repeat("日", claude.MaxTitleLen-5) + "/日日日"
+	if n := len([]rune(pathTitle)); n != claude.MaxTitleLen {
+		t.Fatalf("path fixture is %d runes, want %d", n, claude.MaxTitleLen)
+	}
+	if !looksLikePath(pathTitle) {
+		t.Fatalf("path fixture %q does not route down the left-truncating branch", pathTitle)
+	}
+
+	for _, tc := range []struct{ name, title string }{
+		{"prose", title},
+		{"path", pathTitle},
+	} {
+		const id = "s1"
+		m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
+		for _, w := range []int{11, 14, 20, 40} {
+			got := m.sessionTitleCell(id, w)
+			if cw := lipgloss.Width(got); cw > w {
+				t.Errorf("%s: a %d-rune title rendered %d columns into a %d-column cell: %q — the "+
+					"harvester's cap is a RUNE count, so this package must re-truncate by width",
+					tc.name, claude.MaxTitleLen, cw, w, got)
+			}
 		}
 	}
+
+	const id = "s1"
+	m := newTitleModel(t, map[string]SessionMetadata{id: {Title: title}}, id)
 
 	// And the same through the rendered row, so the guard covers what a reader actually sees rather
 	// than only the cell helper.
@@ -1055,5 +1076,33 @@ func TestPicker_ReHarvestsOnAnInterval(t *testing.T) {
 	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
 	if _, c := m.Update(refreshTickMsg(time.Now())); c == nil {
 		t.Error("the ticker must stay armed even with no harvester")
+	}
+}
+
+// TestLooksLikePath_AnyUnicodeSpaceSeparates pins the separator class.
+//
+// The function's job is to keep a slash command from being left-truncated, and it decided that on an
+// ASCII-only IndexAny(rest, " \t"). A command separated by a non-breaking or ideographic space had no
+// separator by that test, so the second "/" in its argument made it a path and the command name — the
+// part a reader needs — was the part discarded.
+//
+// Reachable only from a stale or hand-edited metadata file, since the harvester folds every unicode
+// space to U+0020 before writing. Asserted here anyway: this package should not depend on its input
+// having come from the current harvester.
+func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
+	for _, sep := range []string{" ", "\t", " ", "　", " ", " ", " "} {
+		title := "/review" + sep + "docs/plan.md"
+		if looksLikePath(title) {
+			t.Errorf("looksLikePath(%q) = true, want false: the %U separator makes this a slash "+
+				"command with an argument, not a path — left-truncating it discards the command name",
+				title, []rune(sep)[0])
+		}
+	}
+
+	// The other direction still holds: a real path has no space at all before its second segment.
+	for _, title := range []string{"/Users/somebody/src", "/w/x/y", "/a/b"} {
+		if !looksLikePath(title) {
+			t.Errorf("looksLikePath(%q) = false, want true", title)
+		}
 	}
 }

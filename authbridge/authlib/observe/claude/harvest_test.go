@@ -2321,3 +2321,147 @@ func TestStripHarnessSpans_ScalesLinearly(t *testing.T) {
 			ratio, tl, ts)
 	}
 }
+
+// TestNormalizeTitle_IsAFixedPointAcrossRuneScrubbing pins the ORDER of normalizeTitle's passes.
+//
+// The scrub that drops invisible runes used to run AFTER the markup loop had converged, and deleting
+// a rune is exactly the kind of rewrite that exposes new work for the markup passes. Splitting a tag
+// with any invisible rune hid it from every pass; dropping that rune afterwards re-joined the tag and
+// wrote intact markup to ~/.cortex/session-metadata.json, which consumers other than the TUI read as
+// plain text.
+//
+// Each case is ONE ordinary transcript line through the public path, not a direct normalizeTitle
+// call, because the claim is about what lands in the file.
+//
+// The MID-NAME variant is the one worth keeping a name for: it does not look like a failure. The
+// bracket cases came out as visible markup, but "hello <sys​tem-reminder>SECRET</...>" came out
+// as "hello SECRET world" — clean prose, with a harness block's body promoted into the title and
+// nothing on screen to flag it.
+func TestNormalizeTitle_IsAFixedPointAcrossRuneScrubbing(t *testing.T) {
+	// Every class of rune the scrub drops, since each one can split a tag.
+	for _, inv := range []struct {
+		name string
+		r    string
+	}{
+		{"zero-width space", "​"},
+		{"bidi override", "‮"},
+		{"bidi isolate", "⁦"},
+		{"combining mark", "́"},
+		{"variation selector", "️"},
+		{"zero-width joiner", "‍"},
+		{"soft hyphen", "­"},
+		{"C1 control", "\u0085"},
+	} {
+		for _, placement := range []struct {
+			name, prompt string
+		}{
+			{"after the bracket", "<" + inv.r + "system-reminder>INJECTED</" + inv.r + "system-reminder>"},
+			{"mid name", "hello <sys" + inv.r + "tem-reminder>SECRET</sys" + inv.r + "tem-reminder> world"},
+			{"before the bracket", "text " + inv.r + "<system-reminder>INJECTED</system-reminder>"},
+			{"plain tag", "look <" + inv.r + "b>bold</" + inv.r + "b> here"},
+		} {
+			t.Run(inv.name+", "+placement.name, func(t *testing.T) {
+				dir := t.TempDir()
+				line, err := json.Marshal(map[string]any{
+					"type":    "user",
+					"cwd":     "/w/x",
+					"origin":  map[string]any{"kind": "human"},
+					"message": map[string]any{"role": "user", "content": placement.prompt},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeSessionTranscript(t, dir, "s.jsonl", string(line))
+				got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+				if gerr != nil {
+					t.Fatal(gerr)
+				}
+				for _, bad := range []string{"<", ">", "system-reminder", "INJECTED", "SECRET"} {
+					if strings.Contains(got, bad) {
+						t.Errorf("title %q contains %q — the markup loop reached a fixed point "+
+							"before the rune scrub ran, so dropping %U reconstituted it",
+							got, bad, []rune(inv.r)[0])
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestNormalizeTitle_FoldsEveryUnicodeSpace pins that no whitespace but U+0020 survives.
+//
+// Two reasons, beyond a title being one plain line. A reader cannot tell U+00A0 from a space, so a
+// title that holds one is lying about its own shape; and a consumer that splits on ASCII space sees a
+// different string than the one on screen, which is how looksLikePath came to misread a slash command
+// as a path.
+func TestNormalizeTitle_FoldsEveryUnicodeSpace(t *testing.T) {
+	// A SEPARATOR folds to U+0020 — the printing spaces, plus newline, carriage return and tab, which
+	// separate words in prose that was never one line. A reader sees a gap in each case, so the title
+	// keeps one.
+	for _, sp := range []string{" ", "\t", "\n", "\r", "\u00a0", "\u3000", "\u2009", "\u2003", "\u205f", "\u1680"} {
+		if got := titleOf(t, "alpha"+sp+"beta"); got != "alpha beta" {
+			t.Errorf("title = %q, want %q: %U prints as a gap, so it must fold to a plain space",
+				got, "alpha beta", []rune(sp)[0])
+		}
+	}
+
+	// A NON-PRINTING rune is dropped, even though unicode.IsSpace is true for these four — U+000B,
+	// U+000C and U+0085 are whitespace AND non-graphic. Folding them to a space was a
+	// real leak, not a cosmetic choice: it turned "<\u0085system-reminder>BODY</...>" into
+	// "< system-reminder>BODY</ system-reminder>", which is not a tag by tagSpanLen's rule, so the
+	// block was never removed with its body and the body became the title. Joining two words is the
+	// cheaper error.
+	for _, sp := range []string{"\v", "\f", "\u0085"} {
+		if got := titleOf(t, "alpha"+sp+"beta"); got != "alphabeta" {
+			t.Errorf("title = %q, want %q: %U does not print, so it is dropped rather than folded — "+
+				"folding it to a space splits a tag name into something tagSpanLen will not match",
+				got, "alphabeta", []rune(sp)[0])
+		}
+	}
+}
+
+// titleOf writes prompt as the one human turn of a transcript and returns the harvested title.
+func titleOf(t *testing.T, prompt string) string {
+	t.Helper()
+	dir := t.TempDir()
+	line, err := json.Marshal(map[string]any{
+		"type":    "user",
+		"cwd":     "/w/x",
+		"origin":  map[string]any{"kind": "human"},
+		"message": map[string]any{"role": "user", "content": prompt},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSessionTranscript(t, dir, "s.jsonl", string(line))
+	got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	return got
+}
+
+// TestTagSpanLen_QuotedAngleBracketDoesNotCloseTheTag pins the quoting rule.
+//
+// HTML permits ">" inside a quoted attribute value, and scanning for the first ">" byte closed the
+// span there — so `<a href="x>y">link</a>` left `y">link` in the title. Both quote characters,
+// since either may contain the other unescaped.
+func TestTagSpanLen_QuotedAngleBracketDoesNotCloseTheTag(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`hello <a href="x>y">link</a> world`, "hello link world"},
+		{`hi <img alt='a>b'> there`, "hi there"},
+		{`<span title="a > b">txt</span>`, "txt"},
+		{`<x a="'">keep</x>`, "keep"},
+		{`<y b='">'>keep</y>`, "keep"},
+		// A harness block whose opening tag hides a ">" must still go WITH ITS BODY, not be
+		// unwrapped to it — the failure mode that makes this more than cosmetic.
+		{`<system-reminder foo="a>b">SECRET</system-reminder>`, ""},
+		// Unchanged: a comparison operator is not a tag, and an unterminated "<" is kept as text.
+		{`if a < 5 then`, "if a < 5 then"},
+		{`use <unclosed here`, "use <unclosed here"},
+	} {
+		if got := normalizeTitle(tc.in); got != tc.want {
+			t.Errorf("normalizeTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
