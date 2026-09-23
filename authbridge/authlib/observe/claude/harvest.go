@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ConfigDirEnv is the variable Claude Code itself honours for relocating its config
@@ -625,16 +626,177 @@ const maxTitleLen = 80
 // display columns — and a marker added here would be re-truncated downstream, leaving a cell with
 // two of them.
 func clipTitle(s string) string {
-	// ONE LINE. A prompt is free text and may hold newlines or tabs; a title is a table cell, and
-	// the viewer sanitises control characters into U+FFFD rather than dropping them, so a raw
-	// newline would reach the cell as a visible replacement glyph. Collapsing runs of whitespace
-	// also stops a wrapped prompt spending its 80 characters on indentation.
-	s = strings.Join(strings.Fields(s), " ")
+	// STRIP ALL MARKUP FIRST, wherever it sits. Every earlier attempt filtered markup by SHAPE —
+	// anchored at the start, or line-leading, or per block — and each round of review found another
+	// shape that slipped past: markup inside <command-args>, markup mid-line on a later line, a
+	// block indented with a vertical tab. Enumerating shapes cannot converge, because the shapes are
+	// the harness's to choose.
+	//
+	// So the rule here is positional-independent and applies to every tier: a title carries no tags
+	// at all. Callers still unwrap envelopes and drop harness-output wrappers, because those
+	// decisions are about WHICH TEXT to use; this is about what may appear in the result.
+	s = stripHarnessSpans(s)
+	s = stripANSI(s)
+	s = stripTags(s)
+
+	// ONE LINE, and only characters that print as themselves.
+	//
+	// The old version collapsed whitespace and stopped there, leaving ESC sequences, C1 controls,
+	// bidi overrides and zero-width characters in the written file. That was safe only because the
+	// viewer runs sanitizeLabel over every cell — so the guarantee lived in one consumer, and
+	// anything else reading ~/.cortex/session-metadata.json got the raw bytes. A title is meant to
+	// be plain text with nothing hidden in it, which has to be true of the FILE, not of one reader.
+	//
+	// An ALLOWLIST, not a denylist of known-bad ranges: unicode.IsGraphic is false for every
+	// control, format, surrogate and unassigned code point, so a category nobody enumerated cannot
+	// leak through. Whitespace is normalised to a single space and everything else non-graphic is
+	// dropped rather than replaced, since a run of U+FFFD tells a reader nothing.
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := true // leading whitespace is dropped
+	for _, r := range s {
+		switch {
+		case unicode.IsSpace(r):
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case !unicode.IsGraphic(r):
+			// Controls (C0/C1/DEL), format characters — bidi overrides and isolates, ZWJ, ZWSP,
+			// variation selectors — surrogates and unassigned code points. None of these print as
+			// themselves, and the bidi ones actively reorder what surrounds them.
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
+	}
+	s = strings.TrimSpace(b.String())
+
 	r := []rune(s)
 	if len(r) <= maxTitleLen {
 		return s
 	}
 	return strings.TrimSpace(string(r[:maxTitleLen]))
+}
+
+// stripANSI removes a CSI/OSC escape sequence together with its parameters.
+//
+// Dropping the ESC byte alone — which the non-graphic filter below does — leaves the payload behind:
+// "\x1b[31mred\x1b[0m" became "[31mred[0m", which is not dangerous but is not a title either. The
+// whole sequence goes, so the result reads as what the user wrote.
+//
+// Handles the two forms that carry parameters: CSI (ESC [ … final byte in @-~) and OSC
+// (ESC ] … terminated by BEL or ST). Any other escape is left to the non-graphic filter, which drops
+// the ESC and leaves at most one stray character.
+func stripANSI(s string) string {
+	if !strings.ContainsRune(s, 0x1b) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		if rs[i] != 0x1b || i+1 >= len(rs) {
+			b.WriteRune(rs[i])
+			continue
+		}
+		switch rs[i+1] {
+		case '[': // CSI: parameters, then a final byte in the range @ to ~
+			j := i + 2
+			for j < len(rs) && (rs[j] < '@' || rs[j] > '~') {
+				j++
+			}
+			i = j // the final byte is consumed too
+		case ']': // OSC: runs to BEL, or to ST (ESC \)
+			j := i + 2
+			for j < len(rs) && rs[j] != 0x07 {
+				if rs[j] == 0x1b && j+1 < len(rs) && rs[j+1] == '\\' {
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+		default:
+			// A two-character escape, or something unrecognised. Skip the ESC and let the loop
+			// handle the next rune normally.
+		}
+	}
+	return b.String()
+}
+
+// stripHarnessSpans removes a known harness block AND ITS BODY, wherever it sits.
+//
+// stripTags alone deletes the angle-bracket spans and leaves what was between them, so
+// "my question\n<system-reminder>LEAK</system-reminder>" became "my question LEAK" — the tags gone
+// and the injected text promoted into the title. For a harness block the BODY is the payload, so the
+// whole span has to go.
+//
+// Only the named set is removed with its body: those tags are the harness's, so their content is
+// never the user's. An unknown tag keeps its body, because there the text between the brackets may
+// well be the prompt — stripTags then removes the brackets alone.
+//
+// Position-independent, and applied before stripTags, so a block anywhere in the string is handled:
+// at the start, appended on an indented line, mid-line on a later line, or nested inside a
+// <command-args> value. That last one is the leak review found this round; the rest are the leaks it
+// found in the rounds before.
+func stripHarnessSpans(s string) string {
+	for _, tag := range harnessTagNames {
+		for {
+			i := strings.Index(s, tag)
+			if i < 0 {
+				break
+			}
+			// The span runs to the matching close when there is one, and to the end of the opening
+			// tag otherwise — a self-closing or unterminated block leaves nothing to keep.
+			end := len(s)
+			name := tag[1:] // tag is "<name"
+			if c := strings.Index(s[i:], "</"+name); c >= 0 {
+				if g := strings.IndexByte(s[i+c:], '>'); g >= 0 {
+					end = i + c + g + 1
+				}
+			} else if g := strings.IndexByte(s[i:], '>'); g >= 0 {
+				end = i + g + 1
+			}
+			s = s[:i] + " " + s[end:]
+		}
+	}
+	return s
+}
+
+// stripTags removes every <...> span from s, wherever it appears.
+//
+// POSITION-INDEPENDENT, which is the point: the shape-by-shape filters above it each guard one
+// placement, and review found a new placement each round. This one cannot be flanked.
+//
+// Unbalanced or nested markup is handled by construction, since it only ever deletes from a "<" to
+// the next ">" and leaves a lone "<" alone. That last part is deliberate: "is 3 < 5 in Go?" and
+// "List<String>" are the shapes a real prompt carries, and the first must survive. The second is
+// sacrificed — a prompt that genuinely quotes a tag loses it — which is the trade this asks for:
+// titles are plain, and a plain title cannot also faithfully quote markup.
+func stripTags(s string) string {
+	if !strings.ContainsRune(s, '<') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '<':
+			depth++
+		case r == '>' && depth > 0:
+			depth--
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	// A lone "<" with no closing ">" left depth > 0 and swallowed the tail, which would turn
+	// "is 3 < 5" into "is 3 ". Fall back to the original in that case: nothing was a tag.
+	if depth > 0 {
+		return s
+	}
+	return b.String()
 }
 
 // promptFromMessage returns the text a person typed in one user turn, and whether the content was

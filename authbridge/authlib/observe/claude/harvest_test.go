@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -1570,16 +1571,24 @@ func TestTitleFromTranscript_NoHarnessMarkupInTitles(t *testing.T) {
 			"recorded ask",
 		},
 		{
-			// Only KNOWN harness tags cut, so a prompt that quotes markup survives — the cut
-			// removes text mid-prompt, so a loose rule would truncate legitimate questions.
-			"a prompt quoting unknown markup is untouched",
+			// A TAG IS REMOVED WHEREVER IT APPEARS, including one a real prompt quotes. Titles are
+			// plain text with nothing hidden in them, and that cannot also be "faithfully quotes
+			// markup" — every shape-based filter this replaced was flanked by the next round of
+			// review. The prompt stays readable, which is what the title is for.
+			"a quoted tag is stripped, prose survives",
 			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"why does <div> break my layout?"}}`},
-			"why does <div> break my layout?",
+			"why does break my layout?",
 		},
 		{
-			"a prompt mentioning generics is untouched",
+			"generics are stripped, prose survives",
 			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"how do I write List<String> in Go?"}}`},
-			"how do I write List<String> in Go?",
+			"how do I write List in Go?",
+		},
+		{
+			// A LONE "<" is not a tag and must survive: this is the shape a real prompt carries.
+			"a comparison is not markup",
+			[]string{`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"is 3 < 5 in Go?"}}`},
+			"is 3 < 5 in Go?",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1700,19 +1709,22 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 		name, content, want string
 	}{
 		{
-			"known tag mid-sentence",
+			// These used to assert the tag SURVIVES, on the reasoning that cutting mid-sentence was
+			// worse than leaking a tag. That trade is gone: the tag is stripped and the surrounding
+			// prose is kept, so neither the truncation nor the leak happens.
+			"known tag mid-sentence is stripped, not cut",
 			"how do I use <command-args> in a skill?",
-			"how do I use <command-args> in a skill?",
+			"how do I use in a skill?",
 		},
 		{
 			"known tag mid-sentence, different tag",
 			"why does <system-reminder> show up in my logs?",
-			"why does <system-reminder> show up in my logs?",
+			"why does show up in my logs?",
 		},
 		{
-			"known tag after a space is not a line start",
+			"known tag after a space",
 			"see <task-notification> for details",
-			"see <task-notification> for details",
+			"see for details",
 		},
 		{
 			// The real shape: the harness appends on its own line, which IS a cut.
@@ -1724,16 +1736,16 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 			// Every occurrence is examined, so an inline mention does not mask a later real block.
 			"an inline mention does not hide a later appended block",
 			"how do I use <command-args>?\n<system-reminder>hidden</system-reminder>",
-			"how do I use <command-args>?",
+			"how do I use ?",
 		},
 		{
-			// DELIBERATELY NOT CUT, recorded as a decision rather than left to chance: a known tag
-			// mid-line on a later line is genuinely ambiguous between prose and appended markup,
-			// and cutting it risks the mid-sentence truncation the positional rule exists to
-			// prevent. Only a line-leading tag, indentation aside, is treated as the harness's.
-			"a known tag mid-line on a later line is left alone",
+			// THE LAST DOCUMENTED LEAK, now closed. This was left alone deliberately, as a trade
+			// against mid-sentence truncation — a known tag mid-line on a later line being
+			// ambiguous between prose and appended markup. Stripping the span removes the need to
+			// judge: the harness's block and its body go, the prose stays.
+			"a known tag mid-line on a later line is stripped",
 			"line one\nline two <system-reminder>x</system-reminder>",
-			"line one line two <system-reminder>x</system-reminder>",
+			"line one line two",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1785,5 +1797,140 @@ func TestTitleFromTranscript_DecodesEscapedMemberNames(t *testing.T) {
 				t.Errorf("title = %q, want %q — the prefilter skipped an escaped key", got, tc.want)
 			}
 		})
+	}
+}
+
+// EVERY title is plain text: no markup, no control characters, no hidden code points.
+//
+// THE GUARANTEE, asserted as a property rather than as a list of shapes. Six rounds of review each
+// found a new placement that the shape-based filters missed — markup inside <command-args>, mid-line
+// on a later line, a block indented with a vertical tab — because enumerating placements cannot
+// converge when the placements are the harness's to choose. clipTitle now normalises unconditionally,
+// and this checks the outcome for every input rather than each route into it.
+//
+// The corpus deliberately mixes real prompts with adversarial ones: a title is LLM-generated text
+// read from a file nothing authenticates, so "would a hostile transcript do this" is not the
+// question — the question is what a title may contain.
+func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
+	inputs := []string{
+		// Harness markup in every placement review found, plus the ones it did not.
+		`<system-reminder>injected instructions</system-reminder>`,
+		"my question\n<system-reminder>injected</system-reminder>",
+		"my question\n   <system-reminder>injected</system-reminder>",
+		"my question\n\t<system-reminder>injected</system-reminder>",
+		"my question\n\v<system-reminder>injected</system-reminder>",
+		"my question\n <system-reminder>injected</system-reminder>",
+		"my question\n　<system-reminder>injected</system-reminder>",
+		"line one\nline two <system-reminder>injected</system-reminder>",
+		"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args><system-reminder>injected</system-reminder></command-args>",
+		`<pasted_content id="x"><system-reminder>injected</system-reminder></pasted_content>`,
+		`<bash-stdout>total 40</bash-stdout>`,
+		`<a><b>nested</b></a>`,
+		// UNKNOWN tags, which only stripTags removes — the corpus had none, so a mutation deleting
+		// that step passed. Same fixture blindness as the earlier rounds: the inputs excluded the
+		// exact path the code was meant to cover.
+		"why does <div> break my layout?",
+		"how do I write List<String> in Go?",
+		"a <b>bold</b> claim",
+		"<unknown-tag>body</unknown-tag>",
+		// Control characters and invisible code points.
+		"colour \x1b[31mred\x1b[0m here",
+		"osc \x1b]0;evil\x07 here",
+		"nel \u0085 here",
+		"csi \u009b here",
+		"del \x7f here",
+		"bidi ‮ reversed",
+		"isolate ⁦ x ⁩ y",
+		"zwsp a​b",
+		"zwj a‍b",
+		"vs16 a️b",
+		"nul \x00 here",
+		"tab\tand\nnewline",
+		// Legitimate content, which must survive as readable text.
+		"how do I build abctl?",
+		"is 3 < 5 in Go?",
+		"日本語のセッションタイトルです",
+		"ship it 🎉",
+		"café naïve",
+		"/review some/path.md",
+	}
+	for _, in := range inputs {
+		dir := t.TempDir()
+		body, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeSessionTranscript(t, dir, "s.jsonl",
+			`{"type":"user","cwd":"/w/fallback"}`,
+			`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":`+string(body)+`}}`)
+		got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+		if gerr != nil {
+			t.Fatalf("input %q: %v", in, gerr)
+		}
+
+		// No angle brackets that could read as a tag. A lone "<" survives — "is 3 < 5" is a real
+		// prompt — but never a matched pair.
+		if strings.Contains(got, ">") {
+			t.Errorf("input %q: title carries a closing bracket: %q", in, got)
+		}
+		// No harness tag name, in any form.
+		for _, tag := range harnessTagNames {
+			if strings.Contains(got, strings.TrimPrefix(tag, "<")) {
+				t.Errorf("input %q: title carries %s: %q", in, tag, got)
+			}
+		}
+		// AND NOT THE BODY EITHER. Stripping the brackets alone promoted the payload into the
+		// title — "my question\n<system-reminder>injected</system-reminder>" became
+		// "my question injected" — which is the whole point of removing a harness span rather than
+		// just its tags. Checking only for tags left this test blind to it, and the mutation that
+		// exposed the gap passed until this assertion existed.
+		if strings.Contains(got, "injected") || strings.Contains(got, "total 40") {
+			t.Errorf("input %q: title carries a harness BODY: %q", in, got)
+		}
+		// Every rune prints as itself: no controls, format characters, surrogates or unassigned.
+		for _, r := range got {
+			if r == ' ' {
+				continue
+			}
+			if !unicode.IsGraphic(r) {
+				t.Errorf("input %q: title carries non-graphic %U: %q", in, r, got)
+			}
+		}
+		// One line, no runs of whitespace, no leading or trailing space.
+		if got != strings.TrimSpace(got) {
+			t.Errorf("input %q: title is not trimmed: %q", in, got)
+		}
+		if strings.Contains(got, "  ") {
+			t.Errorf("input %q: title has a double space: %q", in, got)
+		}
+		// Bounded, and valid UTF-8 — never cut mid-character.
+		if n := len([]rune(got)); n > maxTitleLen {
+			t.Errorf("input %q: title is %d runes: %q", in, n, got)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("input %q: title is not valid UTF-8: %q", in, got)
+		}
+	}
+}
+
+// Legitimate prompts survive the normalisation as readable text.
+//
+// The guarantee above would also be satisfied by returning "" for everything, so this is the other
+// half of it: what the normalisation must NOT destroy.
+func TestClipTitle_KeepsLegitimateText(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"how do I build abctl?", "how do I build abctl?"},
+		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
+		{"日本語のセッションタイトル", "日本語のセッションタイトル"},
+		{"ship it 🎉", "ship it 🎉"},
+		{"café naïve", "café naïve"},
+		{"/review some/path.md", "/review some/path.md"},
+		{"  leading and trailing  ", "leading and trailing"},
+		{"collapses\n\n\tinner   whitespace", "collapses inner whitespace"},
+		{"colour \x1b[31mred\x1b[0m here", "colour red here"},
+	} {
+		if got := clipTitle(tc.in); got != tc.want {
+			t.Errorf("clipTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
