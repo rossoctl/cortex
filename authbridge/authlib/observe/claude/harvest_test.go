@@ -1934,3 +1934,119 @@ func TestClipTitle_KeepsLegitimateText(t *testing.T) {
 		}
 	}
 }
+
+// The cwd fallback is plain too, and keeps its leaf.
+//
+// It returned through a bare strings.Fields — whitespace collapsed and nothing else — so a directory
+// name carrying an ESC sequence, a bidi override or a tag reached the file unfiltered while every
+// other tier was clean. It now shares normalizeTitle with them, but NOT the length cap: a path's
+// distinguishing end is its leaf, and clipping keeps the head.
+func TestTitleFromTranscript_CwdFallbackIsPlainAndUnclipped(t *testing.T) {
+	titleFor := func(cwd string) string {
+		t.Helper()
+		dir := t.TempDir()
+		body, err := json.Marshal(cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeSessionTranscript(t, dir, "s.jsonl", `{"type":"user","cwd":`+string(body)+`}`)
+		got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		return got
+	}
+
+	for _, in := range []string{
+		"/w/dir\x1b[31mred",
+		"/w/‮dir",
+		"/w/<system-reminder>injected</system-reminder>dir",
+		"/w/áccent",
+		"/w/norm​al",
+	} {
+		got := titleFor(in)
+		for _, r := range got {
+			if r != ' ' && !unicode.IsGraphic(r) {
+				t.Errorf("cwd %q: title carries non-graphic %U: %q", in, r, got)
+			}
+		}
+		if strings.Contains(got, ">") {
+			t.Errorf("cwd %q: title carries markup: %q", in, got)
+		}
+		if strings.Contains(got, "injected") {
+			t.Errorf("cwd %q: title carries a harness body: %q", in, got)
+		}
+	}
+
+	// NOT clipped: a prefix past the cap must not swallow the leaf, or sibling worktrees become
+	// indistinguishable.
+	const prefix = "/Users/somebody/go/src/github.com/some-organisation/some-repository/worktrees/wt/"
+	if len([]rune(prefix)) <= maxTitleLen {
+		t.Fatalf("fixture prefix is %d runes, needs to exceed %d", len([]rune(prefix)), maxTitleLen)
+	}
+	a, b := titleFor(prefix+"alpha"), titleFor(prefix+"beta")
+	if a == b {
+		t.Errorf("sibling paths produced the same title %q", a)
+	}
+	if !strings.HasSuffix(a, "alpha") || !strings.HasSuffix(b, "beta") {
+		t.Errorf("the leaf did not survive: %q / %q", a, b)
+	}
+}
+
+// A truncated read is REPORTED, not silently swallowed, and the best title found still comes back.
+//
+// titleFromTranscript's second return says the scan ended early — a line past the 16MB buffer, or an
+// I/O error partway through — and ReadSessions collects those into Result.Partial for the caller to
+// warn about. The contract was documented in two places and asserted nowhere, so a regression would
+// have been silent: the title of a long session would quietly become a stale one.
+func TestTitleFromTranscript_ReportsTruncatedReads(t *testing.T) {
+	dir := t.TempDir()
+	// One line past bufio.Scanner's 16MB ceiling, after a usable title. The title found before the
+	// stop must survive, since something is better than nothing — that is why the error is returned
+	// ALONGSIDE it rather than instead of it.
+	huge := strings.Repeat("x", 17<<20)
+	writeSessionTranscript(t, dir, "s.jsonl",
+		`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"a real ask"}}`,
+		`{"type":"user","cwd":"/w/`+huge+`"}`)
+
+	got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+	if err == nil {
+		t.Error("a line past the scanner buffer was not reported")
+	}
+	if got != "a real ask" {
+		t.Errorf("title = %q, want the title found before the stop", got)
+	}
+}
+
+// ReadSessions surfaces a truncated transcript through Result.Partial rather than failing the harvest.
+//
+// One bad transcript must not cost the other hundred names, so the error is collected and the session
+// still lands in the map. The propagation was untested.
+func TestReadSessions_CollectsPartialReads(t *testing.T) {
+	cfg := t.TempDir()
+	proj := filepath.Join(cfg, "projects", "-p")
+	huge := strings.Repeat("x", 17<<20)
+	writeSessionTranscript(t, proj, "truncated.jsonl",
+		`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"a real ask"}}`,
+		`{"type":"user","cwd":"/w/`+huge+`"}`)
+	writeSessionTranscript(t, proj, "fine.jsonl",
+		`{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"another ask"}}`)
+
+	out, partial, _, err := ReadSessions(cfg, nil)
+	if err != nil {
+		t.Fatalf("a truncated transcript failed the whole harvest: %v", err)
+	}
+	if len(partial) != 1 {
+		t.Errorf("partial = %d entries, want 1: %v", len(partial), partial)
+	}
+	if len(partial) == 1 && !strings.Contains(partial[0], "truncated.jsonl") {
+		t.Errorf("the partial entry does not name the transcript: %q", partial[0])
+	}
+	// Both sessions are still named — the truncated one from what was found before the stop.
+	if out["truncated"].Title != "a real ask" {
+		t.Errorf("truncated session title = %q, want %q", out["truncated"].Title, "a real ask")
+	}
+	if out["fine"].Title != "another ask" {
+		t.Errorf("healthy session title = %q, want %q", out["fine"].Title, "another ask")
+	}
+}

@@ -482,7 +482,8 @@ func truncRight(s string, n int) string {
 	return "…"
 }
 
-// truncLeft clips s to n runes keeping the RIGHT end, marking the cut with a leading ellipsis.
+// truncLeft clips s to n DISPLAY COLUMNS keeping the RIGHT end, marking the cut with a leading
+// ellipsis.
 //
 // The mirror of trunc, for values whose distinguishing end is the last one: a path, where every
 // sibling shares the prefix. n < 1 yields "" and n == 1 yields just the ellipsis, so the result
@@ -500,6 +501,13 @@ func truncLeft(s string, n int) string {
 	// exactly the titles that need it.
 	//
 	// lipgloss.Width, mirroring padLeft, which measures this way for the same reason.
+	//
+	// AND IT IS NOT THE LAST MEASUREMENT THE CELL MEETS. bubbles v1.0.0 runs runewidth.Truncate over
+	// every cell before styling, and runewidth does not skip ANSI. Measuring here in display columns
+	// is therefore necessary but not sufficient: it holds only while the cell is PLAIN, which for a
+	// title is guaranteed upstream (authlib/observe/claude normalises every one) and asserted below.
+	// Styling a title would put escape bytes inside that second budget and collapse a narrow cell to
+	// a lone ellipsis.
 	if lipgloss.Width(s) <= n {
 		return s
 	}

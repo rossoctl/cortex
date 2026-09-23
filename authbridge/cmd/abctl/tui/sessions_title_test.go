@@ -802,3 +802,34 @@ func TestTrunc_BudgetsInDisplayColumnsAndKeepsASCIIIdentical(t *testing.T) {
 		}
 	}
 }
+
+// A rendered TITLE cell carries no ANSI, which is what makes the column measurement sufficient.
+//
+// bubbles v1.0.0 runs runewidth.Truncate over every cell before styling, and runewidth does not skip
+// escape sequences. Measuring in display columns here is therefore only safe while the cell is PLAIN:
+// escape bytes would be charged against the budget and a narrow cell would collapse to a lone
+// ellipsis. The harvester guarantees plain titles; this asserts the renderer does not reintroduce
+// styling, so the pair of facts the comment on truncLeft depends on is actually held by a test.
+func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
+	forceColor(t) // styling real, so a Render that added escapes would show up here
+
+	const id = "s1"
+	for _, title := range []string{
+		"a plain prose title",
+		"/Users/somebody/src/cortex/.worktrees/a-long-name/authbridge",
+		"日本語のセッションタイトルです",
+		"ship it 🎉",
+	} {
+		m := newTitleModel(t, map[string]SessionMetadata{id: {Title: title}}, id)
+		for _, w := range []int{11, 20, 40} {
+			got := m.sessionTitleCell(id, w)
+			if strings.ContainsRune(got, 0x1b) {
+				t.Errorf("title cell carries an escape byte at width %d: %q", w, got)
+			}
+			if lipgloss.Width(got) > w {
+				t.Errorf("title cell is %d columns against a %d-column budget: %q",
+					lipgloss.Width(got), w, got)
+			}
+		}
+	}
+}

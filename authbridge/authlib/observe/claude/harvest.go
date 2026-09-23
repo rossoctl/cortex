@@ -595,11 +595,20 @@ func titleFromTranscript(path string) (string, error) {
 	// titles, so the column stops telling them apart — exactly what it is for. Clipping the cwd
 	// was also a regression against the behaviour before this change, which never truncated here.
 	//
-	// Safe to leave long because the renderer already truncates a path FROM THE LEFT, keeping the
-	// tail (see the viewer's truncLeft): the cap exists to bound prompts, which are unbounded free
-	// text, not paths, which are bounded by the filesystem. Whitespace is still collapsed, so a
-	// cwd cannot carry a control character into a cell.
-	return strings.Join(strings.Fields(cwd), " "), err
+	// LEFT-TRUNCATION IS A PROPERTY OF THE LEADING SLASH, NOT OF BEING A CWD, and this function
+	// cannot convey which is which: a prompt and a cwd come back through the same string, so the
+	// renderer decides by looking at the first character. A cwd therefore keeps its tail only
+	// because it starts with "/" — and since this change a "/review …" prompt takes that branch
+	// too, while a relative cwd would not. An earlier version of this comment claimed the renderer
+	// truncates "a path" from the left, which overstated what it can know.
+	//
+	// So the reason to leave it long is narrower: a path is bounded by the filesystem, where a
+	// prompt is unbounded free text, and the cap exists for the latter. The cell stays bounded
+	// either way, because the renderer truncates whatever it is handed.
+	//
+	// It is still normalised — whitespace collapsed, markup and non-graphic runes dropped — so a
+	// cwd cannot carry hidden characters into a cell any more than a prompt can.
+	return normalizeTitle(cwd), err
 }
 
 // maxTitleLen caps a harvested title, in RUNES.
@@ -613,6 +622,14 @@ func titleFromTranscript(path string) (string, error) {
 // width. It is safe only because every renderer re-truncates by display width — the sessions pane
 // measures with lipgloss.Width.
 //
+// THAT IS NOT THE ONLY RULER THE CELL MEETS, and saying only "the pane measures with lipgloss.Width"
+// was incomplete: bubbles v1.0.0 applies runewidth.Truncate to every cell before styling it, and
+// runewidth is NOT ANSI-aware. Today that is harmless, because a title cell carries no escape bytes —
+// this package guarantees it, and the pane asserts it. But the two facts are load-bearing together: if
+// a title were ever styled, the escape bytes would be charged against the column budget and an
+// 11-column cell would collapse to a lone ellipsis. Anyone adding colour to a title needs to know that
+// before they do it, which is why it is recorded here rather than left to be rediscovered.
+//
 // THAT RELATIONSHIP IS NOT GUARDED BY ANY SINGLE TEST, and an earlier version of this comment
 // implied otherwise. It spans two modules: this package has no width library, so its test asserts
 // only that the cap is a rune count and not a byte or width bound, while the re-truncation lives in
@@ -625,7 +642,14 @@ const maxTitleLen = 80
 // No ellipsis: this is not the display truncation — the TITLE column applies its own, measured in
 // display columns — and a marker added here would be re-truncated downstream, leaving a cell with
 // two of them.
-func clipTitle(s string) string {
+// normalizeTitle makes s plain: no markup, no characters that fail to print as themselves, one line.
+//
+// SEPARATED FROM THE LENGTH CAP so the cwd fallback can have the guarantee without the clipping.
+// Before this it returned through a bare strings.Fields, which collapsed whitespace and nothing
+// else — so a directory name carrying an ESC sequence, a bidi override or a tag reached the file
+// unfiltered, while every other tier was clean. A guarantee that holds for three tiers out of four
+// is not one.
+func normalizeTitle(s string) string {
 	// STRIP ALL MARKUP FIRST, wherever it sits. Every earlier attempt filtered markup by SHAPE —
 	// anchored at the start, or line-leading, or per block — and each round of review found another
 	// shape that slipped past: markup inside <command-args>, markup mid-line on a later line, a
@@ -665,13 +689,40 @@ func clipTitle(s string) string {
 			// Controls (C0/C1/DEL), format characters — bidi overrides and isolates, ZWJ, ZWSP,
 			// variation selectors — surrogates and unassigned code points. None of these print as
 			// themselves, and the bidi ones actively reorder what surrounds them.
+		case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r), unicode.Is(unicode.Sk, r):
+			// COMBINING AND MODIFYING characters: non-spacing marks, enclosing marks, and modifier
+			// symbols (skin tones). Dropped rather than kept, which is what lets the length cut
+			// below be a plain rune slice.
+			//
+			// They only ever attach to the character before them, so a cut that lands between the
+			// two leaves a dangling mark on whatever now precedes it — or a base character shorn of
+			// its accent. Keeping them would mean measuring in grapheme clusters, which needs a
+			// segmentation library this module does not have. Dropping them costs an accent
+			// ("café" titles as "cafe") and keeps this function simple, which is the trade the
+			// rest of it already makes.
+		case r >= 0x1F1E6 && r <= 0x1F1FF:
+			// REGIONAL INDICATORS, which only carry meaning in pairs: a cut between them turns a
+			// flag into a lone letter glyph. Two runes, never independently meaningful, so they go
+			// together or not at all.
 		default:
 			b.WriteRune(r)
 			prevSpace = false
 		}
 	}
-	s = strings.TrimSpace(b.String())
+	return strings.TrimSpace(b.String())
+}
 
+// clipTitle normalises s and caps it at maxTitleLen runes.
+//
+// What every tier but the cwd fallback goes through; that one uses normalizeTitle alone, because a
+// path's distinguishing end is its leaf and clipping keeps the head.
+//
+// A PLAIN RUNE CUT IS SAFE HERE, because normalizeTitle removed every character that binds to its
+// neighbour: combining marks, modifiers, joiners and regional indicators are all gone, so one rune
+// is one grapheme and the slice cannot land inside a cluster. Without that a cut could leave a
+// dangling accent or half a flag.
+func clipTitle(s string) string {
+	s = normalizeTitle(s)
 	r := []rune(s)
 	if len(r) <= maxTitleLen {
 		return s
