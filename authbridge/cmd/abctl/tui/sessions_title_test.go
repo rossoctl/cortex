@@ -988,6 +988,50 @@ func TestLooksLikePath(t *testing.T) {
 	}
 }
 
+// TestLooksLikePath_SingleSegmentPathWithASpaceReadsAsProse pins the rule's ONE deliberate miss.
+//
+// The doc comment calls this out as wrong on purpose, but nothing held it, so the trade was a claim
+// rather than a decision anyone could see change. Characterization, not an endorsement: it asserts
+// what the current rule does so that widening it is a visible diff and not a silent one.
+//
+// "/tmp foo" is a real single-segment directory with a space in it. The rule wants a second "/" before
+// any space, so it reads as prose and is truncated from the RIGHT — the opposite end from the one a
+// path wants kept. The cost is bounded and small, which is why the rule stays simple: the cell is cut
+// at the wrong end, not unbounded, and Claude Code records a cwd with at least two segments, so this
+// shape does not arise from harvesting. It can only arrive from a hand-edited metadata file or a
+// prompt that happens to look like one.
+//
+// The OPPOSITE direction is not a miss and belongs here so the two are not confused: "/review a/b" and
+// "/read docs/x.md" are slash commands whose argument contains a slash, and prose is the right answer
+// for them. The rule gets those right for the same reason it gets "/tmp foo" wrong — it looks for the
+// second "/" before any space — so one behaviour cannot be changed without the other.
+func TestLooksLikePath_SingleSegmentPathWithASpaceReadsAsProse(t *testing.T) {
+	// The deliberate miss: a genuine path, classified as prose, right-truncated.
+	for _, in := range []string{"/tmp foo", "/opt my notes", "/srv a"} {
+		if looksLikePath(in) {
+			t.Errorf("looksLikePath(%q) = true, want false — the rule requires a second %q before "+
+				"any space, so a single-segment path with a space reads as prose. If this now "+
+				"returns true the trade-off changed; update the doc comment with it", in, "/")
+		}
+	}
+
+	// And what it costs, measured rather than described: the leaf goes, the head is kept.
+	const budget = 6
+	if got := truncRight("/tmp foo", budget); got != "/tmp …" {
+		t.Errorf("truncRight(%q, %d) = %q, want %q — this is the cost of the miss above, pinned so "+
+			"it is a bounded wrong-end cut and not something worse", "/tmp foo", budget, got, "/tmp …")
+	}
+
+	// NOT a miss: a slash command with a slash in its argument. Prose is correct, and the same clause
+	// produces both answers.
+	for _, in := range []string{"/review a/b", "/read docs/x.md", "/cd /usr/local"} {
+		if looksLikePath(in) {
+			t.Errorf("looksLikePath(%q) = true, want false: a slash command reads left-to-right, so "+
+				"left-truncating it would discard the command name", in)
+		}
+	}
+}
+
 // runBatch invokes a command and, if it is a tea.Batch, every member it carries.
 //
 // tea.Batch does not run its members: it returns a tea.BatchMsg, which the runtime then dispatches.

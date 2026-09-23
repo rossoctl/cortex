@@ -460,6 +460,12 @@ func (m *model) sessionTitleCell(id string, titleW int) string {
 // right-truncated. A single-segment path is not something Claude Code records as a cwd, and the cost
 // is a cell cut at the other end rather than anything unbounded.
 //
+// THAT MISS IS PINNED, by TestLooksLikePath_SingleSegmentPathWithASpaceReadsAsProse, as
+// characterization rather than endorsement — it also measures the cost, so widening this rule is a
+// visible diff. The same test covers the opposite direction, which is NOT a miss: "/review a/b" is a
+// slash command whose argument holds a slash, and prose is the right answer. One clause produces both,
+// so neither behaviour can change alone.
+//
 // ANY UNICODE SPACE SEPARATES, not just " " and "\t". An earlier IndexAny(rest, " \t") saw no
 // separator in "/review\u00a0docs/plan.md", found the second "/", and left-truncated the slash
 // command — the exact regression above, reachable through a non-breaking space, an ideographic space,
@@ -529,10 +535,22 @@ func truncLeft(s string, n int) string {
 	// package documents as content nobody here controls, so CJK and emoji are expected rather
 	// than exotic: measured, a 14-column budget returned 27 columns of CJK.
 	//
-	// The two failures differ and both are bad. In a header the over-wide string wraps the
-	// terminal, costing a body row. In the table the library re-truncates from the RIGHT,
-	// destroying the tail that left-truncation exists to keep — so the feature inverts for
-	// exactly the titles that need it.
+	// The two failures differ and both are bad. In a header the over-wide string wraps the terminal,
+	// costing a body row.
+	//
+	// In the table the cell is cut a SECOND time, and the result is worse than either end alone.
+	// bubbles renders every cell through runewidth.Truncate(value, width, "…"), which keeps the HEAD
+	// and appends its own ellipsis — so an over-wide left-truncation is cut again from the right,
+	// with this function's leading ellipsis already in place. Measured on a 14-column budget:
+	//
+	//	truncLeft, correct     "…日日日日日日"      13 columns, tail kept, one ellipsis
+	//	measured in runes      "…日日日日日日日日日日日日日"  27 columns
+	//	  ...after the table   "…日日日日日日…"     14 columns, TWO ellipses, tail gone
+	//
+	// So the failure is not that left-truncation inverts into right-truncation — it is that the cell
+	// ends up cut at BOTH ends and keeps the middle, which is the one part of a path that identifies
+	// nothing. At a narrow budget it degenerates completely: an 11-column cell renders "…日日日日…" and
+	// a 2-column one renders "……".
 	//
 	// lipgloss.Width, mirroring padLeft, which measures this way for the same reason.
 	//
