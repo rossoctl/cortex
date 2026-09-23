@@ -2153,3 +2153,54 @@ func TestClipTitle_KeepsComparisonOperators(t *testing.T) {
 		}
 	}
 }
+
+// A harness block nested inside the SAME tag name is removed whole.
+//
+// The close-tag search took the first "</name" after the opening tag, which for same-name nesting is
+// the INNER close — so the span ended early and everything up to the outer close survived as prose.
+// The fixed-point loop could not recover it either, because the opening tag had already been consumed.
+// Different-name nesting always worked, since each tag is scanned separately, and that is exactly why
+// the corpus missed this: it covered the case that worked.
+func TestStripHarnessSpans_HandlesSameNameNesting(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"one level", "<system-reminder>a<system-reminder>b</system-reminder>LEAK</system-reminder>", ""},
+		{"trailing prose survives", "<system-reminder>a<system-reminder>b</system-reminder>LEAK</system-reminder> tail", "tail"},
+		{"leading prose survives", "head <system-reminder>a<system-reminder>b</system-reminder>LEAK</system-reminder>", "head"},
+		{"three levels", "<system-reminder>a<system-reminder>b<system-reminder>c</system-reminder>d</system-reminder>LEAK</system-reminder>", ""},
+		// Two SEPARATE blocks are not nesting: the text between them is the user's and must survive.
+		{"separate blocks keep the text between", "<system-reminder>a</system-reminder> keep me <system-reminder>b</system-reminder>", "keep me"},
+		{"different-name nesting still works", "<system-reminder>x<task-notification>y</task-notification>z</system-reminder>", ""},
+		// An unclosed block still runs to end-of-string.
+		{"unclosed runs to end", "prose <system-reminder>LEAK payload", "prose"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clipTitle(tc.in); got != tc.want {
+				t.Errorf("clipTitle(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// cutTrailingHarness treats every whitespace class as indentation, decoded as runes.
+//
+// `unicode.IsSpace(rune(s[j]))` converts one BYTE, so a multi-byte space never matched — its
+// continuation bytes are not IsSpace, the scan stopped on them, and the block read as mid-line. The
+// adjacent comment named NBSP as a covered shape while the code could not see it. Not a leak end to
+// end, since normalisation removes the tag anyway, but the defence did not do what it claimed.
+func TestCutTrailingHarness_AnyWhitespaceIndent(t *testing.T) {
+	for _, ind := range []string{" ", "  ", "\t", "\v", "\f", " ", "　", " ", " ", " \t "} {
+		in := "my real question\n" + ind + "<system-reminder>hidden</system-reminder>"
+		if got := cutTrailingHarness(in); got != "my real question" {
+			t.Errorf("indent %q: cutTrailingHarness = %q, want %q", ind, got, "my real question")
+		}
+	}
+	// Real text before the tag on its line is still not a cut — the positional rule holds.
+	for _, in := range []string{
+		"line one\nline two <system-reminder>x</system-reminder>",
+		"see <task-notification> for details",
+	} {
+		if got := cutTrailingHarness(in); got != in {
+			t.Errorf("cutTrailingHarness(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}

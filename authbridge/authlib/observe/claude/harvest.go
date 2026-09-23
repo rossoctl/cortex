@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ConfigDirEnv is the variable Claude Code itself honours for relocating its config
@@ -634,11 +635,18 @@ func titleFromTranscript(path string) (string, error) {
 // 11-column cell would collapse to a lone ellipsis. Anyone adding colour to a title needs to know that
 // before they do it, which is why it is recorded here rather than left to be rediscovered.
 //
-// THAT RELATIONSHIP IS NOT GUARDED BY ANY SINGLE TEST, and an earlier version of this comment
-// implied otherwise. It spans two modules: this package has no width library, so its test asserts
-// only that the cap is a rune count and not a byte or width bound, while the re-truncation lives in
-// cmd/abctl/tui and is tested there against its own column budgets. Nothing fails if someone
-// removes the renderer's truncation and leaves this constant alone.
+// THAT RELATIONSHIP IS GUARDED, from the renderer's side:
+// TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures in cmd/abctl/tui takes a title at exactly this
+// cap in the worst case for the mismatch — MaxTitleLen runes of CJK, twice that in columns — and
+// requires the rendered cell to fit anyway. Removing the renderer's truncation fails it, along with
+// ten other tests in that package.
+//
+// An earlier version of this comment said the opposite: that no single test held the relationship
+// and that "nothing fails if someone removes the renderer's truncation". That was true when written
+// and false once the guard landed, which is the worse direction for a comment to be wrong in — it
+// invites a maintainer to delete guarded code. This package still cannot assert the width half
+// itself (it has no width library, and the exported constant is what lets the other side name it),
+// so the guard lives there and this comment points at it by name.
 const MaxTitleLen = 80
 
 // maxNormalizePasses bounds normalizeTitle's fixed-point loop.
@@ -863,11 +871,34 @@ func stripHarnessSpans(s string) string {
 			// "INJECTED payload" — with no escape sequence needed. A harness block that is not
 			// closed is still a harness block, and everything after it is its content as far as
 			// anyone can tell.
+			// THE MATCHING CLOSE, counting depth — not the first one. With the same tag NESTED,
+			// "<system-reminder>a<system-reminder>b</system-reminder>LEAKED</system-reminder>" ended
+			// its span at the INNER close, so the outer close and everything before it survived as
+			// "LEAKED". The next iteration then found no opening tag, because this one had consumed
+			// it, so the fixed-point loop could not recover it either.
+			//
+			// Different-name nesting was already handled, since each tag is scanned separately, and
+			// that is why the corpus missed this: it covered the case that worked.
 			end := len(s)
 			name := tag[1:] // tag is "<name"
-			if c := strings.Index(s[i:], "</"+name); c >= 0 {
-				if g := strings.IndexByte(s[i+c:], '>'); g >= 0 {
-					end = i + c + g + 1
+			depth := 0
+			for j := i; j < len(s); {
+				switch {
+				case strings.HasPrefix(s[j:], tag):
+					depth++
+					j += len(tag)
+				case strings.HasPrefix(s[j:], "</"+name):
+					depth--
+					if depth == 0 {
+						if g := strings.IndexByte(s[j:], '>'); g >= 0 {
+							end = j + g + 1
+						}
+						j = len(s) // done
+						continue
+					}
+					j += len("</" + name)
+				default:
+					j++
 				}
 			}
 			s = s[:i] + " " + s[end:]
@@ -1232,8 +1263,8 @@ func cutTrailingHarness(s string) string {
 			// LEADING WHITESPACE STILL COUNTS AS LINE-LEADING. Requiring s[i-1] to be exactly a
 			// newline let an INDENTED block through: "my question\n   <system-reminder>…" kept the
 			// tag and was clipped mid-tag at 80 runes, which is the failure this function's own doc
-			// describes. Only spaces and tabs are skipped, so the constraint still holds against
-			// anything with real text before it on the line.
+			// describes. Only whitespace is skipped, so the constraint still holds against anything
+			// with real text before it on the line.
 			//
 			// A known tag mid-line on a LATER line — "line one\nline two <system-reminder>x" — is
 			// deliberately left alone: it is genuinely ambiguous between prose and appended markup,
@@ -1243,17 +1274,26 @@ func cutTrailingHarness(s string) string {
 			// Every occurrence is examined, not just the first: a prompt may mention a tag inline
 			// and still have a real appended block after it.
 			if i > 0 {
-				// ANY whitespace counts as indentation, not just space and tab. The adjacent comment
-				// already cited \v and NBSP as shapes the harness might use, while the check tested
-				// two characters — so the two defences were less independent than they read. Not a
-				// leak end to end, since normalizeTitle removes the tag either way, but a defence
-				// that only appears to cover a case is worse than one that admits it does not.
-				j := i - 1
-				for j >= 0 && unicode.IsSpace(rune(s[j])) && s[j] != '\n' && s[j] != '\r' {
-					j--
+				// ANY whitespace counts as indentation, not just space and tab — and it is decoded as
+				// a RUNE, which is the part the previous version got wrong. `unicode.IsSpace(rune(s[j]))`
+				// converts one BYTE, so a multi-byte space (NBSP, U+3000, U+2028, ogham) never matched:
+				// its continuation bytes are not IsSpace, so the scan stopped on them and the block was
+				// treated as mid-line. The comment claimed those very shapes were covered.
+				//
+				// Not a leak end to end — normalizeTitle removes the tag either way — but a defence that
+				// only appears to cover a case is worse than one that admits it does not.
+				j := i
+				for j > 0 {
+					r, size := utf8.DecodeLastRuneInString(s[:j])
+					if r == '\n' || r == '\r' || !unicode.IsSpace(r) {
+						break
+					}
+					j -= size
 				}
-				if j >= 0 && s[j] != '\n' && s[j] != '\r' {
-					continue
+				if j > 0 {
+					if r, _ := utf8.DecodeLastRuneInString(s[:j]); r != '\n' && r != '\r' {
+						continue
+					}
 				}
 			}
 			if cut < 0 || i < cut {
