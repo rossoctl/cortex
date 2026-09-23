@@ -485,8 +485,17 @@ func titleFromTranscript(path string) (string, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
-		if e.Cwd != "" {
-			cwd = e.Cwd
+		// NORMALISED BEFORE THE GUARD, like all five prompt tiers, rather than tested raw.
+		//
+		// A raw `!= ""` accepted a cwd that normalises away to nothing — whitespace only, an ESC
+		// sequence, a bare tag — and last-wins then let it CLOBBER a good value from an earlier line,
+		// so the session titled as "" instead of "/w/good". The cwd is the last fallback, so an empty
+		// result here is an unnamed session, not a fall-through to something else.
+		//
+		// normalizeTitle, not clipTitle: a path's distinguishing end is its leaf, so this tier
+		// deliberately keeps its full length and the renderer truncates from the left.
+		if c := normalizeTitle(e.Cwd); c != "" {
+			cwd = c
 		}
 		// Guarded on Type as well as on the value: "aiTitle" appearing on some other
 		// line kind is not a title claim.
@@ -623,6 +632,11 @@ func titleFromTranscript(path string) (string, error) {
 	//
 	// It is still normalised — whitespace collapsed, markup and non-graphic runes dropped — so a
 	// cwd cannot carry hidden characters into a cell any more than a prompt can.
+	//
+	// NORMALISED TWICE, and deliberately so: the accumulator above normalises each candidate to decide
+	// whether it is empty, and this call is the guarantee for the RETURN. normalizeTitle is idempotent
+	// (asserted, since its fixed-point loop is what makes that true), so the second pass costs one
+	// walk and means this line does not depend on every assignment upstream having been normalised.
 	return normalizeTitle(cwd), err
 }
 
@@ -928,74 +942,93 @@ func stripANSI(s string) string {
 // <command-args> value. That last one is the leak review found this round; the rest are the leaks it
 // found in the rounds before.
 func stripHarnessSpans(s string) string {
-	for _, tag := range harnessTagNames {
-		if !strings.Contains(s, tag) {
+	if !strings.ContainsRune(s, '<') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	// A CURSOR, and one output buffer. This used to re-slice s on every excision and then restart
+	// strings.Index from offset 0, which is quadratic in the number of blocks: measured end to end
+	// through titleFromTranscript, 155KB took 21ms, 620KB 242ms and 2.5MB 2.49s — four times the input
+	// for eleven times the work — and bufio admits lines up to 16MB, so a single chatty transcript line
+	// could stall the harvest for seconds. cutTrailingHarness already advanced a cursor; this matches
+	// it.
+	//
+	// SPANS ARE FOUND STRUCTURALLY, by tagSpanLen, and then judged by CANONICAL NAME. This used to
+	// scan for each literal tag string from the list, which made the match as narrow as a byte
+	// compare — and every way a real name can differ from its literal form downgraded "remove with
+	// body" to "neuter the brackets", promoting the body into the title:
+	//
+	//	"<SYSTEM-REMINDER>INJECTED</SYSTEM-REMINDER>"    case
+	//	"<system\u02c6-reminder>INJECTED</...>"           a rune wedged into the name
+	//	"</system-reminder>"                             an orphan close, byte 1 is "/"
+	//
+	// One parser, one lookup: tagSpanLen decides what a span IS and isHarnessSpan decides what it
+	// MEANS, so the two cannot disagree the way a second literal scanner did.
+	for pos := 0; pos < len(s); {
+		i := strings.IndexByte(s[pos:], '<')
+		if i < 0 {
+			b.WriteString(s[pos:])
+			break
+		}
+		i += pos
+		n := tagSpanLen(s[i:])
+		if n == 0 || !isHarnessSpan(s[i:i+n]) {
+			// Not a harness span. Emit through this "<" and keep looking; stripTags handles whatever
+			// neutering the rest needs.
+			b.WriteString(s[pos : i+1])
+			pos = i + 1
 			continue
 		}
-		closeTag := "</" + tag[1:] // tag is "<name"
-		var b strings.Builder
-		b.Grow(len(s))
-		// A CURSOR, and one output buffer. This used to re-slice s on every excision and then
-		// restart strings.Index from offset 0, which is quadratic in the number of blocks: measured
-		// end to end through titleFromTranscript, 155KB took 21ms, 620KB 242ms and 2.5MB 2.49s —
-		// four times the input for eleven times the work — and bufio admits lines up to 16MB, so a
-		// single chatty transcript line could stall the harvest for seconds. cutTrailingHarness
-		// already advanced a cursor; this now matches it.
-		for {
-			i := strings.Index(s, tag)
-			if i < 0 {
-				b.WriteString(s)
-				break
-			}
-			b.WriteString(s[:i])
-			b.WriteByte(' ')
+		b.WriteString(s[pos:i])
+		b.WriteByte(' ')
 
-			// The span runs to the matching close when there is one, and TO THE END OF THE STRING
-			// otherwise.
-			//
-			// Not to the end of the opening tag, which is what it did: an unclosed block then left
-			// its body behind as bare prose — "prose <system-reminder>INJECTED payload" kept
-			// "INJECTED payload" — with no escape sequence needed. A harness block that is not
-			// closed is still a harness block, and everything after it is its content as far as
-			// anyone can tell.
-			//
-			// THE MATCHING CLOSE, counting depth — not the first one. With the same tag NESTED,
-			// "<system-reminder>a<system-reminder>b</system-reminder>LEAKED</system-reminder>" ended
-			// its span at the INNER close, so the outer close and everything before it survived as
-			// "LEAKED". The next iteration then found no opening tag, because this one had consumed
-			// it, so the fixed-point loop could not recover it either.
-			//
-			// Different-name nesting was already handled, since each tag is scanned separately, and
-			// that is why the corpus missed this: it covered the case that worked.
-			//
-			// The depth scan walks each byte of the span at most once, and the cursor never revisits
-			// it, so the whole pass is linear in len(s) per tag.
-			end := len(s)
-			depth := 0
-			for j := i; j < len(s); {
-				switch {
-				case strings.HasPrefix(s[j:], tag):
-					depth++
-					j += len(tag)
-				case strings.HasPrefix(s[j:], closeTag):
-					depth--
-					if depth == 0 {
-						if g := strings.IndexByte(s[j:], '>'); g >= 0 {
-							end = j + g + 1
-						}
-						j = len(s)
-						continue
-					}
-					j += len(closeTag)
-				default:
-					j++
-				}
+		// The span runs to the matching close when there is one, and TO THE END OF THE STRING
+		// otherwise.
+		//
+		// Not to the end of the opening tag, which is what it did: an unclosed block then left its
+		// body behind as bare prose — "prose <system-reminder>INJECTED payload" kept "INJECTED
+		// payload" — with no escape sequence needed. A harness block that is not closed is still a
+		// harness block, and everything after it is its content as far as anyone can tell.
+		//
+		// THE MATCHING CLOSE, counting depth — not the first one. With the same tag NESTED,
+		// "<system-reminder>a<system-reminder>b</system-reminder>LEAKED</system-reminder>" ended its
+		// span at the INNER close, so the outer close and everything before it survived as "LEAKED".
+		// The next iteration then found no opening tag, because this one had consumed it, so the
+		// fixed-point loop could not recover it either.
+		//
+		// Depth is counted over spans of THE SAME canonical name, so a different harness tag nested
+		// inside does not close this one; it is removed with this span's body regardless.
+		//
+		// The depth scan walks each byte of the span at most once, and the cursor never revisits it,
+		// so the whole pass is linear in len(s).
+		want := canonicalTagName(neuteredSpan(s[i : i+n]))
+		end := len(s)
+		depth := 0
+		for k := i; k < len(s); {
+			if s[k] != '<' {
+				k++
+				continue
 			}
-			s = s[end:]
+			m := tagSpanLen(s[k:])
+			if m == 0 || canonicalTagName(neuteredSpan(s[k:k+m])) != want {
+				k++
+				continue
+			}
+			if strings.HasPrefix(s[k:], "</") {
+				depth--
+				if depth == 0 {
+					end = k + m
+					break
+				}
+			} else {
+				depth++
+			}
+			k += m
 		}
-		s = b.String()
+		pos = end
 	}
-	return s
+	return b.String()
 }
 
 // stripTags NEUTERS every tag-name-shaped span in s: the angle brackets go, the text between them
@@ -1406,6 +1439,56 @@ func promptCandidate(text string) (string, bool) {
 // "does this text BEGIN as markup", where a false positive costs one fallback. This one cuts text
 // off mid-prompt, so it may only fire on tags known to be the harness's. Matching any "<word>"
 // would truncate a prompt that quotes HTML or generics.
+// canonicalTagName reduces a tag name to the form the harness-tag lookup compares.
+//
+// Lowercased, and stripped of everything that is not a letter or digit. Both halves close a body-leak
+// class rather than being tidiness:
+//
+//   - CASE. tagSpanLen accepts A-Z in a name, but the tag list is all lowercase and was compared byte
+//     for byte, so "<SYSTEM-REMINDER>INJECTED</SYSTEM-REMINDER>" matched nothing, fell through to the
+//     neutering pass, and promoted its body into the title. isSyntheticPrompt already lowercased and
+//     documented why; the function that removes the BODY did not.
+//   - NON-ALPHANUMERICS. Dropping them handles any rune wedged into a name, not just the hyphens and
+//     underscores the list happens to contain. U+02C6 is category Lm, so scrubRunes does not drop it
+//     (it drops Mn/Me/Sk), and "<system\u02c6-reminder>" split the name past any literal compare with
+//     nothing in the pipeline to remove the rune — so the fixed-point loop could not rescue it either.
+//     Canonicalising the NAME rather than enumerating runes to delete means the next such category
+//     needs no change here.
+func canonicalTagName(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		}
+	}
+	return b.String()
+}
+
+// harnessTagSet is harnessTagNames keyed by canonical name, for the body-removing lookup.
+var harnessTagSet = func() map[string]bool {
+	m := make(map[string]bool, len(harnessTagNames))
+	for _, tag := range harnessTagNames {
+		m[canonicalTagName(tag)] = true
+	}
+	return m
+}()
+
+// isHarnessSpan reports whether the tag span s names a harness block, whatever its case, its
+// punctuation, or whether it is an opening or a closing tag.
+//
+// s must be exactly one span as measured by tagSpanLen. neuteredSpan already drops the brackets and a
+// leading slash, so a CLOSING tag canonicalises to the same name as its opener — which is what makes
+// an orphan "</system-reminder>" recognisable. It was not: the scan looked for "<system-reminder" and
+// byte 1 of an orphan close is "/", so it missed, and the neutering pass turned the orphan into the
+// bare word "system-reminder".
+func isHarnessSpan(s string) bool {
+	return harnessTagSet[canonicalTagName(neuteredSpan(s))]
+}
+
 var harnessTagNames = []string{
 	"<system-reminder",
 	"<task-notification",

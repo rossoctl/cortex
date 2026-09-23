@@ -2541,3 +2541,126 @@ func TestNeuteredSpan(t *testing.T) {
 		}
 	}
 }
+
+// TestStripHarnessSpans_MatchesTheNameNotItsBytes pins the class of body leak that came from
+// comparing tag names literally.
+//
+// tagSpanLen decides what a span IS and accepts A-Z in a name; the tag list is all lowercase and was
+// compared byte for byte. So every way a real name can differ from its literal form silently
+// downgraded "remove with body" to "neuter the brackets" — and neutering a harness tag PROMOTES its
+// body into the title, which is the one outcome this file exists to prevent.
+//
+// isSyntheticPrompt already lowercased its comparison and documented why. The function that removes
+// the body did not, which is the asymmetry these cases cover.
+func TestStripHarnessSpans_MatchesTheNameNotItsBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"uppercase", "<SYSTEM-REMINDER>INJECTED</SYSTEM-REMINDER>", ""},
+		{"mixed case", "<System-Reminder>INJECTED</System-Reminder>", ""},
+		{"uppercase, mid-prose", "ok <SYSTEM-REMINDER>INJECTED</SYSTEM-REMINDER> end", "ok end"},
+		{"close tag cased differently", "<system-reminder>INJECTED</SYSTEM-REMINDER>", ""},
+
+		// A rune wedged into the name. U+02C6 is category Lm, so scrubRunes does NOT drop it — it
+		// drops Mn/Me/Sk — which means nothing in the pipeline deletes the rune and the fixed-point
+		// loop cannot rescue the match. Canonicalising the name is what closes it.
+		{"Lm rune in the name", "<systemˆ-reminder>INJECTED</systemˆ-reminder>", ""},
+		{"Lm rune, open only", "<systemˆ-reminder>INJECTED</system-reminder>", ""},
+
+		// An ORPHAN CLOSE. The scan looked for "<system-reminder" and byte 1 of an orphan close is
+		// "/", so it missed and the neutering pass left the bare word behind.
+		{"orphan close", "</system-reminder>", ""},
+		{"orphan close, mid-prose", "prose </system-reminder> more", "prose"},
+		{"orphan close, uppercase", "</SYSTEM-REMINDER>", ""},
+
+		// Unchanged: a name that is NOT a harness tag is still only neutered, never body-removed.
+		{"unknown tag keeps its words", "<unknown-tag>X</unknown-tag>", "unknown-tag X unknown-tag"},
+		{"comparison is not a span", "is 3 < 5 in Go?", "is 3 < 5 in Go?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeTitle(tc.in); got != tc.want {
+				t.Errorf("normalizeTitle(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeTitle_IsIdempotentAtEveryNestingDepth settles a reported concern rather than fixing
+// one, and keeps it settled.
+//
+// The claim was that neuteredSpan re-emits an interior "<" verbatim, so each left-nested bracket
+// costs one pass, nine nested pairs exhaust maxNormalizePasses and a live tag span survives. It does
+// not reproduce: neuteredSpan returns the interior WITHOUT its brackets, so nesting does not consume
+// passes at all and one pass handles any depth.
+//
+// Asserted as two properties, at depths well past the pass limit: no span survives, and a second
+// application changes nothing. The second is what "fixed point" means, and other comments in this
+// file now lean on it.
+func TestNormalizeTitle_IsIdempotentAtEveryNestingDepth(t *testing.T) {
+	for depth := 1; depth <= 24; depth++ {
+		for _, tag := range []string{"a", "unknown-tag", "system-reminder"} {
+			in := strings.Repeat("<"+tag+">", depth) + "BODY" + strings.Repeat("</"+tag+">", depth)
+			once := normalizeTitle(in)
+			if twice := normalizeTitle(once); once != twice {
+				t.Errorf("depth %d, <%s>: not idempotent — %q then %q", depth, tag, once, twice)
+			}
+			for off := 0; off < len(once); off++ {
+				if once[off] == '<' && tagSpanLen(once[off:]) > 0 {
+					t.Errorf("depth %d, <%s>: a live tag span survived at offset %d: %q",
+						depth, tag, off, once)
+					break
+				}
+			}
+			// And a harness block's body never survives, whatever the nesting.
+			if tag == "system-reminder" && strings.Contains(once, "BODY") {
+				t.Errorf("depth %d: harness body survived: %q", depth, once)
+			}
+		}
+	}
+}
+
+// TestTitleFromTranscript_AnEmptyCwdDoesNotClobberAGoodOne pins the last tier's guard.
+//
+// The cwd accumulator tested the RAW value for emptiness, unlike all five prompt tiers, which
+// normalise first. So a cwd that normalises away to nothing — whitespace only, an ESC sequence —
+// counted as present, and last-wins let it overwrite a good value from an earlier line. The cwd is the
+// final fallback, so the result was an unnamed session rather than a fall-through.
+func TestTitleFromTranscript_AnEmptyCwdDoesNotClobberAGoodOne(t *testing.T) {
+	for _, tc := range []struct{ name, later string }{
+		{"spaces", `"   "`},
+		{"tab", `"\t"`},
+		{"non-breaking space", `" "`},
+		{"ideographic space", `"　"`},
+		{"escape sequence only", `"\u001b[0m"`},
+		{"zero-width space", `"​"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl",
+				`{"type":"user","cwd":"/w/good"}`,
+				`{"type":"user","cwd":`+tc.later+`}`)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "/w/good" {
+				t.Errorf("title = %q, want %q — a cwd that normalises to nothing must not overwrite "+
+					"a good one, since this tier is the last fallback", got, "/w/good")
+			}
+		})
+	}
+
+	// Last-wins still applies to a cwd that normalises to something. Not a defect of the guard: by
+	// this tier's own rule the later line is the current directory.
+	dir := t.TempDir()
+	writeSessionTranscript(t, dir, "s.jsonl",
+		`{"type":"user","cwd":"/w/first"}`,
+		`{"type":"user","cwd":"/w/second"}`)
+	got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/w/second" {
+		t.Errorf("title = %q, want %q — last-wins is the rule for a non-empty cwd", got, "/w/second")
+	}
+}
