@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -178,10 +179,53 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 // titled — triggers nothing at all and costs one map lookup per row per tick.
 func (m *model) untitledSettled(now time.Time) bool {
 	for _, s := range m.sessions {
-		if m.sessionsData[s.ID].Title != "" {
+		if m.sessionHasTitle(s.ID) {
+			continue
+		}
+		// A ZERO UpdatedAt IS NOT "QUIET SINCE THE EPOCH". The field is whatever /v1/sessions
+		// sent, and a summary that omits it decodes to the zero time — which would otherwise
+		// read as settled by ~55 years and trigger a harvest on the first tick, before the
+		// transcript of a brand new session is necessarily on disk. Unknown is not settled.
+		if s.UpdatedAt.IsZero() {
 			continue
 		}
 		if now.Sub(s.UpdatedAt) >= untitledSettleDelay {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionHasTitle reports whether this session renders a title, as the TITLE cell would judge it.
+//
+// THROUGH sessionTitle, not the raw map, so this predicate and the cell can never disagree about
+// what "unnamed" means: the cell sanitises (sessionTitle does), and a predicate reading
+// m.sessionsData[id].Title directly would be asserting about a different string than the one on
+// screen. sanitizeLabel replaces rather than strips, so it cannot change emptiness today — the
+// point is that this does not depend on that remaining true.
+//
+// WHITESPACE COUNTS AS UNNAMED, which the raw comparison got wrong. A title of " " is non-empty
+// to Go and blank in the column, so it satisfied the old check and suppressed the harvest for a
+// row displaying nothing. The harvester normalises its own output and tests each tier's CLIPPED
+// value, so this is defence at the consumer rather than a live upstream bug — but this file
+// renders whatever is in that map, including what an older harvester or a hand-edited file left.
+func (m *model) sessionHasTitle(id string) bool {
+	return strings.TrimSpace(m.sessionTitle(id)) != ""
+}
+
+// harvestNamedSomething reports whether a finished harvest named a session this model could not
+// name before.
+//
+// NOT len(meta) > 0. An incremental harvest returns the whole merged map — every session it has
+// ever seen, not just what this pass parsed — so a non-empty result says nothing about progress
+// and would keep the backoff permanently reset. The question is whether any entry names a session
+// that was unnamed here, which is also what the operator would call progress.
+func (m *model) harvestNamedSomething(meta map[string]SessionMetadata) bool {
+	for id, md := range meta {
+		if strings.TrimSpace(sanitizeLabel(md.Title)) == "" {
+			continue
+		}
+		if !m.sessionHasTitle(id) {
 			return true
 		}
 	}

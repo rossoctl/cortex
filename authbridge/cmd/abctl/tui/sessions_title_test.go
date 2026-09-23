@@ -1391,3 +1391,175 @@ func TestSessionsPane_ReHarvestsSettledUntitledSessions(t *testing.T) {
 		t.Error("claimed a harvest was in flight with no harvester")
 	}
 }
+
+// TestSessionsPane_BacksOffFruitlessHarvests pins the exponential backoff.
+//
+// A session with no transcript under the agent's config dir can never be named — a different
+// agent wrote it, the tree was pruned, CLAUDE_CONFIG_DIR moved. Its row keeps the settle gate
+// satisfied forever, so without a backoff the pane re-walks the whole transcript tree every
+// untitledSettleDelay for a title that is not coming.
+func TestSessionsPane_BacksOffFruitlessHarvests(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: time.Now().Add(-time.Hour)}}
+	m.harvest = func() (map[string]SessionMetadata, error) { return nil, nil }
+
+	// A harvest that names nothing widens the wait.
+	for want := 1; want <= 3; want++ {
+		m.lastHarvest = time.Now().Add(-untitledBackoffCap)
+		m.Update(refreshTickMsg(time.Now()))
+		if !m.harvesting {
+			t.Fatalf("miss %d: no harvest started with the backoff elapsed", want)
+		}
+		m.Update(harvestedMsg{})
+		if m.untitledMisses != want {
+			t.Fatalf("after %d fruitless harvests untitledMisses = %d", want, m.untitledMisses)
+		}
+	}
+
+	// THE WIDENED WAIT IS ACTUALLY ENFORCED. Backdated by the PREVIOUS step's delay, which the
+	// flat settle delay would have accepted; the current backoff must not.
+	m.lastHarvest = time.Now().Add(-untitledBackoff(m.untitledMisses - 1))
+	m.Update(refreshTickMsg(time.Now()))
+	if m.harvesting {
+		t.Error("harvested before the backed-off interval had elapsed")
+	}
+
+	// A harvest that names something resets to the fast cadence.
+	m.lastHarvest = time.Now().Add(-untitledBackoffCap)
+	m.Update(refreshTickMsg(time.Now()))
+	if !m.harvesting {
+		t.Fatal("no harvest started with the backoff fully elapsed")
+	}
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "named at last"}}})
+	if m.untitledMisses != 0 {
+		t.Errorf("a harvest that named a session left untitledMisses = %d", m.untitledMisses)
+	}
+}
+
+// TestUntitledBackoff_DoublesAndIsBounded pins the schedule, including the overflow guard.
+//
+// misses is unbounded — a viewer left open overnight keeps counting — and an unguarded
+// `untitledSettleDelay << misses` goes NEGATIVE past 62, which would make the gate fire on every
+// tick: the exact failure the backoff exists to prevent, reached by way of its own fix.
+func TestUntitledBackoff_DoublesAndIsBounded(t *testing.T) {
+	if got := untitledBackoff(0); got != untitledSettleDelay {
+		t.Errorf("untitledBackoff(0) = %v, want the flat settle delay %v", got, untitledSettleDelay)
+	}
+	if got := untitledBackoff(1); got != 2*untitledSettleDelay {
+		t.Errorf("untitledBackoff(1) = %v, want %v", got, 2*untitledSettleDelay)
+	}
+	// Monotonic, never negative, never past the cap — including the shift-overflow range.
+	prev := time.Duration(0)
+	for _, misses := range []int{0, 1, 2, 3, 8, 24, 25, 62, 63, 64, 1 << 20} {
+		got := untitledBackoff(misses)
+		if got <= 0 {
+			t.Fatalf("untitledBackoff(%d) = %v, must be positive", misses, got)
+		}
+		if got > untitledBackoffCap {
+			t.Errorf("untitledBackoff(%d) = %v, past the cap %v", misses, got, untitledBackoffCap)
+		}
+		if got < prev {
+			t.Errorf("untitledBackoff(%d) = %v went backwards from %v", misses, got, prev)
+		}
+		prev = got
+	}
+}
+
+// TestPicker_HarvestsAtMostOncePerVisit pins the picker to one tree walk per visit.
+//
+// The namespaces/pods panes hold no session rows, so nothing there can tell a fruitless walk from
+// a useful one and the interval alone would re-walk the tree for as long as the operator sits
+// there. One scan answers what the pane needs: a session started elsewhere is named by the time
+// they scroll to it.
+func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.pane = paneNamespaces
+	m.lastPane = paneNamespaces
+	called := 0
+	m.harvest = func() (map[string]SessionMetadata, error) {
+		called++
+		return nil, nil
+	}
+
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	_, cmd := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, cmd)
+	if called != 1 {
+		t.Fatalf("first tick harvested %d times, want 1", called)
+	}
+	m.Update(harvestedMsg{})
+
+	// A second due tick in the same visit must not walk the tree again.
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	_, again := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, again)
+	if called != 1 {
+		t.Errorf("a second tick in the same visit harvested again (%d calls)", called)
+	}
+
+	// Leaving and returning is a new visit, detected on the pane-change edge rather than by
+	// every assignment to m.pane announcing itself.
+	m.pane = paneSessions
+	m.Update(refreshTickMsg(time.Now()))
+	m.pane = paneNamespaces
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	_, revisit := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, revisit)
+	if called != 2 {
+		t.Errorf("a return to the picker did not harvest again (%d calls, want 2)", called)
+	}
+}
+
+// TestUntitledSettled_BlankAndUnknownRows pins what counts as unnamed and as settled.
+//
+// A title of " " is non-empty to Go and blank in the column, so a raw `!= ""` suppressed the
+// harvest for a row displaying nothing. A zero UpdatedAt is unknown, not quiet since the epoch.
+func TestUntitledSettled_BlankAndUnknownRows(t *testing.T) {
+	settled := time.Now().Add(-2 * untitledSettleDelay)
+
+	cases := []struct {
+		name string
+		meta map[string]SessionMetadata
+		upd  time.Time
+		want bool
+	}{
+		{"unnamed and settled", map[string]SessionMetadata{}, settled, true},
+		{"named", map[string]SessionMetadata{"s1": {Title: "known"}}, settled, false},
+		{"whitespace title is unnamed", map[string]SessionMetadata{"s1": {Title: "   "}}, settled, true},
+		// A CONTROL CHARACTER IS NAMED, not blank. sanitizeLabel REPLACES it with U+FFFD rather
+		// than stripping it, so the cell shows a visible glyph and TrimSpace does not remove it.
+		// Pinned to record which side of the line this falls on: the predicate asks what the cell
+		// renders, and the cell renders something here.
+		{"control-only title renders a glyph", map[string]SessionMetadata{"s1": {Title: "\t"}}, settled, false},
+		{"unsettled", map[string]SessionMetadata{}, time.Now(), false},
+		{"unknown UpdatedAt is not settled", map[string]SessionMetadata{}, time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTitleModel(t, tc.meta, "s1")
+			m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: tc.upd}}
+			if got := m.untitledSettled(time.Now()); got != tc.want {
+				t.Errorf("untitledSettled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHarvestNamedSomething_IgnoresAlreadyKnown pins the backoff's notion of progress.
+//
+// An incremental harvest returns the whole MERGED map — every session it has ever seen, not just
+// what this pass parsed — so len(meta) > 0 is true on every call once the file exists. Counting
+// that as progress would leave the backoff permanently reset and the retry loop intact.
+func TestHarvestNamedSomething_IgnoresAlreadyKnown(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: "known"}}, "s1")
+
+	if m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "known"}}) {
+		t.Error("a map repeating a title this model already had counted as progress")
+	}
+	if m.harvestNamedSomething(map[string]SessionMetadata{"s2": {Title: "  "}}) {
+		t.Error("a blank title counted as naming a session")
+	}
+	if !m.harvestNamedSomething(map[string]SessionMetadata{"s2": {Title: "new name"}}) {
+		t.Error("a title for a session this model could not name was not counted")
+	}
+}

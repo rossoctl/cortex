@@ -220,6 +220,41 @@ const reharvestInterval = 3 * time.Minute
 // new session sit nameless for no benefit; shorter would harvest mid-write repeatedly.
 const untitledSettleDelay = 5 * time.Second
 
+// untitledBackoffCap bounds the exponential backoff on fruitless sessions-pane harvests.
+//
+// Three minutes so the worst case lands on reharvestInterval, the cadence the picker panes
+// already considered acceptable for walking this tree — a session that can never be named
+// then costs what the old code spent unconditionally, rather than a tree walk every
+// untitledSettleDelay forever.
+const untitledBackoffCap = 3 * time.Minute
+
+// untitledBackoff is how long to wait before the next sessions-pane harvest, given how many
+// consecutive harvests have named nothing.
+//
+// Doubling from untitledSettleDelay: 5s, 10s, 20s … capped at untitledBackoffCap. The first
+// miss still retries quickly, because the common reason a just-appeared session is unnamed is
+// that its transcript was a moment behind — and that case resolves on the next attempt.
+//
+// SHIFTS RATHER THAN MULTIPLIES, and the shift is bounded before it is applied: misses is
+// unbounded (a viewer left open overnight), and 5s << 62 overflows int64 into a negative
+// duration, which would make the gate fire on EVERY tick — the exact failure the backoff
+// exists to prevent, arrived at by way of the fix for it.
+func untitledBackoff(misses int) time.Duration {
+	if misses <= 0 {
+		return untitledSettleDelay
+	}
+	// 2^24 * 5s is already far past the cap, so anything beyond that is the cap by definition
+	// and never needs to be computed.
+	if misses > 24 {
+		return untitledBackoffCap
+	}
+	d := untitledSettleDelay << uint(misses)
+	if d > untitledBackoffCap {
+		return untitledBackoffCap
+	}
+	return d
+}
+
 // Tea messages.
 type tickMsg time.Time
 type refreshTickMsg time.Time
@@ -411,10 +446,32 @@ type model struct {
 	// harvesting guards against stacking: a harvest walks a transcript tree, and a second pass while
 	// the first is in flight would duplicate the work and race its own write of the metadata file.
 	harvesting bool
-	eventCt    uint64 // monotonic counter
-	lastTick   time.Time
-	lastCt     uint64
-	rate       float64
+	// pickerHarvested says the namespaces/pods panes have already harvested during this visit.
+	//
+	// Cleared by the pane-change edge in the refreshTickMsg branch rather than at each site that
+	// assigns m.pane: there are five of those across two files, and a sixth added later would
+	// silently inherit "already harvested" from a previous visit. lastPane is what that edge
+	// compares against.
+	pickerHarvested bool
+	// lastPane is the pane the previous refresh tick saw, for detecting a pane change without
+	// every pane switch having to announce itself. Only the picker re-harvest reads it.
+	lastPane paneID
+	// untitledMisses counts consecutive sessions-pane harvests that named nothing, and backs the
+	// next one off exponentially — see untitledBackoff.
+	//
+	// A SESSION THAT CAN NEVER BE NAMED IS THE COMMON CASE HERE, not the exception: a session
+	// with no transcript under the agent's config dir (a different agent, a pruned tree, a
+	// CLAUDE_CONFIG_DIR that moved) stays unnamed no matter how often the tree is walked. Without
+	// a backoff its row keeps the settle gate satisfied forever, so the pane re-walks the whole
+	// transcript tree every untitledSettleDelay for a title that is never coming.
+	//
+	// Reset on any harvest that named something, so a tree that starts producing titles returns to
+	// the fast cadence immediately rather than staying penalised for earlier silence.
+	untitledMisses int
+	eventCt        uint64 // monotonic counter
+	lastTick       time.Time
+	lastCt         uint64
+	rate           float64
 
 	// Connection status.
 	connState connStateInfo
@@ -1064,6 +1121,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case harvestedMsg:
 		m.harvesting = false
+		// COUNT THE MISS BEFORE THE MERGE, since the merge is what would hide it. A harvest that
+		// named nothing NEW leaves every unnamed row unnamed, so the settle gate stays satisfied
+		// and the next tick would walk the tree again at the same cadence; untitledBackoff is what
+		// turns that into a widening retry. Reset on any harvest that named something, so a tree
+		// which starts producing titles returns to the fast cadence at once.
+		//
+		// "NAMED SOMETHING" MEANS A TITLE THIS MODEL DID NOT ALREADY HAVE, not a non-empty result.
+		// An incremental harvest returns the whole merged map — every session it has ever seen —
+		// so len(msg.meta) > 0 is true on every call once the file exists, and counting that as
+		// progress would leave the backoff permanently reset and the loop intact.
+		if m.harvestNamedSomething(msg.meta) {
+			m.untitledMisses = 0
+		} else {
+			m.untitledMisses++
+		}
 		// Merge, never replace. The harvest sees one agent's config dir, while the map it is
 		// merging into was loaded from a file that may carry entries from another dir or from a
 		// transcript since pruned — the same reason the harvester itself upserts. Replacing
@@ -1119,6 +1191,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchUsage(), usageTick(m.usage.tickGen))
 
 	case refreshTickMsg:
+		// A PANE CHANGE ENDS THE PICKER'S ONE-HARVEST-PER-VISIT BUDGET. Detected here, on the
+		// edge, so the five places that assign m.pane do not each have to remember to clear it —
+		// and so a sixth cannot quietly skip the harvest by inheriting a set flag.
+		if m.pane != m.lastPane {
+			m.lastPane = m.pane
+			m.pickerHarvested = false
+		}
 		// In picker mode, skip the fetch — m.client may be nil after a
 		// back-out. Keep the ticker alive so it's ready when the user
 		// re-enters a session.
@@ -1130,8 +1209,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Keyed off the existing refresh ticker rather than a second tea.Tick: one timer is
 			// easier to reason about than two with different periods, and this branch already
 			// returns on every tick.
-			if m.harvest != nil && !m.harvesting && time.Since(m.lastHarvest) >= reharvestInterval {
+			//
+			// AT MOST ONCE PER VISIT TO THIS PANE, which is what pickerHarvested tracks. These
+			// panes hold no session rows, so there is nothing here to tell a fruitless walk from
+			// a useful one — the interval alone would keep re-walking the tree for as long as the
+			// operator sits here, and the sessions pane's own backoff cannot help because this
+			// path does not consult it. One walk per visit is what the pane actually needs: it
+			// exists so a session started elsewhere is named by the time the operator scrolls to
+			// it, and that is answered by a single scan. Cleared on entry to the pane, so coming
+			// back later harvests again.
+			if m.harvest != nil && !m.harvesting && !m.pickerHarvested &&
+				time.Since(m.lastHarvest) >= reharvestInterval {
 				m.harvesting = true
+				m.pickerHarvested = true
 				m.lastHarvest = time.Now()
 				return m, tea.Batch(harvestCmd(m.harvest), refreshTickCmd())
 			}
@@ -1142,13 +1232,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the transcripts. Gated on a row that is actually unnamed AND settled, so a list whose
 		// titles are all known triggers nothing — see untitledSettled.
 		//
+		// ONLY WHILE THIS PANE IS THE VISIBLE ONE. m.pane is exactly that — the panes above
+		// return before reaching here — so the check is the pane equality itself, and a harvest
+		// never runs on behalf of a list nobody is looking at.
+		//
+		// BACKED OFF BY untitledBackoff rather than the flat settle delay, because a session that
+		// can never be named keeps this gate satisfied forever: without the backoff an unnameable
+		// row re-walks the transcript tree every untitledSettleDelay for a title that is not
+		// coming. See untitledMisses.
+		//
 		// STARTED HERE, NOT RETURNED FROM HERE. This pane's tick must still reach the session
 		// fetch at the bottom of this branch, so the harvest is batched into that return rather
 		// than short-circuiting it — returning early instead would trade the titles for the
 		// 2s refresh of every other cell in the row.
 		var harvestNow tea.Cmd
 		if m.pane == paneSessions && m.harvest != nil && !m.harvesting &&
-			time.Since(m.lastHarvest) >= untitledSettleDelay && m.untitledSettled(time.Now()) {
+			time.Since(m.lastHarvest) >= untitledBackoff(m.untitledMisses) &&
+			m.untitledSettled(time.Now()) {
 			m.harvesting = true
 			m.lastHarvest = time.Now()
 			harvestNow = harvestCmd(m.harvest)
