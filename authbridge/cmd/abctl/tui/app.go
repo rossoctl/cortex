@@ -184,6 +184,18 @@ const localProbeTimeout = 2 * time.Second
 // stub sessions would otherwise linger in the TUI.
 const refreshInterval = 2 * time.Second
 
+// reharvestInterval is how often the session picker re-reads the coding agent's transcripts.
+//
+// The picker is where someone sits while deciding which pod to open, and a session started in another
+// terminal meanwhile has no title until something re-reads the logs. Three minutes rather than the 2s
+// refresh tick: a harvest walks a transcript tree, and the incremental pass only skips work for files
+// whose mtime has not moved — so polling it at the session cadence would re-stat the whole tree ninety
+// times a minute for a change that arrives every few minutes at best.
+//
+// Only while the PICKER is open. Once a session view is up the titles on screen are already loaded,
+// and a background harvest there would compete with the event stream for no visible gain.
+const reharvestInterval = 3 * time.Minute
+
 // Tea messages.
 type tickMsg time.Time
 type refreshTickMsg time.Time
@@ -361,11 +373,16 @@ type model struct {
 	// unharvested session, an unknown id and an absent file all render the same.
 	sessionsData map[string]SessionMetadata
 	// harvest refreshes sessionsData in the background once the UI is up. Nil disables it.
-	harvest  HarvestFunc
-	eventCt  uint64 // monotonic counter
-	lastTick time.Time
-	lastCt   uint64
-	rate     float64
+	harvest HarvestFunc
+	// lastHarvest is when the most recent harvest was STARTED, for the picker's re-harvest cadence.
+	lastHarvest time.Time
+	// harvesting guards against stacking: a harvest walks a transcript tree, and a second pass while
+	// the first is in flight would duplicate the work and race its own write of the metadata file.
+	harvesting bool
+	eventCt    uint64 // monotonic counter
+	lastTick   time.Time
+	lastCt     uint64
+	rate       float64
 
 	// Connection status.
 	connState connStateInfo
@@ -848,6 +865,13 @@ func (m *model) Init() tea.Cmd {
 	// disk names every session the last run saw, so a harvest only ever ADDS titles — and
 	// reading a large ~/.claude takes about as long as everything else at startup put
 	// together. Batched rather than sequenced so neither waits on the other.
+	// Stamped here, not on arrival: the cadence is measured from when a harvest STARTS, so leaving it
+	// zero would make the first tick three minutes later look overdue regardless of when the initial
+	// harvest actually ran.
+	if m.harvest != nil {
+		m.harvesting = true
+		m.lastHarvest = time.Now()
+	}
 	if m.pane == paneNamespaces {
 		// Picker mode — load agents, then idle until user picks a pod.
 		m.loading = true
@@ -1000,6 +1024,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case harvestedMsg:
+		m.harvesting = false
 		// Merge, never replace. The harvest sees one agent's config dir, while the map it is
 		// merging into was loaded from a file that may carry entries from another dir or from a
 		// transcript since pruned — the same reason the harvester itself upserts. Replacing
@@ -1059,6 +1084,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// back-out. Keep the ticker alive so it's ready when the user
 		// re-enters a session.
 		if m.pane == paneNamespaces || m.pane == panePods {
+			// RE-HARVEST WHILE THE PICKER IS OPEN, so a session started in another terminal is named
+			// by the time the user scrolls to it. This is the one pane where someone may sit for
+			// minutes with nothing else refreshing the titles on screen.
+			//
+			// Keyed off the existing refresh ticker rather than a second tea.Tick: one timer is
+			// easier to reason about than two with different periods, and this branch already
+			// returns on every tick.
+			if m.harvest != nil && !m.harvesting && time.Since(m.lastHarvest) >= reharvestInterval {
+				m.harvesting = true
+				m.lastHarvest = time.Now()
+				return m, tea.Batch(harvestCmd(m.harvest), refreshTickCmd())
+			}
 			return m, refreshTickCmd()
 		}
 		// Refresh the pipeline view too while a pane that displays plugin

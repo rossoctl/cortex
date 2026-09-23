@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
@@ -962,5 +964,96 @@ func TestLooksLikePath(t *testing.T) {
 		if got := looksLikePath(tc.in); got != tc.want {
 			t.Errorf("looksLikePath(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+// runBatch invokes a command and, if it is a tea.Batch, every member it carries.
+//
+// tea.Batch does not run its members: it returns a tea.BatchMsg, which the runtime then dispatches.
+// A test asserting that a batched command reached a closure has to do that dispatch itself.
+func runBatch(t *testing.T, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	switch msg := cmd().(type) {
+	case tea.BatchMsg:
+		for _, c := range msg {
+			runBatch(t, c)
+		}
+	}
+}
+
+// The session picker re-harvests periodically, so a session started elsewhere gets named.
+//
+// The picker is the one pane where someone may sit for minutes with nothing refreshing the titles:
+// the 2s tick skips the session fetch there (m.client may be nil), and the harvest previously ran
+// once at Init. A session started in another terminal meanwhile stayed nameless until the viewer was
+// restarted.
+func TestPicker_ReHarvestsOnAnInterval(t *testing.T) {
+	newPicker := func(harvest HarvestFunc) *model {
+		m := newTitleModel(t, map[string]SessionMetadata{})
+		m.pane = paneNamespaces
+		m.harvest = harvest
+		return m
+	}
+	called := 0
+	harvest := func() (map[string]SessionMetadata, error) {
+		called++
+		return map[string]SessionMetadata{"s1": {Title: "found later"}}, nil
+	}
+
+	// Not yet due: the stamp is fresh, so the tick only re-arms the timer.
+	m := newPicker(harvest)
+	m.lastHarvest = time.Now()
+	if _, cmd := m.Update(refreshTickMsg(time.Now())); cmd == nil {
+		t.Fatal("the refresh ticker was not re-armed")
+	}
+	if called != 0 {
+		t.Errorf("harvested %d times while not due, want 0", called)
+	}
+
+	// Due: the returned command must include the harvest, which we run to observe it.
+	m = newPicker(harvest)
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	_, cmd := m.Update(refreshTickMsg(time.Now()))
+	if cmd == nil {
+		t.Fatal("no command returned when a re-harvest was due")
+	}
+	// tea.Batch returns a BatchMsg holding the member commands rather than running them, so the
+	// members have to be invoked to reach the harvest closure.
+	runBatch(t, cmd)
+	if called == 0 {
+		t.Error("a due re-harvest did not run the harvester")
+	}
+	if !m.harvesting {
+		t.Error("the in-flight guard was not set, so a second tick could stack a harvest")
+	}
+
+	// While one is in flight, a further tick must not start another — even once the interval has
+	// elapsed again. Backdating the stamp is what makes this test the guard's: without it the tick is
+	// simply not due, so the assertion passed with the guard removed (confirmed by mutation).
+	before := called
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	_, stacked := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, stacked)
+	if called != before {
+		t.Errorf("a harvest was stacked while one was in flight (%d -> %d)", before, called)
+	}
+
+	// The arriving result clears the guard.
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "found later"}}})
+	if m.harvesting {
+		t.Error("harvestedMsg did not clear the in-flight guard")
+	}
+	if got := m.sessionTitle("s1"); got != "found later" {
+		t.Errorf("the re-harvested title did not reach the model: %q", got)
+	}
+
+	// A nil harvester (--skip-claude-metadata) must never be called.
+	m = newPicker(nil)
+	m.lastHarvest = time.Now().Add(-2 * reharvestInterval)
+	if _, c := m.Update(refreshTickMsg(time.Now())); c == nil {
+		t.Error("the ticker must stay armed even with no harvester")
 	}
 }

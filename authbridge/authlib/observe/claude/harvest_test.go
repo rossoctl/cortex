@@ -2204,3 +2204,120 @@ func TestCutTrailingHarness_AnyWhitespaceIndent(t *testing.T) {
 		}
 	}
 }
+
+// The same content yields the same title whether or not the turn is attributed.
+//
+// THE GAP THIS CLOSES: the str and blocks tiers assigned raw text, skipping promptCandidate
+// entirely, so an unattributed slash command kept its "<command-message>…" envelope, failed the
+// synthetic check and fell through to the cwd — while the identical content titled correctly with
+// origin.kind=human. Unattributed turns are the majority (9940 against 640 on the measured tree), so
+// the tier that skipped the unwrapping was the common one.
+//
+// Both unwrap tests used only human-attributed fixtures, which is why CI was green on it. This one is
+// parameterised over attribution precisely so a future tier cannot be added without it.
+func TestTitleFromTranscript_AttributionDoesNotChangeTheTitle(t *testing.T) {
+	const envelope = "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>some/path.md</command-args>"
+	for _, tc := range []struct{ name, content, want string }{
+		{"slash command envelope", envelope, "/review some/path.md"},
+		{"pasted content wrapper", `<pasted_content id="x">the pasted body</pasted_content>`, "the pasted body"},
+		{"plain prose", "how do I build abctl?", "how do I build abctl?"},
+		{"prose with trailing harness block", "my real question\n<system-reminder>hidden</system-reminder>", "my real question"},
+		// A harness-output wrapper still falls through in BOTH cases: its body is not the user's.
+		{"harness output wrapper", "<bash-stdout>total 40</bash-stdout>", "/w/fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			titleFor := func(origin string) string {
+				t.Helper()
+				dir := t.TempDir()
+				body, err := json.Marshal(tc.content)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeSessionTranscript(t, dir, "s.jsonl",
+					`{"type":"user","cwd":"/w/fallback"}`,
+					`{"type":"user",`+origin+`"message":{"role":"user","content":`+string(body)+`}}`)
+				got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+				if gerr != nil {
+					t.Fatal(gerr)
+				}
+				return got
+			}
+			human := titleFor(`"origin":{"kind":"human"},`)
+			plain := titleFor("")
+			if human != tc.want {
+				t.Errorf("attributed title = %q, want %q", human, tc.want)
+			}
+			if plain != tc.want {
+				t.Errorf("unattributed title = %q, want %q", plain, tc.want)
+			}
+			if human != plain {
+				t.Errorf("attribution changed the title: %q vs %q", human, plain)
+			}
+		})
+	}
+}
+
+// The same holds for a content ARRAY, which reaches the blocks tier rather than str.
+//
+// Both tiers assigned raw text, so both were affected; a fix to one alone would leave the other.
+func TestTitleFromTranscript_AttributionDoesNotChangeBlockTitles(t *testing.T) {
+	const content = `[{"type":"text","text":"<pasted_content id=\"x\">the pasted body</pasted_content>"}]`
+	titleFor := func(origin string) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeSessionTranscript(t, dir, "s.jsonl",
+			`{"type":"user","cwd":"/w/fallback"}`,
+			`{"type":"user",`+origin+`"message":{"role":"user","content":`+content+`}}`)
+		got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		return got
+	}
+	human, plain := titleFor(`"origin":{"kind":"human"},`), titleFor("")
+	if human != "the pasted body" || plain != "the pasted body" {
+		t.Errorf("attributed = %q, unattributed = %q, want both %q", human, plain, "the pasted body")
+	}
+}
+
+// stripHarnessSpans is linear in the input, not quadratic in the number of blocks.
+//
+// It re-sliced the string on every excision and restarted strings.Index from offset 0. Measured end
+// to end through titleFromTranscript before the fix: 155KB took 21ms, 620KB 242ms and 2.5MB 2.49s —
+// four times the input for eleven times the work. bufio admits lines up to 16MB, so one chatty
+// transcript line could stall the harvest for seconds. After: 9ms, 24ms, 54ms.
+//
+// Asserted as a RATIO rather than a wall-clock bound, so the test says what it means on a loaded CI
+// machine: quadratic growth shows up as time scaling with the square of the input, and a 4x input
+// step would take ~16x. The 8x ceiling leaves room for noise while still failing the 11x that was
+// measured.
+func TestStripHarnessSpans_ScalesLinearly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing-sensitive")
+	}
+	build := func(kb int) string {
+		var b strings.Builder
+		for b.Len() < kb*1024 {
+			b.WriteString("some prose here <system-reminder>hidden payload text</system-reminder> more prose\n")
+		}
+		return b.String()
+	}
+	measure := func(s string) time.Duration {
+		start := time.Now()
+		stripHarnessSpans(s)
+		return time.Since(start)
+	}
+	small, large := build(256), build(1024) // a 4x step
+
+	// Warm up, so the first allocation does not land inside a measurement.
+	measure(small)
+
+	ts, tl := measure(small), measure(large)
+	if ts <= 0 {
+		ts = time.Microsecond
+	}
+	if ratio := float64(tl) / float64(ts); ratio > 8 {
+		t.Errorf("4x the input took %.1fx the time (%v vs %v) — that is quadratic, not linear",
+			ratio, tl, ts)
+	}
+}

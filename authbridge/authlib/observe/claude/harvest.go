@@ -548,13 +548,27 @@ func titleFromTranscript(path string) (string, error) {
 			case kind != "" && kind != "human":
 				// Explicitly NOT human — "task-notification" or "peer". Discarded outright;
 				// this is the traffic the text heuristics existed to catch.
-			case isSyntheticPrompt(text):
-				// Unattributed and looks machine-written. Still filtered, because transcripts
-				// with no origin field at all have nothing better to go on.
-			case wasString:
-				str = text
 			default:
-				blocks = text
+				// EVERY TIER GOES THROUGH promptCandidate, not just the attributed one. These two
+				// used to take the raw text, so the same content was titled one way with
+				// origin.kind=human and lost entirely without it: an unattributed slash command
+				// stayed as its "<command-message>…" envelope, failed the synthetic check, and fell
+				// through to the cwd. Unattributed turns are the MAJORITY — 9940 against 640 on the
+				// measured tree — so the tier that skipped the unwrapping was the common one.
+				//
+				// The synthetic check moves INSIDE promptCandidate rather than standing as its own
+				// case above, which is what makes this possible: it runs after the envelope and
+				// wrapper are removed, so a turn that only looks machine-written because of its
+				// wrapper is no longer discarded for it.
+				p, ok := promptCandidate(text)
+				if !ok {
+					break
+				}
+				if wasString {
+					str = p
+				} else {
+					blocks = p
+				}
 			}
 		}
 	}
@@ -858,11 +872,27 @@ func stripANSI(s string) string {
 // found in the rounds before.
 func stripHarnessSpans(s string) string {
 	for _, tag := range harnessTagNames {
+		if !strings.Contains(s, tag) {
+			continue
+		}
+		closeTag := "</" + tag[1:] // tag is "<name"
+		var b strings.Builder
+		b.Grow(len(s))
+		// A CURSOR, and one output buffer. This used to re-slice s on every excision and then
+		// restart strings.Index from offset 0, which is quadratic in the number of blocks: measured
+		// end to end through titleFromTranscript, 155KB took 21ms, 620KB 242ms and 2.5MB 2.49s —
+		// four times the input for eleven times the work — and bufio admits lines up to 16MB, so a
+		// single chatty transcript line could stall the harvest for seconds. cutTrailingHarness
+		// already advanced a cursor; this now matches it.
 		for {
 			i := strings.Index(s, tag)
 			if i < 0 {
+				b.WriteString(s)
 				break
 			}
+			b.WriteString(s[:i])
+			b.WriteByte(' ')
+
 			// The span runs to the matching close when there is one, and TO THE END OF THE STRING
 			// otherwise.
 			//
@@ -871,6 +901,7 @@ func stripHarnessSpans(s string) string {
 			// "INJECTED payload" — with no escape sequence needed. A harness block that is not
 			// closed is still a harness block, and everything after it is its content as far as
 			// anyone can tell.
+			//
 			// THE MATCHING CLOSE, counting depth — not the first one. With the same tag NESTED,
 			// "<system-reminder>a<system-reminder>b</system-reminder>LEAKED</system-reminder>" ended
 			// its span at the INNER close, so the outer close and everything before it survived as
@@ -879,30 +910,33 @@ func stripHarnessSpans(s string) string {
 			//
 			// Different-name nesting was already handled, since each tag is scanned separately, and
 			// that is why the corpus missed this: it covered the case that worked.
+			//
+			// The depth scan walks each byte of the span at most once, and the cursor never revisits
+			// it, so the whole pass is linear in len(s) per tag.
 			end := len(s)
-			name := tag[1:] // tag is "<name"
 			depth := 0
 			for j := i; j < len(s); {
 				switch {
 				case strings.HasPrefix(s[j:], tag):
 					depth++
 					j += len(tag)
-				case strings.HasPrefix(s[j:], "</"+name):
+				case strings.HasPrefix(s[j:], closeTag):
 					depth--
 					if depth == 0 {
 						if g := strings.IndexByte(s[j:], '>'); g >= 0 {
 							end = j + g + 1
 						}
-						j = len(s) // done
+						j = len(s)
 						continue
 					}
-					j += len("</" + name)
+					j += len(closeTag)
 				default:
 					j++
 				}
 			}
-			s = s[:i] + " " + s[end:]
+			s = s[end:]
 		}
+		s = b.String()
 	}
 	return s
 }
@@ -1017,14 +1051,20 @@ func promptFromMessage(raw json.RawMessage) (text string, wasString bool) {
 		// real text — "my question" and "<system-reminder>…" as two text blocks of one turn — and
 		// testing only the joined string let the markup through, because the guard is anchored at
 		// the start and the join begins with the prose.
-		if isSyntheticPrompt(blk.Text) {
+		// A CONTENT-BEARING WRAPPER IS UNWRAPPED FIRST, so the test below judges what the user
+		// actually wrote. A "<pasted_content …>" block is synthetic-LOOKING but its body is the
+		// user's, and dropping it here lost that body for an array turn while a string turn of the
+		// identical content kept it — attribution and encoding deciding the outcome rather than the
+		// content. A harness-output wrapper is not unwrapped, so "<system-reminder>…" still goes.
+		blockText := stripWrapperTag(blk.Text)
+		if isSyntheticPrompt(blockText) {
 			continue
 		}
 		// AND WITHIN the block. isSyntheticPrompt is anchored, so a block holding prose followed by
 		// markup — "my question\n<system-reminder>…" as ONE block — passed the check and reached
 		// the title intact. Cut here rather than after the join, so a later block cannot be
 		// mistaken for the appended markup of an earlier one.
-		text := cutTrailingHarness(blk.Text)
+		text := cutTrailingHarness(blockText)
 		if text == "" {
 			continue
 		}
