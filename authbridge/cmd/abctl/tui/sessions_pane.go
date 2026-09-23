@@ -483,6 +483,27 @@ func looksLikePath(title string) bool {
 	return strings.Contains(rest, "/")
 }
 
+// zeroWidthFree reports whether every rune in s occupies at least one display column.
+//
+// What licenses the prefix skip in truncLeft and truncRight: with no zero-width rune, a run of more
+// than n runes cannot fit n columns, so n runes from the relevant end is an exact lower bound and
+// every index beyond it is provably too wide to measure. One zero-width rune breaks that, and a
+// differential test against the pre-skip implementation caught exactly that case.
+//
+// Checked structurally rather than by measuring: the classes runewidth gives zero columns are
+// non-spacing and enclosing marks, format characters and controls, plus the modifier symbols this
+// project already drops upstream. Cheap — one pass, no allocation — and the answer is yes for every
+// title, so the skip is not hypothetical.
+func zeroWidthFree(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) ||
+			unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Sk, r) {
+			return false
+		}
+	}
+	return true
+}
+
 // truncRight clips s to n DISPLAY COLUMNS keeping the LEFT end, marking the cut with a
 // trailing ellipsis.
 //
@@ -513,7 +534,16 @@ func truncRight(s string, n int) string {
 	//
 	// The ELLIPSIS PLUS THE HEAD is measured, not the head plus one, so a trailing combining
 	// mark that fuses onto the ellipsis cannot push the result over budget.
+	//
+	// AND IT SKIPS AHEAD, for truncLeft's reason, under the same guard: a head longer than n runes
+	// cannot fit n columns PROVIDED no rune is zero-width, so the first n runes are then an exact
+	// lower bound. This had the identical quadratic shape — 2500 runes 39ms, 20000 2.30s on one call
+	// — and is reachable the same way, since looksLikePath needs a leading "/" so a RELATIVE cwd
+	// routes down this branch while just as uncapped.
 	r := []rune(s)
+	if len(r) > n && zeroWidthFree(s) {
+		r = r[:n]
+	}
 	for i := len(r); i > 0; i-- {
 		if out := string(r[:i]) + "…"; lipgloss.Width(out) <= n {
 			return out
@@ -569,8 +599,32 @@ func truncLeft(s string, n int) string {
 	// Runes are dropped from the front until the remainder fits the budget less the ellipsis.
 	// One at a time rather than by arithmetic: a rune's width is 1 or 2, so there is no index
 	// that can be computed from the total.
+	//
+	// BUT THE SEARCH SKIPS AHEAD FIRST, because measuring from i == 0 made this quadratic: each
+	// iteration rebuilt the whole remaining tail and handed it to lipgloss.Width, so the cost grew
+	// with the square of the input. Measured on one call, dropping runes one at a time from the
+	// front: 2500 runes 36ms, 5000 142ms, 10000 572ms, 20000 2.33s — four times the input for
+	// sixteen times the work. The same shape stripHarnessSpans was flagged for; these two were left.
+	//
+	// THE SKIP IS GUARDED, because the obvious bound is not universally true. "Every rune is at
+	// least one column, so the last n runes are an exact lower bound" holds only while no rune is
+	// ZERO columns — and combining marks, joiners and variation selectors all are. A differential
+	// test against the old implementation caught it at n == 1: on a string of combining marks the
+	// bound skipped past marks the one-at-a-time search would have kept, and the two returned
+	// different bytes.
+	//
+	// So skipping is conditional on the premise: zeroWidthFree reports whether s contains any
+	// zero-width rune, and only then is the prefix provably untestable. A title reaching this file
+	// never contains one — authlib/observe/claude drops every Mn/Me/Cf/Cc/Sk, asserted there across
+	// the whole Unicode range — so the fast path is what actually runs. The fallback exists because
+	// these are general helpers with callers that make no such promise, and a wrong answer is worse
+	// than a slow one.
 	r := []rune(s)
-	for i := range r {
+	start := 0
+	if len(r) > n && zeroWidthFree(s) {
+		start = len(r) - n
+	}
+	for i := start; i < len(r); i++ {
 		// The ELLIPSIS PLUS THE TAIL is measured, not the tail plus one. A tail that begins
 		// with a combining mark or a variation selector fuses onto the ellipsis, so the pair
 		// is narrower than the sum of its parts — and assuming the ellipsis always adds

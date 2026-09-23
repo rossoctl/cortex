@@ -2664,3 +2664,48 @@ func TestTitleFromTranscript_AnEmptyCwdDoesNotClobberAGoodOne(t *testing.T) {
 		t.Errorf("title = %q, want %q — last-wins is the rule for a non-empty cwd", got, "/w/second")
 	}
 }
+
+// TestTitleFromTranscript_CwdIsBounded pins the one string the harvester used to leave unbounded.
+//
+// Five prompt tiers go through clipTitle; the cwd tier returned normalizeTitle(cwd) uncapped, on the
+// reasoning that "a path is bounded by the filesystem". It is not: e.Cwd is a JSON string field, and a
+// transcript is a file anything can write. The value then reached the renderer's per-rune width search,
+// which measured the whole remaining string once per dropped rune — seconds per redraw on a 20,000-rune
+// cwd.
+//
+// The cap is deliberately far above MaxTitleLen, because this tier exists to show a directory and
+// clipping it to a title's budget would defeat it. It is a BOUND, not a display budget.
+func TestTitleFromTranscript_CwdIsBounded(t *testing.T) {
+	for _, runes := range []int{10, 100, MaxCwdLen, MaxCwdLen + 1, 5000, 50000} {
+		dir := t.TempDir()
+		writeSessionTranscript(t, dir, "s.jsonl",
+			`{"type":"user","cwd":"/`+strings.Repeat("a", runes-1)+`"}`)
+		got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := len([]rune(got)); n > MaxCwdLen {
+			t.Errorf("a %d-rune cwd produced a %d-rune title, over the %d cap — an unbounded title "+
+				"reaches the renderer's per-rune width search", runes, n, MaxCwdLen)
+		}
+		// A cwd at or under the cap is untouched: the bound must not clip a real path.
+		if runes <= MaxCwdLen && len([]rune(got)) != runes {
+			t.Errorf("a %d-rune cwd was clipped to %d runes, but the cap is %d — a genuine deep path "+
+				"must keep its whole leaf", runes, len([]rune(got)), MaxCwdLen)
+		}
+	}
+
+	// THE TAIL SURVIVES, not the head: a path's leaf is the identifying part, and it is the end the
+	// renderer keeps too.
+	dir := t.TempDir()
+	writeSessionTranscript(t, dir, "s.jsonl",
+		`{"type":"user","cwd":"/`+strings.Repeat("a", 5000)+`/the-leaf"}`)
+	got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(got, "/the-leaf") {
+		t.Errorf("title = %q, want it to end in %q — clipping a cwd must keep the leaf",
+			got[max(0, len(got)-20):], "/the-leaf")
+	}
+}

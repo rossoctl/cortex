@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1179,6 +1180,140 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 	for _, title := range []string{"/Users/somebody/src", "/w/x/y", "/a/b"} {
 		if !looksLikePath(title) {
 			t.Errorf("looksLikePath(%q) = false, want true", title)
+		}
+	}
+}
+
+// TestTrunc_ScalesLinearly pins the cost of both truncators against the INPUT length.
+//
+// Both measured the whole remaining string with lipgloss.Width once per dropped rune, so the cost grew
+// with the square of the input: on one call, 2500 runes took 36ms, 5000 142ms, 10000 572ms and 20000
+// 2.33s — four times the input for sixteen times the work. Reachable because the cwd tier was
+// uncapped, and the renderer redraws on every poll.
+//
+// Asserted as a RATIO rather than a wall-clock bound, so it says what it means on a loaded CI machine:
+// quadratic growth shows up as ~4x per doubling, linear as ~2x, and the ceiling sits between them.
+// Both ends are timed inside one test so the comparison is against the same machine at the same moment.
+func TestTrunc_ScalesLinearly(t *testing.T) {
+	const budget = 40
+	measure := func(f func(string, int) string, runes int) time.Duration {
+		s := "/" + strings.Repeat("a", runes-1)
+		// Warm, so the first-call cost of anything lazy is not charged to the small input.
+		f(s, budget)
+		start := time.Now()
+		for i := 0; i < 20; i++ {
+			f(s, budget)
+		}
+		return time.Since(start)
+	}
+	for _, tc := range []struct {
+		name string
+		f    func(string, int) string
+	}{
+		{"truncLeft", truncLeft},
+		{"truncRight", truncRight},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			small := measure(tc.f, 4000)
+			large := measure(tc.f, 16000)
+			if small <= 0 {
+				t.Skip("timer resolution too coarse to compare")
+			}
+			// 4x the input. Linear predicts ~4x the time; quadratic predicts ~16x. A ceiling of 8x
+			// separates them with room for scheduling noise.
+			if ratio := float64(large) / float64(small); ratio > 8 {
+				t.Errorf("4x the input took %.1fx the time (%v -> %v) — that is the quadratic shape "+
+					"back: the per-rune search must skip to the last/first n runes before measuring",
+					ratio, small, large)
+			}
+		})
+	}
+}
+
+// TestTrunc_SkipAheadMatchesTheOneAtATimeSearch is the differential test that caught the first version
+// of the skip being wrong, kept so it cannot regress.
+//
+// The skip rests on "every rune is at least one column, so n runes from the end is an exact lower
+// bound". That premise is FALSE for zero-width runes — combining marks, joiners, variation selectors —
+// and an unguarded skip returned different bytes than the one-at-a-time search at n == 1 on a string of
+// combining marks. The guard is zeroWidthFree; this asserts the equivalence it is supposed to buy,
+// across alphabets chosen so both sides of the guard are exercised.
+func TestTrunc_SkipAheadMatchesTheOneAtATimeSearch(t *testing.T) {
+	// The pre-skip implementations, as an oracle.
+	oldLeft := func(s string, n int) string {
+		if lipgloss.Width(s) <= n {
+			return s
+		}
+		if n < 1 {
+			return ""
+		}
+		r := []rune(s)
+		for i := range r {
+			if out := "…" + string(r[i:]); lipgloss.Width(out) <= n {
+				return out
+			}
+		}
+		return "…"
+	}
+	oldRight := func(s string, n int) string {
+		if lipgloss.Width(s) <= n {
+			return s
+		}
+		if n < 1 {
+			return ""
+		}
+		r := []rune(s)
+		for i := len(r); i > 0; i-- {
+			if out := string(r[:i]) + "…"; lipgloss.Width(out) <= n {
+				return out
+			}
+		}
+		return "…"
+	}
+
+	alphabets := []string{
+		"abcdefghijklmnopqrstuvwxyz /._-", // the ordinary case, and the one that must be fast
+		"日本語のセッションタイトル漢字",                 // two columns per rune
+		"🎉🚀✨🔥",                            // wide emoji
+		"aあ🎉/b日x",                         // mixed widths
+		"éà",                            // COMBINING MARKS: zero width, the case that broke it
+		"️‍",                              // variation selector, ZWJ: also zero width
+	}
+	rng := rand.New(rand.NewSource(20260923))
+	checked := 0
+	for _, alpha := range alphabets {
+		ar := []rune(alpha)
+		for trial := 0; trial < 120; trial++ {
+			var sb strings.Builder
+			for i := 0; i < rng.Intn(60); i++ {
+				sb.WriteRune(ar[rng.Intn(len(ar))])
+			}
+			s := sb.String()
+			for n := -2; n <= 45; n++ {
+				if want, got := oldLeft(s, n), truncLeft(s, n); want != got {
+					t.Fatalf("truncLeft(%q, %d) = %q, one-at-a-time search gives %q", s, n, got, want)
+				}
+				if want, got := oldRight(s, n), truncRight(s, n); want != got {
+					t.Fatalf("truncRight(%q, %d) = %q, one-at-a-time search gives %q", s, n, got, want)
+				}
+				checked += 2
+			}
+		}
+	}
+	t.Logf("%d comparisons against the one-at-a-time search, all byte-identical", checked)
+}
+
+// TestZeroWidthFree pins the guard's own answer, including that an ordinary title takes the fast path.
+func TestZeroWidthFree(t *testing.T) {
+	for _, s := range []string{"", "plain prose", "/Users/x/src", "日本語", "🎉", "a b-c_d.e"} {
+		if !zeroWidthFree(s) {
+			t.Errorf("zeroWidthFree(%q) = false, want true — an ordinary title must take the fast path", s)
+		}
+	}
+	for _, s := range []string{"é", "a‍", "x️", "a\u0000b", "́"} {
+		if zeroWidthFree(s) {
+			t.Errorf("zeroWidthFree(%q) = true, want false — %U occupies no column, so the prefix "+
+				"bound does not hold", s, []rune(s)[len([]rune(s))-1])
 		}
 	}
 }

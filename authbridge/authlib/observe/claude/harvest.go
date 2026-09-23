@@ -626,9 +626,15 @@ func titleFromTranscript(path string) (string, error) {
 	// too, while a relative cwd would not. An earlier version of this comment claimed the renderer
 	// truncates "a path" from the left, which overstated what it can know.
 	//
-	// So the reason to leave it long is narrower: a path is bounded by the filesystem, where a
-	// prompt is unbounded free text, and the cap exists for the latter. The cell stays bounded
-	// either way, because the renderer truncates whatever it is handed.
+	// So the reason to leave it long is narrower: a REAL path is bounded by the filesystem, where a
+	// prompt is unbounded free text, and the cap exists for the latter.
+	//
+	// "BOUNDED BY THE FILESYSTEM" WAS THE FLAW. e.Cwd is a JSON string field, not a stat() result —
+	// nothing validates its length, and a transcript is a file anything can write. So this tier was
+	// the one unbounded string in the harvester, and it reached the renderer's per-rune width search,
+	// where a 20,000-rune value cost seconds per redraw. Capped at MaxCwdLen now: still far longer
+	// than MaxTitleLen so a genuine deep path keeps its whole leaf, which is what this tier is for,
+	// but no longer unbounded. The truncation keeps the TAIL, matching how the renderer treats a path.
 	//
 	// It is still normalised — whitespace collapsed, markup and non-graphic runes dropped — so a
 	// cwd cannot carry hidden characters into a cell any more than a prompt can.
@@ -637,7 +643,29 @@ func titleFromTranscript(path string) (string, error) {
 	// whether it is empty, and this call is the guarantee for the RETURN. normalizeTitle is idempotent
 	// (asserted, since its fixed-point loop is what makes that true), so the second pass costs one
 	// walk and means this line does not depend on every assignment upstream having been normalised.
-	return normalizeTitle(cwd), err
+	return clipCwd(normalizeTitle(cwd)), err
+}
+
+// MaxCwdLen caps the cwd fallback, in RUNES.
+//
+// Deliberately much larger than MaxTitleLen: this tier exists to show a directory, whose leaf is the
+// identifying part, so clipping it to a title's budget would defeat it. It is not a display budget —
+// the renderer truncates to the column anyway — it is a BOUND, so that one field in a transcript
+// cannot hand the renderer an arbitrarily long string. Linux caps a path at 4096 bytes; this is
+// comfortably above any real one and still finite.
+const MaxCwdLen = 1024
+
+// clipCwd caps s at MaxCwdLen runes, keeping the TAIL.
+//
+// The tail, not the head, because a path's distinguishing end is its leaf and that is the end the
+// renderer keeps too. A plain rune slice is safe for the same reason it is in clipTitle: normalizeTitle
+// has already removed every rune that binds to its neighbour.
+func clipCwd(s string) string {
+	r := []rune(s)
+	if len(r) <= MaxCwdLen {
+		return s
+	}
+	return strings.TrimSpace(string(r[len(r)-MaxCwdLen:]))
 }
 
 // MaxTitleLen caps a harvested title, in RUNES.
