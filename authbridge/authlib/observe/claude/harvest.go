@@ -641,6 +641,13 @@ func titleFromTranscript(path string) (string, error) {
 // removes the renderer's truncation and leaves this constant alone.
 const MaxTitleLen = 80
 
+// maxNormalizePasses bounds normalizeTitle's fixed-point loop.
+//
+// Each pass only ever deletes, so the string strictly shrinks and the loop converges long before
+// this — two passes is the most any observed input needs. The cap exists so a future pass that
+// somehow grows the string cannot spin, not because convergence is in doubt.
+const maxNormalizePasses = 8
+
 // clipTitle trims s and caps it at MaxTitleLen runes.
 //
 // No ellipsis: this is not the display truncation — the TITLE column applies its own, measured in
@@ -663,9 +670,32 @@ func normalizeTitle(s string) string {
 	// So the rule here is positional-independent and applies to every tier: a title carries no tags
 	// at all. Callers still unwrap envelopes and drop harness-output wrappers, because those
 	// decisions are about WHICH TEXT to use; this is about what may appear in the result.
-	s = stripHarnessSpans(s)
-	s = stripANSI(s)
-	s = stripTags(s)
+	// ORDER, AND THEN A FIXED POINT.
+	//
+	// stripANSI runs FIRST because an escape sequence inside a tag name hides that tag from the only
+	// pass that removes a block together with its body: "<system-\x1b[0mreminder>INJECTED</...>"
+	// was invisible to stripHarnessSpans, and stripTags then unwrapped it to bare "INJECTED".
+	// Removing the escapes first makes the tag whole again.
+	//
+	// And the three are applied until nothing changes, rather than once each. Every one of them
+	// REWRITES the string, so any of them can expose work for another: removing an escape can join a
+	// tag name, and removing a harness span can bring two halves of prose together.
+	//
+	// REDUNDANT TODAY, and recorded as such rather than left to look load-bearing: with the order
+	// above, one pass handles every input tried, including escapes nested inside tags inside escapes
+	// — pinning the loop to a single iteration fails no test. It is kept because the argument for
+	// one pass being enough is an argument about orderings, and "the orderings someone thought of"
+	// is exactly what six rounds of review kept flanking. Bounded because each pass only ever
+	// deletes, so the length strictly decreases until it stabilises.
+	for i := 0; i < maxNormalizePasses; i++ {
+		before := s
+		s = stripANSI(s)
+		s = stripHarnessSpans(s)
+		s = stripTags(s)
+		if s == before {
+			break
+		}
+	}
 
 	// ONE LINE, and only characters that print as themselves.
 	//
@@ -705,6 +735,9 @@ func normalizeTitle(s string) string {
 			// ("café" titles as "cafe") and keeps this function simple, which is the trade the
 			// rest of it already makes.
 		case r >= 0x1F1E6 && r <= 0x1F1FF:
+			// Dropped, which can empty a title entirely — a prompt of nothing but flags. The tier
+			// switch treats an empty result as "this tier has nothing", so the session falls through
+			// to the next one rather than rendering blank; see the normalisation before that switch.
 			// REGIONAL INDICATORS, which only carry meaning in pairs: a cut between them turns a
 			// flag into a lone letter glyph. Two runes, never independently meaningful, so they go
 			// together or not at all.
@@ -751,18 +784,34 @@ func stripANSI(s string) string {
 	b.Grow(len(s))
 	rs := []rune(s)
 	for i := 0; i < len(rs); i++ {
-		if rs[i] != 0x1b || i+1 >= len(rs) {
+		if rs[i] != 0x1b {
 			b.WriteRune(rs[i])
 			continue
 		}
+		// A LONE TRAILING ESC IS DROPPED, not written through. The old code fell to the default
+		// branch and copied it, contradicting this function's own doc — harmless inside
+		// normalizeTitle, where the allowlist catches it, but stripANSI has direct callers in the
+		// renderer's width assertions.
+		if i+1 >= len(rs) {
+			break
+		}
 		switch rs[i+1] {
-		case '[': // CSI: parameters, then a final byte in the range @ to ~
+		case '[': // CSI: parameters, then a final byte in @ to ~
 			j := i + 2
 			for j < len(rs) && (rs[j] < '@' || rs[j] > '~') {
 				j++
 			}
-			i = j // the final byte is consumed too
-		case ']': // OSC: runs to BEL, or to ST (ESC \)
+			i = j
+		case ']', 'P', 'X', '^', '_':
+			// STRING-ARGUMENT SEQUENCES, all terminated by BEL or ST: OSC (]), DCS (P), SOS (X),
+			// PM (^) and APC (_). Only OSC was handled, so a DCS payload — "\x1bPq …\x1b\\" —
+			// lost its ESC and leaked the rest as literal text, which is a garbage title rather
+			// than a dangerous one. They share a terminator, so they share a branch.
+			//
+			// The property test cannot tell these apart from the two-byte fallback, since both leave
+			// a plain title — only the CONTENT differs, and "garbage but plain" satisfies the
+			// guarantee. TestStripANSI_HandlesEveryEscapeClass is what pins the payload actually
+			// going, rather than the ESC alone.
 			j := i + 2
 			for j < len(rs) && rs[j] != 0x07 {
 				if rs[j] == 0x1b && j+1 < len(rs) && rs[j+1] == '\\' {
@@ -772,9 +821,13 @@ func stripANSI(s string) string {
 				j++
 			}
 			i = j
+		case '(', ')', '*', '+', '-', '.', '/', '%', '#', ' ':
+			// CHARSET SELECTION and other two-byte intermediates: ESC ( B, ESC # 8 and friends take
+			// exactly one more byte. Skipping only the ESC left "(B" in the title.
+			i += 2
 		default:
-			// A two-character escape, or something unrecognised. Skip the ESC and let the loop
-			// handle the next rune normally.
+			// A two-character escape (ESC 7, ESC c, ESC =). The ESC and its single final byte go.
+			i++
 		}
 	}
 	return b.String()
@@ -802,16 +855,20 @@ func stripHarnessSpans(s string) string {
 			if i < 0 {
 				break
 			}
-			// The span runs to the matching close when there is one, and to the end of the opening
-			// tag otherwise — a self-closing or unterminated block leaves nothing to keep.
+			// The span runs to the matching close when there is one, and TO THE END OF THE STRING
+			// otherwise.
+			//
+			// Not to the end of the opening tag, which is what it did: an unclosed block then left
+			// its body behind as bare prose — "prose <system-reminder>INJECTED payload" kept
+			// "INJECTED payload" — with no escape sequence needed. A harness block that is not
+			// closed is still a harness block, and everything after it is its content as far as
+			// anyone can tell.
 			end := len(s)
 			name := tag[1:] // tag is "<name"
 			if c := strings.Index(s[i:], "</"+name); c >= 0 {
 				if g := strings.IndexByte(s[i+c:], '>'); g >= 0 {
 					end = i + c + g + 1
 				}
-			} else if g := strings.IndexByte(s[i:], '>'); g >= 0 {
-				end = i + g + 1
 			}
 			s = s[:i] + " " + s[end:]
 		}
@@ -835,23 +892,66 @@ func stripTags(s string) string {
 	}
 	var b strings.Builder
 	b.Grow(len(s))
-	depth := 0
-	for _, r := range s {
-		switch {
-		case r == '<':
-			depth++
-		case r == '>' && depth > 0:
-			depth--
-		case depth == 0:
-			b.WriteRune(r)
+	for {
+		i := strings.IndexByte(s, '<')
+		if i < 0 {
+			b.WriteString(s)
+			break
 		}
-	}
-	// A lone "<" with no closing ">" left depth > 0 and swallowed the tail, which would turn
-	// "is 3 < 5" into "is 3 ". Fall back to the original in that case: nothing was a tag.
-	if depth > 0 {
-		return s
+		// A TAG-NAME-SHAPED SPAN, not just anything between angle brackets. Two defects came from
+		// treating every "<" as an opener and counting depth:
+		//
+		//   - two balanced comparison operators cancelled out, so the depth-0 fallback never fired
+		//     and everything between them was eaten: "is 3 < 5 and 6 > 2 in Go?" became
+		//     "is 3 2 in Go?";
+		//   - one unbalanced "<" disabled stripping for the WHOLE string, including balanced tags
+		//     before it, so normalizeTitle's no-markup contract was simply false for such inputs.
+		//
+		// Deciding per span fixes both: a "<" that does not begin a plausible tag is ordinary text
+		// and is kept, and each span is judged on its own.
+		if n := tagSpanLen(s[i:]); n > 0 {
+			b.WriteString(s[:i])
+			s = s[i+n:]
+			continue
+		}
+		b.WriteString(s[:i+1])
+		s = s[i+1:]
 	}
 	return b.String()
+}
+
+// tagSpanLen returns the length of the tag starting at s[0], or 0 if s does not start with one.
+//
+// A tag is "<", an optional "/", a name of letters, digits, "-" or "_", then anything up to the
+// first ">". That is deliberately narrow: "< 5" and "<" at end-of-string are not tags, so a
+// comparison operator in a real prompt survives, while "<div>", "</system-reminder>" and
+// "<a href=\"x\">" do not.
+func tagSpanLen(s string) int {
+	if len(s) < 2 || s[0] != '<' {
+		return 0
+	}
+	i := 1
+	if s[i] == '/' {
+		i++
+	}
+	nameStart := i
+	for i < len(s) {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			i++
+			continue
+		}
+		break
+	}
+	if i == nameStart {
+		return 0 // no name: "< 5", "<>", "<="
+	}
+	if j := strings.IndexByte(s[i:], '>'); j >= 0 {
+		return i + j + 1
+	}
+	// An opening tag with no ">" anywhere. Not a span, so the "<" is kept as text — the alternative
+	// is swallowing the rest of the string on a stray bracket.
+	return 0
 }
 
 // promptFromMessage returns the text a person typed in one user turn, and whether the content was
@@ -1143,8 +1243,13 @@ func cutTrailingHarness(s string) string {
 			// Every occurrence is examined, not just the first: a prompt may mention a tag inline
 			// and still have a real appended block after it.
 			if i > 0 {
+				// ANY whitespace counts as indentation, not just space and tab. The adjacent comment
+				// already cited \v and NBSP as shapes the harness might use, while the check tested
+				// two characters — so the two defences were less independent than they read. Not a
+				// leak end to end, since normalizeTitle removes the tag either way, but a defence
+				// that only appears to cover a case is worse than one that admits it does not.
 				j := i - 1
-				for j >= 0 && (s[j] == ' ' || s[j] == '\t') {
+				for j >= 0 && unicode.IsSpace(rune(s[j])) && s[j] != '\n' && s[j] != '\r' {
 					j--
 				}
 				if j >= 0 && s[j] != '\n' && s[j] != '\r' {

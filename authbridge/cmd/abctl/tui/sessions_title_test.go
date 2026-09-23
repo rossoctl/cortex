@@ -921,8 +921,14 @@ func TestSessionTitleCell_SlashCommandIsNotAPath(t *testing.T) {
 			if lipgloss.Width(got) > w {
 				t.Fatalf("cell is %d columns against a %d-column budget: %q", lipgloss.Width(got), w, got)
 			}
+			// RUNE slices, not byte slices. Every fixture here is ASCII today, but this suite
+			// deliberately exercises CJK elsewhere, and a byte slice would split a multi-byte
+			// character the moment someone adds such a case — producing an invalid-UTF-8 needle and
+			// a failure that looks like the code's fault.
+			head := string([]rune(tc.title)[:5])
+			tail := func(s string) string { r := []rune(s); return string(r[len(r)-5:]) }
 			if tc.keepHead {
-				if !strings.HasPrefix(got, tc.title[:5]) {
+				if !strings.HasPrefix(got, head) {
 					t.Errorf("command name lost: %q from %q", got, tc.title)
 				}
 				if strings.HasPrefix(got, "…") {
@@ -930,7 +936,7 @@ func TestSessionTitleCell_SlashCommandIsNotAPath(t *testing.T) {
 				}
 				return
 			}
-			if !strings.HasSuffix(got, tc.title[len(tc.title)-5:]) {
+			if !strings.HasSuffix(got, tail(tc.title)) {
 				t.Errorf("path leaf lost: %q from %q", got, tc.title)
 			}
 		})

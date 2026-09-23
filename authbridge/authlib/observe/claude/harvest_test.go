@@ -1709,22 +1709,25 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 		name, content, want string
 	}{
 		{
-			// These used to assert the tag SURVIVES, on the reasoning that cutting mid-sentence was
-			// worse than leaking a tag. That trade is gone: the tag is stripped and the surrounding
-			// prose is kept, so neither the truncation nor the leak happens.
-			"known tag mid-sentence is stripped, not cut",
+			// AN UNCLOSED HARNESS TAG RUNS TO END-OF-STRING, so a prompt mentioning one loses its
+			// tail. That is the deliberate trade: an unclosed block whose body cannot be delimited
+			// otherwise promotes its content into the title — "prose <system-reminder>INJECTED
+			// payload" kept "INJECTED payload" — and a title being plain matters more than a prompt
+			// that quotes a harness tag reading in full. The head, which says what the session is
+			// about, survives either way.
+			"an unclosed known tag takes the rest of the line",
 			"how do I use <command-args> in a skill?",
-			"how do I use in a skill?",
+			"how do I use",
 		},
 		{
-			"known tag mid-sentence, different tag",
+			"an unclosed known tag, different tag",
 			"why does <system-reminder> show up in my logs?",
-			"why does show up in my logs?",
+			"why does",
 		},
 		{
-			"known tag after a space",
+			"an unclosed known tag after a space",
 			"see <task-notification> for details",
-			"see for details",
+			"see",
 		},
 		{
 			// The real shape: the harness appends on its own line, which IS a cut.
@@ -1734,9 +1737,10 @@ func TestTitleFromTranscript_InlineHarnessTagMentionIsNotACut(t *testing.T) {
 		},
 		{
 			// Every occurrence is examined, so an inline mention does not mask a later real block.
-			"an inline mention does not hide a later appended block",
+			// The first unclosed tag already takes the rest, appended block included.
+			"an unclosed mention takes the appended block with it",
 			"how do I use <command-args>?\n<system-reminder>hidden</system-reminder>",
-			"how do I use ?",
+			"how do I use",
 		},
 		{
 			// THE LAST DOCUMENTED LEAK, now closed. This was left alone deliberately, as a trade
@@ -1815,14 +1819,14 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 	inputs := []string{
 		// Harness markup in every placement review found, plus the ones it did not.
 		`<system-reminder>injected instructions</system-reminder>`,
-		"my question\n<system-reminder>injected</system-reminder>",
-		"my question\n   <system-reminder>injected</system-reminder>",
-		"my question\n\t<system-reminder>injected</system-reminder>",
-		"my question\n\v<system-reminder>injected</system-reminder>",
+		"my question\n<system-reminder>HARNESSBODY</system-reminder>",
+		"my question\n   <system-reminder>HARNESSBODY</system-reminder>",
+		"my question\n\t<system-reminder>HARNESSBODY</system-reminder>",
+		"my question\n\v<system-reminder>HARNESSBODY</system-reminder>",
 		"my question\n <system-reminder>injected</system-reminder>",
 		"my question\n　<system-reminder>injected</system-reminder>",
-		"line one\nline two <system-reminder>injected</system-reminder>",
-		"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args><system-reminder>injected</system-reminder></command-args>",
+		"line one\nline two <system-reminder>HARNESSBODY</system-reminder>",
+		"<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args><system-reminder>HARNESSBODY</system-reminder></command-args>",
 		`<pasted_content id="x"><system-reminder>injected</system-reminder></pasted_content>`,
 		`<bash-stdout>total 40</bash-stdout>`,
 		`<a><b>nested</b></a>`,
@@ -1833,6 +1837,20 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 		"how do I write List<String> in Go?",
 		"a <b>bold</b> claim",
 		"<unknown-tag>body</unknown-tag>",
+		// THIS ROUND. Each was a leak or a mangling; the corpus grows rather than each getting its
+		// own test, because the property is what matters and the placements are open-ended.
+		"ok <system-\x1b[0mreminder>HARNESSBODY</system-reminder> end", // ESC splitting a tag name
+		"<system\x1b[m-reminder>HARNESSBODY</system-reminder>",
+		"prose <system-reminder>HARNESSBODY payload here", // unclosed block
+		"is 3 < 5 and 6 > 2 in Go?",                       // two balanced operators
+		"<system-reminder>HARNESSBODY</system-reminder> and 3 < 5",
+		"a\x1bPq injected \x1b\\b", // DCS
+		"a\x1b(Binjected",          // charset selection
+		"a\x1b_injected\x07b",      // APC
+		"title\x1b",                // trailing lone ESC
+		"my question\n\v<system-reminder>HARNESSBODY</system-reminder>",
+		"my question\n\f<system-reminder>HARNESSBODY</system-reminder>",
+		"my question\n\u00a0<system-reminder>HARNESSBODY</system-reminder>",
 		// Control characters and invisible code points.
 		"colour \x1b[31mred\x1b[0m here",
 		"osc \x1b]0;evil\x07 here",
@@ -1868,10 +1886,12 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 			t.Fatalf("input %q: %v", in, gerr)
 		}
 
-		// No angle brackets that could read as a tag. A lone "<" survives — "is 3 < 5" is a real
-		// prompt — but never a matched pair.
-		if strings.Contains(got, ">") {
-			t.Errorf("input %q: title carries a closing bracket: %q", in, got)
+		// NO TAG-SHAPED SPAN. Bare brackets are legitimate — "is 3 < 5 and 6 > 2 in Go?" is a real
+		// prompt and must survive whole — so the assertion is about a "<name>" span, not about the
+		// characters. An earlier version banned ">" outright and failed that prompt, which would have
+		// pushed the code toward eating comparison operators again.
+		if tagSpanLen(got[strings.IndexByte(got+"<", '<'):]) > 0 {
+			t.Errorf("input %q: title carries a tag span: %q", in, got)
 		}
 		// No harness tag name, in any form.
 		for _, tag := range harnessTagNames {
@@ -1880,11 +1900,15 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 			}
 		}
 		// AND NOT THE BODY EITHER. Stripping the brackets alone promoted the payload into the
-		// title — "my question\n<system-reminder>injected</system-reminder>" became
+		// title — "my question\n<system-reminder>HARNESSBODY</system-reminder>" became
 		// "my question injected" — which is the whole point of removing a harness span rather than
 		// just its tags. Checking only for tags left this test blind to it, and the mutation that
 		// exposed the gap passed until this assertion existed.
-		if strings.Contains(got, "injected") || strings.Contains(got, "total 40") {
+		// A harness BODY must not survive — stripping brackets alone promoted the payload. Keyed on
+		// a marker that appears ONLY inside harness spans in this corpus: "injected" was used both
+		// for those and for plain text after an escape sequence, so the check fired on text that was
+		// never inside a tag.
+		if strings.Contains(got, "HARNESSBODY") || strings.Contains(got, "total 40") {
 			t.Errorf("input %q: title carries a harness BODY: %q", in, got)
 		}
 		// Every rune prints as itself: no controls, format characters, surrogates or unassigned.
@@ -2048,5 +2072,84 @@ func TestReadSessions_CollectsPartialReads(t *testing.T) {
 	}
 	if out["fine"].Title != "another ask" {
 		t.Errorf("healthy session title = %q, want %q", out["fine"].Title, "another ask")
+	}
+}
+
+// stripANSI removes each escape class WITH its payload, not just the ESC byte.
+//
+// The property test cannot see this: dropping the ESC alone still leaves a plain title, so
+// "garbage but plain" satisfies the guarantee. Only CSI and OSC were handled, so a DCS or APC
+// payload — and the one byte after a charset-selection escape — survived as literal text.
+func TestStripANSI_HandlesEveryEscapeClass(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"CSI colour", "a\x1b[31mb", "ab"},
+		{"CSI cursor", "a\x1b[2Jb", "ab"},
+		{"OSC with BEL", "a\x1b]0;evil\x07b", "ab"},
+		{"OSC with ST", "a\x1b]0;evil\x1b\\b", "ab"},
+		{"DCS", "a\x1bPq payload \x1b\\b", "ab"},
+		{"SOS", "a\x1bXpayload\x07b", "ab"},
+		{"PM", "a\x1b^payload\x07b", "ab"},
+		{"APC", "a\x1b_payload\x07b", "ab"},
+		{"charset selection", "a\x1b(Bb", "ab"},
+		{"charset selection, other", "a\x1b)0b", "ab"},
+		{"two-byte escape", "a\x1b7b", "ab"},
+		{"trailing lone ESC", "title\x1b", "title"},
+		{"no escapes", "how do I build abctl?", "how do I build abctl?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripANSI(tc.in); got != tc.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// tagSpanLen recognises a tag and declines everything else, which is what keeps comparison
+// operators in real prompts.
+//
+// Two defects came from counting "<" and ">" as a balanced pair: two operators cancelled out and
+// everything between them was eaten ("is 3 < 5 and 6 > 2 in Go?" became "is 3 2 in Go?"), and one
+// unbalanced "<" disabled stripping for the whole string including balanced tags before it.
+func TestTagSpanLen(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"<div>", 5},
+		{"</div>", 6},
+		{"<system-reminder>", 17},
+		{`<a href="x">`, 12},
+		{"<b>text</b>", 3}, // the opening tag only
+		{"< 5", 0},         // a comparison, not a tag
+		{"<=", 0},
+		{"<>", 0},
+		{"<", 0},
+		{"<div", 0}, // no closing bracket anywhere
+		{"plain", 0},
+		{"", 0},
+	} {
+		if got := tagSpanLen(tc.in); got != tc.want {
+			t.Errorf("tagSpanLen(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Comparison operators survive in both directions, and a tag beside them still goes.
+func TestClipTitle_KeepsComparisonOperators(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
+		{"is 3 < 5 and 6 > 2 in Go?", "is 3 < 5 and 6 > 2 in Go?"},
+		{"a > b > c", "a > b > c"},
+		{"x <= y and y >= z", "x <= y and y >= z"},
+		// A balanced span BEFORE a lone "<" is still stripped: one unbalanced bracket used to
+		// disable stripping for the entire string.
+		{"<system-reminder>HARNESSBODY</system-reminder> and 3 < 5", "and 3 < 5"},
+		{"<div>x</div> and 3 < 5", "x and 3 < 5"},
+	} {
+		if got := clipTitle(tc.in); got != tc.want {
+			t.Errorf("clipTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
