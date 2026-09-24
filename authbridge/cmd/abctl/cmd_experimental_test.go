@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,6 +32,40 @@ func writeSessionTranscript(t *testing.T, dir, name string, lines ...string) {
 }
 
 // readMetadataFile decodes what the command wrote.
+// oversizedMetadata builds a VALID metadata file just over Harvest's 16 MiB read cap.
+//
+// Raw text rather than marshalling a map: 4000-odd entries through encoding/json took seconds,
+// and what the test needs is the size and the validity, not realistic content.
+func oversizedMetadata(t *testing.T) []byte {
+	t.Helper()
+	var b []byte
+	b = append(b, '{')
+	pad := strings.Repeat("x", 4<<10)
+	for i := 0; len(b) <= 16<<20; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, fmt.Sprintf("%q:{\"title\":%q}", fmt.Sprintf("sess-%06d", i), pad)...)
+	}
+	b = append(b, '}')
+	// Asserted, because an INVALID oversized file would exercise the rebuild path instead and
+	// the test would pass for the wrong reason.
+	if !json.Valid(b) {
+		t.Fatal("fixture is not valid JSON, so this would not test the refusal")
+	}
+	return b
+}
+
+// fileSize reports the file's size, for before/after comparison.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return st.Size()
+}
+
 func readMetadataFile(t *testing.T, path string) map[string]tui.SessionMetadata {
 	t.Helper()
 	b, err := os.ReadFile(path) //nolint:gosec // test-controlled path
@@ -442,6 +477,38 @@ func TestReadClaudeSessions_MergeRefusesAnUnreadableFile(t *testing.T) {
 	}
 	if got := readMetadataFile(t, path)["old"].Title; got != "keep me" {
 		t.Errorf("Title = %q, want the untouched entry: the file was replaced", got)
+	}
+}
+
+// An oversized but valid file is refused with its OWN remedy — not the permission advice, which
+// would be wrong: the file is intact and readable, just over the read cap.
+func TestReadClaudeSessions_OversizedFileNamesTheRightRepair(t *testing.T) {
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, oversizedMetadata(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size := fileSize(t, path)
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"user","cwd":"/w"}`)
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
+		t.Errorf("exit = %d, want 1", code)
+	}
+	if got := errb.String(); !strings.Contains(got, "too large") {
+		t.Errorf("stderr does not say what is wrong:\n%s", got)
+	}
+	if got := errb.String(); strings.Contains(got, "permissions") {
+		t.Errorf("stderr gives the permission remedy for an intact file:\n%s", got)
+	}
+	if got := fileSize(t, path); got != size {
+		t.Errorf("file is %d bytes, was %d — it was rewritten", got, size)
 	}
 }
 

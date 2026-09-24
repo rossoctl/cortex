@@ -256,14 +256,23 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 				"    mv %s %s.bad\n", err, path, path)
 			return nil
 		}
+		// Too large is the same shape of problem: Harvest refuses it, so it repeats every launch
+		// and needs a human. Different remedy — the file is intact and readable, just over the
+		// cap — so it gets its own line rather than the permission advice.
+		if errors.Is(err, claude.ErrMetadataTooLarge) {
+			fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
+				"  Move it aside to start a fresh file:\n"+
+				"    mv %s %s.bak\n", err, path, path)
+			return nil
+		}
 		// EVERY OTHER READ ERROR FALLS THROUGH SILENTLY rather than disabling titles or warning
 		// here, because this position cannot tell which of them Harvest will recover from. The
 		// sentinel that says "this one does not parse" is unexported, and exporting it would
 		// widen authlib's API to let this pre-flight re-derive a decision Harvest makes a few
 		// lines later anyway.
 		//
-		// So the split is by what a human can DO, not by what went wrong: a permission failure
-		// names an action and repeats every launch, which is worth printing before the alt screen
+		// So the split is by what a human can DO, not by what went wrong: the two cases above
+		// name an action and repeat every launch, which is worth printing before the alt screen
 		// goes up. Not warning about the rest is the deliberate half — the common case among them
 		// is the file that does not parse, which heals itself moments later, so a line here would
 		// tell the operator titles are in trouble and then hand them titles. A harvest that does

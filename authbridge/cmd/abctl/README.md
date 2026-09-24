@@ -153,10 +153,12 @@ simply not be touched. It suppresses only the *scan*: the viewer still reads
 only sessions new or renamed since the last scan show as bare ids. There is no flag that
 hides titles already on disk — delete the file for that.
 
-A harvest that cannot run is never fatal — a missing, unreadable or corrupt file
-costs the `TITLE` column and nothing else, and the viewer still opens. The failures
-that can be known before the viewer starts, such as an unreadable metadata file, print
-one line to stderr with the repair; success says nothing.
+A harvest that cannot run is never fatal — the worst a missing or unreadable file
+costs is the `TITLE` column, and the viewer still opens. A file that does not parse is
+rebuilt from the transcripts rather than costing anything; the entries a rebuild cannot
+recover are sessions whose transcripts Claude Code has already pruned. The failures that
+need a human, such as an unreadable metadata file, print one line to stderr with the
+repair before the viewer starts; success says nothing.
 
 The config directory is `CLAUDE_CONFIG_DIR` when set, and `~/.claude`
 otherwise. To read a different directory, or to force a full re-read of every

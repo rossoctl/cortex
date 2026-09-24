@@ -397,6 +397,40 @@ func TestClaudeHarvester_UnreadableFileNamesTheRepair(t *testing.T) {
 	}
 }
 
+// An oversized-but-valid file also disables the harvest — Harvest refuses it, so running the
+// harvester anyway would fail on every launch with nothing said before the alt screen. The
+// remedy printed must be its own, not the permission advice: this file is readable and intact.
+func TestClaudeHarvester_OversizedFileNamesItsOwnRepair(t *testing.T) {
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, oversizedMetadata(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var warn bytes.Buffer
+	if h := claudeHarvester(&warn); h != nil {
+		t.Error("a file Harvest refuses must disable the harvest rather than fail every launch")
+	}
+	got := warn.String()
+	if !strings.Contains(got, "too large") {
+		t.Errorf("the warning does not say what is wrong:\n%s", got)
+	}
+	if strings.Contains(got, "permission") {
+		t.Errorf("the warning gives the permission remedy for an intact file:\n%s", got)
+	}
+	if !strings.Contains(got, "mv ") {
+		t.Errorf("the warning does not name the repair:\n%s", got)
+	}
+}
+
 // `abctl observe` wires the harvest to the flag: on by default, off with
 // --skip-claude-metadata.
 //

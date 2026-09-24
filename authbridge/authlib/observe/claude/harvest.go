@@ -23,9 +23,11 @@ const ConfigDirEnv = "CLAUDE_CONFIG_DIR"
 // read, so a merge refused rather than replacing a file whose contents are unknown.
 //
 // NARROWER THAN THE NAME SUGGESTS: a file that reads fine but does not parse no longer
-// comes back here, because Harvest rebuilds it instead. What is left is the file that
-// could not be read at all — a permission or I/O failure — where refusing is the only
-// safe answer, since a rebuild would replace entries that may be perfectly good.
+// comes back here, because Harvest rebuilds it instead. What is left is every file Harvest
+// refuses because a rebuild might replace good entries — one that could not be read (a
+// permission or I/O failure) and one too large to read whole (ErrMetadataTooLarge). The two
+// need different advice, so a caller printing a remedy must check the narrower sentinel
+// first rather than assuming this one means permissions.
 //
 // Exported because the repair is a CLI affordance: `abctl experimental
 // read-claude-sessions` names --merge=false as the way past, and only the command layer
@@ -43,6 +45,15 @@ var ErrCorruptMetadata = errors.New("corrupt session metadata")
 // platform — an errors.Is against it must compile where the lock is a no-op too, which is
 // the Windows cross-check lock_other.go exists to keep working.
 var ErrLockTimeout = errors.New("timed out waiting for the session metadata lock")
+
+// ErrMetadataTooLarge reports that the metadata file is larger than ReadMetadata's cap, so it
+// could not be read whole and was refused rather than rebuilt over.
+//
+// Exported, unlike errMetadataNotJSON, because the remedy differs and callers must not give the
+// wrong one: this file is intact and its permissions are fine, so "fix the permissions" is wrong
+// advice. It is also permanent — every launch refuses again — which a caller may want to say
+// before a full-screen viewer hides it.
+var ErrMetadataTooLarge = errors.New("session metadata file is too large to read")
 
 // errMetadataNotJSON marks the one read failure Harvest can recover from by rebuilding.
 //
@@ -1826,16 +1837,18 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	// Truncation is reported as ITS OWN failure, not left to surface as a JSON error. A valid
 	// file over the cap decodes as a parse failure, and Harvest rebuilds over parse failures —
 	// which would replace a good 17 MB file with a 400-byte one. So the cap is checked before
-	// the decode, and the error deliberately carries neither sentinel: not errMetadataNotJSON,
-	// so it cannot be rebuilt over; not a bare read error, because nothing is wrong with the
-	// bytes. Read one over the cap to tell "exactly at the cap" from "larger".
+	// the decode, and the error deliberately carries its own sentinel: not errMetadataNotJSON,
+	// so it cannot be rebuilt over; not a bare read error either, because nothing is wrong with the
+	// bytes — it carries ErrMetadataTooLarge, which the CLI and the viewer's pre-flight each
+	// branch on to give the right remedy. Read one over the cap to tell "exactly at the cap"
+	// from "larger".
 	const maxMetadataBytes = 16 << 20
 	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(b) > maxMetadataBytes {
-		return nil, fmt.Errorf("%s is larger than the %d byte read limit", path, maxMetadataBytes)
+		return nil, fmt.Errorf("%w: %s is larger than the %d byte read limit", ErrMetadataTooLarge, path, maxMetadataBytes)
 	}
 	var m map[string]SessionMetadata
 	if uerr := json.Unmarshal(b, &m); uerr != nil {
@@ -1915,6 +1928,14 @@ func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (add
 	return added, replaced, nil
 }
 
+// writeAll writes body to w. A var, not a call, purely as a test seam.
+//
+// The bug it guards is the `err :=` shadow in SaveMetadata: a scoped error would be dropped,
+// and Close and Rename would then rename a TRUNCATED file over the good one. Nothing a test
+// can provoke on a working filesystem — a short write without an error is not something a
+// real file does — so the injection point is the only way to reach that path.
+var writeAll = func(w io.Writer, body []byte) (int, error) { return w.Write(body) }
+
 // SaveMetadata writes the map atomically, creating ~/.cortex if needed.
 //
 // Same mechanics as saveUserConfig, for the same reasons: CreateTemp rather than a
@@ -1960,16 +1981,11 @@ func SaveMetadata(path string, meta map[string]SessionMetadata) error {
 	// would then see success, renaming a truncated file over the good one. The bug
 	// saveUserConfig's comment records having made.
 	//
-	// TRIPWIRE LOST IN THE MOVE, recorded rather than left silent: in package main this was
-	// `writeAll(f, body)`, an indirected io.Writer.Write that a test could swap for a failing
-	// one — added because the shadowing bug above is invisible to every test that writes to a
-	// working filesystem. That var stays in cmd/abctl for saveUserConfig, which is what its
-	// own test swaps, and it cannot travel here without duplicating it across two modules. No
-	// test ever reached it through the harvest path (the write-failure test uses an
-	// unwritable directory instead), so nothing regressed today — but the injection point is
-	// gone, so a future edit that reintroduces the shadowing has one fewer way to be caught.
-	// Restoring it is three lines if that ever feels too thin.
-	_, err = f.Write(body)
+	// Through writeAll, not f.Write directly, so a test can make the write fail while Close
+	// and Rename still succeed — the only shape that catches the shadowing above, and one no
+	// real filesystem produces on demand. cmd/abctl has its own copy of this seam for
+	// saveUserConfig; the duplication is two lines and buys each module its own tripwire.
+	_, err = writeAll(f, body)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

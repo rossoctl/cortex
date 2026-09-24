@@ -144,10 +144,18 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// `abctl observe` is the incremental caller.
 	res, err := claude.Harvest(claude.Options{ConfigDir: *dir, Merge: *merge})
 	if err != nil {
+		// Two refusals, two remedies. Checked narrowest first: the oversized file also wraps
+		// ErrCorruptMetadata, and its permissions are fine, so the permission advice is wrong
+		// for it. Neither suggests --merge=false any more — both would hit the same read.
+		if errors.Is(err, claude.ErrMetadataTooLarge) {
+			// The path is already in the error text, so it is not repeated here.
+			fmt.Fprintf(stderr, "abctl: %v\n"+
+				"  Move the file aside and re-run to start a fresh one.\n", err)
+			return 1
+		}
 		if errors.Is(err, claude.ErrCorruptMetadata) {
-			// NOW ONLY THE UNREADABLE FILE reaches here: one that does not parse is rebuilt by
-			// Harvest itself. This one could not be read at all, so --merge=false is no longer
-			// the thing to suggest — it would hit the same read. Name what a human can do.
+			// A file that does not parse is rebuilt by Harvest itself, so what reaches here
+			// could not be read at all. Name what a human can do.
 			fmt.Fprintf(stderr, "abctl: %v\n"+
 				"  Fix the file's permissions, or move it aside and re-run.\n", err)
 			return 1

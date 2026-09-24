@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -345,6 +346,11 @@ func TestHarvest_OversizedValidMetadataIsRefusedNotRebuilt(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCorruptMetadata) {
 		t.Errorf("err = %v, want it to wrap ErrCorruptMetadata", err)
+	}
+	// Distinguishable through both wraps, so a caller can give the right remedy: this file's
+	// permissions are fine and "fix the permissions" would be wrong advice.
+	if !errors.Is(err, ErrMetadataTooLarge) {
+		t.Errorf("err = %v, want it to wrap ErrMetadataTooLarge", err)
 	}
 	if res.Rebuilt {
 		t.Error("Rebuilt is true for a file that was merely too large to read")
@@ -2845,5 +2851,44 @@ func TestTitleFromTranscript_CwdIsBounded(t *testing.T) {
 	if !strings.HasSuffix(got, "/the-leaf") {
 		t.Errorf("title = %q, want it to end in %q — clipping a cwd must keep the leaf",
 			got[max(0, len(got)-20):], "/the-leaf")
+	}
+}
+
+// A short write must not be renamed over the good file. This is the seam writeAll exists for:
+// the failure is a write error that Close and Rename both survive, which no real filesystem
+// produces, and the bug it guards — `err :=` shadowing inside SaveMetadata — is invisible to
+// every test that writes to a working disk.
+func TestSaveMetadata_AFailedWriteKeepsTheOldFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-metadata.json")
+	const keep = `{"old":{"title":"keep me"}}`
+	if err := os.WriteFile(path, []byte(keep), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	was := writeAll
+	writeAll = func(io.Writer, []byte) (int, error) { return 0, errors.New("disk on fire") }
+	t.Cleanup(func() { writeAll = was })
+
+	if err := SaveMetadata(path, map[string]SessionMetadata{"new": {Title: "t"}}); err == nil {
+		t.Fatal("SaveMetadata returned nil after the write failed")
+	}
+	// The point of the test: the old file, not a truncated new one.
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != keep {
+		t.Errorf("file = %q, want the original %q", b, keep)
+	}
+	// And no temp file left behind to accumulate one per failure.
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file %s was left behind", e.Name())
+		}
 	}
 }
