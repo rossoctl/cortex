@@ -181,6 +181,9 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 // Only sessions the metadata does NOT name are considered, so the steady state — every row titled
 // — triggers nothing at all.
 //
+// THE QUIET TEST SPANS TWO CLOCKS and tolerates them disagreeing in the safe direction; the
+// reasoning is at the comparison itself.
+//
 // IT IS NOT FREE, THOUGH, and an earlier version of this comment claimed "one map lookup per row
 // per tick", which undersells it: sessionHasTitle goes through sessionTitle, which calls
 // sanitizeLabel, which builds a new string. So the steady state allocates once per row per 2s
@@ -204,7 +207,28 @@ func (m *model) untitledSettled(now time.Time) bool {
 		if s.UpdatedAt.IsZero() {
 			continue
 		}
-		if now.Sub(s.UpdatedAt) >= untitledSettleDelay {
+		// TWO CLOCKS, NOT ONE, and this subtraction is the only place in the pane where that
+		// costs anything. now is the laptop's; UpdatedAt was stamped inside the pod
+		// (authlib/session/store.go, sess.UpdatedAt = now) or carried on a streamed event, and
+		// the two are reached through a kubectl port-forward with nothing keeping them in step.
+		// Kubernetes does not synchronise node clocks, and a laptop that slept is the common
+		// way this gets large.
+		//
+		// A FUTURE UpdatedAt IS A BROKEN CLOCK, NOT A SETTLED SESSION. Pod ahead of client gives
+		// a negative delta, which can never reach untitledSettleDelay, so that row's title never
+		// arrives — no error, no log, just a permanently blank TITLE cell, and the skew has to
+		// exceed only 5s to do it. Treating it as settled instead is the safe direction: the
+		// cost of harvesting early is one wasted tree walk that the backoff then widens, against
+		// a title that otherwise never comes at all.
+		//
+		// Clamped rather than corrected, because there is nothing to correct against. Both
+		// timestamps on SessionSummary are server-stamped, so the response carries no
+		// client-anchored instant to measure the offset from, and inventing one (first-seen-at,
+		// per row) would be a second clock model for a pane whose AGE column already tolerates
+		// the same skew — relTime renders a negative delta as "just now" and moves on. The
+		// asymmetry is the point: a wrong AGE is visibly wrong for one tick, while a wrong
+		// settle answer is invisible and permanent.
+		if quiet := now.Sub(s.UpdatedAt); quiet < 0 || quiet >= untitledSettleDelay {
 			return true
 		}
 	}

@@ -1406,6 +1406,15 @@ func TestSessionsPane_BacksOffFruitlessHarvests(t *testing.T) {
 	m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: time.Now().Add(-time.Hour)}}
 	m.harvest = func() (map[string]SessionMetadata, error) { return nil, nil }
 
+	// SPEND THE ARRIVAL RESET FIRST. s1 is unnamed and this model has never scored it, so the
+	// first harvest resets rather than counting — see untitledCounted. That is deliberate (a row
+	// nobody has asked about yet is not evidence that asking is fruitless) and it is not what
+	// this test is about, so get past it before measuring the widening.
+	m.Update(harvestedMsg{})
+	if m.untitledMisses != 0 {
+		t.Fatalf("first harvest on a never-scored row should reset, got %d", m.untitledMisses)
+	}
+
 	// A harvest that names nothing widens the wait.
 	for want := 1; want <= 3; want++ {
 		m.lastHarvest = time.Now().Add(-untitledBackoffCap)
@@ -1695,6 +1704,9 @@ func TestHarvestedMsg_UnscoreableHarvestsDoNotMoveTheBackoff(t *testing.T) {
 	// what counting means.
 	m = newTitleModel(t, map[string]SessionMetadata{}, "s1")
 	m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: time.Now()}}
+	// Twice: the first harvest meets s1 and resets on arrival, the second is the miss being
+	// measured. Scoring a row the model has never seen unnamed is a reset by design.
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"other": {Title: "not on screen"}}})
 	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"other": {Title: "not on screen"}}})
 	if m.untitledMisses != 1 {
 		t.Errorf("a fruitless harvest with rows present left untitledMisses = %d, want 1", m.untitledMisses)
@@ -1749,5 +1761,162 @@ func TestPicker_InitHarvestCountsAgainstTheVisit(t *testing.T) {
 	runBatch(t, again)
 	if called != 1 {
 		t.Errorf("a later tick in the same visit re-harvested (%d calls, want 1)", called)
+	}
+}
+
+// TestUntitledMisses_NewSessionClearsAnotherRowsPenalty is the #1109 symptom with a longer fuse.
+//
+// untitledMisses is one model-wide counter, but the thing it describes — "asking about this row is
+// fruitless" — is per-row. A session with no transcript under the agent's config dir can never be
+// named, so it drives the counter to untitledBackoffCap. Before the arrival reset, a genuinely new
+// unnamed session appearing afterwards inherited that 3m wait for its FIRST title: the backoff gate
+// refused it, though nothing had ever been asked about it.
+//
+// DRIVES THE REAL HANDLER, not the fields. The reset has to happen where the misses are counted, so
+// a test that set untitledMisses by hand would pass against a fix placed anywhere at all.
+func TestUntitledMisses_NewSessionClearsAnotherRowsPenalty(t *testing.T) {
+	// One row that no harvest will ever name.
+	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
+	empty := map[string]SessionMetadata{}
+
+	// Eight fruitless harvests on that row. Past the cap, so the failure is a 3m wait.
+	for i := 0; i < 8; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	// A new session appears — the ordinary case, an operator watching a pod while an unnameable
+	// row sits on screen. The poll path replaces the slice wholesale; both rows are unnamed.
+	m.sessions = append(m.sessions, session.SessionSummary{ID: "brandnew", UpdatedAt: time.Now()})
+
+	// The next harvest still names nothing: the new session's transcript is not readable yet,
+	// which is exactly when its first retry matters most.
+	m.Update(harvestedMsg{meta: empty})
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d after a previously-unseen unnamed session arrived; "+
+			"its first title waits %v, earned by a different row",
+			m.untitledMisses, untitledBackoff(m.untitledMisses))
+	}
+}
+
+// TestUntitledMisses_SameUnnameableRowKeepsBackingOff is the other half of the arrival reset.
+//
+// The reset keys on a row this scoring has not seen unnamed before. If it instead fired whenever
+// any unnamed row was present, the backoff would be permanently reset and the loop it exists to
+// break — a full transcript-tree walk every untitledSettleDelay for a title that is never coming —
+// would be back with extra code. So: the same row asked again must still widen the wait.
+func TestUntitledMisses_SameUnnameableRowKeepsBackingOff(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
+	empty := map[string]SessionMetadata{}
+
+	// FOUR HARVESTS, THREE MISSES. The first one meets this row for the first time and resets,
+	// which is the arrival reset working as intended rather than an off-by-one: a row that has
+	// never been asked about is not evidence that asking is fruitless. Only the repeats count.
+	for i := 0; i < 4; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+
+	if m.untitledMisses != 3 {
+		t.Errorf("untitledMisses = %d after 4 fruitless harvests on one unchanged row, want 3 "+
+			"(backoff %v); the arrival reset is firing on a row it already counted",
+			m.untitledMisses, untitledBackoff(m.untitledMisses))
+	}
+}
+
+// TestUntitledMisses_ReturningSessionCountsAsNew pins that the set is rebuilt, not appended to.
+//
+// A row that leaves the list and comes back is a new row to an operator watching the pane, and
+// abctl's own docs note a session id can be re-created after eviction. An append-only set would
+// remember it as "already counted" and make its first title wait out a backoff earned before it
+// went away.
+func TestUntitledMisses_ReturningSessionCountsAsNew(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "comesback")
+	empty := map[string]SessionMetadata{}
+
+	for i := 0; i < 8; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	// Gone: the poll returned a list without it. Scored while absent, so the set forgets it.
+	m.sessions = []session.SessionSummary{{ID: "other", UpdatedAt: time.Now()}}
+	m.sessionsData = map[string]SessionMetadata{"other": {Title: "named"}}
+	m.Update(harvestedMsg{meta: empty})
+
+	// Back again, still unnamed.
+	m.sessions = append(m.sessions, session.SessionSummary{ID: "comesback", UpdatedAt: time.Now()})
+	m.Update(harvestedMsg{meta: empty})
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d after a session returned to the list; "+
+			"the set is remembering ids whose rows are gone", m.untitledMisses)
+	}
+}
+
+// TestUntitledMisses_TitledRowsStayOutOfTheSet pins that only rows counted against the backoff are
+// remembered.
+//
+// A row that already has a title is not what the backoff is about. Admitting it to the set would
+// mean a row LOSING its title later — a hand-edited metadata file, a merge that blanks one — read
+// as "not new" and skipped the reset, leaving it to wait out a penalty it never earned.
+func TestUntitledMisses_TitledRowsStayOutOfTheSet(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: "known"}}, "s1", "unnameable")
+	empty := map[string]SessionMetadata{}
+
+	for i := 0; i < 8; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	// s1 loses its title. It is now an unnamed row that was never counted as one.
+	m.sessionsData = map[string]SessionMetadata{}
+	m.Update(harvestedMsg{meta: empty})
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d after a titled row went blank; it is being treated as "+
+			"already counted", m.untitledMisses)
+	}
+}
+
+// TestUntitledSettled_FutureUpdatedAtIsNotQuietForever covers client/server clock skew.
+//
+// now is the laptop's clock; UpdatedAt was stamped in the pod. Nothing keeps them in step — the
+// pane reaches the store through a port-forward, Kubernetes does not synchronise node clocks, and
+// a laptop that slept is the ordinary way the gap gets large. With a plain now.Sub, a pod clock
+// even 5s ahead makes the delta negative, which can never reach untitledSettleDelay: that row's
+// title never arrives, with no error and no log. Treating a future stamp as settled costs one
+// wasted tree walk that the backoff then widens.
+func TestUntitledSettled_FutureUpdatedAtIsNotQuietForever(t *testing.T) {
+	now := time.Now()
+
+	cases := []struct {
+		name string
+		upd  time.Time
+		want bool
+	}{
+		// The skew only has to exceed untitledSettleDelay to strand a row forever.
+		{"pod clock slightly ahead", now.Add(2 * untitledSettleDelay), true},
+		{"pod clock badly ahead", now.Add(36 * time.Hour), true},
+		// Unchanged behaviour on the in-step cases, so the clamp cannot be mistaken for
+		// "always settled".
+		{"quiet long enough", now.Add(-2 * untitledSettleDelay), true},
+		{"still busy", now, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+			m.sessions[0].UpdatedAt = tc.upd
+			if got := m.untitledSettled(now); got != tc.want {
+				t.Errorf("untitledSettled = %v, want %v (UpdatedAt %v from now)",
+					got, tc.want, tc.upd.Sub(now))
+			}
+		})
 	}
 }
