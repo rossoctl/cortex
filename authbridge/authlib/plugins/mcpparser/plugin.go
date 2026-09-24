@@ -209,10 +209,19 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
+	// A top-level non-object body (array, string, number, null) is not
+	// JSON-RPC; peek the first byte so it takes the calm skip path below
+	// rather than logging as malformed.
+	trimmed := bytes.TrimLeft(pctx.Body, " \t\r\n")
+	isObject := len(trimmed) > 0 && trimmed[0] == '{'
+
 	var rpc parsercommon.JSONRPCRequest
-	if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
-		slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(pctx.Body))
-		return pipeline.Action{Type: pipeline.Continue}
+	if isObject {
+		if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
+			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(pctx.Body),
+				"host", pctx.Host, "path", pctx.Path)
+			return pipeline.Action{Type: pipeline.Continue}
+		}
 	}
 	// Claim only MCP-namespace methods. Both MCP and A2A ride JSON-RPC 2.0
 	// over HTTP, so "the method is non-empty" cannot tell them apart — the
@@ -223,8 +232,9 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// JSONRPCRequest with an empty Method) — which would otherwise show a
 	// phantom "mcp: {}" on every such event. a2a-parser has the mirror
 	// guard for its own namespace.
-	if !isMCPMethod(rpc.Method) {
-		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method, "bodyLen", len(pctx.Body))
+	if !isObject || !isMCPMethod(rpc.Method) {
+		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method,
+			"bodyLen", len(pctx.Body), "host", pctx.Host, "path", pctx.Path)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

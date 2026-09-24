@@ -186,6 +186,26 @@ func TestMCPParser_SkipsJSONThatIsNotJSONRPC(t *testing.T) {
 	}
 }
 
+// A top-level JSON array is not JSON-RPC, so it is declined on shape
+// before any method check — the body here wraps a real MCP method that
+// would match isMCPMethod if it were an object.
+func TestMCPParser_TopLevelArray_NoMatch(t *testing.T) {
+	p := NewMCPParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]`),
+	}
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.MCP != nil {
+		t.Errorf("MCP should remain nil for a top-level array, got %+v", pctx.Extensions.MCP)
+	}
+	if pctx.Extensions.Invocations != nil {
+		t.Errorf("expected no Invocation recorded, got %+v", pctx.Extensions.Invocations)
+	}
+}
+
 // MCP and A2A both ride JSON-RPC 2.0, so mcp-parser must NOT claim A2A
 // methods just because they carry a non-empty JSON-RPC method. Gating on
 // the MCP namespace makes it decline A2A traffic (message/*, tasks/*,

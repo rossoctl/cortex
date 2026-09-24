@@ -43,10 +43,19 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
+	// A top-level non-object body (array, string, number, null) is not
+	// JSON-RPC; peek the first byte so it takes the calm skip path below
+	// rather than logging as malformed.
+	trimmed := bytes.TrimLeft(pctx.Body, " \t\r\n")
+	isObject := len(trimmed) > 0 && trimmed[0] == '{'
+
 	var rpc parsercommon.JSONRPCRequest
-	if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
-		slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(pctx.Body))
-		return pipeline.Action{Type: pipeline.Continue}
+	if isObject {
+		if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
+			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(pctx.Body),
+				"host", pctx.Host, "path", pctx.Path)
+			return pipeline.Action{Type: pipeline.Continue}
+		}
 	}
 
 	// Claim only A2A-namespace methods. Both A2A and MCP ride JSON-RPC 2.0
@@ -58,8 +67,9 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// (which unmarshals into JSONRPCRequest with an empty Method). Without
 	// it, abctl showed a phantom a2a-parser match on both MCP and inference
 	// traffic. mcp-parser has the mirror guard for its own namespace.
-	if !isA2AMethod(rpc.Method) {
-		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method, "bodyLen", len(pctx.Body))
+	if !isObject || !isA2AMethod(rpc.Method) {
+		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
+			"bodyLen", len(pctx.Body), "host", pctx.Host, "path", pctx.Path)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

@@ -345,6 +345,12 @@ func TestA2AParser_NonJSONRPCBody_NoMatch(t *testing.T) {
 		{"openai chat completions", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`},
 		{"empty object", `{}`},
 		{"explicit empty method", `{"jsonrpc":"2.0","id":1,"method":"","params":{}}`},
+		// Non-object JSON: declined on shape, before any method check. The
+		// array wraps a real A2A method on purpose — it would match
+		// isA2AMethod if it were an object.
+		{"top-level array", `[{"jsonrpc":"2.0","id":1,"method":"message/send"}]`},
+		{"top-level string", `"hello"`},
+		{"top-level number", `42`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
