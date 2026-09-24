@@ -479,11 +479,42 @@ type model struct {
 	//
 	// Reset on any harvest that named something, so a tree that starts producing titles returns to
 	// the fast cadence immediately rather than staying penalised for earlier silence.
+	//
+	// AND RESET WHEN AN UNNAMED SESSION ARRIVES THAT WAS NOT HERE BEFORE — see untitledCounted,
+	// which is what makes that detectable. Without it this counter is model-wide while the thing
+	// it is meant to describe is per-session: one row that can never be named drives it to the
+	// untitledBackoffCap, and a genuinely new session appearing afterwards inherits that 3m wait
+	// for its first title. That is #1109's symptom with a longer fuse, and it is the ordinary
+	// case — an operator watching a pod gets a new session while an unnameable one is on screen.
 	untitledMisses int
-	eventCt        uint64 // monotonic counter
-	lastTick       time.Time
-	lastCt         uint64
-	rate           float64
+	// untitledCounted is the set of session ids that were unnamed at the last harvest scoring,
+	// so the next one can tell a NEW unnamed row from the same unnameable row asked again.
+	//
+	// WHY A SET AND NOT A PER-SESSION BACKOFF. Keying untitledMisses by session id is the more
+	// literal reading of "the counter is not per-session", and it is the bigger change: the gate
+	// would have to pick a deadline across rows, which is a policy question this PR does not need
+	// to answer — the harvest is one tree walk for ALL sessions, so per-session deadlines would
+	// still share a single scan and the first row due would set the cadence for everyone. What
+	// the defect actually costs is a stale penalty carried onto a fresh row, and an arrival reset
+	// ends that without inventing a per-row schedule. So the backoff stays global and describes
+	// "how fruitless has this LIST been lately", which is what a single tree walk can honour.
+	//
+	// HOLDS UNNAMED IDS ONLY, not every id seen. A session that already has a title is not what
+	// the settle gate or the backoff is about, and admitting it here would mean a row LOSING its
+	// title later (a hand-edited metadata file, a merge that blanks one) read as "not new" and
+	// skipped the reset. Membership answers exactly one question — was this row already counted
+	// against the backoff as unnameable — so only rows that were counted belong in it.
+	//
+	// REBUILT AT EACH SCORING RATHER THAN ADDED TO, so ids drop out when their session leaves the
+	// list or gains a title. An append-only set would grow for the life of the process and, worse,
+	// would remember a session that went away and came back as "already counted" — abctl's own
+	// docs note a session id can be re-created after eviction, and a returning id is a new row to
+	// an operator watching the pane.
+	untitledCounted map[string]bool
+	eventCt         uint64 // monotonic counter
+	lastTick        time.Time
+	lastCt          uint64
+	rate            float64
 
 	// Connection status.
 	connState connStateInfo
@@ -1185,10 +1216,36 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// UNSCOREABLE IS NEITHER, so the counter holds rather than resetting: a harvest nobody
 		// could judge is no reason to believe the tree started producing titles either.
+		//
+		// AN UNNAMED ROW THIS SCORING HAS NOT SEEN BEFORE RESETS THE COUNTER, whatever the harvest
+		// found, because the accumulated penalty was earned by OTHER rows. A row that can never be
+		// named pins untitledMisses at the cap, and the next session to appear is a fresh question
+		// the tree has never been asked — making it wait out a 3m backoff earned by a different
+		// session is the bug. Ordered before the miss count so a tick that both gains a new row and
+		// fails to name anything resets rather than incrementing: the new row has not been tried
+		// yet, so there is no evidence against it to count.
 		if len(m.sessions) > 0 {
-			if m.harvestNamedSomething(msg.meta) {
+			counted := make(map[string]bool, len(m.sessions))
+			fresh := false
+			for _, sess := range m.sessions {
+				if m.sessionHasTitle(sess.ID) {
+					continue
+				}
+				counted[sess.ID] = true
+				if !m.untitledCounted[sess.ID] {
+					fresh = true
+				}
+			}
+			// ASSIGNED BEFORE THE BRANCH, so every scoreable tick records what it judged. Doing it
+			// only on one arm would leave the set describing some earlier tick, and the next new
+			// row would be compared against a stale snapshot.
+			m.untitledCounted = counted
+			switch {
+			case fresh:
 				m.untitledMisses = 0
-			} else {
+			case m.harvestNamedSomething(msg.meta):
+				m.untitledMisses = 0
+			default:
 				m.untitledMisses++
 			}
 		}
