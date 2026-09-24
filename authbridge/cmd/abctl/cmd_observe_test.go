@@ -319,16 +319,13 @@ func TestClaudeHarvester_SurvivesAnUnreadableConfigDir(t *testing.T) {
 	}
 }
 
-// A corrupt metadata file names the repair, and disables the harvest rather than running it.
+// A file that does not parse no longer disables the harvest: Harvest rebuilds it, and the
+// titles arrive on their own.
 //
-// Checked BEFORE the TUI starts precisely so the message can be printed at all: the harvest now
-// runs after the alt screen goes up, where a warning would corrupt the frame. It is also the one
-// failure that cannot clear itself, since every launch reads the same bad file. observe has to
-// name a different repair from the subcommand's --merge=false, which is not a flag it has.
-//
-// (This test existed before the async change and was lost in an edit; restored here in the
-// factory's shape, which is also where it belongs now that the check moved.)
-func TestClaudeHarvester_CorruptFileNamesTheRepair(t *testing.T) {
+// This is the reported bug at the level the user sees it. The pre-flight used to return nil
+// here, so `abctl observe` showed no titles at all for the whole run, and every later launch
+// read the same bad file — the state never cleared itself without a hand-run subcommand.
+func TestClaudeHarvester_CorruptFileIsRebuiltNotFatal(t *testing.T) {
 	home := prefsHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")
 	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
@@ -344,16 +341,57 @@ func TestClaudeHarvester_CorruptFileNamesTheRepair(t *testing.T) {
 	}
 
 	var warn bytes.Buffer
+	h := claudeHarvester(&warn)
+	if h == nil {
+		t.Fatal("a file that does not parse must not disable the harvest: Harvest rebuilds it")
+	}
+	// Asserted through the harvester rather than the file, because a harvester that runs but
+	// yields nothing would leave the TITLE column exactly as empty as no harvester at all.
+	got, err := h()
+	if err != nil {
+		t.Fatalf("harvest: %v", err)
+	}
+	if got["s1"].Title != "t" {
+		t.Errorf("Title = %q, want %q: the rebuild did not reach the transcripts", got["s1"].Title, "t")
+	}
+}
+
+// A file that cannot be READ still disables the harvest, and still names a repair. Harvest
+// refuses that one — a permission failure says nothing about the contents — so the pre-flight
+// is the only place it can be said before the alt screen goes up.
+func TestClaudeHarvester_UnreadableFileNamesTheRepair(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
+	}
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"old":{"title":"keep me"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	var warn bytes.Buffer
 	if h := claudeHarvester(&warn); h != nil {
-		t.Error("a corrupt file must disable the harvest, not be silently merged over")
+		t.Error("an unreadable file must disable the harvest, not be rebuilt over")
 	}
 	got := warn.String()
-	if !strings.Contains(got, "read-claude-sessions --merge=false") {
+	if !strings.Contains(got, "mv ") {
 		t.Errorf("the warning does not name the repair:\n%s", got)
 	}
 	// The command it names must be runnable as printed, on its own line.
 	for _, line := range strings.Split(got, "\n") {
-		if strings.Contains(line, "abctl experimental") && !strings.HasPrefix(strings.TrimSpace(line), "abctl experimental") {
+		if strings.Contains(line, "mv ") && !strings.HasPrefix(strings.TrimSpace(line), "mv ") {
 			t.Errorf("the repair command is not on a line of its own: %q", line)
 		}
 	}

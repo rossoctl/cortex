@@ -19,13 +19,42 @@ import (
 // tree. Read here so a user who has moved it is not told there are no sessions.
 const ConfigDirEnv = "CLAUDE_CONFIG_DIR"
 
-// ErrCorruptMetadata reports that an existing metadata file could not be trusted, so a
-// merge refused rather than rebuilding from scratch and dropping its entries.
+// ErrCorruptMetadata reports that an existing metadata file was there and could not be
+// read, so a merge refused rather than replacing a file whose contents are unknown.
+//
+// NARROWER THAN THE NAME SUGGESTS: a file that reads fine but does not parse no longer
+// comes back here, because Harvest rebuilds it instead. What is left is the file that
+// could not be read at all — a permission or I/O failure — where refusing is the only
+// safe answer, since a rebuild would replace entries that may be perfectly good.
 //
 // Exported because the repair is a CLI affordance: `abctl experimental
 // read-claude-sessions` names --merge=false as the way past, and only the command layer
 // knows its own flags. Callers discriminate with errors.Is.
 var ErrCorruptMetadata = errors.New("corrupt session metadata")
+
+// ErrLockTimeout reports that the metadata lock could not be acquired before its deadline,
+// so the harvest proceeded UNLOCKED rather than not at all.
+//
+// Its own error so a caller can tell "this filesystem cannot flock" from "another process
+// is holding it": both proceed unlocked, but only the second means a concurrent harvest is
+// real and a lost update is possible.
+//
+// Declared here rather than in lock_unix.go so it is part of the package API on every
+// platform — an errors.Is against it must compile where the lock is a no-op too, which is
+// the Windows cross-check lock_other.go exists to keep working.
+var ErrLockTimeout = errors.New("timed out waiting for the session metadata lock")
+
+// errMetadataNotJSON marks the one read failure Harvest can recover from by rebuilding.
+//
+// A SENTINEL RATHER THAN A STRING MATCH on ReadMetadata's message, and rather than
+// treating every non-permission error as a parse failure: io.ReadAll can fail with EIO
+// mid-file, which reads exactly like a truncated document and must not be rebuilt over.
+// Classifying on what the error IS, not on what it is not, keeps the destructive branch
+// reachable only from the one case that is provably a parse failure.
+//
+// Unexported: callers outside this package have no decision to make with it, since
+// Harvest acts on it before they see anything.
+var errMetadataNotJSON = errors.New("metadata is not valid JSON")
 
 // Options selects how much work one harvest does.
 type Options struct {
@@ -47,8 +76,11 @@ type Options struct {
 	//     file is a cache with no eviction, and `--merge=false` is the only thing that prunes it.
 	//   - Merge:false DROPS every entry this harvest did not see, which includes entries from any
 	//     OTHER config dir and any session pruned since. That is what makes it the way to rebuild a
-	//     wrong file, and also why it is not the default: run it with a --dir narrower than the one
-	//     that produced the file and it discards the difference without asking.
+	//     file whose entries are WRONG — a file that parses but says the wrong thing, which nothing
+	//     else can fix — and also why it is not the default: run it with a --dir narrower than the
+	//     one that produced the file and it discards the difference without asking. It is no longer
+	//     needed for a file that does not parse; Harvest rebuilds that one itself, and reports it
+	//     on Result.Rebuilt.
 	Merge bool
 	// Incremental skips transcripts no newer than the entry already recorded for
 	// them, so only recently-touched sessions are parsed.
@@ -95,6 +127,13 @@ type Result struct {
 	// grow, so counting it as recovered drove Kept negative and the subcommand printed
 	// "-1 kept from the existing file". Not part of the Total identity below for the same reason.
 	Replaced int
+	// Rebuilt reports that the existing file did not parse, so this harvest replaced it from
+	// the transcripts instead of merging into it.
+	//
+	// Worth a field because the counts alone cannot show it: a rebuild looks exactly like an
+	// ordinary first run — everything Harvested, nothing Kept — and the entries it dropped
+	// (sessions whose transcripts are gone) leave no trace anywhere for a caller to notice.
+	Rebuilt bool
 	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
 	// otherwise. Keyed by session id.
 	//
@@ -159,16 +198,38 @@ func Harvest(opts Options) (Result, error) {
 	var existing map[string]SessionMetadata
 	if opts.Merge {
 		if existing, err = ReadMetadata(path); err != nil {
-			// Wrapped in a sentinel rather than returned bare. A corrupt file read as
-			// absent would silently rebuild from scratch under the flag whose whole
-			// purpose is not losing entries — the same trap readState exists to close
-			// for claude-code-state.json. The caller names the repair.
-			return res, fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
+			// A FILE THAT DOES NOT PARSE IS REBUILT; a file that could not be READ is
+			// refused. Refusing both is what this used to do, on the reasoning that a
+			// rebuild drops entries the flag exists to keep. What that reasoning missed is
+			// where the entries actually go: the only ones a rebuild loses are those whose
+			// transcripts are gone, and refusing did not preserve those either — it just
+			// deferred the choice onto a user who had to know --merge=false to make it,
+			// while `abctl observe` showed no titles at all until they did. Since every
+			// launch read the same bad file, that state never cleared itself.
+			//
+			// The read failure stays a refusal, and the distinction is the whole safety
+			// argument: a permission or I/O error says nothing about the contents, so
+			// replacing the file there would destroy entries that are very likely intact.
+			if !errors.Is(err, errMetadataNotJSON) {
+				return res, fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
+			}
+			existing = map[string]SessionMetadata{}
+			res.Rebuilt = true
 		}
 	}
 
 	var since map[string]SessionMetadata
-	if opts.Incremental {
+	if opts.Incremental && !res.Rebuilt {
+		// NOT INCREMENTAL OVER A REBUILD, though today nothing observable turns on it: the
+		// rebuild replaced existing with an empty map, so every transcript looks new and the
+		// scan reads them all either way. NO TEST PINS THIS — a mutation removing the
+		// !res.Rebuilt term passes the suite, deliberately recorded here rather than guarded
+		// with a test that would only be asserting the coincidence.
+		//
+		// Kept because the equivalence is a property of the line above, not of this one: give
+		// the rebuild any non-empty baseline — salvaged entries, a defaulted map — and a set
+		// since starts skipping transcripts the rebuild exists to read. Saying "a rebuild is
+		// not incremental" directly costs one term and cannot come apart.
 		since = existing
 	}
 
@@ -1761,7 +1822,10 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	}
 	var m map[string]SessionMetadata
 	if uerr := json.Unmarshal(b, &m); uerr != nil {
-		return nil, fmt.Errorf("%s is not valid JSON: %w", path, uerr)
+		// Sentinel-wrapped so Harvest can tell a parse failure from a file it could not
+		// read: only the former is safe to rebuild over. The message keeps the path and
+		// the decoder's own detail, both of which reach the user.
+		return nil, fmt.Errorf("%w: %s is not valid JSON: %w", errMetadataNotJSON, path, uerr)
 	}
 	if m == nil {
 		return map[string]SessionMetadata{}, nil

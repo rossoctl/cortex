@@ -381,10 +381,9 @@ func TestReadClaudeSessions_MergePrefersTheFreshHarvest(t *testing.T) {
 	}
 }
 
-// A corrupt existing file must not be read as empty under --merge: that would rebuild
-// from scratch under the flag whose purpose is not losing entries. Refuse, and name
-// the way past it.
-func TestReadClaudeSessions_MergeRefusesACorruptFile(t *testing.T) {
+// A file that does not parse is rebuilt in place, without --merge=false and without the
+// operator having to know that flag exists. Reported, because the counts cannot show it.
+func TestReadClaudeSessions_MergeRebuildsACorruptFile(t *testing.T) {
 	home := prefsHome(t)
 	path := filepath.Join(home, tui.SessionMetadataRel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -399,25 +398,50 @@ func TestReadClaudeSessions_MergeRefusesACorruptFile(t *testing.T) {
 		`{"type":"user","cwd":"/w"}`)
 
 	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "rebuilt it") {
+		t.Errorf("stderr does not report the rebuild: %q", errb.String())
+	}
+	if _, ok := readMetadataFile(t, path)["fresh"]; !ok {
+		t.Error("the corrupt file was not rebuilt")
+	}
+}
+
+// A file that could not be READ is still refused, and left alone. The rebuild must not
+// reach this case: a permission failure says nothing about the contents.
+func TestReadClaudeSessions_MergeRefusesAnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
+	}
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Valid JSON, so the mode is the only thing making it unreadable.
+	if err := os.WriteFile(path, []byte(`{"old":{"title":"keep me"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"user","cwd":"/w"}`)
+
+	var out, errb bytes.Buffer
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
 		t.Errorf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errb.String(), "--merge=false") {
-		t.Errorf("stderr does not name the way past it: %q", errb.String())
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	// The bad file is left alone rather than overwritten, so it can still be repaired.
-	b, err := os.ReadFile(path)
-	if err != nil || string(b) != "{not json" {
-		t.Errorf("the corrupt file was modified: %q, %v", b, err)
-	}
-
-	// --merge=false is that way past it.
-	var out2, errb2 bytes.Buffer
-	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg, "--merge=false"}, &out2, &errb2); code != 0 {
-		t.Fatalf("--merge=false exit = %d: %s", code, errb2.String())
-	}
-	if _, ok := readMetadataFile(t, path)["fresh"]; !ok {
-		t.Error("--merge=false did not rebuild the file")
+	if got := readMetadataFile(t, path)["old"].Title; got != "keep me" {
+		t.Errorf("Title = %q, want the untouched entry: the file was replaced", got)
 	}
 }
 

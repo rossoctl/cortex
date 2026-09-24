@@ -145,12 +145,11 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	res, err := claude.Harvest(claude.Options{ConfigDir: *dir, Merge: *merge})
 	if err != nil {
 		if errors.Is(err, claude.ErrCorruptMetadata) {
-			// Refused rather than treated as empty. A corrupt file read as absent would
-			// silently rebuild from scratch under the flag whose whole purpose is not
-			// losing entries — the same trap readState exists to close for
-			// claude-code-state.json. Name the repair, and name the way past it.
+			// NOW ONLY THE UNREADABLE FILE reaches here: one that does not parse is rebuilt by
+			// Harvest itself. This one could not be read at all, so --merge=false is no longer
+			// the thing to suggest — it would hit the same read. Name what a human can do.
 			fmt.Fprintf(stderr, "abctl: %v\n"+
-				"  Fix or move the file, or re-run with --merge=false to rebuild it.\n", err)
+				"  Fix the file's permissions, or move it aside and re-run.\n", err)
 			return 1
 		}
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -173,6 +172,13 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 
 	if res.Recovered > 0 {
 		fmt.Fprintf(stderr, "abctl: merged %d entry(s) written concurrently by another run\n", res.Recovered)
+	}
+
+	// Said out loud because the counts cannot show it: a rebuild reports everything harvested
+	// and nothing kept, which is exactly what a first run reports. The entries it dropped —
+	// sessions whose transcripts are gone — leave no trace for the operator to notice.
+	if res.Rebuilt {
+		fmt.Fprintf(stderr, "abctl: the existing file could not be parsed; rebuilt it from %s\n", res.ConfigDir)
 	}
 
 	// Reported rather than silent: the count is the only way to notice that a wrong

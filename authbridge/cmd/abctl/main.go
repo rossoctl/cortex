@@ -13,9 +13,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -239,14 +241,33 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n", err)
 		return nil
 	} else if _, err := claude.ReadMetadata(path); err != nil {
-		// A corrupt file is the one failure that cannot clear itself: every launch reads the
-		// same bad file. ErrCorruptMetadata is exported so a caller can name the fix, and this
-		// caller has to name a different one from the subcommand's --merge=false, which is not
-		// a flag `abctl observe` has.
-		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
-			"  Fix or move the file, or rebuild it:\n"+
-			"    abctl experimental read-claude-sessions --merge=false\n", err)
-		return nil
+		// A FILE THAT DOES NOT PARSE IS NO LONGER CHECKED FOR HERE, because Harvest rebuilds it
+		// on the background goroutine and the titles arrive on their own. What is left is the
+		// file Harvest still refuses: one that could not be READ. That one repeats every launch
+		// and needs a human — a permission fixed, a disk looked at — so it is worth the one
+		// thing this position can still do, which is print before the alt screen goes up.
+		//
+		// Read-and-discard rather than a stat: the failure being checked for is the read itself,
+		// and Harvest's own read is the one that decides. Not a wasted read either way — it was
+		// already here, and what changed is only which of its errors is fatal.
+		if errors.Is(err, fs.ErrPermission) {
+			fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
+				"  Fix the file's permissions, or move it aside:\n"+
+				"    mv %s %s.bad\n", err, path, path)
+			return nil
+		}
+		// EVERY OTHER READ ERROR FALLS THROUGH SILENTLY rather than disabling titles or warning
+		// here, because this position cannot tell which of them Harvest will recover from. The
+		// sentinel that says "this one does not parse" is unexported, and exporting it would
+		// widen authlib's API to let this pre-flight re-derive a decision Harvest makes a few
+		// lines later anyway.
+		//
+		// So the split is by what a human can DO, not by what went wrong: a permission failure
+		// names an action and repeats every launch, which is worth printing before the alt screen
+		// goes up. Not warning about the rest is the deliberate half — the common case among them
+		// is the file that does not parse, which heals itself moments later, so a line here would
+		// tell the operator titles are in trouble and then hand them titles. A harvest that does
+		// go on to fail reports itself through the viewer's own error path.
 	}
 	return func() (map[string]tui.SessionMetadata, error) {
 		// Incremental, unlike `abctl experimental read-claude-sessions`: that command's subject
