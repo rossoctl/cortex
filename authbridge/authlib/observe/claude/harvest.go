@@ -134,6 +134,12 @@ type Result struct {
 	// ordinary first run — everything Harvested, nothing Kept — and the entries it dropped
 	// (sessions whose transcripts are gone) leave no trace anywhere for a caller to notice.
 	Rebuilt bool
+	// LockTimedOut reports that the metadata lock could not be taken before its deadline, so
+	// this harvest ran unlocked and a concurrent run's rename may erase its entries.
+	//
+	// A field because the alternative is silence: without it, the one failure mode this lock
+	// exists to prevent is invisible from outside, and "some titles vanished" has no diagnosis.
+	LockTimedOut bool
 	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
 	// otherwise. Keyed by session id.
 	//
@@ -186,9 +192,15 @@ func Harvest(opts Options) (Result, error) {
 	// Best-effort: a filesystem that cannot flock still harvests, unlocked, on the footing every
 	// platform had before this. Not taken without Merge, where there is nothing to lose — that path
 	// replaces the file by definition.
+	// The error is recorded, not returned: proceeding unlocked is the deliberate fallback, so a
+	// caller that wants to report the risk can, and one that does not still harvests.
 	if opts.Merge {
-		if unlock, lerr := lockMetadata(path); lerr == nil {
+		unlock, lerr := lockMetadata(path)
+		switch {
+		case lerr == nil:
 			defer unlock()
+		case errors.Is(lerr, ErrLockTimeout):
+			res.LockTimedOut = true
 		}
 	}
 
@@ -1811,14 +1823,19 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	// file is readable, so an unbounded read stalls startup with nothing on screen to say why.
 	// Far past any real metadata file: the measured 192-session file is 74 KB.
 	//
-	// Truncation surfaces as a JSON error rather than as silent data loss, which is the right
-	// outcome here: this reader's caller refuses to merge over a file it cannot parse, so a
-	// file too large to read is treated like any other unreadable one instead of quietly
-	// becoming a smaller map.
+	// Truncation is reported as ITS OWN failure, not left to surface as a JSON error. A valid
+	// file over the cap decodes as a parse failure, and Harvest rebuilds over parse failures —
+	// which would replace a good 17 MB file with a 400-byte one. So the cap is checked before
+	// the decode, and the error deliberately carries neither sentinel: not errMetadataNotJSON,
+	// so it cannot be rebuilt over; not a bare read error, because nothing is wrong with the
+	// bytes. Read one over the cap to tell "exactly at the cap" from "larger".
 	const maxMetadataBytes = 16 << 20
-	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes))
+	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(b) > maxMetadataBytes {
+		return nil, fmt.Errorf("%s is larger than the %d byte read limit", path, maxMetadataBytes)
 	}
 	var m map[string]SessionMetadata
 	if uerr := json.Unmarshal(b, &m); uerr != nil {

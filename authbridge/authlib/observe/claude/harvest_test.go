@@ -304,6 +304,61 @@ func TestHarvest_UnreadableMetadataIsRefusedNotRebuilt(t *testing.T) {
 
 // A rebuild is still a merge otherwise: it replaces the unparseable file, and the next
 // harvest keeps what it wrote.
+// An oversized but VALID file is refused, not rebuilt over. The read cap makes such a file
+// fail json.Unmarshal, which would classify it as a parse failure and destroy it: measured at
+// 18.5MB/17000 entries replaced by 412 bytes/1 entry.
+func TestHarvest_OversizedValidMetadataIsRefusedNotRebuilt(t *testing.T) {
+	metadataHome(t)
+	path, err := SessionMetadataPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Built as text rather than by marshalling a map: cheaper, and it keeps the fixture's size
+	// the point of the test rather than a side effect of the struct.
+	var b []byte
+	b = append(b, '{')
+	pad := strings.Repeat("x", 4<<10)
+	for i := 0; len(b) <= 16<<20; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, fmt.Sprintf("%q:{\"title\":%q}", fmt.Sprintf("sess-%06d", i), pad)...)
+	}
+	b = append(b, '}')
+	if !json.Valid(b) {
+		t.Fatal("fixture is not valid JSON, so this would not test the rebuild path")
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"ai-title","aiTitle":"new"}`)
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err == nil {
+		t.Fatalf("Harvest succeeded (Rebuilt=%v); want it refused rather than rebuilding", res.Rebuilt)
+	}
+	if !errors.Is(err, ErrCorruptMetadata) {
+		t.Errorf("err = %v, want it to wrap ErrCorruptMetadata", err)
+	}
+	if res.Rebuilt {
+		t.Error("Rebuilt is true for a file that was merely too large to read")
+	}
+	// The assertion that matters: the bytes are still there.
+	st, serr := os.Stat(path)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	if got := st.Size(); got != int64(len(b)) {
+		t.Errorf("file is %d bytes, was %d — it was rewritten", got, len(b))
+	}
+}
+
 func TestHarvest_RebuildThenMergeKeepsEntries(t *testing.T) {
 	metadataHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")

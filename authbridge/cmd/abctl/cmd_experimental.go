@@ -177,6 +177,12 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// Said out loud because the counts cannot show it: a rebuild reports everything harvested
 	// and nothing kept, which is exactly what a first run reports. The entries it dropped —
 	// sessions whose transcripts are gone — leave no trace for the operator to notice.
+	// Said out loud because the entries it may have lost are gone without a trace: an unlocked
+	// harvest can have its whole contribution erased by a concurrent run's rename.
+	if res.LockTimedOut {
+		fmt.Fprintf(stderr, "abctl: timed out waiting for the lock on %s; harvested anyway, so a concurrent run may have overwritten this one\n", res.Path)
+	}
+
 	if res.Rebuilt {
 		fmt.Fprintf(stderr, "abctl: the existing file could not be parsed; rebuilt it from %s\n", res.ConfigDir)
 	}
