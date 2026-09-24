@@ -14,22 +14,39 @@ import (
 // lockTimeout bounds how long a harvest waits for the metadata lock before proceeding
 // without it.
 //
-// SIZED AGAINST A SCAN, not against a guess: a harvest holds the lock for the length of
-// one transcript scan, measured at ~3ms for a one-file tree and well under a second for
-// the ~180-session tree a laptop accumulates. Two seconds is therefore many times the
-// longest legitimate wait, so expiry means the holder is wedged rather than busy.
+// THE TWO COSTS ARE NOT SYMMETRIC, which is what sets the size. Too long only delays a
+// harvest that was going to be wrong anyway — the wedged case this bound exists for, where
+// no wait of any length succeeds. Too short corrupts a HEALTHY run: expiry means proceeding
+// unlocked, and an unlocked harvest can have its whole contribution erased by another run's
+// rename. So the deadline has to sit far above the slowest legitimate wait, and the penalty
+// for overshooting is measured in seconds of a background goroutine nobody is watching.
 //
-// The cost of it being too short is a lost update, which recoverConcurrentEntries
-// narrows; the cost of it being too long is the bug it exists to fix — no titles at all
-// while `abctl observe` polls a lock nobody will release.
-const lockTimeout = 2 * time.Second
+// SIZED AGAINST A QUEUE, not a single scan, because the wait is the queue ahead of you and
+// not the holder alone. That was the sizing error in the first version of this: 2s was chosen
+// as "many times one scan" from a ~3ms one-file measurement, and it fell over as soon as
+// several harvests contended on a slow machine. Six concurrent harvests of a padded tree took
+// ~190ms serialized on a developer laptop and blew straight past 2s on a shared CI runner —
+// the package's own concurrency test failed, with five of six children losing every entry.
+// A runner is not an exotic environment; it is the slowest machine this code routinely runs on
+// and therefore the one that sets the number.
+//
+// A VAR RATHER THAN A CONST only so the tests can shrink it: waiting the real deadline twice
+// would add a minute to the package for no extra coverage, and a test that asserts the logic at
+// 40ms asserts exactly the same logic. Nothing outside the tests assigns it.
+//
+// 30s is deliberately far past any queue this file can produce. `abctl observe` harvests one
+// tree per tick, `read-claude-sessions` is one process, and the realistic worst case is a
+// handful of viewers plus a manual run — a queue of seconds, not minutes, even derated for a
+// loaded runner. What 30s buys is that reaching it means no wait would have worked.
+var lockTimeout = 30 * time.Second
 
 // lockPoll is how often acquisition is retried inside lockTimeout.
 //
 // Polled rather than blocking because the two are exclusive in this API: syscall.Flock
 // either blocks forever (LOCK_EX) or returns at once (LOCK_NB), and there is no
-// deadline variant. 20ms costs at most 100 cheap syscalls across the whole timeout and
-// adds at most 20ms to an uncontended handoff.
+// deadline variant. 20ms adds at most 20ms to an uncontended handoff, and costs 1500
+// cheap syscalls across a full 30s timeout — paid only by a harvest that is already
+// losing, since a lock that frees up is acquired on the next tick.
 const lockPoll = 20 * time.Millisecond
 
 // lockMetadata takes an exclusive advisory lock covering the read-modify-write of the metadata
@@ -55,12 +72,17 @@ const lockPoll = 20 * time.Millisecond
 // on a timer, so every later attempt queued behind the same lock and the viewer showed no titles
 // at all, indefinitely, with nothing on screen to say why.
 //
-// What the bound costs: past the deadline two harvests can interleave, and the loser's entries can
-// be dropped by the winner's rename. That is the lost update this lock exists to prevent, now
-// possible again in the one case where the alternative was no titles ever.
-// recoverConcurrentEntries narrows it — it re-reads after saving and takes back what another run
-// wrote — but it is a single re-read, so it cannot converge against a run that renames inside its
-// window. Unlocked is strictly worse than locked and strictly better than wedged.
+// What the bound costs, and why the deadline is generous rather than tight: past it two harvests
+// interleave, and the loser's entries can be erased wholesale by the winner's rename. That is the
+// very lost update this lock exists to prevent, so expiry must mean "no wait would have worked"
+// and never "this machine is slow today". recoverConcurrentEntries is a weaker backstop than it
+// looks — a SINGLE re-read after saving, which by its own documentation cannot converge when more
+// than one rename lands inside its window, i.e. exactly the many-writer case a short deadline
+// creates. It does not cover for a deadline that fires under ordinary contention.
+//
+// So: unlocked is strictly better than wedged, and strictly worse than locked — which makes the
+// bound worth having and worth sizing so that only the wedged case ever reaches it. See
+// lockTimeout for the measurements that set the number.
 //
 // Errors are returned rather than swallowed so the caller can proceed UNLOCKED instead of refusing
 // to harvest: a filesystem that cannot flock (some network mounts) should still get titles, on the

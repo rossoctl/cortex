@@ -46,10 +46,24 @@ func holdMetadataLock(t *testing.T, path string) {
 	})
 }
 
+// shortenLockTimeout shrinks the deadline for one test and restores it after.
+//
+// The deadline's production VALUE is a judgement about slow machines (see lockTimeout); what
+// these tests check is the behaviour at it — that expiry happens, is reported, and returns no
+// unlock func. That behaviour is identical at 40ms, and waiting the real 30s twice would add a
+// minute to the package to re-learn nothing.
+func shortenLockTimeout(t *testing.T) {
+	t.Helper()
+	was := lockTimeout
+	lockTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { lockTimeout = was })
+}
+
 // A held lock is waited for, then given up on — not waited for forever. This is the
 // wedged-holder case: before the timeout, `abctl observe` queued every harvest behind a
 // lock nobody would release and showed no titles at all, indefinitely.
 func TestLockMetadata_TimesOutAndReportsIt(t *testing.T) {
+	shortenLockTimeout(t)
 	path := filepath.Join(t.TempDir(), "session-metadata.json")
 	holdMetadataLock(t, path)
 
@@ -106,6 +120,7 @@ func TestLockMetadata_UncontendedIsFast(t *testing.T) {
 // THE POINT OF THE TIMEOUT, at the level the bug was reported at: a wedged holder no
 // longer stops the titles from appearing. The harvest proceeds unlocked and writes.
 func TestHarvest_ProceedsWhenTheLockIsHeld(t *testing.T) {
+	shortenLockTimeout(t)
 	metadataHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")
 	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
