@@ -451,14 +451,24 @@ type model struct {
 	harvesting bool
 	// pickerHarvested says the namespaces/pods panes have already harvested during this visit.
 	//
-	// Cleared by the pane-change edge in the refreshTickMsg branch rather than at each site that
-	// assigns m.pane: there are five of those across two files, and a sixth added later would
-	// silently inherit "already harvested" from a previous visit. lastPane is what that edge
-	// compares against.
+	// Cleared by the arrival edge in the refreshTickMsg branch rather than at each site that
+	// assigns m.pane: there are two dozen of those across app.go and keys.go, and one added later
+	// would silently inherit "already harvested" from a previous visit. pickerShowing is what
+	// that edge compares against.
 	pickerHarvested bool
-	// lastPane is the pane the previous refresh tick saw, for detecting a pane change without
-	// every pane switch having to announce itself. Only the picker re-harvest reads it.
-	lastPane paneID
+	// pickerShowing is whether the previous refresh tick found the picker on screen, for
+	// detecting ARRIVAL at it without every pane switch having to announce itself. Only the
+	// picker harvest reads it.
+	//
+	// A BOOL, NOT THE PREVIOUS paneID, for two reasons that point the same way. The budget it
+	// clears covers a visit, and a visit spans paneNamespaces and panePods both — tracking the
+	// exact pane made namespaces→pods→namespaces three visits and re-walked the transcript tree
+	// at each hop. And a paneID field cannot express "no pane yet" without the paneNone sentinel
+	// that previousPane and pipelineReturnPane each need a comment to explain: paneNamespaces is
+	// the zero value, so a zero-valued previous-pane field claims the picker model is already
+	// where it starts and eats that model's first arrival. False is the honest zero here — no
+	// tick has seen the picker yet — so both constructors are correct without seeding anything.
+	pickerShowing bool
 	// untitledMisses counts consecutive sessions-pane harvests that named nothing, and backs the
 	// next one off exponentially — see untitledBackoff.
 	//
@@ -882,6 +892,13 @@ func (m *model) backToPodsPane() {
 	// versions registered. The next `P` press refetches.
 	m.catalog = nil
 	m.catalogTbl.SetRows(nil)
+	// The backoff describes THE POD BEING LEFT, so it must not price the next one's first
+	// harvest. Those misses were recorded against a session list that is now gone (m.sessions is
+	// cleared just above), and a different pod is a different set of sessions with a different
+	// chance of being nameable. Left behind, six fruitless harvests here mean the next pod's list
+	// waits the 3m cap before its first scan instead of untitledSettleDelay — measured, not
+	// supposed.
+	m.untitledMisses = 0
 	m.previousPane = paneNone
 	// Same reason: a return pane recorded against the pod being left would send
 	// the next `P`-then-esc back into a pane belonging to the previous connection.
@@ -1123,6 +1140,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case harvestedMsg:
+		// THE ONLY PLACE harvesting IS CLEARED, and harvestCmd always returns a harvestedMsg —
+		// on success, on a harvester error (which it swallows) and on a nil map alike — so the
+		// flag is held for exactly one in-flight scan. That total coverage is the invariant:
+		// any future path that can drop this message instead of delivering it latches
+		// harvesting = true and silently disables every later harvest, in both the picker and
+		// the sessions pane, for the life of the process. There is no watchdog. A harvest that
+		// cannot report must still send this message.
 		m.harvesting = false
 		// COUNT THE MISS BEFORE THE MERGE, since the merge is what would hide it. A harvest that
 		// named nothing NEW leaves every unnamed row unnamed, so the settle gate stays satisfied
@@ -1208,11 +1232,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchUsage(), usageTick(m.usage.tickGen))
 
 	case refreshTickMsg:
-		// A PANE CHANGE ENDS THE PICKER'S ONE-HARVEST-PER-VISIT BUDGET. Detected here, on the
-		// edge, so the five places that assign m.pane do not each have to remember to clear it —
-		// and so a sixth cannot quietly skip the harvest by inheriting a set flag.
-		if m.pane != m.lastPane {
-			m.lastPane = m.pane
+		// ARRIVING AT THE PICKER ENDS ITS ONE-HARVEST-PER-VISIT BUDGET. Detected here, on the
+		// edge, so the two dozen places that assign m.pane do not each have to remember to clear
+		// it — and so one added later cannot quietly skip the harvest by inheriting a set flag.
+		//
+		// THE EDGE IS INTO THE PICKER AS A WHOLE, not into either of its panes. A visit spans
+		// both: enter on a namespace goes to panePods and esc comes back, and keying the budget
+		// on raw pane equality made each of those hops a fresh visit — so drilling into a
+		// namespace and backing out re-walked the entire transcript tree per hop, which is the
+		// opposite of what one-per-visit is for. What matters is whether the operator is newly
+		// in the picker at all, so that is what the edge compares.
+		if showing := m.pane == paneNamespaces || m.pane == panePods; showing != m.pickerShowing {
+			m.pickerShowing = showing
 			m.pickerHarvested = false
 		}
 		// In picker mode, skip the fetch — m.client may be nil after a
@@ -1259,11 +1290,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than short-circuiting it — returning early instead would trade the titles for the
 		// 2s refresh of every other cell in the row.
 		var harvestNow tea.Cmd
+		// ONE now FOR THE WHOLE DECISION, so the backoff and the settle test are provably
+		// answered about the same instant rather than two readings of the clock a few
+		// microseconds apart.
+		now := time.Now()
 		if m.pane == paneSessions && m.harvest != nil && !m.harvesting &&
-			time.Since(m.lastHarvest) >= untitledBackoff(m.untitledMisses) &&
-			m.untitledSettled(time.Now()) {
+			now.Sub(m.lastHarvest) >= untitledBackoff(m.untitledMisses) &&
+			m.untitledSettled(now) {
 			m.harvesting = true
-			m.lastHarvest = time.Now()
+			m.lastHarvest = now
 			harvestNow = harvestCmd(m.harvest)
 		}
 		// Refresh the pipeline view too while a pane that displays plugin

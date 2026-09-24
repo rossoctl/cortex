@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand"
 	"os"
@@ -1462,13 +1463,16 @@ func TestUntitledBackoff_DoublesAndIsBounded(t *testing.T) {
 // TestPicker_HarvestsAtMostOncePerVisit pins the picker to one tree walk per visit.
 //
 // The namespaces/pods panes hold no session rows, so nothing there can tell a fruitless walk from
-// a useful one and the interval alone would re-walk the tree for as long as the operator sits
-// there. One scan answers what the pane needs: a session started elsewhere is named by the time
-// they scroll to it.
+// a useful one and an interval alone would re-walk the tree for as long as the operator sits
+// there. One scan is what idle time is worth spending: a session started elsewhere is named by
+// the time they scroll to it.
 func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
 	m.pane = paneNamespaces
-	m.lastPane = paneNamespaces
+	// pickerShowing = true, so the arrival edge has already been spent and what the ticks below
+	// exercise is the budget rather than the edge. TestPicker_HarvestsOnFirstTickFromConstructor
+	// covers the arrival itself, from an unseeded model.
+	m.pickerShowing = true
 	called := 0
 	m.harvest = func() (map[string]SessionMetadata, error) {
 		called++
@@ -1489,8 +1493,24 @@ func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 		t.Errorf("a second tick in the same visit harvested again (%d calls)", called)
 	}
 
-	// Leaving and returning is a new visit, detected on the pane-change edge rather than by
-	// every assignment to m.pane announcing itself.
+	// DRILLING IN IS THE SAME VISIT. enter on a namespace moves to panePods and esc comes back;
+	// keying the budget on the exact pane made each hop a new visit and re-walked the whole
+	// transcript tree per keystroke. The operator never left the picker, so nothing should rescan.
+	m.pane = panePods
+	_, hop := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, hop)
+	if called != 1 {
+		t.Errorf("the namespaces->pods hop re-harvested (%d calls, want 1)", called)
+	}
+	m.pane = paneNamespaces
+	_, back := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, back)
+	if called != 1 {
+		t.Errorf("the pods->namespaces hop re-harvested (%d calls, want 1)", called)
+	}
+
+	// Leaving the picker ALTOGETHER and returning is a new visit, detected on the arrival edge
+	// rather than by every assignment to m.pane announcing itself.
 	m.pane = paneSessions
 	m.Update(refreshTickMsg(time.Now()))
 	m.pane = paneNamespaces
@@ -1498,6 +1518,63 @@ func TestPicker_HarvestsAtMostOncePerVisit(t *testing.T) {
 	runBatch(t, revisit)
 	if called != 2 {
 		t.Errorf("a return to the picker did not harvest again (%d calls, want 2)", called)
+	}
+}
+
+// TestPicker_HarvestsOnFirstTickFromConstructor pins the arrival harvest for the visit that
+// matters most: the first one, on a model straight from newPickerModel.
+//
+// THE ZERO VALUE HAS TO BE RIGHT HERE, and it was not when this state was a paneID. The picker
+// model STARTS on paneNamespaces, so a previous-pane field zero-valuing to paneNamespaces (it is
+// iota 0) recorded "already here" before any tick ran — the edge never fired, and the first visit
+// to the picker harvested only because Init happens to scan separately. Every test that set the
+// field by hand to match m.pane masked it. This one constructs the state the way the constructor
+// leaves it and asserts the scan happens anyway.
+func TestPicker_HarvestsOnFirstTickFromConstructor(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.pane = paneNamespaces
+	// Deliberately NOT seeding pickerShowing: the whole point is that the constructor does not
+	// either, and the first tick must still see an arrival.
+	called := 0
+	m.harvest = func() (map[string]SessionMetadata, error) {
+		called++
+		return nil, nil
+	}
+
+	_, cmd := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, cmd)
+	if called != 1 {
+		t.Fatalf("the first tick on a constructor-shaped picker model harvested %d times, want 1", called)
+	}
+	if !m.pickerShowing {
+		t.Error("pickerShowing was not recorded, so the next tick will re-harvest")
+	}
+}
+
+// TestBackToPodsPane_ResetsTheBackoff pins the widened backoff to the pod it was measured on.
+//
+// untitledMisses prices the NEXT harvest, and those misses were recorded against a session list
+// that back-out throws away (m.sessions is cleared in the same block). A different pod is a
+// different set of sessions with a different chance of being nameable, so carrying the counter
+// across means the new pod's list waits out the old pod's penalty — at the cap, 3 minutes before
+// its first scan instead of the 5s settle delay. Every other field describing the old connection
+// is cleared there; this one was missed.
+func TestBackToPodsPane_ResetsTheBackoff(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	// backToPodsPane derives a fresh context from parentCtx.
+	m.parentCtx, m.ctx = context.Background(), context.Background()
+	m.cancel = func() {}
+	// Six fruitless harvests is past the cap, so the failure is a 3m wait rather than a small one.
+	m.untitledMisses = 6
+	if untitledBackoff(m.untitledMisses) != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: %v", untitledBackoff(m.untitledMisses))
+	}
+
+	m.backToPodsPane()
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d after backing out; the next pod inherits a %v delay",
+			m.untitledMisses, untitledBackoff(m.untitledMisses))
 	}
 }
 
@@ -1561,6 +1638,14 @@ func TestHarvestNamedSomething_JudgesOnlyRowsOnScreen(t *testing.T) {
 	m = newTitleModel(t, map[string]SessionMetadata{}, "s1")
 	if m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "  "}}) {
 		t.Error("a blank title counted as naming a session")
+	}
+	// SANITISED BEFORE JUDGING, which matters HERE and not in sessionHasTitle's cases: this is the
+	// one caller handing titleIsBlank a RAW harvest result, where sessionTitle has not already
+	// sanitised on the way in. A control character becomes U+FFFD and renders a visible glyph, so
+	// the row IS named — dropping the sanitize would call it blank and re-harvest forever for a
+	// row that is already showing something.
+	if !m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "\t"}}) {
+		t.Error("a control-only title is a visible glyph in the cell, so it names the row")
 	}
 	if m.harvestNamedSomething(map[string]SessionMetadata{"old": {Title: "elsewhere"}}) {
 		t.Error("a title for the wrong session counted as naming the row on screen")
