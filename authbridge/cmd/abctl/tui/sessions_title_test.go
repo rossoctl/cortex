@@ -1783,6 +1783,13 @@ func TestPicker_InitHarvestCountsAgainstTheVisit(t *testing.T) {
 //
 // DRIVES THE REAL HANDLER, not the fields. The reset has to happen where the misses are counted, so
 // a test that set untitledMisses by hand would pass against a fix placed anywhere at all.
+//
+// ASSERTS THE COUNTER, WHICH IS NOT THE USER-VISIBLE BEHAVIOUR — and reading it as though it were is
+// how a live defect sat behind a passing test. The scoring reset this checks runs after a harvest
+// FINISHES, so it cannot help the row that triggered it; whether that row's harvest ever STARTS is
+// decided by the backoff gate on the refreshTickMsg path. See
+// TestRefreshTick_FreshRowHarvestsDespiteAnotherRowsBackoff, which measures that, and keep the two
+// together: this one pins the bookkeeping, that one pins the timing.
 func TestUntitledMisses_NewSessionClearsAnotherRowsPenalty(t *testing.T) {
 	// One row that no harvest will ever name.
 	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
@@ -2005,5 +2012,111 @@ func TestBackToPodsPane_ClearsTheCountedSet(t *testing.T) {
 	if m.untitledMisses != 0 {
 		t.Errorf("untitledMisses = %d on the new pod's first scoring of a shared session id; "+
 			"the previous pod's set suppressed the fresh-row reset", m.untitledMisses)
+	}
+}
+
+// TestRefreshTick_FreshRowHarvestsDespiteAnotherRowsBackoff is the arrival reset measured where an
+// operator feels it: whether a harvest actually STARTS.
+//
+// THE COUNTER TESTS ABOVE CANNOT CATCH THIS, which is why this one exists. They hand the handler a
+// harvestedMsg and assert untitledMisses == 0 — true, and irrelevant to the row that needed it. The
+// scoring reset runs when a harvest FINISHES; the backoff gate on the refreshTickMsg path decides
+// whether one BEGINS. So with the reset in place and the gate reading the raw counter, an unnameable
+// row at untitledBackoffCap still made a brand-new settled session wait 3m for its first title, and
+// every arrival-reset test passed the whole time. The gate is the only place this is observable.
+//
+// DRIVES refreshTickMsg THROUGH Update, not the gate expression, so it fails if the freshness check
+// is placed anywhere that is not the decision itself.
+func TestRefreshTick_FreshRowHarvestsDespiteAnotherRowsBackoff(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
+	empty := map[string]SessionMetadata{}
+	m.harvest = func() (map[string]SessionMetadata, error) { return empty, nil }
+
+	// Drive the unnameable row past the cap through the real handler.
+	m.sessions = []session.SessionSummary{{ID: "unnameable", UpdatedAt: time.Now().Add(-time.Minute)}}
+	for i := 0; i < 10; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	// A new session appears and settles. Ten seconds since the last harvest: past
+	// untitledSettleDelay, nowhere near the 3m the other row earned.
+	m.harvesting = false
+	m.lastHarvest = time.Now().Add(-10 * time.Second)
+	m.sessions = append(m.sessions,
+		session.SessionSummary{ID: "brandnew", UpdatedAt: time.Now().Add(-untitledSettleDelay * 2)})
+
+	m.Update(refreshTickMsg{})
+
+	// m.harvesting is the gate's own record that it fired, and the one the batched command is
+	// guarded by — asserting the returned tea.Cmd is non-nil would pass on the refresh tick alone.
+	if !m.harvesting {
+		t.Errorf("no harvest started for a brand-new settled session while another row held the "+
+			"backoff at %v; its first title waits for a penalty it did not earn",
+			untitledBackoff(m.untitledMisses))
+	}
+}
+
+// TestRefreshTick_UnnameableRowStillBacksOffAtTheGate is the other side of the gate check.
+//
+// Forgiving the backoff for a row the set has not seen must not forgive it for the row that earned
+// it. If untitledFresh answered yes whenever any unnamed row was on screen — or if the gate used the
+// floor unconditionally — the transcript-tree walk every untitledSettleDelay would be back, which is
+// the loop untitledMisses exists to break.
+func TestRefreshTick_UnnameableRowStillBacksOffAtTheGate(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
+	empty := map[string]SessionMetadata{}
+	m.harvest = func() (map[string]SessionMetadata, error) { return empty, nil }
+	m.sessions = []session.SessionSummary{{ID: "unnameable", UpdatedAt: time.Now().Add(-time.Minute)}}
+
+	// Six harvests: five misses, so the earned wait is well past untitledSettleDelay.
+	for i := 0; i < 6; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	earned := untitledBackoff(m.untitledMisses)
+	if earned <= untitledSettleDelay {
+		t.Fatalf("fixture did not back off: misses=%d backoff=%v", m.untitledMisses, earned)
+	}
+
+	// Past the settle floor, inside the earned backoff. Nothing new on screen.
+	m.harvesting = false
+	m.lastHarvest = time.Now().Add(-untitledSettleDelay * 2)
+
+	m.Update(refreshTickMsg{})
+
+	if m.harvesting {
+		t.Errorf("harvested %v after the last one despite an earned backoff of %v; the same "+
+			"unnameable row re-walks the transcript tree", untitledSettleDelay*2, earned)
+	}
+}
+
+// TestRefreshTick_FreshRowStillWaitsToSettle keeps the arrival reset from eating the settle delay.
+//
+// A new row forgives the accumulated PENALTY, not the wait that makes this poll affordable: its
+// transcript is being appended to, and the title tiers read the last message, so harvesting the
+// instant a session appears reads a file the agent is still writing. The gate prices a fresh row at
+// untitledBackoff(0), which IS untitledSettleDelay — not at zero.
+func TestRefreshTick_FreshRowStillWaitsToSettle(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "unnameable")
+	empty := map[string]SessionMetadata{}
+	m.harvest = func() (map[string]SessionMetadata, error) { return empty, nil }
+	m.sessions = []session.SessionSummary{{ID: "unnameable", UpdatedAt: time.Now().Add(-time.Minute)}}
+	for i := 0; i < 6; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+
+	// Long past any backoff, so the settle test is the only thing that can refuse. The new row is
+	// BUSY — updated a moment ago, transcript still being written.
+	m.harvesting = false
+	m.lastHarvest = time.Now().Add(-time.Hour)
+	m.sessions = []session.SessionSummary{{ID: "brandnew", UpdatedAt: time.Now()}}
+
+	m.Update(refreshTickMsg{})
+
+	if m.harvesting {
+		t.Errorf("harvested a brand-new session that is still receiving events; the settle delay " +
+			"exists because the title tiers read a transcript the agent has not finished writing")
 	}
 }

@@ -1242,17 +1242,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// misses=9, which is the very defect the fresh-row reset exists to remove. An empty list
 		// has no unnamed rows, so rebuilding here correctly empties the set, and the returning row
 		// is new again.
-		counted := make(map[string]bool, len(m.sessions))
-		fresh := false
-		for _, sess := range m.sessions {
-			if m.sessionHasTitle(sess.ID) {
-				continue
-			}
-			counted[sess.ID] = true
-			if !m.untitledCounted[sess.ID] {
-				fresh = true
-			}
-		}
+		// THROUGH countUntitled's shared walk, so the gate's untitledFresh and this scoring judge
+		// "unnamed and not yet counted" by one definition. The gate forgives the backoff on that
+		// answer; this records it. If the two ever disagreed, an arrival would be forgiven and
+		// never recorded (harvesting every tick forever) or recorded without being forgiven (the
+		// defect this PR is about).
+		counted, fresh := m.countUntitled()
 		// ASSIGNED BEFORE THE BRANCH, so every harvest records what it judged. Doing it only on one
 		// arm would leave the set describing some earlier tick, and the next new row would be
 		// compared against a stale snapshot.
@@ -1378,6 +1373,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// row re-walks the transcript tree every untitledSettleDelay for a title that is not
 		// coming. See untitledMisses.
 		//
+		// EXCEPT FOR A ROW THE BACKOFF WAS NEVER EARNED AGAINST, which is what untitledFresh asks
+		// and what the scoring reset alone could not deliver. The reset in the harvestedMsg
+		// handler only runs after a harvest COMPLETES, so on the tick where a new session first
+		// appears the counter still holds the previous rows' penalty — and the gate is what
+		// decides whether that harvest ever starts. An unnameable row at the cap therefore made a
+		// brand-new settled session wait 3m for its first title, measured on the real Update loop,
+		// which is the very bug the reset was added to fix: the reset fires only on the harvest
+		// after the one the new row needed. Asking here closes it, because this is the only place
+		// the decision is actually made.
+		//
 		// STARTED HERE, NOT RETURNED FROM HERE. This pane's tick must still reach the session
 		// fetch at the bottom of this branch, so the harvest is batched into that return rather
 		// than short-circuiting it — returning early instead would trade the titles for the
@@ -1387,8 +1392,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// answered about the same instant rather than two readings of the clock a few
 		// microseconds apart.
 		now := time.Now()
+		// PRICED AT THE FLOOR FOR A FRESH ROW. untitledSettleDelay rather than zero, so a new
+		// session still waits for its transcript to settle — the arrival is a reason to forgive
+		// the accumulated penalty, not a reason to skip the settle test that makes this poll
+		// affordable. untitledBackoff(0) IS that floor, so this is the same number the first
+		// attempt at any row gets.
+		wait := untitledBackoff(m.untitledMisses)
+		if m.untitledFresh() {
+			wait = untitledBackoff(0)
+		}
 		if m.pane == paneSessions && m.harvest != nil && !m.harvesting &&
-			now.Sub(m.lastHarvest) >= untitledBackoff(m.untitledMisses) &&
+			now.Sub(m.lastHarvest) >= wait &&
 			m.untitledSettled(now) {
 			m.harvesting = true
 			m.lastHarvest = now

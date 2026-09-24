@@ -235,6 +235,60 @@ func (m *model) untitledSettled(now time.Time) bool {
 	return false
 }
 
+// untitledFresh reports whether some unnamed row on screen was NOT counted against the backoff
+// yet — a session that appeared since the last harvest was scored.
+//
+// ASKED BY THE GATE, WHICH IS THE POINT. untitledMisses is reset for the same reason in the
+// harvestedMsg handler, but that reset lands one harvest too late to help the row that caused it:
+// the handler runs when a harvest FINISHES, and the gate decides whether one STARTS. So a row
+// arriving while an unnameable row held the counter at untitledBackoffCap waited out a 3m penalty
+// it had no part in earning, and the reset only took effect afterwards — for the next new row.
+// Reading the set here means the arrival is priced on the tick it arrives.
+//
+// COSTS ONE MAP LOOKUP PER UNNAMED ROW PER TICK, and only while the sessions pane is open. The
+// steady state — every row titled — exits on sessionHasTitle without touching the set at all,
+// and the loop is over one pod's live sessions. It is the same walk untitledSettled does and the
+// same walk the scoring does; see countUntitled, which the scoring shares with this.
+//
+// DOES NOT MUTATE THE SET. The gate asks a question; the harvest's scoring is what records the
+// answer. Updating membership here would consume the freshness before the harvest it authorised
+// could be judged, so an arrival would forgive the backoff and then, if the harvest named
+// nothing, be counted as a miss for a row that had never been tried — which is exactly the
+// ordering the scoring's `fresh` arm exists to avoid.
+func (m *model) untitledFresh() bool {
+	for _, sess := range m.sessions {
+		if m.sessionHasTitle(sess.ID) {
+			continue
+		}
+		if !m.untitledCounted[sess.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// countUntitled returns the set of on-screen rows that have no title, and whether any of them is
+// one untitledCounted has not seen.
+//
+// ONE WALK SHARED BY THE GATE'S QUESTION AND THE SCORING'S BOOKKEEPING, because they must agree
+// about what "unnamed and not yet counted" means. untitledFresh answers the gate from the same
+// predicate this builds the set from; a second inline copy of the loop is how the two would drift
+// into disagreeing, which would show up as either a forgiven backoff that never gets recorded or a
+// recorded row that never got forgiven.
+func (m *model) countUntitled() (counted map[string]bool, fresh bool) {
+	counted = make(map[string]bool, len(m.sessions))
+	for _, sess := range m.sessions {
+		if m.sessionHasTitle(sess.ID) {
+			continue
+		}
+		counted[sess.ID] = true
+		if !m.untitledCounted[sess.ID] {
+			fresh = true
+		}
+	}
+	return counted, fresh
+}
+
 // sessionHasTitle reports whether this session renders a title, as the TITLE cell would judge it.
 //
 // THROUGH sessionTitle, not the raw map, so this predicate and the cell can never disagree about
