@@ -303,8 +303,6 @@ func TestHarvest_UnreadableMetadataIsRefusedNotRebuilt(t *testing.T) {
 	}
 }
 
-// A rebuild is still a merge otherwise: it replaces the unparseable file, and the next
-// harvest keeps what it wrote.
 // An oversized but VALID file is refused, not rebuilt over. The read cap makes such a file
 // fail json.Unmarshal, which would classify it as a parse failure and destroy it: measured at
 // 18.5MB/17000 entries replaced by 412 bytes/1 entry.
@@ -365,6 +363,8 @@ func TestHarvest_OversizedValidMetadataIsRefusedNotRebuilt(t *testing.T) {
 	}
 }
 
+// A rebuild is still a merge otherwise: it replaces the unparseable file, and the next
+// harvest keeps what it wrote.
 func TestHarvest_RebuildThenMergeKeepsEntries(t *testing.T) {
 	metadataHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")

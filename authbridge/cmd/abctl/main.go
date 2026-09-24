@@ -275,8 +275,18 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// name an action and repeat every launch, which is worth printing before the alt screen
 		// goes up. Not warning about the rest is the deliberate half — the common case among them
 		// is the file that does not parse, which heals itself moments later, so a line here would
-		// tell the operator titles are in trouble and then hand them titles. A harvest that does
-		// go on to fail reports itself through the viewer's own error path.
+		// tell the operator titles are in trouble and then hand them titles.
+		//
+		// WHAT THAT COSTS, stated plainly because there is no other record of it: the rarer
+		// errors here — EIO, EISDIR, ELOOP — are ones Harvest also refuses, and nothing
+		// downstream reports them. harvestCmd does `meta, _ := h()` (tui/session_metadata.go)
+		// and drops the error on purpose, so those launch with no titles and no explanation,
+		// every time, exactly the shape of bug this fix exists to remove. It is narrower than
+		// what was fixed — a directory or a symlink loop where the metadata file belongs is not
+		// a state a user reaches by accident, whereas a truncated write is — and closing it
+		// properly means either exporting the parse sentinel or giving the TUI somewhere to put
+		// a late error. Both are bigger than this change; #1110 is about the file that does not
+		// parse and the wedged lock.
 	}
 	return func() (map[string]tui.SessionMetadata, error) {
 		// Incremental, unlike `abctl experimental read-claude-sessions`: that command's subject

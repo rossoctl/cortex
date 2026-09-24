@@ -1812,10 +1812,16 @@ type contentBlock struct {
 // ReadMetadata reads the existing file, distinguishing absent from unreadable.
 //
 // An empty map with a nil error means genuinely no file yet — the first run, which is
-// not a problem. A non-nil error means a file was there and could not be trusted, and
-// the caller must say so out loud rather than proceeding: under merge, treating a
-// corrupt file as empty would discard exactly the entries the flag exists to keep.
-// Same distinction, for the same reason, as readState in cmd_claudecode.go.
+// not a problem. A non-nil error means a file was there and could not be trusted; what
+// the caller should DO about it depends on which error, and this function's job is only
+// to keep them apart. Same distinction, for the same reason, as readState in
+// cmd_claudecode.go.
+//
+// Three outcomes a caller can discriminate, because Harvest treats them differently:
+// errMetadataNotJSON for a file whose bytes are not JSON, which Harvest rebuilds over;
+// ErrMetadataTooLarge for a valid file past the read cap, which it refuses because
+// rebuilding would destroy intact entries; and a bare os/io error — permission, EIO —
+// which it also refuses, since nothing there says the contents are bad.
 //
 // A file holding JSON `null` decodes to a nil map, which is indistinguishable from an
 // empty object for merging purposes, so it is normalised rather than refused.
