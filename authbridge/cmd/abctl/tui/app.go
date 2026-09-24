@@ -934,6 +934,13 @@ func (m *model) backToPodsPane() {
 	// waits the 3m cap before its first scan instead of untitledSettleDelay — measured, not
 	// supposed.
 	m.untitledMisses = 0
+	// AND THE SET THAT PRICES IT. Leaving it behind carried the previous pod's unnamed ids into
+	// the next connection, where a shared id — the `default` bucket every pod has, or a redeployed
+	// agent reusing one — read as "already counted" and lost its fresh-row reset, counting a miss
+	// it had not earned. The scoring rebuild above also clears this on the first harvest after the
+	// list empties, so this assignment is not what closes the hole; it is here because this
+	// function's job is to discard what described the pod being left, and the set describes it.
+	m.untitledCounted = nil
 	m.previousPane = paneNone
 	// Same reason: a return pane recorded against the pod being left would send
 	// the next `P`-then-esc back into a pane belonging to the previous connection.
@@ -1224,22 +1231,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// session is the bug. Ordered before the miss count so a tick that both gains a new row and
 		// fails to name anything resets rather than incrementing: the new row has not been tried
 		// yet, so there is no evidence against it to count.
-		if len(m.sessions) > 0 {
-			counted := make(map[string]bool, len(m.sessions))
-			fresh := false
-			for _, sess := range m.sessions {
-				if m.sessionHasTitle(sess.ID) {
-					continue
-				}
-				counted[sess.ID] = true
-				if !m.untitledCounted[sess.ID] {
-					fresh = true
-				}
+		//
+		// THE SET IS REBUILT ON EVERY HARVEST, INCLUDING UNSCOREABLE ONES, and that is outside the
+		// len() > 0 guard for a reason the guard itself cannot serve. The guard decides whether
+		// there is EVIDENCE to score; the set records WHAT WAS ON SCREEN when it was last asked.
+		// Those are different questions, and keeping the set inside the guard answered the second
+		// one with a stale snapshot: an empty list left the previous list's ids in place, so a
+		// session that left and came back with no non-empty scoring in between was read as
+		// "already counted" and inherited the full 3m cap for its first title — measured at
+		// misses=9, which is the very defect the fresh-row reset exists to remove. An empty list
+		// has no unnamed rows, so rebuilding here correctly empties the set, and the returning row
+		// is new again.
+		counted := make(map[string]bool, len(m.sessions))
+		fresh := false
+		for _, sess := range m.sessions {
+			if m.sessionHasTitle(sess.ID) {
+				continue
 			}
-			// ASSIGNED BEFORE THE BRANCH, so every scoreable tick records what it judged. Doing it
-			// only on one arm would leave the set describing some earlier tick, and the next new
-			// row would be compared against a stale snapshot.
-			m.untitledCounted = counted
+			counted[sess.ID] = true
+			if !m.untitledCounted[sess.ID] {
+				fresh = true
+			}
+		}
+		// ASSIGNED BEFORE THE BRANCH, so every harvest records what it judged. Doing it only on one
+		// arm would leave the set describing some earlier tick, and the next new row would be
+		// compared against a stale snapshot.
+		m.untitledCounted = counted
+		if len(m.sessions) > 0 {
 			switch {
 			case fresh:
 				m.untitledMisses = 0

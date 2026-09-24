@@ -1587,11 +1587,20 @@ func TestBackToPodsPane_ResetsTheBackoff(t *testing.T) {
 		t.Fatalf("fixture did not reach the cap: %v", untitledBackoff(m.untitledMisses))
 	}
 
+	// The set that prices the counter is part of the same state. Asserting only the counter passed
+	// while the set still carried this pod's unnamed ids into the next connection.
+	m.untitledCounted = map[string]bool{"shared": true}
+
 	m.backToPodsPane()
 
 	if m.untitledMisses != 0 {
 		t.Errorf("untitledMisses = %d after backing out; the next pod inherits a %v delay",
 			m.untitledMisses, untitledBackoff(m.untitledMisses))
+	}
+	if len(m.untitledCounted) != 0 {
+		t.Errorf("untitledCounted = %v after backing out; a session id shared with the next pod "+
+			"(the `default` bucket, or a redeployed agent) reads as already counted and loses its "+
+			"fresh-row reset", m.untitledCounted)
 	}
 }
 
@@ -1918,5 +1927,83 @@ func TestUntitledSettled_FutureUpdatedAtIsNotQuietForever(t *testing.T) {
 					got, tc.want, tc.upd.Sub(now))
 			}
 		})
+	}
+}
+
+// TestUntitledMisses_ReturningSessionWithNoInterveningScoring is the path
+// TestUntitledMisses_ReturningSessionCountsAsNew does not reach.
+//
+// That test scores a non-empty list while the session is away, which rebuilds the set and drops the
+// absent id. This one never does: the list goes empty and the harvests that land while it is empty
+// are unscoreable. Those are the ordinary ones — Init harvests before its session fetch returns,
+// backing out to the picker sets m.sessions = nil, and the picker harvests on arrival.
+//
+// With the set maintained only inside the len(m.sessions) > 0 guard, the empty scoring left the
+// previous list's ids in place, so the returning row read as "already counted" and inherited the
+// full 3m cap for its first title — measured at misses=9. The set now rebuilds on every harvest:
+// an empty list has no unnamed rows, so the set correctly empties and the row is new again.
+func TestUntitledMisses_ReturningSessionWithNoInterveningScoring(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "comesback")
+	m.sessions = []session.SessionSummary{{ID: "comesback", UpdatedAt: time.Now().Add(-time.Hour)}}
+	empty := map[string]SessionMetadata{}
+
+	for i := 0; i < 9; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	// Gone, and the only harvest landing while it is away has no rows to score.
+	m.sessions = nil
+	m.Update(harvestedMsg{meta: empty})
+
+	// THE COUNTER MUST NOT HAVE MOVED. An unscoreable harvest is neither progress nor a miss —
+	// pinned here too, because rebuilding the set outside the scoring guard must not be mistaken
+	// for scoring outside it.
+	if m.untitledMisses == 0 {
+		t.Errorf("an unscoreable harvest reset untitledMisses; the set rebuild leaked into scoring")
+	}
+
+	// Back again, still unnamed and settled.
+	m.sessions = []session.SessionSummary{{ID: "comesback", UpdatedAt: time.Now().Add(-6 * time.Second)}}
+	m.Update(harvestedMsg{meta: empty})
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d after the session returned with no non-empty scoring in "+
+			"between; its first title waits %v", m.untitledMisses, untitledBackoff(m.untitledMisses))
+	}
+}
+
+// TestBackToPodsPane_ClearsTheCountedSet covers the pod switch end to end, through the real
+// harvestedMsg handler rather than by assigning the set.
+//
+// Two pods can hold a session with the same id: `default` is the bucket every pod's denial events
+// aggregate into, and a redeployed agent can reuse one. Carrying the previous pod's set across the
+// switch made that id read as already counted, so the new pod's first harvest counted a miss the
+// row had not earned instead of resetting on arrival.
+func TestBackToPodsPane_ClearsTheCountedSet(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "default")
+	m.parentCtx, m.ctx = context.Background(), context.Background()
+	m.cancel = func() {}
+	m.sessions = []session.SessionSummary{{ID: "default", UpdatedAt: time.Now().Add(-time.Hour)}}
+	empty := map[string]SessionMetadata{}
+
+	for i := 0; i < 9; i++ {
+		m.Update(harvestedMsg{meta: empty})
+	}
+	if got := untitledBackoff(m.untitledMisses); got != untitledBackoffCap {
+		t.Fatalf("fixture did not reach the cap: misses=%d backoff=%v", m.untitledMisses, got)
+	}
+
+	m.backToPodsPane()
+
+	// A different pod, whose list also holds a `default` session — unnamed, settled.
+	m.sessions = []session.SessionSummary{{ID: "default", UpdatedAt: time.Now().Add(-6 * time.Second)}}
+	m.Update(harvestedMsg{meta: empty})
+
+	if m.untitledMisses != 0 {
+		t.Errorf("untitledMisses = %d on the new pod's first scoring of a shared session id; "+
+			"the previous pod's set suppressed the fresh-row reset", m.untitledMisses)
 	}
 }
