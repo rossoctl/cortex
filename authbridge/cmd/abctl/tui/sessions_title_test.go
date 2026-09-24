@@ -291,6 +291,14 @@ func TestSessionLabelAndHeader(t *testing.T) {
 	if got, want := m.sessionLabel("id-2"), "id-2"; got != want {
 		t.Errorf("sessionLabel for an unharvested session = %q, want the bare id %q", got, want)
 	}
+	// A WHITESPACE-ONLY TITLE IS UNNAMED HERE TOO, on the same terms as the TITLE cell and the
+	// harvest gate. A raw != "" accepted it and produced "    (id-3)": a header indented by a
+	// title that displays nothing, which reads as a rendering fault rather than as a session
+	// nobody has named.
+	m.sessionsData["id-3"] = SessionMetadata{Title: "   "}
+	if got, want := m.sessionLabel("id-3"), "id-3"; got != want {
+		t.Errorf("sessionLabel for a blank title = %q, want the bare id %q", got, want)
+	}
 	if got, want := m.sessionHeader("id-1", ""), "abctl · fix the parser (id-1)"; got != want {
 		t.Errorf("events header = %q, want %q", got, want)
 	}
@@ -1694,5 +1702,52 @@ func TestHarvestedMsg_UnscoreableHarvestsDoNotMoveTheBackoff(t *testing.T) {
 	m.Update(harvestedMsg{meta: map[string]SessionMetadata{"s1": {Title: "named"}}})
 	if m.untitledMisses != 0 {
 		t.Errorf("a harvest that named a visible row left untitledMisses = %d, want 0", m.untitledMisses)
+	}
+}
+
+// TestPicker_InitHarvestCountsAgainstTheVisit pins Init's own scan as the visit's one scan.
+//
+// Init harvests unconditionally, and in picker mode that IS the arrival harvest for the first
+// visit — the operator is already on paneNamespaces when it runs. It stamped lastHarvest and set
+// harvesting but not pickerHarvested, so once harvestedMsg cleared harvesting the very next tick
+// found an unspent budget and walked the whole transcript tree a second time, about two seconds
+// into startup. The deleted interval was the only thing suppressing that.
+//
+// Calls Init, which is what TestPicker_HarvestsOnFirstTickFromConstructor cannot: that test
+// starts from a constructor-shaped model and never runs startup, so it sees one scan either way.
+func TestPicker_InitHarvestCountsAgainstTheVisit(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{}, "s1")
+	m.pane = paneNamespaces
+	m.ctx = context.Background()
+	// Init batches loadAgentsCmd alongside the harvest, and runBatch dispatches the whole batch.
+	m.lister = &fakeLister{namespaces: fixtureNamespaces}
+	called := 0
+	m.harvest = func() (map[string]SessionMetadata, error) {
+		called++
+		return nil, nil
+	}
+
+	runBatch(t, m.Init())
+	if called != 1 {
+		t.Fatalf("Init harvested %d times, want 1", called)
+	}
+	if !m.pickerHarvested {
+		t.Error("Init did not spend the visit's budget, so the next tick will rescan")
+	}
+	m.Update(harvestedMsg{})
+
+	// The first tick after startup must not walk the tree again: the operator has not left the
+	// picker, and Init already scanned on their behalf.
+	_, cmd := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, cmd)
+	if called != 1 {
+		t.Errorf("the first tick after Init re-harvested (%d calls, want 1)", called)
+	}
+
+	// And not on the tick after that either.
+	_, again := m.Update(refreshTickMsg(time.Now()))
+	runBatch(t, again)
+	if called != 1 {
+		t.Errorf("a later tick in the same visit re-harvested (%d calls, want 1)", called)
 	}
 }

@@ -109,7 +109,10 @@ func loadSessionMetadataForModel() map[string]SessionMetadata {
 // unique — two sessions in the same directory get the same harvested title, so a title
 // alone would make them indistinguishable in a header.
 func (m *model) sessionLabel(id string) string {
-	if title := m.sessionTitle(id); title != "" {
+	// THROUGH titleIsBlank, like the other two consumers of "is this named". A raw != "" accepted
+	// a whitespace-only title and rendered "    (id)" — a header padded by a title that shows
+	// nothing, which is worse than the bare id it would otherwise print.
+	if title := m.sessionTitle(id); !titleIsBlank(title) {
 		return title + " (" + id + ")"
 	}
 	return id
@@ -175,8 +178,20 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 // this cheap: without it every event on a still-unnamed session would trigger a scan, and
 // with it a busy session is harvested once, after it pauses.
 //
-// Only sessions the metadata does NOT name are considered, so the steady state — every row
-// titled — triggers nothing at all and costs one map lookup per row per tick.
+// Only sessions the metadata does NOT name are considered, so the steady state — every row titled
+// — triggers nothing at all.
+//
+// IT IS NOT FREE, THOUGH, and an earlier version of this comment claimed "one map lookup per row
+// per tick", which undersells it: sessionHasTitle goes through sessionTitle, which calls
+// sanitizeLabel, which builds a new string. So the steady state allocates once per row per 2s
+// tick and always walks the whole list — the all-titled case is the one that cannot exit early,
+// because the loop is looking for a row that is not there.
+//
+// Left as a linear walk deliberately. The rows here are one pod's live sessions, a handful in
+// practice against the ~180 in the metadata file, and the alternative — a cached "any untitled"
+// flag — is a second piece of state to invalidate on every sessionsLoadedMsg and every harvest
+// merge, which is how the events map grew the bugs its own comments now document. The honest
+// figure is in the comment; the optimisation waits for a profile that asks for it.
 func (m *model) untitledSettled(now time.Time) bool {
 	for _, s := range m.sessions {
 		if m.sessionHasTitle(s.ID) {

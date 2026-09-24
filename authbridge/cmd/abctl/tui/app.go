@@ -184,30 +184,19 @@ const localProbeTimeout = 2 * time.Second
 // stub sessions would otherwise linger in the TUI.
 const refreshInterval = 2 * time.Second
 
-// pickerHarvestOnce records that the NAMESPACES and PODS panes harvest ONCE PER VISIT, on
-// arrival, with no interval at all. There is no constant here because there is no longer a
-// cadence to name — the visit itself is the trigger.
+// The NAMESPACES and PODS panes harvest ONCE PER VISIT, on arrival, with no interval — so there
+// is no constant to declare here. The visit is the trigger; pickerHarvested and pickerShowing
+// carry the state, and Init spends the first visit's budget.
 //
-// OPPORTUNISTIC, NOT NEEDED BY THE PANE. This is the reasoning that removed the interval, and
-// it is not the reasoning the interval was written under. The picker is rarely visited, and the
-// only reason to walk a transcript tree from it is that the system is otherwise idle waiting for
-// someone to choose a pod — so the scan is work taken while nothing else wants the machine, not
-// work the pane depends on. Idle-time work belongs at the moment you arrive; pacing it on a
-// clock set by some earlier harvest gets the timing exactly backwards.
+// The scan is OPPORTUNISTIC, not something the pane needs: the picker is rarely visited, and the
+// reason to walk a transcript tree from it is that the machine is idle waiting for someone to
+// choose a pod. Idle-time work belongs at the moment you arrive, so a clock set by some earlier
+// harvest is the wrong pacing for it — a 3-minute interval used to sit here, and once the
+// per-visit cap existed it could only suppress the one scan each visit was allowed.
 //
-// A 3-MINUTE INTERVAL USED TO GUARD THIS, and once pickerHarvested existed it did nothing but
-// SUPPRESS the single scan each visit was allowed: entering the picker less than three minutes
-// after any other harvest skipped the visit's only walk, with nothing left to retry it until the
-// operator left and came back after the clock aged out. An earlier version of this paragraph
-// justified the interval by saying a harvest is expensive enough that polling it at the 2s
-// session cadence would re-stat the whole tree ninety times a minute — true, and the reason the
-// interval was right when it was the only thing limiting repeats. pickerHarvested limits them
-// now, so the clock only ever cost a scan.
-//
-// The sessions LIST harvests on entirely separate terms — see untitledSettleDelay and
-// untitledBackoff — because it gains a row whenever a session appears and can tell an unnamed
-// row from a named one. These panes hold no session rows at all, which is why one scan per visit
-// is the most they can sensibly ask for.
+// The sessions LIST harvests on separate terms — see untitledSettleDelay and untitledBackoff —
+// because it can tell an unnamed row from a named one. These panes hold no session rows, which
+// is why one scan per visit is the most they can sensibly ask for.
 
 // untitledSettleDelay is how long a session must be quiet before an unnamed row triggers a
 // re-harvest, and it is the whole reason this poll is affordable.
@@ -892,6 +881,10 @@ func (m *model) backToPodsPane() {
 	// versions registered. The next `P` press refetches.
 	m.catalog = nil
 	m.catalogTbl.SetRows(nil)
+	// pickerHarvested and pickerShowing are deliberately NOT reset here. They are edge-derived:
+	// the next refresh tick sees the pane is the picker, finds pickerShowing false, and clears the
+	// budget itself. Resetting them here would be a second writer of state that already has one.
+	//
 	// The backoff describes THE POD BEING LEFT, so it must not price the next one's first
 	// harvest. Those misses were recorded against a session list that is now gone (m.sessions is
 	// cleared just above), and a different pod is a different set of sessions with a different
@@ -991,6 +984,17 @@ func (m *model) Init() tea.Cmd {
 	if m.pane == paneNamespaces {
 		// Picker mode — load agents, then idle until user picks a pod.
 		m.loading = true
+		// INIT'S HARVEST *IS* THE FIRST VISIT'S ARRIVAL HARVEST, so record the arrival here: the
+		// operator is already on paneNamespaces when this runs, and the picker's rule is one walk
+		// per visit. Without this the first tick walked the whole transcript tree a SECOND time
+		// about two seconds into startup. The retired interval was what used to hide that.
+		//
+		// BOTH FIELDS, because either alone leaves the double scan in place. pickerHarvested is
+		// the spent budget; pickerShowing is what stops the first tick from reading this as a
+		// fresh arrival into the picker and clearing that budget again. They are one fact — "the
+		// picker is showing and its scan is done" — and Init is where it first becomes true.
+		m.pickerHarvested = true
+		m.pickerShowing = true
 		return tea.Batch(loadAgentsCmd(m.ctx, m.lister), harvestCmd(m.harvest))
 	}
 	return tea.Batch(m.initSessionView(), harvestCmd(m.harvest))
