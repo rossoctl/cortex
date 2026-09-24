@@ -58,14 +58,38 @@ func LoadSessionMetadata(path string) map[string]SessionMetadata {
 	// before the TUI starts, stalling startup with nothing on screen to say why — the load
 	// happens while the model is built, before tea.NewProgram, so there is nowhere to report
 	// it. 16 MiB is far past any real metadata file: the measured 109-session file is 42 KB.
+	//
+	// READ ONE PAST THE CAP, and bail on over-cap rather than decoding. Without the +1 the file
+	// was read to exactly the cap and the truncated buffer handed to Unmarshal, and what that
+	// produced depended on where the cut landed. Measured both ways:
+	//
+	//   - Cut mid-token, the common case: Unmarshal fails with "unexpected end of JSON input"
+	//     and the result is this same empty map. No behaviour change from the fix.
+	//   - Cut where the prefix is INDEPENDENTLY VALID JSON — trailing whitespace past the cap
+	//     does it — the prefix decoded and this function returned a PARTIAL map as though it
+	//     were the whole file, while claude.ReadMetadata refused the identical bytes. A
+	//     16,777,238-byte file loaded 1 entry before the fix and 0 after.
+	//
+	// The second is what the +1 is for: not the volume of titles lost, but that a partial read
+	// was indistinguishable from a complete one.
+	//
+	// Still returns the empty map, because this function has nowhere to report anything and
+	// says so above — but claude.ReadMetadata applies the SAME cap and DOES distinguish it,
+	// carrying ErrMetadataTooLarge, and `abctl observe`'s pre-flight calls that before the alt
+	// screen goes up. So the operator gets the one line naming the remedy from there; what
+	// this bail-out buys is that the two readers agree on which files are too large, instead
+	// of one silently reading a prefix the other refuses whole.
 	const maxMetadataBytes = 16 << 20
 	f, err := os.Open(path) //nolint:gosec // operator-supplied path
 	if err != nil {
 		return out
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes))
+	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes+1))
 	if err != nil {
+		return out
+	}
+	if len(b) > maxMetadataBytes {
 		return out
 	}
 	var m map[string]SessionMetadata

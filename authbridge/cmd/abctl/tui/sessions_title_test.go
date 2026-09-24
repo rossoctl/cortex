@@ -2120,3 +2120,51 @@ func TestRefreshTick_FreshRowStillWaitsToSettle(t *testing.T) {
 			"exists because the title tiers read a transcript the agent has not finished writing")
 	}
 }
+
+// An oversized file must be REFUSED WHOLE, not read as a valid prefix of itself.
+//
+// What the cap does and does not protect against, measured rather than assumed. A file over the
+// limit was read to exactly maxMetadataBytes with no +1, and what happened next depended entirely
+// on where the cut landed:
+//
+//   - Cut mid-token — the overwhelmingly common case — Unmarshal fails with "unexpected end of
+//     JSON input" and the result is the empty map. Identical before and after this fix, and not
+//     data loss beyond the TITLE column this function is contracted to lose on any failure.
+//   - Cut where the prefix is INDEPENDENTLY VALID JSON, which trailing whitespace past the cap
+//     produces: the prefix decoded and the viewer loaded a partial map, believing it complete,
+//     while claude.ReadMetadata refused the very same file with ErrMetadataTooLarge. Measured: a
+//     16,777,238-byte file loaded 1 entry before the fix and 0 after.
+//
+// The second is the one worth a test, because it is the only shape where the two readers of this
+// file disagreed about its CONTENTS rather than merely about how loudly to fail.
+func TestLoadSessionMetadata_AtTheReadCap(t *testing.T) {
+	const cap = 16 << 20
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+
+	// A valid object followed by enough whitespace to push the file past the cap. The first
+	// cap bytes are therefore valid JSON on their own — which is exactly what makes a truncated
+	// read decode successfully and silently drop whatever followed.
+	body := `{"a":{"title":"real"}}`
+	over := []byte(body + strings.Repeat(" ", cap))
+	if len(over) <= cap {
+		t.Fatalf("fixture is %d bytes, within the %d cap: it cannot test the over case", len(over), cap)
+	}
+	if err := os.WriteFile(path, over, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Zero, not one. One means a prefix decoded and the viewer is now showing a file it only
+	// partly read, with no error anywhere and claude.ReadMetadata refusing the same bytes.
+	if got := LoadSessionMetadata(path); len(got) != 0 {
+		t.Errorf("loaded %d entries from a %d byte file: a valid prefix of an oversize file decoded",
+			len(got), len(over))
+	}
+
+	// And the cap still admits everything under it, so the guard is a limit and not a wall.
+	under := []byte(body + strings.Repeat(" ", 1024))
+	if err := os.WriteFile(path, under, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadSessionMetadata(path); len(got) != 1 || got["a"].Title != "real" {
+		t.Errorf("loaded %d entries from a %d byte file, want the 1 real entry", len(got), len(under))
+	}
+}

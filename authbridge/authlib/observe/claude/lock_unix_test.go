@@ -164,3 +164,68 @@ func TestHarvest_ProceedsWhenTheLockIsHeld(t *testing.T) {
 		t.Error("LockTimedOut is false after the harvest ran unlocked")
 	}
 }
+
+// A flock failure that is NOT a timeout is recorded too, and the harvest still runs.
+//
+// The default: arm this covers was missing: a lock that failed for any reason other than the
+// deadline left LockTimedOut false and nothing else set, so the one state where a concurrent
+// rename can erase every entry a run wrote was also the one state a caller could not report.
+//
+// Provoked through a metadata directory that cannot be written, which makes the lock FILE
+// uncreatable — a real case (read-only home, restrictive mode) and the only non-timeout lock
+// failure a unit test can produce without a filesystem that refuses flock outright.
+func TestHarvest_NonTimeoutLockFailureIsRecorded(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test relies on")
+	}
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	path, err := SessionMetadataPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 0o500: readable and traversable, so the harvest can still try, but no new file can be
+	// created in it — which is what the lock needs.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	res, _ := Harvest(Options{ConfigDir: cfg, Merge: true})
+	// The save fails too — the directory is unwritable, that is the point — so the error is not
+	// asserted. What must hold is that the lock failure was RECORDED rather than swallowed.
+	if res.LockFailed == "" {
+		t.Error("LockFailed is empty after the lock could not be created")
+	}
+	// Not mislabelled as a timeout: nobody was holding it, and saying so would send a reader
+	// looking for a process that does not exist.
+	if res.LockTimedOut {
+		t.Error("LockTimedOut is true for a failure that was not a timeout")
+	}
+}
+
+// The mirror: a lock that works reports neither field. Without this the pair above would pass
+// against code that set LockFailed unconditionally.
+func TestHarvest_SuccessfulLockReportsNeitherFailure(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err != nil {
+		t.Fatalf("Harvest: %v", err)
+	}
+	if res.LockFailed != "" {
+		t.Errorf("LockFailed = %q with a working lock", res.LockFailed)
+	}
+	if res.LockTimedOut {
+		t.Error("LockTimedOut is true with a working lock")
+	}
+}

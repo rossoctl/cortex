@@ -196,6 +196,13 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "abctl: timed out waiting for the lock on %s; harvested anyway, so a concurrent run may have overwritten this one\n", res.Path)
 	}
 
+	// Same risk, different cause, so different words: a timeout means another run holds the lock,
+	// this means locking did not work at all. Reported for the same reason — the harvest ran
+	// unlocked either way.
+	if res.LockFailed != "" {
+		fmt.Fprintf(stderr, "abctl: could not lock %s (%s); harvested anyway, so a concurrent run may have overwritten this one\n", res.Path, res.LockFailed)
+	}
+
 	// Said out loud because the counts cannot show it: a rebuild reports everything harvested
 	// and nothing kept, which is exactly what a first run reports. The entries it dropped —
 	// sessions whose transcripts are gone — leave no trace for the operator to notice.

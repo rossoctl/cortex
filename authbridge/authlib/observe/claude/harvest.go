@@ -151,6 +151,18 @@ type Result struct {
 	// A field because the alternative is silence: without it, the one failure mode this lock
 	// exists to prevent is invisible from outside, and "some titles vanished" has no diagnosis.
 	LockTimedOut bool
+	// LockFailed carries a lock failure that was NOT a timeout — flock refused for some other
+	// reason, e.g. the lock file could not be created or the filesystem rejected the call.
+	//
+	// Separate from LockTimedOut because the two need different words: a timeout means someone
+	// else holds it, while this means locking did not work at all, and reporting "timed out" for
+	// an EIO would send the reader looking for a process that does not exist. Empty when locking
+	// succeeded, was not attempted (no Merge), or is a no-op on this platform.
+	//
+	// Same consequence as a timeout, which is why it is reported at all: the harvest proceeds
+	// UNLOCKED, so a concurrent run's rename can erase everything it wrote. Before this, that
+	// state was the only one where wholesale loss was possible and nothing recorded it.
+	LockFailed string
 	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
 	// otherwise. Keyed by session id.
 	//
@@ -212,6 +224,12 @@ func Harvest(opts Options) (Result, error) {
 			defer unlock()
 		case errors.Is(lerr, ErrLockTimeout):
 			res.LockTimedOut = true
+		default:
+			// ARMED, because the fallback is the same as a timeout's — harvest unlocked — but
+			// nothing said so. A flock that fails for any other reason left LockTimedOut false
+			// and no other trace, so the one state where a concurrent rename can erase every
+			// entry this run wrote was also the one state a caller could not report.
+			res.LockFailed = lerr.Error()
 		}
 	}
 
@@ -1834,11 +1852,21 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	// BOUNDED, the same 16 MiB the viewer's own reader of this file uses. Both now cap it, and
-	// for the same reason: a stray large file at this path would otherwise be read whole and
-	// decoded before the viewer starts — `abctl observe` calls this synchronously to check the
-	// file is readable, so an unbounded read stalls startup with nothing on screen to say why.
-	// Far past any real metadata file: the measured 192-session file is 74 KB.
+	// BOUNDED at the same 16 MiB the viewer's own reader of this file uses, for the same reason:
+	// a stray large file at this path would otherwise be read whole and decoded before the viewer
+	// starts — `abctl observe` calls this synchronously to check the file is readable, so an
+	// unbounded read stalls startup with nothing on screen to say why. Far past any real metadata
+	// file: the measured 192-session file is 74 KB.
+	//
+	// THE CAP IS SHARED; THE CONTRACT AT IT IS NOT, and the difference is deliberate rather than
+	// an oversight to be unified. This function has a caller that can act — it returns an error,
+	// so the CLI and the pre-flight both name a remedy — and refuses loudly with
+	// ErrMetadataTooLarge. tui.LoadSessionMetadata has nowhere to report anything (it runs while
+	// the model is built, before tea.NewProgram owns the screen) and so returns an empty map,
+	// costing the TITLE column. What both must agree on is WHICH files are too large, which is
+	// why the constant and the read-one-past-it shape are duplicated there rather than eyeballed:
+	// they once disagreed, and the viewer silently decoded a truncated prefix of a file this one
+	// refused whole.
 	//
 	// Truncation is reported as ITS OWN failure, not left to surface as a JSON error. A valid
 	// file over the cap decodes as a parse failure, and Harvest rebuilds over parse failures —
