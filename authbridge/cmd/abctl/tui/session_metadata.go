@@ -230,16 +230,31 @@ func (m *model) sessionHasTitle(id string) bool {
 
 // titleIsBlank reports whether a title string would render as an empty TITLE cell.
 //
-// THE ONE DEFINITION OF "UNNAMED", extracted because there are two callers asking that question
-// about different strings — sessionHasTitle about what the model already holds, and
-// harvestNamedSomething about what a harvest just returned, which is not in the model yet and so
-// cannot be reached through sessionTitle. Both have to agree with the cell, and an inline copy in
-// the second one is exactly the predicate/cell drift sessionHasTitle's comment exists to prevent.
+// THE ONE DEFINITION OF "UNNAMED" AMONG THE PREDICATES, extracted because three callers ask that
+// question about different strings — sessionHasTitle about what the model already holds,
+// sessionLabel about the same for a header, and harvestNamedSomething about what a harvest just
+// returned, which is not in the model yet and so cannot be reached through sessionTitle. An
+// inline copy in any of them is the drift sessionHasTitle's comment exists to prevent.
 //
-// Sanitises before trimming because the cell does. sanitizeLabel REPLACES control and BIDI runes
-// with U+FFFD rather than stripping them, so a title of only control characters is not blank —
-// it renders a visible glyph, and claiming it unnamed would re-harvest forever for a row that is
-// already showing something.
+// THE CELL DOES NOT CALL THIS, and the claim that it does was overstated. sessionTitleCell tests
+// a raw title == "" as a fast path to skip truncating an empty string; it does not judge
+// blankness, and a " " title falls through it and is returned as " ". So the two AGREE in
+// behaviour on every input — verified across "", " ", "   ", "\t" and ordinary prose — but by
+// construction rather than by sharing this function. If that fast path ever becomes a real
+// blankness test, it should route through here.
+//
+// SANITISES BEFORE TRIMMING, in that order, because that is the order the cell applies them: it
+// renders sessionTitle, which is sanitizeLabel'd, and nothing trims afterwards. sanitizeLabel
+// REPLACES control and BIDI runes with U+FFFD rather than stripping them, so a title of "\t" or
+// "\n" is NOT blank here — the cell shows "�", a visible glyph, and a predicate calling that row
+// unnamed would re-harvest forever for a row that is already displaying something.
+//
+// Reversing the two — sanitizeLabel(TrimSpace(title)) — is the tempting reading, since it makes
+// "\t" answer "blank" the way a human skimming the source expects. It is wrong for this
+// predicate: TrimSpace would strip the tab before sanitizeLabel could turn it into the glyph the
+// cell actually paints, so the predicate would disagree with the screen. That disagreement is the
+// one thing this helper exists to prevent. (Only tab/newline-class runes differ between the two
+// orders; NUL and the BIDI controls are not whitespace, so TrimSpace never reaches them.)
 //
 // Sanitising a string sessionTitle already sanitised is a no-op, not a second pass with different
 // meaning: sanitizeLabel is idempotent — U+FFFD matches none of its cases and falls through — so

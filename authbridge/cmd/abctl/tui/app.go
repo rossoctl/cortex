@@ -433,7 +433,17 @@ type model struct {
 	sessionsData map[string]SessionMetadata
 	// harvest refreshes sessionsData in the background once the UI is up. Nil disables it.
 	harvest HarvestFunc
-	// lastHarvest is when the most recent harvest was STARTED, for the picker's re-harvest cadence.
+	// lastHarvest is when the most recent harvest was STARTED. Read by ONE caller: the sessions
+	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then. The picker
+	// no longer has a cadence to measure — it harvests on arrival — so nothing there reads this.
+	//
+	// STAMPED BY EVERY PATH, THOUGH, INCLUDING THE ONES THAT NEVER READ IT, and that is a real
+	// coupling rather than a tidy one: a picker scan on arrival, and Init's startup scan, both
+	// move this stamp, so the sessions pane's first settle-triggered harvest can be held off for
+	// up to one untitledSettleDelay after the operator picks a pod. Bounded at 5s, and defensible
+	// — the tree was just walked, so there is little to gain from walking it again — but it means
+	// the two paths are not as independent as their separate triggers suggest. A dedicated
+	// lastSessionsHarvest would decouple them; deliberately not done here.
 	lastHarvest time.Time
 	// harvesting guards against stacking: a harvest walks a transcript tree, and a second pass while
 	// the first is in flight would duplicate the work and race its own write of the metadata file.
@@ -881,9 +891,10 @@ func (m *model) backToPodsPane() {
 	// versions registered. The next `P` press refetches.
 	m.catalog = nil
 	m.catalogTbl.SetRows(nil)
-	// pickerHarvested and pickerShowing are deliberately NOT reset here. They are edge-derived:
-	// the next refresh tick sees the pane is the picker, finds pickerShowing false, and clears the
-	// budget itself. Resetting them here would be a second writer of state that already has one.
+	// pickerHarvested and pickerShowing are deliberately NOT reset here. They are edge-derived: the
+	// next refresh tick recomputes "is the picker showing", finds it disagrees with the recorded
+	// pickerShowing, and clears the budget on that inequality. Resetting them here would make this
+	// a second writer of state that already has exactly one.
 	//
 	// The backoff describes THE POD BEING LEFT, so it must not price the next one's first
 	// harvest. Those misses were recorded against a session list that is now gone (m.sessions is
@@ -974,9 +985,9 @@ func (m *model) Init() tea.Cmd {
 	// disk names every session the last run saw, so a harvest only ever ADDS titles — and
 	// reading a large ~/.claude takes about as long as everything else at startup put
 	// together. Batched rather than sequenced so neither waits on the other.
-	// Stamped here, not on arrival: the cadence is measured from when a harvest STARTS, so leaving it
-	// zero would make the first tick three minutes later look overdue regardless of when the initial
-	// harvest actually ran.
+	// Stamped here, not on arrival: the sessions pane's backoff is measured from when a harvest
+	// STARTS, so leaving it zero would make its first tick look overdue by the whole age of the
+	// clock regardless of when this harvest actually ran.
 	if m.harvest != nil {
 		m.harvesting = true
 		m.lastHarvest = time.Now()
@@ -1254,19 +1265,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// back-out. Keep the ticker alive so it's ready when the user
 		// re-enters a session.
 		if m.pane == paneNamespaces || m.pane == panePods {
-			// RE-HARVEST WHILE THE PICKER IS OPEN, so a session started in another terminal is named
-			// by the time the user scrolls to it. This is the one pane where someone may sit for
-			// minutes with nothing else refreshing the titles on screen.
+			// HARVEST ON ARRIVAL, EXACTLY ONCE PER VISIT, so a session started in another terminal
+			// is named by the time the user scrolls to it. This is the one pane where someone may
+			// sit for minutes with nothing else refreshing the titles on screen.
 			//
-			// Keyed off the existing refresh ticker rather than a second tea.Tick: one timer is
-			// easier to reason about than two with different periods, and this branch already
-			// returns on every tick.
+			// pickerHarvested is the spent budget and pickerShowing is the arrival edge; Init sets
+			// both for the first visit. There is no interval on purpose — the scan is opportunistic
+			// idle-time work, so it belongs at the moment of arrival rather than on a clock some
+			// earlier harvest set. See the comment above refreshInterval.
 			//
-			// EXACTLY ONCE PER VISIT, ON ARRIVAL, which is what pickerHarvested tracks — there is
-			// no interval here on purpose; see pickerHarvestOnce. These panes hold no session rows,
-			// so nothing here can tell a fruitless walk from a useful one, and the sessions pane's
-			// backoff cannot help because this path does not consult it. Cleared on entry to the
-			// pane, so coming back later harvests again.
+			// Riding the existing refresh ticker rather than a second tea.Tick: one timer is easier
+			// to reason about than two, and this branch already returns on every tick. That is how
+			// the scan is DELIVERED, not what paces it.
+			//
+			// These panes hold no session rows, so nothing here can tell a fruitless walk from a
+			// useful one, and the sessions pane's backoff cannot help because this path does not
+			// consult it. One walk per visit is the most they can sensibly ask for.
 			if m.harvest != nil && !m.harvesting && !m.pickerHarvested {
 				m.harvesting = true
 				m.pickerHarvested = true
@@ -1315,7 +1329,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// requests and keep adding one every tick.
 		if (m.pane == panePluginDetail || m.pane == panePipeline) && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd(), harvestNow)
+			// harvestNow is deliberately absent: it is only ever set under m.pane == paneSessions,
+			// and reaching here requires panePluginDetail or panePipeline, so passing it would
+			// imply a combination that cannot occur. tea.Batch would drop the nil harmlessly —
+			// the point is not to suggest otherwise to the next reader.
+			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd())
 		}
 		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd(), harvestNow)
 
