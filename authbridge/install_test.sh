@@ -713,7 +713,7 @@ with_pid_exe_path() { # proc_exe_target(empty for no /proc)  lsof_txt  ps_args
 	{
 		printf 'PROCROOT=%s\n' "${_root}"
 		if [ -n "$2" ]; then
-			printf 'command() { case "$2" in lsof) return 0 ;; *) return 0 ;; esac; }\n'
+			printf 'command() { return 0; }\n'
 			# Modelled on real lsof rather than echoing a fixed answer: list-selection
 			# options are ORed unless -a is given, so without -a `-p <pid> -d txt`
 			# lists every process's executable and head -1 takes whatever came first.
@@ -824,6 +824,128 @@ check "foreign: an unrelated process holding the port is foreign too" \
 	"3121 /usr/bin/python3" \
 	"$(with_foreign_proxy_holder '3121 /usr/bin/python3' __MISSING__ /home/u/.local/bin)"
 
+# --- foreign_proxy_holder: the readlink -f canonicalisation branch ---
+#
+# The subtlest branch here, and it was the one with no coverage: the cases above all use
+# fictitious paths, where `readlink -f` resolves nothing and the plain text comparison
+# decides the verdict on its own. So nothing exercised a holder path that differs
+# TEXTUALLY from ${BIN_DIR}/authbridge-proxy while canonicalising EQUAL — which is
+# precisely the false-foreign the branch exists to prevent (a symlinked $HOME, or
+# /var -> /private/var on macOS, makes /proc/<pid>/exe report a different string for the
+# very same file). Getting that wrong dies on an ordinary upgrade.
+#
+# Real files and a real symlink on disk, because readlink -f is shipped code here and a
+# stub would only test the stub. hide_readlink=yes drops `readlink` from view instead, to
+# pin what the `|| true` degrades TO on a platform that lacks it.
+with_foreign_canonical() { # holder-path  bin_dir  hide_readlink(yes|no)
+	_root="${TMP}/canon"; rm -rf "${_root}"
+	mkdir -p "${_root}/real/bin" "${_root}/other/bin"
+	: >"${_root}/real/bin/authbridge-proxy"
+	: >"${_root}/other/bin/authbridge-proxy"
+	# An alias directory reaching the SAME binary by a different string — the symlinked
+	# $HOME / /private/var shape, reduced to its essentials.
+	ln -s "${_root}/real" "${_root}/alias"
+	{
+		printf 'DEMO_FORWARD_PORT=47600\n'
+		printf 'PROXY_PIDFILE=%s/no_such_pidfile\n' "${_root}"
+		printf 'BIN_DIR=%s\n' "$2"
+		printf 'port_holder() { printf "84858 %%s\\n" "%s"; }\n' "$1"
+		if [ "$3" = yes ]; then
+			# command -v readlink fails => the canonicalisation block is skipped whole.
+			printf 'command() { case "$2" in readlink) return 1 ;; *) return 0 ;; esac; }\n'
+		fi
+		sed -n '/^foreign_proxy_holder()/,/^}/p' "${INSTALL_SH}"
+		printf 'foreign_proxy_holder || echo __OURS__\n'
+	} >"${TMP}/fphcanon.sh"
+	sh "${TMP}/fphcanon.sh" 2>/dev/null
+}
+_CANON="${TMP}/canon"
+# The false-foreign this branch exists to prevent: two different strings, one file.
+# Without the readlink -f comparison this reads as foreign and the installer dies
+# telling the user to kill their own proxy mid-upgrade.
+check "foreign/canonical: a symlinked path to OUR binary is not foreign" \
+	"__OURS__" \
+	"$(with_foreign_canonical "${_CANON}/alias/bin/authbridge-proxy" "${_CANON}/real/bin" no)"
+# ...and it holds in the other direction too, so the test is not just asserting that
+# one specific spelling wins.
+check "foreign/canonical: ours via the real path when BIN_DIR is the symlinked one" \
+	"__OURS__" \
+	"$(with_foreign_canonical "${_CANON}/real/bin/authbridge-proxy" "${_CANON}/alias/bin" no)"
+# The branch must not over-broaden into "anything resolvable is ours": a genuinely
+# different binary canonicalises to a different path and stays foreign.
+check "foreign/canonical: a different real binary still canonicalises foreign" \
+	"84858 ${_CANON}/other/bin/authbridge-proxy" \
+	"$(with_foreign_canonical "${_CANON}/other/bin/authbridge-proxy" "${_CANON}/real/bin" no)"
+# No readlink: `|| true` skips canonicalisation and the plain text comparison decides,
+# so the symlinked spelling reads as foreign. That fails CLOSED in the loud direction
+# (a false accusation, not a missed one), which is worth having visible in a test rather
+# than discovered on a platform without readlink. readlink -f does work on current
+# macOS and Linux, so this is the degraded path, not the usual one.
+check "foreign/canonical: without readlink the symlinked path degrades to foreign" \
+	"84858 ${_CANON}/alias/bin/authbridge-proxy" \
+	"$(with_foreign_canonical "${_CANON}/alias/bin/authbridge-proxy" "${_CANON}/real/bin" yes)"
+
+# --- port_holder: the lsof branch, and the four addresses it has to probe ---
+#
+# This is the macOS path, and the platform the bug was actually reported on — but every
+# other port_holder case here either stubs lsof away (with_port_holder_ss makes
+# `command -v` fail for everything but ss) or exercises the neither-tool case, so all of
+# the address matching landed on the ss branch and this one had no coverage at all.
+#
+# The four-address loop is load-bearing rather than defensive padding: a `*:PORT`
+# wildcard bind IS matched by -i@0.0.0.0:PORT and missed entirely by -i@127.0.0.1:PORT,
+# so probing only loopback would report "nothing holds it" while a wildcard listener sat
+# on the port. The stub below answers for ONE address, so each case proves its own probe
+# runs rather than riding on a catch-all.
+with_port_holder_lsof() { # port  address-that-answers  [second-address-that-answers]
+	{
+		printf 'command() { case "$2" in lsof) return 0 ;; *) return 1 ;; esac; }\n'
+		# Modelled on real lsof's -i@<addr>:<port> selection: answer only when the
+		# queried address is one this fixture is listening on. $2/$3 are matched against
+		# the -iTCP@... argument, so a probe for a different address prints nothing and
+		# the loop must move on to the next one.
+		printf 'lsof() {\n'
+		printf '\t_want=""\n'
+		printf '\tfor _w in "$@"; do case "${_w}" in -iTCP@*) _want=${_w#-iTCP@} ;; esac; done\n'
+		printf '\tcase "${_want}" in\n'
+		printf '\t\t"%s:%s") printf "p84858\\n" ;;\n' "$2" "$1"
+		if [ -n "${3:-}" ]; then
+			printf '\t\t"%s:%s") printf "p99999\\n" ;;\n' "$3" "$1"
+		fi
+		printf '\t\t*) return 1 ;;\n'
+		printf '\tesac\n'
+		printf '}\n'
+		printf 'pid_exe_path() { printf "/Users/u/.local/bin/authbridge-proxy\\n"; }\n'
+		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
+		printf 'port_holder "%s" || echo __NONE__\n' "$1"
+	} >"${TMP}/phlsof.sh"
+	sh "${TMP}/phlsof.sh" 2>/dev/null
+}
+check "port_holder/lsof: IPv4 loopback -> pid from -Fp [the macOS path]" \
+	"84858 /Users/u/.local/bin/authbridge-proxy" \
+	"$(with_port_holder_lsof 47600 127.0.0.1)"
+# Missed by the 127.0.0.1 probe alone, and it does hold the loopback port.
+check "port_holder/lsof: IPv6 loopback [::1] is probed too" \
+	"84858 /Users/u/.local/bin/authbridge-proxy" \
+	"$(with_port_holder_lsof 47600 '[::1]')"
+# The case the loop exists for: verified against real lsof that a wildcard bind answers
+# -i@0.0.0.0 and is invisible to -i@127.0.0.1. Dropping that probe fails here.
+check "port_holder/lsof: a wildcard 0.0.0.0 bind is found (invisible to the loopback probe)" \
+	"84858 /Users/u/.local/bin/authbridge-proxy" \
+	"$(with_port_holder_lsof 47600 0.0.0.0)"
+check "port_holder/lsof: an IPv6 wildcard [::] bind is found" \
+	"84858 /Users/u/.local/bin/authbridge-proxy" \
+	"$(with_port_holder_lsof 47600 '[::]')"
+# One port, one holder: the loop breaks on the first address that answers rather than
+# collecting every match, so two listening addresses must still yield a single pid.
+# Without the break this reads "84858 99999 <path>" or similar.
+check "port_holder/lsof: the loop breaks on the first hit (one pid, not a concatenation)" \
+	"84858 /Users/u/.local/bin/authbridge-proxy" \
+	"$(with_port_holder_lsof 47600 127.0.0.1 '[::1]')"
+# Nothing on any of the four addresses: report nothing rather than guess.
+check "port_holder/lsof: nothing listening on any probed address reports nothing" \
+	"__NONE__" "$(with_port_holder_lsof 47600 198.51.100.7)"
+
 # --- port_holder: the ss fallback, and which binds count as holding the port ---
 #
 # lsof-only meant this detection silently never fired on modern Linux, where
@@ -916,10 +1038,27 @@ pid_without_path_port_holder() {
 check "port_holder: a pid whose path cannot be resolved reports nothing (no 'unknown')" \
 	"__NONE__" "$(pid_without_path_port_holder)"
 
-# The regression guard proper: no path comparison may be fed from `ps -o comm=`,
-# because it cannot carry a path on Linux. This is the defect that shipped.
-check "no comm=-derived path comparison remains" "0" \
-	"$(grep -c 'comm=.*authbridge-proxy\|authbridge-proxy.*comm=' "${INSTALL_SH}")"
+# The regression guard proper: `ps -o comm=` may appear EXACTLY ONCE in install.sh —
+# the sanctioned use in proxy_running, which matches the truncated *authbridge-prox*
+# on purpose and never compares a path.
+#
+# Counting is the whole point, and the previous form of this check is why. It grepped
+# for `comm=` and `authbridge-proxy` on ONE line and asserted zero — but the defect
+# spanned two lines (the `comm=` capture in port_holder and the path comparison in
+# foreign_proxy_holder), so that pattern returned 0 on the buggy commit too: the exact
+# value it asserted as clean. It could not fail on the bug its own comment named, which
+# is worse than no check, because the comment invited readers to trust it.
+#
+# Verified both ways: this count is 2 on d5f8abd3 (the commit that shipped the defect —
+# port_holder's capture plus proxy_running's) and 1 here. A second occurrence is not
+# forbidden forever, but it has to be argued for rather than appear by accident.
+#
+# Comment lines are stripped first, and that is not incidental: pid_exe_path's header
+# explains at length why `ps -o comm=` cannot carry a path, quoting it verbatim. Counting
+# prose would make this fire on someone DOCUMENTING the hazard — the opposite of the
+# intent — so only real invocations count.
+check "ps -o comm= is invoked once only (proxy_running, which wants the truncated name)" "1" \
+	"$(grep -v '^[[:space:]]*#' "${INSTALL_SH}" | grep -c 'ps .*-o comm=\|ps -o comm=')"
 
 # --- the new-CA notice is gated on the CA CHANGING, not on ca.crt existing ---
 #
