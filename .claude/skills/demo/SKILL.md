@@ -66,7 +66,7 @@ docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
 kind load docker-image <image> --name rossoctl
 ```
 
-`scripts/local-build-and-test.sh` builds and Kind-loads `authbridge`,
+`scripts/dev/local-build-and-test.sh` builds and Kind-loads `authbridge`,
 `authbridge-envoy`, `authbridge-lite` and `proxy-init` (plus `spiffe-idp-setup`
 from the rossoctl repo) — prefer it over building by hand. Note it does not build
 `authbridge-cpex` or `authbridge-praxis`.

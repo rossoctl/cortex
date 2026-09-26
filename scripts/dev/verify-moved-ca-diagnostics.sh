@@ -6,7 +6,7 @@
 # two throwaway HOMEs under a temp dir — it never touches your real ~/.cortex, and
 # it starts its proxy on an unused high port so a running Cortex is unaffected.
 #
-# Usage:  scripts/verify-moved-ca-diagnostics.sh [path-to-authbridge-proxy]
+# Usage:  scripts/dev/verify-moved-ca-diagnostics.sh [path-to-authbridge-proxy]
 #
 # With no argument it builds the binary from this checkout.
 set -euo pipefail
@@ -14,7 +14,7 @@ set -euo pipefail
 PORT="${PORT:-47690}"   # deliberately not 47600; must not disturb a real install
 HOST="${HOST:-example.com}"
 
-cd "$(dirname "$0")/.."   # repo root
+cd "$(dirname "$0")/../.."   # repo root
 
 WORK="$(mktemp -d)"
 # Kill the proxy BEFORE removing the tree: the config lives under $WORK and the

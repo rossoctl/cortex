@@ -142,8 +142,10 @@ cortex/
 │                                     #   not an inert archive.
 │
 ├── scripts/
-│   ├── local-build-and-test.sh       # Build every image and load it into Kind
-│   ├── verify-spire-keycloak.sh      # Platform preflight for a local dev cluster
+│   ├── dev/                          # Loose dev-only shell scripts
+│   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
+│   │   ├── verify-spire-keycloak.sh  #   Platform preflight for a local dev cluster
+│   │   └── verify-moved-ca-diagnostics.sh #   Repro for issue #1033's moved-CA diagnostics
 │   ├── profile-tags/                 # Build-tag resolver: one profile per artifact
 │   ├── readme-demo/                  # Generates the README demo animation
 │   └── hooks/commit-msg              # Rewrites Co-Authored-By to Assisted-By
@@ -787,14 +789,14 @@ There are **two** setup scripts for different demo scenarios:
 
 ### Building Everything Locally
 
-`scripts/local-build-and-test.sh` orchestrates every image
+`scripts/dev/local-build-and-test.sh` orchestrates every image
 the platform needs (`spiffe-idp-setup` from rossoctl, plus
 `authbridge`, `authbridge-envoy`, `authbridge-lite`, `proxy-init`
 from this repo) and loads them into a Kind cluster. Run it from
 the repo root:
 
 ```bash
-ROSSOCTL_DIR=../rossoctl ./scripts/local-build-and-test.sh
+ROSSOCTL_DIR=../rossoctl ./scripts/dev/local-build-and-test.sh
 ```
 
 To build a single image directly. All Docker build contexts are the repo root now,
@@ -928,7 +930,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 - Example deployment YAMLs in `demos/*/k8s/`
 
 ### Shell Scripts
-- Strict mode where it is safe to add: `scripts/local-build-and-test.sh` uses
+- Strict mode where it is safe to add: `scripts/dev/local-build-and-test.sh` uses
   `set -euo pipefail`, `install.sh` uses `set -eu`. **`deploy/proxy-init/init-iptables.sh`
   is `set -e` only** — do not "fix" it to `pipefail` without testing, its iptables
   probes rely on tolerated failures.

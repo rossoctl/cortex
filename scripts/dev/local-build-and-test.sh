@@ -5,10 +5,10 @@ set -euo pipefail
 # This script builds all necessary images locally and loads them into Kind
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# This script lives in scripts/, one level below the repo root; every relative
-# path below (Docker build contexts, the rossoctl sibling checkout) is anchored
-# to REPO_ROOT, not SCRIPT_DIR.
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# This script lives in scripts/dev/, two levels below the repo root; every
+# relative path below (Docker build contexts, the rossoctl sibling checkout)
+# is anchored to REPO_ROOT, not SCRIPT_DIR.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROSSOCTL_DIR="${ROSSOCTL_DIR:-$(cd "$REPO_ROOT/../rossoctl" 2>/dev/null && pwd || echo "")}"
 if [ -z "$ROSSOCTL_DIR" ] || [ ! -d "$ROSSOCTL_DIR" ]; then
     echo "ERROR: Set ROSSOCTL_DIR to point to your rossoctl repo clone"
