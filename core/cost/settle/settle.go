@@ -1,4 +1,4 @@
-// Package costing turns one response's facts into one settled cost.
+// Package settle turns one response's facts into one settled cost.
 //
 // It exists because that decision was made in two places with two shapes — inside
 // litellm-budget-track and again inside the usage aggregator — and the two could disagree
@@ -399,7 +399,7 @@ type Settled struct {
 	// them needs a tolerance, not equality: both halves resolve at the same prompt size over a
 	// complementary partition, but each is rounded to micros on its own and the whole is rounded
 	// separately. NOT equality "to the micro, by construction", which the rounding contradicts;
-	// costing_test.go uses 1e-6.
+	// settle_test.go uses 1e-6.
 	//
 	// Neither sums to CostUSD, which may be the gateway's; comparing their sum against a
 	// reported total is a drift measurement, and ModelledUSD is the figure kept for it.

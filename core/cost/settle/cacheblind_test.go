@@ -31,7 +31,7 @@ import (
 // reporter needs both figures to say anything. Refusing it as the CHARGED figure and discarding
 // it are different acts.
 //
-// cacheTierCtx carries all four tiers, which costing_test.go's ctx cannot: this defect is
+// cacheTierCtx carries all four tiers, which settle_test.go's ctx cannot: this defect is
 // invisible without cache tokens, which is exactly why the 2026-09-11 validation in settle.go —
 // a 16-input / 4-output call — could not have caught it.
 func cacheTierCtx(headers map[string]string, input, output, cacheWrite, cacheRead int) *pipeline.Context {

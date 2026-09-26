@@ -1,4 +1,4 @@
-// Package costledger persists per-minute cost and token totals to disk so "what did
+// Package ledger persists per-minute cost and token totals to disk so "what did
 // today cost" survives a restart. The usage aggregator's ring is six hours of
 // in-memory buckets and dies with the process; a coding session spans days.
 //

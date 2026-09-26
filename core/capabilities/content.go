@@ -1,4 +1,4 @@
-// Package contracts defines capability interfaces that protocol
+// Package capabilities defines capability interfaces that protocol
 // extensions implement to participate in framework services like content
 // inspection, session bucketing, and summarization. The package is
 // deliberately dependency-free — parser plugins and consumer plugins

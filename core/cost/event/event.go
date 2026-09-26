@@ -1,4 +1,4 @@
-// Package costevent is the canonical wire shape of the per-request cost that
+// Package event is the canonical wire shape of the per-request cost that
 // litellm-budget-track publishes onto a session event.
 //
 // It lives in its own package because the producer is a plugin while the

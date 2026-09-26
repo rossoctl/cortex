@@ -1,4 +1,4 @@
-// Package tls builds *crypto/tls.Config values for authbridge's
+// Package tlsconfig builds *crypto/tls.Config values for authbridge's
 // reverse-proxy and forward-proxy listeners using a SPIRE X.509 SVID
 // source. Mode-aware: callers pass "permissive" or "strict" to drive
 // the listener's fallback behavior; this package itself only models

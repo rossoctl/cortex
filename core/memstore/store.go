@@ -1,4 +1,4 @@
-// Package shared provides a generic, process-scoped, TTL key→value store
+// Package memstore provides a generic, process-scoped, TTL key→value store
 // that plugins reach via pipeline.Context.Shared. It is intentionally
 // semantics-free — feature-specific conventions (e.g. credential
 // placeholders) live in their own packages and namespace their keys.
