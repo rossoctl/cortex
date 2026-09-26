@@ -193,8 +193,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rogpeppe/go-internal v1.16.0 h1:O9DK+vNMDVGLr2BeZqmpLeMjiMNkuXfcqntWbZV6S5g=
 github.com/rogpeppe/go-internal v1.16.0/go.mod h1:DrUVZyrJU+txYW5/1kwtXQSMFio52ZOxX7yM1VHvnxs=
-github.com/rossoctl/context-guru v0.2.0 h1:wMu9o4sIHTD46hgguEONa9GNHwhSAl/TBh9zD2QxRvM=
-github.com/rossoctl/context-guru v0.2.0/go.mod h1:qSnO3Aqw3yvdmcZFQdeN8EAvR5qeF5TJvonEtpyDYCs=
+github.com/rossoctl/context-guru v0.3.0 h1:uYE2aez1+WFLrEDELn/61D4urC8jEGuokJWQq0XdqXc=
+github.com/rossoctl/context-guru v0.3.0/go.mod h1:qSnO3Aqw3yvdmcZFQdeN8EAvR5qeF5TJvonEtpyDYCs=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
 github.com/segmentio/asm v1.2.1/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
 github.com/sirupsen/logrus v1.10.2 h1:G2SED73/qrAu6YwbdxOD6peLkCBI3z7L+ykJFTXJBBo=
