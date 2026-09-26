@@ -20,7 +20,7 @@ Neither owns the cost model. One owner of rates means `tool-prune`,
 | The published record | `authlib/costevent` | this page ([Cost records](#cost-records)) |
 | Durable per-minute ledger (`cost_ledger:`) | `authlib/costledger` | [`laptop-service.md`](laptop-service.md) for the config; [`framework-architecture.md`](framework-architecture.md) for why it is not hot-reloadable |
 | Windowed aggregation, `/v1/usage` | `authlib/usage` | **not yet documented** — `GET /` on the session API lists the endpoint, and [`litellm-budgettrack-plugin.md`](litellm-budgettrack-plugin.md) covers reading `unpricedBy` |
-| Daily caps, drift check | `plugins/litellm_budgettrack` | [`litellm-budgettrack-plugin.md`](litellm-budgettrack-plugin.md) |
+| Daily caps, drift check | `authlib/plugins/litellm_budgettrack` | [`litellm-budgettrack-plugin.md`](litellm-budgettrack-plugin.md) |
 
 > **Terminology.** *Rate* — money per token for one tier of one model at one endpoint.
 > *Tier* — which kind of token: uncached input, cache write, cache read, output.
@@ -241,7 +241,6 @@ pricing:
   endpoints:
     - hosts: ["gw.internal", "gw-alt.internal"]   # host globs, port stripped.
                                                   # "*" or omitted = any endpoint
-      multiplier: 0.76               # optional, scales every rate for these hosts
       models:
         "*claude-opus-*":            # model glob, matched case-insensitively
           input_cost_per_million:       3.80

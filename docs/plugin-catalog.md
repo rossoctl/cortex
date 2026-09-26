@@ -132,7 +132,7 @@ is published as a cost record keyed `cost` on the session event (see
 [Cost records](pricing.md#cost-records)).
 
 No configuration — no config struct, does not implement `Configurable`. Rates arrive by
-injection from the top-level [`pricing:`](pricing.md) section; with none configured the parser
+injection from the top-level [`pricing:`](pricing.md#overriding-in-config) section; with none configured the parser
 still parses and reports the traffic as unpriced.
 
 ## `jwt-validation`
@@ -192,7 +192,7 @@ cost is ever accumulated and the budget never trips.
 
 - `spend_file` (string) — path to the JSON spend ledger file; required. The ledger is a small JSON file the plugin creates and rewrites, holding the current UTC date plus the cumulative spend and call count for that day (it resets automatically at midnight UTC) — see [Ledger Format](./litellm-budgettrack-plugin.md#ledger-format).
 - `max_budget` (float64) — daily budget in USD; required, must be > 0.
-- **No rate options, and no pricing at all.** This plugin bills a figure it does not compute: `inference-parser` settles the cost and publishes the record, and this plugin adds the day's total, enforces the cap, and warns when the rate table disagrees with what the gateway charged. Rates live in the top-level [`pricing:`](pricing.md) section.
+- **No rate options, and no pricing at all.** This plugin bills a figure it does not compute: `inference-parser` settles the cost and publishes the record, and this plugin adds the day's total, enforces the cap, and warns when the rate table disagrees with what the gateway charged. Rates live in the top-level [`pricing:`](pricing.md#overriding-in-config) section.
 - **Requires `inference-parser` LATER in the chain** (`RequiresLater`). The response passes walk the chain in reverse, so the parser must sit at a higher index to fold each frame before this plugin settles the cost. A chain without it — or with it earlier — fails to build.
 
 ## `mcp-parser`

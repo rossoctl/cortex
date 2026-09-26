@@ -269,8 +269,12 @@ func TestWarnIfUnpinned(t *testing.T) {
 			}
 			if tc.warn {
 				// The direction of the error and the remedy both have to be in it, or an
-				// operator cannot act on it.
-				for _, want := range []string{"VENDOR LIST", "OVERSTATED", "pricing.endpoints"} {
+				// operator cannot act on it — and so must the surfaces that carry
+				// provenance, because naming one that does not is the bug this pins.
+				for _, want := range []string{
+					"VENDOR LIST", "OVERSTATED", "pricing.endpoints",
+					"abctl pricing", "abctl observe",
+				} {
 					if !strings.Contains(got, want) {
 						t.Errorf("warning omits %q: %s", want, got)
 					}
