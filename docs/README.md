@@ -10,6 +10,8 @@ only the repo-level pieces.
 | Install and run Cortex on a laptop | [root README](../README.md) |
 | Understand the sidecar shapes and deployment | [`architecture.md`](architecture.md) |
 | Configure a plugin | [`docs/plugin-catalog.md`](../docs/plugin-catalog.md) |
+| Set up model pricing and gateway discounts, or read the `cost` record | [`docs/pricing.md`](../docs/pricing.md) |
+| See the rates actually in effect | `abctl pricing [--host <gateway>]` |
 | Write a plugin | [`docs/plugin-reference.md`](../docs/plugin-reference.md) and [`plugin-tutorial.md`](../docs/plugin-tutorial.md) |
 | Understand the pipeline internals and hot-reload | [`docs/framework-architecture.md`](../docs/framework-architecture.md) |
 | Run a demo | [`demos/README.md`](../demos/README.md) |

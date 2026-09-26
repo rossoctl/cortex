@@ -102,7 +102,7 @@ func TestResolution_ExactHostBeatsAGlobThatCoversIt(t *testing.T) {
 }
 
 func TestResolution_CatchAllHostSpellingsRankEqually(t *testing.T) {
-	// plugin-catalog.md documents "" and "*" as identical. They must therefore lose
+	// pricing.md documents "" and "*" as identical. They must therefore lose
 	// to a more specific MODEL the same way, which len("*")==1 vs len("")==0 broke.
 	var catchAll, exact Rates
 	catchAll.Base[TierInput], catchAll.Set[TierInput] = 42.0/tokensPerMillion, true
