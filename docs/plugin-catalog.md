@@ -373,7 +373,7 @@ aggregator and `/v1/usage` endpoint all live in `authlib/`, and a plugin only fe
 ## `pricing:`
 
 Moved. Model rates, gateway discounts, the shipped defaults and how to override them are
-in **[`pricing.md`](pricing.md)**.
+in **[`pricing.md`](pricing.md#overriding-in-config)**.
 
 It lives there because `pricing:` is a top-level config section rather than a plugin — it
 registers no plugin and this file catalogs "every plugin with a Go implementation that
