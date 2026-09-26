@@ -12,8 +12,25 @@ git mv authlib core
 (cd core && go mod edit -module github.com/rossoctl/cortex/core)
 
 # Import paths, and the LEFT side of replace directives, in Go files and go.mod.
+#
+# The bare-word rule has to run here too, not only over the non-Go files. Three
+# real references in this tree are written in a syntax no plain module-path
+# substitution can match:
+#   - a regexp literal with ESCAPED dots, scripts/profile-tags/guards_test.go
+#   - two import-path guards comparing a quoted SUFFIX, "/authlib/costledger"
+#     and "/authlib/usage", in cmd/authbridge-{cpex,envoy}/main_test.go
+# Left alone, all three go quietly inert: the string simply stops matching, so
+# the tests keep passing while the assertions no longer assert anything.
+#
+# Safe because `authlib` is nowhere a Go identifier or import alias, and appears
+# in no string literal, struct tag, go:embed directive or testdata fixture where
+# it is data rather than a path. It also rewrites prose in Go comments, which is
+# wanted -- Task 6 owns the semantic rewrite, not the name.
 find . -path ./.git -prune -o \( -name '*.go' -o -name 'go.mod' \) -print0 \
-  | xargs -0 perl -pi -e 's{github\.com/rossoctl/cortex/authlib}{github.com/rossoctl/cortex/core}g'
+  | xargs -0 perl -pi -e '
+      s{github\.com/rossoctl/cortex/authlib}{github.com/rossoctl/cortex/core}g;
+      s{\bauthlib\b}{core}g;
+    '
 
 # RIGHT side of replace directives: ../../authlib -> ../../core.
 # Capture the prefix WHOLE. A starred group keeps only its last repetition,
