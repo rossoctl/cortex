@@ -129,10 +129,10 @@ add. An absent figure is reported as absent, never as `$0.00`.
 The arithmetic and the gateway header semantics are in `authlib/costing`, not in the parser:
 a provider-shaped body parser has no business knowing one gateway's header names. The result
 is published as a cost record keyed `cost` on the session event (see
-[Cost records](#cost-records)).
+[Cost records](pricing.md#cost-records)).
 
 No configuration — no config struct, does not implement `Configurable`. Rates arrive by
-injection from the top-level [`pricing:`](#pricing) section; with none configured the parser
+injection from the top-level [`pricing:`](pricing.md#overriding-in-config) section; with none configured the parser
 still parses and reports the traffic as unpriced.
 
 ## `jwt-validation`
@@ -192,7 +192,7 @@ cost is ever accumulated and the budget never trips.
 
 - `spend_file` (string) — path to the JSON spend ledger file; required. The ledger is a small JSON file the plugin creates and rewrites, holding the current UTC date plus the cumulative spend and call count for that day (it resets automatically at midnight UTC) — see [Ledger Format](./litellm-budgettrack-plugin.md#ledger-format).
 - `max_budget` (float64) — daily budget in USD; required, must be > 0.
-- **No rate options, and no pricing at all.** This plugin bills a figure it does not compute: `inference-parser` settles the cost and publishes the record, and this plugin adds the day's total, enforces the cap, and warns when the rate table disagrees with what the gateway charged. Rates live in the top-level [`pricing:`](#pricing) section.
+- **No rate options, and no pricing at all.** This plugin bills a figure it does not compute: `inference-parser` settles the cost and publishes the record, and this plugin adds the day's total, enforces the cap, and warns when the rate table disagrees with what the gateway charged. Rates live in the top-level [`pricing:`](pricing.md#overriding-in-config) section.
 - **Requires `inference-parser` LATER in the chain** (`RequiresLater`). The response passes walk the chain in reverse, so the parser must sit at a higher index to fold each frame before this plugin settles the cost. A chain without it — or with it earlier — fails to build.
 
 ## `mcp-parser`
@@ -364,198 +364,18 @@ rollout, the metrics readout, and what the saving does and does not change.
 
 ## Cost records
 
-Every priced request publishes one record on its response session event, under the key
-`cost`. One producer, one record, one number.
+Moved. The `cost` session-event record — its fields, and the rule that nothing in
+`avoided` is spend — is in **[`pricing.md`](pricing.md#cost-records)**.
 
-The key names the **concern, not the producer**. It used to be the producing plugin's name
-(`litellm-budget-track`), which made moving costing to the component that actually knows the
-token counts a breaking wire change — for live consumers and for every event already in a
-session store. The framework set that precedent itself: `pipeline/context.go` publishes
-`body-mutation` from the core, "because a switch of plugin names in a future refactor
-shouldn't break operators' dashboards". The legacy key is still written and still read, and
-comes out a release after the rename ships.
-
-| field | meaning |
-|---|---|
-| `cost_usd` | what the whole exchange cost — prompt and completion together, unlike the two halves below. `source` says whether the gateway reported it (`gateway-header`) or it was modelled from token counts (`usage-fallback`); `provenance` says how much to trust the rates behind a modelled figure |
-| `settled` | a figure exists — **including a deliberate zero**, which is the gateway saying the call was free. Without it, "free" and "nobody priced this" were indistinguishable, and a cache hit got re-priced from the rate table |
-| `prompt_usd` | the modelled cost of the prompt alone, tier-weighted. A breakdown, **not** a component of a sum: it is the table's figure even when `cost_usd` is the gateway's |
-| `output_usd` | the modelled cost of the generated tokens alone, at the output rate, resolved at the **request's** prompt size so a long-context premium reaches the completion too. The other half of the same breakdown, so a per-row UI can show what a response row cost rather than what the exchange cost. Priced from the table, **never** `cost_usd` − `prompt_usd`: that difference mixes a possibly-authoritative total with a modelled half, so it reports a gateway-vs-table delta as the completion's cost and can go negative. (`modelled` − `prompt_usd` would be sound; mixing sources is the problem, not subtraction.) `prompt_usd` + `output_usd` equals the modelled total to the micro |
-| `avoided[]` | cost that was **not** incurred, attributed per component, with `tokensAvoided`, `usd`, the `tier` it came out of, and two honesty flags: `estimated` (derived from a byte ratio, not a tokenizer) and `projected` (measured but never applied — that money *was* spent) |
-| `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
-
-**Nothing in `avoided` is spend.** No consumer may add it to a cost, a budget or a usage
-total; a test in `authlib/usage` asserts the aggregator's totals are unchanged by its
-presence. It is a container rather than a few flat fields because more counterfactuals are
-coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
-`cost_usd` the record would become half-real and half-hypothetical, which is how someone
-eventually sums two fields that must never be summed.
+Like `pricing:` below, cost is core rather than plugin: `costing.Settle` and the ledger,
+aggregator and `/v1/usage` endpoint all live in `authlib/`, and a plugin only feeds them.
 
 ## `pricing:`
 
-Top-level section owning every model rate in the process. One section rather than a
-knob per plugin, so `tool-prune`, `litellm-budget-track`, `/v1/usage` and `abctl`
-cannot disagree about what a request cost.
+Moved. Model rates, gateway discounts, the shipped defaults and how to override them are
+in **[`pricing.md`](pricing.md#overriding-in-config)**.
 
-```yaml
-pricing:
-  # The bundled table ships vendor-list rates for the Claude families, generated
-  # from LiteLLM's public price map. On by default: internal usage should work with
-  # no setup. Set false to price only what you configure.
-  bundled: true
-  endpoints:
-    - hosts: ["gw.internal"]       # host globs, port stripped; "*" or omitted = any
-      models:
-        "*claude-opus-*":          # model glob, matched case-insensitively
-          input_cost_per_million: 3.80
-          cache_write_cost_per_million: 4.75
-          cache_read_cost_per_million: 0.38
-          output_cost_per_million: 19.00
-          above:                   # optional long-context override
-            - prompt_tokens: 200000
-              input_cost_per_million: 7.60
-```
-
-`hosts` is a LIST because gateways commonly share a rate card — two replicas, or a
-service name and its external alias, bill identically, and repeating the whole models
-block per host invites the two copies to drift. Each host becomes its own table row.
-
-`multiplier` scales every rate that resolves for those hosts, including tiers and
-long-context thresholds. Absent means 1.0. A multiplier-only endpoint needs no `models`
-block. The factor is capped at 10, because `multiplier: 76` for `0.76` inflates every
-figure a hundredfold and reads as plausible in a config file.
-
-**Inspecting what is in effect.** No config file can answer this: the figures a request
-is charged come from your `pricing:` section *plus* the table compiled into the binary
-*plus* any shipped gateway discount. Two views:
-
-```
-abctl pricing                      every row, unscaled
-abctl pricing --host <gateway>     what that endpoint is charged, discount applied
-```
-
-Both are served by `GET /pricing/table[?host=]` on the diagnostic listener, beside
-`/config` and `/reload/status`.
-
-**Rates are scoped per endpoint**, which a per-plugin table could not express: the
-same model bills differently on a discounted gateway than on the vendor endpoint,
-and only the request's target host distinguishes them.
-
-### Pinning a gateway that bills below list
-
-The bundled table ships vendor-list prices, so a gateway that bills below list is
-overstated until Cortex knows the discount. **Most gateways bill a uniform fraction of
-list, and for those the whole answer is one scalar:**
-
-```yaml
-pricing:
-  endpoints:
-    - hosts: ["my-gateway.example.com"]
-      multiplier: 0.76        # a FRACTION of list, so 0.76 is a 24% discount
-```
-
-One number rather than twelve, and it **tracks upstream repricing**: the gateway's price
-is derived from list, so refreshing the bundled table moves both together. A copied rate
-card freezes today's numbers and goes stale silently.
-
-Some gateways already have a discount shipped with Cortex and need no configuration at
-all — `abctl pricing --host <gateway>` says which, and shows the rates in effect with
-their provenance. The `multiplier` you set outranks any shipped one.
-
-**Provenance decides before specificity, so a catch-all you configure beats a specific
-rule Cortex ships.** These are not equivalent:
-
-```yaml
-pricing:
-  endpoints:
-    - hosts: ["*"]            # applies to EVERY endpoint, including ones with a
-      multiplier: 0.9         # shipped discount — 0.9 replaces their 0.76
-```
-
-That is deliberate: a configured factor means an operator checked their bill, and a rule
-compiled into a binary should never silently win over that. But it does mean a catch-all
-written for one gateway quietly reprices the rest. Scope the `hosts` list unless you mean
-every endpoint, and check the result with `abctl pricing --host <gateway>`.
-
-To drop a shipped discount for an endpoint without scaling it, set `multiplier: 1.0`
-explicitly — that is a configured rule of 1.0, which outranks the shipped factor and
-leaves the rates at vendor list. Omitting `multiplier` does NOT do this; it leaves the
-shipped rule in force.
-
-**Measuring your gateway's factor.** You do not have to be told it — a LiteLLM gateway
-reports what it charged, so the factor is one division:
-
-```sh
-# Non-streamed, so the gateway settles the cost before replying. A streamed response
-# reports 0 in that header by design, which is why this cannot be learned from live
-# agent traffic.
-# --proto '=https' so a mistyped http:// URL fails instead of putting $KEY on the wire
-# in cleartext.
-curl -sD - -o /dev/null --proto '=https' "$GATEWAY/v1/messages" \
-  -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
-  -d '{"model":"claude-opus-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}' \
-  | grep -i x-litellm-response-cost-original
-```
-
-Divide that by what the same token counts cost at list (`abctl pricing` shows the list
-rates; the response's `usage` block gives the counts). Repeat for one more model: a single
-factor across both means a uniform discount and `multiplier` is the whole answer, while
-figures that disagree mean the prices are negotiated per model and need the `models`
-block below.
-
-Cortex checks this for you as traffic flows. When a non-streamed response carries a
-settled cost that disagrees with the modelled figure by more than 5%, `litellm-budget-track`
-warns once per endpoint and model with both numbers and the ratio — so a stale or missing
-factor announces itself rather than quietly misreporting spend.
-
-**Pinned rates are never scaled by a shipped multiplier.** If you pin per-model rates for
-a host that also matches a discount Cortex ships, the shipped factor is dropped for that
-host — your figures are already what the gateway charges, and scaling them again would
-understate spend by the factor. `abctl pricing --host <gateway>` shows `multiplier 1` there
-to confirm it. A multiplier you configure yourself does still apply on top of your own
-rates, since asking for both is a thing an operator can legitimately mean.
-
-Reach for per-model rates only when a gateway's prices are genuinely negotiated per
-model rather than derived from list:
-
-```yaml
-pricing:
-  endpoints:
-    - hosts: ["litellm.internal*"]     # your gateway; ports are stripped before matching
-      models:
-        "*claude-opus-*":
-          input_cost_per_million: 3.80
-          cache_write_cost_per_million: 4.75
-          cache_read_cost_per_million: 0.38
-```
-
-Everything else keeps resolving from the bundled table, so `api.anthropic.com` still
-prices at vendor list while your gateway prices at yours. Check it took effect with
-`abctl`: the cost total is annotated `[configured]` rather than `[bundled]`.
-
-Rates on a gateway change on the order of months, which is why this is a static block
-rather than something fetched. Asking the gateway for its own rates via LiteLLM's
-`GET /model/info` was designed and prototyped and then dropped: it needed a virtual key
-minted and mounted, an outbound dependency and a refresh loop, to save transcribing
-three numbers. If your gateway's rates do change often, the resolution order is built
-for it — see `ProvDiscovered` in `authlib/pricing`.
-
-**Bundled rates are VENDOR LIST.** A gateway billing below list is *overstated*
-until you pin it with a host-scoped entry, which outranks anything bundled. This is
-the opposite direction from the hand-measured defaults it replaced, so an operator
-carrying over an old correction should re-check its sign.
-
-Resolution per `(endpoint, model)`: **provenance first** — `configured` beats
-`discovered` beats `bundled` — then specificity within a level, endpoint axis
-before model axis, exact before glob, longer glob before shorter.
-
-**Both units are accepted per tier**; setting *both* for one tier fails startup
-naming the tier, since they differ by 10^6 and silently picking a winner would
-misprice by that factor with nothing in the readout to say which was honoured.
-
-A request is priced only if **every tier that carried tokens had a rate**.
-Otherwise it is reported *unpriced* — never under-priced — and named in
-`/v1/usage`'s `unpricedBy` so the missing entry is nameable rather than merely
-counted.
-
-Regenerate the bundled table with `make pricing-table COMMIT=<litellm sha>`.
+It lives there because `pricing:` is a top-level config section rather than a plugin — it
+registers no plugin and this file catalogs "every plugin with a Go implementation that
+calls `plugins.RegisterPlugin()`". The plugins that *consume* those rates
+(`inference-parser`, `litellm-budget-track`, `tool-prune`) are still catalogued above.

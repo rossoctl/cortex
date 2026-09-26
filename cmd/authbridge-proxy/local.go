@@ -242,7 +242,7 @@ tls_bridge:
 #
 # For a gateway whose prices are genuinely negotiated per model rather than
 # derived from list, give rates instead of a multiplier -- see
-# docs/plugin-catalog.md.
+# docs/pricing.md.
 #
 # Cost history on disk. Per-minute totals only -- no prompts, no completions,
 # no tool arguments -- under ~/.cortex/cost/YYYY-MM-DD.jsonl, kept 31 days

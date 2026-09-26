@@ -42,7 +42,7 @@ func bundledMultipliers() []MultiplierRule {
 		// figures, which is what makes one number the honest representation rather
 		// than a convenient approximation.
 		//
-		// Re-measure with the method in docs/plugin-catalog.md if the figures ever
+		// Re-measure with the method in docs/pricing.md if the figures ever
 		// look wrong; the drift check in litellm-budget-track will say so first.
 		//
 		// Streamed responses report a cost of 0 in that header, so this cannot be

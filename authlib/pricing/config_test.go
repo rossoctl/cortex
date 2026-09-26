@@ -269,11 +269,26 @@ func TestWarnIfUnpinned(t *testing.T) {
 			}
 			if tc.warn {
 				// The direction of the error and the remedy both have to be in it, or an
-				// operator cannot act on it.
-				for _, want := range []string{"VENDOR LIST", "OVERSTATED", "pricing.endpoints"} {
+				// operator cannot act on it. Each surface is pinned together with the
+				// CAPABILITY claimed for it: a bare "abctl observe" also passes with the
+				// two halves swapped, and swapped the hint is false in both halves.
+				for _, want := range []string{
+					"VENDOR LIST", "OVERSTATED", "pricing.endpoints",
+					"abctl pricing --host <gateway> shows the rates",
+					"abctl observe annotates the cost total",
+				} {
 					if !strings.Contains(got, want) {
 						t.Errorf("warning omits %q: %s", want, got)
 					}
+				}
+				// Naming the right surfaces does not exclude the wrong one. The bug this
+				// pins was the hint sending an operator to `abctl cost`, which prints no
+				// provenance annotation (provenanceNote lives only in cmd/abctl/tui), and
+				// re-adding it leaves every pin above satisfied — so the ban is the only
+				// half that can fail for the original defect, and the pins above are the
+				// only half that can fail for its deletion.
+				if strings.Contains(got, "abctl cost") {
+					t.Errorf("warning sends the operator to abctl cost, which carries no provenance: %s", got)
 				}
 			}
 		})

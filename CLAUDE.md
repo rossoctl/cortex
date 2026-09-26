@@ -142,6 +142,7 @@ cortex/
 │   ├── architecture.md               #   How a request flows through the pipeline
 │   ├── plugin-reference.md           #   Producer-side plugin contract
 │   ├── plugin-catalog.md             #   Per-plugin config fields
+│   ├── pricing.md                    #   Rates, discounts, overrides, the cost record
 │   ├── framework-architecture.md     #   Pipeline internals, hot-reload
 │   ├── proposals/, assets/           #   Repo-level proposals + images
 │   └── superpowers/{plans,specs}/    #   Dated design records. STILL WRITTEN TO —
