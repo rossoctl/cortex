@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 	"github.com/rossoctl/cortex/core/session"
 	"gopkg.in/yaml.v3"
 )
@@ -50,9 +50,9 @@ type Config struct {
 	//
 	// Absent means the bundled price table alone, which is deliberate: covering
 	// internal usage with no manual setup is the point. Set `pricing.bundled:
-	// false` to price only what you configure. See core/pricing.
+	// false` to price only what you configure. See core/cost/pricing.
 	Pricing *pricing.Config `yaml:"pricing,omitempty" json:"pricing,omitempty"`
-	// CostLedger configures the durable per-minute cost ledger (core/costledger),
+	// CostLedger configures the durable per-minute cost ledger (core/cost/ledger),
 	// which persists closed minutes so "what did today cost" survives a restart.
 	//
 	// Absent means the caller's default, and the callers differ deliberately: a local
@@ -101,7 +101,7 @@ type CostLedgerConfig struct {
 	//
 	// THIRTY-ONE because that is what window=month needs: a month-to-date total on the 31st
 	// of a 31-day month opens 31 day files, and costledger's prune keeps exactly
-	// retention_days distinct dates. See costledger.defaultRetentionDays, which is pinned to
+	// retention_days distinct dates. See ledger.defaultRetentionDays, which is pinned to
 	// usage.WindowMonthLocalDays.
 	//
 	// A non-zero value must be at least minCostLedgerRetentionDays; see there. Note that the
@@ -211,7 +211,7 @@ func (c *CostLedgerConfig) Validate() error {
 		// would read as an off-by-one in the software rather than as the rolling span it is.
 		// It names both increments, because 8 is as reasonable a guess as 7 and was the floor
 		// until a spring-forward week was measured against it.
-		// The numbers are spelled out rather than interpolated from core/usage, for the
+		// The numbers are spelled out rather than interpolated from core/cost/usage, for the
 		// reason minCostLedgerRetentionDays is a literal: this package must not import the
 		// aggregator. Every one of them is pinned against usage's own constants by
 		// TestMinCostLedgerRetentionDays_MatchesTheWindowItProtects, so a window change

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // ledgerSnapshot's ASSEMBLY of the coverage figure, not the arithmetic under it.
@@ -57,11 +57,11 @@ func TestLedgerSnapshot_CarriesTheCoverageShortfallMeasuredAtTheWindowsOwnInstan
 			from := time.Date(2026, 3, 1, 0, 0, 0, 0, loc)
 
 			clock := windowEnd.Add(tc.clockSkew)
-			led, err := costledger.New(t.TempDir(),
-				costledger.WithClock(func() time.Time { return clock }),
-				costledger.WithRetentionDays(tc.retain))
+			led, err := ledger.New(t.TempDir(),
+				ledger.WithClock(func() time.Time { return clock }),
+				ledger.WithRetentionDays(tc.retain))
 			if err != nil {
-				t.Fatalf("costledger.New: %v", err)
+				t.Fatalf("ledger.New: %v", err)
 			}
 			t.Cleanup(func() { _ = led.Close() })
 			// One costed minute inside the window, so the snapshot is a real answer rather than
@@ -114,11 +114,11 @@ func TestLedgerSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal(t *test
 	// clock is advanced between writes rather than the rows being back-dated, because the day
 	// file a row lands in comes from the WRITER's clock.
 	clock := time.Date(2026, 3, 1, 12, 0, 0, 0, loc)
-	led, err := costledger.New(dir,
-		costledger.WithClock(func() time.Time { return clock }),
-		costledger.WithRetentionDays(10))
+	led, err := ledger.New(dir,
+		ledger.WithClock(func() time.Time { return clock }),
+		ledger.WithRetentionDays(10))
 	if err != nil {
-		t.Fatalf("costledger.New: %v", err)
+		t.Fatalf("ledger.New: %v", err)
 	}
 	for day := 1; day <= 21; day++ {
 		clock = time.Date(2026, 3, day, 12, 0, 0, 0, loc)
@@ -135,9 +135,9 @@ func TestLedgerSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal(t *test
 	// newest file (the 21st) rather than the clock's day (the 31st) — so it keeps the 12th
 	// through the 21st, all ten of which are before the horizon the clock implies.
 	reopened := time.Date(2026, 3, 31, 11, 30, 0, 0, loc)
-	led2, err := costledger.New(dir,
-		costledger.WithClock(func() time.Time { return reopened }),
-		costledger.WithRetentionDays(10))
+	led2, err := ledger.New(dir,
+		ledger.WithClock(func() time.Time { return reopened }),
+		ledger.WithRetentionDays(10))
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

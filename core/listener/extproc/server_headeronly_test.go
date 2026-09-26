@@ -7,7 +7,7 @@ import (
 	extprocfilterv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 	"github.com/rossoctl/cortex/core/session"
@@ -46,7 +46,7 @@ const headerOnlyCostUSD = 0.002
 // inference-parser and whose session store is fresh.
 //
 // rates are deliberately NOT wired: a positive gateway header is authoritative
-// and costing.Settle prices it with a nil resolver, so nothing here depends on a
+// and settle.Settle prices it with a nil resolver, so nothing here depends on a
 // rate table and the test cannot pass for the wrong reason (a modelled figure
 // invented from token counters that a body-less response does not have).
 func newHeaderOnlyServer(t *testing.T) (*Server, *session.Store) {
@@ -167,7 +167,7 @@ func TestExtProc_HeaderOnlyResponse_SettlesCostAndRecordsResponseRow(t *testing.
 	if ev.StatusCode != 429 {
 		t.Errorf("row StatusCode = %d, want 429", ev.StatusCode)
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row (Plugins keys = %v); the gateway reported a charge and nothing settled it", pluginKeys(ev))
 	}
@@ -177,8 +177,8 @@ func TestExtProc_HeaderOnlyResponse_SettlesCostAndRecordsResponseRow(t *testing.
 	if rec.CostUSD != headerOnlyCostUSD {
 		t.Errorf("cost record CostUSD = %v, want %v (the gateway's own header)", rec.CostUSD, headerOnlyCostUSD)
 	}
-	if rec.Source != costevent.SourceGatewayHeader {
-		t.Errorf("cost record Source = %q, want %q", rec.Source, costevent.SourceGatewayHeader)
+	if rec.Source != event.SourceGatewayHeader {
+		t.Errorf("cost record Source = %q, want %q", rec.Source, event.SourceGatewayHeader)
 	}
 }
 

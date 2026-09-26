@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // A body-less response is not a free response. The gateway reports what it charged
@@ -46,18 +46,18 @@ func bodylessRates(t *testing.T) pricing.Resolver {
 
 // publishedCost reads the cost record off pctx, if one was published.
 //
-// Reads the canonical key rather than the legacy plugin-name alias: costing.Publish
+// Reads the canonical key rather than the legacy plugin-name alias: settle.Publish
 // writes both, and asserting on the concern-named one is what keeps this test honest
 // about which key a consumer is meant to read.
-func publishedCost(t *testing.T, pctx *pipeline.Context) (costevent.Event, bool) {
+func publishedCost(t *testing.T, pctx *pipeline.Context) (event.Event, bool) {
 	t.Helper()
-	raw, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix]
+	raw, ok := pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix]
 	if !ok {
-		return costevent.Event{}, false
+		return event.Event{}, false
 	}
-	ev, ok := raw.(costevent.Event)
+	ev, ok := raw.(event.Event)
 	if !ok {
-		t.Fatalf("cost record has type %T, want costevent.Event", raw)
+		t.Fatalf("cost record has type %T, want event.Event", raw)
 	}
 	return ev, true
 }
@@ -143,10 +143,10 @@ func bodylessCtx(costHeader string, stream bool) *pipeline.Context {
 	// A header-only reply to a streaming request is not itself an event stream, so
 	// application/json is the honest content type on all three sites. It also keeps
 	// a zero header meaningful, which text/event-stream would not — see
-	// costing.IsEventStream.
+	// settle.IsEventStream.
 	h.Set("Content-Type", "application/json")
 	if costHeader != "" {
-		h.Set(costing.ResponseCostHeader, costHeader)
+		h.Set(settle.ResponseCostHeader, costHeader)
 	}
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Outbound,
@@ -183,8 +183,8 @@ func TestBodylessResponse_PositiveCostHeaderIsCharged(t *testing.T) {
 			if ev.CostUSD != 0.25 {
 				t.Errorf("CostUSD = %v, want the header's 0.25", ev.CostUSD)
 			}
-			if ev.Source != costevent.SourceGatewayHeader {
-				t.Errorf("Source = %q, want %q", ev.Source, costevent.SourceGatewayHeader)
+			if ev.Source != event.SourceGatewayHeader {
+				t.Errorf("Source = %q, want %q", ev.Source, event.SourceGatewayHeader)
 			}
 			if !ev.Settled {
 				t.Error("Settled = false; an authoritative gateway figure is settled")
@@ -256,10 +256,10 @@ func TestBodylessResponse_ZeroUsageIsUnpriced(t *testing.T) {
 // paths published nothing at all, so a downstream consumer saw no record, fell through to
 // its own rate table, and could fabricate a cost for a call the gateway had explicitly
 // declared free. A settled zero suppresses that fallback, which is the whole reason
-// costevent.Event.Settled exists.
+// event.Event.Settled exists.
 //
 // So the assertion is specifically that Settled is TRUE while the cost is zero. A record
-// with cost 0 and Settled false would be worse than no record: costevent.Priced() reads it
+// with cost 0 and Settled false would be worse than no record: event.Priced() reads it
 // as unpriced, which is the state that invited the fabrication.
 func TestBodylessResponse_DeclaredFreeZeroIsPublishedAsSettled(t *testing.T) {
 	for _, site := range bodylessSites() {
@@ -283,11 +283,11 @@ func TestBodylessResponse_DeclaredFreeZeroIsPublishedAsSettled(t *testing.T) {
 			if !ev.Priced() {
 				t.Error("Priced() = false; a settled zero must count as priced so no consumer re-prices it")
 			}
-			if ev.Source != costevent.SourceGatewayHeader {
-				t.Errorf("Source = %q, want %q", ev.Source, costevent.SourceGatewayHeader)
+			if ev.Source != event.SourceGatewayHeader {
+				t.Errorf("Source = %q, want %q", ev.Source, event.SourceGatewayHeader)
 			}
 			// A declared-free call is an EXACT total, so it must carry no inexactness
-			// caveat — this is the gate in costing.Settle that keys on the source rather
+			// caveat — this is the gate in settle.Settle that keys on the source rather
 			// than on "the header was not positive".
 			if ev.Incomplete {
 				t.Errorf("Incomplete = true (%q); the gateway stating it charged nothing is an exact total, not a lower bound on nothing", ev.IncompleteReason)

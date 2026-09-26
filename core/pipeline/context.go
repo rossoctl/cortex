@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 )
 
 // Identity carries the subject identity established by whichever auth
@@ -31,7 +31,7 @@ type Identity interface {
 
 // SharedStore is a process-scoped key→value store with TTL, injected by the
 // listener so plugins can share state across the inbound→outbound request
-// boundary (e.g. credential placeholders). Implemented by core/shared.Store.
+// boundary (e.g. credential placeholders). Implemented by core/memstore.Store.
 type SharedStore interface {
 	Put(key string, val any, ttl time.Duration)
 	Get(key string) (any, bool)
@@ -200,7 +200,7 @@ type Context struct {
 	// terminates TLS in Envoy and never populates this field).
 	//
 	// Plugins that want per-caller policy use the convenience method
-	// PeerCertificate() to get the leaf cert and core/tls.PeerSPIFFEID
+	// PeerCertificate() to get the leaf cert and core/tlsconfig.PeerSPIFFEID
 	// to extract the URI SAN. Listeners use it to populate
 	// SessionEvent.TLS for the observability surface.
 	TLS *tls.ConnectionState
@@ -702,13 +702,13 @@ func (c *Context) BodyMutated() bool { return c.bodyMutated }
 func (c *Context) ResponseBodyMutated() bool { return c.responseBodyMutated }
 
 // ContentSources returns every protocol extension on this Context that
-// implements contracts.ContentSource. Guardrail plugins call this to
+// implements capabilities.ContentSource. Guardrail plugins call this to
 // iterate inspectable text across whatever protocol a request happens
 // to carry, without importing any specific parser package:
 //
 //	for _, src := range pctx.ContentSources() {
 //	    for _, f := range src.Fragments() {
-//	        if f.Role == contracts.RoleUser { scan(f.Text) }
+//	        if f.Role == capabilities.RoleUser { scan(f.Text) }
 //	    }
 //	}
 //
@@ -716,8 +716,8 @@ func (c *Context) ResponseBodyMutated() bool { return c.responseBodyMutated }
 // treat the result as an unordered set. Returns an empty slice when no
 // parser produced an extension or when none of the populated extensions
 // implement ContentSource.
-func (c *Context) ContentSources() []contracts.ContentSource {
-	out := make([]contracts.ContentSource, 0, 3)
+func (c *Context) ContentSources() []capabilities.ContentSource {
+	out := make([]capabilities.ContentSource, 0, 3)
 	if c.Extensions.A2A != nil {
 		out = append(out, c.Extensions.A2A)
 	}

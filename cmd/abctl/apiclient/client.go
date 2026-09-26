@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // Client is a handle to a session API endpoint. Safe for concurrent use.

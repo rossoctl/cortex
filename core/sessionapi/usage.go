@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // handleUsage serves GET /v1/usage — time-bucketed volume, error, latency and cost
@@ -71,7 +71,7 @@ import (
 // session through this path.
 //
 // COST IS NOT SINGLE-SOURCED, and this comment deliberately does not claim it is.
-// core/costing settles the figure most requests arrive with, but the aggregator
+// core/cost/settle settles the figure most requests arrive with, but the aggregator
 // still prices independently when none is present, so the two can answer differently
 // about the same request. Do not write here that cost is computed in one place.
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +214,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		// r.Context(), so a client that hangs up stops the read. The ledger walks one day
 		// file per day in the window — up to eight for window=7d, against a path an
 		// operator configured and possibly a slow mount — and without this every abandoned
-		// request kept reading to the end for nobody. See costledger.Query.
+		// request kept reading to the end for nobody. See ledger.Query.
 		snap, err = s.ledgerSnapshot(r.Context(), spec, group)
 		if err != nil {
 			// A read failure is not a client error and must not look like one.
@@ -269,7 +269,7 @@ var errSessionWithSymbolicWindow = usageError{
 // BucketSeconds reports the real span so a client cannot mistake it for a fine
 // series.
 //
-// Reads through costledger.Window, never Query: the ledger's day files hold only
+// Reads through ledger.Window, never Query: the ledger's day files hold only
 // CLOSED minutes, so the minute currently accumulating is in the writer's memory
 // and Query alone would omit it. That omission is not small in the case this
 // endpoint exists for — a session whose whole conversation fit inside one minute has
@@ -319,7 +319,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	// the response: a client asking for status got group:"status" with series:null and no
 	// way to tell "this source cannot break down by status" from "there was no traffic".
 	// Worse, Fold used to publish a residual for them, so the response also claimed 100%
-	// of its own total was unaccounted for. See costledger.Groupable.
+	// of its own total was unaccounted for. See ledger.Groupable.
 	//
 	// Reported as the grouping IN EFFECT rather than refused with a 400, because a
 	// rejection would have to be conditional on a ledger being wired up at all — the same
@@ -328,10 +328,10 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	// is the argument the session= guard above makes in the other direction, and it is
 	// load-bearing in both.
 	applied := group
-	if !costledger.Groupable(group) {
+	if !ledger.Groupable(group) {
 		applied = usage.GroupNone
 	}
-	totals, series, ungroupedCost, ungroupedAvoided := costledger.Fold(rows, applied)
+	totals, series, ungroupedCost, ungroupedAvoided := ledger.Fold(rows, applied)
 	// Carried onto the totals BEFORE the snapshot is built, not left to
 	// SetUngroupedCost's own assignment below. This response's single bucket is a copy of
 	// totals, so setting the flag afterwards would mark Totals as a bound while the bucket
@@ -426,7 +426,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 }
 
 // writeUsageError returns 400 with the validation message. Every message it can
-// carry is a fixed string authored in this package or in core/usage: none
+// carry is a fixed string authored in this package or in core/cost/usage: none
 // interpolates query input. That is a requirement, not an accident — this
 // endpoint is unauthenticated, so reflecting caller-supplied bytes into a
 // response body would hand an attacker a reflection primitive. Keep it that way
@@ -449,7 +449,7 @@ func writeUsageError(w http.ResponseWriter, err error) {
 //
 // BOTH ARGUMENTS IDENTIFY A DATE AND NEITHER IS A BOUND, which is where two defects lived.
 // cutoff comes from costledger's retentionCutoff, and a ledger day is carried at NOON —
-// costledger.dayOf's doc forbids reading it as the day's first instant — while from is a local
+// ledger.dayOf's doc forbids reading it as the day's first instant — while from is a local
 // MIDNIGHT, from usage.StartOfLocalDay or StartOfLocalMonth. Comparing them as instants made a
 // month-to-date request report one day short of ITSELF: from sits twelve hours before the cutoff
 // of the very date it starts on, so "from is earlier" was true and a floor turned it into 1. With
@@ -492,7 +492,7 @@ func utcNoonOfDate(t time.Time) time.Time {
 // response saying "degraded" with an empty object looks like a client-side rendering problem, not a
 // producer dropping a number. TestDegradedFrom_CarriesEveryCaveatField compares the two structs
 // field by field through reflection, so a fourth counter fails here rather than shipping silently.
-func degradedFrom(c costledger.Caveats) *usage.Degraded {
+func degradedFrom(c ledger.Caveats) *usage.Degraded {
 	return &usage.Degraded{
 		SkippedLines:   c.SkippedLines,
 		TruncatedDays:  c.TruncatedDays,

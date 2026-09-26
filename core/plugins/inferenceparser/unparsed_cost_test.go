@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -37,7 +37,7 @@ func unparsedCtx(path, costHeader string) *pipeline.Context {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	if costHeader != "" {
-		h.Set(costing.ResponseCostHeader, costHeader)
+		h.Set(settle.ResponseCostHeader, costHeader)
 	}
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Outbound,
@@ -110,8 +110,8 @@ func TestUnparsedEndpoint_GatewayCostIsCharged(t *testing.T) {
 				if ev.CostUSD != 0.0042 {
 					t.Errorf("CostUSD = %v, want the header's 0.0042", ev.CostUSD)
 				}
-				if ev.Source != costevent.SourceGatewayHeader {
-					t.Errorf("Source = %q, want %q", ev.Source, costevent.SourceGatewayHeader)
+				if ev.Source != event.SourceGatewayHeader {
+					t.Errorf("Source = %q, want %q", ev.Source, event.SourceGatewayHeader)
 				}
 				if !ev.Priced() {
 					t.Error("Priced() = false; a consumer would treat this as unpriced traffic and re-price or ignore it")
@@ -186,8 +186,8 @@ func TestUnparseableBody_GatewayCostIsCharged(t *testing.T) {
 					if ev.CostUSD != 0.0042 {
 						t.Errorf("CostUSD = %v, want the header's 0.0042", ev.CostUSD)
 					}
-					if ev.Source != costevent.SourceGatewayHeader {
-						t.Errorf("Source = %q, want %q", ev.Source, costevent.SourceGatewayHeader)
+					if ev.Source != event.SourceGatewayHeader {
+						t.Errorf("Source = %q, want %q", ev.Source, event.SourceGatewayHeader)
 					}
 				})
 			}
@@ -309,14 +309,14 @@ func TestUnparsedEndpoint_StreamPlaceholderZeroPublishesNothing(t *testing.T) {
 // TestUnparsedEndpoint_OriginalCostHeaderIsRead covers the header LiteLLM actually sends on
 // the Anthropic-shaped path, where the bare one is absent.
 //
-// It is the fallback in costing.headerCost, and without it budget tracking silently records
+// It is the fallback in settle.headerCost, and without it budget tracking silently records
 // $0 for every request of that shape. Pinned on the unparsed path too, so a change that
 // narrowed the fallback could not leave this path reading only the bare header.
 func TestUnparsedEndpoint_OriginalCostHeaderIsRead(t *testing.T) {
 	p := NewInferenceParser()
 	p.SetPricingResolver(bodylessRates(t))
 	pctx := unparsedCtx("/v1/embeddings", "")
-	pctx.ResponseHeaders.Set(costing.ResponseCostOriginalHeader, "0.0042")
+	pctx.ResponseHeaders.Set(settle.ResponseCostOriginalHeader, "0.0042")
 
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 

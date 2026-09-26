@@ -42,7 +42,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/internal/tlssniff"
-	authtls "github.com/rossoctl/cortex/core/tls"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 )
 
 const chainDst = "10.244.0.5:8000"

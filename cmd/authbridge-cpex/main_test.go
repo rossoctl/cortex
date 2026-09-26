@@ -105,7 +105,7 @@ func TestCostLedgerInertClaim_NoLedgerOrAggregatorIsLinkedHere(t *testing.T) {
 	}
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
-		if strings.HasSuffix(path, "/core/costledger") || strings.HasSuffix(path, "/core/usage") {
+		if strings.HasSuffix(path, "/core/cost/ledger") || strings.HasSuffix(path, "/core/cost/usage") {
 			t.Errorf("main.go imports %s, so cost_ledger may no longer be inert in this binary — "+
 				"wire the block through and delete warnCostLedgerInert, or narrow its message", path)
 		}

@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // DefaultSessionID is used when no explicit A2A SessionID is present and no
@@ -57,8 +57,8 @@ type entry struct {
 	// UNCAPPED by default (see New) — so a long session put an unbounded number of
 	// json.Unmarshal calls on a timer, in front of a lock whose writer side is
 	// Store.Append on the proxy's request path. sumTokens beside it is a pointer-deref
-	// loop; this was parsing. costledger.Writer.Record hoists its own phase guard above
-	// costevent.Record for exactly this reason.
+	// loop; this was parsing. ledger.Writer.Record hoists its own phase guard above
+	// event.Record for exactly this reason.
 	//
 	// usage.CostSum, not two int64s: it saturates rather than wrapping AND records that it
 	// did, so a clamped lifetime total arrives labelled instead of as a plausible
@@ -334,7 +334,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// would change nothing. THE RECORDERS ARE NOT IN THAT CLASS: they run between here and the trim
 	// and are handed &event, and Recorder's contract forbids blocking and re-entering the store
 	// while saying nothing about MUTATION. Every implementation in tree reads only
-	// (usage.Aggregator, costledger.Writer, and logAppended just below), so nothing is wrong today —
+	// (usage.Aggregator, ledger.Writer, and logAppended just below), so nothing is wrong today —
 	// but that is a property of those implementations rather than a guarantee from the interface, so
 	// moving this call below them is not provably free and must not be done casually.
 	//
@@ -636,7 +636,7 @@ type SessionSummary struct {
 	// AvoidedMicros is cost this session did NOT incur, same unit, APPLIED savings only.
 	//
 	// NOT SPEND, and never to be added to CostMicros — see usage.Counts.AvoidedMicros and the
-	// invariant on costevent.Event.Avoided. Reported beside it because the two answer
+	// invariant on event.Event.Avoided. Reported beside it because the two answer
 	// different questions about the same session.
 	AvoidedMicros int64 `json:"avoidedMicros,omitempty"`
 	// Saturated says the two figures above are FLOORS: an addition into one of them reached
@@ -765,10 +765,10 @@ type eventMoney struct {
 
 // moneyOf reads one event's settled cost and its avoided cost, in micros.
 //
-// ONE DECODE FOR BOTH, because both come off the same record and costevent.Record is a JSON
+// ONE DECODE FOR BOTH, because both come off the same record and event.Record is a JSON
 // unmarshal. Asking for them separately would parse every plugin map twice.
 //
-// Priced dollars only in cost — costevent.Event.Priced is the one predicate for that, so a
+// Priced dollars only in cost — event.Event.Priced is the one predicate for that, so a
 // refused or unsettled figure contributes nothing here exactly as it contributes nothing to
 // /v1/usage. avoided ignores pricedness on purpose: a request that could not be priced still
 // had prompt tokens removed. See usage.Aggregator.costOf, which this deliberately mirrors,
@@ -785,13 +785,13 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 	// token skew against TotalTokens: a denial carries no Inference extension, so those
 	// events contribute zero tokens either way.
 	//
-	// CHECKED BEFORE THE DECODE, matching costledger.Writer.Record's own hoisted guard and
+	// CHECKED BEFORE THE DECODE, matching ledger.Writer.Record's own hoisted guard and
 	// for the same reason it gives: a request event's plugin map must not be parsed to
 	// answer a question the phase already settles.
 	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
 		return eventMoney{}
 	}
-	ev, ok := costevent.Record(e)
+	ev, ok := event.Record(e)
 	if !ok {
 		return eventMoney{}
 	}

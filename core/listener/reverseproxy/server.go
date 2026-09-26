@@ -25,7 +25,7 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/spiffe"
-	authtls "github.com/rossoctl/cortex/core/tls"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 )
 
 // maxBodySize bounds a buffered request or response body, and the per-frame cap
@@ -281,7 +281,7 @@ func (s *Server) WrapListener(inner net.Listener) net.Listener {
 func (s *Server) MTLSEnabled() bool { return s.mtlsCfg != nil }
 
 // eventTLS builds a *pipeline.EventTLS from the pctx's connection
-// state, extracting the peer SPIFFE ID via core/tls. Returns nil
+// state, extracting the peer SPIFFE ID via core/tlsconfig. Returns nil
 // for plaintext or absent TLS state — sites that pass the result
 // through to a SessionEvent get the right thing for any caller.
 func eventTLS(pctx *pipeline.Context) *pipeline.EventTLS {

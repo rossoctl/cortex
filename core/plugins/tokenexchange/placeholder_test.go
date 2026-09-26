@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/placeholder"
-	"github.com/rossoctl/cortex/core/shared"
 )
 
 func resolveTestPlugin(t *testing.T, exchangeURL string) *TokenExchange {
@@ -41,7 +41,7 @@ func TestResolve_MatchedRouteExchanges(t *testing.T) {
 	defer srv.Close()
 	p := resolveTestPlugin(t, srv.URL)
 
-	st := shared.New()
+	st := memstore.New()
 	handle, _ := placeholder.New()
 	st.Put(placeholder.Key(handle), "real-user-token", time.Hour)
 
@@ -69,7 +69,7 @@ func TestResolve_MissDenies(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Host:      "target-svc",
 		Headers:   http.Header{"Authorization": []string{"Bearer abph_unknownhandle"}},
-		Shared:    shared.New(),
+		Shared:    memstore.New(),
 	}
 	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Reject {
@@ -86,7 +86,7 @@ func TestResolve_NonPlaceholderPassThrough(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Host:      "target-svc",
 		Headers:   http.Header{"Authorization": []string{"Bearer real-jwt"}},
-		Shared:    shared.New(),
+		Shared:    memstore.New(),
 	}
 	action := invokeOnRequest(p, pctx)
 	if action.Type != pipeline.Continue {
@@ -112,7 +112,7 @@ func TestResolve_UnmatchedRoutePlaceholderNotLeaked(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 
-	st := shared.New()
+	st := memstore.New()
 	handle, _ := placeholder.New()
 	st.Put(placeholder.Key(handle), "real-user-token", time.Hour)
 

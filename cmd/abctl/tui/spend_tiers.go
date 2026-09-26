@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/core/pricing"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // numTierRows is the height of the tier column, in every state.

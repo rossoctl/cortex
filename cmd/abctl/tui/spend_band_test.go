@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // bandSummary is a healthy four-span answer, with figures of four different magnitudes so the

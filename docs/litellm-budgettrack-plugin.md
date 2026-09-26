@@ -43,7 +43,7 @@ The plugin hooks:
 ### Cost source (what the terminal frame charges)
 
 **Since cortex #972 this plugin does not settle the cost itself.** `inference-parser` does,
-via `core/costing`, because it is the component that knows when token usage is final; this
+via `core/cost/settle`, because it is the component that knows when token usage is final; this
 plugin bills the published figure, adds the day's total, enforces the cap, and reports drift.
 The two sources below are still the rule — they just live in one place now, shared with every
 other consumer of a cost, instead of being implemented here and again in the usage
@@ -220,17 +220,17 @@ an `Invocation` with these `details`:
 
 ### Consumers
 
-The event's wire shape is declared once, in `core/costevent` (`costevent.Event`,
-published under `costevent.PluginName`). Producer and consumers share that one
+The event's wire shape is declared once, in `core/cost/event` (`event.Event`,
+published under `event.PluginName`). Producer and consumers share that one
 declaration rather than each keeping a private copy, so a field rename is a
 compile error rather than a silently blank column:
 
-- **The usage aggregator** (`core/usage`) records `cost_usd` into
+- **The usage aggregator** (`core/cost/usage`) records `cost_usd` into
   `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
   reports the same figure this plugin enforces its budget against.
 - **`abctl`** renders the per-request figure in its events pane, and the window
   total plus coverage in the usage footer. Its `tui.costEvent` is a type *alias*
-  for `costevent.Event`, not a copy.
+  for `event.Event`, not a copy.
 
 Two consequences for reading `/v1/usage`. Cost is reported only for traffic this
 plugin priced, so requests it did not price appear as the gap between

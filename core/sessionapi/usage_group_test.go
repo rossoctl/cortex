@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // TestHandleUsage_ALedgerWindowSaysWhichGroupingItCouldApply is the client-visible half

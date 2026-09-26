@@ -7,7 +7,7 @@
 // Two stores implement that: ConfigMapStore for a pod in a cluster (this
 // file) and FileStore for a Cortex running on this machine (local.go). Only
 // fetch / rewrap / apply differ between them — the templates, the diff
-// prompt, the validation and the reload poll are shared.
+// prompt, the validation and the reload poll are memstore.
 //
 // All kubectl interaction goes through the Runner injection seam so tests
 // can stub it out.

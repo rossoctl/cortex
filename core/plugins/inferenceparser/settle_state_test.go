@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 )
 
 // THE TWO CLAIMS SETTLECOST'S STATE MAKES, neither of which was pinned anywhere.
@@ -12,7 +12,7 @@ import (
 // The published record has a whole file of coverage (unparsed_cost_test.go,
 // bodyless_cost_test.go). These two are about what settleCost leaves BEHIND on pctx: the
 // idempotence latch, and the Settled outcome that litellm-budget-track reads back through
-// costing.Load. Both are read by other components and neither is visible in a published
+// settle.Load. Both are read by other components and neither is visible in a published
 // event, so a regression in either is silent.
 
 // TestSettleCost_NothingToSayDoesNotLatch is the placement of the idempotence latch.
@@ -46,7 +46,7 @@ func TestSettleCost_NothingToSayDoesNotLatch(t *testing.T) {
 
 	// The figure arrives on a later pass. Contrived — see the doc comment — and the point
 	// is that the guard's answer must not depend on that.
-	pctx.ResponseHeaders.Set(costing.ResponseCostHeader, "0.0042")
+	pctx.ResponseHeaders.Set(settle.ResponseCostHeader, "0.0042")
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 
 	ev, ok := publishedCost(t, pctx)
@@ -77,7 +77,7 @@ func TestSettleCost_LatchesOncePublished(t *testing.T) {
 
 	// A second gateway figure the latch must ignore. Rewriting the header proves the latch
 	// short-circuits before Settle reads it, rather than the two passes happening to agree.
-	pctx.ResponseHeaders.Set(costing.ResponseCostHeader, "99.0")
+	pctx.ResponseHeaders.Set(settle.ResponseCostHeader, "99.0")
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 	// The buffered hook as well, since a pipeline that reached both must not charge twice
 	// either. It cannot fire under a real listener (RunResponse skips a StreamingResponder),
@@ -90,7 +90,7 @@ func TestSettleCost_LatchesOncePublished(t *testing.T) {
 	}
 }
 
-// TestSettleCost_StoresOnEveryProxiedResponse is the claim costing.Load's contract now
+// TestSettleCost_StoresOnEveryProxiedResponse is the claim settle.Load's contract now
 // rests on.
 //
 // Load's false does NOT mean "no inference at all" — a reading that holds only while Store is
@@ -111,9 +111,9 @@ func TestSettleCost_StoresOnEveryProxiedResponse(t *testing.T) {
 
 			p.OnResponseFrame(context.Background(), pctx, nil, true)
 
-			settled, ok := costing.Load(pctx)
+			settled, ok := settle.Load(pctx)
 			if !ok {
-				t.Fatalf("costing.Load reported no outcome for %s; Store runs on every proxied response, and a consumer reading false as \"no inference\" is reading a claim this no longer makes", path)
+				t.Fatalf("settle.Load reported no outcome for %s; Store runs on every proxied response, and a consumer reading false as \"no inference\" is reading a claim this no longer makes", path)
 			}
 			if settled.Priced {
 				t.Errorf("Settled.Priced = true for %s with no cost header and no usage; a stored outcome is a decision, not a figure, and pricing this would put non-inference traffic in the coverage denominator", path)

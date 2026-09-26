@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // These tests exist because the listener and the inference parser can disagree about what
@@ -45,7 +45,7 @@ import (
 // snapshot is taken in-pass rather than after the client's ReadAll.
 type costProbe struct {
 	mu         sync.Mutex
-	settled    costing.Settled
+	settled    settle.Settled
 	loaded     bool
 	prompt     int
 	output     int
@@ -91,13 +91,13 @@ func (p *costProbe) OnResponseFrame(ctx context.Context, pctx *pipeline.Context,
 	if dl, ok := ctx.Deadline(); ok {
 		p.terminalDeadline, p.terminalBudget = true, time.Until(dl)
 	}
-	p.settled, p.loaded = costing.Load(pctx)
+	p.settled, p.loaded = settle.Load(pctx)
 	if ext := pctx.Extensions.Inference; ext != nil {
 		p.prompt, p.output, p.total = ext.PromptTokens, ext.CompletionTokens, ext.TotalTokens
 		p.completion = ext.Completion
 	}
 	p.skips = noBodySkips(pctx)
-	_, p.record = pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix]
+	_, p.record = pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix]
 	if p.terminal != nil {
 		select {
 		case p.terminal <- struct{}{}:
@@ -115,7 +115,7 @@ func (p *costProbe) published() bool {
 	return p.record
 }
 
-func (p *costProbe) snapshotCost() (costing.Settled, bool, int, int, int) {
+func (p *costProbe) snapshotCost() (settle.Settled, bool, int, int, int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.settled, p.loaded, p.prompt, p.output, p.total
@@ -221,7 +221,7 @@ func litellmSSEBackend(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set(costing.ResponseCostHeader, "0")
+		w.Header().Set(settle.ResponseCostHeader, "0")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		for _, chunk := range []string{
@@ -297,7 +297,7 @@ func TestReverseProxy_StreamedResponseToNonStreamRequest_StillCosts(t *testing.T
 func TestReverseProxy_BufferedResponseToStreamRequest_ParsesTheEnvelope(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(costing.ResponseCostHeader, "0.0004")
+		w.Header().Set(settle.ResponseCostHeader, "0.0004")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"buffered reply"},` +
 			`"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}`))
@@ -366,7 +366,7 @@ func TestReverseProxy_StreamedUnparsedEndpoint_CoverageBoundary(t *testing.T) {
 	}, {
 		name:         "implausible figure on a stream is refused and disclosed",
 		costHeader:   "50000",
-		wantRejected: costevent.RejectedImplausible,
+		wantRejected: event.RejectedImplausible,
 	}, {
 		name:       "placeholder zero on a stream is no figure at all",
 		costHeader: "0",
@@ -374,7 +374,7 @@ func TestReverseProxy_StreamedUnparsedEndpoint_CoverageBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set(costing.ResponseCostHeader, tc.costHeader)
+				w.Header().Set(settle.ResponseCostHeader, tc.costHeader)
 				w.WriteHeader(http.StatusOK)
 				flusher := w.(http.Flusher)
 				_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
@@ -813,8 +813,8 @@ func TestReverseProxy_TruncatedStreamToANonStreamRequest_IsAFloor(t *testing.T) 
 			settled.Incomplete, settled.IncompleteReason, pricing.ReasonOutputUncounted, output)
 	}
 	// AND THE RECORD CARRIES IT, since the caveat only matters where the money is read.
-	if rec := costing.NewRecord(settled, nil); !rec.Incomplete || rec.Trust() != costevent.TrustFloor {
-		t.Errorf("record Incomplete = %v / Trust = %q, want true / %q", rec.Incomplete, rec.Trust(), costevent.TrustFloor)
+	if rec := settle.NewRecord(settled, nil); !rec.Incomplete || rec.Trust() != event.TrustFloor {
+		t.Errorf("record Incomplete = %v / Trust = %q, want true / %q", rec.Incomplete, rec.Trust(), event.TrustFloor)
 	}
 }
 
@@ -825,7 +825,7 @@ func truncatedSSEBackend(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set(costing.ResponseCostHeader, "0")
+		w.Header().Set(settle.ResponseCostHeader, "0")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		for _, chunk := range []string{

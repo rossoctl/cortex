@@ -30,8 +30,8 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/spiffe"
-	authtls "github.com/rossoctl/cortex/core/tls"
 	"github.com/rossoctl/cortex/core/tlsbridge"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 )
 
 // maxBodySize is TWO ceilings, not one: the buffered request/response body cap,

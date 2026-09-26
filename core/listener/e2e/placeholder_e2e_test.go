@@ -22,11 +22,11 @@ import (
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
+	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/placeholder"
 	jwtvalidation "github.com/rossoctl/cortex/core/plugins/jwtvalidation"
 	tokenexchange "github.com/rossoctl/cortex/core/plugins/tokenexchange"
-	"github.com/rossoctl/cortex/core/shared"
 )
 
 // startJWKS mints an RSA keypair, serves its public half as a JWKS, and
@@ -137,7 +137,7 @@ func TestPlaceholderSwap_EndToEnd(t *testing.T) {
 	defer upstream.Close()
 
 	// 5. Shared store — ONE store, shared by both listeners. -----------------
-	store := shared.New()
+	store := memstore.New()
 
 	// 7. Outbound stack (built first so the agent backend can route
 	//    through it). token-exchange resolves the placeholder and exchanges.

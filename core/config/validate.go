@@ -3,7 +3,7 @@ package config
 import (
 	"fmt"
 
-	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
 // Validate checks the top-level runtime config: mode and listener combo.

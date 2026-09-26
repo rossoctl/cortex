@@ -399,7 +399,7 @@ func validateReloadable(active, next *config.Config) error {
 		diffs = append(diffs, "listener.*")
 	}
 	// cost_ledger.* for the same reason, and it is the more dangerous of the two to
-	// leave out. The ledger is a *costledger.Writer constructed once at startup and
+	// leave out. The ledger is a *ledger.Writer constructed once at startup and
 	// handed to the session store as a Recorder, so nothing here can reach the
 	// running writer. Without this branch an edit was ACCEPTED: ReloadsOK
 	// incremented, /reload/status published a new ActiveConfigSHA256, and /config

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costledger"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // daysOutsideRetention is the coverage statement that replaced a false disclosure.
@@ -206,16 +206,16 @@ func TestDaysOutsideRetention_IsSilentForAWindowInsideTheHorizon(t *testing.T) {
 
 // ledgerCutoff is the horizon the REAL producer reports for a given clock and retention.
 //
-// A live costledger.Writer rather than a hand-built time, so the shape of the value under test is
+// A live ledger.Writer rather than a hand-built time, so the shape of the value under test is
 // the shape production passes. The ledger needs no rows for this: RetentionCutoff is a statement
 // about configuration, which is the property its own test pins.
 func ledgerCutoff(t *testing.T, now time.Time, retain int) time.Time {
 	t.Helper()
-	w, err := costledger.New(t.TempDir(),
-		costledger.WithRetentionDays(retain),
-		costledger.WithClock(func() time.Time { return now }))
+	w, err := ledger.New(t.TempDir(),
+		ledger.WithRetentionDays(retain),
+		ledger.WithClock(func() time.Time { return now }))
 	if err != nil {
-		t.Fatalf("costledger.New: %v", err)
+		t.Fatalf("ledger.New: %v", err)
 	}
 	return w.RetentionCutoff()
 }
@@ -233,7 +233,7 @@ func dateOf(t time.Time) time.Time {
 // producerAnchorHour is the hour of day costledger carries its day identifiers at.
 //
 // READ FROM THE PRODUCER rather than written as 12 here, so the fixtures in this file follow
-// costledger.dayHour if it ever moves instead of quietly testing a shape nothing produces —
+// ledger.dayHour if it ever moves instead of quietly testing a shape nothing produces —
 // which is the exact failure this file is a rewrite of.
 func producerAnchorHour(t *testing.T) int {
 	t.Helper()

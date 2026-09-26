@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // fakeUsageServer answers GET /v1/usage with body and 404s everything else, so a

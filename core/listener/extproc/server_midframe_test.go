@@ -6,7 +6,7 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
 )
 
 // midFrameSplitRequests scripts the same streamed turn as splitStreamRequests, split at a byte
@@ -65,7 +65,7 @@ func TestExtProc_SSEBodySplitMidFrame_ChargesTheWholeFigure(t *testing.T) {
 	if ev == nil {
 		t.Fatal("no outbound response row recorded for a mid-frame split body")
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row (Plugins keys = %v)", pluginKeys(ev))
 	}

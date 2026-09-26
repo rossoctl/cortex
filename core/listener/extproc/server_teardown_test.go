@@ -6,7 +6,7 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
 )
 
 // cancelOnEndStream lives in server_lifecycle_test.go, which is where the teardown FLUSH itself is
@@ -59,7 +59,7 @@ func TestExtProc_ATornDownStreamStillSettlesItsCost(t *testing.T) {
 	if ev == nil {
 		t.Fatal("no outbound response row recorded for a torn-down stream")
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row of a torn-down stream (Plugins keys = %v): "+
 			"the terminal frame was dispatched on the cancelled stream context, so the parsers "+

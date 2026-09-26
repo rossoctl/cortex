@@ -6,10 +6,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // driftTolerance is how far the modelled cost may sit from the gateway's own figure
@@ -79,13 +79,13 @@ func (p *BudgetTrack) SetDriftLogger(l *slog.Logger) {
 //
 // The ledger keeps using the authoritative figure regardless: drift is a diagnostic about the
 // rate TABLE, never a reason to distrust the gateway's own number.
-func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled costing.Settled) {
+func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled settle.Settled) {
 	// ONLY A GATEWAY FIGURE IS WORTH COMPARING AGAINST THE TABLE. Off that arm the charged figure
 	// IS the modelled one, so the ratio is 1.0 by construction and the comparison says nothing —
 	// and a future change that made it say something would be measuring the table against itself.
 	// Here rather than at the call site, so every precondition this check has is in one place and
 	// each one can be tested; the call-site half could not be.
-	if settled.Source != costevent.SourceGatewayHeader {
+	if settled.Source != event.SourceGatewayHeader {
 		return
 	}
 	authoritative := settled.CostUSD
@@ -123,7 +123,7 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled costing.Settled
 	// layer, and comparing a modelled cost against it would report drift that is really
 	// the operator's own gateway-side adjustment. Skipped rather than guessed at,
 	// because the arithmetic relating the two is not something this code can verify.
-	if !costing.Comparable(pctx) {
+	if !settle.Comparable(pctx) {
 		return
 	}
 

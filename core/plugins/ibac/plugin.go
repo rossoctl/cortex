@@ -36,7 +36,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/bypass"
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 )
@@ -694,7 +694,7 @@ func firstUserMessageText(inf *pipeline.InferenceExtension) string {
 		return ""
 	}
 	for _, m := range inf.Messages {
-		if m.Role == contracts.RoleUser {
+		if m.Role == capabilities.RoleUser {
 			return m.Content
 		}
 	}
@@ -709,7 +709,7 @@ func extractIntentText(intent *pipeline.SessionEvent) string {
 		return ""
 	}
 	for _, f := range intent.A2A.Fragments() {
-		if f.Role == contracts.RoleUser && f.Text != "" {
+		if f.Role == capabilities.RoleUser && f.Text != "" {
 			return f.Text
 		}
 	}

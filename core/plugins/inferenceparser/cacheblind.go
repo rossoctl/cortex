@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // maxCacheBlindKeys bounds the dedup set, for the reason litellm-budget-track's drift reporter
@@ -50,7 +50,7 @@ func (p *InferenceParser) setCacheBlindLogger(l *slog.Logger) {
 	p.blind.mu.Unlock()
 }
 
-// reportCacheBlind warns when costing.Settle refused a cache-blind header for this
+// reportCacheBlind warns when settle.Settle refused a cache-blind header for this
 // endpoint and model.
 //
 // The decision itself is costing's — see Settled.HeaderOmittedCache — and is not re-derived
@@ -64,7 +64,7 @@ func (p *InferenceParser) setCacheBlindLogger(l *slog.Logger) {
 // operator who "corrected" it would break the 65% of responses whose headers agree with it
 // exactly. What this line reports is the gateway under-reporting, and the only action is to
 // know that the charged figure came from the table.
-func (p *InferenceParser) reportCacheBlind(pctx *pipeline.Context, settled costing.Settled) {
+func (p *InferenceParser) reportCacheBlind(pctx *pipeline.Context, settled settle.Settled) {
 	if !settled.HeaderOmittedCache || pctx == nil {
 		return
 	}

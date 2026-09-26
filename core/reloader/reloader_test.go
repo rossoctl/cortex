@@ -231,7 +231,7 @@ func TestReloader_RefusesListenerChange(t *testing.T) {
 
 // A cost_ledger edit must be REFUSED, not accepted-and-discarded.
 //
-// This is the defect the guard was added for: the ledger is a *costledger.Writer
+// This is the defect the guard was added for: the ledger is a *ledger.Writer
 // opened once at startup and handed to the session store as a Recorder, so a reload
 // cannot reach it. Before the guard, editing `enabled: true` to `enabled: false`
 // incremented ReloadsOK, published a new ActiveConfigSHA256 on /reload/status, and

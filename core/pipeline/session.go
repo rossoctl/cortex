@@ -336,7 +336,7 @@ type EventTLS struct {
 // NewEventTLS builds an EventTLS from a *tls.ConnectionState (the
 // shape http.Request.TLS exposes). peerSpiffeID is the caller's
 // pre-extracted SPIFFE URI — passed in rather than re-extracted here
-// to keep this package free of an core/tls dependency. Returns
+// to keep this package free of an core/tlsconfig dependency. Returns
 // nil when state is nil so callers can pass r.TLS unconditionally.
 func NewEventTLS(state *tls.ConnectionState, peerSpiffeID string) *EventTLS {
 	if state == nil {

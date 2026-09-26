@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // THE TRUST BOUNDARY, END TO END THROUGH THE PLUGIN. unparsed_cost_test.go covers the
@@ -28,7 +28,7 @@ import (
 // TestUnparsedEndpoint_ImplausibleCostContributesNothing is the regression.
 //
 // Nothing about the record may read as money: not the figure, not the settled bit, not the
-// micros conversion every consumer accumulates in, and not costevent.Priced, which is the
+// micros conversion every consumer accumulates in, and not event.Priced, which is the
 // admission guard the aggregator's Decode and the ledger writer's own gate both go through.
 func TestUnparsedEndpoint_ImplausibleCostContributesNothing(t *testing.T) {
 	// ONE VALUE, EVERY SITE. Which figures fall either side of the cap is costing's boundary and
@@ -62,19 +62,19 @@ func TestUnparsedEndpoint_ImplausibleCostContributesNothing(t *testing.T) {
 				}
 				// VISIBLE AS A GAP. The record exists precisely so the refusal is
 				// nameable rather than silent.
-				if ev.RejectedReason != costevent.RejectedImplausible {
-					t.Errorf("RejectedReason = %q, want %q", ev.RejectedReason, costevent.RejectedImplausible)
+				if ev.RejectedReason != event.RejectedImplausible {
+					t.Errorf("RejectedReason = %q, want %q", ev.RejectedReason, event.RejectedImplausible)
 				}
 				// And the state a later plugin in the same request reads.
-				settled, loaded := costing.Load(pctx)
+				settled, loaded := settle.Load(pctx)
 				if !loaded {
-					t.Fatal("costing.Load found nothing; a consumer cannot tell 'no figure' from 'this pass never ran'")
+					t.Fatal("settle.Load found nothing; a consumer cannot tell 'no figure' from 'this pass never ran'")
 				}
 				if settled.Priced || settled.CostUSD != 0 {
 					t.Errorf("stashed state is priced: %+v — litellm_budgettrack bills off this, so a figure here is a ledger row and a daily total", settled)
 				}
-				if settled.RejectedReason != costevent.RejectedImplausible {
-					t.Errorf("stashed RejectedReason = %q, want %q", settled.RejectedReason, costevent.RejectedImplausible)
+				if settled.RejectedReason != event.RejectedImplausible {
+					t.Errorf("stashed RejectedReason = %q, want %q", settled.RejectedReason, event.RejectedImplausible)
 				}
 			})
 		}
@@ -194,7 +194,7 @@ func TestUnparsedEndpoint_RefusalIsPublishedExactlyOnce(t *testing.T) {
 	// With the header unchanged, both dispatches produce the same refusal and comparing them
 	// compares one record to itself — green with the latch deleted. A figure that WOULD settle
 	// is the discriminating input: the refusal has to survive it.
-	pctx.ResponseHeaders.Set(costing.ResponseCostHeader, "0.5")
+	pctx.ResponseHeaders.Set(settle.ResponseCostHeader, "0.5")
 
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 	p.OnResponse(context.Background(), pctx)
@@ -207,7 +207,7 @@ func TestUnparsedEndpoint_RefusalIsPublishedExactlyOnce(t *testing.T) {
 		t.Errorf("CostUSD = %v after a repeat dispatch carrying a plausible 0.5; the latch has to "+
 			"hold the refusal, not let a later figure replace it", second.CostUSD)
 	}
-	if second.RejectedReason != costevent.RejectedImplausible {
-		t.Errorf("RejectedReason = %q after the repeat dispatches, want %q — a latch that dropped the disclosure would be as wrong as one that doubled it", second.RejectedReason, costevent.RejectedImplausible)
+	if second.RejectedReason != event.RejectedImplausible {
+		t.Errorf("RejectedReason = %q after the repeat dispatches, want %q — a latch that dropped the disclosure would be as wrong as one that doubled it", second.RejectedReason, event.RejectedImplausible)
 	}
 }

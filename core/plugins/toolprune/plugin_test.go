@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // anthropicBody is deliberately awkward: unsorted keys, odd indentation, a
@@ -689,9 +689,9 @@ func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrun
 // settle stands in for inference-parser: price the response and publish the record,
 // including the saving attributed to this plugin.
 func (p *pricedPrune) settle(pctx *pipeline.Context) {
-	s := costing.Settle(pctx, p.rates)
-	costing.Store(pctx, s)
-	costing.Publish(pctx, costing.NewRecord(s, costing.Avoided(pctx, p.rates)))
+	s := settle.Settle(pctx, p.rates)
+	settle.Store(pctx, s)
+	settle.Publish(pctx, settle.NewRecord(s, settle.Avoided(pctx, p.rates)))
 }
 
 // tierRates builds prompt-tier rates from per-token values. Zero means "no rate
@@ -711,7 +711,7 @@ func tierRates(input, cacheWrite, cacheRead float64) pricing.Rates {
 }
 
 // anyEndpoint scopes an entry to every endpoint, which is what these tests want:
-// the subject is model rates, not endpoint scoping (covered in core/pricing).
+// the subject is model rates, not endpoint scoping (covered in core/cost/pricing).
 func anyEndpoint(model string, r pricing.Rates) pricing.Entry {
 	return pricing.Entry{Host: "*", Model: model, Rates: r, Prov: pricing.ProvConfigured}
 }
@@ -1022,7 +1022,7 @@ func TestEvent_FieldNamesCostingDependsOn(t *testing.T) {
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 
-	got := costing.Avoided(pctx, p.rates)
+	got := settle.Avoided(pctx, p.rates)
 	if len(got) != 1 {
 		t.Fatalf("costing found %d savings, want 1 — the event's field names have drifted: %+v", len(got), got)
 	}
@@ -1055,7 +1055,7 @@ func TestEvent_ObserveModeSavingIsProjected(t *testing.T) {
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 
-	got := costing.Avoided(pctx, p.rates)
+	got := settle.Avoided(pctx, p.rates)
 	if len(got) != 1 {
 		t.Fatalf("no saving reported in observe mode: %+v", got)
 	}
@@ -1107,7 +1107,7 @@ func TestMetrics_UnknownTierIsNotInput(t *testing.T) {
 	p.settle(pctx)
 
 	// Rewrite the published record with a tier name from a future build.
-	ev, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix].(costevent.Event)
+	ev, ok := pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix].(event.Event)
 	if !ok {
 		t.Fatal("no cost record to rewrite")
 	}
@@ -1115,7 +1115,7 @@ func TestMetrics_UnknownTierIsNotInput(t *testing.T) {
 		t.Fatalf("expected one saving, got %+v", ev.Avoided)
 	}
 	ev.Avoided[0].Tier = "cache_read_1h"
-	costing.Publish(pctx, ev)
+	settle.Publish(pctx, ev)
 
 	p.OnFinish(context.Background(), pctx)
 

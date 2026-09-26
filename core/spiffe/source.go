@@ -1,5 +1,5 @@
 // Package spiffe provides framework-shared SPIFFE credential helpers.
-// Its consumers are the mTLS layer in core/tls with the proxy-sidecar
+// Its consumers are the mTLS layer in core/tlsconfig with the proxy-sidecar
 // listeners (X509Source), the token-exchange plugin (JWTSource), and the
 // plugin framework, which injects *Provider into any plugin implementing
 // ProviderConsumer; future LLM-judges or audit plugins that need workload

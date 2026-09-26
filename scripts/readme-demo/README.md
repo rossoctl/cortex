@@ -15,7 +15,7 @@ Code consent prompt, three Claude Code sessions, then `abctl` answering "where d
 the money go?".
 
 **The abctl screens are rendered by the real abctl.** `tuicapture.go` starts a real
-`session.Store`, `usage.Aggregator` and `costledger.Writer`, attaches the
+`session.Store`, `usage.Aggregator` and `ledger.Writer`, attaches the
 production Bubble Tea model to them through the real HTTP API, feeds synthetic
 events, and captures `View()`. So every column heading, gauge and money figure in
 the asset came out of the shipping code path, and a UI change shows up on the next

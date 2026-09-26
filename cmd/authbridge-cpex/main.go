@@ -31,17 +31,17 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/pricing"
 	"github.com/rossoctl/cortex/core/reloader"
-	"github.com/rossoctl/cortex/core/runtimeutil"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/sessionapi"
-	"github.com/rossoctl/cortex/core/shared"
 	"github.com/rossoctl/cortex/core/spiffe"
-	authtls "github.com/rossoctl/cortex/core/tls"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
@@ -92,8 +92,8 @@ func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
 
-	runtimeutil.InitLogging("authbridge-cpex")
-	runtimeutil.StartSignalToggle()
+	bootstrap.InitLogging("authbridge-cpex")
+	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
 		log.Fatal("--config is required and must point to a YAML file")
@@ -253,7 +253,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("creating forward proxy: %v", err)
 	}
-	sharedStore := shared.New()
+	sharedStore := memstore.New()
 	defer sharedStore.Close()
 	rpSrv.Shared = sharedStore
 	fpSrv.Shared = sharedStore
@@ -267,12 +267,12 @@ func main() {
 	// off switch wherever attribution is a trust boundary; see
 	// session.IDFromHeaders.
 	fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
-	rpHTTP, err := runtimeutil.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
+	rpHTTP, err := bootstrap.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy listen: %v", err)
 	}
 	httpServers = append(httpServers, rpHTTP)
-	fpHTTP, err := runtimeutil.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
+	fpHTTP, err := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
 	if err != nil {
 		log.Fatalf("forward-proxy listen: %v", err)
 	}
@@ -284,7 +284,7 @@ func main() {
 		sources = append(sources, plugins.CollectStats(outboundH.Load())...)
 		return auth.MergeStats(sources...)
 	}
-	statSrv, statErr := runtimeutil.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
+	statSrv, statErr := bootstrap.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
 	if statErr != nil {
 		log.Fatalf("stat server listen: %v", statErr)
 	}
@@ -308,9 +308,9 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-cpex starting", "mode", cfg.Mode, "logLevel", runtimeutil.LogLevel().String())
+	slog.Info("authbridge-cpex starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
-	healthSrv, healthErr := runtimeutil.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
+	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {
 		log.Fatalf("health server listen: %v", healthErr)
 	}

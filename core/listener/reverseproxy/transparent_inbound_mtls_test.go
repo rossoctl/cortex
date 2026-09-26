@@ -5,7 +5,7 @@ package reverseproxy
 // Everything in transparent_inbound_test.go drives srv.Handler() behind an
 // httptest server with a stand-in for the listener, and every constructor there
 // passes nil MTLSOptions. That leaves the shape the operator actually deploys —
-// runtimeutil.StartTransparentInboundServer, which is
+// bootstrap.StartTransparentInboundServer, which is
 // WrapListener(NewInboundListener(tcpLn)) + http.Server{ConnContext} — with no
 // Go coverage at all once mTLS is on. A regression there fails only rossoctl's
 // e2e suite, in a different repo, which is a slow and easily-skipped signal.
@@ -46,7 +46,7 @@ import (
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/listener/transparentproxy"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
-	authtls "github.com/rossoctl/cortex/core/tls"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 )
 
 // --- fixtures ----------------------------------------------------------------
@@ -62,7 +62,7 @@ type testSVIDSource struct {
 func (s *testSVIDSource) Certificate() (*tls.Certificate, error) { return s.cert, nil }
 func (s *testSVIDSource) TrustBundle() (*x509.CertPool, error)   { return s.pool, nil }
 
-// newTestSVIDSource mirrors the cert shape in core/tls/testhelpers_test.go
+// newTestSVIDSource mirrors the cert shape in core/tlsconfig/testhelpers_test.go
 // (ECDSA P256, ClientAuth+ServerAuth EKU, SPIFFE ID as URI SAN) — test helpers
 // can't cross a package boundary, so the generation is repeated rather than
 // exported into the production tree.

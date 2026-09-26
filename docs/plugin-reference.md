@@ -911,7 +911,7 @@ If you find yourself wanting OnFinish-phase Invocations in session events, the d
 
 Parser plugins whose extensions carry user-visible text (message bodies,
 tool arguments, LLM completions) can opt into a shared content-inspection
-contract by implementing [`contracts.ContentSource`](../core/contracts/content.go).
+contract by implementing [`capabilities.ContentSource`](../core/capabilities/content.go).
 Guardrail plugins (PII scrubbers, jailbreak detectors, content classifiers,
 prompt-injection filters, etc.) iterate the contract via
 `pctx.ContentSources()` and never import any specific parser package.
@@ -933,7 +933,7 @@ type Fragment struct {
 }
 ```
 
-Constants for the standard role values live in the `contracts` package
+Constants for the standard role values live in the `capabilities` package
 (`RoleUser`, `RoleAssistant`, `RoleSystem`, `RoleTool`, `RoleToolArgs`,
 `RoleToolResult`). Parsers should use them when the semantic fit is clear.
 The vocabulary is open — a protocol that carries a role outside this list
@@ -966,13 +966,13 @@ the types in [`core/pipeline/content.go`](../core/pipeline/content.go).
 ### Consuming content in a guardrail
 
 ```go
-import "github.com/rossoctl/cortex/core/contracts"
+import "github.com/rossoctl/cortex/core/capabilities"
 
 func (p *JailbreakDetector) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
     for _, src := range pctx.ContentSources() {
         for _, f := range src.Fragments() {
             // Jailbreak attempts come through user input and tool_args.
-            if f.Role != contracts.RoleUser && f.Role != contracts.RoleToolArgs {
+            if f.Role != capabilities.RoleUser && f.Role != capabilities.RoleToolArgs {
                 continue
             }
             if hit := p.classify(f.Text); hit.IsJailbreak {

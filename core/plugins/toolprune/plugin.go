@@ -36,10 +36,10 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // defaultPaths are the inference endpoints the plugin acts on, matched by
@@ -60,7 +60,7 @@ type config struct {
 	//
 	// Rates used to be 12 fields plus a per-model map on this struct, with a
 	// second copy of the same idea in litellm-budget-track. They now live in one
-	// top-level `pricing:` section resolved by core/pricing. An operator who
+	// top-level `pricing:` section resolved by core/cost/pricing. An operator who
 	// had `pricing:` under this plugin moves it there and gains endpoint scoping,
 	// which a per-plugin table could not express: the applicable rate depends on
 	// which gateway served the request, not on which plugin is asking.
@@ -462,7 +462,7 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	})
 	// Carry the saving to OnFinish, where the response reveals which token tier
 	// it came out of. SetState keeps it private to this plugin, unlike
-	// Extensions.Custom which is shared.
+	// Extensions.Custom which is memstore.
 	pipeline.SetState(pctx, p.Name(), &requestState{bytesRemoved: removedBytes})
 	if applied {
 		p.m.pruned(names, removedBytes)
@@ -536,20 +536,20 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 //
 // Reads the record rather than recomputing, and reads it by COMPONENT so a pipeline with
 // several body-shrinking plugins attributes each one's saving to itself.
-func savingFor(pctx *pipeline.Context, component string) (costevent.Saving, bool) {
+func savingFor(pctx *pipeline.Context, component string) (event.Saving, bool) {
 	if pctx == nil || len(pctx.Extensions.Custom) == 0 {
-		return costevent.Saving{}, false
+		return event.Saving{}, false
 	}
-	ev, ok := pctx.Extensions.Custom[costevent.Key+pipeline.PluginEventSuffix].(costevent.Event)
+	ev, ok := pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix].(event.Event)
 	if !ok {
-		return costevent.Saving{}, false
+		return event.Saving{}, false
 	}
 	for _, s := range ev.Avoided {
 		if s.Component == component {
 			return s, true
 		}
 	}
-	return costevent.Saving{}, false
+	return event.Saving{}, false
 }
 
 // modelOf names the model for the unpriced-model tally, which is what tells an operator

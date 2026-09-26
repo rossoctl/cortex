@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/config"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // writeBuiltinConfig must produce a config file in cortexDir that loads, presets,

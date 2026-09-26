@@ -5,14 +5,14 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 )
 
 func TestA2AExtension_Fragments(t *testing.T) {
 	tests := []struct {
 		name string
 		ext  *A2AExtension
-		want []contracts.Fragment
+		want []capabilities.Fragment
 	}{
 		{
 			name: "nil_receiver",
@@ -27,8 +27,8 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "text", Content: "What's the weather in SF?"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "What's the weather in SF?"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "What's the weather in SF?"},
 			},
 		},
 		{
@@ -39,8 +39,8 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "text", Content: "The weather is sunny."},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleAssistant, Text: "The weather is sunny."},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleAssistant, Text: "The weather is sunny."},
 			},
 		},
 		{
@@ -51,8 +51,8 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "data", Content: `{"lat":37.7}`},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: `{"lat":37.7}`},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: `{"lat":37.7}`},
 			},
 		},
 		{
@@ -64,8 +64,8 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "text", Content: "Summarize this"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "Summarize this"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "Summarize this"},
 			},
 		},
 		{
@@ -77,8 +77,8 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "text", Content: "real content"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "real content"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "real content"},
 			},
 		},
 		{
@@ -88,9 +88,9 @@ func TestA2AExtension_Fragments(t *testing.T) {
 				Parts:    []A2APart{{Kind: "text", Content: "Tell me a joke"}},
 				Artifact: "Why did the chicken cross the road?",
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "Tell me a joke"},
-				{Role: contracts.RoleAssistant, Text: "Why did the chicken cross the road?"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "Tell me a joke"},
+				{Role: capabilities.RoleAssistant, Text: "Why did the chicken cross the road?"},
 			},
 		},
 		{
@@ -101,7 +101,7 @@ func TestA2AExtension_Fragments(t *testing.T) {
 					{Kind: "text", Content: "hi"},
 				},
 			},
-			want: []contracts.Fragment{
+			want: []capabilities.Fragment{
 				{Role: "custom-role", Text: "hi"},
 			},
 		},
@@ -120,7 +120,7 @@ func TestMCPExtension_Fragments(t *testing.T) {
 	tests := []struct {
 		name string
 		ext  *MCPExtension
-		want []contracts.Fragment
+		want []capabilities.Fragment
 	}{
 		{
 			name: "nil_receiver",
@@ -141,9 +141,9 @@ func TestMCPExtension_Fragments(t *testing.T) {
 					"arguments": map[string]any{"url": "https://example.com"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleTool, Text: "fetch_url"},
-				{Role: contracts.RoleToolArgs, Text: "https://example.com"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleTool, Text: "fetch_url"},
+				{Role: capabilities.RoleToolArgs, Text: "https://example.com"},
 			},
 		},
 		{
@@ -155,9 +155,9 @@ func TestMCPExtension_Fragments(t *testing.T) {
 					"arguments": map[string]any{"prefs": map[string]any{"theme": "dark"}},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleTool, Text: "set_preferences"},
-				{Role: contracts.RoleToolArgs, Text: `{"theme":"dark"}`},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleTool, Text: "set_preferences"},
+				{Role: capabilities.RoleToolArgs, Text: `{"theme":"dark"}`},
 			},
 		},
 		{
@@ -168,8 +168,8 @@ func TestMCPExtension_Fragments(t *testing.T) {
 					"arguments": map[string]any{"q": "hello"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleToolArgs, Text: "hello"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleToolArgs, Text: "hello"},
 			},
 		},
 		{
@@ -187,8 +187,8 @@ func TestMCPExtension_Fragments(t *testing.T) {
 					},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleToolResult, Text: "Result line"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleToolResult, Text: "Result line"},
 			},
 		},
 		{
@@ -202,8 +202,8 @@ func TestMCPExtension_Fragments(t *testing.T) {
 					},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleToolResult, Text: "caption"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleToolResult, Text: "caption"},
 			},
 		},
 		{
@@ -213,9 +213,9 @@ func TestMCPExtension_Fragments(t *testing.T) {
 				Params: map[string]any{"name": "fetch_url"},
 				Err:    &MCPError{Code: -32602, Message: "invalid url: http://internal.example/secret"},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleTool, Text: "fetch_url"},
-				{Role: contracts.RoleToolResult, Text: "invalid url: http://internal.example/secret"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleTool, Text: "fetch_url"},
+				{Role: capabilities.RoleToolResult, Text: "invalid url: http://internal.example/secret"},
 			},
 		},
 		{
@@ -229,9 +229,9 @@ func TestMCPExtension_Fragments(t *testing.T) {
 				},
 				Err: &MCPError{Code: 1, Message: "timeout"},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleToolResult, Text: "partial output"},
-				{Role: contracts.RoleToolResult, Text: "timeout"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleToolResult, Text: "partial output"},
+				{Role: capabilities.RoleToolResult, Text: "timeout"},
 			},
 		},
 		{
@@ -252,8 +252,8 @@ func TestMCPExtension_Fragments(t *testing.T) {
 				},
 			},
 			// tool name still emitted; arguments skipped with DEBUG log
-			want: []contracts.Fragment{
-				{Role: contracts.RoleTool, Text: "fetch_url"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleTool, Text: "fetch_url"},
 			},
 		},
 		{
@@ -287,7 +287,7 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 	tests := []struct {
 		name string
 		ext  *InferenceExtension
-		want []contracts.Fragment
+		want []capabilities.Fragment
 	}{
 		{
 			name: "nil_receiver",
@@ -302,9 +302,9 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 					{Role: "user", Content: "Hi"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleSystem, Text: "You are helpful."},
-				{Role: contracts.RoleUser, Text: "Hi"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleSystem, Text: "You are helpful."},
+				{Role: capabilities.RoleUser, Text: "Hi"},
 			},
 		},
 		{
@@ -316,10 +316,10 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 					{Role: "tool", Content: "18°C sunny"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "weather?"},
-				{Role: contracts.RoleAssistant, Text: "let me check"},
-				{Role: contracts.RoleToolResult, Text: "18°C sunny"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "weather?"},
+				{Role: capabilities.RoleAssistant, Text: "let me check"},
+				{Role: capabilities.RoleToolResult, Text: "18°C sunny"},
 			},
 		},
 		{
@@ -330,8 +330,8 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 					{Role: "user", Content: "real"},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleUser, Text: "real"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleUser, Text: "real"},
 			},
 		},
 		{
@@ -339,8 +339,8 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 			ext: &InferenceExtension{
 				Completion: "The answer is 42.",
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleAssistant, Text: "The answer is 42."},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleAssistant, Text: "The answer is 42."},
 			},
 		},
 		{
@@ -350,9 +350,9 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 					{Name: "get_weather", Arguments: `{"city":"SF"}`},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleTool, Text: "get_weather"},
-				{Role: contracts.RoleToolArgs, Text: `{"city":"SF"}`},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleTool, Text: "get_weather"},
+				{Role: capabilities.RoleToolArgs, Text: `{"city":"SF"}`},
 			},
 		},
 		{
@@ -363,9 +363,9 @@ func TestInferenceExtension_Fragments(t *testing.T) {
 					{Name: "call_me", Arguments: ""},
 				},
 			},
-			want: []contracts.Fragment{
-				{Role: contracts.RoleToolArgs, Text: "{}"},
-				{Role: contracts.RoleTool, Text: "call_me"},
+			want: []capabilities.Fragment{
+				{Role: capabilities.RoleToolArgs, Text: "{}"},
+				{Role: capabilities.RoleTool, Text: "call_me"},
 			},
 		},
 		{
@@ -408,7 +408,7 @@ func TestContentSources(t *testing.T) {
 	var userTexts []string
 	for _, s := range srcs {
 		for _, f := range s.Fragments() {
-			if f.Role == contracts.RoleUser {
+			if f.Role == capabilities.RoleUser {
 				userTexts = append(userTexts, f.Text)
 			}
 		}
@@ -422,7 +422,7 @@ func TestContentSources(t *testing.T) {
 
 // sortFragments sorts by (Role, Text) so map-order non-determinism in
 // MCP's arguments iteration doesn't flake the test comparisons.
-func sortFragments(f []contracts.Fragment) {
+func sortFragments(f []capabilities.Fragment) {
 	sort.Slice(f, func(i, j int) bool {
 		if f[i].Role != f[j].Role {
 			return f[i].Role < f[j].Role

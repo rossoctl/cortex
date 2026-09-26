@@ -6,8 +6,8 @@ import (
 	"sort"
 
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 	"github.com/rossoctl/cortex/core/spiffe"
 )
 

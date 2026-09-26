@@ -20,11 +20,11 @@ import (
 	// success for the one assertion in this file that needs a zone whose offset CHANGES.
 	_ "time/tzdata"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // fetchUsage GETs the endpoint and returns status plus raw body.
@@ -277,7 +277,7 @@ func TestHandleUsage_SessionIDLengthCap(t *testing.T) {
 
 // inferenceEventForAPI builds a response event carrying an explicit token split.
 //
-// A local copy of core/usage's own inferenceEvent: that one is unexported and
+// A local copy of core/cost/usage's own inferenceEvent: that one is unexported and
 // this is a different package, so there is nothing to import.
 func inferenceEventForAPI(model string, in, cacheRead, cacheWrite, out int) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
@@ -369,7 +369,7 @@ func TestHandleUsage_SplitFieldsAppearOnTheWire(t *testing.T) {
 // Closed, not open: the writer keeps the open minute in memory on purpose, so a row
 // only reaches disk once the minute rolls or Flush is called. A test that skipped
 // the flush would assert against an empty ledger and read as a routing bug.
-func ledgerWithOneCostedMinute(t *testing.T, at time.Time, host, model string, costUSD float64) *costledger.Writer {
+func ledgerWithOneCostedMinute(t *testing.T, at time.Time, host, model string, costUSD float64) *ledger.Writer {
 	t.Helper()
 	led := newTestLedger(t, at)
 	recordCostedMinute(t, led, at, host, model, costUSD)
@@ -523,11 +523,11 @@ func TestStartOfToday_TheFixtureAnchorLandsInsideTheWindowItIsQueriedWith(t *tes
 }
 
 // newTestLedger opens an empty ledger with its clock pinned to at.
-func newTestLedger(t *testing.T, at time.Time) *costledger.Writer {
+func newTestLedger(t *testing.T, at time.Time) *ledger.Writer {
 	t.Helper()
-	led, err := costledger.New(t.TempDir(), costledger.WithClock(func() time.Time { return at }))
+	led, err := ledger.New(t.TempDir(), ledger.WithClock(func() time.Time { return at }))
 	if err != nil {
-		t.Fatalf("costledger.New: %v", err)
+		t.Fatalf("ledger.New: %v", err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
 	return led
@@ -535,11 +535,11 @@ func newTestLedger(t *testing.T, at time.Time) *costledger.Writer {
 
 // recordCostedMinute feeds one settled-cost inference response to a ledger, without
 // flushing — so the caller chooses whether the minute is open or closed.
-func recordCostedMinute(t *testing.T, led *costledger.Writer, at time.Time, host, model string, costUSD float64) {
+func recordCostedMinute(t *testing.T, led *ledger.Writer, at time.Time, host, model string, costUSD float64) {
 	t.Helper()
-	rec, err := json.Marshal(costevent.Event{
+	rec, err := json.Marshal(event.Event{
 		CostUSD: costUSD, Settled: true,
-		Source: costevent.SourceUsageFallback, Provenance: "bundled",
+		Source: event.SourceUsageFallback, Provenance: "bundled",
 	})
 	if err != nil {
 		t.Fatalf("marshal cost record: %v", err)
@@ -549,7 +549,7 @@ func recordCostedMinute(t *testing.T, led *costledger.Writer, at time.Time, host
 		Inference: &pipeline.InferenceExtension{
 			Model: model, InputTokens: 100, OutputTokens: 50, TotalTokens: 150, PresentKinds: 0b1001,
 		},
-		Plugins: map[string]json.RawMessage{costevent.Key: rec},
+		Plugins: map[string]json.RawMessage{event.Key: rec},
 	})
 }
 
@@ -774,23 +774,23 @@ func TestHandleUsage_LedgerBackedWindowGroupsByModel(t *testing.T) {
 //
 // The ledger keeps a gateway-priced response the inference parser could not read
 // (/v1/embeddings, /v1/rerank) as a row with no model, so it counts toward Totals and
-// cannot be a group=model key. costledger.Fold computes that residual; this pins that
+// cannot be a group=model key. ledger.Fold computes that residual; this pins that
 // ledgerSnapshot carries it out to the JSON.
 func TestHandleUsage_LedgerBackedModelSeriesDisclosesWhatItLeavesOut(t *testing.T) {
 	at := insideToday(t, 2*time.Minute)
 	led := ledgerWithOneCostedMinute(t, at, "gw", "opus", 0.10)
 	// A second row in the same minute: priced by the gateway, with no Inference extension
 	// at all. A different composite key, so it is its own row.
-	rec, err := json.Marshal(costevent.Event{
+	rec, err := json.Marshal(event.Event{
 		CostUSD: 0.25, Settled: true,
-		Source: costevent.SourceGatewayHeader, Provenance: "authoritative",
+		Source: event.SourceGatewayHeader, Provenance: "authoritative",
 	})
 	if err != nil {
 		t.Fatalf("marshal cost record: %v", err)
 	}
 	led.Record("s1", &pipeline.SessionEvent{
 		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "gw",
-		Plugins: map[string]json.RawMessage{costevent.Key: rec},
+		Plugins: map[string]json.RawMessage{event.Key: rec},
 	})
 	if ferr := led.Flush(); ferr != nil {
 		t.Fatalf("Flush: %v", ferr)
@@ -893,9 +893,9 @@ func TestHandleUsage_ACorruptLedgerLineIsDisclosedInTheResponse(t *testing.T) {
 	// An explicit dir rather than newTestLedger's hidden t.TempDir(), because this test
 	// has to reach the day file the writer produced.
 	dir := t.TempDir()
-	led, lerr := costledger.New(dir, costledger.WithClock(func() time.Time { return when }))
+	led, lerr := ledger.New(dir, ledger.WithClock(func() time.Time { return when }))
 	if lerr != nil {
-		t.Fatalf("costledger.New: %v", lerr)
+		t.Fatalf("ledger.New: %v", lerr)
 	}
 	t.Cleanup(func() { _ = led.Close() })
 
@@ -948,7 +948,7 @@ func TestHandleUsage_ACorruptLedgerLineIsDisclosedInTheResponse(t *testing.T) {
 // own reads constantly.
 //
 // The handler is called directly rather than through httptest, because the assertion is
-// about which context reaches costledger.Window and a real client disconnect cannot be
+// about which context reaches ledger.Window and a real client disconnect cannot be
 // timed against the read.
 func TestHandleUsage_TheRequestContextReachesTheLedgerRead(t *testing.T) {
 	led := ledgerWithOneCostedMinute(t, insideToday(t, 2*time.Minute), "gw", "opus", 0.25)
@@ -1072,7 +1072,7 @@ func TestInsideTodayAt_ClampsAtThirtySecondsPastMidnight(t *testing.T) {
 // looks like the client's fault. Reflection rather than three assertions, so the NEXT counter added to
 // Caveats fails here instead of shipping.
 func TestDegradedFrom_CarriesEveryCaveatField(t *testing.T) {
-	var c costledger.Caveats
+	var c ledger.Caveats
 	cv := reflect.ValueOf(&c).Elem()
 	ct := cv.Type()
 	// A distinct non-zero value per field, so a copy that reads the wrong source field is caught too.
@@ -1279,7 +1279,7 @@ func TestBucketSecondsFor_IsNeverZero(t *testing.T) {
 // THE RESTORE IS THE LOAD-BEARING HALF. A broken directory also fails the READ, so without putting the
 // day file back, `degraded` appears because of UnreadableDays and a test about the write-side count
 // passes whether or not that count is disclosed at all.
-func breakAndRestore(t *testing.T, dir string, led *costledger.Writer, at time.Time) {
+func breakAndRestore(t *testing.T, dir string, led *ledger.Writer, at time.Time) {
 	t.Helper()
 
 	saved := map[string][]byte{}
@@ -1333,9 +1333,9 @@ func breakAndRestore(t *testing.T, dir string, led *costledger.Writer, at time.T
 func TestHandleUsage_TheWriterDropWarningFiresOnChangeNotPerRead(t *testing.T) {
 	at := insideToday(t, 3*time.Hour)
 	dir := t.TempDir()
-	led, err := costledger.New(dir, costledger.WithClock(func() time.Time { return at }))
+	led, err := ledger.New(dir, ledger.WithClock(func() time.Time { return at }))
 	if err != nil {
-		t.Fatalf("costledger.New: %v", err)
+		t.Fatalf("ledger.New: %v", err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
 	recordCostedMinute(t, led, at, "gw.example", "m", 1.0)
@@ -1422,9 +1422,9 @@ func TestHandleUsage_AWriterDropReachesTheResponse(t *testing.T) {
 	// Built inline rather than through newTestLedger, because this test needs the directory: it breaks
 	// it below to make the writer really lose a row.
 	dir := t.TempDir()
-	led, err := costledger.New(dir, costledger.WithClock(func() time.Time { return at }))
+	led, err := ledger.New(dir, ledger.WithClock(func() time.Time { return at }))
 	if err != nil {
-		t.Fatalf("costledger.New: %v", err)
+		t.Fatalf("ledger.New: %v", err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
 	recordCostedMinute(t, led, at, "gw.example", "m", 1.0)

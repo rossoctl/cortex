@@ -329,7 +329,7 @@ func TestScenario(t *testing.T) {
 ## Step 8 — Expose content to guardrails (parser plugins)
 
 If your plugin is a **parser** whose extension carries user-visible
-text, implement [`contracts.ContentSource`](../core/contracts/content.go)
+text, implement [`capabilities.ContentSource`](../core/capabilities/content.go)
 so guardrails can inspect it without importing your package. See
 [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails)
 for the role vocabulary and the mapping table across in-tree parsers.
@@ -338,18 +338,18 @@ Minimal example for an Inference-like parser whose extension stores
 `Messages []struct{ Role, Content string }`:
 
 ```go
-import "github.com/rossoctl/cortex/core/contracts"
+import "github.com/rossoctl/cortex/core/capabilities"
 
 // Compile-time assertion — catches interface drift at build time.
-var _ contracts.ContentSource = (*MyExtension)(nil)
+var _ capabilities.ContentSource = (*MyExtension)(nil)
 
-func (e *MyExtension) Fragments() []contracts.Fragment {
-    out := make([]contracts.Fragment, 0, len(e.Messages))
+func (e *MyExtension) Fragments() []capabilities.Fragment {
+    out := make([]capabilities.Fragment, 0, len(e.Messages))
     for _, m := range e.Messages {
         if m.Content == "" {
             continue
         }
-        out = append(out, contracts.Fragment{Role: m.Role, Text: m.Content})
+        out = append(out, capabilities.Fragment{Role: m.Role, Text: m.Content})
     }
     return out
 }
@@ -361,7 +361,7 @@ iterate, and see your messages alongside every other parser's output.
 **Role normalization.** The minimal example above emits `m.Role` as-is.
 If your protocol uses role names that differ from the standard vocabulary
 (e.g., A2A uses `"agent"` where the standard is `"assistant"`), remap
-them to the `contracts.Role*` constants inside `Fragments` so guardrails
+them to the `capabilities.Role*` constants inside `Fragments` so guardrails
 match uniformly across protocols. See
 [`A2AExtension.Fragments`](../core/pipeline/content.go) for a reference
 implementation that rewrites `"agent"` → `"assistant"`.

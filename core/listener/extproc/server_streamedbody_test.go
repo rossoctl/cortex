@@ -7,10 +7,10 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
-	"github.com/rossoctl/cortex/core/pricing"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -177,7 +177,7 @@ func TestExtProc_SplitResponseBody_ChargesTheWholeFigureExactlyOnce(t *testing.T
 	if ev == nil {
 		t.Fatal("no outbound response row recorded for a split streamed body")
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row (Plugins keys = %v)", pluginKeys(ev))
 	}
@@ -201,9 +201,9 @@ func TestExtProc_SplitResponseBody_ChargesTheWholeFigureExactlyOnce(t *testing.T
 		t.Errorf("Incomplete = true with reason %q, over a stream that delivered its stop "+
 			"reason and its output tally", rec.IncompleteReason)
 	}
-	if rec.Source != costevent.SourceUsageFallback {
+	if rec.Source != event.SourceUsageFallback {
 		t.Errorf("Source = %q, want %q — a stream's zero cost header is a placeholder, so the "+
-			"modelled figure is the authority here", rec.Source, costevent.SourceUsageFallback)
+			"modelled figure is the authority here", rec.Source, event.SourceUsageFallback)
 	}
 }
 

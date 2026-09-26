@@ -11,7 +11,7 @@ import (
 	"time"
 
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -583,7 +583,7 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 				Roles: id.Scopes(),
 			},
 		}
-		if cc, ok := id.(contracts.ClaimsCarrier); ok {
+		if cc, ok := id.(capabilities.ClaimsCarrier); ok {
 			ext.Security.AuthMethod = cc.AuthMethod()
 			if claims := cc.Claims(); len(claims) > 0 {
 				ext.Security.Subject.Claims = claims

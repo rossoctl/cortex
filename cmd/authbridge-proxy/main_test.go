@@ -312,7 +312,7 @@ func TestLedgerEnabled_ExplicitSettingOverridesTheDerivedDefault(t *testing.T) {
 // four things the wiring consists of are present, so a deletion or a half-revert fails rather than
 // passing silently:
 //
-//   - the ledger is constructed (costledger.New),
+//   - the ledger is constructed (ledger.New),
 //   - it is registered on the session store, which is the only way events reach it,
 //   - a fatal exit flushes it (closeLedgerOnFatal assigned),
 //   - and no fatal site after that point still calls log.Fatalf directly, which would skip the flush
@@ -360,7 +360,7 @@ func TestMain_WiresTheLedgerAndFlushesItOnFatalPaths(t *testing.T) {
 			}
 			pkg, _ := sel.X.(*ast.Ident)
 			switch {
-			case pkg != nil && pkg.Name == "costledger" && sel.Sel.Name == "New":
+			case pkg != nil && pkg.Name == "ledger" && sel.Sel.Name == "New":
 				newLedger = true
 			case sel.Sel.Name == "AddRecorder":
 				for _, a := range v.Args {
@@ -388,7 +388,7 @@ func TestMain_WiresTheLedgerAndFlushesItOnFatalPaths(t *testing.T) {
 	})
 
 	if !newLedger {
-		t.Error("main.go never calls costledger.New: the ledger is not constructed")
+		t.Error("main.go never calls ledger.New: the ledger is not constructed")
 	}
 	if !addRecorder {
 		t.Error("main.go never passes costLedger to AddRecorder: nothing would reach the ledger, and every window=today would read an empty file")

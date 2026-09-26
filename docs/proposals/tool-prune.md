@@ -488,7 +488,7 @@ Counters are per-process and in-memory: they reset when the proxy restarts and a
 not aggregated across a fleet. That is the right trade for the laptop scenario this
 targets, and it is what keeps the plugin free of a storage dependency. Fleet-wide
 aggregation belongs on the existing stats server
-(`runtimeutil.StartStatServer`, port 47602 in the demo config), which is a
+(`bootstrap.StartStatServer`, port 47602 in the demo config), which is a
 natural later addition and does not change the plugin.
 
 ## Delivery

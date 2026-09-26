@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
 )
 
@@ -16,7 +16,7 @@ import (
 // so jwt-validation only wraps non-nil Claims.
 //
 // Beyond the minimal pipeline.Identity surface it also implements
-// contracts.ClaimsCarrier so richer consumers (the cpex plugin) can read
+// capabilities.ClaimsCarrier so richer consumers (the cpex plugin) can read
 // issuer / audience / auth-method / curated claims without
 // pipeline.Identity growing.
 type claimsIdentity struct {
@@ -24,9 +24,9 @@ type claimsIdentity struct {
 }
 
 // Compile-time assertion: claimsIdentity exposes the richer claim
-// surface. If contracts.ClaimsCarrier gains a method, this line forces
+// surface. If capabilities.ClaimsCarrier gains a method, this line forces
 // the adapter to keep up at `go build`.
-var _ contracts.ClaimsCarrier = claimsIdentity{}
+var _ capabilities.ClaimsCarrier = claimsIdentity{}
 
 func (i claimsIdentity) Subject() string {
 	if i.c == nil {
@@ -49,7 +49,7 @@ func (i claimsIdentity) Scopes() []string {
 	return i.c.Scopes
 }
 
-// Issuer implements contracts.ClaimsCarrier.
+// Issuer implements capabilities.ClaimsCarrier.
 func (i claimsIdentity) Issuer() string {
 	if i.c == nil {
 		return ""
@@ -57,7 +57,7 @@ func (i claimsIdentity) Issuer() string {
 	return i.c.Issuer
 }
 
-// Audience implements contracts.ClaimsCarrier.
+// Audience implements capabilities.ClaimsCarrier.
 func (i claimsIdentity) Audience() []string {
 	if i.c == nil {
 		return nil
@@ -65,13 +65,13 @@ func (i claimsIdentity) Audience() []string {
 	return i.c.Audience
 }
 
-// AuthMethod implements contracts.ClaimsCarrier. A claimsIdentity is only
+// AuthMethod implements capabilities.ClaimsCarrier. A claimsIdentity is only
 // ever constructed from a verified JWT, so the method is always "jwt".
 func (i claimsIdentity) AuthMethod() string {
 	return "jwt"
 }
 
-// Claims implements contracts.ClaimsCarrier. It returns a deliberately
+// Claims implements capabilities.ClaimsCarrier. It returns a deliberately
 // SMALL, string-valued subset — issuer, audience (comma-joined), and
 // expiry (Unix seconds) — never the full raw `Extra` claim map. Those
 // three are the keys policy commonly branches on; dumping the entire

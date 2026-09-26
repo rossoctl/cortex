@@ -85,7 +85,7 @@ const contextColumnTitle = "CONTEXT(1M)"
 // contextWindowTokens is the denominator every gauge is drawn against.
 //
 // FIXED AT ONE MILLION, which is the largest window on any path this proxy sees — the Claude
-// [1m] beta — and the same figure core/usage and core/pricing already reason against.
+// [1m] beta — and the same figure core/cost/usage and core/cost/pricing already reason against.
 //
 // WHAT THAT COSTS, stated because the gauge is only as honest as its scale: a model with a
 // 200k window at 180k tokens is 90% full and draws here as 18%, near-empty, at exactly the

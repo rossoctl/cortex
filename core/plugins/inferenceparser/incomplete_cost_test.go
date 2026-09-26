@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // End-to-end through the REAL parser: a truncated Anthropic stream must publish its
@@ -24,7 +24,7 @@ import (
 func anthropicStreamCtx() *pipeline.Context {
 	h := http.Header{}
 	h.Set("Content-Type", "text/event-stream")
-	h.Set(costing.ResponseCostHeader, "0")
+	h.Set(settle.ResponseCostHeader, "0")
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Outbound,
 		Host:            "gw.internal",
@@ -80,8 +80,8 @@ func TestTruncatedAnthropicStream_PublishesAFloorAndSaysSo(t *testing.T) {
 	if ev.IncompleteReason != pricing.ReasonOutputUncounted {
 		t.Errorf("IncompleteReason = %q, want %q", ev.IncompleteReason, pricing.ReasonOutputUncounted)
 	}
-	if ev.Source != costevent.SourceUsageFallback {
-		t.Errorf("Source = %q, want %q (a stream's zero header is a placeholder)", ev.Source, costevent.SourceUsageFallback)
+	if ev.Source != event.SourceUsageFallback {
+		t.Errorf("Source = %q, want %q (a stream's zero header is a placeholder)", ev.Source, event.SourceUsageFallback)
 	}
 	// Still settled and still priced, so the dollars reach every total they belong in.
 	if !ev.Settled || !ev.Priced() {
@@ -131,7 +131,7 @@ func TestCompleteAnthropicStream_CarriesNoCaveat(t *testing.T) {
 func openAIStreamCtx(contentType string, reqStream bool) *pipeline.Context {
 	h := http.Header{}
 	h.Set("Content-Type", contentType)
-	h.Set(costing.ResponseCostHeader, "0")
+	h.Set(settle.ResponseCostHeader, "0")
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Outbound,
 		Host:            "gw.internal",

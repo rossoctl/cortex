@@ -3,7 +3,7 @@ package parsercommon
 import (
 	"testing"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // Kind IS the authority for the PresentKinds bit layout, and usage exports a copy of it

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costledger"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"gopkg.in/yaml.v3"
 )
 
@@ -155,7 +155,7 @@ func TestCostLedgerConfig_TheFloorCoversEveryDayTheWindowTouches(t *testing.T) {
 		t.Fatalf("ParseWindowSpec(%q): %v", usage.Window7d, err)
 	}
 	// The ledger walks whole local days from From to To inclusive (see
-	// costledger.Writer.Query), so this counts day files, not hours.
+	// ledger.Writer.Query), so this counts day files, not hours.
 	days := 0
 	for d := dayOfTest(spec.From); !d.After(dayOfTest(spec.To)); d = d.AddDate(0, 0, 1) {
 		days++
@@ -344,8 +344,8 @@ func TestCostLedgerValidate_RejectsARetentionLargeEnoughToInvertPrune(t *testing
 // avoid: nothing in costledger, usage or pipeline imports this package, so the only thing that import
 // costs is a test-only edge — cheap against a silent disagreement over how much history is deleted.
 func TestMaxCostLedgerRetentionDays_MatchesTheStoreItClamps(t *testing.T) {
-	if maxCostLedgerRetentionDays != costledger.MaxRetentionDays {
-		t.Errorf("config ceiling = %d, costledger.MaxRetentionDays = %d: a config that loads would produce a store clamping to a different number, which deletes history the validator said was fine to keep",
-			maxCostLedgerRetentionDays, costledger.MaxRetentionDays)
+	if maxCostLedgerRetentionDays != ledger.MaxRetentionDays {
+		t.Errorf("config ceiling = %d, ledger.MaxRetentionDays = %d: a config that loads would produce a store clamping to a different number, which deletes history the validator said was fine to keep",
+			maxCostLedgerRetentionDays, ledger.MaxRetentionDays)
 	}
 }

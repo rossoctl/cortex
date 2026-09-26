@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -20,7 +20,7 @@ func blindCtx(header string, cacheRead int) *pipeline.Context {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	if header != "" {
-		h.Set(costing.ResponseCostHeader, header)
+		h.Set(settle.ResponseCostHeader, header)
 	}
 	return &pipeline.Context{
 		Host:            "gw.internal",
@@ -43,7 +43,7 @@ func blindParser(t *testing.T, buf *bytes.Buffer) *InferenceParser {
 }
 
 // THE SIGNAL THAT WAS MISSING. The header figure was on the wire, the substitution now happens
-// in costing.Settle, and without a line here an operator sees neither: the money is right and
+// in settle.Settle, and without a line here an operator sees neither: the money is right and
 // the reason is invisible.
 func TestCacheBlind_WarnsOnceWithBothFigures(t *testing.T) {
 	var buf bytes.Buffer

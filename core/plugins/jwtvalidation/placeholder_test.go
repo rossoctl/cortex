@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/placeholder"
-	"github.com/rossoctl/cortex/core/shared"
 )
 
 func mintTestContext(store pipeline.SharedStore) *pipeline.Context {
@@ -22,7 +22,7 @@ func mintTestContext(store pipeline.SharedStore) *pipeline.Context {
 }
 
 func TestMint_ReplacesAuthAndStoresToken(t *testing.T) {
-	st := shared.New()
+	st := memstore.New()
 	p := &JWTValidation{
 		cfg:            jwtValidationConfig{PlaceholderMode: true},
 		placeholderTTL: time.Hour,

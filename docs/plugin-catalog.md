@@ -126,7 +126,7 @@ still published — carrying the token counts, any avoided cost, and no dollar f
 gap is named in `/v1/usage`'s `unpricedBy` so an operator knows which `pricing:` entry to
 add. An absent figure is reported as absent, never as `$0.00`.
 
-The arithmetic and the gateway header semantics are in `core/costing`, not in the parser:
+The arithmetic and the gateway header semantics are in `core/cost/settle`, not in the parser:
 a provider-shaped body parser has no business knowing one gateway's header names. The result
 is published as a cost record keyed `cost` on the session event (see
 [Cost records](#cost-records)).
@@ -385,7 +385,7 @@ comes out a release after the rename ships.
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
 
 **Nothing in `avoided` is spend.** No consumer may add it to a cost, a budget or a usage
-total; a test in `core/usage` asserts the aggregator's totals are unchanged by its
+total; a test in `core/cost/usage` asserts the aggregator's totals are unchanged by its
 presence. It is a container rather than a few flat fields because more counterfactuals are
 coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
@@ -538,7 +538,7 @@ rather than something fetched. Asking the gateway for its own rates via LiteLLM'
 `GET /model/info` was designed and prototyped and then dropped: it needed a virtual key
 minted and mounted, an outbound dependency and a refresh loop, to save transcribing
 three numbers. If your gateway's rates do change often, the resolution order is built
-for it — see `ProvDiscovered` in `core/pricing`.
+for it — see `ProvDiscovered` in `core/cost/pricing`.
 
 **Bundled rates are VENDOR LIST.** A gateway billing below list is *overstated*
 until you pin it with a host-scoped entry, which outranks anything bundled. This is

@@ -19,11 +19,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/redact"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // defaultHeartbeatInterval is how often the SSE stream sends a keep-alive
@@ -55,7 +55,7 @@ type Server struct {
 	// writing files in a pod is the wrong sink and a central collector is the right
 	// one — handleUsage degrades to the ring's maximum rather than erroring, so an
 	// abctl cost view shows what is available there instead of failing.
-	ledger *costledger.Writer
+	ledger *ledger.Writer
 	// loggedDropped is the highest writer-drop total this server has already logged, so the write-side
 	// warning fires on a CHANGE rather than on every request. See the usage handler: the drop count is
 	// process-cumulative, so logging it per read turned one lost row into a warning on every poll for
@@ -134,7 +134,7 @@ func WithUsage(a *usage.Aggregator) Option {
 // on for a local install and off in Kubernetes, so a client must never depend on it
 // being present, and a 400 there would break the cost view for the deployment shape
 // that has no ledger by design.
-func WithCostLedger(l *costledger.Writer) Option {
+func WithCostLedger(l *ledger.Writer) Option {
 	return func(s *Server) { s.ledger = l }
 }
 

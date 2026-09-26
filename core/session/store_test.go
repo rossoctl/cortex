@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -640,13 +640,13 @@ func TestSumTokens(t *testing.T) {
 }
 
 // costRecord builds the plugin map one session event carries its cost record in.
-func costRecord(t *testing.T, ev costevent.Event) map[string]json.RawMessage {
+func costRecord(t *testing.T, ev event.Event) map[string]json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]json.RawMessage{costevent.Key: raw}
+	return map[string]json.RawMessage{event.Key: raw}
 }
 
 // TestSumCost covers the four rules sumCost applies, which sumTokens beside it does not have
@@ -660,34 +660,34 @@ func TestSumCost(t *testing.T) {
 		// An ordinary priced response with a saving on it. Both figures counted.
 		{
 			Phase: pipeline.SessionResponse,
-			Plugins: costRecord(t, costevent.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-				Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}),
+			Plugins: costRecord(t, event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
+				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}),
 		},
 		// UNPRICED, and carrying a saving. No dollars, and the saving still counts: the
 		// prompt was pruned whether or not anything managed to price the response.
 		{
 			Phase: pipeline.SessionResponse,
-			Plugins: costRecord(t, costevent.Event{Source: costevent.SourceUsageFallback,
-				Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}),
+			Plugins: costRecord(t, event.Event{Source: event.SourceUsageFallback,
+				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}),
 		},
 		// A DENIAL carrying a settled figure — the proxy charges for a response whose body
 		// never arrived. Counted, which is why this is not restricted to SessionResponse.
 		{
 			Phase:   pipeline.SessionDenied,
-			Plugins: costRecord(t, costevent.Event{CostUSD: 0.05, Settled: true, Provenance: "authoritative"}),
+			Plugins: costRecord(t, event.Event{CostUSD: 0.05, Settled: true, Provenance: "authoritative"}),
 		},
 		// A REQUEST-phase record. Skipped: the cost is settled on the response pass, and
 		// counting both halves would double-charge every request that has one.
 		{
 			Phase:   pipeline.SessionRequest,
-			Plugins: costRecord(t, costevent.Event{CostUSD: 99, Settled: true, Provenance: "configured"}),
+			Plugins: costRecord(t, event.Event{CostUSD: 99, Settled: true, Provenance: "configured"}),
 		},
 		// A PROJECTED saving: observe mode left every byte on the wire, so this is money
 		// that WAS spent and must not be reported as avoided.
 		{
 			Phase: pipeline.SessionResponse,
-			Plugins: costRecord(t, costevent.Event{Source: costevent.SourceUsageFallback,
-				Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 5000, USD: 5, Tier: "input", Projected: true}}}),
+			Plugins: costRecord(t, event.Event{Source: event.SourceUsageFallback,
+				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 5000, USD: 5, Tier: "input", Projected: true}}}),
 		},
 		// A response with no cost record at all — the common case for non-inference traffic.
 		{Phase: pipeline.SessionResponse, MCP: &pipeline.MCPExtension{Method: "tools/call"}},
@@ -726,7 +726,7 @@ func TestSumCost_SaturatesRatherThanWrapping(t *testing.T) {
 	// Just under pricing.MaxCostMicros in dollars, so each record prices at close to the
 	// largest figure costevent will represent. Two of them exceed int64 nowhere near, so the
 	// list is padded to reach the ceiling.
-	big := costevent.Event{CostUSD: 9e9, Settled: true, Provenance: "authoritative"}
+	big := event.Event{CostUSD: 9e9, Settled: true, Provenance: "authoritative"}
 	one := costRecord(t, big)
 	evs := make([]pipeline.SessionEvent, 4096)
 	for i := range evs {
@@ -762,8 +762,8 @@ func TestSumCost_SaturatesRatherThanWrapping(t *testing.T) {
 // trimEventsPinIntent does not drop a plain prefix when it pins an intent, so a caller
 // re-deriving the dropped set would subtract the wrong events.
 func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
-	priced := costRecord(t, costevent.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-		Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}})
+	priced := costRecord(t, event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
+		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}})
 
 	for _, tc := range []struct {
 		name      string

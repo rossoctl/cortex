@@ -5,8 +5,8 @@
 // THIS PLUGIN DOES NOT PRICE ANYTHING, since d6eb9efa. inference-parser settles every request's
 // cost and publishes the record — see inferenceparser/cost.go for why the component that
 // produces the token counts is the one that turns them into money. This plugin reads that figure
-// through costing.Load, accumulates it against the budget, and annotates the record through
-// costing.Amend. It holds no rates and resolves no headers, and the description of a
+// through settle.Load, accumulates it against the budget, and annotates the record through
+// settle.Amend. It holds no rates and resolves no headers, and the description of a
 // two-way header/table resolution that stood here until now described the arrangement before
 // that commit.
 //
@@ -32,8 +32,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 )
@@ -47,7 +47,7 @@ type budgetTrackConfig struct {
 	// Four of them (input / output / cache_write / cache_read per token) priced
 	// streamed responses here, duplicating both the rates in tool-prune's config
 	// and the token parser in inference-parser. Rates come from the top-level
-	// `pricing:` section via core/pricing, which also gives them endpoint
+	// `pricing:` section via core/cost/pricing, which also gives them endpoint
 	// scoping — the same model bills differently per gateway, and a per-plugin
 	// table had no way to say so.
 }
@@ -64,7 +64,7 @@ type settleState struct {
 	settled bool
 }
 
-// The per-response cost event this plugin publishes lives in core/costevent:
+// The per-response cost event this plugin publishes lives in core/cost/event:
 // the usage aggregator and abctl both decode it, so the shape belongs where all
 // three can share one declaration rather than in this package.
 
@@ -76,7 +76,7 @@ type spendLedger struct {
 
 // BudgetTrack keeps the daily spend ledger and refuses requests once the budget is spent.
 //
-// It does NOT decide what a request cost. That is core/costing, driven by
+// It does NOT decide what a request cost. That is core/cost/settle, driven by
 // inference-parser — the component that knows when token counts are final — and this plugin
 // bills the figure that was published. Before cortex #972 both jobs lived here, which meant
 // a pipeline without this plugin had no authoritative figure at all and every cost silently
@@ -201,7 +201,7 @@ func (p *BudgetTrack) OnResponse(_ context.Context, pctx *pipeline.Context) pipe
 //
 // It no longer prices anything. inference-parser settles the cost — it is the component
 // that knows when usage is final — and this plugin's job is the ledger and the budget. See
-// core/costing and inferenceparser/cost.go for why the split runs that way.
+// core/cost/settle and inferenceparser/cost.go for why the split runs that way.
 func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
 	if !last {
 		return pipeline.Action{Type: pipeline.Continue}
@@ -237,7 +237,7 @@ func (p *BudgetTrack) bill(pctx *pipeline.Context) {
 		return
 	}
 
-	settled, ok := costing.Load(pctx)
+	settled, ok := settle.Load(pctx)
 	if !ok || !settled.Priced {
 		// Nothing was priced, so there is nothing to bill and no ledger fields to
 		// add. NOT marked settled: a listener that calls OnResponse before the
@@ -277,7 +277,7 @@ func (p *BudgetTrack) bill(pctx *pipeline.Context) {
 // are the budget's business and nothing else's, and the alternative — a second event just
 // for two numbers — would make every consumer join two records to render one line.
 func (p *BudgetTrack) amend(pctx *pipeline.Context, dailyTotal float64) {
-	if costing.Amend(pctx, func(ev *costevent.Event) {
+	if settle.Amend(pctx, func(ev *event.Event) {
 		ev.DailyTotalUSD = dailyTotal
 		ev.DailyMaxUSD = p.cfg.MaxBudget
 	}) {

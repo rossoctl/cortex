@@ -30,10 +30,10 @@ Verified against `fe19c8c1`, not assumed:
 | Layer | Per-tier tokens | Per-tier cost |
 |---|---|---|
 | `pricing.CostWithReason` | yes, `Usage.tokens()` | **computed, then discarded** |
-| `costing.Settled` | — | prompt/output halves only |
-| `costevent.Event` | — | `PromptUSD`, `OutputUSD` |
+| `settle.Settled` | — | prompt/output halves only |
+| `event.Event` | — | `PromptUSD`, `OutputUSD` |
 | `usage.Counts` | yes, five fields | no — one `CostMicros` |
-| `costledger.Row` | via embed | via embed |
+| `ledger.Row` | via embed | via embed |
 | `/v1/usage` | yes | no |
 | `abctl cost` | yes, `tokenSplit` | no |
 | spend drawer | no | no |
@@ -45,7 +45,7 @@ the four tiers and accumulates `usd += float64(n) * eff.Base[i]`, then throws th
 per-tier values away. Capturing them is a change at the source, not a new
 calculation.
 
-**`costledger.Row` embeds `usage.Counts`.** Its own doc says this is deliberate,
+**`ledger.Row` embeds `usage.Counts`.** Its own doc says this is deliberate,
 "so the ledger, /v1/usage and any future collector share one vocabulary: a field
 added there appears here, and a divergence is a compile error instead of a review
 question." Four fields on `Counts` therefore reach the ring, the durable ledger,
@@ -227,11 +227,11 @@ Independent of the tier work, and the reason the current screen reads as ugly:
 ## 5. Data flow
 
 ```
-pricing.CostWithReason ──[numTiers]float64──▶ costing.Settled ──▶ costevent.Event
+pricing.CostWithReason ──[numTiers]float64──▶ settle.Settled ──▶ event.Event
                                                                         │
                                                           usage.foldInto│
                                                                         ▼
-                                          usage.Counts (4 × int64) ──▶ costledger.Row (embed)
+                                          usage.Counts (4 × int64) ──▶ ledger.Row (embed)
                                                      │                        │
                                                      ├──▶ /v1/usage           └──▶ durable ledger
                                                      ▼
@@ -302,7 +302,7 @@ Three, stacked on `main`, each independently reviewable and each shipping a
 verifiable increment:
 
 **PR 1 — capture.** `pricing` returns the per-tier array it already computes;
-`costing.Settled` and `costevent.Event` carry it. No surface change. Ships the
+`settle.Settled` and `event.Event` carry it. No surface change. Ships the
 per-event data and is testable purely as arithmetic.
 
 **PR 2 — aggregate.** Four fields on `usage.Counts`, wired through `Add` and

@@ -2,7 +2,7 @@ package toolprune
 
 import (
 	"fmt"
-	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"sort"
 	"strings"
 	"sync"

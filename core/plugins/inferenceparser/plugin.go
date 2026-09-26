@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // InferenceParser parses outbound OpenAI-compatible LLM inference requests
@@ -21,7 +21,7 @@ import (
 // the token counts is the one that turns them into money.
 type InferenceParser struct {
 	// rates is the process rate table, injected by plugins.BuildWithDeps. Nil when the
-	// process has no pricing wired, which costing.Settle handles by reporting unpriced.
+	// process has no pricing wired, which settle.Settle handles by reporting unpriced.
 	rates pricing.Resolver
 	// blind reports gateways whose cost header omits cache cost, once each. It lives here
 	// rather than beside litellm-budget-track's drift reporter because that plugin is opt-in
@@ -181,7 +181,7 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	if len(pctx.ResponseBody) == 0 {
 		pctx.Skip("no_response_body")
 		// Priced anyway, because a body is not what makes a response cost money: the gateway
-		// reports its figure in a RESPONSE HEADER and costing.Settle prefers it over anything
+		// reports its figure in a RESPONSE HEADER and settle.Settle prefers it over anything
 		// modelled, so a costed response with an empty or unrecognised body is real spend.
 		// Returning without settling drops it from the cost record, the aggregate and the budget.
 		//
@@ -282,7 +282,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		//
 		// EVERY path, not an allowlist of the ones that look priceable. The predicate that
 		// decides whether money moves is "the gateway reported a cost", which
-		// costing.headerCost evaluates off the response headers; a second list of paths
+		// settle.headerCost evaluates off the response headers; a second list of paths
 		// here would be the same omission this fixes, one release later. A plain proxied
 		// response with no cost header publishes nothing, because with no extension there
 		// is no usage to model and settleCost's own gate then finds neither a figure nor a
@@ -364,7 +364,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 	// Terminal frame. Three shapes reach here and the state, the Content-Type and the
 	// frame's own framing tell them apart — see carriesSSEFraming for the last of those.
 	state := pipeline.GetState[inferenceStreamState](pctx, streamStateKey)
-	if state == nil && len(frame) > 0 && costing.IsEventStream(pctx) && !carriesSSEFraming(frame) {
+	if state == nil && len(frame) > 0 && settle.IsEventStream(pctx) && !carriesSSEFraming(frame) {
 		// A streamed response whose whole content fitted in one event, delivered on the
 		// terminal call: unframed payload, SSE Content-Type, no earlier frames. It folds
 		// like any other chunk — allocate the scratch so it does.
@@ -421,7 +421,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		p.settleCost(pctx)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-	if costing.IsEventStream(pctx) {
+	if settle.IsEventStream(pctx) {
 		// An SSE body delivered whole, with its wire framing intact — not frame by frame.
 		// Both proxy listeners fall back to the buffered path for a text/event-stream
 		// response when a plugin in the chain declares WritesResponseBody (a body they

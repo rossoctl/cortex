@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // Bar geometry. Four columns wide with a one-column gap, so ten bars occupy 49

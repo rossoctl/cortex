@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // A non-streamed response carries BOTH the gateway's own settled cost and the token
@@ -32,7 +32,7 @@ func TestDrift_WarnsWhenModelledDivergesFromAuthoritative(t *testing.T) {
 	// 1000 in + 1000 out at 2e-6 = 0.004 modelled; gateway says 0.002.
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set(costing.ResponseCostHeader, "0.002")
+	h.Set(settle.ResponseCostHeader, "0.002")
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 1000)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -63,7 +63,7 @@ func TestDrift_SilentWhenTheyAgree(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set(costing.ResponseCostHeader, "0.002") // 1000+1000 at 1e-6 = exactly 0.002
+	h.Set(settle.ResponseCostHeader, "0.002") // 1000+1000 at 1e-6 = exactly 0.002
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 1000)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -86,7 +86,7 @@ func TestDrift_WarnsOncePerEndpointModel(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		h := http.Header{}
 		h.Set("Content-Type", "application/json")
-		h.Set(costing.ResponseCostHeader, "0.002")
+		h.Set(settle.ResponseCostHeader, "0.002")
 		pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 		pricedInference(pctx, 1000, 0, 0, 1000)
 		p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -108,7 +108,7 @@ func TestDrift_SilentOnStreamedResponses(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("Content-Type", "text/event-stream")
-	h.Set(costing.ResponseCostHeader, "0")
+	h.Set(settle.ResponseCostHeader, "0")
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 1000)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -132,7 +132,7 @@ func TestDrift_SeenMapIsBounded(t *testing.T) {
 	for i := 0; i < maxDriftKeys*3; i++ {
 		h := http.Header{}
 		h.Set("Content-Type", "application/json")
-		h.Set(costing.ResponseCostHeader, "0.002")
+		h.Set(settle.ResponseCostHeader, "0.002")
 		pctx := &pipeline.Context{Host: fmt.Sprintf("gw-%d.internal", i), ResponseHeaders: h}
 		pricedInference(pctx, 1000, 0, 0, 1000)
 		p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -166,9 +166,9 @@ func TestDrift_SilentOnTheOriginalHeaderFallback(t *testing.T) {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	// No bare header, exactly as /v1/messages replies.
-	h.Set(costing.ResponseCostOriginalHeader, "0.002")
-	h.Set(costing.DiscountAmountHeader, "0.0")
-	h.Set(costing.MarginAmountHeader, "0.0")
+	h.Set(settle.ResponseCostOriginalHeader, "0.002")
+	h.Set(settle.DiscountAmountHeader, "0.0")
+	h.Set(settle.MarginAmountHeader, "0.0")
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 1000)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -195,8 +195,8 @@ func TestDrift_SilentWhenTheFallbackFigureIsPreAdjustment(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set(costing.ResponseCostOriginalHeader, "0.002") // modelled would be 0.004 → 2x, normally a warning
-	h.Set(costing.DiscountAmountHeader, "0.0005")      // but the gateway adjusts its own figure
+	h.Set(settle.ResponseCostOriginalHeader, "0.002") // modelled would be 0.004 → 2x, normally a warning
+	h.Set(settle.DiscountAmountHeader, "0.0005")      // but the gateway adjusts its own figure
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 1000)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -227,7 +227,7 @@ func TestDrift_TolerancePeriodIsInclusive(t *testing.T) {
 
 			h := http.Header{}
 			h.Set("Content-Type", "application/json")
-			h.Set(costing.ResponseCostHeader, tc.authorativ)
+			h.Set(settle.ResponseCostHeader, tc.authorativ)
 			pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 			pricedInference(pctx, 1000, 0, 0, 1000) // modelled 0.002
 			p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -251,7 +251,7 @@ func TestDrift_DedupKeyNormalizesTheHost(t *testing.T) {
 	for _, host := range []string{"gw.internal", "GW.internal", "gw.internal:443"} {
 		h := http.Header{}
 		h.Set("Content-Type", "application/json")
-		h.Set(costing.ResponseCostHeader, "0.002")
+		h.Set(settle.ResponseCostHeader, "0.002")
 		pctx := &pipeline.Context{Host: host, ResponseHeaders: h}
 		pricedInference(pctx, 1000, 0, 0, 1000)
 		p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -272,7 +272,7 @@ func TestDrift_ConfigureResetsTheReporter(t *testing.T) {
 		p.SetDriftLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		h := http.Header{}
 		h.Set("Content-Type", "application/json")
-		h.Set(costing.ResponseCostHeader, "0.002")
+		h.Set(settle.ResponseCostHeader, "0.002")
 		pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 		pricedInference(pctx, 1000, 0, 0, 1000)
 		p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -314,7 +314,7 @@ func TestDrift_NotMeasuredWhenTheModelledFigureIsAFloor(t *testing.T) {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
 	// The gateway charged for 2,000 tokens, which at these rates is what 2,000 tokens cost.
-	h.Set(costing.ResponseCostHeader, "0.002")
+	h.Set(settle.ResponseCostHeader, "0.002")
 	pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 	pricedInference(pctx, 1000, 0, 0, 0)
 	// The response states its own total, and it exceeds the counters it attributed.
@@ -348,37 +348,37 @@ func TestDrift_NotMeasuredWhenTheModelledFigureIsAFloor(t *testing.T) {
 func TestDrift_PreconditionsAreEachTestable(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		settled costing.Settled
+		settled settle.Settled
 		wantLog bool
 	}{{
 		name: "a gateway figure diverging from the table warns",
-		settled: costing.Settled{
-			CostUSD: 0.001, Source: costevent.SourceGatewayHeader, Priced: true,
+		settled: settle.Settled{
+			CostUSD: 0.001, Source: event.SourceGatewayHeader, Priced: true,
 			ModelledUSD: 0.002, HasModelled: true, ModelledProv: pricing.ProvConfigured,
 		},
 		wantLog: true,
 	}, {
 		// THE ROW THE GATE EXISTS FOR.
 		name: "the same divergence on the usage-fallback arm says nothing",
-		settled: costing.Settled{
-			CostUSD: 0.001, Source: costevent.SourceUsageFallback, Priced: true,
+		settled: settle.Settled{
+			CostUSD: 0.001, Source: event.SourceUsageFallback, Priced: true,
 			ModelledUSD: 0.002, HasModelled: true, ModelledProv: pricing.ProvConfigured,
 		},
 	}, {
 		name: "a declared-free zero has nothing to divide by",
-		settled: costing.Settled{
-			CostUSD: 0, Source: costevent.SourceGatewayHeader, Priced: true, DeclaredFree: true,
+		settled: settle.Settled{
+			CostUSD: 0, Source: event.SourceGatewayHeader, Priced: true, DeclaredFree: true,
 			ModelledUSD: 0.002, HasModelled: true, ModelledProv: pricing.ProvConfigured,
 		},
 	}, {
 		name: "no modelled figure means no comparison",
-		settled: costing.Settled{
-			CostUSD: 0.001, Source: costevent.SourceGatewayHeader, Priced: true,
+		settled: settle.Settled{
+			CostUSD: 0.001, Source: event.SourceGatewayHeader, Priced: true,
 		},
 	}, {
 		name: "a modelled floor is not a measurement of the table",
-		settled: costing.Settled{
-			CostUSD: 0.002, Source: costevent.SourceGatewayHeader, Priced: true,
+		settled: settle.Settled{
+			CostUSD: 0.002, Source: event.SourceGatewayHeader, Priced: true,
 			ModelledUSD: 0.001, HasModelled: true, ModelledProv: pricing.ProvConfigured,
 			ModelledIncomplete: true, ModelledIncompleteReason: pricing.ReasonOutputUncounted,
 		},
@@ -390,7 +390,7 @@ func TestDrift_PreconditionsAreEachTestable(t *testing.T) {
 
 			h := http.Header{}
 			h.Set("Content-Type", "application/json")
-			h.Set(costing.ResponseCostHeader, "0.001")
+			h.Set(settle.ResponseCostHeader, "0.001")
 			pctx := &pipeline.Context{Host: "gw.internal", ResponseHeaders: h}
 			pricedInference(pctx, 1000, 0, 0, 1000)
 

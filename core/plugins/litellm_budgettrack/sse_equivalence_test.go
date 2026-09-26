@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // TestSSEEquivalence is the regression guard for the riskiest change in the
@@ -96,7 +96,7 @@ func sseCases() []sseCase {
 
 // runSSE drives one case through the plugin's frame path and returns the settled
 // cost event, if any.
-func runSSE(t *testing.T, p *billing, c sseCase) (costevent.Event, bool) {
+func runSSE(t *testing.T, p *billing, c sseCase) (event.Event, bool) {
 	t.Helper()
 	pctx := &pipeline.Context{
 		Path:            "/v1/messages?beta=true",
@@ -120,7 +120,7 @@ func runSSE(t *testing.T, p *billing, c sseCase) (costevent.Event, bool) {
 
 	raw, ok := pctx.Extensions.Custom[p.Name()+pipeline.PluginEventSuffix]
 	if !ok {
-		return costevent.Event{}, false
+		return event.Event{}, false
 	}
 	// Round-trip through JSON exactly as the listener does, so the test exercises
 	// the wire shape rather than the in-memory struct.
@@ -128,7 +128,7 @@ func runSSE(t *testing.T, p *billing, c sseCase) (costevent.Event, bool) {
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
 	}
-	var ev costevent.Event
+	var ev event.Event
 	if err := json.Unmarshal(b, &ev); err != nil {
 		t.Fatalf("unmarshal event: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestSSEEquivalence_HeaderCostStillWins(t *testing.T) {
 	p := newPricedBudgetTrack(t)
 	pctx := &pipeline.Context{Path: "/v1/messages", Host: "gw.internal", ResponseHeaders: http.Header{}}
 	pctx.ResponseHeaders.Set("Content-Type", "application/json")
-	pctx.ResponseHeaders.Set(costing.ResponseCostHeader, "0.25")
+	pctx.ResponseHeaders.Set(settle.ResponseCostHeader, "0.25")
 	frames := []string{`{"usage":{"input_tokens":1000,"output_tokens":500}}`}
 	primeInference(t, pctx, frames, p.rates)
 
@@ -167,15 +167,15 @@ func TestSSEEquivalence_HeaderCostStillWins(t *testing.T) {
 		t.Fatal("no cost event")
 	}
 	b, _ := json.Marshal(raw)
-	var ev costevent.Event
+	var ev event.Event
 	if err := json.Unmarshal(b, &ev); err != nil {
 		t.Fatal(err)
 	}
 	if ev.CostUSD != 0.25 {
 		t.Errorf("cost = %v, want the header's 0.25", ev.CostUSD)
 	}
-	if ev.Source != costevent.SourceGatewayHeader {
-		t.Errorf("source = %q, want %q", ev.Source, costevent.SourceGatewayHeader)
+	if ev.Source != event.SourceGatewayHeader {
+		t.Errorf("source = %q, want %q", ev.Source, event.SourceGatewayHeader)
 	}
 }
 
@@ -202,7 +202,7 @@ func primeInference(t *testing.T, pctx *pipeline.Context, frames []string, rates
 	// true or it treats a single last=true frame as a buffered JSON body.
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{
 		Model:  "claude-opus-5",
-		Stream: costing.IsEventStream(pctx),
+		Stream: settle.IsEventStream(pctx),
 	}
 	for i, f := range frames {
 		ip.OnResponseFrame(context.Background(), pctx, []byte(f), i == len(frames)-1)

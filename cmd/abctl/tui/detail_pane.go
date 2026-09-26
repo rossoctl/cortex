@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized
@@ -166,8 +166,8 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	// yanked file still holds exactly what went over the wire — the same split this
 	// function already makes for identity, one line down.
 	if pl, ok := m["plugins"].(map[string]any); ok {
-		if _, current := pl[costevent.Key]; current {
-			delete(pl, costevent.PluginName)
+		if _, current := pl[event.Key]; current {
+			delete(pl, event.PluginName)
 		}
 	}
 	// Identity is summarized at the session level (events pane banner).

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/core/config"
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	// REGISTERED BY IMPORTING IT, which is how a deployment gets it too: the plugin's init
@@ -16,8 +16,8 @@ import (
 	// pipeline naming it. Blank because nothing here calls the package directly — the point is
 	// to reach the real plugin through the same registry and the same builder production uses,
 	// rather than constructing it and hand-wiring a resolver.
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	_ "github.com/rossoctl/cortex/core/plugins/inferenceparser"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // THE COST RECORD, COMPARED ACROSS ALL THREE LISTENERS, WITH THE REAL COST OWNER WIRED.
@@ -122,7 +122,7 @@ const modelledWholeUSD = (1000*7 + 200*3 + 500*23) / 1e6
 // costFixture pairs a parity fixture with the record every listener must produce for it.
 type costFixture struct {
 	fixture
-	want costevent.Event
+	want event.Event
 }
 
 func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
@@ -148,9 +148,9 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.upstreamBody = []byte(anthropicBuffered)
 			return f
 		}(),
-		want: costevent.Event{
+		want: event.Event{
 			CostUSD:    modelledWholeUSD,
-			Source:     costevent.SourceUsageFallback,
+			Source:     event.SourceUsageFallback,
 			Provenance: pricing.ProvConfigured.String(),
 			Settled:    true,
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
@@ -164,12 +164,12 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.reqBody = []byte(anthropicRequest)
 			f.upstreamStatus = 200
 			f.upstreamBody = []byte(anthropicBuffered)
-			f.upstreamHeaders = map[string]string{costing.ResponseCostHeader: "0.0075"}
+			f.upstreamHeaders = map[string]string{settle.ResponseCostHeader: "0.0075"}
 			return f
 		}(),
-		want: costevent.Event{
+		want: event.Event{
 			CostUSD:    0.0075,
-			Source:     costevent.SourceGatewayHeader,
+			Source:     event.SourceGatewayHeader,
 			Provenance: pricing.ProvAuthoritative.String(),
 			Settled:    true,
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
@@ -187,12 +187,12 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.upstreamBody = []byte(anthropicStreamed)
 			// LiteLLM's placeholder zero on a stream: it means nothing, and treating it as a
 			// declared-free call would publish $0 for a turn that cost money.
-			f.upstreamHeaders = map[string]string{costing.ResponseCostHeader: "0"}
+			f.upstreamHeaders = map[string]string{settle.ResponseCostHeader: "0"}
 			return f
 		}(),
-		want: costevent.Event{
+		want: event.Event{
 			CostUSD:    modelledWholeUSD,
-			Source:     costevent.SourceUsageFallback,
+			Source:     event.SourceUsageFallback,
 			Provenance: pricing.ProvConfigured.String(),
 			Settled:    true,
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
@@ -208,11 +208,11 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.reqBody = []byte(`{"input":"hi"}`)
 			f.upstreamStatus = 200
 			f.upstreamBody = []byte(`{"data":[]}`)
-			f.upstreamHeaders = map[string]string{costing.ResponseCostHeader: "1000000000"}
+			f.upstreamHeaders = map[string]string{settle.ResponseCostHeader: "1000000000"}
 			return f
 		}(),
-		want: costevent.Event{
-			RejectedReason: costevent.RejectedImplausible,
+		want: event.Event{
+			RejectedReason: event.RejectedImplausible,
 			// "none" rather than empty: NewRecord stringifies the provenance whatever it is, and
 			// a refused figure has none. Worth pinning — a consumer rendering provenance beside
 			// the money needs the refusal to read as "no rates were involved" and not as a gap
@@ -231,12 +231,12 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.reqBody = []byte(`{"input":"hi"}`)
 			f.upstreamStatus = 200
 			f.upstreamBody = []byte(`{"data":[]}`)
-			f.upstreamHeaders = map[string]string{costing.ResponseCostHeader: "0.25"}
+			f.upstreamHeaders = map[string]string{settle.ResponseCostHeader: "0.25"}
 			return f
 		}(),
-		want: costevent.Event{
+		want: event.Event{
 			CostUSD:    0.25,
-			Source:     costevent.SourceGatewayHeader,
+			Source:     event.SourceGatewayHeader,
 			Provenance: pricing.ProvAuthoritative.String(),
 			Settled:    true,
 			// No halves: there is no usage to model on a path the parser could not read, and
@@ -258,13 +258,13 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			f.upstreamStatus = 200
 			f.upstreamContentType = "text/event-stream"
 			f.upstreamBody = []byte(anthropicStreamed)
-			f.upstreamHeaders = map[string]string{costing.ResponseCostHeader: "0"}
+			f.upstreamHeaders = map[string]string{settle.ResponseCostHeader: "0"}
 			f.splitResponseBodyAt = splitInsideOutputTally
 			return f
 		}(),
-		want: costevent.Event{
+		want: event.Event{
 			CostUSD:    modelledWholeUSD,
-			Source:     costevent.SourceUsageFallback,
+			Source:     event.SourceUsageFallback,
 			Provenance: pricing.ProvConfigured.String(),
 			Settled:    true,
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
@@ -295,7 +295,7 @@ func TestCostRecordParity(t *testing.T) {
 				// Collected in this scope for the reason parity_test.go's loop explains: a
 				// comparison assembled inside a subtest closure compares nothing the moment the
 				// subtests run in parallel, and passes.
-				records := map[string]*costevent.Event{}
+				records := map[string]*event.Event{}
 				for _, l := range listeners {
 					obs := l.run(t, cf.fixture, pipeline.SessionResponse)
 					if obs == nil {
@@ -334,7 +334,7 @@ func TestCostRecordParity(t *testing.T) {
 
 // assertRecord compares the fields that carry money or qualify it, naming each one, because a
 // reflect.DeepEqual failure over the whole struct says "these differ" and not which claim broke.
-func assertRecord(t *testing.T, listener string, got, want costevent.Event) {
+func assertRecord(t *testing.T, listener string, got, want event.Event) {
 	t.Helper()
 	if got.CostUSD != want.CostUSD {
 		t.Errorf("%s: CostUSD = %v, want %v", listener, got.CostUSD, want.CostUSD)
@@ -369,30 +369,30 @@ func assertRecord(t *testing.T, listener string, got, want costevent.Event) {
 }
 
 // costRecord decodes the cost record off an observation, or nil when the turn published none.
-func costRecord(t *testing.T, listener string, obs *observation) *costevent.Event {
+func costRecord(t *testing.T, listener string, obs *observation) *event.Event {
 	t.Helper()
 	// THE WIRE KEY, NOT THE CONTEXT KEY. A plugin publishes under "<key>.event" on the pctx and
 	// SnapshotPlugins strips that suffix when it writes the session event, so looking for the
 	// context key here finds nothing and reads as "no record published" — which is a false
-	// FAILURE, but the same mistake in a consumer is a false zero. costevent.Record accepts
+	// FAILURE, but the same mistake in a consumer is a false zero. event.Record accepts
 	// either the concern name or the producer's, so both are tried.
-	raw, ok := obs.PluginEventJSON[costevent.Key]
+	raw, ok := obs.PluginEventJSON[event.Key]
 	if !ok {
-		// costevent.PluginName is deprecated in favour of the concern-named key, and reading it
+		// event.PluginName is deprecated in favour of the concern-named key, and reading it
 		// here is the point: Record accepts EITHER, so a consumer written against the old key must
 		// keep working. Nothing else in this repo should reach for it.
-		if raw, ok = obs.PluginEventJSON[costevent.PluginName]; !ok { //nolint:staticcheck // deliberate: the compatibility key Record still accepts
+		if raw, ok = obs.PluginEventJSON[event.PluginName]; !ok { //nolint:staticcheck // deliberate: the compatibility key Record still accepts
 			return nil
 		}
 	}
-	var ev costevent.Event
+	var ev event.Event
 	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
 		t.Fatalf("%s: decoding the cost record: %v (raw %s)", listener, err, raw)
 	}
 	return &ev
 }
 
-func mustJSON(t *testing.T, ev costevent.Event) string {
+func mustJSON(t *testing.T, ev event.Event) string {
 	t.Helper()
 	b, err := json.Marshal(ev)
 	if err != nil {

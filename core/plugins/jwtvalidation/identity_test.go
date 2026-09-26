@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/contracts"
+	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
 )
 
@@ -28,7 +28,7 @@ func TestClaimsIdentity_BasicAccessors(t *testing.T) {
 
 func TestClaimsIdentity_ClaimsCarrier(t *testing.T) {
 	// Compile-time + runtime: the adapter is a ClaimsCarrier.
-	var cc contracts.ClaimsCarrier = claimsIdentity{c: &validation.Claims{
+	var cc capabilities.ClaimsCarrier = claimsIdentity{c: &validation.Claims{
 		Subject:   "alice",
 		Issuer:    "https://kc/realms/rossoctl",
 		Audience:  []string{"hr-agent", "github-tool"},

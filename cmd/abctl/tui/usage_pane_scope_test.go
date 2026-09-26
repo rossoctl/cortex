@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // TestUsageScopeMax_CoversTheWidestHeader recomputes usageScopeMax's allowance from the sources

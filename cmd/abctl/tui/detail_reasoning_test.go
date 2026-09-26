@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/usage"
 )
 
 // The detail pane is where the EXACT reasoning figure lives.

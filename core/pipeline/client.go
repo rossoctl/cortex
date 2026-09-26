@@ -70,7 +70,7 @@ type EventClient struct {
 // FORWARD REFERENCES BELOW. This lands ahead of the two packages that consume
 // Label(): the usage aggregator's byAgent series and the durable cost ledger
 // (`costledger`, which does not exist yet). Both arrive later in this series, so
-// `costledger.*` names in this file are the shape the rule takes there rather than
+// `ledger.*` names in this file are the shape the rule takes there rather than
 // symbols that resolve today. `usage.*` names do resolve.
 //
 // 128 is well beyond any real agent's product token and version. Cardinality is
@@ -285,7 +285,7 @@ func ParseUserAgent(ua string) *EventClient {
 	// bound. See sanitizeUA for what the first step removes and maxClientLen for what the
 	// second one is for.
 	//
-	// THE ORDER IS LOAD-BEARING, in the same direction as costledger.rowLabel's: a
+	// THE ORDER IS LOAD-BEARING, in the same direction as ledger.rowLabel's: a
 	// substitution can triple the string, so capping first would let 128 control bytes
 	// become 384 in a label whose whole purpose is to be bounded. Capping last can land
 	// mid-U+FFFD, which is why capUA cuts on a rune boundary. The transient cost of
@@ -329,7 +329,7 @@ func ParseUserAgent(ua string) *EventClient {
 // EXPORTED so there is exactly one definition of it. Both surfaces that serve
 // group=agent have to agree on this string: the live aggregator keys its series on
 // Label() directly, while the cost ledger stores absence losslessly as "" and maps it
-// back at the query boundary (see costledger.labelFor). Those are two different code
+// back at the query boundary (see ledger.labelFor). Those are two different code
 // paths reaching the same bucket, so two spellings would surface as two rows in any
 // client that merged a ring answer with a ledger answer — and each row would hold half the
 // unattributed spend, which is worse than either alone. A matching literal in both packages

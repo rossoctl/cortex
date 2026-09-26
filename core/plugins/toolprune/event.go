@@ -15,7 +15,7 @@ import (
 // depends on which prompt-cache tier the saving came out of and that is only known from the
 // response. The conclusion was right and the remedy was backwards: the money step belongs
 // where both halves are in hand, which is the cost owner on the response side. It publishes
-// the priced saving in costevent.Event.Avoided, attributed to this plugin, so no consumer
+// the priced saving in event.Event.Avoided, attributed to this plugin, so no consumer
 // needs rates and none of them can disagree about the figure.
 //
 // No body content: the session store is unauthenticated, so this holds counts,

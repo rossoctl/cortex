@@ -10,8 +10,8 @@ import (
 	// for why a skip here would be worse than no test.
 	_ "time/tzdata"
 
-	"github.com/rossoctl/cortex/core/costledger"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // dayBoundaryCase is one zone and date, and where its local day actually begins.
@@ -54,7 +54,7 @@ var dayBoundaryCases = []dayBoundaryCase{
 //
 // This package is where the two meet, so this is where the join is asserted: build a ledger
 // whose clock is in the zone, write costed minutes on both sides of the boundary, ask
-// window=today for its bounds and hand exactly those to costledger.Window. What comes back
+// window=today for its bounds and hand exactly those to ledger.Window. What comes back
 // must be precisely the rows whose local date is the date in question.
 //
 // MEASURED WITH THE OLD BOUND, to say what it cost rather than that it was wrong: in
@@ -86,9 +86,9 @@ func TestTodayWindowAndLedgerDayAgreeInEveryZone(t *testing.T) {
 			// The ledger's clock zone IS its day boundary (see costledger's store.loc), and in
 			// production both it and ParseWindowSpec read time.Now(), so pinning them to the
 			// same zone here is the production arrangement rather than a convenience.
-			led, err := costledger.New(t.TempDir(), costledger.WithClock(func() time.Time { return now }))
+			led, err := ledger.New(t.TempDir(), ledger.WithClock(func() time.Time { return now }))
 			if err != nil {
-				t.Fatalf("costledger.New: %v", err)
+				t.Fatalf("ledger.New: %v", err)
 			}
 			t.Cleanup(func() { _ = led.Close() })
 

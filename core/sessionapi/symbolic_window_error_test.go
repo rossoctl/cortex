@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // THE REFUSAL MUST NAME THE WINDOW THE CALLER USED, for every symbolic window there is.

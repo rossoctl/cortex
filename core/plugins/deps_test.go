@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // pricedPlugin records what was injected and when, so the tests can assert the

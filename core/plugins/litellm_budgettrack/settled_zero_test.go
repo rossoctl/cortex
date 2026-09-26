@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/rossoctl/cortex/core/costevent"
-	"github.com/rossoctl/cortex/core/costing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // A settled zero must be published for exactly one case and no other. The bool this
@@ -73,7 +73,7 @@ func TestSettledZero_OnlyForADeclaredFreeCall(t *testing.T) {
 			p := unpriced(t)
 			h := http.Header{}
 			if tc.header != "" {
-				h.Set(costing.ResponseCostHeader, tc.header)
+				h.Set(settle.ResponseCostHeader, tc.header)
 			}
 			if tc.streamed {
 				h.Set("Content-Type", "text/event-stream")
@@ -115,8 +115,8 @@ func TestSettledZero_StreamedZeroStillPricesFromUsage(t *testing.T) {
 		pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6,
 	})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
-		costing.ResponseCostHeader: {"0"},
-		"Content-Type":             {"text/event-stream"},
+		settle.ResponseCostHeader: {"0"},
+		"Content-Type":            {"text/event-stream"},
 	}}
 	pricedInference(pctx, 1000, 0, 0, 100)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -131,8 +131,8 @@ func TestSettledZero_StreamedZeroStillPricesFromUsage(t *testing.T) {
 	if want := 1000*1e-6 + 100*5e-6; ev.CostUSD < want-1e-12 || ev.CostUSD > want+1e-12 {
 		t.Errorf("cost = %v, want %v", ev.CostUSD, want)
 	}
-	if ev.Source != costevent.SourceUsageFallback {
-		t.Errorf("source = %q, want %q", ev.Source, costevent.SourceUsageFallback)
+	if ev.Source != event.SourceUsageFallback {
+		t.Errorf("source = %q, want %q", ev.Source, event.SourceUsageFallback)
 	}
 }
 

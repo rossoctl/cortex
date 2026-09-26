@@ -47,7 +47,7 @@ func WithReloadStatus(h http.Handler) Option {
 }
 
 // WithPricingTable registers a /pricing/table handler (typically the Handler returned
-// by an core/pricing.Registry). Omit when pricing isn't wired up.
+// by an core/cost/pricing.Registry). Omit when pricing isn't wired up.
 //
 // It answers what a config file cannot: the rates in effect come from the operator's
 // `pricing:` section PLUS a table compiled into the binary PLUS any shipped gateway

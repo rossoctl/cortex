@@ -321,7 +321,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 // URL from execEnv — so a refusal points at the thing the reader can go and change.
 // errBridgeDisabled already took this parameter for exactly that reason; this
 // applies the same reasoning to the forward_proxy_addr refusal, which had lost the
-// path when the derivation became shared.
+// path when the derivation became memstore.
 func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, error) {
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {

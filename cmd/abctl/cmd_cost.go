@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pricing"
-	"github.com/rossoctl/cortex/core/usage"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 
@@ -463,7 +463,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer) {
 	// THREE WORDS OF CAVEAT, none of them optional. The figure is an ESTIMATE (a
 	// bytes-to-tokens ratio, not a tokenizer), it is GROSS (nothing subtracts the prompt-cache
 	// re-warm a list change costs), and it is NOT DEDUCTED from the total above (the invariant
-	// on costevent.Event.Avoided forbids any consumer adding it to spend, in either direction).
+	// on event.Event.Avoided forbids any consumer adding it to spend, in either direction).
 	// A reader who takes this as money in the bank has been misled by the line, not by the
 	// aggregate.
 	//

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	fwd "github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
-	"github.com/rossoctl/cortex/core/pricing"
 	"github.com/rossoctl/cortex/core/session"
 )
 

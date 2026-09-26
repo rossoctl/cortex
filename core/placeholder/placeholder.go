@@ -1,7 +1,7 @@
 // Package placeholder defines the convention for opaque credential
 // handles: a random "abph_" token the agent receives in place of the real
 // Authorization value, plus the namespaced key used to store the real
-// token in a shared store. The generic store itself (core/shared) holds
+// token in a shared store. The generic store itself (core/memstore) holds
 // no credential semantics.
 package placeholder
 

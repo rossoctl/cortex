@@ -6,7 +6,7 @@ import (
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 
-	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/cost/event"
 )
 
 // A RESPONSE THAT ENDS AFTER ITS HEADERS AND BEFORE ANY BODY MESSAGE STILL HAS TO SETTLE.
@@ -57,7 +57,7 @@ func TestExtProc_HeadersThenTeardownStillSettlesTheHeaderCost(t *testing.T) {
 		t.Fatal("no outbound response row recorded for a response that ended after its headers: " +
 			"the teardown flush is gated on a body message, so this shape finalizes nowhere")
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row (Plugins keys = %v): the gateway reported "+
 			"0.004 on the response headers and it reached no consumer", pluginKeys(ev))
@@ -142,7 +142,7 @@ func TestExtProc_SplitJSONResponseBodyIsParsedAsOneResponse(t *testing.T) {
 		t.Errorf("TotalTokens = %d, want 1500 — a body split across two messages was parsed as "+
 			"two responses, so neither fragment was valid JSON and the usage never landed", got)
 	}
-	rec, ok := costevent.Record(ev)
+	rec, ok := event.Record(ev)
 	if !ok {
 		t.Fatalf("no cost record on the response row (Plugins keys = %v)", pluginKeys(ev))
 	}
