@@ -28,7 +28,6 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 COPY core/ core/
-COPY storage/ storage/
 COPY cmd/authbridge-proxy/ cmd/authbridge-proxy/
 
 # Plugins are all opt-in, so a build with no tags registers none. Such an image

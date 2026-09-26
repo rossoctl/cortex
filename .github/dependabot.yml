@@ -85,7 +85,7 @@ updates:
 
   # Go - storage backends (direct deps: go-redis, miniredis)
   - package-ecosystem: gomod
-    directory: /storage/redis
+    directory: /core/storage/redis
     schedule:
       interval: weekly
 

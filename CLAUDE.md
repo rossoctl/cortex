@@ -100,7 +100,9 @@ cortex/
 │   ├── routing/                      #   Host-to-audience router
 │   ├── auth/                         #   HandleInbound + HandleOutbound composition
 │   ├── listener/                     #   All listener implementations (extproc, proxies)
-│   └── config/                       #   Mode presets, YAML config, validation
+│   ├── config/                       #   Mode presets, YAML config, validation
+│   └── storage/redis/                #   Redis driver for the storage.Store interface
+│                                     #   (its own module, nested but not part of core)
 │
 ├── cmd/authbridge-proxy/             # proxy-sidecar mode (default). Full plugin set.
 │   ├── main.go                       #   (the authbridge-lite image is this binary
@@ -149,9 +151,6 @@ cortex/
 │   ├── profile-tags/                 # Build-tag resolver: one profile per artifact
 │   ├── readme-demo/                  # Generates the README demo animation
 │   └── hooks/commit-msg              # Rewrites Co-Authored-By to Assisted-By
-│
-├── storage/redis/                    # Redis driver for the storage.Store interface
-│                                     # (its own module)
 │
 ├── deploy/                           # Cluster-side deployables that run beside the sidecar
 │   ├── proxy-init/                   #   iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
@@ -300,7 +299,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 - `core/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
 - `cmd/abctl/` — the TUI; also released as a standalone binary.
-- `storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
+- `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
 
 **Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
@@ -707,7 +706,7 @@ Hooks:
   `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,abctl,authbridge-praxis}`
   matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
-  build), `storage/redis`, and the three `demos/*` modules.
+  build), `core/storage/redis`, and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
   checkout and exits 0, so formatting drift cannot fail a build.
 
@@ -952,7 +951,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 ## Gotchas and Known Issues
 
-1. **Multiple Go modules:** The repo has 12 Go modules at the root — `core/`, each `cmd/*/`, `storage/redis/`, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first nine; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
+1. **Multiple Go modules:** The repo has 12 Go modules — `core/` and each `cmd/*/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first nine; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
 2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file` / `jwt_svid_path`) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
 

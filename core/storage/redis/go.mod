@@ -1,4 +1,4 @@
-module github.com/rossoctl/cortex/storage/redis
+module github.com/rossoctl/cortex/core/storage/redis
 
 go 1.26.5
 
@@ -15,4 +15,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/rossoctl/cortex/core => ../../core
+replace github.com/rossoctl/cortex/core => ../..

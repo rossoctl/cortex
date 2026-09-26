@@ -9,5 +9,5 @@ use (
 	./cmd/authbridge-proxy
 	./scripts/profile-tags
 	./scripts/readme-demo
-	./storage/redis
+	./core/storage/redis
 )

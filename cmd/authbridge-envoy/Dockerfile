@@ -20,7 +20,6 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 COPY core/ core/
-COPY storage/ storage/
 COPY cmd/authbridge-envoy/ cmd/authbridge-envoy/
 
 # Plugins are all opt-in; see the note in cmd/authbridge-proxy/Dockerfile. An
