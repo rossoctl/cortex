@@ -413,7 +413,7 @@ The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](htt
   - [Manual deployment](../demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
   - [UI deployment](../demos/github-issue/demo-ui.md) — import agent and tool via the Rossoctl dashboard
 - **[Token-Exchange Routes](../demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
-- **[Lineage Demo](../demos/lineage/README.md)** - Per-request data lineage from the sidecar on the Weather Agent pair, attached to the running Deployments with the [lineage attach kit](../lineage-attach/README.md); shows the same turn fragmented and then as one trace (no Keycloak involved)
+- **[Lineage Demo](../demos/lineage/README.md)** - Per-request data lineage from the sidecar on the Weather Agent pair, attached to the running Deployments with the [lineage attach kit](../deploy/lineage-attach/README.md); shows the same turn fragmented and then as one trace (no Keycloak involved)
 
 All demos except the Lineage Demo cover configuring Keycloak, deploying, and testing.
 
@@ -524,7 +524,7 @@ when `-tags include_plugin_<name>` is passed.
 - [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
 - `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
-- [proxy-init](../proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
+- [proxy-init](../deploy/proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](./) — framework architecture and plugin author references
 
 Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.

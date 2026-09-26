@@ -8,7 +8,7 @@ agent re-asks the user; the bad call never runs.
 
 SPARC is the `SPARCReflectionComponent` from the
 [`agent-lifecycle-toolkit`](https://pypi.org/project/agent-lifecycle-toolkit/) (ALTK) Python
-package, served over HTTP by the companion [SPARC reflection service](../sparc-service/README.md).
+package, served over HTTP by the companion [SPARC reflection service](../deploy/sparc-service/README.md).
 Because AuthBridge plugins are Go, this plugin calls the service over HTTP (the same shape
 `ibac` uses for its judge). All enforcement policy lives in the plugin; the service only
 returns SPARC's verdict.
@@ -69,17 +69,17 @@ grounded) is `<=` it, any reject is escalated to `deny`.
 
 ## Prerequisite: deploy the SPARC service
 
-The plugin is a thin client — it calls the [SPARC reflection service](../sparc-service/README.md)
+The plugin is a thin client — it calls the [SPARC reflection service](../deploy/sparc-service/README.md)
 over HTTP. **Deploy that service once per cluster before enabling this plugin**, or every tool call
 hits an unreachable reflector (and falls back to `fail_policy`). It's one command:
 
 ```bash
-cd sparc-service/deploy
+cd deploy/sparc-service/deploy
 export WX_API_KEY=... WX_PROJECT_ID=...   # or PROVIDER=ollama, openai, ...
 make install                              # deploys into rossoctl-system by default
 ```
 
-See [`sparc-service/deploy/README.md`](../sparc-service/deploy/README.md) for providers, the
+See [`deploy/sparc-service/deploy/README.md`](../deploy/sparc-service/deploy/README.md) for providers, the
 local-image path (`make image install` on kind), and configuration. Point `reflector_endpoint`
 below at the resulting service (`http://sparc-service.<namespace>.svc:8090`).
 
@@ -170,7 +170,7 @@ service never echoes provider exception text back to callers; details stay in it
 - Cost: one reflection round-trip per (non-skipped) tool call.
 
 ## See also
-- [`sparc-service/README.md`](../sparc-service/README.md) — the reflection service.
+- [`deploy/sparc-service/README.md`](../deploy/sparc-service/README.md) — the reflection service.
 - [`demos/finance-sparc/`](../demos/finance-sparc/README.md) — the end-to-end demo.
 - [`ibac-plugin.md`](ibac-plugin.md) — the complementary intent control.
 

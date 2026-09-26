@@ -117,7 +117,7 @@ echo ""
 echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
-cd "${REPO_ROOT}/proxy-init"
+cd "${REPO_ROOT}/deploy/proxy-init"
 ${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"

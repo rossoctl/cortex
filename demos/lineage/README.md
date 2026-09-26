@@ -2,7 +2,7 @@
 
 The [Weather Agent](../weather-agent/demo-ui.md) pair from `rossoctl/examples`
 — an A2A agent that asks an LLM and calls one MCP tool — deployed plain, then
-given per-request lineage with the [lineage attach kit](../../lineage-attach/README.md)
+given per-request lineage with the [lineage attach kit](../../deploy/lineage-attach/README.md)
 and nothing else. Six steps. You will see the same turn twice: first as
 **19 separate traces** (the entry alone and each of the app's 18 calls in a
 trace of its own, because the app does not carry `traceparent`), then as
@@ -10,8 +10,8 @@ trace of its own, because the app does not carry `traceparent`), then as
 app's own propagation is switched on. Nothing about the app is edited except
 one environment variable that the app itself defines.
 
-Read [the kit's README](../../lineage-attach/README.md) for what the spans
-carry and [DESIGN](../../lineage-attach/DESIGN.md) for why propagation is the
+Read [the kit's README](../../deploy/lineage-attach/README.md) for what the spans
+carry and [DESIGN](../../deploy/lineage-attach/DESIGN.md) for why propagation is the
 app's job; this page is only the walk-through.
 
 ## Prerequisites
@@ -21,13 +21,13 @@ app's job; this page is only the walk-through.
   its platform-rendered `envoy-config` ConfigMap, and the platform collector
   (`deploy/otel-collector` in `rossoctl-system`, stock `debug` exporter).
 - A sidecar image that carries `lineage-telemetry` (cortex #761): until a release does,
-  [RECIPE step 1](../../lineage-attach/RECIPE.md#1-a-sidecar-image-that-carries-the-plugin-once-per-cluster-until-a-release-does)
-  builds and loads it (run it from the kit's directory; its `cd ..` is
+  [RECIPE step 1](../../deploy/lineage-attach/RECIPE.md#1-a-sidecar-image-that-carries-the-plugin-once-per-cluster-until-a-release-does)
+  builds and loads it (run it from the kit's directory; its `cd ../..` is
   relative to there). Then, back in this directory, for the whole session:
 
   ```sh
   export SIDECAR_IMAGE=docker.io/library/authbridge-envoy:latest PROXY_INIT_IMAGE=docker.io/library/proxy-init:latest
-  export KIT=../../lineage-attach
+  export KIT=../../deploy/lineage-attach
   ```
 - An LLM the agent can reach over **plaintext HTTP** (an HTTPS LLM is TLS
   passthrough: the sidecar records no hop for it). Default: Ollama on the host
@@ -144,7 +144,7 @@ them.
 > different message), `$KIT/build-otel-shim.sh ghcr.io/rossoctl/examples/weather_service:latest`
 > exits 3 with `REFUSING to bake …: it already instruments httpx`. An app that
 > brings its own instrumentation gets its own switch; the shim is for the app
-> that brings none ([RECIPE step 2](../../lineage-attach/RECIPE.md#2-bake-the-propagation-shim-onto-the-app-image-once-per-image)).
+> that brings none ([RECIPE step 2](../../deploy/lineage-attach/RECIPE.md#2-bake-the-propagation-shim-onto-the-app-image-once-per-image)).
 > The tool image bakes, but it does not need to: its one call that matters is
 > HTTPS to `wttr.in`, which the sidecar passes through unseen, and its own
 > OTLP export (the tool's code defaults the endpoint to the collector's 8335;
@@ -217,4 +217,4 @@ application and the two readers.
 | step 5 still says `ENTRY ONLY` (or `FRAGMENTED`) | the agent did not restart with the variable — `kubectl -n team1 logs deploy/weather-service -c agent \| grep 'httpx instrumented'` |
 | the agent logs export failures after step 4 | wrong collector port: the stock chart serves OTLP/HTTP on `8335`, not `4318`; propagation works regardless, but the agent's own spans do not arrive |
 | the answer is a tool error about `wttr.in` | the tool needs egress to `https://wttr.in`; the sidecar passes HTTPS through, so this is cluster egress, not lineage |
-| anything about the attachment itself | the kit's [Troubleshooting](../../lineage-attach/README.md#troubleshooting) |
+| anything about the attachment itself | the kit's [Troubleshooting](../../deploy/lineage-attach/README.md#troubleshooting) |

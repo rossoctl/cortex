@@ -232,7 +232,7 @@ OPA engine and four fixed decision paths. Full details in the plugin's
 ## `sparc`
 
 Pre-tool reflection: sends proposed tool calls to a
-[SPARC reflection service](../sparc-service/README.md) — a companion
+[SPARC reflection service](../deploy/sparc-service/README.md) — a companion
 HTTP service wrapping the `SPARCReflectionComponent` from the
 [agent-lifecycle-toolkit](https://pypi.org/project/agent-lifecycle-toolkit/)
 (ALTK) package — and enforces the configured policy on the result. It

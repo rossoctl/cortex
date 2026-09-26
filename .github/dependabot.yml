@@ -97,6 +97,6 @@ updates:
 
   # Docker - proxy-init (iptables init container, envoy-sidecar mode)
   - package-ecosystem: docker
-    directory: /proxy-init
+    directory: /deploy/proxy-init
     schedule:
       interval: weekly

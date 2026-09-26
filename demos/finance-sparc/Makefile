@@ -37,7 +37,7 @@ AGENT_IMAGE := finance-agent:latest
 MCP_IMAGE   := finance-mcp:latest
 SPARC_IMAGE := sparc-service:latest
 # Shared SPARC-service installer (the demo deploys the service through it).
-SPARC_DEPLOY := ../../sparc-service/deploy
+SPARC_DEPLOY := ../../deploy/sparc-service/deploy
 # Pinned (must match k8s/ollama.yaml). Override only if you stage a different tag.
 OLLAMA_IMAGE := ollama/ollama:0.30.2
 # In-cluster Ollama (the agent's reasoning LLM for the watsonx path).
@@ -116,7 +116,7 @@ ollama-up:  ## ollama: use the host Ollama (Metal/GPU) for reasoning + reflectio
 endif
 
 build-images:  ## Build the agent, MCP server, and SPARC service images
-	@echo "[*] building $(SPARC_IMAGE)";  $(CONTAINER_RUNTIME) build -t $(SPARC_IMAGE) ../../sparc-service
+	@echo "[*] building $(SPARC_IMAGE)";  $(CONTAINER_RUNTIME) build -t $(SPARC_IMAGE) ../../deploy/sparc-service
 	@echo "[*] building $(AGENT_IMAGE)";  $(CONTAINER_RUNTIME) build -f finance-agent/Dockerfile -t $(AGENT_IMAGE) .
 	@echo "[*] building $(MCP_IMAGE)";    $(CONTAINER_RUNTIME) build -f finance-mcp/Dockerfile -t $(MCP_IMAGE) .
 

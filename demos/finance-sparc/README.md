@@ -73,13 +73,13 @@ make demo PROVIDER=ollama
 `make demo` is one-shot and idempotent. It: checks cluster egress (a no-op on healthy
 networks), builds + loads images (including an authbridge image carrying the `sparc` plugin),
 stages + warms the in-cluster Ollama model(s), deploys the SPARC service via the shared
-[installer](../../sparc-service/deploy/README.md), deploys the finance MCP server + agent,
+[installer](../../deploy/sparc-service/deploy/README.md), deploys the finance MCP server + agent,
 enables the pipeline, configures Keycloak, and drives the two-turn scenario **through real
 inbound auth** (no jwt bypass), printing SPARC's verdicts.
 
 > The SPARC service is the one piece you also need outside this demo. The demo deploys it for
 > you through the same one-command installer a user would run for any agent —
-> [`sparc-service/deploy`](../../sparc-service/deploy/README.md) — so there's a single, reusable
+> [`deploy/sparc-service/deploy`](../../deploy/sparc-service/deploy/README.md) — so there's a single, reusable
 > path. It must be deployed before the `sparc` plugin is enabled.
 
 ## How to read the output
@@ -121,7 +121,7 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
 | `finance-agent/` | A regular A2A agent: Ollama reasoning, MCP `tools/list` discovery, MCP tool execution. |
 | `finance-mcp/` | MCP server: `get_transaction`, `lookup_customer`, `issue_refund`, `get_invoice`, `list_currencies` over a small multi-record dataset (real id: `TX4827`). |
 | `k8s/sparc-patch.yaml` | Pipeline additions: `a2a-parser` inbound; `inference-parser` + `mcp-parser` + `sparc` outbound (mcp mode, fast_track, reflect, `skip_tools: [list_currencies]`). |
-| `k8s/{agent,finance-mcp}.yaml` | Demo workload manifests. (The SPARC service itself is deployed via the shared installer at [`sparc-service/deploy/`](../../sparc-service/deploy/README.md).) |
+| `k8s/{agent,finance-mcp}.yaml` | Demo workload manifests. (The SPARC service itself is deployed via the shared installer at [`deploy/sparc-service/deploy/`](../../deploy/sparc-service/deploy/README.md).) |
 | `k8s/ollama.yaml` | In-cluster Ollama for the agent's reasoning model on the **watsonx** path; model staged onto the node — no host networking. (The `PROVIDER=ollama` path uses your host Ollama instead.) |
 | `scripts/host-setup.sh` | Generic egress check (no-op on healthy networks; portable MSS clamp only if the link blackholes PMTUD). |
 | `scripts/stage-ollama-model.sh` | Copies a model from the host Ollama store onto the kind node (local, no pull). |
@@ -185,5 +185,5 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
 
 ## See also
 - [`docs/sparc-plugin.md`](../../docs/sparc-plugin.md) — plugin reference (config, modes).
-- [`sparc-service/README.md`](../../sparc-service/README.md) — the reflection service.
+- [`deploy/sparc-service/README.md`](../../deploy/sparc-service/README.md) — the reflection service.
 - [`demos/ibac/`](../ibac/README.md) — complementary intent control (SPARC verifies grounding; IBAC verifies intent).

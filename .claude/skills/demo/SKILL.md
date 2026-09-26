@@ -59,7 +59,7 @@ docker build -f cmd/authbridge-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:latest .
 
-cd proxy-init
+cd deploy/proxy-init
 docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
 
 # Load into Kind

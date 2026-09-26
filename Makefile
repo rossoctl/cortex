@@ -26,7 +26,7 @@ fmt: ## Run formatters across all sub-projects
 	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
 	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
 	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
-	@# `--exclude tests` also drops sparc-service/tests, and `--exclude /tests`
+	@# `--exclude tests` also drops deploy/sparc-service/tests, and `--exclude /tests`
 	@# stops excluding root tests/ entirely.
 	ruff format . --exclude ./tests
 
@@ -36,7 +36,7 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 ##@ Sub-project Targets
 
 build-proxy-init: ## Build the proxy-init iptables init container
-	cd proxy-init && make docker-build-init
+	cd deploy/proxy-init && make docker-build-init
 
 pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
 ifndef COMMIT

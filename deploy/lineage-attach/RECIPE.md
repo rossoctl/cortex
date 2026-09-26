@@ -29,8 +29,8 @@ The plugin is cortex #761: build from a tree that carries `authlib/plugins/linea
 (`main` once #761 has merged; the #761 branch until then).
 
 ```sh
-( cd .. && podman build -f cmd/authbridge-envoy/Dockerfile -t docker.io/library/authbridge-envoy:latest . \
-            && podman build -f proxy-init/Dockerfile.init -t docker.io/library/proxy-init:latest proxy-init/ )
+( cd ../.. && podman build -f cmd/authbridge-envoy/Dockerfile -t docker.io/library/authbridge-envoy:latest . \
+            && podman build -f deploy/proxy-init/Dockerfile.init -t docker.io/library/proxy-init:latest deploy/proxy-init/ )
 for ref in authbridge-envoy proxy-init; do podman save docker.io/library/$ref:latest -o /tmp/$ref.tar \
   && KIND_EXPERIMENTAL_PROVIDER=podman kind load image-archive /tmp/$ref.tar --name rossoctl; rm -f /tmp/$ref.tar; done
 export SIDECAR_IMAGE=docker.io/library/authbridge-envoy:latest PROXY_INIT_IMAGE=docker.io/library/proxy-init:latest

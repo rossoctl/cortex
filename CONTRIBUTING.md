@@ -31,10 +31,10 @@ cd cortex
 # Install pre-commit hooks
 pre-commit install
 
-# Build the proxy-init image (one-target Makefile in proxy-init/).
+# Build the proxy-init image (one-target Makefile in deploy/proxy-init/).
 # For every image at once, use scripts/local-build-and-test.sh —
 # see "Testing against a local cluster" below.
-cd proxy-init && make docker-build-init
+cd deploy/proxy-init && make docker-build-init
 ```
 
 Most day-to-day work needs no cluster: `make abctl` / `make authbridge-proxy`

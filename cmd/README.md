@@ -66,7 +66,7 @@ local single-host setups typically pin them all to `127.0.0.1`. `authbridge-prox
 [`docs/laptop-token-savings.md`](../docs/laptop-token-savings.md).
 
 `8082` and `8083` are the iptables REDIRECT targets installed by
-[`proxy-init`](../proxy-init/) and must match its `TRANSPARENT_PORT` /
+[`proxy-init`](../deploy/proxy-init/) and must match its `TRANSPARENT_PORT` /
 `INBOUND_TRANSPARENT_PORT`. A mismatch redirects traffic to a dead port.
 
 **Envoy-sidecar (`authbridge-envoy`):**
@@ -83,9 +83,9 @@ local single-host setups typically pin them all to `127.0.0.1`. `authbridge-prox
 - **Default deployment**: use `authbridge-proxy`. No Envoy, observable via
   abctl. Cooperative egress (HTTP_PROXY) needs no iptables; the always-on
   `enforce-redirect` egress guard and the opt-in transparent inbound listener
-  both use [`proxy-init`](../proxy-init/).
+  both use [`proxy-init`](../deploy/proxy-init/).
 - **Need ambient/transparent interception via Envoy**: use
-  `authbridge-envoy`. Requires the [`proxy-init`](../proxy-init/)
+  `authbridge-envoy`. Requires the [`proxy-init`](../deploy/proxy-init/)
   iptables init container.
 - **Size-constrained, no protocol-aware events needed**: use the
   `authbridge-lite` image — the `authbridge-proxy` binary built with the

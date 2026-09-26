@@ -132,12 +132,6 @@ cortex/
 │
 ├── cmd/README.md                     # Which binary pins which deployment shape
 │
-├── proxy-init/                       # iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
-│   ├── init-iptables.sh              #   iptables setup script
-│   ├── Dockerfile.init               #   proxy-init container image
-│   ├── Makefile                      #   docker-build-init + load-image targets
-│   └── README.md
-│
 ├── docs/                             # Plugin + framework reference, proposals, assets
 │   ├── architecture.md               #   How a request flows through the pipeline
 │   ├── plugin-reference.md           #   Producer-side plugin contract
@@ -157,8 +151,14 @@ cortex/
 ├── storage/redis/                    # Redis driver for the storage.Store interface
 │                                     # (its own module)
 │
-├── sparc-service/                    # Python SPARC reflection service (own image)
-├── lineage-attach/                   # OTel shim + scripts for lineage propagation
+├── deploy/                           # Cluster-side deployables that run beside the sidecar
+│   ├── proxy-init/                   #   iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
+│   │   ├── init-iptables.sh          #     iptables setup script
+│   │   ├── Dockerfile.init           #     proxy-init container image
+│   │   ├── Makefile                  #     docker-build-init + load-image targets
+│   │   └── README.md
+│   ├── sparc-service/                #   Python SPARC reflection service (own image)
+│   └── lineage-attach/               #   OTel shim + scripts for lineage propagation
 │
 ├── demos/                            # 12 scenarios — see demos/README.md for the order
 │   ├── weather-agent/                #   Getting started (+ advanced, + abctl walkthrough)
@@ -200,8 +200,8 @@ the full enumeration — kept as the single list rather than repeated here.
 
 **Common:**
 - `authlib/` — shared auth library (JWT validation, token exchange, caching, routing, all listener implementations, all plugins).
-- `proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
-- `proxy-init/Dockerfile.init` — proxy-init container image.
+- `deploy/proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
+- `deploy/proxy-init/Dockerfile.init` — proxy-init container image.
 
 **Ports (envoy-sidecar):** 15123 (outbound), 15124 (inbound), 9090 (ext-proc), 9901 (admin)
 **Ports (proxy-sidecar / lite):** 8080 (reverse proxy), 8081 (forward proxy), 9091 (health), 9093 (stats), 9094 (session API)
@@ -673,8 +673,8 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | `authbridge-envoy` | `cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/authbridge-proxy/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
 | `authbridge-cpex` | `cmd/authbridge-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/authbridge-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/authbridge-cpex/CPEX_FFI_VERSION` |
-| `proxy-init` | `proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
-| `sparc-service` | `sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
+| `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
+| `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
 None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
 longer gates anything. SPIRE credentials are fetched in-process by
@@ -802,10 +802,10 @@ so run these from the top of the checkout:
 
 ```bash
 # proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
-cd proxy-init
+cd deploy/proxy-init
 make docker-build-init
 make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
-cd ..
+cd ../..
 
 # Sidecar images. Pick whichever you need; the operator selects the image per
 # workload from the resolved AuthBridge mode.
@@ -868,10 +868,10 @@ For an interactive walkthrough see
 - Direction detection: `x-authbridge-direction: inbound` header (injected by Envoy inbound listener config)
 
 ### Adding New iptables Rules
-- Edit `proxy-init/init-iptables.sh`
+- Edit `deploy/proxy-init/init-iptables.sh`
 - Follow the existing pattern: document the rule's purpose, Istio interaction, and chain ordering
 - Test with and without Istio ambient mesh if possible
-- Rebuild from `proxy-init/`: `make docker-build-init && make load-image`
+- Rebuild from `deploy/proxy-init/`: `make docker-build-init && make load-image`
   (the target is `load-image`, singular — `load-images` does not exist)
 
 ### Modifying Client Registration
@@ -929,7 +929,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 ### Shell Scripts
 - Strict mode where it is safe to add: `scripts/local-build-and-test.sh` uses
-  `set -euo pipefail`, `install.sh` uses `set -eu`. **`proxy-init/init-iptables.sh`
+  `set -euo pipefail`, `install.sh` uses `set -eu`. **`deploy/proxy-init/init-iptables.sh`
   is `set -e` only** — do not "fix" it to `pipefail` without testing, its iptables
   probes rely on tolerated failures.
 - Extensive inline documentation (especially `init-iptables.sh`, which explains

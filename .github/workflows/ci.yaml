@@ -260,7 +260,7 @@ jobs:
       # ztunnel-mark RETURN. That ordering decides whether mesh-delivered traffic
       # is validated or waved through, and nothing else in CI covers it.
       - name: Test enforce-redirect + transparent inbound rules
-        run: sudo -E proxy-init/test-enforce-redirect.sh
+        run: sudo -E deploy/proxy-init/test-enforce-redirect.sh
 
   python-test:
     name: Python Tests
