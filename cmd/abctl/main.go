@@ -60,7 +60,7 @@ Usage:
   abctl service <action>     run Cortex as a service: install, uninstall,
                              status, stop, start, restart
   abctl configure <agent>    point a coding agent at Cortex: claude-code,
-                             bob, codex, opencode
+                             bobshell, codex, opencode
   abctl exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                              environment, for tools with no settings file
   abctl tools <action>       tool-definition costs: scan
