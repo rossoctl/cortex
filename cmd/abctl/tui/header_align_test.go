@@ -10,9 +10,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // A COLUMN'S HEADER MUST SIT OVER ITS OWN VALUES.

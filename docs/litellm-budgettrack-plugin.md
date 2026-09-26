@@ -43,7 +43,7 @@ The plugin hooks:
 ### Cost source (what the terminal frame charges)
 
 **Since cortex #972 this plugin does not settle the cost itself.** `inference-parser` does,
-via `authlib/costing`, because it is the component that knows when token usage is final; this
+via `core/costing`, because it is the component that knows when token usage is final; this
 plugin bills the published figure, adds the day's total, enforces the cap, and reports drift.
 The two sources below are still the rule — they just live in one place now, shared with every
 other consumer of a cost, instead of being implemented here and again in the usage
@@ -82,7 +82,7 @@ The cost is settled **once**, on the terminal frame, from one of two sources:
 
 | File | Purpose |
 |------|---------|
-| `authlib/plugins/litellm_budgettrack/plugin.go` | Plugin implementation |
+| `core/plugins/litellm_budgettrack/plugin.go` | Plugin implementation |
 | `cmd/authbridge-proxy/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
 
 ## Plugin Configuration
@@ -220,12 +220,12 @@ an `Invocation` with these `details`:
 
 ### Consumers
 
-The event's wire shape is declared once, in `authlib/costevent` (`costevent.Event`,
+The event's wire shape is declared once, in `core/costevent` (`costevent.Event`,
 published under `costevent.PluginName`). Producer and consumers share that one
 declaration rather than each keeping a private copy, so a field rename is a
 compile error rather than a silently blank column:
 
-- **The usage aggregator** (`authlib/usage`) records `cost_usd` into
+- **The usage aggregator** (`core/usage`) records `cost_usd` into
   `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
   reports the same figure this plugin enforces its budget against.
 - **`abctl`** renders the per-request figure in its events pane, and the window
@@ -258,7 +258,7 @@ The registration file uses the standard build-tag pattern:
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/litellm_budgettrack"
+import _ "github.com/rossoctl/cortex/core/plugins/litellm_budgettrack"
 ```
 
 ## Integration with Cortex
@@ -282,7 +282,7 @@ the plugin is the only cost-tracking mechanism.
 ## Testing
 
 ```bash
-cd authlib/plugins/litellm_budgettrack
+cd core/plugins/litellm_budgettrack
 
 # Run the plugin in a test pipeline
 go test -v ./...

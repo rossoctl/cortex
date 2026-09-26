@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // localProbeTimeout bounds the "is a local Cortex actually up?" check. It runs

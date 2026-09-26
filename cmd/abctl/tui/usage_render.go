@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // Bar geometry. Four columns wide with a one-column gap, so ten bars occupy 49
@@ -692,7 +692,7 @@ func snapshotDamaged(d *usage.Degraded) bool { return d != nil }
 // A negative total is not a total. The session API refuses to publish one — cost is a
 // sum of per-request figures that are themselves non-negative — so this can only fire
 // against a broken or hostile producer. THE GUARANTEE IS UPSTREAM, in
-// authlib/sessionapi, and nothing here re-derives it: this is DEFENCE IN DEPTH, a
+// core/sessionapi, and nothing here re-derives it: this is DEFENCE IN DEPTH, a
 // refusal to render a figure that contradicts a promise made on the other side of the
 // wire.
 //

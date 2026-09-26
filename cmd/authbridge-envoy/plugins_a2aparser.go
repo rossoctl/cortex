@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/a2aparser"
+import _ "github.com/rossoctl/cortex/core/plugins/a2aparser"

@@ -10,9 +10,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rossoctl/cortex/authlib/clientstate"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
+	"github.com/rossoctl/cortex/core/clientstate"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
 // Everything Cortex writes for a user lives under ~/.cortex, so a laptop ends up
@@ -68,7 +68,7 @@ const bridgeCACommonName = "authbridge-tls-bridge-ca"
 
 // clientCAFromState returns the CA file the abctl-managed client is configured with
 // right now, or "" when that cannot be established. The record's name and shape, and
-// the reason `prior` is the wrong field to read, live in authlib/clientstate — shared
+// the reason `prior` is the wrong field to read, live in core/clientstate — shared
 // with abctl, which writes the file.
 func clientCAFromState(statePath string) string {
 	st, err := clientstate.Load(statePath)

@@ -227,7 +227,7 @@ Smaller pull requests are typically easier to review and merge. If your pull req
   `gofmt` is not — CI's lint step runs `go fmt`, which rewrites files and exits 0,
   so unformatted code still goes green. There are no Go hooks in pre-commit either.
 - Run per-module with `GOWORK=off` — how the root Makefile builds, and how every
-  CI job but authlib runs.
+  CI job but core runs.
 - If your change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module — CI gates on it, and `build`/`vet`/`test`
   all pass while it fails.

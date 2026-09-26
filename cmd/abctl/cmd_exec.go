@@ -41,7 +41,7 @@ import (
 // the proxy itself and fail the handshake.
 var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
 
-// The CA variable names are NOT redeclared here. authlib owns that split:
+// The CA variable names are NOT redeclared here. core owns that split:
 // envCACerts is the one additive name (Node) and bundleKeys are the four that
 // replace the trust store, both defined next to the trust bundle they describe.
 // A local copy went stale the moment GIT_SSL_CAINFO joined the managed set —
@@ -463,7 +463,7 @@ func mergeEnv(env []string, inject map[string]string) []string {
 // printExecEnv writes the variables as shell export lines.
 //
 // Driven from the map itself, not a hand-kept name list: the previous version
-// iterated a local slice and so silently omitted GIT_SSL_CAINFO the moment authlib
+// iterated a local slice and so silently omitted GIT_SSL_CAINFO the moment core
 // added it to the managed set. Proxy names first in declaration order, then the CA
 // names sorted, so the output is stable run to run and diffable.
 func printExecEnv(inject map[string]string, stdout io.Writer) {

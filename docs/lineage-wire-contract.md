@@ -3,7 +3,7 @@
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
 
-- Producer: `cortex/authlib/plugins/lineage/` (repo `rossoctl/cortex`).
+- Producer: `cortex/core/plugins/lineage/` (repo `rossoctl/cortex`).
 - Consumer: `data_governance/processors/interactions/sidecar.py`; vocabulary in
   `data_governance/sidecar_facts.py` (repo `rossoctl/lab-data-governance`).
 

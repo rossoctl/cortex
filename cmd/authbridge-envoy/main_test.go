@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // captureWarns runs fn with a logger recording WARN records as JSON lines.
@@ -92,7 +92,7 @@ func TestCostLedgerInertClaim_NoLedgerOrAggregatorIsLinkedHere(t *testing.T) {
 	}
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
-		if strings.HasSuffix(path, "/authlib/costledger") || strings.HasSuffix(path, "/authlib/usage") {
+		if strings.HasSuffix(path, "/core/costledger") || strings.HasSuffix(path, "/core/usage") {
 			t.Errorf("main.go imports %s, so cost_ledger may no longer be inert in this binary — "+
 				"wire the block through and delete warnCostLedgerInert, or narrow its message", path)
 		}

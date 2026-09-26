@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )

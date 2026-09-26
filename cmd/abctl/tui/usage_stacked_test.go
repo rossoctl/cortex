@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // mkSeriesBuckets builds buckets whose Series carry the given per-label request

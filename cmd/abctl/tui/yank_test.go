@@ -10,7 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // #868: a yanked file has to be findable. os.TempDir() on macOS is

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // tlsHeader returns "" for plaintext events so callers can prepend

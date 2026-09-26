@@ -1,0 +1,669 @@
+package a2aparser
+
+import (
+	"context"
+	"testing"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+)
+
+func TestA2AParser_Capabilities(t *testing.T) {
+	p := NewA2AParser()
+
+	if p.Name() != "a2a-parser" {
+		t.Errorf("Name() = %q, want %q", p.Name(), "a2a-parser")
+	}
+
+	caps := p.Capabilities()
+	if !caps.ReadsBody {
+		t.Error("ReadsBody should be true")
+	}
+}
+
+func TestA2AParser_MessageSend(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-1","params":{"message":{"role":"user","parts":[{"kind":"text","text":"Hello agent"}],"messageId":"msg-001"},"sessionId":"sess-abc"}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	ext := pctx.Extensions.A2A
+	if ext.Method != "message/send" {
+		t.Errorf("Method = %q, want %q", ext.Method, "message/send")
+	}
+	if ext.RPCID != "req-1" {
+		t.Errorf("RPCID = %v, want %q", ext.RPCID, "req-1")
+	}
+	if ext.SessionID != "sess-abc" {
+		t.Errorf("SessionID = %q, want %q", ext.SessionID, "sess-abc")
+	}
+	if ext.MessageID != "msg-001" {
+		t.Errorf("MessageID = %q, want %q", ext.MessageID, "msg-001")
+	}
+	if ext.Role != "user" {
+		t.Errorf("Role = %q, want %q", ext.Role, "user")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1", len(ext.Parts))
+	}
+	if ext.Parts[0].Kind != "text" {
+		t.Errorf("Parts[0].Kind = %q, want %q", ext.Parts[0].Kind, "text")
+	}
+	if ext.Parts[0].Content != "Hello agent" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "Hello agent")
+	}
+}
+
+func TestA2AParser_MessageStream(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/stream","id":42,"params":{"message":{"role":"user","parts":[{"kind":"text","text":"What is the weather?"}],"messageId":"msg-002"},"sessionId":"sess-xyz"}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if ext.Method != "message/stream" {
+		t.Errorf("Method = %q, want %q", ext.Method, "message/stream")
+	}
+	if ext.RPCID != float64(42) {
+		t.Errorf("RPCID = %v, want 42", ext.RPCID)
+	}
+	if ext.SessionID != "sess-xyz" {
+		t.Errorf("SessionID = %q, want %q", ext.SessionID, "sess-xyz")
+	}
+}
+
+// The A2A Python SDK (and the rossoctl backend that wraps it) places contextId
+// inside params.message on established-conversation turns — not at the
+// top-level params that the earlier extraction path looked at. Without this
+// fallback, the listener's request-phase session lookup sees an empty
+// SessionID and buckets every turn under "default" instead of the real
+// contextId, leading to a single overflowing "default" session in abctl.
+func TestA2AParser_MessageStream_ContextIDInsideMessage(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/stream","id":"req-9","params":{"message":{"role":"user","parts":[{"kind":"text","text":"weather in ohio"}],"messageId":"msg-inside","contextId":"ctx-from-message"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if ext.SessionID != "ctx-from-message" {
+		t.Errorf("SessionID = %q, want %q (from params.message.contextId)",
+			ext.SessionID, "ctx-from-message")
+	}
+	if ext.MessageID != "msg-inside" {
+		t.Errorf("MessageID = %q, want %q", ext.MessageID, "msg-inside")
+	}
+}
+
+// Top-level contextId wins when both are present. Clients occasionally send
+// both fields (SDK emits one at the message level, middleware sets the other
+// at the envelope level); the A2A spec treats the envelope-level contextId
+// as the session key, and the response-phase path already prefers request-
+// side over server-minted — this test pins that ordering on the request side.
+func TestA2AParser_MessageStream_TopLevelContextIDWins(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/stream","id":"req-10","params":{"contextId":"ctx-top-level","message":{"role":"user","parts":[{"kind":"text","text":"hi"}],"messageId":"msg-both","contextId":"ctx-inside-message"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A.SessionID != "ctx-top-level" {
+		t.Errorf("SessionID = %q, want %q (top-level params.contextId should win)",
+			pctx.Extensions.A2A.SessionID, "ctx-top-level")
+	}
+}
+
+func TestA2AParser_MultipleParts(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-3","params":{"message":{"role":"user","parts":[{"kind":"text","text":"First"},{"kind":"text","text":"Second"}],"messageId":"msg-003"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 2 {
+		t.Fatalf("Parts len = %d, want 2", len(ext.Parts))
+	}
+	if ext.Parts[0].Content != "First" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "First")
+	}
+	if ext.Parts[1].Content != "Second" {
+		t.Errorf("Parts[1].Content = %q, want %q", ext.Parts[1].Content, "Second")
+	}
+}
+
+func TestA2AParser_FilePart(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-4","params":{"message":{"role":"user","parts":[{"kind":"file","data":"base64-encoded-content"}],"messageId":"msg-004"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1", len(ext.Parts))
+	}
+	if ext.Parts[0].Kind != "file" {
+		t.Errorf("Parts[0].Kind = %q, want %q", ext.Parts[0].Kind, "file")
+	}
+	if ext.Parts[0].Content != "base64-encoded-content" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "base64-encoded-content")
+	}
+}
+
+func TestA2AParser_AnyMethod(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"tasks/get","id":"req-5","params":{"taskId":"task-123"}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if ext.Method != "tasks/get" {
+		t.Errorf("Method = %q, want %q", ext.Method, "tasks/get")
+	}
+	if ext.RPCID != "req-5" {
+		t.Errorf("RPCID = %v, want %q", ext.RPCID, "req-5")
+	}
+	if len(ext.Parts) != 0 {
+		t.Errorf("Parts should be empty when no params.message, got %d", len(ext.Parts))
+	}
+}
+
+func TestA2AParser_FutureMethodWithMessage(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/resume","id":"req-7","params":{"message":{"role":"user","parts":[{"kind":"text","text":"Continue"}],"messageId":"msg-007"},"sessionId":"sess-future"}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if ext.Method != "message/resume" {
+		t.Errorf("Method = %q, want %q", ext.Method, "message/resume")
+	}
+	if ext.SessionID != "sess-future" {
+		t.Errorf("SessionID = %q, want %q", ext.SessionID, "sess-future")
+	}
+	if ext.Role != "user" {
+		t.Errorf("Role = %q, want %q", ext.Role, "user")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1", len(ext.Parts))
+	}
+	if ext.Parts[0].Content != "Continue" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "Continue")
+	}
+}
+
+func TestA2AParser_DataPart(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-8","params":{"message":{"role":"user","parts":[{"kind":"data","data":{"key":"value","num":42}}],"messageId":"msg-008"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1", len(ext.Parts))
+	}
+	if ext.Parts[0].Kind != "data" {
+		t.Errorf("Parts[0].Kind = %q, want %q", ext.Parts[0].Kind, "data")
+	}
+	if ext.Parts[0].Content == "" {
+		t.Error("Parts[0].Content should not be empty for data part")
+	}
+}
+
+func TestA2AParser_FilePartURI(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-9","params":{"message":{"role":"user","parts":[{"kind":"file","uri":"https://example.com/doc.pdf"}],"messageId":"msg-009"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1", len(ext.Parts))
+	}
+	if ext.Parts[0].Kind != "file" {
+		t.Errorf("Parts[0].Kind = %q, want %q", ext.Parts[0].Kind, "file")
+	}
+	if ext.Parts[0].Content != "https://example.com/doc.pdf" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "https://example.com/doc.pdf")
+	}
+}
+
+func TestA2AParser_NilBody(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{Body: nil}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A != nil {
+		t.Error("Extensions.A2A should be nil when body is nil")
+	}
+}
+
+func TestA2AParser_EmptyBody(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{Body: []byte{}}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A != nil {
+		t.Error("Extensions.A2A should be nil when body is empty")
+	}
+}
+
+func TestA2AParser_InvalidJSON(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{Body: []byte("not json")}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A != nil {
+		t.Error("Extensions.A2A should be nil for invalid JSON")
+	}
+}
+
+// A JSON body with no JSON-RPC "method" is not A2A traffic. Inference
+// payloads (Anthropic /v1/messages, OpenAI /v1/chat/completions) parse
+// cleanly into JSONRPCRequest with a zero-value Method, so the parser
+// must NOT attach an A2AExtension or record a "matched_" observe for
+// them — otherwise abctl shows a phantom a2a-parser match on every
+// inference call. Regression for the empty-method guard.
+func TestA2AParser_NonJSONRPCBody_NoMatch(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"anthropic messages", `{"model":"claude-opus-4-8","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`},
+		{"openai chat completions", `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{"empty object", `{}`},
+		{"explicit empty method", `{"jsonrpc":"2.0","id":1,"method":"","params":{}}`},
+		// Non-object JSON: declined on shape, before any method check. The
+		// array wraps a real A2A method on purpose — it would match
+		// isA2AMethod if it were an object.
+		{"top-level array", `[{"jsonrpc":"2.0","id":1,"method":"message/send"}]`},
+		{"top-level string", `"hello"`},
+		{"top-level number", `42`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewA2AParser()
+			pctx := &pipeline.Context{Body: []byte(tc.body)}
+
+			action := p.OnRequest(context.Background(), pctx)
+			if action.Type != pipeline.Continue {
+				t.Fatalf("expected Continue, got %v", action.Type)
+			}
+			if pctx.Extensions.A2A != nil {
+				t.Errorf("Extensions.A2A should be nil for non-JSON-RPC body, got %+v", pctx.Extensions.A2A)
+			}
+			// No Invocation should be recorded — the parser didn't claim
+			// this request, so abctl shows no a2a-parser row for it.
+			if pctx.Extensions.Invocations != nil {
+				t.Errorf("expected no Invocation recorded, got %+v", pctx.Extensions.Invocations)
+			}
+		})
+	}
+}
+
+// A2A and MCP both ride JSON-RPC 2.0, so a2a-parser must NOT claim MCP
+// methods just because they carry a non-empty JSON-RPC method. Gating on
+// the A2A namespace (message/, tasks/, agent/) makes it decline MCP
+// traffic (initialize, tools/list, notifications/*, ...) — which is why
+// an MCP request should show no a2a-parser row in abctl. Mirror of
+// mcp-parser's own-namespace guard.
+func TestA2AParser_ForeignNamespaceMethods_Declined(t *testing.T) {
+	mcpMethods := []string{
+		"initialize",
+		"ping",
+		"tools/list",
+		"tools/call",
+		"resources/read",
+		"prompts/get",
+		"notifications/initialized",
+	}
+	for _, method := range mcpMethods {
+		t.Run(method, func(t *testing.T) {
+			p := NewA2AParser()
+			pctx := &pipeline.Context{
+				Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{}}`),
+			}
+
+			action := p.OnRequest(context.Background(), pctx)
+			if action.Type != pipeline.Continue {
+				t.Fatalf("expected Continue, got %v", action.Type)
+			}
+			if pctx.Extensions.A2A != nil {
+				t.Errorf("Extensions.A2A should be nil for non-A2A method %q, got %+v", method, pctx.Extensions.A2A)
+			}
+			if pctx.Extensions.Invocations != nil {
+				t.Errorf("expected no Invocation for non-A2A method %q, got %+v", method, pctx.Extensions.Invocations)
+			}
+			// Declining (no extension attached) means Classification() reports
+			// "unclassified" — (anyAction=false, anyBypass=false) — NOT a
+			// recorded bypass. IBAC then applies unclassified_policy (default
+			// passthrough). Locks the interaction raised in review: scoping the
+			// parser to its namespace moves out-of-namespace JSON-RPC from
+			// "bypass" to "unclassified".
+			if anyAction, anyBypass := pctx.Classification(); anyAction || anyBypass {
+				t.Errorf("Classification() = (action=%v, bypass=%v) for non-A2A method %q; want (false, false) unclassified",
+					anyAction, anyBypass, method)
+			}
+		})
+	}
+}
+
+func TestA2AParser_MissingMessage(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-6","params":{"sessionId":"sess-1"}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if ext.Method != "message/send" {
+		t.Errorf("Method = %q, want %q", ext.Method, "message/send")
+	}
+	if ext.SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want %q", ext.SessionID, "sess-1")
+	}
+	if ext.Role != "" {
+		t.Errorf("Role = %q, want empty", ext.Role)
+	}
+	if len(ext.Parts) != 0 {
+		t.Errorf("Parts len = %d, want 0", len(ext.Parts))
+	}
+}
+
+func TestA2AParser_MalformedParts(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-10","params":{"message":{"role":"user","parts":[{"kind":0,"text":"bad"},{"text":"missing-kind"},{"kind":"text","text":"valid"}],"messageId":"msg-010"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 1 {
+		t.Fatalf("Parts len = %d, want 1 (only the valid part)", len(ext.Parts))
+	}
+	if ext.Parts[0].Kind != "text" {
+		t.Errorf("Parts[0].Kind = %q, want %q", ext.Parts[0].Kind, "text")
+	}
+	if ext.Parts[0].Content != "valid" {
+		t.Errorf("Parts[0].Content = %q, want %q", ext.Parts[0].Content, "valid")
+	}
+}
+
+func TestA2AParser_MalformedContentValues(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-11","params":{"message":{"role":"user","parts":[{"kind":"text","text":false},{"kind":"file","data":0,"uri":{}},{"kind":"data","data":null}],"messageId":"msg-011"}}}`),
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.A2A
+	if ext == nil {
+		t.Fatal("Extensions.A2A is nil")
+	}
+	if len(ext.Parts) != 3 {
+		t.Fatalf("Parts len = %d, want 3", len(ext.Parts))
+	}
+	if ext.Parts[0].Content != "" {
+		t.Errorf("text part with bool value: Content = %q, want empty", ext.Parts[0].Content)
+	}
+	if ext.Parts[1].Content != "" {
+		t.Errorf("file part with numeric data and object uri: Content = %q, want empty", ext.Parts[1].Content)
+	}
+	if ext.Parts[2].Content != "" {
+		t.Errorf("data part with null data: Content = %q, want empty", ext.Parts[2].Content)
+	}
+}
+
+func TestA2AParser_OnResponse_NoRequestContext(t *testing.T) {
+	// If OnRequest never ran (no A2A extension on pctx), OnResponse is a no-op.
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		ResponseBody: []byte(`{"jsonrpc":"2.0","result":{"contextId":"abc-123"}}`),
+	}
+	action := p.OnResponse(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A != nil {
+		t.Error("A2A extension should remain nil when request was not parsed")
+	}
+}
+
+// TestA2AParser_OnResponse_EmptyBody locks the regression: when the
+// request side parsed (Extensions.A2A populated) but response body is
+// empty, the parser MUST record a Skip so abctl pairs the timeline rows.
+func TestA2AParser_OnResponse_EmptyBody(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Direction:  pipeline.Inbound,
+		Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/send"}},
+	}
+	action := p.OnResponse(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A.SessionID != "" {
+		t.Errorf("SessionID should remain empty, got %q", pctx.Extensions.A2A.SessionID)
+	}
+	if pctx.Extensions.Invocations == nil {
+		t.Fatal("expected a Skip Invocation, got none")
+	}
+	invs := pctx.Extensions.Invocations.Inbound
+	if len(invs) != 1 || invs[0].Action != pipeline.ActionSkip || invs[0].Reason != "no_response_body" {
+		t.Fatalf("expected single Skip/no_response_body, got %+v", invs)
+	}
+}
+
+func TestA2AParser_OnResponse_JSONRPC_ContextID(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Extensions:   pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/send"}},
+		ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"contextId":"ctx-abc","messageId":"m1"}}`),
+	}
+	action := p.OnResponse(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A.SessionID != "ctx-abc" {
+		t.Errorf("SessionID = %q, want %q", pctx.Extensions.A2A.SessionID, "ctx-abc")
+	}
+}
+
+func TestA2AParser_OnResponse_JSONRPC_SessionIDFallback(t *testing.T) {
+	// Older A2A drafts use sessionId — still extract it when contextId is absent.
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Extensions:   pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/send"}},
+		ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess-legacy"}}`),
+	}
+	action := p.OnResponse(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A.SessionID != "sess-legacy" {
+		t.Errorf("SessionID = %q, want %q", pctx.Extensions.A2A.SessionID, "sess-legacy")
+	}
+}
+
+func TestA2AParser_OnResponse_SSE(t *testing.T) {
+	// message/stream returns SSE events; each "data:" line carries a JSON-RPC event.
+	p := NewA2AParser()
+	body := "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"contextId\":\"ctx-sse\",\"kind\":\"message\"}}\r\n\r\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"contextId\":\"ctx-sse\",\"kind\":\"status-update\"}}\r\n\r\n"
+	pctx := &pipeline.Context{
+		Extensions:   pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/stream"}},
+		ResponseBody: []byte(body),
+	}
+	action := p.OnResponse(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A.SessionID != "ctx-sse" {
+		t.Errorf("SessionID = %q, want %q", pctx.Extensions.A2A.SessionID, "ctx-sse")
+	}
+}
+
+func TestA2AParser_OnResponse_SSE_SkipsEventsWithoutSession(t *testing.T) {
+	// The first "data:" line carries no contextId; the parser should keep scanning
+	// rather than give up on the first event.
+	p := NewA2AParser()
+	body := "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"kind\":\"status-update\"}}\r\n\r\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"contextId\":\"ctx-late\"}}\r\n\r\n"
+	pctx := &pipeline.Context{
+		Extensions:   pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/stream"}},
+		ResponseBody: []byte(body),
+	}
+	_ = p.OnResponse(context.Background(), pctx)
+	if pctx.Extensions.A2A.SessionID != "ctx-late" {
+		t.Errorf("SessionID = %q, want %q", pctx.Extensions.A2A.SessionID, "ctx-late")
+	}
+}
+
+func TestA2AParser_OnResponse_NoSessionFound(t *testing.T) {
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Extensions:   pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/send", SessionID: "preexisting"}},
+		ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"kind":"message"}}`),
+	}
+	_ = p.OnResponse(context.Background(), pctx)
+	// Should NOT overwrite the existing value when the response has no session.
+	if pctx.Extensions.A2A.SessionID != "preexisting" {
+		t.Errorf("SessionID = %q, should not be cleared", pctx.Extensions.A2A.SessionID)
+	}
+}
+
+func TestA2AParser_OnRequest_ContextIDPreferred(t *testing.T) {
+	// A client resuming a conversation sends contextId; we should pick it up on the request side too.
+	p := NewA2AParser()
+	pctx := &pipeline.Context{
+		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":1,"params":{"contextId":"ctx-resume","message":{"role":"user","messageId":"m2","parts":[{"kind":"text","text":"hi again"}]}}}`),
+	}
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	if pctx.Extensions.A2A == nil || pctx.Extensions.A2A.SessionID != "ctx-resume" {
+		t.Errorf("SessionID from contextId: got %+v, want ctx-resume", pctx.Extensions.A2A)
+	}
+}
+
+// IsAction classification: message/send and message/stream are user-
+// meaningful action methods (judge them); everything else is protocol
+// mechanics (skip).
+func TestA2AParser_Classification(t *testing.T) {
+	cases := []struct {
+		method   string
+		body     string
+		isAction bool
+	}{
+		{"message/send", `{"jsonrpc":"2.0","method":"message/send","id":1,"params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`, true},
+		{"message/stream", `{"jsonrpc":"2.0","method":"message/stream","id":2,"params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}]}}}`, true},
+		// Hypothetical / future protocol-mechanics methods stay at the
+		// default false. We can't enumerate every A2A non-action method
+		// here (some don't exist yet) — the classification is "true for
+		// known actions, false for everything else" so the table only
+		// needs known-action coverage plus a representative non-action.
+		{"agent/discover", `{"jsonrpc":"2.0","method":"agent/discover","id":3}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			p := NewA2AParser()
+			pctx := &pipeline.Context{Body: []byte(tc.body)}
+			_ = p.OnRequest(context.Background(), pctx)
+			if pctx.Extensions.A2A == nil {
+				t.Fatalf("A2A extension nil for method %q", tc.method)
+			}
+			if pctx.Extensions.A2A.IsAction != tc.isAction {
+				t.Errorf("IsAction = %v, want %v for method %q",
+					pctx.Extensions.A2A.IsAction, tc.isAction, tc.method)
+			}
+		})
+	}
+}

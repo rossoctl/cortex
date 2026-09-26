@@ -10,16 +10,16 @@ updates:
         patterns:
           - "github/codeql-action/*"
 
-  # Go - authlib (the shared library — pulled in by every cmd/* binary
+  # Go - core (the shared library — pulled in by every cmd/* binary
   # via replace directives, so updates here flow into everything).
   - package-ecosystem: gomod
-    directory: /authlib
+    directory: /core
     schedule:
       interval: weekly
     ignore:
       # gobwas/glob v1 is a breaking API change, not just the engine rewrite
       # its release notes describe: Compile went from returning the Glob
-      # interface to a concrete *Pattern, and Glob was removed. authlib
+      # interface to a concrete *Pattern, and Glob was removed. core
       # declares glob.Glob in listener/skiphost, routing and
       # plugins/tokenbroker — and OPA declares it too (v1/topdown/glob.go,
       # v1/bundle/bundle.go, still true at 1.20.1), so v1 cannot be adopted
@@ -37,12 +37,12 @@ updates:
       # bumped and the four digest-pinned golang:1.26-alpine builders in
       # cmd/*/Dockerfile moved to 1.27 (they set GOWORK=off but not
       # GOTOOLCHAIN, so they would silently download the 1.27 toolchain
-      # mid-build rather than fail). authlib uses three symbols from
+      # mid-build rather than fail). core uses three symbols from
       # core/schemas, so v1.8 buys nothing today.
       #
       # Range rather than update-types, so v1.7.x patches keep flowing —
       # v1.7.15 is the newest release still on go 1.26.5 (see #840). There is
-      # no API break waiting: v1.8.4 was built and tested against authlib
+      # no API break waiting: v1.8.4 was built and tested against core
       # with go.work at 1.27.0 and the suite passed. Drop this range when the
       # Go 1.27 move is made deliberately.
       - dependency-name: "github.com/maximhq/bifrost/core"
@@ -54,10 +54,10 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # See the authlib entry above for why glob v1 is blocked.
+      # See the core entry above for why glob v1 is blocked.
       - dependency-name: "github.com/gobwas/glob"
         update-types: ["version-update:semver-major"]
-      # Indirect via authlib. See the authlib entry above for why bifrost
+      # Indirect via core. See the core entry above for why bifrost
       # v1.8+ is gated on the Go 1.27 move.
       - dependency-name: "github.com/maximhq/bifrost/core"
         versions: [">=1.8.0"]
@@ -66,10 +66,10 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # See the authlib entry above for why glob v1 is blocked.
+      # See the core entry above for why glob v1 is blocked.
       - dependency-name: "github.com/gobwas/glob"
         update-types: ["version-update:semver-major"]
-      # Indirect via authlib. See the authlib entry above for why bifrost
+      # Indirect via core. See the core entry above for why bifrost
       # v1.8+ is gated on the Go 1.27 move.
       - dependency-name: "github.com/maximhq/bifrost/core"
         versions: [">=1.8.0"]
@@ -79,7 +79,7 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # See the authlib entry above for why glob v1 is blocked.
+      # See the core entry above for why glob v1 is blocked.
       - dependency-name: "github.com/gobwas/glob"
         update-types: ["version-update:semver-major"]
 

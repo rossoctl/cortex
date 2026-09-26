@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // spendPollInterval is the band's FASTEST cadence — the hour's — and the figure
@@ -632,7 +632,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 	}
 	// A negative total is refused HERE, before anything derives a figure from it, which
 	// is what makes one guard cover the amount and the burn rate at once. See
-	// negativeCost: the guarantee is upstream in authlib/sessionapi and this is defence
+	// negativeCost: the guarantee is upstream in core/sessionapi and this is defence
 	// in depth. Reported as UNPRICED rather than clamped, so the strip renders "cost
 	// unavailable" — the same treatment the Cost pane already chose, because "$-5.0000
 	// /1h" on the strip reads as a refund nobody issued.
@@ -1023,7 +1023,7 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	// field's own spelling of "no figure" and the same treatment the window figure and the
 	// Cost pane give an impossible number — the strip then falls back to its rolling
 	// figure rather than printing "$-5.0000 today". See negativeCost: the guarantee is
-	// upstream in authlib/sessionapi, and this is defence in depth.
+	// upstream in core/sessionapi, and this is defence in depth.
 	if negativeCost(snap.Totals.CostMicros) {
 		return
 	}

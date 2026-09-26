@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/plugins/tokenexchange"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/plugins/tokenexchange"
 )
 
 func identityConfig(idType string) json.RawMessage {

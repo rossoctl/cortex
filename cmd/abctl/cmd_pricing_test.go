@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pricing"
+	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // End to end through the real handler: a real Registry, the real JSON, the real

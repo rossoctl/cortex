@@ -175,7 +175,7 @@ service never echoes provider exception text back to callers; details stay in it
 - [`ibac-plugin.md`](ibac-plugin.md) — the complementary intent control.
 
 ## Files
-- `authlib/plugins/sparc/plugin.go` — config, gates, policy, structured event.
-- `authlib/plugins/sparc/collect.go` — generic input collection.
-- `authlib/plugins/sparc/respond.go` — MCP result + completion-rewrite responders.
-- `authlib/plugins/sparc/reflector.go` — HTTP client to the service.
+- `core/plugins/sparc/plugin.go` — config, gates, policy, structured event.
+- `core/plugins/sparc/collect.go` — generic input collection.
+- `core/plugins/sparc/respond.go` — MCP result + completion-rewrite responders.
+- `core/plugins/sparc/reflector.go` — HTTP client to the service.

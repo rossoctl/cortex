@@ -7,7 +7,7 @@ import (
 
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // A reply from a superseded request must be dropped. Two rapid `w` presses leave

@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // eventColumnID names a column stably, so a selection is keyed by identity rather

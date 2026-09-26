@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // These tests used to cover abctl's own byte-to-token-to-dollar arithmetic. That arithmetic
-// moved to the proxy (authlib/costing, authlib/pricing), where it is tested against the real
+// moved to the proxy (core/costing, core/pricing), where it is tested against the real
 // parser, and abctl's remaining job is reading a figure off the record. So these now cover
 // the reading — including the cases where there is nothing to read, which must render as
 // "not reported" rather than as zero.

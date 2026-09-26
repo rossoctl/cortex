@@ -629,7 +629,7 @@ type jsonRPCError struct {
 // "Agent card not available."
 //
 // jwt-validation's bypass list includes /.well-known/* by default
-// (bypass.DefaultPatterns at authlib/bypass), so the operator's
+// (bypass.DefaultPatterns at core/bypass), so the operator's
 // reconciler can hit this without a Bearer token.
 func handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

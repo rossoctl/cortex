@@ -5,7 +5,7 @@ A thin, in-process HTTP wrapper around the **SPARC** pre-tool reflection compone
 [`agent-lifecycle-toolkit`](https://pypi.org/project/agent-lifecycle-toolkit/) (ALTK)
 PyPI package.
 
-AuthBridge's Go [`sparc` plugin](../../authlib/plugins/sparc) calls this service to decide
+AuthBridge's Go [`sparc` plugin](../../core/plugins/sparc) calls this service to decide
 whether a proposed tool call is **grounded** in the conversation and the available tool
 specs. SPARC catches hallucinated / ungrounded arguments (e.g. an invented transaction
 ID) and inappropriate function selection.

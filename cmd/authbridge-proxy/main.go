@@ -32,29 +32,29 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/auth"
-	"github.com/rossoctl/cortex/authlib/clientstate"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/costledger"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/reloader"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/shared"
-	"github.com/rossoctl/cortex/authlib/spiffe"
-	authtls "github.com/rossoctl/cortex/authlib/tls"
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/clientstate"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/reloader"
+	"github.com/rossoctl/cortex/core/runtimeutil"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/shared"
+	"github.com/rossoctl/cortex/core/spiffe"
+	authtls "github.com/rossoctl/cortex/core/tls"
+	"github.com/rossoctl/cortex/core/tlsbridge"
+	"github.com/rossoctl/cortex/core/usage"
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
-	"github.com/rossoctl/cortex/authlib/listener/forwardproxy"
-	"github.com/rossoctl/cortex/authlib/listener/reverseproxy"
-	"github.com/rossoctl/cortex/authlib/listener/skiphost"
-	"github.com/rossoctl/cortex/authlib/listener/transparentproxy"
+	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/listener/reverseproxy"
+	"github.com/rossoctl/cortex/core/listener/skiphost"
+	"github.com/rossoctl/cortex/core/listener/transparentproxy"
 	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
 	// by `//go:build include_plugin_<name>`. main.go imports no plugin
 	// package directly, so a binary links exactly the set its profile names
@@ -576,7 +576,7 @@ func main() {
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
 		// by-endpoint, by-provenance) rather than the joint distribution a ledger row
-		// needs, so summing them would double-count. See authlib/costledger.
+		// needs, so summing them would double-count. See core/costledger.
 		//
 		// ON WHEREVER IT CAN DELIVER, which is not the same as "on for --local". The
 		// default used to be localMode, so it described which flag started the binary

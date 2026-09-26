@@ -5,6 +5,6 @@
 package main
 
 import (
-	_ "github.com/rossoctl/cortex/authlib/plugins/sessionbudget"
+	_ "github.com/rossoctl/cortex/core/plugins/sessionbudget"
 	_ "github.com/rossoctl/cortex/storage/redis"
 )

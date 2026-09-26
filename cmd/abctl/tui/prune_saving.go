@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/pricing"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/pricing"
 )
 
 // This file used to turn tool-prune's byte saving into tokens and dollars.

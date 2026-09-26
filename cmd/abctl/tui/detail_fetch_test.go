@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // The predicate decides whether Enter costs a round trip. Every arm matters: not

@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // tierCounts is one window's totals with a cache-heavy modelled mix.

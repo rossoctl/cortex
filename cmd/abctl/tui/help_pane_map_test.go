@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // helpWide is a wrap budget wider than any line the overlay builds, so tests

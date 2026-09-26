@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // mkLatencyBuckets builds buckets carrying mean/stddev/sample triples.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 

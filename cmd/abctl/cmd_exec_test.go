@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/redact"
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/redact"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -224,7 +224,7 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 	t.Setenv("SSL_CERT_FILE", "/etc/ssl/wrong.pem")
 
 	// The name list is built from the managed set, not written out by hand: a
-	// hardcoded list stopped covering GIT_SSL_CAINFO the moment authlib added it,
+	// hardcoded list stopped covering GIT_SSL_CAINFO the moment core added it,
 	// and a variable this test does not name is a variable it cannot check.
 	names := append([]string{}, execProxyVars...)
 	for _, k := range managedKeys {
@@ -695,7 +695,7 @@ func TestRunExec_PrintWithCommandIsAUsageError(t *testing.T) {
 //
 // This replaces a test that stat'd "trust-bundle.pem" after a rejected
 // invocation. That filename stopped existing when the bundle moved into
-// authlib/tlsbridge, so the assertion watched a path nothing could ever create and
+// core/tlsbridge, so the assertion watched a path nothing could ever create and
 // could not fail. The property worth pinning is the stronger one that made it
 // vacuous: Cortex owns those files now, so abctl only ever reads them.
 func TestRunExec_NeverWritesToTheCADir(t *testing.T) {
@@ -973,7 +973,7 @@ func TestDefaultCortexStatsURL(t *testing.T) {
 //
 // Every one of the five findings in the review round that produced this test was
 // text describing an older implementation, and two of them were this specific
-// drift: the help block omitted GIT_SSL_CAINFO once authlib added it, and called
+// drift: the help block omitted GIT_SSL_CAINFO once core added it, and called
 // bundle.crt "a temporary bundle" after it stopped being one. Both were invisible
 // to the suite — the help text is a string constant nothing asserted on.
 //

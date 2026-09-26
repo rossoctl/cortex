@@ -25,7 +25,7 @@ refuses them by design; see README "Enrolled workloads".
 
 ## 1. A sidecar image that carries the plugin (once per cluster, until a release does)
 
-The plugin is cortex #761: build from a tree that carries `authlib/plugins/lineage/`
+The plugin is cortex #761: build from a tree that carries `core/plugins/lineage/`
 (`main` once #761 has merged; the #761 branch until then).
 
 ```sh

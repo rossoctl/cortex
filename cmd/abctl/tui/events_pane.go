@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // eventKey pins a row to a specific event across rebuilds, so the
@@ -1199,7 +1199,7 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 // one call: the total may be the gateway's own post-discount figure while both halves are
 // always the rate table's, so their sum is the table's opinion of the call and not what
 // was charged. The total remains on the record for the detail view and for the drift
-// check in authlib/costing.
+// check in core/costing.
 //
 // Every figure in this column is therefore a model, and none is marked as one — the
 // distinction the column used to blur (one cell authoritative, one modelled) is gone now

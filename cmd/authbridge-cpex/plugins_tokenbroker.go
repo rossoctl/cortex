@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/tokenbroker"
+import _ "github.com/rossoctl/cortex/core/plugins/tokenbroker"

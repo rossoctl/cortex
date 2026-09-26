@@ -28,12 +28,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/costledger"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/costledger"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/usage"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/cmd/abctl/tui"
 )

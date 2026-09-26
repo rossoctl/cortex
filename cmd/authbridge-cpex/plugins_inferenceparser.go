@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/inferenceparser"
+import _ "github.com/rossoctl/cortex/core/plugins/inferenceparser"

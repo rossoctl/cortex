@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/litellm_budgettrack"
+import _ "github.com/rossoctl/cortex/core/plugins/litellm_budgettrack"

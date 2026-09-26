@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // Once Claude Code's settings point at the proxy, every request goes there — so a

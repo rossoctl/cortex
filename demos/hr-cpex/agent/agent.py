@@ -271,7 +271,7 @@ def format_tool_response(status: int, data: dict[str, Any]) -> str:
     if "error" in data:
         # MCP JSON-RPC 2.0 error frame (HTTP 200). The forward proxy renders
         # cpex denials this way for MCP requests; the violation code lives at
-        # error.data.error (see authlib/listener/httpx/render.go),
+        # error.data.error (see core/listener/httpx/render.go),
         # NOT error.data.violation.
         err = data["error"]
         return json.dumps(

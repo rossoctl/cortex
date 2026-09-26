@@ -14,7 +14,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // claudeCodeTools is the manifest an agent re-sends on every single turn, which

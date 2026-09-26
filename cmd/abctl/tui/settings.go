@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/rossoctl/cortex/authlib/usage"
+import "github.com/rossoctl/cortex/core/usage"
 
 // Settings is abctl's live user settings, global to the process.
 //

@@ -8,11 +8,11 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
-// THE RULE ITSELF IS TESTED IN authlib/pipeline/promptcontext_test.go, against
+// THE RULE ITSELF IS TESTED IN core/pipeline/promptcontext_test.go, against
 // pipeline.PromptContextOf, with its OWN copy of the fixtures below — see that package's
 // promptcontext_fixtures_test.go for why they are duplicated rather than shared.
 //

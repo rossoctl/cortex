@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // seedAgentTurns appends n request/response pairs shaped like a long-running

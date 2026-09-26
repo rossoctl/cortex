@@ -19,7 +19,7 @@ lint: ## Run all linters (pre-commit hooks)
 	pre-commit run --all-files
 
 fmt: ## Run formatters across all sub-projects
-	cd authlib && go fmt ./...
+	cd core && go fmt ./...
 	cd cmd/abctl && go fmt ./...
 	cd cmd/authbridge-proxy && go fmt ./...
 	cd cmd/authbridge-envoy && go fmt ./...
@@ -48,9 +48,9 @@ endif
 	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
 	@# machine, not a property of this repo, and hardcoding it broke the target for
 	@# anyone whose proxy is the only route out.
-	cd authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
+	cd core && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
 		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
-	cd authlib && go test ./pricing/ -run TestBundled
+	cd core && go test ./pricing/ -run TestBundled
 
 ##@ Binary Targets
 

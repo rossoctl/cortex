@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // Every timeline fetch asks for the summary, because the timeline never renders a

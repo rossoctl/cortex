@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // The spend drawer is the strip EXPANDED IN PLACE, not a pane.
@@ -793,7 +793,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		// point: renderTierRows' row count is a contract held in another package, and this
 		// is the index that would crash the render if it slipped. A short tier column pads
 		// with blanks; a missing row is cosmetic where an out-of-range read is a dead TUI.
-		// Same standing as addSat's overflow guard in authlib/usage.
+		// Same standing as addSat's overflow guard in core/usage.
 		tier := ""
 		if i < len(tiers) {
 			tier = tiers[i]

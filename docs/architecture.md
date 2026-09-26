@@ -1,6 +1,6 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](../authlib/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`core/`](../core/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
 > **📘 Looking to run the demo?** See the [Weather Agent](../demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](../demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](../demos/token-exchange-routes/README.md) for route configuration.
 
@@ -75,7 +75,7 @@ mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
-The shared auth library at [`authlib/`](../authlib/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`authlib/README.md`](../authlib/README.md) for package reference.
+The shared auth library at [`core/`](../core/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`core/README.md`](../core/README.md) for package reference.
 
 ## Plugin Catalog
 
@@ -83,7 +83,7 @@ See [`docs/plugin-catalog.md`](./plugin-catalog.md) for the full list of impleme
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `authlib/spiffe`'s Provider over the Workload API. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
+The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `core/spiffe`'s Provider over the Workload API. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
 
 ### What AuthBridge Does
 
@@ -500,7 +500,7 @@ To make a plugin excludable:
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/<name>"
+import _ "github.com/rossoctl/cortex/core/plugins/<name>"
 ```
 
 2. Never import a plugin package from `main.go`. An unconditional import cannot be
@@ -520,7 +520,7 @@ when `-tags include_plugin_<name>` is passed.
 
 ## Component Documentation
 
-- [authlib](../authlib/README.md) — Shared auth building blocks (Go library)
+- [core](../core/README.md) — Shared auth building blocks (Go library)
 - [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
 - `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary

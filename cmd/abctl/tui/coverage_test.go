@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // The three coverage states a cost total can be in. Conflating any two of them is

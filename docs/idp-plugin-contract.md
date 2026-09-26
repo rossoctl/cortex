@@ -50,8 +50,8 @@ Create a single file — no changes to core plugin code required:
 package tokenexchange
 
 import (
-    "github.com/rossoctl/cortex/authlib/plugins/tokenexchange/exchange"
-    fwspiffe "github.com/rossoctl/cortex/authlib/spiffe"
+    "github.com/rossoctl/cortex/core/plugins/tokenexchange/exchange"
+    fwspiffe "github.com/rossoctl/cortex/core/spiffe"
 )
 
 type oktaProvider struct{}

@@ -14,7 +14,7 @@
 //
 // For envoy-sidecar mode use authbridge-envoy; for a no-cgo, pure-Go
 // build use authbridge-proxy. The body of main() below is duplicated
-// from authbridge-proxy/main.go pending an authlib-side `Run()`
+// from authbridge-proxy/main.go pending an core-side `Run()`
 // extraction — see this binary's README for the extraction proposal.
 package main
 
@@ -30,21 +30,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/auth"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/reloader"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/shared"
-	"github.com/rossoctl/cortex/authlib/spiffe"
-	authtls "github.com/rossoctl/cortex/authlib/tls"
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/reloader"
+	"github.com/rossoctl/cortex/core/runtimeutil"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/shared"
+	"github.com/rossoctl/cortex/core/spiffe"
+	authtls "github.com/rossoctl/cortex/core/tls"
 
-	"github.com/rossoctl/cortex/authlib/listener/forwardproxy"
-	"github.com/rossoctl/cortex/authlib/listener/reverseproxy"
+	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/listener/reverseproxy"
 	// Plugins — same set as authbridge-proxy, plus the cpex plugin
 	// which lives behind //go:build cpex. The cpex import only fires
 	// in this binary's build; pure-Go binaries (authbridge-proxy,

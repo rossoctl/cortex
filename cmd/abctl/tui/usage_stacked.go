@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // unlabelledLabel names the share of a bucket that no series claims. It reaches

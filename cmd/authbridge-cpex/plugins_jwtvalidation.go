@@ -2,4 +2,4 @@
 
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/jwtvalidation"
+import _ "github.com/rossoctl/cortex/core/plugins/jwtvalidation"

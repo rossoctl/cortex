@@ -14,7 +14,7 @@
 # Expected:
 #   * HTTP 200 with an MCP JSON-RPC 2.0 error frame, error.data.error =
 #     cpex.pii_detected (the forward proxy renders MCP-protocol errors for
-#     MCP requests; see authlib/listener/httpx/render.go)
+#     MCP requests; see core/listener/httpx/render.go)
 #   * Backend (hr-mcp) NEVER receives the call — the deny is
 #     enforced at the gateway plugin layer
 #   * stderr (from the gateway process) shows a JSON audit record

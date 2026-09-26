@@ -25,7 +25,7 @@ Each sidecar binary directory contains `main.go`, `go.mod`/`go.sum`,
 entrypoint, since it ships as a binary rather than an image. The images carry the authbridge
 binary and — for the envoy variant — the Envoy proxy itself. There is
 no bundled `spiffe-helper` daemon and no `SPIRE_ENABLED` gate: SVIDs
-are fetched in-process by `authlib/spiffe`'s Provider over the SPIRE
+are fetched in-process by `core/spiffe`'s Provider over the SPIRE
 Workload API.
 
 ## Configuration

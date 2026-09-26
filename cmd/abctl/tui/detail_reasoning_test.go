@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // The detail pane is where the EXACT reasoning figure lives.

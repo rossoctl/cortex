@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authlib/go.mod
+          go-version-file: core/go.mod
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -40,20 +40,20 @@ jobs:
         env:
           SKIP: ai-assisted-by-trailer
 
-  go-ci-authlib:
-    name: Go CI (authlib)
+  go-ci-core:
+    name: Go CI (core)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: authlib
+        working-directory: core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authlib/go.mod
-          cache-dependency-path: authlib/go.sum
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
 
       - name: Lint
         run: |
@@ -152,7 +152,7 @@ jobs:
           - authbridge-envoy
           # abctl is published by release-binaries.yaml, so it has to build
           # under GOWORK=off here too. Omitting it let a missing go.sum entry
-          # for an authlib transitive dep reach main: the workspace build used
+          # for an core transitive dep reach main: the workspace build used
           # everywhere else resolved it, and the per-module release build did
           # not — surfacing only when a tag was cut.
           - abctl
@@ -167,7 +167,7 @@ jobs:
       run:
         working-directory: cmd/${{ matrix.binary }}
     env:
-      # Disable go.work so each cmd/* module resolves authlib via its own
+      # Disable go.work so each cmd/* module resolves core via its own
       # `replace` directive in go.mod (the workspace would otherwise pull
       # all sibling modules in and slow down CI).
       GOWORK: "off"
@@ -308,7 +308,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authlib/go.mod
+          go-version-file: core/go.mod
 
       - name: Run go mod tidy -diff in every module
         run: |

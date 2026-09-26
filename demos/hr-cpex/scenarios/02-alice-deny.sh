@@ -5,7 +5,7 @@
 #     error.message = the human reason, error.data.error = the cpex code
 #     (cpex.<sanitized-code>), error.data.plugin = cpex. The forward proxy
 #     renders MCP-protocol errors for MCP requests (see
-#     authlib/listener/httpx/render.go).
+#     core/listener/httpx/render.go).
 #   * No token exchange happened (Keycloak's /token endpoint
 #     should NOT receive a token-exchange call for this request)
 #   * MCP server NEVER sees the call (request short-circuits at policy)

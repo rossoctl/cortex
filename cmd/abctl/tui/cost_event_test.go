@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // costWire is the exact JSON the proxy publishes as a cost record.
@@ -187,8 +187,8 @@ func TestCostCellPhases(t *testing.T) {
 // rate overstates a cache-heavy turn by close to an order of magnitude, which is
 // the common shape for a long-running agent. The weighted figure must be well
 // below the flat one.
-// The tier weighting now happens in the proxy (authlib/costing computes the prompt-only
-// figure; authlib/pricing weights the tiers), and is tested there against the real rate
+// The tier weighting now happens in the proxy (core/costing computes the prompt-only
+// figure; core/pricing weights the tiers), and is tested there against the real rate
 // table. What abctl must still get right is reading the published figure and declining to
 // invent one — a $0.00 in this column reads as a free prompt.
 func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {

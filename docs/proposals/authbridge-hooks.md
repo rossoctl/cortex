@@ -1,8 +1,8 @@
 # AuthBridge Hook System and CPEX Integration
 
 **Status**: Implemented — kept as the design record, not a live proposal.
-The plugin pipeline shipped in `authlib/pipeline`, and the CPEX
-integration in `authlib/plugins/cpex` + `cmd/authbridge-cpex`. Read
+The plugin pipeline shipped in `core/pipeline`, and the CPEX
+integration in `core/plugins/cpex` + `cmd/authbridge-cpex`. Read
 [`framework-architecture.md`](../../docs/framework-architecture.md),
 [`plugin-reference.md`](../../docs/plugin-reference.md) and
 [`cpex-plugin.md`](../../docs/cpex-plugin.md) for current behaviour;
@@ -609,7 +609,7 @@ A single new package joins the AuthBridge Go module structure.
 
 ```
 authbridge/
-  authlib/
+  core/
     hooks/                        NEW: authbridge hooks package
       hooks.go                    Hook type IDs, registration, public types
       payloads.go                 Payload and result Go structs per hook
@@ -699,7 +699,7 @@ if d != nil && d.HasHooksFor(hooks.InboundPostValidation) {
 
 ## 8. Built-in Plugin Migration
 
-### 8.1 How `jwt-validation` wraps `authlib/validation/`
+### 8.1 How `jwt-validation` wraps `core/validation/`
 
 The built-in `jwt-validation` plugin wraps `validation.LazyJWKSVerifier`:
 
@@ -729,7 +729,7 @@ After (with hooks):
 
 In Phase 1, the built-in plugin is informational only and the existing Go code still performs validation. In Phase 4, the jwt-validation built-in handles validation entirely, and the Go code becomes the orchestrator that invokes hooks and applies results.
 
-### 8.2 How `token-exchange` wraps `authlib/exchange/` + `authlib/cache/`
+### 8.2 How `token-exchange` wraps `core/exchange/` + `core/cache/`
 
 ```
 Before (current):
@@ -891,7 +891,7 @@ The request span gains plugin attributes:
 Each phase is independently shippable. Acceptance criteria are defined per phase.
 
 **Phase 0: Package skeleton.**
-`authlib/hooks/` package, CPEX Go dependency pinned, CI build verification. No runtime changes.
+`core/hooks/` package, CPEX Go dependency pinned, CI build verification. No runtime changes.
 *Acceptance:* `go build` succeeds with the new dependency; existing tests pass.
 
 **Phase 1: Startup hooks + dispatcher skeleton.**

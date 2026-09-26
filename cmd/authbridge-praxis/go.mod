@@ -2,7 +2,7 @@ module github.com/rossoctl/cortex/cmd/authbridge-praxis
 
 go 1.26.5
 
-require github.com/rossoctl/cortex/authlib v0.0.0-20260819180630-8386e3004363
+require github.com/rossoctl/cortex/core v0.0.0-20260819180630-8386e3004363
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -31,9 +31,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// Build against the in-tree authlib rather than a published version. go.work
+// Build against the in-tree core rather than a published version. go.work
 // provides this during local development, but container builds set GOWORK=off
 // (the workspace's sibling modules are not in the build context), and without
-// the replace the module proxy would supply an older authlib — one that
-// predates authlib/praxis and fails the build. Mirrors cmd/authbridge-proxy.
-replace github.com/rossoctl/cortex/authlib => ../../authlib
+// the replace the module proxy would supply an older core — one that
+// predates core/praxis and fails the build. Mirrors cmd/authbridge-proxy.
+replace github.com/rossoctl/cortex/core => ../../core

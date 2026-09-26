@@ -1,0 +1,646 @@
+package pipeline
+
+import (
+	"bytes"
+	"time"
+)
+
+// Extensions holds typed extension slots for plugin-to-plugin communication.
+// Each slot is populated by a specific plugin and consumed by downstream plugins.
+//
+// The named slots (MCP, A2A, Security, Delegation, Inference, Auth) are
+// reserved for telemetry-worthy extensions — data that flows into
+// SessionEvent, is serialized on the wire API, and has a published schema
+// that unrelated plugins can rely on. Adding a new named slot is a
+// core-library change.
+//
+// For data that shouldn't drive a core-library change, use Custom. Two
+// access patterns share the same map:
+//
+//   - Plugin-PRIVATE state (cross-phase continuity inside one plugin).
+//     Use the typed SetState / GetState generics. Key is plugin.Name().
+//     Value is typically *T for a plugin-internal struct (may contain
+//     sync primitives, unexported fields, channels). Never flows to
+//     session events.
+//
+//   - Plugin-PUBLIC observability. Use a key suffixed with "/event"
+//     (e.g., "rate-limiter/event"). Value must be JSON-marshalable.
+//     The listener serializes matching entries into SessionEvent.Plugins
+//     at record time — keyed by the plugin name (suffix stripped). A
+//     new plugin can surface events to /v1/sessions without any
+//     core modification. See docs/plugin-reference.md for the
+//     convention + promotion criteria for named-slot graduation.
+//
+// The suffix convention keeps the two intents unambiguous at write
+// time: a plugin author has to deliberately type "/event" to opt into
+// serialization, so private state can never leak by accident.
+type Extensions struct {
+	MCP         *MCPExtension
+	A2A         *A2AExtension
+	Security    *SecurityExtension
+	Delegation  *DelegationExtension
+	Inference   *InferenceExtension
+	Invocations *Invocations
+	Custom      map[string]any
+}
+
+// PluginEventSuffix is the key suffix that marks a Custom entry as
+// plugin-public observability data destined for SessionEvent.Plugins.
+// Plugin authors opt into serialization by writing:
+//
+//	pctx.Extensions.Custom["rate-limiter"+pipeline.PluginEventSuffix] = ...
+//
+// The listener strips the suffix when populating SessionEvent.Plugins,
+// so consumers see the plugin name as the map key.
+const PluginEventSuffix = "/event"
+
+// SetState stashes a typed value on pctx under key. Intended for plugin-
+// private per-request state — e.g., a rate-limiter remembering how many
+// tokens were available when OnRequest saw the call, for OnResponse to
+// consult. The generic type parameter is documentary: it forces callers
+// to pass *T rather than an unrelated interface, which pairs with the
+// symmetric type-assert in GetState.
+//
+// Convention: `key` should be the plugin's Name() so keys from unrelated
+// plugins don't collide. SetState is not safe for concurrent use — pctx
+// is single-threaded per request in the pipeline.
+func SetState[T any](pctx *Context, key string, v *T) {
+	if pctx.Extensions.Custom == nil {
+		pctx.Extensions.Custom = map[string]any{}
+	}
+	pctx.Extensions.Custom[key] = v
+}
+
+// GetState retrieves a typed value previously stored via SetState. Returns
+// nil when the key is absent or when the stored value is not a *T —
+// safe-fails rather than panicking so a mid-pipeline type migration
+// (plugin version skew) degrades instead of crashing the handler.
+func GetState[T any](pctx *Context, key string) *T {
+	if pctx.Extensions.Custom == nil {
+		return nil
+	}
+	v, ok := pctx.Extensions.Custom[key].(*T)
+	if !ok {
+		return nil
+	}
+	return v
+}
+
+// MCPExtension carries parsed MCP JSON-RPC metadata.
+// Result and Err are mutually exclusive: a response sets exactly one.
+//
+// IsAction is the parser's classification verdict (see
+// pipeline.Context.Classification). The parser explicitly sets it
+// true for user-meaningful action methods (tools/call, prompts/get,
+// resources/read); the zero value false means "protocol mechanics
+// or unclassified." Default-false reflects defense-in-depth: if the
+// parser can't confidently classify a method as an action, guardrails
+// err toward letting traffic through rather than judging it.
+type MCPExtension struct {
+	Method   string         `json:"method,omitempty"`
+	RPCID    any            `json:"rpcId,omitempty"`
+	Params   map[string]any `json:"params,omitempty"`
+	Result   map[string]any `json:"result,omitempty"`
+	Err      *MCPError      `json:"error,omitempty"`
+	IsAction bool           `json:"isAction,omitempty"`
+}
+
+// MCPError mirrors a JSON-RPC 2.0 error object.
+type MCPError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
+}
+
+// A2AExtension carries parsed A2A protocol metadata from inbound requests
+// and response summaries for debugging.
+//
+// IsAction is the parser's classification verdict; see MCPExtension.IsAction
+// for the contract. Set true for user-meaningful methods (message/send,
+// message/stream); zero value covers protocol/discovery methods.
+type A2AExtension struct {
+	// Request fields
+	Method    string    `json:"method,omitempty"`
+	RPCID     any       `json:"rpcId,omitempty"`
+	SessionID string    `json:"sessionId,omitempty"`
+	MessageID string    `json:"messageId,omitempty"`
+	TaskID    string    `json:"taskId,omitempty"`
+	Role      string    `json:"role,omitempty"`
+	Parts     []A2APart `json:"parts,omitempty"`
+
+	// Response fields (populated by a2a-parser OnResponse)
+	FinalStatus  string `json:"finalStatus,omitempty"`  // "completed", "failed", "canceled"
+	Artifact     string `json:"artifact,omitempty"`     // final artifact text
+	ErrorMessage string `json:"errorMessage,omitempty"` // failure reason if status is "failed"
+
+	// Classification — see MCPExtension.IsAction.
+	IsAction bool `json:"isAction,omitempty"`
+}
+
+// A2APart represents a message part in an A2A request.
+type A2APart struct {
+	Kind    string `json:"kind"`
+	Content string `json:"content,omitempty"`
+}
+
+// InferenceExtension carries parsed LLM inference request and response metadata.
+// Request fields are populated by OnRequest; response fields by OnResponse.
+//
+// IsAction is the parser's classification verdict; see MCPExtension.IsAction
+// for the contract. Inference calls are always actions when populated, so
+// inference-parser sets this true unconditionally.
+type InferenceExtension struct {
+	Model       string             `json:"model,omitempty"`
+	Messages    []InferenceMessage `json:"messages,omitempty"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	MaxTokens   *int               `json:"maxTokens,omitempty"`
+	TopP        *float64           `json:"topP,omitempty"`
+	Stream      bool               `json:"stream,omitempty"`
+	Tools       []InferenceTool    `json:"tools,omitempty"`
+	ToolChoice  any                `json:"toolChoice,omitempty"` // "auto" | "none" | {type,function:{name}}
+
+	// MessageCount and ToolCount are how many Messages and Tools this event HAD, for readers of
+	// a copy that no longer carries them. Set only by sessionapi.summarizeEvent, immediately
+	// before it nils both slices; zero everywhere else, including on every event the store keeps.
+	//
+	// WHY A COUNT AND NOT THE SLICE: the two useful facts about a conversation that have nothing
+	// to do with its content are "did this request carry a tool manifest" and "how long is the
+	// conversation". abctl's CONTEXT gauge asks exactly those — a manifest separates an agentic
+	// turn from a one-shot completion, and the message count was how it guessed which of the
+	// threads sharing a session id was the conversation — and it asked them of len(Tools) and
+	// len(Messages), which `view=summary` strips. Measured on one live session, 41 of 62 inference
+	// responses carry a manifest unprojected and 0 of 62 do projected, so the gauge showed a dash
+	// for every row the timeline delivered. Two ints answer both against a payload that is 99.5%
+	// of the event.
+	//
+	// THE MESSAGE COUNT IS NOW THE FALLBACK for that second question and AgentRole below is the
+	// answer: the count separates a conversation from its subagents only while it is the longer of
+	// the two, and it cannot see a compaction, which restarts the conversation at a low count. It
+	// stays because a consumer may be reading a proxy that states no role. ToolCount is not
+	// affected — nothing else distinguishes a one-shot.
+	//
+	// ZERO MEANS "NOT STATED", NOT "NONE", so a reader must prefer the slice when it is present:
+	//
+	//	if n := len(inf.Tools); n > 0 { use n } else { use inf.ToolCount }
+	//
+	// Both version-skew directions land on that rule. An OLD proxy ignores `view` and returns
+	// full events (sessionapi.eventProjection), so the slices answer there. A proxy built between
+	// abctl's CONTEXT column and these fields projects without setting them, and then neither
+	// answers — which is one reason abctl remembers its own figure rather than recomputing it
+	// from whatever it happens to hold.
+	MessageCount int `json:"messageCount,omitempty"`
+	ToolCount    int `json:"toolCount,omitempty"`
+
+	// AgentRole says WHICH CALLER under one session id made this request — the interactive
+	// conversation, or a subagent it spawned. Claude Code declares it: every request's system
+	// prompt opens with a pseudo-header line, and a subagent's carries cc_is_subagent=true.
+	//
+	//	main:     x-anthropic-billing-header: cc_version=2.1.270.119; cc_entrypoint=cli;
+	//	subagent: x-anthropic-billing-header: cc_version=2.1.270.658; cc_entrypoint=cli; cc_is_subagent=true;
+	//
+	// Measured on 19 probed requests across three live sessions: present on every restricted
+	// manifest (11 tools), absent on every full one (27 and 31), and — the property that makes
+	// it worth publishing — UNCHANGED ACROSS A COMPACTION, which rewrites the messages and
+	// leaves the system prompt alone. The message count cannot say this: subagent turns reached
+	// 177 and 186 messages against main threads at 188 and 288, so the two populations overlap.
+	//
+	// WHY THERE IS NO THIRD VALUE FOR A ONE-SHOT. The completions Claude Code interleaves with
+	// a conversation — its permission security monitor, the auto-mode state classifier — are
+	// issued by the same CLI rather than by a subagent, so they declare no marker and are
+	// "main" here. What separates them is that they carry no tool manifest, which is ToolCount
+	// above; this field does not restate it, and a reader needs both.
+	//
+	// EMPTY MEANS "NOT STATED", NOT "MAIN" — the same rule as the counts, and the reason this
+	// is a string rather than a bool. abctl's CONTEXT gauge takes the main agent's LATEST turn
+	// where the role is stated and falls back to the message count where it is not; a bool's
+	// false cannot tell a proxy that says "main" from one that says nothing, and the difference
+	// decides which rule runs. Set only when the billing-header line is there, so a client that
+	// is not Claude Code states nothing and gets the fallback.
+	//
+	// Read off the REQUEST. It reaches the response event the same way the manifest does —
+	// SnapshotInference copies the struct whole — and survives `view=summary` because
+	// summarizeEvent copies it too.
+	AgentRole AgentRole `json:"agentRole,omitempty"`
+
+	// StreamedResponse says the RESPONSE arrived as a stream, which is a different fact from Stream
+	// above — that one is what the request ASKED for, read off the request body.
+	//
+	// They come apart in both directions and the difference decides whether a token tally is FINAL: a
+	// gateway may answer a non-streaming request with SSE, and a client asking for a stream may get a
+	// buffered body. A parser reading the request flag then calls a running tally final (a floor
+	// labelled exact) or calls a final one running (a caveat on correct money). Set by whoever
+	// observed the frames — inferenceparser's per-frame arm — and read by pricing.IncompleteReason,
+	// both of which are in this PR.
+	StreamedResponse bool `json:"streamedResponse,omitempty"`
+
+	// Response fields (populated after OnResponse runs).
+	Completion   string `json:"completion,omitempty"`
+	FinishReason string `json:"finishReason,omitempty"`
+
+	// ToolCalls are the tool invocations the model requested. Populated on
+	// three of the four response paths — both non-streaming dialects and
+	// Anthropic streaming. An OpenAI *stream* leaves it empty: that dialect
+	// splits each call across `choices[].delta.tool_calls[]` fragments keyed
+	// by their own index, a shape the streaming chunk decoder does not read.
+	//
+	// So empty means "the model requested no tools" only for a non-streaming
+	// response or an Anthropic stream. A consumer that spans dialects — cost
+	// accounting, per-tool attribution — must not read absence as a negative
+	// on a streamed OpenAI turn, where it is indistinguishable from a turn
+	// whose calls were never captured.
+	ToolCalls []InferenceToolCall `json:"toolCalls,omitempty"`
+
+	// Legacy aggregates, derived from the split fields below via
+	// parsercommon.TokenUsage.Fill.
+	PromptTokens     int `json:"promptTokens,omitempty"`
+	CompletionTokens int `json:"completionTokens,omitempty"`
+	TotalTokens      int `json:"totalTokens,omitempty"`
+
+	// Split token counters — provider-neutral shape published by every
+	// inference parser via parsercommon.TokenUsage.Fill.
+	InputTokens      int `json:"inputTokens,omitempty"`      // uncached prompt tokens
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`  // served from cache
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"` // written to cache
+	OutputTokens     int `json:"outputTokens,omitempty"`     // generated tokens
+	ReasoningTokens  int `json:"reasoningTokens,omitempty"`  // reasoning-only output
+
+	// PresentKinds names which split sub-kinds the provider populated.
+	// Zero on a set bit means "reported zero"; zero on an unset bit
+	// means "not exposed." Bit layout matches parsercommon.Kind
+	// (Input=1, CacheRead=2, CacheWrite=4, Output=8, Reasoning=16);
+	// typed as uint8 to avoid importing parsercommon here.
+	PresentKinds uint8 `json:"presentKinds,omitempty"`
+
+	// Classification — see MCPExtension.IsAction.
+	IsAction bool `json:"isAction,omitempty"`
+}
+
+// AgentRole is the closed vocabulary for InferenceExtension.AgentRole.
+//
+// THE EMPTY VALUE HAS NO CONSTANT, deliberately. It means "the parser could not tell", and
+// naming it would invite a reader to compare against it as though it were a third kind of
+// caller; the two constants below are the only claims this type ever makes.
+type AgentRole string
+
+const (
+	AgentRoleMain     AgentRole = "main"
+	AgentRoleSubagent AgentRole = "subagent"
+)
+
+// InferenceMessage represents a single message in the conversation.
+type InferenceMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content,omitempty"`
+
+	// ContentBytes is the wire size of this message's content value as the
+	// client sent it, before the parser reduced it to text. Content keeps
+	// only text blocks, so a message whose payload is a tool result, an
+	// image, or any other non-text block flattens to "" and looks free —
+	// while the model was billed for all of it. ContentBytes is what those
+	// messages contribute, without recording their contents: it is a byte
+	// count of the raw JSON (syntax and escapes included), not a token
+	// count, and is a size signal rather than an exact one.
+	//
+	// Whitespace counts too, because the measure is of what was sent, not of
+	// a normalized form of it. A client that pretty-prints its request bodies
+	// therefore reports a higher count than one sending compact JSON for the
+	// same content — tens of percent apart on a deeply nested tool result.
+	// Comparable across messages from one client; not across clients.
+	ContentBytes int `json:"contentBytes,omitempty"`
+}
+
+// RawJSON is a JSON value held exactly as it arrived, rather than decoded into Go values.
+// What it preserves is KEY ORDER, which is what decoding into a map destroys — marshaling
+// a map sorts keys, so a schema came back reordered from the one the client sent.
+//
+// It does not preserve the bytes exactly through a re-marshal, and claiming so would be
+// wrong: encoding/json compacts a Marshaler's output and HTML-escapes it, so insignificant
+// whitespace is dropped and the characters less-than, greater-than and ampersand come back
+// as their six-byte unicode escapes. The value this type HOLDS is untouched; only a copy
+// that has been through json.Marshal is compacted. TestRawJSON_ReMarshalCompactsAndEscapes
+// pins both.
+//
+// WHY A NAMED STRING, and not the two obvious alternatives — this type exists to be
+// deduplicated by core/session's interner, and both of them defeat that:
+//
+//   - map[string]any (what InferenceTool.Parameters used to be) cannot be interned at
+//     all without a recursive walk that rewrites map values, and a walk cannot lean on
+//     immutability the way sharing a string can. It is also expensive to hold: a tool
+//     manifest's schemas measured 4.1x their JSON text as maps, per event, on a live
+//     session.
+//   - json.RawMessage fails twice. Converting an interned string to []byte COPIES, so
+//     every event would get its own copy and the interning would buy nothing; and []byte
+//     is mutable, so genuinely sharing one across events would let any holder rewrite
+//     bytes another event has already published.
+//
+// A string is immutable, and both string(RawJSON) and RawJSON(string) are free
+// conversions, so an interned value is shared rather than copied. That is the entire
+// reason for the type.
+//
+// The MarshalJSON method is load bearing beyond serialization: OPA's ast.InterfaceToValue
+// switches on the concrete Go type and treats anything it sees as a plain string as a
+// JSON string. Reaching rego as an object depends on landing in that switch's default
+// arm, which round-trips through encoding/json — so this must stay a NAMED type (never
+// `= string`, which the switch would catch) and must keep the method. See
+// plugins/opa/tool_parameters_rego_test.go, which drives that exact conversion.
+type RawJSON string
+
+// MarshalJSON emits the value verbatim.
+//
+// Empty becomes null rather than nothing, because empty bytes are not valid JSON and
+// would fail the enclosing marshal. Not hypothetical: plugins/sparc/collect.go inserts
+// this value into a map unconditionally, without checking for absence first.
+func (r RawJSON) MarshalJSON() ([]byte, error) {
+	if r == "" {
+		return []byte("null"), nil
+	}
+	return []byte(r), nil
+}
+
+// UnmarshalJSON keeps the raw bytes without validating or reformatting them. The decoder
+// has already established that they are a well-formed JSON value.
+//
+// JSON null is the exception, and it decodes to EMPTY rather than to the four bytes
+// "null". Keeping them would make `"parameters": null` four bytes long, which passes every
+// `len(...) > 0` guard a consumer writes — plugins/opa/plugin.go tests exactly that before
+// putting the schema in its policy input — and would hand rego a null where the map-typed
+// field left the key absent. Empty also round-trips: MarshalJSON writes null back.
+func (r *RawJSON) UnmarshalJSON(b []byte) error {
+	if bytes.Equal(b, []byte("null")) {
+		*r = ""
+		return nil
+	}
+	*r = RawJSON(b)
+	return nil
+}
+
+// InferenceTool is a function/tool the client declared the model may call.
+// Parameters is the OpenAI-style JSON Schema object describing valid args, kept as
+// received — see RawJSON for why it is not decoded.
+type InferenceTool struct {
+	Name        string  `json:"name"`
+	Description string  `json:"description,omitempty"`
+	Parameters  RawJSON `json:"parameters,omitempty"`
+}
+
+// InferenceToolCall is a tool invocation the model emitted in its response.
+// Arguments is the raw JSON string as returned by the LLM (often needs
+// json.Unmarshal by the caller) — kept as a string so malformed output
+// from the model doesn't prevent capture.
+type InferenceToolCall struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// SecurityExtension carries guardrail output.
+// Caller identity is already in ctx.Agent and ctx.Claims — this slot is only
+// for downstream signals from content-inspection plugins.
+type SecurityExtension struct {
+	Labels      []string `json:"labels,omitempty"`
+	Blocked     bool     `json:"blocked,omitempty"`
+	BlockReason string   `json:"blockReason,omitempty"`
+}
+
+// InvocationAction is the universal 5-value vocabulary every plugin uses
+// to describe what it did on a single pipeline pass. Every plugin —
+// gate, parser, rate-limiter, guardrail, whatever we add next —
+// MUST emit exactly one of these per Invocation so abctl and /v1/sessions
+// can render a consistent per-plugin timeline.
+//
+//	allow   — a gate plugin permitted the request. jwt-validation
+//	          returns this on successful signature + issuer + audience.
+//	deny    — a gate plugin rejected the request. Terminal for the
+//	          pipeline pass. jwt-validation on bad token,
+//	          token-exchange on upstream IdP failure.
+//	skip    — the plugin ran but didn't act. jwt-validation on a
+//	          bypass path, token-exchange on a host with no matching
+//	          route, a parser whose body didn't match its format.
+//	modify  — the plugin mutated the message. token-exchange replaced
+//	          the Authorization header with a freshly-issued token.
+//	observe — the plugin attached diagnostic data without altering
+//	          flow. All parsers use this when they successfully parse.
+//
+// Reason (the stable machine code alongside Action) can discriminate
+// within a value — e.g. skip/path_bypass vs skip/no_matching_route
+// tell different stories at the detail-pane level, but both read
+// "skip" in the at-a-glance timeline.
+//
+// Named InvocationAction rather than Action because pipeline.Action is
+// already the pipeline-directive struct (Continue / Reject); keeping
+// the names distinct avoids a shadowing foot-gun.
+type InvocationAction string
+
+const (
+	ActionAllow   InvocationAction = "allow"
+	ActionDeny    InvocationAction = "deny"
+	ActionSkip    InvocationAction = "skip"
+	ActionModify  InvocationAction = "modify"
+	ActionObserve InvocationAction = "observe"
+)
+
+// Invocations carries one record per plugin that ran on a pipeline pass,
+// split by direction so a single event's inbound and outbound plugin
+// activity stays distinguishable. Multiple plugins can contribute — each
+// appends an entry — so chained plugins cooperate without schema churn.
+// Directions are disjoint per request: a single listener pass populates
+// at most one of Inbound / Outbound.
+//
+// Replaces the earlier AuthExtension; parsers and any other plugin class
+// share the list now. abctl renders one row per Invocation, so operators
+// get a per-plugin timeline without guessing which plugins touched each
+// event.
+type Invocations struct {
+	Inbound  []Invocation `json:"inbound,omitempty"`
+	Outbound []Invocation `json:"outbound,omitempty"`
+}
+
+// FilteredByPhase returns a new *Invocations containing only entries
+// whose Phase matches the argument. Strict match — untagged entries
+// (Phase == "") are dropped because the framework always populates
+// Phase via Context.Record; an untagged entry is a plugin bug and
+// including it in the wrong phase would double-report in one event
+// and be missing from the other.
+//
+// The underlying Invocation values are copied shallowly; mutating a
+// returned entry's Details map mutates the source. Acceptable for
+// the per-request flow where the original lives only on pctx and is
+// discarded after recording.
+//
+// Returns nil when no entries match so callers can drop the field
+// from the SessionEvent without a null check.
+//
+// Intended for reject-event recording in listeners and for the
+// accept-path phase split (one SessionEvent per phase). Listeners
+// that need full independence from pctx's lifecycle layer their own
+// snapshot on top.
+func (in *Invocations) FilteredByPhase(phase InvocationPhase) *Invocations {
+	if in == nil {
+		return nil
+	}
+	out := &Invocations{}
+	for _, inv := range in.Inbound {
+		if inv.Phase == phase {
+			out.Inbound = append(out.Inbound, inv)
+		}
+	}
+	for _, inv := range in.Outbound {
+		if inv.Phase == phase {
+			out.Outbound = append(out.Outbound, inv)
+		}
+	}
+	if out.Inbound == nil && out.Outbound == nil {
+		return nil
+	}
+	return out
+}
+
+// Invocation records one plugin's action on one pipeline pass. Plugin is
+// the plugin's Name() for traceability. Action is the universal 5-value
+// verb (see Action). Reason is a stable machine-readable label paired
+// with the counters plugins already feed into /stats — use Reason for
+// filtering / indexing rather than Action alone when you need to
+// distinguish skip/path_bypass from skip/no_matching_route.
+//
+// Diagnostic fields are populated selectively per plugin. Auth gates
+// populate ExpectedIssuer/Audience/Token*; outbound routers populate
+// Route* and CacheHit; parsers typically populate only Plugin/Action/
+// Reason because their semantic payload lives on the typed extension
+// slots (A2A / MCP / Inference).
+//
+// NEVER contains the raw bearer token, token signature, or client
+// credentials. The session API has no auth on it; only safe-to-log data
+// belongs here.
+// InvocationPhase identifies whether an Invocation was appended during
+// the request pass or the response pass. Without this tag the full list
+// on pctx — which is cumulative across both phases — can't be correctly
+// partitioned by the listener when it records the request event and the
+// response event separately. Keeping the full list on pctx is deliberate
+// (plugins may need cross-phase context); the phase tag lets consumers
+// filter by pass.
+type InvocationPhase string
+
+const (
+	InvocationPhaseRequest  InvocationPhase = "request"
+	InvocationPhaseResponse InvocationPhase = "response"
+)
+
+type Invocation struct {
+	Plugin string           `json:"plugin"`
+	Action InvocationAction `json:"action"`
+	// Phase is the pass (request or response) that appended this
+	// record. The listener uses it to filter invocations per event at
+	// record time — the request event carries only request-phase
+	// entries, the response event only response-phase entries, even
+	// though pctx carries the union.
+	Phase  InvocationPhase `json:"phase,omitempty"`
+	Reason string          `json:"reason,omitempty"`
+
+	// Path is the request path the invocation ran on. Populated so
+	// operators can disambiguate invocations on the same plugin (e.g.
+	// a jwt-validation skip on /healthz vs /.well-known/agent.json;
+	// a mcp-parser observe on tools/call vs tools/list). Left empty
+	// when the plugin has no path context.
+	//
+	// Back-filled from Context.Path by Record when a plugin leaves it
+	// unset, so it holds the same value as SessionEvent.HTTPPath on the
+	// enclosing event. Read HTTPPath for "the path of this request" — it
+	// is present on every recorded HTTP event, while this field exists
+	// only where a plugin recorded an invocation.
+	Path string `json:"path,omitempty"`
+
+	// Details carries plugin-specific context as a flat string→string
+	// map. Opaque to the framework; abctl renders it as key=value rows
+	// in the invocation detail pane. Suggested convention: snake_case
+	// keys scoped to the plugin's semantic domain. Built-in plugins
+	// use keys like expected_issuer, token_subject, route_host,
+	// target_audience, cache_hit. Third-party plugins define their own.
+	//
+	// Stringify booleans as "true"/"false" and []string as space-
+	// joined (matching OAuth scope conventions). Keep values short
+	// enough for a detail pane — bulky diagnostics belong in the
+	// Extensions.Custom escape-hatch event.
+	//
+	// NEVER put raw tokens, signatures, or client credentials here.
+	// The session API has no auth on it — only safe-to-log data
+	// belongs in Invocation.Details.
+	Details map[string]string `json:"details,omitempty"`
+
+	// Shadow reports that the plugin ran under on_error: observe and
+	// its decision (deny or modify) was NOT applied to the request.
+	// An operator reading a would-have-blocked timeline filters on
+	// Shadow=true to count rollout-candidate events; a dashboard that
+	// aggregates "effective denies" filters Shadow=false. The
+	// framework, not the plugin, sets this — plugin code looks
+	// identical under enforce and observe.
+	Shadow bool `json:"shadow,omitempty"`
+
+	// Late reports that this Invocation was appended AFTER the response had already gone
+	// downstream — a teardown flush, a finalization pass — so a deny recorded here could not
+	// have taken effect whatever it says. Kept rather than dropped: a plugin that would have
+	// refused a response that already shipped is exactly what a rollout wants to see, and it
+	// is the same distinction Shadow draws for on_error: observe.
+	//
+	// Read by OutcomeFromContext, which does not let a late deny make the request a denial.
+	// The framework sets it, from Context.MarkResponseDelivered.
+	Late bool `json:"late,omitempty"`
+}
+
+// DelegationExtension tracks the token delegation chain across hops.
+// The chain is append-only and unexported to prevent forgery or truncation.
+type DelegationExtension struct {
+	chain  []DelegationHop
+	Origin string // original caller's subject ID
+	Actor  string // current actor's subject ID
+}
+
+// Chain returns a copy of the delegation chain. The copy prevents callers from
+// mutating the backing slice (truncation, reordering, forgery).
+func (d *DelegationExtension) Chain() []DelegationHop {
+	out := make([]DelegationHop, len(d.chain))
+	copy(out, d.chain)
+	return out
+}
+
+// Depth returns the number of hops in the delegation chain.
+func (d *DelegationExtension) Depth() int {
+	return len(d.chain)
+}
+
+// DelegationHop represents one hop in the delegation chain.
+//
+// Audience, Strategy, and FromCache enrich a hop produced by an
+// AuthBridge auth plugin (today: token-exchange) so downstream policy
+// can reason about WHAT a token was minted for and HOW. They map onto
+// the corresponding CPEX DelegationHop fields. All three are optional —
+// a producer that only knows the subject leaves them zero.
+type DelegationHop struct {
+	SubjectID string
+	Scopes    []string
+	Timestamp time.Time
+
+	// Audience is the target audience the hop's token was minted for
+	// (RFC 8693 `audience`). Empty when the hop isn't an exchange.
+	Audience string
+
+	// Strategy names how the hop was produced — e.g. "token-exchange"
+	// for an RFC 8693 exchange. Empty when unclassified.
+	Strategy string
+
+	// FromCache reports the hop's token was served from the exchange
+	// cache rather than freshly minted at the IdP.
+	FromCache bool
+}
+
+// AppendHop adds a hop to the delegation chain. This is the only way to extend
+// the chain — direct mutation is prevented by the unexported slice.
+//
+// AppendHop is not safe for concurrent use. The pipeline guarantees sequential
+// invocation.
+func (d *DelegationExtension) AppendHop(hop DelegationHop) {
+	d.chain = append(d.chain, hop)
+	if d.Origin == "" {
+		d.Origin = hop.SubjectID
+	}
+	d.Actor = hop.SubjectID
+}

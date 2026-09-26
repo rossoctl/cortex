@@ -32,21 +32,21 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/rossoctl/cortex/authlib/auth"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/reloader"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/shared"
-	"github.com/rossoctl/cortex/authlib/spiffe"
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/reloader"
+	"github.com/rossoctl/cortex/core/runtimeutil"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/shared"
+	"github.com/rossoctl/cortex/core/spiffe"
 
 	// Only the ext_proc listener is compiled in (no HTTP proxies).
-	"github.com/rossoctl/cortex/authlib/listener/extproc"
-	"github.com/rossoctl/cortex/authlib/listener/skiphost"
+	"github.com/rossoctl/cortex/core/listener/extproc"
+	"github.com/rossoctl/cortex/core/listener/skiphost"
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
 )

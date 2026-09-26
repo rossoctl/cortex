@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 func TestListSessions(t *testing.T) {
@@ -179,7 +179,7 @@ func TestGetPluginCatalog(t *testing.T) {
 }
 
 // TestGetPluginCatalog_DecodesFieldSchemas guards against tag drift
-// between server-side FieldSchemaEntry (authlib/sessionapi/server.go)
+// between server-side FieldSchemaEntry (core/sessionapi/server.go)
 // and client-side PluginFieldEntry (here in apiclient). Every JSON
 // key the server emits must decode into the matching Go field, or the
 // abctl edit templates renderer silently loses metadata. Covers

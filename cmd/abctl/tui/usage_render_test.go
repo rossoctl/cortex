@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 func mkBuckets(vals []int64) []usage.Bucket {

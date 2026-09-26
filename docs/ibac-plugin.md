@@ -304,7 +304,7 @@ IBAC's own outbound judge call must not loop back through the IBAC
 plugin. Two mechanisms guarantee this, in order of importance:
 
 1. **Standalone HTTP client.** The judge call is made via the
-   `authlib/llmclient` package's `*http.Client`, which does NOT route
+   `core/llmclient` package's `*http.Client`, which does NOT route
    through the proxy listener. Structurally, the call cannot reach
    IBAC again.
 2. **`X-IBAC-Judge: 1` sentinel header.** Every outgoing judge request
@@ -315,7 +315,7 @@ plugin. Two mechanisms guarantee this, in order of importance:
 
 The header is set automatically by `llmclient.New(Options{
 SentinelHeaderName: "X-IBAC-Judge"})` — see
-[`authlib/llmclient/`](../authlib/llmclient/) for the helper.
+[`core/llmclient/`](../core/llmclient/) for the helper.
 
 ## Limitations & Non-Goals
 
@@ -388,22 +388,22 @@ NetworkPolicy, JWT validation) for the cases IBAC isn't suited to.
 - [`demos/ibac/`](../demos/ibac/README.md) — end-to-end demo
   with a vulnerable email-summarization agent, demonstrating the
   email-poison attack with and without IBAC enabled.
-- [`authlib/llmclient/`](../authlib/llmclient/) — the
+- [`core/llmclient/`](../core/llmclient/) — the
   OpenAI-compatible chat-completions client used for judge calls. Same
   helper is the recommended building block for any future LLM-using
   plugin (PII detection, jailbreak scoring, intent matchers).
 - [`docs/plugin-reference.md`](plugin-reference.md) —
   general plugin authoring conventions; `ibac` is the in-tree
   reference for the LLM-using pattern.
-- [`authlib/plugins/ibac/`](../authlib/plugins/ibac/) —
+- [`core/plugins/ibac/`](../core/plugins/ibac/) —
   plugin source.
 
 ## Files
 
 | Path | Description |
 |------|-------------|
-| `authlib/plugins/ibac/plugin.go` | Plugin entry point, config, OnRequest pipeline |
-| `authlib/plugins/ibac/judge.go` | `Judge` interface and `httpJudge` implementation |
-| `authlib/plugins/ibac/plugin_test.go` | Plugin unit tests |
-| `authlib/plugins/ibac/judge_test.go` | Judge unit tests |
-| `authlib/llmclient/` | LLM-client helper (used by `httpJudge`) |
+| `core/plugins/ibac/plugin.go` | Plugin entry point, config, OnRequest pipeline |
+| `core/plugins/ibac/judge.go` | `Judge` interface and `httpJudge` implementation |
+| `core/plugins/ibac/plugin_test.go` | Plugin unit tests |
+| `core/plugins/ibac/judge_test.go` | Judge unit tests |
+| `core/llmclient/` | LLM-client helper (used by `httpJudge`) |

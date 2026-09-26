@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized

@@ -25,8 +25,8 @@ const legacyTagEscape = "allow-legacy-plugin-tag"
 // than an AST walk: it matches inside a grouped import block as well as a single
 // one, since it does not anchor on the `import` keyword. If the registration
 // shape ever loosens beyond `_ "<path>"`, switch to go/ast — see
-// authlib/plugins/injection_coverage_test.go for the pattern.
-var blankPluginImport = regexp.MustCompile(`_\s+"github\.com/rossoctl/cortex/authlib/plugins/(\w+)"`)
+// core/plugins/injection_coverage_test.go for the pattern.
+var blankPluginImport = regexp.MustCompile(`_\s+"github\.com/rossoctl/cortex/core/plugins/(\w+)"`)
 
 // profileInvocations match the shapes a call site uses to name a profile. All
 // three deliberately require the name to start with a letter, so a shell

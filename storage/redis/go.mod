@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/rossoctl/cortex/authlib v0.0.0
+	github.com/rossoctl/cortex/core v0.0.0
 )
 
 require (
@@ -15,4 +15,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/rossoctl/cortex/authlib => ../../authlib
+replace github.com/rossoctl/cortex/core => ../../core

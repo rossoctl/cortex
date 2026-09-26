@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // tokenSplit's reasoning line was unreachable surface until the Anthropic parser

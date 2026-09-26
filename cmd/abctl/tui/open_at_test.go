@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 func TestOpenAtRow(t *testing.T) {

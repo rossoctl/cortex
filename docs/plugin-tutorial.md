@@ -24,7 +24,7 @@ diagnostic invocations that show up in `/v1/sessions` and in `abctl`.
 
 ## Step 1 — The minimal plugin
 
-Create a file under `authlib/plugins/hellolog.go`:
+Create a file under `core/plugins/hellolog.go`:
 
 ```go
 package plugins
@@ -33,7 +33,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 type HelloLog struct{}
@@ -263,8 +263,8 @@ imports the registry instead of sharing its package:
 package myplugin
 
 import (
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
 )
 
 type MyPlugin struct{}
@@ -329,7 +329,7 @@ func TestScenario(t *testing.T) {
 ## Step 8 — Expose content to guardrails (parser plugins)
 
 If your plugin is a **parser** whose extension carries user-visible
-text, implement [`contracts.ContentSource`](../authlib/contracts/content.go)
+text, implement [`contracts.ContentSource`](../core/contracts/content.go)
 so guardrails can inspect it without importing your package. See
 [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails)
 for the role vocabulary and the mapping table across in-tree parsers.
@@ -338,7 +338,7 @@ Minimal example for an Inference-like parser whose extension stores
 `Messages []struct{ Role, Content string }`:
 
 ```go
-import "github.com/rossoctl/cortex/authlib/contracts"
+import "github.com/rossoctl/cortex/core/contracts"
 
 // Compile-time assertion — catches interface drift at build time.
 var _ contracts.ContentSource = (*MyExtension)(nil)
@@ -363,7 +363,7 @@ If your protocol uses role names that differ from the standard vocabulary
 (e.g., A2A uses `"agent"` where the standard is `"assistant"`), remap
 them to the `contracts.Role*` constants inside `Fragments` so guardrails
 match uniformly across protocols. See
-[`A2AExtension.Fragments`](../authlib/pipeline/content.go) for a reference
+[`A2AExtension.Fragments`](../core/pipeline/content.go) for a reference
 implementation that rewrites `"agent"` → `"assistant"`.
 
 Skip this step if your protocol is binary, control-plane only, or
@@ -382,7 +382,7 @@ Beyond the four required methods, plugins may implement:
 
 All optional. A plugin that doesn't implement them is treated as
 "always ready, no init, no shutdown." Definitions are in
-`authlib/pipeline/plugin.go`.
+`core/pipeline/plugin.go`.
 
 ## Gotchas
 
@@ -404,6 +404,6 @@ All optional. A plugin that doesn't implement them is treated as
 - [`framework-architecture.md`](./framework-architecture.md) — how the pipeline
   composes plugins, the Run / RunResponse dispatch order, and the
   lifecycle hooks.
-- [`pipeline/plugin.go`](../authlib/pipeline/plugin.go) — the Plugin interface
+- [`pipeline/plugin.go`](../core/pipeline/plugin.go) — the Plugin interface
   and all optional interfaces (Initializer / Shutdowner / Readier /
   Configurable).

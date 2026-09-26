@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/usage"
 )
 
 // These pin behaviour that spanReadings carries and that was, until now, only asserted through

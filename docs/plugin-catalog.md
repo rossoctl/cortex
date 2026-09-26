@@ -70,7 +70,7 @@ framework (a policy enforcement runtime for AI agents): an APL DSL plus named
 CPEX policy plugins (Cedar, PII, audit, …). Requires the separate
 `authbridge-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`, links a pinned
 `libcpex_ffi.a`). Full details in [cpex-plugin.md](./cpex-plugin.md);
-see also the plugin's [README](../authlib/plugins/cpex/README.md).
+see also the plugin's [README](../core/plugins/cpex/README.md).
 
 - `hooks.on_request` / `hooks.on_response` (`[]string`) — [CPEX hook names](https://contextforge-org.github.io/cpex/docs/0.1.x/hook-types/) to fire on each phase, in order (AuthBridge classifies traffic onto the `cmf.*` hooks — see [Hook chains](./cpex-plugin.md#hook-chains)).
 - `config` (string) — inline CPEX runtime YAML (`plugins:`/`global:`/`plugin_settings:`); mutually exclusive with `config_file`.
@@ -126,7 +126,7 @@ still published — carrying the token counts, any avoided cost, and no dollar f
 gap is named in `/v1/usage`'s `unpricedBy` so an operator knows which `pricing:` entry to
 add. An absent figure is reported as absent, never as `$0.00`.
 
-The arithmetic and the gateway header semantics are in `authlib/costing`, not in the parser:
+The arithmetic and the gateway header semantics are in `core/costing`, not in the parser:
 a provider-shaped body parser has no business knowing one gateway's header names. The result
 is published as a cost record keyed `cost` on the session event (see
 [Cost records](#cost-records)).
@@ -221,9 +221,9 @@ unclassified.
 Evaluates [OPA](https://www.openpolicyagent.org/docs) (Open Policy Agent)
 policy bundles against inbound and outbound requests, using an embedded
 OPA engine and four fixed decision paths. Full details in the plugin's
-[README](../authlib/plugins/opa/README.md).
+[README](../core/plugins/opa/README.md).
 
-- `bundle_url` (string) — base URL of the Rossoctl Bundle Server, the in-cluster service that serves per-agent [OPA policy bundles](https://www.openpolicyagent.org/docs/management-bundles) keyed by SPIFFE ID (see [how it works](../authlib/plugins/opa/README.md#how-it-works)); required.
+- `bundle_url` (string) — base URL of the Rossoctl Bundle Server, the in-cluster service that serves per-agent [OPA policy bundles](https://www.openpolicyagent.org/docs/management-bundles) keyed by SPIFFE ID (see [how it works](../core/plugins/opa/README.md#how-it-works)); required.
 - `agent_id_file` (string) — path to the agent's client-ID file. Default `/shared/client-id.txt`.
 - `agent_id` (string) — inline agent ID; overrides `agent_id_file` when set.
 - `polling_min_delay` / `polling_max_delay` (int) — bundle polling interval bounds in seconds. Defaults 10 / 120.
@@ -385,7 +385,7 @@ comes out a release after the rename ships.
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
 
 **Nothing in `avoided` is spend.** No consumer may add it to a cost, a budget or a usage
-total; a test in `authlib/usage` asserts the aggregator's totals are unchanged by its
+total; a test in `core/usage` asserts the aggregator's totals are unchanged by its
 presence. It is a container rather than a few flat fields because more counterfactuals are
 coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
@@ -538,7 +538,7 @@ rather than something fetched. Asking the gateway for its own rates via LiteLLM'
 `GET /model/info` was designed and prototyped and then dropped: it needed a virtual key
 minted and mounted, an outbound dependency and a refresh loop, to save transcribing
 three numbers. If your gateway's rates do change often, the resolution order is built
-for it — see `ProvDiscovered` in `authlib/pricing`.
+for it — see `ProvDiscovered` in `core/pricing`.
 
 **Bundled rates are VENDOR LIST.** A gateway billing below list is *overstated*
 until you pin it with a host-scoped entry, which outranks anything bundled. This is

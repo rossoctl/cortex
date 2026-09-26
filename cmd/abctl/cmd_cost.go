@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/pricing"
+	"github.com/rossoctl/cortex/core/usage"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 

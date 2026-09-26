@@ -1,0 +1,942 @@
+// Package reverseproxy implements an HTTP reverse proxy listener.
+// Inbound requests are validated via the inbound pipeline before being
+// forwarded to a fixed backend.
+package reverseproxy
+
+import (
+	"bytes"
+	"context"
+	cryptotls "crypto/tls"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
+	"github.com/rossoctl/cortex/core/listener/internal/sseframe"
+	"github.com/rossoctl/cortex/core/listener/internal/tlssniff"
+	"github.com/rossoctl/cortex/core/listener/transparentproxy"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/spiffe"
+	authtls "github.com/rossoctl/cortex/core/tls"
+)
+
+// maxBodySize bounds a buffered request or response body, and the per-frame cap
+// on the SSE reader.
+//
+// Left at Envoy's default per_stream_buffer_limit_bytes while the forward proxy
+// runs at 10MB: the bodies that forced that raise were outbound agent-to-LLM
+// requests, which do not traverse this listener in the deployments observed so
+// far. The same growth applies in principle on the inbound path — an agent
+// receiving a large request, or an in-cluster LLM route through a sidecar — so
+// raise this to match if an oversized-body rejection is ever observed here.
+// The two are deliberately independent: the inbound and outbound size profiles
+// differ, and a shared constant would tie one listener's ceiling to the other's
+// traffic. See the forward proxy's maxBodySize for the measurement behind 10MB.
+const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes
+
+type pctxKey struct{}
+
+// responseRejectedError carries a pipeline Reject from the roundTripper
+// back to the error handler, where it's rendered into the
+// http.ResponseWriter. The embedded action keeps Violation.Render() and
+// helper constructors available at the render site.
+type responseRejectedError struct {
+	action pipeline.Action
+}
+
+func (e *responseRejectedError) Error() string {
+	if e.action.Violation != nil {
+		return e.action.Violation.Reason
+	}
+	return "response rejected"
+}
+
+// Server is an HTTP reverse proxy with inbound JWT validation.
+//
+// InboundPipeline is a holder so the bound pipeline can be hot-swapped
+// under the running listener; each handleRequest Loads through it so
+// in-flight requests finish on the pipeline they started with.
+type Server struct {
+	InboundPipeline *pipeline.Holder
+	Sessions        *session.Store       // nil when session tracking is disabled
+	Shared          pipeline.SharedStore // process-scoped store; set by main, may be nil
+	proxy           *httputil.ReverseProxy
+	backend         string
+
+	// transparentInbound marks this as the transparent inbound shape. It does two
+	// things, and they are deliberately one flag: the Director resolves the
+	// forwarding target per connection from SO_ORIGINAL_DST, and a request with no
+	// recovered destination fails closed (502) rather than being forwarded
+	// anywhere. Set by NewTransparentServer only.
+	//
+	// The Director gate is not optional hygiene: that closure is installed by
+	// NewServer, so without it the rewrite would be live on every fixed-backend
+	// server too — safe only while nothing populates the context key without an
+	// InboundListener, which nothing enforces.
+	transparentInbound bool
+
+	// mtlsCfg is the *tls.Config wrapping the local SVID for inbound
+	// mTLS, or nil when mTLS is disabled. mtlsMode is consulted by
+	// the byte-peek listener (Listen) to decide whether non-TLS
+	// connections are passed through (permissive) or closed (strict).
+	mtlsCfg     *cryptotls.Config
+	mtlsMode    tlssniff.Mode
+	mtlsMetrics *authtls.Metrics
+}
+
+// MTLSOptions configures inbound mTLS. Pass nil (or a zero-value
+// MTLSOptions with Source nil) to construct a server with TLS off.
+type MTLSOptions struct {
+	// Source supplies the local SVID + trust bundle. Required when
+	// MTLSOptions is non-nil; the constructor errors otherwise.
+	Source spiffe.X509Source
+
+	// Strict: when true, the listener rejects non-TLS callers. When
+	// false (default), it accepts both TLS and plaintext on the same
+	// port via byte-peek detection.
+	Strict bool
+
+	// Metrics, when non-nil, receives counter increments on TLS
+	// accept / plaintext-accept / plaintext-reject paths. The caller
+	// owns the *Metrics and exposes its Snapshot via /stats.
+	Metrics *authtls.Metrics
+}
+
+// NewServer creates a reverse proxy that forwards to the given backend URL.
+// When mtls is non-nil, the listener returned by Listen wraps the inbound
+// connection in TLS sniffing using the provided X.509 source.
+func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL string, mtls *MTLSOptions) (*Server, error) {
+	target, err := url.Parse(backendURL)
+	if err != nil {
+		return nil, err
+	}
+	// Declared before the Director so the closure can capture it: the
+	// transparent-inbound rewrite is gated on s.transparentInbound, which
+	// NewTransparentServer sets after this constructor returns.
+	s := &Server{}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	// The default Director rewrites the outbound scheme/host/path but
+	// deliberately leaves req.Host as the inbound caller's Host (e.g.
+	// "authbridge-ab1:8080"). Cloudflare-fronted backends like
+	// api.anthropic.com validate Host against the request line and
+	// reject a mismatch, so wrap the Director to rewrite it to the
+	// backend target's host after the default rewrite runs.
+	orig := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		orig(req)
+		req.Host = target.Host
+		// Transparent inbound: the client addressed the app's real port, and
+		// iptables REDIRECTed it here. Forward to that port on loopback instead
+		// of to the single configured backend.
+		//
+		// Loopback specifically, and not the recovered IP: the enforce-redirect
+		// egress guard RETURNs loopback (-o lo, -d 127.0.0.0/8) so this hop
+		// cannot be re-captured by our own outbound rules. It also keeps the
+		// second hop out of Istio ambient's OUTPUT-chain handling entirely.
+		//
+		// The client's real IP is preserved by REDIRECT and reaches the app via
+		// X-Forwarded-For, which ReverseProxy appends from req.RemoteAddr.
+		if s.transparentInbound {
+			if dst, ok := transparentproxy.OrigDstFromContext(req.Context()); ok {
+				if _, port, err := net.SplitHostPort(dst); err == nil {
+					req.URL.Scheme = "http"
+					req.URL.Host = net.JoinHostPort("127.0.0.1", port)
+					req.Host = req.URL.Host
+				}
+			}
+		}
+		// Strip the client's Accept-Encoding, but only when a plugin will
+		// actually inspect the response body: a StreamingResponder (SSE
+		// re-framing) or any ReadsBody/WritesRequestBody plugin (buffered read into
+		// pctx.ResponseBody). Those paths must see plaintext — with no explicit
+		// Accept-Encoding, Go's transport negotiates gzip itself and
+		// transparently decompresses the response (dropping Content-Encoding /
+		// Content-Length), so both the inspection here and the downstream client
+		// get plaintext. Leaving an explicit "Accept-Encoding: gzip" through
+		// would yield a gzipped body the SSE re-framer reads as garbage plus a
+		// Content-Encoding: gzip header over re-emitted plaintext — which makes
+		// SSE clients (e.g. the Anthropic SDK) decode zero events. When no plugin
+		// reads the response body this proxy is a pure pass-through, so leave
+		// Accept-Encoding intact rather than force needless upstream→client
+		// decompression (matters for a remote backend or large non-streamed
+		// bodies; harmless on a localhost sidecar hop).
+		if inbound.NeedsBody() || inbound.HasStreamingResponders() {
+			req.Header.Del("Accept-Encoding")
+		}
+	}
+	// FlushInterval -1 makes ReverseProxy flush after every Read of
+	// the response body. Required for streaming text/event-stream
+	// responses where each frame must hit the client immediately —
+	// the default 0 buffers until the client connection's write
+	// buffer is full. ReverseProxy already auto-flushes on
+	// text/event-stream Content-Type but only when FlushInterval is
+	// non-zero, and the explicit -1 makes the streaming behavior
+	// uniform across content types we install via
+	// installStreamingResponseBody.
+	proxy.FlushInterval = -1
+	s.InboundPipeline = inbound
+	s.Sessions = sessions
+	s.proxy = proxy
+	s.backend = backendURL
+	if mtls != nil {
+		if mtls.Source == nil {
+			return nil, fmt.Errorf("reverseproxy: MTLSOptions.Source is required when mtls is non-nil")
+		}
+		tlsCfg, err := authtls.ServerConfig(mtls.Source)
+		if err != nil {
+			return nil, fmt.Errorf("reverseproxy: build server tls config: %w", err)
+		}
+		s.mtlsCfg = tlsCfg
+		s.mtlsMode = tlssniff.ModePermissive
+		if mtls.Strict {
+			s.mtlsMode = tlssniff.ModeStrict
+		}
+		s.mtlsMetrics = mtls.Metrics
+	}
+	proxy.ModifyResponse = s.modifyResponse
+	proxy.ErrorHandler = s.errorHandler
+	return s, nil
+}
+
+// NewTransparentServer creates a reverse proxy whose forwarding target is
+// resolved per connection from the original destination recovered by
+// transparentproxy.InboundListener, rather than from a fixed backend URL. A
+// request arriving without a recovered destination is rejected with 502.
+//
+// There is deliberately no fallback-backend parameter. An earlier draft took one
+// and disarmed the 502 whenever it was non-empty, which made "unattributable
+// inbound request is rejected" flip to "forwarded to the fallback" as a side
+// effect of an argument that reads like it only adds a backend — a security
+// posture change hidden behind unrelated-looking config, on the one listener
+// whose entire purpose is to be a hard inbound boundary.
+//
+// Nothing needed it: the only caller passed "", and the case it would serve is
+// close to unreachable anyway, since InboundListener rejects unrecoverable and
+// self-referential destinations at Accept time. If a fallback is ever genuinely
+// wanted, it should return as an options struct with a separate, explicit
+// fail-closed field, so a caller has to weaken the boundary on purpose.
+func NewTransparentServer(inbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOptions) (*Server, error) {
+	// url.Parse("") yields a URL with an empty Host, which would make the default
+	// Director emit a request with no target. Park the fixed target on a sentinel
+	// that can never be dialed by accident; the Director overrides it whenever a
+	// destination was recovered, and handleRequest fails closed when one wasn't.
+	s, err := NewServer(inbound, sessions, "http://"+unresolvableBackend, mtls)
+	if err != nil {
+		return nil, err
+	}
+	s.transparentInbound = true
+	return s, nil
+}
+
+// unresolvableBackend is the parked fixed target for a transparent server.
+// 127.0.0.1:0 is not dialable (port 0 is "pick one" for bind, not connect), so a
+// bug that let a request through without a recovered destination fails loudly
+// instead of reaching a real service.
+const unresolvableBackend = "127.0.0.1:0"
+
+// Listen returns a net.Listener bound to addr. When mTLS is configured
+// the listener is a tlssniff.Listener that dispatches TLS handshakes
+// through the local SVID and pass-throughs plain HTTP per the
+// configured mode (permissive / strict). When mTLS is disabled the
+// returned listener is a plain net.Listen("tcp", addr).
+//
+// Callers pass the result to http.Server.Serve.
+func (s *Server) Listen(addr string) (net.Listener, error) {
+	inner, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return s.WrapListener(inner), nil
+}
+
+// WrapListener applies this server's inbound mTLS posture to an already-bound
+// listener, returning it unchanged when mTLS is disabled. Split out of Listen so
+// the transparent inbound path — which must bind a *net.TCPListener itself, to
+// recover SO_ORIGINAL_DST before any bytes are read — gets the identical
+// permissive/strict behavior instead of a second implementation of it.
+func (s *Server) WrapListener(inner net.Listener) net.Listener {
+	if s.mtlsCfg == nil {
+		return inner
+	}
+	sniff := tlssniff.New(inner, s.mtlsCfg, s.mtlsMode)
+	if s.mtlsMetrics != nil {
+		sniff.SetOnPlainRejected(func(_ net.Conn) {
+			s.mtlsMetrics.InboundPlainRejected.Add(1)
+		})
+	}
+	return sniff
+}
+
+// MTLSEnabled reports whether the listener is wrapping connections
+// in TLS-sniffing. Used by the bin's startup-log path to surface a
+// clear message about the listener mode.
+func (s *Server) MTLSEnabled() bool { return s.mtlsCfg != nil }
+
+// eventTLS builds a *pipeline.EventTLS from the pctx's connection
+// state, extracting the peer SPIFFE ID via core/tls. Returns nil
+// for plaintext or absent TLS state — sites that pass the result
+// through to a SessionEvent get the right thing for any caller.
+func eventTLS(pctx *pipeline.Context) *pipeline.EventTLS {
+	if pctx == nil || pctx.TLS == nil {
+		return nil
+	}
+	return pipeline.NewEventTLS(pctx.TLS, authtls.PeerSPIFFEID(pctx.PeerCertificate()))
+}
+
+// Handler returns the HTTP handler for the reverse proxy.
+func (s *Server) Handler() http.Handler {
+	return http.HandlerFunc(s.handleRequest)
+}
+
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Fail closed on an unattributable request. In per-connection-backend mode
+	// the forwarding target comes from SO_ORIGINAL_DST; if the listener could
+	// not recover one there is no correct target, and the parked fixed backend
+	// is deliberately undialable. Reject here rather than let it reach the
+	// pipeline — a request we can't attribute to a captured destination is one
+	// this listener has no business forwarding.
+	if s.transparentInbound {
+		if _, ok := transparentproxy.OrigDstFromContext(r.Context()); !ok {
+			slog.Warn("reverse-proxy: rejecting request with no recovered destination",
+				"remote", r.RemoteAddr, "host", r.Host, "path", r.URL.Path)
+			http.Error(w, "no original destination recovered", http.StatusBadGateway)
+			return
+		}
+	}
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Inbound,
+		Method:    r.Method,
+		Scheme:    requestScheme(r),
+		Host:      r.Host,
+		Path:      r.URL.Path,
+		Headers:   r.Header.Clone(),
+		Shared:    s.Shared,
+		StartedAt: time.Now(),
+	}
+	// Resolved here, before the pipeline runs, so the calling program is fixed for every
+	// event this request produces: Headers above is a clone that plugins write to, so a
+	// later resolution would attribute the request to whatever the pipeline left behind,
+	// and the answer would depend on which recording site asked first. See
+	// pipeline.Context.ResolveClient — the forward proxy and ext_proc pin at their own
+	// construction sites for the same reason.
+	//
+	// Inbound, this is the caller's own User-Agent. Without it every event here recorded no
+	// client at all, and Label() answered "unknown" — which is documented as "the request
+	// carried no User-Agent" and would have meant "this listener was never wired".
+	pctx.ResolveClient()
+
+	// Surface connection-level identity to plugins that opt in. r.TLS is
+	// non-nil only when the connection went through TLS — for plain HTTP
+	// callers (UI, healthchecks), pctx.TLS stays nil and any plugin
+	// reading it sees the absence cleanly.
+	if r.TLS != nil {
+		pctx.TLS = r.TLS
+		if s.mtlsMetrics != nil && len(r.TLS.PeerCertificates) > 0 {
+			s.mtlsMetrics.InboundTLSAccepted.Add(1)
+		}
+	} else if s.mtlsMetrics != nil {
+		s.mtlsMetrics.InboundPlainAccepted.Add(1)
+	}
+
+	// Finisher dispatch runs after every exit path from this handler —
+	// allowed requests, plugin denials, upstream errors. RunFinish is
+	// a no-op when pctx.dispatched is empty (e.g. body-too-large
+	// rejected before Run), so this defer is safe on the pre-pipeline
+	// error paths too.
+	defer func() {
+		s.InboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+	}()
+
+	if s.InboundPipeline.NeedsBody() && r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			bodyread.LogError("reverse-proxy", r, len(body), maxBodySize, err)
+			status, msg := bodyread.Rejection(err)
+			http.Error(w, msg, status)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		pctx.Body = body
+		slog.Debug("reverse-proxy: buffered request body", "host", r.Host, "bodyLen", len(body))
+	}
+
+	action := s.InboundPipeline.Run(r.Context(), pctx)
+	if action.Type == pipeline.Reject {
+		s.recordInboundReject(pctx, action)
+		httpx.WriteRejection(w, action)
+		return
+	}
+
+	// If a WritesRequestBody plugin rewrote pctx.Body, send the new bytes to
+	// the backend and clear Content-Encoding (same rationale as the
+	// response path — plugin may have decompressed).
+	if pctx.BodyMutated() {
+		r.Body = io.NopCloser(bytes.NewReader(pctx.Body))
+		r.ContentLength = int64(len(pctx.Body))
+		r.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.Body)))
+		r.Header.Del("Content-Encoding")
+	}
+
+	// Propagate every header mutation the inbound pipeline made to the forwarded
+	// request. pctx.Headers started as a clone of r.Header, so plugins' set / replace
+	// / delete operations on it are the intended backend-facing header set. Only
+	// Authorization used to be forwarded, silently dropping any other injected header
+	// (e.g. static-inject's x-api-key). Content-Length / Content-Encoding are managed
+	// by the body-rewrite block above and the transport, so leave them untouched.
+	skip := func(k string) bool {
+		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
+	}
+	for k := range r.Header {
+		if skip(k) {
+			continue
+		}
+		if _, ok := pctx.Headers[k]; !ok {
+			r.Header.Del(k) // plugin removed it
+		}
+	}
+	for k, vv := range pctx.Headers {
+		if skip(k) {
+			continue
+		}
+		if len(vv) == 0 {
+			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
+			continue
+		}
+		r.Header[k] = append([]string(nil), vv...) // set / overwrite
+	}
+
+	// Record the inbound request event whenever there is something
+	// observable: an A2A conversation, plugin invocations, or plugin-public
+	// Custom entries. Mirrors extproc.recordInboundSession's widened gate so
+	// observability does not depend on the a2a-parser being in the pipeline
+	// (e.g. a jwt-validation allow on an auth-only agent must still show, just
+	// as denials already do via recordInboundReject). The A2A-specific session
+	// rekey in modifyResponse stays A2A-gated.
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	// Record every inbound request the pipeline saw, even with no plugin
+	// activity (skip_hosts is N/A inbound).
+	if s.Sessions != nil {
+		sid := inboundSessionID(pctx)
+		// Snapshot-copy the protocol extension and use the shared helpers
+		// for plugin invocations / observability / identity. Mirrors what
+		// extproc does so request events don't pick up response-phase
+		// mutations on the same pctx.Extensions.A2A struct.
+		s.Sessions.Append(sid, pipeline.SessionEvent{
+			At:          time.Now(),
+			Direction:   pipeline.Inbound,
+			Phase:       pipeline.SessionRequest,
+			RequestID:   pctx.RequestID(),
+			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+			Plugins:     plugins,
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Client:      pctx.ClientInfo(),
+			Host:        pctx.Host,
+			HTTPMethod:  pctx.Method,
+			HTTPPath:    pctx.Path,
+			TLS:         eventTLS(pctx),
+		})
+	}
+
+	r = r.WithContext(context.WithValue(r.Context(), pctxKey{}, pctx))
+	s.proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) modifyResponse(resp *http.Response) error {
+	pctx, _ := resp.Request.Context().Value(pctxKey{}).(*pipeline.Context)
+	if pctx == nil {
+		return nil
+	}
+
+	pctx.StatusCode = resp.StatusCode
+	pctx.ResponseHeaders = resp.Header.Clone()
+
+	// Branch on Content-Type per response. Streaming-aware pipelines on
+	// text/event-stream responses (A2A message/stream, MCP tools/call
+	// result over Streamable HTTP) replace resp.Body with a streaming
+	// reader that pulls one frame at a time, dispatches it to the
+	// pipeline, and rewrites the SSE event back. RunResponse is NOT
+	// called on this path — streaming-aware plugins finalize via
+	// OnResponseFrame(last=true).
+	//
+	// WritesResponseBody is incompatible with streaming (we can't rewrite a
+	// body we've already started forwarding) — fall back to buffered
+	// with a warning.
+	if isEventStream(resp.Header.Get("Content-Type")) &&
+		s.InboundPipeline.HasStreamingResponders() &&
+		resp.Body != nil {
+		if s.InboundPipeline.WritesResponseBody() {
+			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pctx.Host)
+		} else {
+			s.installStreamingResponseBody(resp, pctx)
+			// Strip Content-Length — the framing reader doesn't know
+			// the final length and net/http handles chunked encoding
+			// when Content-Length is unset.
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = -1
+			return nil
+		}
+	}
+
+	if s.InboundPipeline.NeedsBody() && resp.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if len(body) > maxBodySize {
+			return fmt.Errorf("response body too large (%d bytes)", len(body))
+		}
+		pctx.ResponseBody = body
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+	}
+
+	// DETACHED AND BOUNDED, for the same reason the streaming path's finalize() is, and this is
+	// the arm that was missed. Everything below runs AFTER the whole body is in hand, so a
+	// client that hung up while it was being read leaves a done context — and
+	// RunResponseFrame refuses a done context before calling any plugin, returning a Deny that
+	// this call site cannot tell from a policy reject, because it only tests action.Type. The
+	// response then becomes a responseRejectedError: the cost never settles, and the
+	// SessionResponse append at the bottom of this function is skipped, for a response that
+	// arrived complete. Detaching also restores the meaning of a Reject here — with
+	// cancellation gone, one can only come from a plugin.
+	//
+	// ONE CONTEXT PER DISPATCH, which is the rule at every finalization site in this tree. The
+	// alternative — one context for the whole finalization — is simpler and gets the priority
+	// backwards: the dispatches run in order, so whatever the response phase spends is taken from
+	// the TERMINAL frame, and that is the dispatch that turns folded state into a settled figure.
+	// A slow plugin in the phase would then lose the charge, which is the failure this whole
+	// change exists to prevent, in a new disguise. Bounding each one separately keeps the total
+	// bounded too, because the number of dispatches here is fixed and small.
+	//
+	// Built here rather than at the top of modifyResponse: the deadline bounds this work, and a
+	// deadline that started while the body was still being read would bound the read instead.
+	phaseCtx, cancelPhase := httpx.TeardownContext(resp.Request.Context())
+	defer cancelPhase()
+
+	action := s.InboundPipeline.RunResponse(phaseCtx, pctx)
+	if action.Type == pipeline.Reject {
+		return &responseRejectedError{action: action}
+	}
+
+	// Streaming-aware plugins use a single code path for both shapes:
+	// for buffered application/json we deliver the body as one
+	// last=true frame so plugins can finalize via OnResponseFrame.
+	if s.InboundPipeline.HasStreamingResponders() && resp.Body != nil {
+		// Its own budget, per the rule above: the settle does not inherit what the phase spent.
+		finalCtx, cancelFinal := httpx.TeardownContext(resp.Request.Context())
+		defer cancelFinal()
+		frameAction := s.InboundPipeline.RunResponseFrame(finalCtx, pctx, pctx.ResponseBody, true)
+		if frameAction.Type == pipeline.Reject {
+			return &responseRejectedError{action: frameAction}
+		}
+	}
+
+	// A plugin that called pctx.SetResponseBody flipped the mutation flag.
+	// Use the replaced bytes and rewrite Content-Length so the downstream
+	// client gets a consistent response. Content-Encoding is cleared —
+	// see the same comment in forwardproxy for the rationale.
+	if pctx.ResponseBodyMutated() {
+		resp.Body = io.NopCloser(bytes.NewReader(pctx.ResponseBody))
+		resp.ContentLength = int64(len(pctx.ResponseBody))
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.ResponseBody)))
+		resp.Header.Del("Content-Encoding")
+	}
+
+	// Rekey the default bucket → A2A contextId when the response
+	// reveals one. The first turn of an A2A conversation arrives
+	// without a contextId (the agent assigns it on response), so the
+	// inbound request + any outbound MCP/inference calls during
+	// processing land in `default`. Without rekey those events stay
+	// orphaned while only the response goes to the contextId bucket.
+	// Mirrors extproc.rekeyInboundSession.
+	//
+	// Skip when SessionID is empty (auth-only or non-A2A response —
+	// no contextId to merge against) or already "default" (a no-op
+	// that would also collide with the source bucket name).
+	if s.Sessions != nil && pctx.Extensions.A2A != nil &&
+		pctx.Extensions.A2A.SessionID != "" &&
+		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
+		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
+	}
+
+	// Mirror forwardproxy's response-phase event so abctl pairs every
+	// inbound request with a response row. Without this, A2A
+	// `message/stream` requests show up as orphan request events.
+	// SSE responses still get recorded — the body is whatever the
+	// pipeline saw at this point (may be empty for streamed bodies),
+	// but the status code and plugin invocations are always meaningful.
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	// Always pair every inbound request with a response row (carries StatusCode).
+	if s.Sessions != nil {
+		sid := inboundSessionID(pctx)
+		s.Sessions.Append(sid, pipeline.SessionEvent{
+			At:          time.Now(),
+			Direction:   pipeline.Inbound,
+			Phase:       pipeline.SessionResponse,
+			RequestID:   pctx.RequestID(),
+			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+			Plugins:     plugins,
+			Identity:    pipeline.SnapshotIdentity(pctx),
+			Client:      pctx.ClientInfo(),
+			Host:        pctx.Host,
+			HTTPMethod:  pctx.Method,
+			HTTPPath:    pctx.Path,
+			StatusCode:  resp.StatusCode,
+			Error:       pipeline.DeriveError(pctx),
+			Duration:    pipeline.DurationSince(pctx.StartedAt),
+			TLS:         eventTLS(pctx),
+		})
+	}
+	return nil
+}
+
+func (s *Server) errorHandler(w http.ResponseWriter, _ *http.Request, err error) {
+	if rErr, ok := err.(*responseRejectedError); ok {
+		httpx.WriteRejection(w, rErr.action)
+		return
+	}
+	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+}
+
+// recordInboundReject emits a SessionDenied event for inbound requests
+// a pipeline plugin rejected. Lets gate plugins (jwt-validation and
+// future inbound guardrails) show operators what was blocked and why
+// via /v1/sessions and abctl, instead of the block appearing only as
+// a 401/403 on the caller side.
+//
+// Skips when no Invocations were appended — the deny came from a
+// plugin that didn't contribute diagnostic context, and a content-free
+// SessionDenied event would be noise without attribution.
+func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Action) {
+	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
+		return
+	}
+	// Inbound uses the A2A-stated contextId when available; otherwise
+	// the default bucket. Same rule as the accept path's
+	// inboundSessionID helper, kept consistent so denial events land
+	// in the same bucket the accepted request would have.
+	sid := inboundSessionID(pctx)
+	var status int
+	var code, message string
+	if action.Violation != nil {
+		status = action.Violation.Status
+		if status == 0 {
+			status = pipeline.StatusFromCode(action.Violation.Code)
+		}
+		code = action.Violation.Code
+		message = action.Violation.Reason
+	}
+	ev := pipeline.SessionEvent{
+		At:          time.Now(),
+		Direction:   pipeline.Inbound,
+		Phase:       pipeline.SessionDenied,
+		RequestID:   pctx.RequestID(),
+		Client:      pctx.ClientInfo(),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
+		StatusCode:  status,
+		Error: &pipeline.EventError{
+			Kind:    "policy",
+			Code:    code,
+			Message: message,
+		},
+		TLS: eventTLS(pctx),
+	}
+	s.Sessions.Append(sid, ev)
+}
+
+// requestScheme derives the URL scheme for an incoming server-side
+// request. On server requests Go does not populate r.URL.Scheme (it's
+// only set for client-side / proxy requests where the full URL is on
+// the request line), so we read it from r.TLS instead: TLS present =>
+// https, absent => http.
+//
+// Contract note: this listener intentionally diverges from the
+// Context.Scheme godoc's "empty when undetermined" convention — it
+// always returns "http" or "https" based on r.TLS. The fallback is
+// confidently wrong when reverseproxy sits behind a TLS-terminating
+// upstream (LB, ingress): r.TLS is nil on the inner hop even though
+// the caller's actual scheme was https. Consumers that need the
+// caller's scheme in that topology should plumb X-Forwarded-Proto
+// once a trusted-upstream policy exists (not in this PR).
+//
+// Does not consult X-Forwarded-Proto. Honoring that header is only
+// safe when the upstream proxy is trusted; wiring a trust policy is
+// deferred until we have a concrete multi-hop deployment story.
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// installStreamingResponseBody replaces resp.Body with a streaming
+// reader that pulls SSE frames off the upstream, dispatches each frame
+// through the pipeline's StreamingResponder hook, and emits the
+// framed bytes downstream. ReverseProxy's normal io.Copy then ferries
+// those bytes to the client; FlushInterval=-1 (set in NewServer)
+// flushes after each Read so frames hit the client as they arrive.
+//
+// On end-of-stream the reader emits a final last=true call to
+// finalize aggregating plugins, then records the inbound response
+// SessionEvent (the call site that buffered responses use is below
+// modifyResponse, which doesn't run on the streaming path because
+// modifyResponse returned early).
+func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipeline.Context) {
+	upstream := resp.Body
+	resp.Body = &streamingResponseBody{
+		upstream: upstream,
+		reader:   sseframe.NewReader(upstream, maxBodySize),
+		// The request context, used for mid-stream frames deliberately: those dispatches
+		// happen only while bytes are being copied to a client that is still there, and a
+		// cancelled context there is a real signal to stop. The terminal frame is the
+		// opposite case — see finalize.
+		ctx:      resp.Request.Context(),
+		pipeline: s.InboundPipeline,
+		pctx:     pctx,
+		onClose: func(statusCode int) {
+			s.recordInboundResponseEvent(pctx, statusCode)
+		},
+		statusCode: resp.StatusCode,
+	}
+}
+
+// recordInboundResponseEvent emits the SessionResponse event for an
+// inbound streaming response. Mirrors the buffered-path block at the
+// bottom of modifyResponse; lives here so the streaming body's
+// onClose callback can record without holding a reference to the
+// status code that close arrived with.
+func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode int) {
+	if s.Sessions == nil {
+		return
+	}
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	// Always record the streaming response (carries StatusCode), even with
+	// no plugin activity.
+	sid := inboundSessionID(pctx)
+	// Rekey default → contextId mirroring the buffered path's behavior;
+	// streaming A2A message/stream may discover the contextId mid-stream.
+	if pctx.Extensions.A2A != nil && pctx.Extensions.A2A.SessionID != "" &&
+		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
+		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
+	}
+	s.Sessions.Append(sid, pipeline.SessionEvent{
+		At:          time.Now(),
+		Direction:   pipeline.Inbound,
+		Phase:       pipeline.SessionResponse,
+		RequestID:   pctx.RequestID(),
+		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		Plugins:     plugins,
+		Identity:    pipeline.SnapshotIdentity(pctx),
+		Client:      pctx.ClientInfo(),
+		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
+		StatusCode:  statusCode,
+		Error:       pipeline.DeriveError(pctx),
+		Duration:    pipeline.DurationSince(pctx.StartedAt),
+		TLS:         eventTLS(pctx),
+	})
+}
+
+// streamingResponseBody is the io.ReadCloser ReverseProxy ferries
+// downstream. Each Read call pulls one SSE frame from the upstream,
+// dispatches it through the pipeline, and writes the re-framed event
+// into the caller's buffer. On end-of-stream a final last=true
+// dispatch lets aggregating plugins finalize, and onClose records
+// the response SessionEvent.
+//
+// The struct holds an internal buffer (`pending`) that may not
+// drain in one Read — large frames are returned across multiple
+// Reads, byte-for-byte. Streaming preserves SSE wire framing
+// (`data: <payload>\n\n`) regardless of how the upstream emitted
+// each frame's data lines.
+type streamingResponseBody struct {
+	upstream io.ReadCloser
+	reader   *sseframe.Reader
+	// ctx is the request context, used for mid-stream frames. The terminal dispatch runs on
+	// a detached, bounded context built at the moment it fires — see finalize.
+	ctx        context.Context
+	pipeline   *pipeline.Holder
+	pctx       *pipeline.Context
+	onClose    func(statusCode int)
+	statusCode int
+
+	pending  []byte
+	finished bool
+	closed   bool
+}
+
+// finalize runs the terminal last=true dispatch, which is the only thing that turns a
+// stream's folded state into a settled cost.
+//
+// DETACHED FROM THE REQUEST. A client that hangs up mid-stream — a cancelled turn, a closed
+// tab, a timeout — cancels the request context, and pipeline.RunResponseFrame refuses a
+// cancelled context before calling any plugin: it returns Deny("pipeline.cancelled"). On the
+// request context that spend was silently dropped on the one event most likely to produce it.
+// Anthropic reports the whole prompt split on message_start, so the expensive half of a long
+// turn is already on the wire when the client leaves. Every listener detaches here for this
+// reason; see httpx.TeardownContext.
+//
+// BUILT HERE, NOT WHEN THE RESPONSE HEADERS ARRIVED, and that is the whole reason this is a
+// method rather than a field. TeardownContext carries a deadline, and a deadline starts
+// running the moment it is created: a context built in installStreamingResponseBody — which
+// runs as soon as upstream headers land — is already expired by the time a turn that streamed
+// for longer than httpx.TeardownTimeout reaches its terminal frame. RunResponseFrame refuses an
+// expired context exactly as it refuses a cancelled one, so the budget meant to bound
+// finalization would instead cap the length of a stream that can be charged at all, and it
+// would drop precisely the long turns that cost the most. Lazily is also why there is no cancel
+// to remember: the deferred one below releases the timer on every path, which a struct field
+// could only promise.
+// AND IT BLOCKS THE CALLER, up to httpx.TeardownTimeout. This runs inside Read and Close on the
+// response body, so a wedged plugin holds net/http's copy loop or the connection teardown for that
+// long — where before it returned instantly, by failing to finalize at all on a cancelled context. See
+// TeardownTimeout for why bounded-and-slow beats instant-and-wrong.
+func (b *streamingResponseBody) finalize() {
+	ctx, cancel := httpx.TeardownContext(b.ctx)
+	defer cancel()
+	// DELIVERED, so a refusal from here cannot rename the request. Every frame this body emitted
+	// went to the client as it was read, so a plugin rejecting on the terminal dispatch is a
+	// decision that cannot take effect — and without this, OutcomeFromContext would report
+	// OutcomeDeny beside a 200. ext_proc's teardown flush says the same thing for the same reason;
+	// the three listeners have to agree about it. See pipeline.Context.MarkResponseDelivered.
+	b.pctx.MarkResponseDelivered()
+	b.pipeline.RunResponseFrame(ctx, b.pctx, nil, true)
+}
+
+func (b *streamingResponseBody) Read(p []byte) (int, error) {
+	if len(b.pending) > 0 {
+		n := copy(p, b.pending)
+		b.pending = b.pending[n:]
+		return n, nil
+	}
+	if b.finished {
+		return 0, io.EOF
+	}
+
+	frame, err := b.reader.ReadFrame()
+	if err == io.EOF {
+		// End of upstream. Finalize aggregating plugins.
+		b.finalize()
+		b.finished = true
+		return 0, io.EOF
+	}
+	if err != nil {
+		// Stream errored mid-flight. Finalize so plugins can record
+		// what they have, then propagate the error so net/http closes
+		// the downstream connection.
+		b.finalize()
+		b.finished = true
+		return 0, err
+	}
+
+	action := b.pipeline.RunResponseFrame(b.ctx, b.pctx, frame, false)
+	if action.Type == pipeline.Reject {
+		// Mid-stream reject from a streaming-aware plugin. Headers and
+		// earlier frames are already on the wire, so the cleanest
+		// signal is to abort the read; the client sees a truncated
+		// stream. Finalize first so plugin state is consistent.
+		b.finalize()
+		b.finished = true
+		return 0, fmt.Errorf("reverseproxy: streaming response rejected mid-stream")
+	}
+
+	// Re-frame as SSE. The decoder folds multi-line `data:` events
+	// with `\n` separators per spec; split here so each original line
+	// gets its own `data: ` prefix and the downstream parser sees the
+	// same event boundaries the upstream produced. For single-line
+	// JSON-RPC payloads this is equivalent to one `data: <payload>\n\n`.
+	out := make([]byte, 0, len(frame)+16)
+	// Preserve the upstream SSE "event:" line. sseframe surfaces only the
+	// data payload, but clients like the Anthropic SDK type each event from
+	// the "event:" field; dropping it makes the re-framed stream parse to
+	// zero typed events downstream.
+	if ev := b.reader.LastEvent(); len(ev) > 0 {
+		out = append(out, "event: "...)
+		out = append(out, ev...)
+		out = append(out, '\n')
+	}
+	rest := frame
+	for len(rest) > 0 {
+		nl := bytes.IndexByte(rest, '\n')
+		var line []byte
+		if nl < 0 {
+			line = rest
+			rest = nil
+		} else {
+			line = rest[:nl]
+			rest = rest[nl+1:]
+		}
+		out = append(out, "data: "...)
+		out = append(out, line...)
+		out = append(out, '\n')
+	}
+	out = append(out, '\n')
+
+	n := copy(p, out)
+	if n < len(out) {
+		b.pending = out[n:]
+	}
+	return n, nil
+}
+
+func (b *streamingResponseBody) Close() error {
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+	// Ensure plugins finalize even if Read never reached EOF (client
+	// disconnect, ReverseProxy error).
+	if !b.finished {
+		b.finalize()
+		b.finished = true
+	}
+	if b.onClose != nil {
+		b.onClose(b.statusCode)
+	}
+	return b.upstream.Close()
+}
+
+// isEventStream reports whether a Content-Type header value names the
+// SSE media type. Tolerates parameters and ASCII case differences.
+// Mirrors the forwardproxy helper of the same name.
+func isEventStream(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
+}
+
+// inboundSessionID returns the bucket ID for an inbound event. Mirrors
+// extproc's inboundSessionID: trusts the A2A-stated contextId when
+// non-empty, otherwise routes to DefaultSessionID. Does NOT fall back
+// to ActiveSession() — that fallback was a cross-conversation
+// contamination vector (a new conversation's first turn would inherit
+// the previous conversation's rekeyed bucket, stranding the current
+// turn's events in the prior bucket and creating an orphan one-event
+// session for the response). Rekey on response migrates the Default
+// bucket into the contextId once the agent reveals it.
+func inboundSessionID(pctx *pipeline.Context) string {
+	if pctx.Extensions.A2A != nil && pctx.Extensions.A2A.SessionID != "" {
+		return pctx.Extensions.A2A.SessionID
+	}
+	return session.DefaultSessionID
+}

@@ -4,13 +4,13 @@
 # SPIFFE credentials are obtained in-process by authbridge-envoy via
 # go-spiffe's WorkloadAPI client (no spiffe-helper sidecar binary).
 #
-# Build context: . (repository root; needs access to authlib/ and cmd/authbridge-envoy/)
+# Build context: . (repository root; needs access to core/ and cmd/authbridge-envoy/)
 
 # Stage 1: Build authbridge-envoy binary.
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to
 # shave ~30% off the binary. Go's runtime keeps `pclntab` separately,
 # so panic stack traces still show function names.
-# authlib embeds github.com/rossoctl/context-guru (a published module, fetched via
+# core embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY). It is pure-Go (skeleton cgo is behind the cg_skeleton tag), so
 # CGO_ENABLED=0 stays correct.
 FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
@@ -19,7 +19,7 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-COPY authlib/ authlib/
+COPY core/ core/
 COPY storage/ storage/
 COPY cmd/authbridge-envoy/ cmd/authbridge-envoy/
 

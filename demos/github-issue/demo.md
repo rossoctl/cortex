@@ -48,7 +48,7 @@ The agent pod has two containers (after cortex#411):
     `proxy-init` init container for iptables setup)
 
 There is no bundled `spiffe-helper` binary and no `SPIRE_ENABLED` gate:
-SVIDs are fetched in-process by `authlib/spiffe`'s Provider over the SPIRE
+SVIDs are fetched in-process by `core/spiffe`'s Provider over the SPIRE
 Workload API. Keycloak client registration is
 operator-managed (no in-pod sidecar); the operator's
 `ClientRegistrationReconciler` creates a

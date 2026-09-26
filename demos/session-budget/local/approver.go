@@ -25,7 +25,7 @@ import (
 )
 
 // pauseRequest mirrors the wire type in
-// authlib/plugins/sessionbudget/plugin.go.
+// core/plugins/sessionbudget/plugin.go.
 type pauseRequest struct {
 	SessionID       string `json:"session_id"`
 	Reason          string `json:"reason"`

@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/costevent"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // costEvent is the litellm-budget-track per-response event.
@@ -13,7 +13,7 @@ import (
 // response, but a streamed response always reports 0 there, so those are priced
 // from the plugin's own per-token rates instead. Source says which happened.
 //
-// An ALIAS, not a copy: this is authlib's costevent.Event, so the compiler — not
+// An ALIAS, not a copy: this is core's costevent.Event, so the compiler — not
 // a decode test — is what keeps abctl and the producer agreeing on the wire. This
 // file used to redeclare the struct and its decoder, which meant a field rename
 // in the plugin silently blanked a column here until a test happened to catch it.
@@ -34,7 +34,7 @@ type costEvent = costevent.Event
 // false return is the normal case, not an error.
 //
 // Kept as a local name because the TUI reads better for it; the logic, the
-// lookup key and the non-positive-cost rejection all live in authlib/costevent.
+// lookup key and the non-positive-cost rejection all live in core/costevent.
 func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 	return costevent.Decode(e)
 }

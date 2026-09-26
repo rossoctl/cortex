@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // sessionsColumns is the table's full-width column set, before any terminal-fitting.
@@ -85,7 +85,7 @@ const contextColumnTitle = "CONTEXT(1M)"
 // contextWindowTokens is the denominator every gauge is drawn against.
 //
 // FIXED AT ONE MILLION, which is the largest window on any path this proxy sees — the Claude
-// [1m] beta — and the same figure authlib/usage and authlib/pricing already reason against.
+// [1m] beta — and the same figure core/usage and core/pricing already reason against.
 //
 // WHAT THAT COSTS, stated because the gauge is only as honest as its scale: a model with a
 // 200k window at 180k tokens is 90% full and draws here as 18%, near-empty, at exactly the
@@ -592,7 +592,7 @@ func truncLeft(s string, n int) string {
 	// AND IT IS NOT THE LAST MEASUREMENT THE CELL MEETS. bubbles v1.0.0 runs runewidth.Truncate over
 	// every cell before styling, and runewidth does not skip ANSI. Measuring here in display columns
 	// is therefore necessary but not sufficient: it holds only while the cell is PLAIN, which for a
-	// title is guaranteed upstream (authlib/observe/claude normalises every one) and asserted below.
+	// title is guaranteed upstream (core/observe/claude normalises every one) and asserted below.
 	// Styling a title would put escape bytes inside that second budget and collapse a narrow cell to
 	// a lone ellipsis.
 	if lipgloss.Width(s) <= n {
@@ -620,7 +620,7 @@ func truncLeft(s string, n int) string {
 	//
 	// So skipping is conditional on the premise: zeroWidthFree reports whether s contains any
 	// zero-width rune, and only then is the prefix provably untestable. A title reaching this file
-	// never contains one — authlib/observe/claude drops every Mn/Me/Cf/Cc/Sk, asserted there across
+	// never contains one — core/observe/claude drops every Mn/Me/Cf/Cc/Sk, asserted there across
 	// the whole Unicode range — so the fast path is what actually runs. The fallback exists because
 	// these are general helpers with callers that make no such promise, and a wrong answer is worse
 	// than a slow one.

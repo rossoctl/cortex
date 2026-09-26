@@ -8,15 +8,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/session"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // projected models what the TIMELINE delivers: sessionapi.summarizeEvent's inference half — the
 // slices nilled and their LENGTHS recorded in MessageCount / ToolCount first.
 //
-// MIRRORED RATHER THAN CALLED — summarizeEvent is unexported and in another module, and authlib's
+// MIRRORED RATHER THAN CALLED — summarizeEvent is unexported and in another module, and core's
 // own tests pin both halves of it (TestSummarizeEvent_CountsTheConversationItDrops for the counts).
 //
 // EVERY OTHER FIXTURE IN THIS PACKAGE BUILDS Tools BY HAND, and that is exactly how a whole suite
