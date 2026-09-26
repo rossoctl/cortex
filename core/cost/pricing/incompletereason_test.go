@@ -167,7 +167,7 @@ func TestIncompleteReason(t *testing.T) {
 		want: ReasonSplitUnreported,
 	}, {
 		// No counters at all: no figure exists, so there is nothing to qualify.
-		// costing publishes nothing for this request. See the settle-time test in
+		// cost/settle publishes nothing for this request. See the settle-time test in
 		// core/cost/settle for the path that proves it never reaches the flag.
 		name: "no counters at all is unpriced, not incomplete",
 		inf:  &pipeline.InferenceExtension{Model: "claude-opus-5"},

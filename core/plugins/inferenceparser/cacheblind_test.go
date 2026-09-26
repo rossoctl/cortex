@@ -92,7 +92,7 @@ func TestCacheBlind_SilentWhenNothingWasSubstituted(t *testing.T) {
 		{"a header that prices every tier", "0.010200", 10_000},
 		{"a cache-free request whose header is therefore the whole figure", "0.000200", 0},
 		{"no header at all — the table was always going to be charged", "", 10_000},
-		{"an unexplained low header, which costing keeps rather than second-guesses", "0.005", 10_000},
+		{"an unexplained low header, which cost/settle keeps rather than second-guesses", "0.005", 10_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer

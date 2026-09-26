@@ -244,7 +244,7 @@ MCP, A2A, Inference, plus Security and Delegation. These are:
 
 A parser populates its slot AND records an Invocation with `ActionObserve`. The slot carries the structured payload (method, token counts, etc.); the Invocation carries the attribution.
 
-Adding a named slot is an core-core change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
+Adding a named slot is a `core` change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
 
 **Capability interfaces on the slot types.** Named-slot extensions may implement optional capability interfaces declared in [`core/capabilities/`](../core/capabilities/) so consumer plugins can interact with them without importing any specific parser package. The current capability is [`ContentSource`](../core/capabilities/content.go) — implemented by `A2AExtension`, `MCPExtension`, and `InferenceExtension` — which lets guardrail plugins iterate inspectable text fragments via `pctx.ContentSources()`. Parser authors opt in by adding one method (`Fragments() []capabilities.Fragment`); consumers see a uniform view across every protocol that implements the contract. See [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails) for the pattern.
 

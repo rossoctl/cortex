@@ -11,7 +11,7 @@ import (
 // TestRefusal_EveryDeclaredRefusalIsClassified makes a new Refusal a DECISION rather than a default.
 //
 // ImpossibleFigure splits the refusals in two: the figure was the wrong size, or an input was missing
-// or unusable. A caller on the wrong side of that split is not hypothetical — costing keyed on
+// or unusable. A caller on the wrong side of that split is not hypothetical — cost/settle keyed on
 // RefusalImplausibleTotal alone, which silently excluded RefusalUnrepresentable and with it every
 // figure past ~$9.007e9, from the halves guard AND from the disclosure. A refused request then
 // published a $5,000 half carrying no reason at all.

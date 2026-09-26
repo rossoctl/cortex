@@ -37,7 +37,7 @@ import (
 // that actually ships.
 
 // headerOnlyCostUSD is what the gateway says it charged. Well under
-// pricing.MaxPlausibleRequestCostMicros ($10,000), which costing refuses on an
+// pricing.MaxPlausibleRequestCostMicros ($10,000), which cost/settle refuses on an
 // unparsed endpoint — a figure over the cap would be rejected and the test would
 // then be asserting the refusal path instead of the charge.
 const headerOnlyCostUSD = 0.002

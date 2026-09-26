@@ -53,7 +53,7 @@ func (p *InferenceParser) setCacheBlindLogger(l *slog.Logger) {
 // reportCacheBlind warns when settle.Settle refused a cache-blind header for this
 // endpoint and model.
 //
-// The decision itself is costing's — see Settled.HeaderOmittedCache — and is not re-derived
+// The decision itself is cost/settle's — see Settled.HeaderOmittedCache — and is not re-derived
 // here: a reporter that recomputed the predicate would be describing its own arithmetic rather
 // than the substitution that actually happened, and the two could drift apart with nothing
 // failing.

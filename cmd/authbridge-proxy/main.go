@@ -576,7 +576,7 @@ func main() {
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
 		// by-endpoint, by-provenance) rather than the joint distribution a ledger row
-		// needs, so summing them would double-count. See core/ledger.
+		// needs, so summing them would double-count. See core/cost/ledger.
 		//
 		// ON WHEREVER IT CAN DELIVER, which is not the same as "on for --local". The
 		// default used to be localMode, so it described which flag started the binary

@@ -14,7 +14,7 @@
 //
 // For envoy-sidecar mode use authbridge-envoy; for a no-cgo, pure-Go
 // build use authbridge-proxy. The body of main() below is duplicated
-// from authbridge-proxy/main.go pending an core-side `Run()`
+// from authbridge-proxy/main.go pending a core-side `Run()`
 // extraction — see this binary's README for the extraction proposal.
 package main
 

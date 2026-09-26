@@ -138,7 +138,7 @@ func IncompleteReason(inf *pipeline.InferenceExtension) string {
 	}
 	// No counter of any kind carried a figure, yet a total arrived: a gateway reporting
 	// only total_tokens. Gated on the total because with no counters at all there is no
-	// figure to qualify — costing publishes nothing for that request.
+	// figure to qualify — cost/settle publishes nothing for that request.
 	//
 	// THE COUNTERS ARE THE INSTRUMENT HERE, NOT THE PRESENCE MASK. Do not rewrite this as
 	// `PresentKinds&(presentInput|presentOutput) == 0`: that asks a question neither the
@@ -299,7 +299,7 @@ func outputUncounted(inf *pipeline.InferenceExtension) bool {
 		return inf.StreamedResponse
 	}
 	// A prompt-side count is what makes this a FLOOR rather than simply unpriced:
-	// without one there is nothing for the figure to be a lower bound OF, and costing
+	// without one there is nothing for the figure to be a lower bound OF, and cost/settle
 	// publishes nothing at all. TotalTokens is deliberately NOT accepted here — a bare
 	// total includes the completion, so it is the approximate case above, not this one.
 	// PromptTokens is checked alongside the split because Fill derives it from them, and

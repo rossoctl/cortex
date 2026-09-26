@@ -38,7 +38,7 @@ import (
 //
 // WHAT IT CATCHES, MEASURED, not assumed. Reverting the SSE reassembly fails the split fixture
 // three ways at once — the figure ($0.0076 against $0.0191), a false "output-uncounted" disclosure,
-// and ext_proc disagreeing with the forward proxy. Flipping costing's precedence rule fails the
+// and ext_proc disagreeing with the forward proxy. Flipping cost/settle's precedence rule fails the
 // header fixture on ALL THREE listeners while they still agree with each other, which is the case
 // the absolute expectations exist for.
 //
@@ -51,7 +51,7 @@ import (
 //
 // ABSOLUTE, THEN PAIRWISE, and that order is the point. Every listener is checked against an
 // EXPECTED record first, because two listeners agreeing on a wrong figure is the failure mode a
-// pure parity assertion cannot see — and "they agree" is exactly what a shared bug in costing
+// pure parity assertion cannot see — and "they agree" is exactly what a shared bug in cost/settle
 // would produce. The pairwise check then catches the drift no single expectation would: a field
 // nobody thought to assert.
 
@@ -158,7 +158,7 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 		},
 	}, {
 		// THE GATEWAY'S OWN FIGURE WINS, and the modelled one is computed alongside for drift.
-		// The precedence rule is the reason costing exists, so every listener has to apply it.
+		// The precedence rule is the reason cost/settle exists, so every listener has to apply it.
 		fixture: func() fixture {
 			f := base("buffered, gateway header wins")
 			f.reqBody = []byte(anthropicRequest)
@@ -306,7 +306,7 @@ func TestCostRecordParity(t *testing.T) {
 						t.Fatalf("%s published NO cost record: this turn's spend reaches no aggregate, no ledger and no budget", l.name)
 					}
 					// ABSOLUTE FIRST. Two listeners agreeing on a wrong figure is what a shared
-					// bug in costing looks like, and a pairwise check cannot see it.
+					// bug in cost/settle looks like, and a pairwise check cannot see it.
 					assertRecord(t, l.name, *rec, cf.want)
 					records[l.name] = rec
 				}
@@ -343,7 +343,7 @@ func assertRecord(t *testing.T, listener string, got, want event.Event) {
 		t.Errorf("%s: Settled = %v, want %v (Priced() = %v)", listener, got.Settled, want.Settled, got.Priced())
 	}
 	if got.Source != want.Source {
-		t.Errorf("%s: Source = %q, want %q — the precedence rule is the reason costing exists",
+		t.Errorf("%s: Source = %q, want %q — the precedence rule is the reason cost/settle exists",
 			listener, got.Source, want.Source)
 	}
 	if got.Provenance != want.Provenance {

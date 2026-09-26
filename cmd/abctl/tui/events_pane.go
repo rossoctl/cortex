@@ -1199,7 +1199,7 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 // one call: the total may be the gateway's own post-discount figure while both halves are
 // always the rate table's, so their sum is the table's opinion of the call and not what
 // was charged. The total remains on the record for the detail view and for the drift
-// check in core/settle.
+// check in core/cost/settle.
 //
 // Every figure in this column is therefore a model, and none is marked as one — the
 // distinction the column used to blur (one cell authoritative, one modelled) is gone now

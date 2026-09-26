@@ -306,7 +306,7 @@ func TestBodylessResponse_DeclaredFreeZeroIsPublishedAsSettled(t *testing.T) {
 // free.
 //
 // Same header value, same body-less path, opposite outcome — separated only by
-// Content-Type. Without this row, a change that dropped costing's IsEventStream check
+// Content-Type. Without this row, a change that dropped cost/settle's IsEventStream check
 // would still pass the declared-free test above.
 //
 // It also covers "a stream that died before ANY usage arrived", which incomplete_cost_test.go

@@ -309,7 +309,7 @@ func CostByTier(r Rates, u Usage) (tiers [NumTiers]int64, total int64, ok bool, 
 	}
 	// FIRST, so the reason is stable. Asked before the per-tier loop below because the loop
 	// returns on the first problem it meets, and an impossible COUNT is the one refusal a caller
-	// acts on differently — costing refuses every figure derived from the report. Checked here, a
+	// acts on differently — cost/settle refuses every figure derived from the report. Checked here, a
 	// missing rate can no longer mask it.
 	if !PlausibleUsage(u) {
 		return tiers, 0, false, RefusalImpossibleCount
@@ -347,7 +347,7 @@ func CostByTier(r Rates, u Usage) (tiers [NumTiers]int64, total int64, ok bool, 
 	}
 	// AND HELD TO THE SAME PER-REQUEST CEILING AS A GATEWAY'S OWN FIGURE. MicrosFromUSD
 	// alone bounds this at MaxCostMicros — $9 billion, the figure this file calls a garbage
-	// ledger figure — while costing applies PlausibleRequestCostUSD ($10,000) to the header
+	// ledger figure — while cost/settle applies PlausibleRequestCostUSD ($10,000) to the header
 	// path. Two ways to reach the gap: the token check above is PER TIER, so a request can
 	// carry maxPlausibleTokens several times over, and a base RATE has no magnitude bound at
 	// all (config.Build validates only sign and finiteness, and the ProvDiscovered

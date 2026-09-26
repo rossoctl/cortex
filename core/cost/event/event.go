@@ -234,7 +234,7 @@ type Event struct {
 	// LIMIT OF THE DISCLOSURE: it does not reach usage.Snapshot.UnpricedBy, which keys on
 	// "<endpoint> <model>" and counts requests that COULD have been priced — and this refusal
 	// lands on traffic carrying no model at all, which is why the figure could not be
-	// corroborated. The evidence is this field plus the operator warning costing emits.
+	// corroborated. The evidence is this field plus the operator warning cost/settle emits.
 	//
 	// ADDITIVE and omitempty: an older consumer sees an unsettled zero, which is the pre-fix
 	// reading of a refused figure.

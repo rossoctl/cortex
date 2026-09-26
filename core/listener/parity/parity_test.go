@@ -326,7 +326,7 @@ func assertParity(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, list
 	// drift errors and nothing compared. A suite whose entire purpose is catching per-listener
 	// divergence would then pass having compared nothing, silently.
 	//
-	// This is the hazard costing's TestNoTestInThisPackageRunsInParallel guards against in that
+	// This is the hazard cost/settle's TestNoTestInThisPackageRunsInParallel guards against in that
 	// package; the fix here is structural instead, so it holds however this file is run.
 	got := make([]namedObs, 0, len(listeners))
 	for _, l := range listeners {

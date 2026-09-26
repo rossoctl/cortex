@@ -55,13 +55,15 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 | `observe/` | The `:9093` server — `/stats`, `/config`, `/reload/status` |
 | `redact/` | Best-effort stripping of sensitive values before anything is stored or served |
 
-**Auth** — all 1.6% of it:
+**Auth and identity.** The theme table's 882-line Auth figure is `auth` + `bypass` +
+`capabilities` — `capabilities` is grouped here by subject even though it is listed
+under Framework above, which is where it is used from. `spiffe` and `routing` are
+counted under Framework, not here:
 
 | Package | Purpose |
 |---------|---------|
 | `auth/` | Composes building blocks into `HandleInbound` / `HandleOutbound`. Used internally by `jwt-validation` and `token-exchange`; plugin-internal in practice |
 | `bypass/` | Path pattern matcher for public endpoints (health, agent card). Any inbound gate plugin can use it |
-| `capabilities/` | (listed under Framework — it carries the claim constants gates declare) |
 | `spiffe/` | Framework-shared SPIFFE credential helpers: in-process Workload API client plus the `/opt` file mirror |
 | `routing/` | Host-to-audience router with glob matching. Used by `token-exchange` |
 
@@ -125,5 +127,7 @@ plugin), `spiffe/go-spiffe/v2`, `lestrrat-go/jwx/v2` (JWT), `go.opentelemetry.io
 `contextforge-org/cpex`, `maximhq/bifrost/core`, `rossoctl/context-guru`, `gobwas/glob`,
 `fsnotify/fsnotify`, `tidwall/gjson` + `sjson`, `gopkg.in/yaml.v3`.
 
-`core` is **consumed outside this repo** (`rossoctl/operator`, `rossoctl/rossoctl-cli`),
+`core` is **consumed outside this repo** — by `rossoctl/operator` and
+`rossoctl/rossoctl-cli`, both public repos that compile against this module, and
+neither referenced anywhere else in this tree —
 so removing exported API here is a cross-repo change.

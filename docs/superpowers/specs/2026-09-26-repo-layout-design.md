@@ -204,3 +204,12 @@ One PR, six commits, each independently reviewable:
 5. Package renames — `memstore`, `bootstrap`, `capabilities`, `tlsconfig`, `cost/*`.
 6. Prose — rewrite the descriptions that call it "the shared auth library" and
    enumerate the 1.7% while omitting the 32%.
+
+**As implemented: twelve commits, not six.** The six above all landed as planned; the
+other six are fallout each of which deserved its own reviewable boundary rather than
+being folded into the commit that caused it — retargeting ten relative links the
+`deploy/` move stranded, making the migration script actually reproduce its own output,
+restoring the gofmt ordering the rename disturbed, and correcting the godoc headers and
+filenames the package renames left behind. That the fallout matched the planned work
+commit-for-commit is the honest measure of how much of this change was invisible to
+the sweep that performed it.

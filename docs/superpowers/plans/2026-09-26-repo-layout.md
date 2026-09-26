@@ -1,5 +1,15 @@
 # Repo Layout and Naming Implementation Plan
 
+> **Status: implemented.** All six tasks shipped. The checkboxes below are left
+> unticked deliberately — per-step progress was tracked in the SDD ledger, which is
+> git-ignored, and back-filling 28 boxes after the fact would assert a record this
+> file never kept. Three defects in this plan were found during execution and are
+> corrected in the spec rather than silently here: the migration script in Task 3
+> had four bugs (a BSD-only `sed -i ''`, a starred regex group that collapsed
+> `../../` to `../`, a pathspec list that matched `Dockerfile`/`Makefile` at the
+> repository root only, and no `*.py`), there are seven `replace` directives rather
+> than five, and Task 5's predicted `event`/`settle` shadowing did not occur at all.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Take the top level from 10 directories to 7, rename `authlib` to `core` (it is 1.7% auth), and rename five internal packages to match what they do — without changing any published contract.

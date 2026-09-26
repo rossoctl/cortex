@@ -4,7 +4,7 @@ import "encoding/json"
 
 // The published plugin events are plugin-defined structs this package deliberately does not
 // import. These read the few fields needed through the same JSON tags the wire uses, so a
-// rename in the producer is caught by costing's own tests rather than silently zeroing a
+// rename in the producer is caught by cost/settle's own tests rather than silently zeroing a
 // saving.
 
 func asMap(v any) (map[string]any, bool) {

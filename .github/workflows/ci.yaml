@@ -152,7 +152,7 @@ jobs:
           - authbridge-envoy
           # abctl is published by release-binaries.yaml, so it has to build
           # under GOWORK=off here too. Omitting it let a missing go.sum entry
-          # for an core transitive dep reach main: the workspace build used
+          # for a core transitive dep reach main: the workspace build used
           # everywhere else resolved it, and the per-module release build did
           # not — surfacing only when a tag was cut.
           - abctl

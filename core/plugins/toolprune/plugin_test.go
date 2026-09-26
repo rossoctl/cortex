@@ -1009,7 +1009,7 @@ func TestMetrics_RecoveredPanicIsVisible(t *testing.T) {
 	}
 }
 
-// costing reads this plugin's event STRUCTURALLY, by JSON tag, so it can price a saving
+// cost/settle reads this plugin's event STRUCTURALLY, by JSON tag, so it can price a saving
 // without importing the plugin. That keeps the dependency pointing the right way — a plugin
 // that shrinks a body should know nothing about pricing — at the cost of a coupling the
 // compiler cannot see.
@@ -1024,7 +1024,7 @@ func TestEvent_FieldNamesCostingDependsOn(t *testing.T) {
 
 	got := settle.Avoided(pctx, p.rates)
 	if len(got) != 1 {
-		t.Fatalf("costing found %d savings, want 1 — the event's field names have drifted: %+v", len(got), got)
+		t.Fatalf("cost/settle found %d savings, want 1 — the event's field names have drifted: %+v", len(got), got)
 	}
 	s := got[0]
 	if s.Component != "tool-prune" {

@@ -264,7 +264,7 @@ func TestNoPerRequestBoundClosesTheAccumulationWrap(t *testing.T) {
 
 // A MODELLED FIGURE IS HELD TO THE SAME PER-REQUEST CEILING AS A GATEWAY'S OWN.
 //
-// costing applies PlausibleRequestCostUSD ($10,000) to a cost header and names the refusal;
+// cost/settle applies PlausibleRequestCostUSD ($10,000) to a cost header and names the refusal;
 // bounded only at MaxCostMicros ($9 billion), Cost's own arithmetic would admit what this file
 // calls a garbage ledger figure. Two independent ways to reach the gap, both exercised here:
 // the token check inside Cost is PER TIER, so one request can carry maxPlausibleTokens

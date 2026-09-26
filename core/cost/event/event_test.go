@@ -452,7 +452,7 @@ func TestPriced_RefusedFigureIsNeverSpend(t *testing.T) {
 		name string
 		ev   Event
 	}{
-		{"the shape costing publishes", Event{RejectedReason: RejectedImplausible}},
+		{"the shape cost/settle publishes", Event{RejectedReason: RejectedImplausible}},
 		// IN RANGE for the micros unit deliberately — $1 billion converts cleanly — so what
 		// zeroes it below is the REFUSAL and not the representability bound, which is a
 		// different check with its own rows above.

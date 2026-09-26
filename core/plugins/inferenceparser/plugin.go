@@ -296,7 +296,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// not an oversight: a settled zero would count unpriced traffic as free and a
 		// modelled one would be invented. Streaming is not a carve-out — a POSITIVE header
 		// on a stream is charged here like any other, and an implausible one is refused and
-		// disclosed, because costing's cap reads the nil extension and never the
+		// disclosed, because cost/settle's cap reads the nil extension and never the
 		// Content-Type. The only thing that widens this row is teaching the parser the
 		// dialect. See reverseproxy's StreamedUnparsedEndpoint_CoverageBoundary, which
 		// states all three outcomes through a real listener.

@@ -49,8 +49,8 @@ endif
 	@# machine, not a property of this repo, and hardcoding it broke the target for
 	@# anyone whose proxy is the only route out.
 	cd core && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
-		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
-	cd core && go test ./pricing/ -run TestBundled
+		go run ./cost/pricing/internal/gen -commit $(COMMIT) -dir ./cost/pricing
+	cd core && go test ./cost/pricing/ -run TestBundled
 
 ##@ Binary Targets
 

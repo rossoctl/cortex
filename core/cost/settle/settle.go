@@ -851,7 +851,7 @@ func gatewayFigureOf(s Settled) float64 {
 // NewRecord builds the wire record from a settled outcome.
 //
 // Named NewRecord, not Record, because event.Record READS a record off a session event
-// and these two packages are imported together — the cost owner imports costing, every
+// and these two packages are imported together — the cost owner imports cost/settle, every
 // consumer imports event. Two functions with one name pointing opposite directions is a
 // coin flip at each call site, and the New prefix says which way this one goes.
 func NewRecord(s Settled, avoided []event.Saving) event.Event {

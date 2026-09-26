@@ -48,7 +48,7 @@ type fixture struct {
 
 	// upstreamHeaders are extra RESPONSE headers, applied identically by all three
 	// drivers. A gateway's cost header lives here: it is the input half of every
-	// precedence rule in costing, so a fixture that cannot set one cannot compare what
+	// precedence rule in cost/settle, so a fixture that cannot set one cannot compare what
 	// the listeners do with it.
 	upstreamHeaders map[string]string
 

@@ -34,7 +34,7 @@ type costEvent = event.Event
 // false return is the normal case, not an error.
 //
 // Kept as a local name because the TUI reads better for it; the logic, the
-// lookup key and the non-positive-cost rejection all live in core/event.
+// lookup key and the non-positive-cost rejection all live in core/cost/event.
 func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 	return event.Decode(e)
 }
@@ -95,7 +95,7 @@ func savingSign(projected bool) string {
 // renders exact instead.
 //
 // No third glyph for estimated. "~" already means projected, and every saving published today
-// is estimated (costing derives them from a byte ratio), so a marker on 100% of rows would
+// is estimated (cost/settle derives them from a byte ratio), so a marker on 100% of rows would
 // distinguish nothing while adding noise to every one. The moment a component reports a
 // saving counted by a tokenizer, it renders differently here without a legend to learn.
 //

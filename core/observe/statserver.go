@@ -40,14 +40,14 @@ type statServerOpts struct {
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
-// Handler returned by an core/reloader.Reloader). Omit when hot-
+// Handler returned by a core/reloader.Reloader). Omit when hot-
 // reload isn't wired up — the endpoint simply won't exist.
 func WithReloadStatus(h http.Handler) Option {
 	return func(o *statServerOpts) { o.reloadStatus = h }
 }
 
 // WithPricingTable registers a /pricing/table handler (typically the Handler returned
-// by an core/cost/pricing.Registry). Omit when pricing isn't wired up.
+// by a core/cost/pricing.Registry). Omit when pricing isn't wired up.
 //
 // It answers what a config file cannot: the rates in effect come from the operator's
 // `pricing:` section PLUS a table compiled into the binary PLUS any shipped gateway
