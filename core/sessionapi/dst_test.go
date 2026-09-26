@@ -6,7 +6,7 @@ import (
 	"time"
 
 	// EMBEDDED TZDATA. mustZone treats a load failure as a test failure, so the database has
-	// to be in the binary; see the same import in usage/dst_test.go and costledger/dst_test.go
+	// to be in the binary; see the same import in usage/dst_test.go and cost/ledger/dst_test.go
 	// for why a skip here would be worse than no test.
 	_ "time/tzdata"
 
@@ -46,7 +46,7 @@ var dayBoundaryCases = []dayBoundaryCase{
 // was corrected when it was.
 //
 // Two layers decide where a day starts and they have to give the same answer.
-// costledger names a day file from a date carried at noon, so the file is named for the date
+// cost/ledger names a day file from a date carried at noon, so the file is named for the date
 // a row is genuinely on in every zone. usage.ParseWindowSpec computes the bounds that SELECT
 // those files. Each layer has its own tests; neither could catch a disagreement BETWEEN them,
 // and a disagreement is silent — no error, no caveat, just a dollar total that includes spend
@@ -83,7 +83,7 @@ func TestTodayWindowAndLedgerDayAgreeInEveryZone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseWindowSpec: %v", err)
 			}
-			// The ledger's clock zone IS its day boundary (see costledger's store.loc), and in
+			// The ledger's clock zone IS its day boundary (see cost/ledger's store.loc), and in
 			// production both it and ParseWindowSpec read time.Now(), so pinning them to the
 			// same zone here is the production arrangement rather than a convenience.
 			led, err := ledger.New(t.TempDir(), ledger.WithClock(func() time.Time { return now }))

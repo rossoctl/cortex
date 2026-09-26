@@ -100,7 +100,7 @@ type CostLedgerConfig struct {
 	// 31, which is roughly 10 MB.
 	//
 	// THIRTY-ONE because that is what window=month needs: a month-to-date total on the 31st
-	// of a 31-day month opens 31 day files, and costledger's prune keeps exactly
+	// of a 31-day month opens 31 day files, and cost/ledger's prune keeps exactly
 	// retention_days distinct dates. See ledger.defaultRetentionDays, which is pinned to
 	// usage.WindowMonthLocalDays.
 	//

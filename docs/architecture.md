@@ -75,7 +75,7 @@ mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
-The shared auth library at [`core/`](../core/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`core/README.md`](../core/README.md) for package reference.
+The runtime library at [`core/`](../core/) holds the plugin framework, every listener (the Envoy ext_proc server and the HTTP proxies), the cost pipeline, the session store, and the auth primitives — auth being 1.6% of its non-test lines. It is not protocol-free: `listener/extproc` depends on gRPC and `envoyproxy/go-control-plane`. See [`core/README.md`](../core/README.md) for the package reference and the measured breakdown.
 
 ## Plugin Catalog
 
@@ -520,7 +520,7 @@ when `-tags include_plugin_<name>` is passed.
 
 ## Component Documentation
 
-- [core](../core/README.md) — Shared auth building blocks (Go library)
+- [core](../core/README.md) — The runtime library: framework, listeners, cost, session store, auth (Go module)
 - [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
 - `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary

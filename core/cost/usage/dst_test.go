@@ -14,7 +14,7 @@ import (
 	// platform (CI) where nobody looks. Linking the database into the test binary removes
 	// that failure mode, so mustZone can treat an error as a test failure.
 	//
-	// The same import for the same reason is in costledger's dst_test.go. That package
+	// The same import for the same reason is in cost/ledger's dst_test.go. That package
 	// shipped this bug under a commit titled "Pin a non-UTC zone, so the local-midnight
 	// guard actually guards" — the zone it pinned was a FixedZone.
 	_ "time/tzdata"

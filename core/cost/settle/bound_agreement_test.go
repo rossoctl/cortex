@@ -13,7 +13,7 @@ import (
 //
 // THE PRODUCER AND THE CONSUMER ANSWER THE SAME QUESTION IN TWO PLACES. Settle sets
 // Settled.Priced; event.Event.Priced() decides whether that record reads as spend. They
-// are meant to be the same predicate — costevent's own doctrine is that Micros and Priced must
+// are meant to be the same predicate — cost/event's own doctrine is that Micros and Priced must
 // agree, or a consumer adds money to a total while counting the request as uncovered — but
 // nothing made them agree, and they were validated against different bounds: the header arm
 // accepted any finite non-negative float, while Priced() rejects anything the micros unit
@@ -23,7 +23,7 @@ import (
 // BOTH HALVES OF THE DISAGREEMENT ARE REACHABLE, and they are reachable at once. Something
 // gating on Settled.Priced charges the figure — litellm_budgettrack accumulates it into
 // TotalSpend, which drives the HTTP 429 lockout — while everything reading the record through
-// costevent files the same request as UNPRICED. Two headers of ~1.8e308 sum to +Inf, and the
+// cost/event files the same request as UNPRICED. Two headers of ~1.8e308 sum to +Inf, and the
 // ledger's json.Marshal cannot write that at all: one response poisons the file.
 //
 // SO THE TEST IS THE AGREEMENT ITSELF, not a state per row. Asserting "1e10 is refused" would

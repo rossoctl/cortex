@@ -17,7 +17,7 @@ import (
 // sat the line that actually produces it — and both of its mistakes survived the whole suite:
 // deleting the assignment reported every window as fully covered, and asking RetentionCutoff()
 // instead of RetentionCutoffAt(spec.To) read the clock a second time, which is the defect
-// costledger's retention_cutoff_test.go exists for one layer down.
+// cost/ledger's retention_cutoff_test.go exists for one layer down.
 //
 // A HAND-BUILT SPEC rather than an HTTP request, because the mutation that matters needs the
 // ledger's clock and the window's instant to fall on DIFFERENT DAYS — the straddle that made a
@@ -97,7 +97,7 @@ func TestLedgerSnapshot_CarriesTheCoverageShortfallMeasuredAtTheWindowsOwnInstan
 
 // THE SHORTFALL IS A CEILING, NOT A DEDUCTION, and this is the state that proves it.
 //
-// prune floors its own reference day at the NEWEST day file (see costledger's prune), so a ledger
+// prune floors its own reference day at the NEWEST day file (see cost/ledger's prune), so a ledger
 // that has been idle keeps its last retainDays files however long ago they were written — while
 // the coverage figure is measured from the CLOCK. In that state a day can be reported outside
 // retention and still be summed into the total.

@@ -343,7 +343,7 @@ func TestPlausibilityCeilingIsTenThousandDollars(t *testing.T) {
 // TestIncompleteReasonWireStringsArePinned covers what travels, which is the string and not the
 // identifier.
 //
-// These reach abctl as incomplete_reason JSON and costevent switches on them to decide whether a
+// These reach abctl as incomplete_reason JSON and cost/event switches on them to decide whether a
 // figure is a floor or an approximation, so a rename is a wire break. ReasonOutputUncounted was
 // pinned by a marshalling test; the other two were not — renaming either to "MUTANT" left
 // ./core/... green.

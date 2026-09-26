@@ -873,13 +873,13 @@ func TestRecord_LabelLengthIsCapped(t *testing.T) {
 //
 // s[:maxLabelLen] can split a multi-byte sequence, and encoding/json then expands each
 // invalid byte into a 3-byte U+FFFD — so the serialised label came out LONGER than the cap
-// (measured in costledger: 121 bytes cut at 96 serialised at 100). The invalid fragment is
+// (measured in cost/ledger: 121 bytes cut at 96 serialised at 100). The invalid fragment is
 // the smaller problem; the byte cap silently not holding is the defect.
 //
 // EVERY CASE HAS A ONE-BYTE PREFIX, and that is load-bearing rather than incidental.
 // maxLabelLen is 96, which is divisible by 2, 3 and 4 — so a label of uniform multi-byte
 // runes has a rune boundary exactly AT the cap and the byte cut is accidentally correct. The
-// first version of this test in costledger passed against the unfixed code for precisely that
+// first version of this test in cost/ledger passed against the unfixed code for precisely that
 // reason. One ASCII byte in front moves the cut to offset 95, which is a boundary for none of
 // the three widths.
 func TestTruncateLabel_CutsOnARuneBoundaryAndKeepsTheByteCap(t *testing.T) {
@@ -959,7 +959,7 @@ func TestRingLabel_SanitisesBeforeCapping(t *testing.T) {
 // The ring did not sanitise AT ALL. The model comes off the parsed request body and the
 // endpoint is the host the workload asked for, so GET /v1/usage served an ANSI escape
 // straight out of memory — while the ledger's copy of the same label was clean, because
-// costledger sanitises on write. Two surfaces, one request, different bytes: group=model
+// cost/ledger sanitises on write. Two surfaces, one request, different bytes: group=model
 // showed the label as two series, and only the unfixed surface could reposition an operator's
 // cursor. CWE-150.
 //

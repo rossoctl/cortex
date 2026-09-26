@@ -1,7 +1,7 @@
 # Per-Tier Cost Breakdown in abctl
 
 Status: implemented · proposed 2026-09-19 · shipped in
-`core/{pricing,costing,costevent,usage}` and
+`core/cost/{pricing,settle,event,usage}` and
 `cmd/abctl` (the `$` spend breakdown). Kept as the design record,
 not a live proposal.
 

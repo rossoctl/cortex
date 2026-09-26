@@ -724,7 +724,7 @@ func TestSumCost(t *testing.T) {
 // Two maximal figures, which is the smallest case that overflows.
 func TestSumCost_SaturatesRatherThanWrapping(t *testing.T) {
 	// Just under pricing.MaxCostMicros in dollars, so each record prices at close to the
-	// largest figure costevent will represent. Two of them exceed int64 nowhere near, so the
+	// largest figure cost/event will represent. Two of them exceed int64 nowhere near, so the
 	// list is padded to reach the ceiling.
 	big := event.Event{CostUSD: 9e9, Settled: true, Provenance: "authoritative"}
 	one := costRecord(t, big)

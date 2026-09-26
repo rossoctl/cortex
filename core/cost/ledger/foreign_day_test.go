@@ -241,7 +241,7 @@ func TestQuery_AnAbsurdSpanIsBoundedWithoutLosingRows(t *testing.T) {
 // constant.
 func TestMaxLabelLen_MatchesTheRingItMirrors(t *testing.T) {
 	if maxLabelLen != usage.MaxLabelLen {
-		t.Errorf("costledger maxLabelLen = %d, usage.MaxLabelLen = %d: a label capped differently on the two halves is one series key spelled two ways",
+		t.Errorf("cost/ledger maxLabelLen = %d, usage.MaxLabelLen = %d: a label capped differently on the two halves is one series key spelled two ways",
 			maxLabelLen, usage.MaxLabelLen)
 	}
 	// The literal too, so a change that moved BOTH constants together still has to be deliberate:

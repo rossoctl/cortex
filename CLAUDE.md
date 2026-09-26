@@ -90,17 +90,26 @@ There is no `authbridge/` subdirectory: what used to live there is the repo root
 
 ```
 cortex/
-├── core/                          # Shared auth library (Go module)
+├── core/                          # The runtime library (Go module). Auth is 1.6% of it;
+│   │                                 # see core/README.md for the measured breakdown.
+│   ├── pipeline/                     #   Plugin interface + lifecycle
 │   ├── plugins/                      #   Every plugin; each owns its own config
 │   │   ├── jwtvalidation/            #     JWKS-backed JWT verifier (validation/)
 │   │   └── tokenexchange/            #     RFC 8693 exchange client + token cache
-│   ├── bypass/                       #   Path pattern matcher
+│   ├── listener/                     #   All listener implementations (extproc, proxies)
+│   ├── config/                       #   Mode presets, YAML config, validation
+│   ├── cost/                         #   21% of the module: pricing, settle, ledger,
+│   │                                 #   event, usage
+│   ├── session/  sessionapi/         #   Session store + the :9094 API
+│   ├── observe/  redact/             #   The :9093 server; sensitive-value stripping
+│   ├── auth/  bypass/                #   HandleInbound/Outbound; path matcher
+│   ├── capabilities/                 #   Capability interfaces extensions implement
 │   ├── spiffe/                       #   SPIFFE credential sources (in-process
 │   │                                 #   Workload API client + /opt file mirror)
 │   ├── routing/                      #   Host-to-audience router
-│   ├── auth/                         #   HandleInbound + HandleOutbound composition
-│   ├── listener/                     #   All listener implementations (extproc, proxies)
-│   ├── config/                       #   Mode presets, YAML config, validation
+│   ├── memstore/                     #   Process-scoped TTL map (vs storage/, persistent)
+│   ├── bootstrap/                    #   Process startup: logging, health, stats servers
+│   ├── tlsconfig/  tlsbridge/        #   Builds tls.Config values; forges bridge certs
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
@@ -200,7 +209,7 @@ See the binary-by-binary table below (image, mode, listeners, plugins) for
 the full enumeration — kept as the single list rather than repeated here.
 
 **Common:**
-- `core/` — shared auth library (JWT validation, token exchange, caching, routing, all listener implementations, all plugins).
+- `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~53k non-test lines, of which auth is 1.6%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
 - `deploy/proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
 - `deploy/proxy-init/Dockerfile.init` — proxy-init container image.
 
@@ -296,7 +305,7 @@ One variant per opt-in plugin currently offered for try-out (today:
 **Go modules** (12 in total; `go.work` links 9 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
-- `core/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
+- `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
 - `cmd/abctl/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.

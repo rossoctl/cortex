@@ -11,7 +11,7 @@ import "math"
 // is unreachable by any legitimate traffic and is the point past which a figure is a
 // bug rather than a bill.
 //
-// EXPORTED so the one bound serves every producer of a micros figure. costevent's
+// EXPORTED so the one bound serves every producer of a micros figure. cost/event's
 // header path accepts any finite non-negative float, and its Micros() conversion was
 // unguarded — so a header of 1e13 saturated to MaxInt64 and put a garbage figure where a
 // ledger row was expected. A second bound declared over there would be free to drift from

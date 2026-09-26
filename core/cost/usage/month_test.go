@@ -196,7 +196,7 @@ func TestParseWindowSpec_MonthIsNotADuration(t *testing.T) {
 
 // WindowMonthLocalDays IS COUNTED, not asserted against another constant.
 //
-// Its only pin was costledger's TestDefaultRetention_CoversEveryDayTheMonthWindowTouches, which
+// Its only pin was cost/ledger's TestDefaultRetention_CoversEveryDayTheMonthWindowTouches, which
 // compares it with defaultRetentionDays — so setting BOTH to 30 left all three modules green, and
 // the 30-against-31 defect this window exists to fix would have come back unnoticed. Two constants
 // that must agree cannot check each other; that is the lesson Window7dLocalDays already records,
@@ -229,7 +229,7 @@ func TestWindowMonthLocalDays_IsTheLongestMonthsDateCount(t *testing.T) {
 		}
 		if worst != WindowMonthLocalDays {
 			t.Errorf("%s: the widest month-to-date window covers %d local dates (%s), but "+
-				"WindowMonthLocalDays is %d — costledger derives its default retention from this "+
+				"WindowMonthLocalDays is %d — cost/ledger derives its default retention from this "+
 				"constant, so a value below the count answers window=month from too few day files "+
 				"and a value above it keeps history nothing asked for",
 				zone, worst, when, WindowMonthLocalDays)

@@ -299,7 +299,7 @@ func TestPricing_SettledZeroIsNotRePriced(t *testing.T) {
 }
 
 // TestPricing_AbsurdHeaderFigureCannotWrapTheAggregate is the aggregate side of
-// costevent's unbounded conversion.
+// cost/event's unbounded conversion.
 //
 // A gateway header of 1e13 became MaxInt64 micros, and Counts.Add is plain int64
 // addition, so TWO such requests wrapped the window total to −2 micros — verified on

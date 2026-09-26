@@ -455,7 +455,7 @@ func plausibleTokenReport(inf *pipeline.InferenceExtension) bool {
 // overflow — undefined in most languages and merely unhelpful in Go, where it silently
 // produces the very number this function exists to avoid returning.
 //
-// BOTH DIRECTIONS. No producer in this package can settle a negative cost — costevent refuses
+// BOTH DIRECTIONS. No producer in this package can settle a negative cost — cost/event refuses
 // one and MicrosFromUSD rejects it — so the lower clamp is unreachable through the aggregator
 // today. It is here because Add is exported, because "unreachable today" is how the wrap
 // arrived in the first place, and because a half-guarded accumulator invites a reader to
@@ -1027,7 +1027,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	var avoided int64
 	if e.Phase != pipeline.SessionRequest {
 		// ONE unmarshal, feeding both. costOf wants the record only when it priced
-		// something and this wants it either way, so each calling costevent for itself
+		// something and this wants it either way, so each calling cost/event for itself
 		// would decode the same JSON twice per event — and foldInto runs twice, which is
 		// what hoisting this out of it was for.
 		rec, haveRec := event.Record(e)
@@ -1400,7 +1400,7 @@ const MaxSeriesInResponse = 16
 // for a full ring lap. Long enough for any real model id, including provider
 // prefixes and dated suffixes.
 //
-// EXPORTED SO THE DURABLE COPY CAN BE PINNED TO IT. costledger caps its own labels at the same
+// EXPORTED SO THE DURABLE COPY CAN BE PINNED TO IT. cost/ledger caps its own labels at the same
 // number and said so in a comment — "matched deliberately rather than chosen again" — while both
 // copies were unexported, so no test could compare them and raising one to 4096 left both suites
 // green. Same defect and same fix as MaxRetentionDays.
@@ -1445,7 +1445,7 @@ func hostLabel(authority string) string {
 // the ledger; RUNE BOUNDARY, because a byte cut breaks the very byte cap it enforces. A plain
 // s[:maxLabelLen] can split a multi-byte sequence and leave an invalid trailing fragment, and
 // encoding/json then expands each invalid byte into a 3-byte U+FFFD — so a 121-byte label cut
-// at 96 SERIALISES AT 100 BYTES (measured in costledger, where the same defect was fixed
+// at 96 SERIALISES AT 100 BYTES (measured in cost/ledger, where the same defect was fixed
 // first). The invalid fragment is the smaller problem; the cap silently not holding is the
 // reason this is a fix rather than tidying.
 //
@@ -1478,7 +1478,7 @@ func ringLabel(s string) string {
 // THE RING IS A SERVING SURFACE OF ITS OWN. The model comes off the parsed request body and
 // the endpoint is the host the workload asked for, so without this GET /v1/usage serves a
 // model name containing an ANSI escape straight out of memory — while the ledger's copy of the
-// very same label is clean, because costledger sanitises on write. Two surfaces, one request,
+// very same label is clean, because cost/ledger sanitises on write. Two surfaces, one request,
 // different bytes: group=model shows the label as two series, and the unsanitised one can
 // reposition an operator's cursor. CWE-150.
 //
@@ -1503,7 +1503,7 @@ func ringLabel(s string) string {
 //     import, and still filters C0 and DEL only.
 //
 // The first three no longer each carry their own copy of WHICH RUNES COUNT: that predicate is
-// pipeline.IsControlRune, and both this package and costledger import pipeline, so there is one
+// pipeline.IsControlRune, and both this package and cost/ledger import pipeline, so there is one
 // definition repo-wide. This comment used to argue the opposite — that referencing pipeline's
 // would "invert the layering into a cycle" and so the rule had to be copied — which was wrong
 // in the direction that matters: nothing in pipeline imports this package. Three byte-identical
@@ -1551,7 +1551,7 @@ func hasControlRunes(s string) bool {
 
 // CapSeries folds everything past the n costliest entries into the (other) band.
 //
-// EXPORTED FOR costledger, which serves the symbolic windows from disk and had no bound of its
+// EXPORTED FOR cost/ledger, which serves the symbolic windows from disk and had no bound of its
 // own at all: its rows come from day files, so the number of distinct (endpoint, model, agent)
 // keys in a response is however many a month of traffic produced. One map rather than a whole
 // snapshot, because that source answers with a single bucket.
@@ -1591,7 +1591,7 @@ func CapSeries(series map[string]Counts, n int) map[string]Counts {
 	}
 	// Merged rather than assigned: a label spelled "(other)" by a caller is already in the
 	// map, and overwriting it would drop that traffic. The band is not a reserved key — see
-	// costledger's overflowLabel, which makes the same point about spoofability.
+	// cost/ledger's overflowLabel, which makes the same point about spoofability.
 	cur := out[overflowLabel]
 	cur.Add(other)
 	out[overflowLabel] = cur

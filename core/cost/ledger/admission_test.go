@@ -184,7 +184,7 @@ func TestRecord_AnUnpricedRecordWithNoRefusalIsStillNotARow(t *testing.T) {
 //     file accumulates. There is nothing missing from the ledger's total.
 //   - Avoided IS persisted now, in AvoidedMicros, which is #972's decision and arrived
 //     after this test did. It is a column of its own, never a contribution to CostMicros:
-//     costevent is explicit that no consumer may add money-not-spent to spend. Row embeds
+//     cost/event is explicit that no consumer may add money-not-spent to spend. Row embeds
 //     usage.Counts, so the ring carries the same field under the same name across a
 //     window and the two surfaces still AGREE — which is what that requirement was
 //     really about, not the absence of the column.

@@ -185,10 +185,10 @@ func TestCostLedgerConfig_TheFloorCoversEveryDayTheWindowTouches(t *testing.T) {
 }
 
 // dayOfTest is local midnight of t. The ledger's own day boundary, spelled here rather than called
-// through costledger because the point of the test is the arithmetic rather than the wiring.
+// through cost/ledger because the point of the test is the arithmetic rather than the wiring.
 //
-// Not because the import is unavailable: the file DOES import costledger now, for the ceiling pin at
-// the bottom. Nothing in costledger, usage or pipeline imports this package, so there was never a
+// Not because the import is unavailable: the file DOES import cost/ledger now, for the ceiling pin at
+// the bottom. Nothing in cost/ledger, usage or pipeline imports this package, so there was never a
 // cycle to route around.
 func dayOfTest(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
@@ -330,18 +330,18 @@ func TestCostLedgerValidate_RejectsARetentionLargeEnoughToInvertPrune(t *testing
 	}
 }
 
-// TestMaxCostLedgerRetentionDays_MatchesTheStoreItClamps is the pin costledger exported
+// TestMaxCostLedgerRetentionDays_MatchesTheStoreItClamps is the pin cost/ledger exported
 // MaxRetentionDays for, and which did not exist until now.
 //
 // Both sides clamp: this validator refuses a retention past the ceiling, and newStore clamps one that
-// arrives any other way. costledger's own comment says config "owns the derivation" and that its
+// arrives any other way. cost/ledger's own comment says config "owns the derivation" and that its
 // exported constant is what a config-side test asserts against — but no such test existed, so the two
 // literals had nothing holding them equal. That is precisely the drift store.go narrates as having
 // already happened once, when a third copy of the number in a test file made a moved constant look
 // pinned.
 //
-// This test DOES import costledger, which the helper above says it avoids. There is no cycle to
-// avoid: nothing in costledger, usage or pipeline imports this package, so the only thing that import
+// This test DOES import cost/ledger, which the helper above says it avoids. There is no cycle to
+// avoid: nothing in cost/ledger, usage or pipeline imports this package, so the only thing that import
 // costs is a test-only edge — cheap against a silent disagreement over how much history is deleted.
 func TestMaxCostLedgerRetentionDays_MatchesTheStoreItClamps(t *testing.T) {
 	if maxCostLedgerRetentionDays != ledger.MaxRetentionDays {

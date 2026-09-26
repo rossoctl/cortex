@@ -178,7 +178,7 @@ type Snapshot struct {
 	// is unknowable here, and so is whether the total includes it.
 	//
 	// AN EARLIER VERSION OF THIS SAID "that the total cannot include it is certain". It is not,
-	// and the state that breaks it is ordinary rather than exotic: costledger's prune floors its
+	// and the state that breaks it is ordinary rather than exotic: cost/ledger's prune floors its
 	// reference day at the NEWEST day file, so a ledger nothing has written to keeps its last
 	// retainDays files however long ago they were written — while this figure is measured from
 	// the clock. A query then sums day files this field has already called outside. Reproduced
@@ -428,7 +428,7 @@ type Degraded struct {
 	// So a non-zero value means "AT LEAST this many rows are missing", which is the reading
 	// a client has to present. Same number and same qualification as
 	// ledger.Caveats.SkippedLines, which is where this field is copied from; see
-	// costledger's appendBytes for why the bytes on disk cannot support an exact figure.
+	// cost/ledger's appendBytes for why the bytes on disk cannot support an exact figure.
 	SkippedLines int64 `json:"skippedLines,omitempty"`
 	// TruncatedDays is how many day files were abandoned part-way. Worse than a skipped
 	// line by an unbounded amount: the rest of that file is missing, and a file holds a
@@ -646,7 +646,7 @@ func ParseWindow(s string) (time.Duration, error) {
 // dayAnchorHour is the hour used to establish WHICH local date is meant, before any
 // boundary arithmetic is done on it.
 //
-// NOON, and deliberately the same convention and the same value as costledger's dayHour:
+// NOON, and deliberately the same convention and the same value as cost/ledger's dayHour:
 // these two layers have to agree about where a day starts, because this package computes
 // the window bounds that select the day files that package names. A DST transition moves
 // the clock by an hour (Australia/Lord_Howe by thirty minutes), so no transition can move
@@ -824,7 +824,7 @@ const Window7dSpan = 7 * 24 * time.Hour
 // named by.
 //
 // It is therefore the number of day files a durable ledger must hold to answer this window on
-// the 31st of a 31-day month, which is why costledger's default retention is derived from this
+// the 31st of a 31-day month, which is why cost/ledger's default retention is derived from this
 // rather than written as its own number — the lesson Window7dLocalDays records about two
 // constants that had to agree and did not.
 const WindowMonthLocalDays = 31

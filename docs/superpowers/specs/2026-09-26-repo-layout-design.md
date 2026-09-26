@@ -1,6 +1,18 @@
 # Repository layout and naming
 
-Status: design · 2026-09-26 · targets the top-level layout and `core/`'s package names
+Status: **implemented** · 2026-09-26 · the top-level layout and `core/`'s package names
+
+Two counts in this document were wrong when written, and are corrected here rather than
+silently: there are **seven** `replace` directives naming the library, not five (§6's
+table missed the two that sit inside `replace (` blocks), and the theme shares measured
+on the finished branch are Framework 57.1% / Cost 21.1% / Observability 10.0% / **Auth
+1.6%** against 53,323 non-test lines — close enough to §1's figures to leave the
+argument intact, but not the same numbers.
+
+Implementation also turned up eight distinct classes of reference that a substitution
+sweep cannot see, against the one class §6 anticipated. They are enumerated in the PR
+description; the short version is that §6's "verify by shape, not by pattern" was the
+right instruction and still understated the number of shapes.
 
 ## 1. Problem
 

@@ -69,7 +69,7 @@ type EventClient struct {
 //
 // FORWARD REFERENCES BELOW. This lands ahead of the two packages that consume
 // Label(): the usage aggregator's byAgent series and the durable cost ledger
-// (`costledger`, which does not exist yet). Both arrive later in this series, so
+// (`cost/ledger`, which does not exist yet). Both arrive later in this series, so
 // `ledger.*` names in this file are the shape the rule takes there rather than
 // symbols that resolve today. `usage.*` names do resolve.
 //
@@ -196,7 +196,7 @@ func hasControlRunes(s string) bool {
 // there. It is still replaced here like any other C0 control — ParseUserAgent normalises tabs
 // to spaces before this runs, so the legal-whitespace reading is honoured.
 //
-// EXPORTED, AND NOW THE ONLY COPY. usage and costledger each held a byte-identical duplicate under a
+// EXPORTED, AND NOW THE ONLY COPY. usage and cost/ledger each held a byte-identical duplicate under a
 // comment asserting "THE THREE COPIES MOVE TOGETHER" — which nothing enforced, and only this one had
 // test coverage for the bidi marks. Both import this package, so there was never a reason for the
 // other two to exist; a shared predicate is what makes the identical-rule rule true instead of
@@ -223,7 +223,7 @@ func IsControlRune(r rune) bool {
 // capUA cuts s to at most maxClientLen BYTES, on a rune boundary.
 //
 // The cap stays in bytes because that is what it bounds — retained memory here, and
-// through costledger the length of an appended line. Cutting on a rune boundary only
+// through cost/ledger the length of an appended line. Cutting on a rune boundary only
 // changes WHERE the byte cap lands (by up to three bytes), never that there is one.
 //
 // It matters because of the order in ParseUserAgent: sanitizeUA runs first and can put
@@ -361,7 +361,7 @@ const UnknownClientLabel = "unknown"
 // CARRIES NO CONTROL CHARACTERS when the EventClient came from ParseUserAgent, which is the
 // only path a request takes — a property of the parser, not of this method. A hand-built
 // EventClient (a test, a future producer) can hold anything its author put there and this
-// method will join it to a name and hand it on, which is the second reason costledger
+// method will join it to a name and hand it on, which is the second reason cost/ledger
 // sanitises again before writing a row: the guarantee here covers one code path, and the file
 // is forever.
 //

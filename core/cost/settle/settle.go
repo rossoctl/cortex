@@ -752,7 +752,7 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 // StateKey is where the full Settled outcome is stashed for the rest of the request.
 //
 // In-process only — deliberately not on the wire. A consumer that needs the number reads
-// the published costevent record; the drift check needs BOTH figures, and putting them in
+// the published cost/event record; the drift check needs BOTH figures, and putting them in
 // the session event would widen a public shape for one diagnostic's benefit. Keeping them
 // here also means drift compares what was actually decided instead of recomputing a half
 // and hoping the two agree.

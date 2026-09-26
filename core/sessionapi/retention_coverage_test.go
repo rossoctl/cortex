@@ -12,7 +12,7 @@ import (
 //
 // The first version of this counted absent pre-cutoff day FILES and reported them as pruned
 // spend under usage.Degraded, whose meaning is "rows are missing from the sum". That cannot be
-// known: nothing in costledger records its inception or what prune removed, so an absent old day
+// known: nothing in cost/ledger records its inception or what prune removed, so an absent old day
 // is indistinguishable from a day nobody wrote. A three-day-old install with retention_days=10
 // reported twenty-two days of loss and had lost nothing.
 //
@@ -25,7 +25,7 @@ import (
 //
 // THE CUTOFF IS BUILT AT THE PRODUCER'S ANCHOR HOUR, and that is the whole reason this file was
 // rewritten. Every fixture here used to hand-build it at MIDNIGHT while the only caller passes
-// costledger's day identifier, which is carried at NOON — so the suite was green over a
+// cost/ledger's day identifier, which is carried at NOON — so the suite was green over a
 // twelve-hour error that reported a complete month one day short of itself. A test fixture that
 // is shaped differently from the production value proves nothing about production.
 func TestDaysOutsideRetention(t *testing.T) {
@@ -82,7 +82,7 @@ func TestDaysOutsideRetention(t *testing.T) {
 // published as a floor, every 31-day month, on the one day of the month an operator is most
 // likely to be reconciling a budget.
 //
-// DRIVEN THROUGH THE REAL PRODUCER — costledger's own RetentionCutoff against usage's own
+// DRIVEN THROUGH THE REAL PRODUCER — cost/ledger's own RetentionCutoff against usage's own
 // StartOfLocalMonth — because the defect was entirely in the disagreement between the two shapes.
 // Nothing built by hand in this file can pin that.
 func TestDaysOutsideRetention_ACompleteMonthIsNotShort(t *testing.T) {
@@ -160,7 +160,7 @@ func TestDaysOutsideRetention_IsTheSameCountInEveryZone(t *testing.T) {
 //
 // Europe/Berlin springs forward on 29 March 2026, so the span from the 25th to the 31st is 143
 // hours, not 144. Subtracting local midnights and dividing by 24h yields 5 for six dates — one
-// date of coverage silently forgiven. usage and costledger both carry this hazard in their own
+// date of coverage silently forgiven. usage and cost/ledger both carry this hazard in their own
 // docs; this is the third place it has to be handled and the only one that was counting hours.
 func TestDaysOutsideRetention_SurvivesASpringForwardBetweenTheDates(t *testing.T) {
 	loc := mustZone(t, "Europe/Berlin")
@@ -230,7 +230,7 @@ func dateOf(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// producerAnchorHour is the hour of day costledger carries its day identifiers at.
+// producerAnchorHour is the hour of day cost/ledger carries its day identifiers at.
 //
 // READ FROM THE PRODUCER rather than written as 12 here, so the fixtures in this file follow
 // ledger.dayHour if it ever moves instead of quietly testing a shape nothing produces —

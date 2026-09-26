@@ -448,7 +448,7 @@ func writeUsageError(w http.ResponseWriter, err error) {
 // cutoff has one date it cannot cover, not a fraction of one.
 //
 // BOTH ARGUMENTS IDENTIFY A DATE AND NEITHER IS A BOUND, which is where two defects lived.
-// cutoff comes from costledger's retentionCutoff, and a ledger day is carried at NOON —
+// cutoff comes from cost/ledger's retentionCutoff, and a ledger day is carried at NOON —
 // ledger.dayOf's doc forbids reading it as the day's first instant — while from is a local
 // MIDNIGHT, from usage.StartOfLocalDay or StartOfLocalMonth. Comparing them as instants made a
 // month-to-date request report one day short of ITSELF: from sits twelve hours before the cutoff
@@ -475,7 +475,7 @@ func daysOutsideRetention(from, cutoff time.Time) int64 {
 // utcNoonOfDate re-anchors a timestamp's calendar date at noon UTC, so two dates can be
 // differenced as dates.
 //
-// NOON, and in UTC, for the same reason costledger carries its days at noon: UTC has no
+// NOON, and in UTC, for the same reason cost/ledger carries its days at noon: UTC has no
 // transitions, so the gap between two of these is always an exact multiple of 24 hours and the
 // division below cannot be off by one — where a local date's length is 22, 23, 24 or 25 hours and
 // subtracting local midnights drifts by the offset change.
