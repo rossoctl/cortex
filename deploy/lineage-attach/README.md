@@ -36,7 +36,7 @@ remembers writing.
 
 **Start here:** [RECIPE.md](RECIPE.md) — six steps, expected output, back
 out. **Why it works and where it stops:** [DESIGN.md](DESIGN.md). **See it
-run:** the [lineage demo](../demos/lineage/README.md) on the Weather Agent pair.
+run:** the [lineage demo](../../demos/lineage/README.md) on the Weather Agent pair.
 
 ---
 
@@ -56,8 +56,8 @@ pair is joined by `lineage.exchange.id` (the request span's own id):
 | `lineage.parent.source` | `tracestate` — parented on the previous sidecar's stamp; `wire` — on a `traceparent` that arrived without a stamp; `none` — nothing valid arrived, so this hop roots a trace and a `traceparent` is minted for the next |
 | `input.value` / `output.value` | with `capture_io: true`: the parsed A2A message, MCP arguments or LLM prompt, cut at `max_payload_bytes` (4096 unless `MAX_PAYLOAD_BYTES` says otherwise) with a visible marker |
 
-The attributes are the plugin's: [`plugin-catalog.md`](../docs/plugin-catalog.md#lineage-telemetry)
-lists its knobs, [`lineage-wire-contract.md`](../docs/lineage-wire-contract.md) the wire format.
+The attributes are the plugin's: [`plugin-catalog.md`](../../docs/plugin-catalog.md#lineage-telemetry)
+lists its knobs, [`lineage-wire-contract.md`](../../docs/lineage-wire-contract.md) the wire format.
 (Both docs arrive with the `lineage-telemetry` plugin in cortex #761; the links
 resolve once it lands.)
 

@@ -186,7 +186,7 @@ make load-image          # load into a kind cluster
 
 The image is published from CI as
 `ghcr.io/rossoctl/cortex/proxy-init:<tag>` (build defined
-in [`.github/workflows/build.yaml`](../.github/workflows/build.yaml)).
+in [`.github/workflows/build.yaml`](../../.github/workflows/build.yaml)).
 
 ## Testing
 
@@ -224,7 +224,7 @@ container automatically:
   those modes (the operator injects it unconditionally).
 
 See
-[`demos/weather-agent/demo-ui-advanced.md`](../demos/weather-agent/demo-ui-advanced.md)
+[`demos/weather-agent/demo-ui-advanced.md`](../../demos/weather-agent/demo-ui-advanced.md)
 for an end-to-end demo and
-[`demos/token-exchange-routes/README.md`](../demos/token-exchange-routes/README.md)
+[`demos/token-exchange-routes/README.md`](../../demos/token-exchange-routes/README.md)
 for the route-config reference.

@@ -1,6 +1,6 @@
 # Install the SPARC reflection service
 
-The AuthBridge [`sparc` plugin](../../docs/sparc-plugin.md) calls this service to decide whether an
+The AuthBridge [`sparc` plugin](../../../docs/sparc-plugin.md) calls this service to decide whether an
 agent's proposed tool call is grounded in the conversation. **Deploy it once per cluster — before
 you enable the `sparc` plugin on any agent.** Without it, the plugin has nothing to call.
 
@@ -26,7 +26,7 @@ whatever provider credentials are in your environment), deploys the service into
 (default `rossoctl-system`), and waits for it to become ready. Re-running it is idempotent.
 
 When it's up, enable the plugin on an agent — see
-[`docs/sparc-plugin.md`](../../docs/sparc-plugin.md#prerequisite-deploy-the-sparc-service).
+[`docs/sparc-plugin.md`](../../../docs/sparc-plugin.md#prerequisite-deploy-the-sparc-service).
 
 ## Image
 
@@ -63,7 +63,7 @@ Credentials are read from the environment at install time (`WX_API_KEY`, `WX_PRO
 The service is an **in-cluster backend** — no ingress, never public; same trust model as the
 authbridge session API. `/reflect` is unauthenticated by default, so restrict callers with a
 `NetworkPolicy` (allow only the authbridge sidecars). It runs non-root and makes its own egress to
-the LLM provider. See [`docs/sparc-plugin.md`](../../docs/sparc-plugin.md#security--network-posture).
+the LLM provider. See [`docs/sparc-plugin.md`](../../../docs/sparc-plugin.md#security--network-posture).
 
 ## Other targets
 
