@@ -9,7 +9,7 @@ import (
 
 // ReloadStatus is the wire shape of the framework's /reload/status endpoint.
 // Only the fields abctl uses are decoded. Keys must match
-// authlib/reloader/status.go exactly.
+// core/reloader/status.go exactly.
 type ReloadStatus struct {
 	LastSuccess   time.Time `json:"last_success"`
 	ReloadsOK     int64     `json:"reloads_ok"`

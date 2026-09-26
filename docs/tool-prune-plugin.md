@@ -186,7 +186,7 @@ aggregate:
   `on_error: observe` every byte stayed on the wire, so the money was spent.
 - **Gross, not net.** Nothing subtracts the cache re-warm, exactly as for `$ saved`.
 - **Never added to spend.** It is its own column everywhere it appears, and no surface may
-  fold it into a cost total or a budget. A test in `authlib/usage` asserts that the spend
+  fold it into a cost total or a budget. A test in `core/cost/usage` asserts that the spend
   totals are unchanged by a saving's presence and that the saving still lands.
 
 Independent of `abctl`'s per-run stats pane, which resets when the plugin's counters do.
@@ -198,7 +198,7 @@ answer different questions — do not read one as a check on the other.
 
 **Dollars work out of the box**, but rates are **not** a tool-prune option any
 more. They live in the top-level `pricing:` section (see `plugin-catalog.md`),
-resolved by `authlib/pricing`, so `$ saved` here, `/v1/usage` and `abctl` all price
+resolved by `core/cost/pricing`, so `$ saved` here, `/v1/usage` and `abctl` all price
 the same request identically. The 12 rate knobs and the built-in family table that
 used to live on this plugin are gone.
 

@@ -90,7 +90,7 @@ The `make demo-mtls` target does:
 - **Permissive vs strict rollout**: covered by `make demo-mtls-permissive`
   and `make demo-mtls-strict-rejects-plain`.
 - **Cert rotation under load**: tested via unit tests in
-  `authlib/spiffe/x509source_test.go`.
+  `core/spiffe/x509source_test.go`.
 - **rossoctl UI integration**: this demo is intentionally pre-UI —
   if you want to chat with an mTLS-protected agent, run any other
   rossoctl demo with `mtls: { mode: strict }` added to its config.
@@ -104,8 +104,8 @@ The `make demo-mtls` target does:
 The targets above (`make demo-mtls`, `make demo-mtls-permissive`, etc.)
 exercise mTLS in **proxy-sidecar** mode, where authbridge itself is
 the listener and the byte-peek + dial logic lives in Go
-(`authlib/listener/internal/tlssniff` for inbound,
-`authlib/listener/forwardproxy` for outbound).
+(`core/listener/internal/tlssniff` for inbound,
+`core/listener/forwardproxy` for outbound).
 
 A parallel set of targets exercises **envoy-sidecar** mode, where
 Envoy is the listener and mTLS is configured at the data-plane level

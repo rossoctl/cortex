@@ -13,7 +13,7 @@
 # Result: HTTP 200 with an MCP JSON-RPC 2.0 error frame,
 # error.data.error = cpex.cedar_default_deny (the forward proxy renders
 # MCP-protocol errors for MCP requests; see
-# authlib/listener/httpx/render.go).
+# core/listener/httpx/render.go).
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"

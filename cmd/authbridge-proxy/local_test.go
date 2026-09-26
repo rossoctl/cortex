@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // writeBuiltinConfig must produce a config file in cortexDir that loads, presets,
@@ -278,7 +278,7 @@ func TestStaleClientCAWarning_SilentWithoutInputs(t *testing.T) {
 }
 
 // The openssl-parity test for this rendering lives with the implementation, in
-// authlib/tlsbridge (TestFingerprintSHA256_MatchesOpenSSL). It used to be duplicated
+// core/tlsbridge (TestFingerprintSHA256_MatchesOpenSSL). It used to be duplicated
 // here against a local copy of the byte loop; both collapsed into the shared helper.
 
 // clientCAFromState reads the CA the client is configured with RIGHT NOW, which is
@@ -557,7 +557,7 @@ func TestDemoConfig_CostLedgerIsOnWhenLaunchedWithConfigNotLocal(t *testing.T) {
 // so silently truncates month-to-date totals. A pruned day file is ABSENT rather than
 // unreadable, so it produces no Caveats entry and the short answer discloses nothing.
 //
-// It was 30 while costledger's default moved to 31 — one day short, which is exactly the
+// It was 30 while cost/ledger's default moved to 31 — one day short, which is exactly the
 // shortfall that default exists to prevent, sitting in the file we hand people to edit.
 //
 // Asserted against usage.WindowMonthLocalDays rather than against a literal, so the example and

@@ -2,8 +2,8 @@ name: Release binaries
 
 # Cross-compiles the standalone `abctl` and `authbridge-proxy` binaries and
 # attaches them (with SHA-256 checksums) to the GitHub Release for a `v*` tag.
-# Both are pure-Go (CGO_ENABLED=0); each cmd module resolves authlib via its
-# `replace => ../../authlib`, so builds run per-module with GOWORK=off — no
+# Both are pure-Go (CGO_ENABLED=0); each cmd module resolves core via its
+# `replace => ../../core`, so builds run per-module with GOWORK=off — no
 # workspace needed. workflow_dispatch runs a dry build that only uploads
 # workflow artifacts (no Release), for testing.
 

@@ -10,7 +10,7 @@ This skill captures knowledge from building, debugging, and running AuthBridge d
 > **Some entries below are historical.** They describe failures from the
 > pre-cortex#411 multi-sidecar shape, when `spiffe-helper` and
 > `client-registration` were separate containers. Neither exists now — SVIDs are
-> fetched in-process by `authlib/spiffe` and registration runs in the operator —
+> fetched in-process by `core/spiffe` and registration runs in the operator —
 > but the diagnoses are kept because the same *symptoms* still appear in older
 > clusters. Such entries are marked HISTORICAL.
 
@@ -59,14 +59,14 @@ docker build -f cmd/authbridge-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:latest .
 
-cd proxy-init
+cd deploy/proxy-init
 docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
 
 # Load into Kind
 kind load docker-image <image> --name rossoctl
 ```
 
-`scripts/local-build-and-test.sh` builds and Kind-loads `authbridge`,
+`scripts/dev/local-build-and-test.sh` builds and Kind-loads `authbridge`,
 `authbridge-envoy`, `authbridge-lite` and `proxy-init` (plus `spiffe-idp-setup`
 from the rossoctl repo) — prefer it over building by hand. Note it does not build
 `authbridge-cpex` or `authbridge-praxis`.
@@ -142,7 +142,7 @@ reader (client-registration) ran as UID 1000.
 **Fix at the time:** align `RunAsUser` / `RunAsGroup` across both containers.
 
 **Today this symptom cannot recur:** the in-process mirror writes
-`/opt/jwt_svid.token` mode `0644` (`authlib/spiffe/mirror.go`), not `0600`, and the
+`/opt/jwt_svid.token` mode `0644` (`core/spiffe/mirror.go`), not `0600`, and the
 `client-registration` reader is gone. `svid_key.pem` is still `0600`, so a
 different-UID reader of *the key* would be denied — that is a different symptom
 from the one above.
@@ -227,8 +227,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 | Change | Action |
 |--------|--------|
 | `init-iptables.sh` or `Dockerfile.init` | Rebuild proxy-init image, `kind load`, delete pod |
-| `authlib/` or `cmd/authbridge-proxy/` | Rebuild the `authbridge` image, `kind load`, delete pod |
-| `authlib/` or `cmd/authbridge-envoy/` | Rebuild the `authbridge-envoy` image, `kind load`, delete pod |
+| `core/` or `cmd/authbridge-proxy/` | Rebuild the `authbridge` image, `kind load`, delete pod |
+| `core/` or `cmd/authbridge-envoy/` | Rebuild the `authbridge-envoy` image, `kind load`, delete pod |
 | `configmaps.yaml` (any section) | `kubectl apply -f configmaps.yaml`, delete pod |
 | `*-deployment.yaml` | `kubectl apply -f <file>` (rolling update) |
 | `setup_keycloak.py` | Re-run `python setup_keycloak.py` |

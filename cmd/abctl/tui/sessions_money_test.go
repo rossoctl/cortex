@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // The two money cells, lifetime-scoped, from the server's own per-session sums.

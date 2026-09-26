@@ -64,4 +64,4 @@ Tool call blocked by platform:
 
 ## Customizing the judge's system prompt
 
-The plugin ships with a conservative `defaultSystemPrompt` (`authlib/plugins/ibac/judge.go`) that emits `{"verdict": ..., "reason": ...}` JSON. Override via `system_prompt` in the IBAC plugin's `config:` block — see the commented example in [`k8s/ibac-patch.yaml`](k8s/ibac-patch.yaml). The prompt MUST still instruct the model to emit the same JSON shape; anything else routes through `ibac.judge_uncertain` (fail-closed deny).
+The plugin ships with a conservative `defaultSystemPrompt` (`core/plugins/ibac/judge.go`) that emits `{"verdict": ..., "reason": ...}` JSON. Override via `system_prompt` in the IBAC plugin's `config:` block — see the commented example in [`k8s/ibac-patch.yaml`](k8s/ibac-patch.yaml). The prompt MUST still instruct the model to emit the same JSON shape; anything else routes through `ibac.judge_uncertain` (fail-closed deny).

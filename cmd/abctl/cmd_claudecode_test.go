@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
 // settingsWithSecret is shaped like a real settings.json: unrelated top-level

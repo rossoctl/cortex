@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // costWire is the exact JSON the proxy publishes as a cost record.
@@ -176,7 +176,7 @@ func TestCostCellPhases(t *testing.T) {
 	}
 	// An older proxy publishes a total but no output figure. The cell stays blank
 	// instead of falling back to that total, which is the regression this guards.
-	old := recordEvent(t, costevent.Event{CostUSD: 0.2824, Settled: true, PromptUSD: 0.26334})
+	old := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true, PromptUSD: 0.26334})
 	old.Inference = inf
 	if got := m.costCell(rows, partner, 1, old); got != "" {
 		t.Errorf("response COST without output_usd = %q, want empty (not the total)", got)
@@ -187,15 +187,15 @@ func TestCostCellPhases(t *testing.T) {
 // rate overstates a cache-heavy turn by close to an order of magnitude, which is
 // the common shape for a long-running agent. The weighted figure must be well
 // below the flat one.
-// The tier weighting now happens in the proxy (authlib/costing computes the prompt-only
-// figure; authlib/pricing weights the tiers), and is tested there against the real rate
+// The tier weighting now happens in the proxy (core/cost/settle computes the prompt-only
+// figure; core/cost/pricing weights the tiers), and is tested there against the real rate
 // table. What abctl must still get right is reading the published figure and declining to
 // invent one — a $0.00 in this column reads as a free prompt.
 func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 	inf := &pipeline.InferenceExtension{InputTokens: 1_000, CacheReadTokens: 99_000}
 	// A tier-weighted figure, well below the 0.38 a flat input rate would produce for
 	// the same 100k prompt: that gap is why the proxy weights it rather than the UI.
-	e := recordEvent(t, costevent.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414})
+	e := recordEvent(t, event.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414})
 	e.Inference = inf
 	got, ok := promptCost(e)
 	if !ok {
@@ -211,7 +211,7 @@ func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 	if _, ok := promptCost(respEvent("", inf)); ok {
 		t.Error("a response with no record produced a cost figure")
 	}
-	if _, ok := promptCost(recordEvent(t, costevent.Event{CostUSD: 0.05, Settled: true})); ok {
+	if _, ok := promptCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true})); ok {
 		t.Error("a record with no prompt figure produced one")
 	}
 }
@@ -224,7 +224,7 @@ func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 // table, and subtracting would report it as the completion's cost. It can also go negative,
 // which is why the figure is priced rather than differenced.
 func TestOutputCost_ReadsThePublishedFigure(t *testing.T) {
-	e := recordEvent(t, costevent.Event{
+	e := recordEvent(t, event.Event{
 		CostUSD: 0.2719, Settled: true, PromptUSD: 0.26334, OutputUSD: 0.03515,
 	})
 	e.Inference = agentTurn()
@@ -243,7 +243,7 @@ func TestOutputCost_ReadsThePublishedFigure(t *testing.T) {
 	if _, ok := outputCost(respEvent("", agentTurn())); ok {
 		t.Error("a response with no record produced an output figure")
 	}
-	if _, ok := outputCost(recordEvent(t, costevent.Event{CostUSD: 0.05, Settled: true})); ok {
+	if _, ok := outputCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true})); ok {
 		t.Error("a record with no output figure produced one")
 	}
 }

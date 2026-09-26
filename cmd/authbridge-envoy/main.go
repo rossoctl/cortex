@@ -32,21 +32,21 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/rossoctl/cortex/authlib/auth"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/reloader"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/shared"
-	"github.com/rossoctl/cortex/authlib/spiffe"
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/bootstrap"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/memstore"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/reloader"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/spiffe"
 
 	// Only the ext_proc listener is compiled in (no HTTP proxies).
-	"github.com/rossoctl/cortex/authlib/listener/extproc"
-	"github.com/rossoctl/cortex/authlib/listener/skiphost"
+	"github.com/rossoctl/cortex/core/listener/extproc"
+	"github.com/rossoctl/cortex/core/listener/skiphost"
 	// Plugins. Auth gates first, then the protocol parsers that
 	// supply session-event context for abctl.
 )
@@ -91,8 +91,8 @@ func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
 
-	runtimeutil.InitLogging("authbridge-envoy")
-	runtimeutil.StartSignalToggle()
+	bootstrap.InitLogging("authbridge-envoy")
+	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
 		log.Fatal("--config is required and must point to a YAML file")
@@ -243,7 +243,7 @@ func main() {
 	// it is not.
 	warnCostLedgerInert(cfg, slog.Default())
 
-	store := shared.New()
+	store := memstore.New()
 	defer store.Close() // stop the TTL janitor on normal main return
 
 	// SkipHosts: outbound destinations that bypass the pipeline AND
@@ -263,7 +263,7 @@ func main() {
 		sources = append(sources, plugins.CollectStats(outboundH.Load())...)
 		return auth.MergeStats(sources...)
 	}
-	statSrv, statErr := runtimeutil.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
+	statSrv, statErr := bootstrap.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
 	if statErr != nil {
 		log.Fatalf("stat server listen: %v", statErr)
 	}
@@ -290,9 +290,9 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-envoy starting", "mode", cfg.Mode, "logLevel", runtimeutil.LogLevel().String())
+	slog.Info("authbridge-envoy starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
-	healthSrv, healthErr := runtimeutil.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
+	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {
 		log.Fatalf("health server listen: %v", healthErr)
 	}

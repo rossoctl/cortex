@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 	"gopkg.in/yaml.v3"
 )
 

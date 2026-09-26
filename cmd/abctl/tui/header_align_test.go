@@ -10,9 +10,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // A COLUMN'S HEADER MUST SIT OVER ITS OWN VALUES.
@@ -176,9 +176,9 @@ func eventsAlignModel(t *testing.T, width int) *model {
 		Inference: &pipeline.InferenceExtension{
 			Model: "claude-opus-5", InputTokens: 629_312, OutputTokens: 1_165,
 		},
-		Plugins: costRecord(t, costevent.Event{
+		Plugins: costRecord(t, event.Event{
 			CostUSD: 0.2481, Settled: true, PromptUSD: 0.2460, OutputUSD: 0.0221,
-			Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
+			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
 		}),
 	}
 	req := pipeline.SessionEvent{
@@ -201,13 +201,13 @@ func eventsAlignModel(t *testing.T, width int) *model {
 }
 
 // costRecord attaches a cost record the way the proxy does, so costCell has a figure to show.
-func costRecord(t *testing.T, ev costevent.Event) map[string]json.RawMessage {
+func costRecord(t *testing.T, ev event.Event) map[string]json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]json.RawMessage{costevent.Key: raw}
+	return map[string]json.RawMessage{event.Key: raw}
 }
 
 func TestEventsHeader_SitsOverItsOwnValues(t *testing.T) {

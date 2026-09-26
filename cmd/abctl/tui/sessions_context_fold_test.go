@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // THE FOLD MUST AGREE WITH A FULL RESCAN AT EVERY LENGTH, because the fold is the only thing that

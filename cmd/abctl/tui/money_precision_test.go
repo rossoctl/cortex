@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // The cent arithmetic, at the boundaries that made #1042 write it out by hand rather than reach

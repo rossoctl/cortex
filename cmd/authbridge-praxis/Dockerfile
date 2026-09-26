@@ -16,7 +16,7 @@
 # built together — a default-feature Praxis in this image would fail to start
 # on exactly the configs that need inbound auth.
 #
-# Build context: . (repository root; needs access to authlib/, storage/, and
+# Build context: . (repository root; needs access to core/ and
 # cmd/authbridge-praxis/)
 #
 # Praxis source is not vendored in this repo, so the Rust stage fetches it from
@@ -173,8 +173,7 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-COPY authlib/ authlib/
-COPY storage/ storage/
+COPY core/ core/
 COPY cmd/authbridge-praxis/ cmd/authbridge-praxis/
 
 ARG GO_BUILD_TAGS=""

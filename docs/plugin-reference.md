@@ -10,7 +10,7 @@ framework enforces at startup.
 - [`framework-architecture.md`](./framework-architecture.md) — how the pipeline
   composes plugins, the lifecycle, the Context / Extensions wire shape.
 
-How plugins under `authlib/plugins/` receive, validate, and
+How plugins under `core/plugins/` receive, validate, and
 apply their configuration; emit session events; and register themselves
 with the pipeline builder. Everything here is convention — the framework
 only requires `pipeline.Configurable` if the plugin has any config at
@@ -347,7 +347,7 @@ func (c *pluginConfig) applyDefaults() {
 When you need to distinguish "unset" from "explicitly set to zero" —
 typically for booleans — use `*bool` / `*int` in the struct and convert
 to plain values after `applyDefaults`. `SessionConfig.Enabled` in
-`authlib/config` is the reference pattern.
+`core/config` is the reference pattern.
 
 ### 3. `validate()`
 
@@ -387,7 +387,7 @@ convention:
 - `applyDefaults` does not read the file.
 - `validate` requires exactly one to be set.
 - Internal state construction calls the file-read helper from
-  `authlib/config` (not a new one), which tolerates transient absence
+  `core/config` (not a new one), which tolerates transient absence
   during pod boot (the operator-managed Secret at `/shared/` may not yet be mounted).
 
 ## What Configure MUST NOT do
@@ -435,7 +435,7 @@ import (
     "errors"
     "fmt"
 
-    "github.com/rossoctl/cortex/authlib/pipeline"
+    "github.com/rossoctl/cortex/core/pipeline"
 )
 
 // myPluginConfig is the plugin's private config schema. Fields are JSON-
@@ -911,7 +911,7 @@ If you find yourself wanting OnFinish-phase Invocations in session events, the d
 
 Parser plugins whose extensions carry user-visible text (message bodies,
 tool arguments, LLM completions) can opt into a shared content-inspection
-contract by implementing [`contracts.ContentSource`](../authlib/contracts/content.go).
+contract by implementing [`capabilities.ContentSource`](../core/capabilities/content.go).
 Guardrail plugins (PII scrubbers, jailbreak detectors, content classifiers,
 prompt-injection filters, etc.) iterate the contract via
 `pctx.ContentSources()` and never import any specific parser package.
@@ -933,7 +933,7 @@ type Fragment struct {
 }
 ```
 
-Constants for the standard role values live in the `contracts` package
+Constants for the standard role values live in the `capabilities` package
 (`RoleUser`, `RoleAssistant`, `RoleSystem`, `RoleTool`, `RoleToolArgs`,
 `RoleToolResult`). Parsers should use them when the semantic fit is clear.
 The vocabulary is open — a protocol that carries a role outside this list
@@ -961,18 +961,18 @@ Keep each implementation to a pure function over the extension's fields.
 Skip fragments with empty text — consumers never want zero-length entries.
 Stringify non-string values with `json.Marshal` so nested maps/slices
 become flat inspectable text. Reference implementations live alongside
-the types in [`authlib/pipeline/content.go`](../authlib/pipeline/content.go).
+the types in [`core/pipeline/content.go`](../core/pipeline/content.go).
 
 ### Consuming content in a guardrail
 
 ```go
-import "github.com/rossoctl/cortex/authlib/contracts"
+import "github.com/rossoctl/cortex/core/capabilities"
 
 func (p *JailbreakDetector) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
     for _, src := range pctx.ContentSources() {
         for _, f := range src.Fragments() {
             // Jailbreak attempts come through user input and tool_args.
-            if f.Role != contracts.RoleUser && f.Role != contracts.RoleToolArgs {
+            if f.Role != capabilities.RoleUser && f.Role != capabilities.RoleToolArgs {
                 continue
             }
             if hit := p.classify(f.Text); hit.IsJailbreak {
@@ -1007,7 +1007,7 @@ A second protocol-agnostic contract sits alongside `ContentSource`:
 parser plugins set `IsAction bool` on their extensions to tell guardrails
 "is this a user-meaningful action or just protocol mechanics?"
 Guardrails read the aggregated verdict via
-[`pctx.Classification()`](../authlib/pipeline/context.go) without
+[`pctx.Classification()`](../core/pipeline/context.go) without
 importing any specific parser package.
 
 This is the mechanism that lets a defense-in-depth guardrail (IBAC, a
@@ -1074,7 +1074,7 @@ every guardrail's evaluation surface; review accordingly.
 
 A plugin advertises itself to the pipeline builder through `RegisterPlugin`
 in its package `init()`. The registration is open — any package that
-imports `authlib/plugins` can register a plugin, regardless of whether it
+imports `core/plugins` can register a plugin, regardless of whether it
 lives in this module. The pattern mirrors `database/sql` drivers and
 `log/slog` handlers.
 
@@ -1087,7 +1087,7 @@ lives in this module. The pattern mirrors `database/sql` drivers and
 ### Factory shape
 
 ```go
-// authlib/plugins/jwtvalidation.go
+// core/plugins/jwtvalidation.go
 func init() {
     RegisterPlugin("jwt-validation", func() pipeline.Plugin { return NewJWTValidation() })
 }
@@ -1137,7 +1137,7 @@ never call it. It exists to keep tests isolated from each other under
 
 ## Plugins making outbound LLM calls
 
-Plugins that need an LLM in the loop — policy judges, content scorers, intent matchers, audit categorizers — should use [`authlib/llmclient`](../authlib/llmclient/) rather than rolling their own HTTP / JSON / error-handling layer.
+Plugins that need an LLM in the loop — policy judges, content scorers, intent matchers, audit categorizers — should use [`core/llmclient`](../core/llmclient/) rather than rolling their own HTTP / JSON / error-handling layer.
 
 What `llmclient` gives you:
 
@@ -1158,11 +1158,11 @@ Plugins keep ownership of:
 
 - The mapping from LLM output to a pipeline `Action` (e.g. IBAC normalizes `verdict: "allow"|"deny"` and treats anything else as `ActionDeny` with reason `ibac.judge_uncertain`).
 
-The IBAC plugin (`authlib/plugins/ibac/judge.go`) is the in-tree reference; copy its shape when adding a new LLM-using plugin. For what IBAC actually does end-to-end (threat model, configuration, deny-reason vocabulary), see [`ibac-plugin.md`](ibac-plugin.md).
+The IBAC plugin (`core/plugins/ibac/judge.go`) is the in-tree reference; copy its shape when adding a new LLM-using plugin. For what IBAC actually does end-to-end (threat model, configuration, deny-reason vocabulary), see [`ibac-plugin.md`](ibac-plugin.md).
 
 ## `static-inject`: static credential injection
 
-An outbound plugin (`authlib/plugins/staticinject`, registered name
+An outbound plugin (`core/plugins/staticinject`, registered name
 `static-inject`) that swaps a placeholder credential on the outbound
 `Authorization` header for a real static credential, so a
 model-influenced workload never holds the real secret. Unlike
@@ -1290,21 +1290,21 @@ interface — a **current limitation**, tracked as a future enhancement.
 
 ## Cross-references
 
-- `authlib/pipeline/configurable.go` — the interface.
+- `core/pipeline/configurable.go` — the interface.
 - `docs/framework-architecture.md` — how plugins compose and
   run; Configure's place in the lifecycle.
-- `authlib/config/config.go` — `PluginEntry` YAML shape and
+- `core/config/config.go` — `PluginEntry` YAML shape and
   parsing.
-- `authlib/plugins/registry.go` — how Build calls Configure.
-- `authlib/pipeline/extensions.go` — named categories
+- `core/plugins/registry.go` — how Build calls Configure.
+- `core/pipeline/extensions.go` — named categories
   (`MCP`, `A2A`, `Inference`, `Auth`) + `Custom` map + escape-hatch
   convention.
-- `authlib/pipeline/session.go` — `SessionEvent` wire shape
+- `core/pipeline/session.go` — `SessionEvent` wire shape
   and the `SessionDenied` phase.
-- `authlib/llmclient/` — chat-completions helper for
+- `core/llmclient/` — chat-completions helper for
   plugins that call an LLM (see "Plugins making outbound LLM calls"
   above).
-- `authlib/plugins/staticinject/` — the `static-inject`
+- `core/plugins/staticinject/` — the `static-inject`
   plugin (see [`static-inject`: static credential injection](#static-inject-static-credential-injection)
   above); resolver + header-safety helpers are self-contained in this
   package.

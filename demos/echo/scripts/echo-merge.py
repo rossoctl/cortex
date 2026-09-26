@@ -17,7 +17,7 @@ script EDITS the existing plugin configs in place:
                               config.routes.rules
 
 The route key shape is dictated by the token-exchange plugin's Go config
-struct (authlib/plugins/tokenexchange/plugin.go):
+struct (core/plugins/tokenexchange/plugin.go):
 
     tokenExchangeConfig.Routes  json:"routes"        -> config.routes
     tokenExchangeRoutes.Rules   json:"rules"         -> config.routes.rules

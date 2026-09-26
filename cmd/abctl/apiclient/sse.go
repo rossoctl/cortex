@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // StreamEvent is what Stream publishes. One of Event or Status is set per

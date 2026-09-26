@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // spendPollInterval is the band's FASTEST cadence — the hour's — and the figure
@@ -90,7 +90,7 @@ type spendState struct {
 	//
 	// AN ARRAY RATHER THAN A FIELD GROUP PER SPAN, and the two it replaces are why. The
 	// window and today chains were written out longhand — snap, err, lastFetch, reqSeq,
-	// tickGen, twice, with each field's doc explaining that it could not be shared. Every
+	// tickGen, twice, with each field's doc explaining that it could not be memstore. Every
 	// one of those reasons is a reason to have N chains rather than two, and none of them
 	// is a reason to spell the Nth by hand: four copies of that group would be twenty
 	// fields, and adding a fifth span would mean finding all five places that poll.
@@ -219,7 +219,7 @@ var spendSpanDefs = [numSpendSpans]spendSpanDef{
 // and the two counters that decide which replies and which ticks still belong.
 //
 // Every field here is one the old two-chain code had to duplicate, each with a doc saying
-// why it could not be shared. Those docs are preserved on the fields, because the reasons
+// why it could not be memstore. Those docs are preserved on the fields, because the reasons
 // are what make this a per-chain struct rather than a shared one.
 type spendChain struct {
 	snap      *usage.Snapshot
@@ -632,7 +632,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 	}
 	// A negative total is refused HERE, before anything derives a figure from it, which
 	// is what makes one guard cover the amount and the burn rate at once. See
-	// negativeCost: the guarantee is upstream in authlib/sessionapi and this is defence
+	// negativeCost: the guarantee is upstream in core/sessionapi and this is defence
 	// in depth. Reported as UNPRICED rather than clamped, so the strip renders "cost
 	// unavailable" — the same treatment the Cost pane already chose, because "$-5.0000
 	// /1h" on the strip reads as a refund nobody issued.
@@ -1023,7 +1023,7 @@ func (m *model) applyTodayFigure(out *spendSummary) {
 	// field's own spelling of "no figure" and the same treatment the window figure and the
 	// Cost pane give an impossible number — the strip then falls back to its rolling
 	// figure rather than printing "$-5.0000 today". See negativeCost: the guarantee is
-	// upstream in authlib/sessionapi, and this is defence in depth.
+	// upstream in core/sessionapi, and this is defence in depth.
 	if negativeCost(snap.Totals.CostMicros) {
 		return
 	}

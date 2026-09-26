@@ -32,29 +32,29 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/auth"
-	"github.com/rossoctl/cortex/authlib/clientstate"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/costledger"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/plugins"
-	"github.com/rossoctl/cortex/authlib/pricing"
-	"github.com/rossoctl/cortex/authlib/reloader"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/shared"
-	"github.com/rossoctl/cortex/authlib/spiffe"
-	authtls "github.com/rossoctl/cortex/authlib/tls"
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/bootstrap"
+	"github.com/rossoctl/cortex/core/clientstate"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/memstore"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/reloader"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
+	"github.com/rossoctl/cortex/core/spiffe"
+	"github.com/rossoctl/cortex/core/tlsbridge"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
-	"github.com/rossoctl/cortex/authlib/listener/forwardproxy"
-	"github.com/rossoctl/cortex/authlib/listener/reverseproxy"
-	"github.com/rossoctl/cortex/authlib/listener/skiphost"
-	"github.com/rossoctl/cortex/authlib/listener/transparentproxy"
+	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/listener/reverseproxy"
+	"github.com/rossoctl/cortex/core/listener/skiphost"
+	"github.com/rossoctl/cortex/core/listener/transparentproxy"
 	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
 	// by `//go:build include_plugin_<name>`. main.go imports no plugin
 	// package directly, so a binary links exactly the set its profile names
@@ -304,8 +304,8 @@ func main() {
 		return
 	}
 
-	runtimeutil.InitLogging("authbridge-proxy")
-	runtimeutil.StartSignalToggle()
+	bootstrap.InitLogging("authbridge-proxy")
+	bootstrap.StartSignalToggle()
 
 	if *demoDeprecated && !*local {
 		slog.Warn("--demo has been renamed to --local; it still works but will be removed",
@@ -540,7 +540,7 @@ func main() {
 
 	var sessions *session.Store
 	var usageAgg *usage.Aggregator
-	var costLedger *costledger.Writer
+	var costLedger *ledger.Writer
 	if cfg.Session.SessionEnabled() {
 		// Store parameters come from config.SessionConfig.Limits, which is where the
 		// defaults and the reasoning behind them live — one home for what used to be
@@ -576,7 +576,7 @@ func main() {
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
 		// by-endpoint, by-provenance) rather than the joint distribution a ledger row
-		// needs, so summing them would double-count. See authlib/costledger.
+		// needs, so summing them would double-count. See core/cost/ledger.
 		//
 		// ON WHEREVER IT CAN DELIVER, which is not the same as "on for --local". The
 		// default used to be localMode, so it described which flag started the binary
@@ -607,8 +607,8 @@ func main() {
 				// in place, so the ledger cannot end up reading a stale table while /v1/usage
 				// reads a fresh one. It is used only to rebuild the per-tier split on rows
 				// written before that split was persisted — no total is priced from it here.
-				led, lerr := costledger.New(dir, costledger.WithRetentionDays(retention),
-					costledger.WithPricing(pricingRegistry))
+				led, lerr := ledger.New(dir, ledger.WithRetentionDays(retention),
+					ledger.WithPricing(pricingRegistry))
 				if lerr != nil {
 					slog.Warn("cost ledger disabled — could not open it",
 						"dir", dir, "error", lerr, "effect", "cost history will not survive a restart")
@@ -829,7 +829,7 @@ func main() {
 	// selected by listener.roles (empty => both). sharedStore is created up
 	// front so whichever proxies run share one session store.
 	roles := cfg.Listener.ActiveRoles()
-	sharedStore := shared.New()
+	sharedStore := memstore.New()
 	defer sharedStore.Close() // stop the TTL janitor on normal main return
 
 	if roles[config.RoleReverse] {
@@ -849,7 +849,7 @@ func main() {
 			if localMode {
 				slog.Warn("demo mode: transparent inbound listener not started (no iptables to REDIRECT to it)")
 			} else {
-				rpHTTP, rerr := runtimeutil.StartTransparentInboundServer("transparent-inbound", rpSrv, cfg.Listener.TransparentInboundAddr)
+				rpHTTP, rerr := bootstrap.StartTransparentInboundServer("transparent-inbound", rpSrv, cfg.Listener.TransparentInboundAddr)
 				if rerr != nil {
 					fatalf("transparent-inbound listen: %v", rerr)
 				}
@@ -861,7 +861,7 @@ func main() {
 				fatalf("creating reverse proxy: %v", rerr)
 			}
 			rpSrv.Shared = sharedStore
-			rpHTTP, rerr := runtimeutil.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
+			rpHTTP, rerr := bootstrap.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
 			if rerr != nil {
 				fatalf("reverse-proxy listen: %v", rerr)
 			}
@@ -894,7 +894,7 @@ func main() {
 		// the supported agents' session headers (config.SessionIDHeaders);
 		// session.id_headers: [] turns it off.
 		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
-		fpHTTP, herr := runtimeutil.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
+		fpHTTP, herr := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
 		if herr != nil {
 			fatalf("forward-proxy listen: %v", herr)
 		}
@@ -917,7 +917,7 @@ func main() {
 		sources = append(sources, plugins.CollectStats(outboundH.Load())...)
 		return auth.MergeStats(sources...)
 	}
-	statSrv, statErr := runtimeutil.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
+	statSrv, statErr := bootstrap.StartStatServer(cfg, rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(), cfg.Stats.StatsAddress)
 	if statErr != nil {
 		fatalf("stat server listen: %v", statErr)
 	}
@@ -948,9 +948,9 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-proxy starting", "version", version, "mode", cfg.Mode, "logLevel", runtimeutil.LogLevel().String())
+	slog.Info("authbridge-proxy starting", "version", version, "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
-	healthSrv, healthErr := runtimeutil.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
+	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {
 		fatalf("health server listen: %v", healthErr)
 	}

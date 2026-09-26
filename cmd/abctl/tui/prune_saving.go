@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/pricing"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // This file used to turn tool-prune's byte saving into tokens and dollars.
@@ -26,21 +26,21 @@ import (
 // The response event, not the request one: the saving is only priceable once the response
 // reveals which prompt tier it came out of, so that is where the priced figure lands. A
 // request row reaches it through the same pairing it already does to show token totals.
-func savingFor(resp *pipeline.SessionEvent, component string) (costevent.Saving, bool) {
-	ev, ok := costevent.Record(resp)
+func savingFor(resp *pipeline.SessionEvent, component string) (event.Saving, bool) {
+	ev, ok := event.Record(resp)
 	if !ok {
-		return costevent.Saving{}, false
+		return event.Saving{}, false
 	}
 	for _, s := range ev.Avoided {
 		if s.Component == component {
 			return s, true
 		}
 	}
-	return costevent.Saving{}, false
+	return event.Saving{}, false
 }
 
 // pruneSavingFor is the tool-prune saving specifically, which is the only one rendered today.
-func pruneSavingFor(resp *pipeline.SessionEvent) (costevent.Saving, bool) {
+func pruneSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
 	return savingFor(resp, "tool-prune")
 }
 

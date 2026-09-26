@@ -1,8 +1,8 @@
 # Directional Body Capabilities and the `tool-prune` Plugin
 
 **Status**: Implemented — kept as the design record, not a live proposal.
-Shipped as the `tool-prune` plugin (`authlib/plugins/toolprune`) plus
-the directional body capabilities in `authlib/pipeline`. Read
+Shipped as the `tool-prune` plugin (`core/plugins/toolprune`) plus
+the directional body capabilities in `core/pipeline`. Read
 [`tool-prune-plugin.md`](../../docs/tool-prune-plugin.md) for current
 behaviour.
 **Date**: September 2026
@@ -55,7 +55,7 @@ it removes the need for any persistence layer inside the plugin.
 ### The defect
 
 `PluginCapabilities.WritesBody` is a single boolean covering both directions.
-`Pipeline.WritesBody()` (`authlib/pipeline/pipeline.go:383-390`) is a plain OR
+`Pipeline.WritesBody()` (`core/pipeline/pipeline.go:383-390`) is a plain OR
 across the chain, with no notion of direction:
 
 ```go
@@ -144,7 +144,7 @@ tagged wire types (`sessionapi.CatalogEntry` at `sessionapi/server.go:55-63`, an
 the pipeline view whose `readsBody` field is at `:167`) and neither exposes
 `writesBody`. So **no wire key
 and no configuration key changes.** Capabilities are not configurable, so
-`authlib/config` is untouched.
+`core/config` is untouched.
 
 ### Compatibility audit
 
@@ -235,7 +235,7 @@ On each outbound request:
 4. Call `pctx.SetBody` once with the result.
 
 Every byte outside the deleted array elements is unchanged. `gjson`/`sjson` are
-already in `authlib/go.mod` (currently indirect), so no new dependency.
+already in `core/go.mod` (currently indirect), so no new dependency.
 
 Any error or panic fails open: the original body is forwarded unmodified, so the
 plugin's own failure modes cannot break a request. That is a narrower promise
@@ -267,7 +267,7 @@ dependency.
 
 ### Measure-only mode comes from the framework
 
-`on_error` is a per-plugin policy already parsed by `authlib/config`
+`on_error` is a per-plugin policy already parsed by `core/config`
 (`config.go:257`, values `enforce | observe | off`). Under `observe`, `SetBody` is
 a no-op on bytes but still records a modify `Invocation` with `Shadow=true`
 (`context.go:397-421`), so "would have removed" is countable without changing a
@@ -424,7 +424,7 @@ labelled an estimate rather than a measurement.
 
 ### A generic metrics interface
 
-Added to `authlib/pipeline/plugin.go` beside the existing optional interfaces:
+Added to `core/pipeline/plugin.go` beside the existing optional interfaces:
 
 ```go
 // Metric is one operator-facing counter reported by a plugin.
@@ -488,7 +488,7 @@ Counters are per-process and in-memory: they reset when the proxy restarts and a
 not aggregated across a fleet. That is the right trade for the laptop scenario this
 targets, and it is what keeps the plugin free of a storage dependency. Fleet-wide
 aggregation belongs on the existing stats server
-(`runtimeutil.StartStatServer`, port 47602 in the demo config), which is a
+(`bootstrap.StartStatServer`, port 47602 in the demo config), which is a
 natural later addition and does not change the plugin.
 
 ## Delivery
@@ -502,7 +502,7 @@ Four commits, sequenced so the regression argument survives review.
 2. **The split.** Add `WritesResponseBody`; declare it on `sparc` and `cpex`;
    point both listener branches at `Pipeline.WritesResponseBody()`; convert
    `cloneCatalog` to a struct copy; correct the `SetBody` godoc; add tests.
-3. **The metrics channel.** `Metric` and `MetricsProvider` in `authlib/pipeline`;
+3. **The metrics channel.** `Metric` and `MetricsProvider` in `core/pipeline`;
    the `describePipeline` type assertion and wire field; the `abctl` pane section.
    Lands before the plugin so the plugin arrives already visible, and so this
    generic addition is reviewed on its own merits rather than as plugin scaffolding.

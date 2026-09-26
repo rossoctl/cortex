@@ -80,7 +80,7 @@ platform services agentic workloads need in production, as a sidecar or standalo
 
 Everything is a plugin in one pipeline; the [plugin catalog](./docs/plugin-catalog.md)
 lists what ships, and the [architecture reference](./docs/architecture.md) explains how
-a request flows through it. The shared library is [`authlib/`](./authlib/); the
+a request flows through it. The shared library is [`core/`](./core/); the
 binaries live under [`cmd/`](./cmd/).
 
 ## License

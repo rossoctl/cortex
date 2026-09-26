@@ -5,9 +5,9 @@ go 1.26.5
 // Workspace-only: this replace is satisfied by go.work during
 // local development. Standalone `go get` / `go install` outside the
 // workspace will not resolve this path — if abctl is ever distributed as
-// a standalone binary, drop the replace and version authlib as a proper
+// a standalone binary, drop the replace and version core as a proper
 // dependency once it has a tagged release.
-replace github.com/rossoctl/cortex/authlib => ../../authlib
+replace github.com/rossoctl/cortex/core => ../../core
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -15,7 +15,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/muesli/termenv v0.16.0
-	github.com/rossoctl/cortex/authlib v0.0.0-00010101000000-000000000000
+	github.com/rossoctl/cortex/core v0.0.0-00010101000000-000000000000
 	gopkg.in/yaml.v3 v3.0.1
 )
 

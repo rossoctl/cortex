@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/rossoctl/cortex/authlib/observe/claude"
+	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
 const experimentalUsage = `abctl experimental — unstable helpers, no compatibility promise

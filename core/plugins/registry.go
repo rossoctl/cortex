@@ -1,0 +1,402 @@
+package plugins
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/spiffe"
+)
+
+// PluginFactory returns a fresh plugin instance. Plugins take no
+// construction arguments — they receive their configuration through
+// pipeline.Configurable.Configure during Build, and any external
+// dependencies (JWKS cache, HTTP client, etc.) are built from that
+// local config inside Configure.
+type PluginFactory func() pipeline.Plugin
+
+// registry is the dynamic plugin table. Populated by RegisterPlugin,
+// typically from each plugin package's init() function. Guarded by a
+// mutex because init() order across packages isn't guaranteed to be
+// serial under every Go build mode, and tests use UnregisterPlugin
+// concurrently with t.Parallel.
+var (
+	registryMu sync.RWMutex
+	registry   = map[string]PluginFactory{}
+)
+
+// RegisterPlugin adds a plugin factory under name. Intended to be
+// called from package init() functions of plugin implementations:
+//
+//	func init() {
+//	    plugins.RegisterPlugin("rate-limiter", func() pipeline.Plugin {
+//	        return &RateLimiter{}
+//	    })
+//	}
+//
+// This is the stdlib pattern (database/sql.Register, image codec
+// registration, log/slog handler registration): plugins live in their
+// own package and advertise themselves by side-effect import:
+//
+//	import _ "github.com/acme/rossoctl-rate-limiter/ratelimit"
+//
+// Double-registration under the same name panics. Silent last-write-
+// wins would let a version mismatch or deployment bug poison the
+// registry in ways that only surface as mysterious runtime behaviour;
+// failing loud at process start is strictly safer.
+//
+// Empty name or nil factory also panics — both are programmer errors,
+// not recoverable conditions.
+func RegisterPlugin(name string, factory PluginFactory) {
+	if name == "" {
+		panic("plugins: RegisterPlugin called with empty name")
+	}
+	if factory == nil {
+		panic(fmt.Sprintf("plugins: RegisterPlugin(%q) factory is nil", name))
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, exists := registry[name]; exists {
+		panic(fmt.Sprintf("plugins: %q already registered", name))
+	}
+	registry[name] = factory
+}
+
+// RegisteredPlugins returns the names of every registered plugin in
+// sorted order. Intended for diagnostic surfaces (/config, CLI --help,
+// Build's "unknown plugin" error message) and for tests that assert a
+// plugin is visible to the builder.
+func RegisteredPlugins() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	names := make([]string, 0, len(registry))
+	for n := range registry {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SPIFFEConsumerPlugins returns the sorted names of registered plugins whose
+// instances implement spiffe.ProviderConsumer — i.e. the plugins BuildWithSPIFFE
+// would inject the Provider into. Callers that gate Provider construction on
+// actual need (see cmd/authbridge-proxy's spiffeProviderNeeded) use this to
+// assert their need-detection covers every consumer; a new consumer that slips
+// past the predicate would otherwise silently receive a nil Provider.
+//
+// This probes by constructing each plugin and type-asserting. That is safe
+// because PluginFactory is contractually a cheap, side-effect-free constructor
+// (see PluginFactory: no construction args; deps + goroutines are created in
+// Configure/Init, not the factory). If a factory ever gains construction-time
+// side effects, switch this to a static capability tag instead of a live probe.
+func SPIFFEConsumerPlugins() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	var names []string
+	for name, factory := range registry {
+		if _, ok := factory().(spiffe.ProviderConsumer); ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// CatalogEntry pairs a registered plugin's name with the capabilities
+// it advertises and the field-level schema of its config (if it
+// implements pipeline.SchemaProvider). Surfaces in `abctl`'s catalog
+// pane, in the /v1/plugins endpoint, and in `abctl edit`'s template
+// renderer so operators can see what plugins exist, what each one
+// needs, and what each field means without reading source.
+//
+// Fields is nil for plugins without a config (or that don't
+// implement SchemaProvider) — the wire format omits the field via
+// `omitempty`, so existing consumers that don't know about field
+// schemas keep working.
+type CatalogEntry struct {
+	Name         string
+	Capabilities pipeline.PluginCapabilities
+	Fields       []pipeline.FieldSchema
+}
+
+// catalogCache memoizes the Catalog() result on first call. Constructors
+// run once at first invocation; the throwaway instance is unreferenced
+// after Capabilities() is read but never explicitly torn down.
+//
+// Caching bounds the constructor side-effect surface to a one-shot per
+// process — even a misbehaving plugin that allocates a goroutine in its
+// constructor leaks one goroutine, not one per /v1/plugins request.
+var (
+	catalogCacheMu  sync.RWMutex
+	catalogCacheVal []CatalogEntry
+)
+
+// Catalog returns a sorted snapshot of every registered plugin's
+// capabilities. The result is computed on first call and cached;
+// subsequent calls return the cached slice (do not mutate it).
+//
+// First-call mechanics: each registered factory is invoked once with no
+// config; the resulting instance's Capabilities() is the static
+// type-level metadata that the rest of the framework also reads.
+//
+// CONSTRUCTOR CONTRACT: factories called from Catalog MUST NOT allocate
+// goroutines, network connections, file handles, or other resources
+// that need explicit teardown. Allocate the plugin struct and nothing
+// more — heavy work belongs in Init() (after Configure()), where the
+// framework owns the lifecycle. The throwaway instance Catalog
+// constructs is never Shutdown'd; anything it leaks is process-wide.
+//
+// The godoc on PluginCapabilities documents the parallel constraint
+// that Capabilities() must be instance-state-independent (so the
+// cached snapshot from one instance describes every instance the
+// factory produces).
+func Catalog() []CatalogEntry {
+	catalogCacheMu.RLock()
+	if catalogCacheVal != nil {
+		out := cloneCatalog(catalogCacheVal)
+		catalogCacheMu.RUnlock()
+		return out
+	}
+	catalogCacheMu.RUnlock()
+
+	catalogCacheMu.Lock()
+	defer catalogCacheMu.Unlock()
+	if catalogCacheVal != nil { // double-check under write lock
+		return cloneCatalog(catalogCacheVal)
+	}
+
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]CatalogEntry, 0, len(registry))
+	for name, factory := range registry {
+		instance := factory()
+		entry := CatalogEntry{
+			Name:         name,
+			Capabilities: instance.Capabilities().Normalize(),
+		}
+		// Plugins that implement SchemaProvider expose per-field
+		// metadata for templating. Constraints carry over from the
+		// constructor contract above: the throwaway instance is never
+		// Shutdown'd, so SchemaProvider implementations must be
+		// instance-state-independent and side-effect free (typically
+		// just `return pipeline.SchemaOf(myConfig{})`).
+		if sp, ok := instance.(pipeline.SchemaProvider); ok {
+			entry.Fields = sp.ConfigSchema()
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	catalogCacheVal = out
+	return cloneCatalog(out)
+}
+
+// cloneCatalog returns a deep copy of in: each CatalogEntry is copied
+// and every []string field on its Capabilities is freshly allocated.
+// Catalog returns a clone so callers can mutate the slice (sort, filter,
+// extend per-entry slices) without tainting the cached snapshot — and
+// without that tainted view leaking into future /v1/plugins responses.
+func cloneCatalog(in []CatalogEntry) []CatalogEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]CatalogEntry, len(in))
+	for i := range in {
+		// Struct copy, then reallocate the slices. Copying field-by-field
+		// silently drops any capability added later; this picks them up.
+		caps := in[i].Capabilities
+		caps.Requires = append([]string(nil), in[i].Capabilities.Requires...)
+		caps.RequiresAny = append([]string(nil), in[i].Capabilities.RequiresAny...)
+		caps.RequiresLater = append([]string(nil), in[i].Capabilities.RequiresLater...)
+		out[i] = CatalogEntry{
+			Name:         in[i].Name,
+			Capabilities: caps,
+			Fields:       cloneFieldSchemas(in[i].Fields),
+		}
+	}
+	return out
+}
+
+// cloneFieldSchemas deep-copies the per-field schema slice. Fields
+// itself is a slice, but each FieldSchema also contains slices
+// (Enum, Fields for nested structs) that need their own backing
+// arrays to avoid aliasing the cached snapshot.
+func cloneFieldSchemas(in []pipeline.FieldSchema) []pipeline.FieldSchema {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]pipeline.FieldSchema, len(in))
+	for i, f := range in {
+		out[i] = f
+		out[i].Enum = append([]string(nil), f.Enum...)
+		out[i].Fields = cloneFieldSchemas(f.Fields) // recurse for nested struct fields
+	}
+	return out
+}
+
+// resetCatalogCache clears the memoized Catalog result. Intended for
+// tests that register/unregister plugins and need a fresh view.
+func resetCatalogCache() {
+	catalogCacheMu.Lock()
+	catalogCacheVal = nil
+	catalogCacheMu.Unlock()
+}
+
+// WarmCatalog triggers Catalog() at boot so any plugin whose factory
+// violates the constructor contract (panics, allocates goroutines /
+// connections / file handles) surfaces during startup rather than
+// silently caching a faulty throwaway instance on the first /v1/plugins
+// request. Cheap insurance — the result is already memoized, so calling
+// this at boot moves "first call" out of the request hot path.
+//
+// Intended for the binary's main() to invoke once after all plugin
+// init() registrations have run (typically right before sessionapi.New).
+func WarmCatalog() { _ = Catalog() }
+
+// factoryFor looks up a factory by name. Internal to the package.
+// Callers under Build use this to resolve config entries into plugin
+// instances.
+func factoryFor(name string) (PluginFactory, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	f, ok := registry[name]
+	return f, ok
+}
+
+// Build constructs a pipeline from an ordered list of plugin entries.
+// For every plugin that implements pipeline.Configurable, Build calls
+// Configure with the entry's Config bytes (nil when omitted). Passing
+// config to a plugin that doesn't implement Configurable is rejected so
+// stale or misplaced config blocks fail at startup instead of being
+// silently ignored.
+//
+// Unknown plugin names fail fast with an error that lists every
+// currently-registered plugin — typo-catching diagnostic.
+//
+// Injects nothing. A thin wrapper over BuildWithDeps, which is the single
+// implementation; see there for the Configure and injection contract.
+func Build(entries []config.PluginEntry, opts ...pipeline.Option) (*pipeline.Pipeline, error) {
+	return BuildWithDeps(entries, Deps{}, opts...)
+}
+
+// BuildWithSPIFFE is Build plus dependency injection of the framework
+// SPIFFE Provider. Every plugin satisfying spiffe.ProviderConsumer
+// receives p via SetSPIFFEProvider before its Configure is invoked, so
+// configuration code can use the provider's sources directly.
+//
+// Pass nil for p in builds that don't need SPIFFE; in that case the
+// behavior is equivalent to Build for non-consuming plugins, and
+// consumer plugins are NOT called (their SetSPIFFEProvider is skipped).
+//
+// Plugins that don't implement ProviderConsumer are unaffected.
+//
+// A thin wrapper over BuildWithDeps. It survives as a named entry point because
+// four binaries call it; new dependencies go through Deps rather than growing a
+// third builder.
+func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...pipeline.Option) (*pipeline.Pipeline, error) {
+	return BuildWithDeps(entries, Deps{SPIFFE: p}, opts...)
+}
+
+// validateRelationships checks every plugin's Requires / RequiresAny
+// declarations against the chain it's about to run in. Collects all
+// errors across the chain into one joined error rather than
+// short-circuiting on the first — friendlier for operators iterating on
+// a freshly-edited YAML.
+//
+// Semantics:
+//
+//   - Requires: every named plugin must appear at a lower index in
+//     the chain. Missing or misordered is an error.
+//   - RequiresLater: every named plugin must appear at a HIGHER index.
+//     The mirror of Requires, for dependencies on another plugin's
+//     response-phase output — the response pass walks the chain in
+//     reverse, so "runs before me on the response" means "later in the
+//     chain".
+//   - RequiresAny: at least one named plugin must appear at a lower
+//     index. Any named plugin that IS present must also be at a
+//     lower index.
+//
+// Each rule uses the per-plugin Name() as the identity key (case-sensitive).
+// If a plugin name is duplicated in a chain (rare — requires
+// config.PluginEntry.ID differentiation), the earliest-occurrence index
+// is authoritative for position checks.
+func validateRelationships(ps []pipeline.Plugin) error {
+	if len(ps) == 0 {
+		return nil
+	}
+	// Build a name->first-occurrence-index map once.
+	positions := make(map[string]int, len(ps))
+	for i, p := range ps {
+		if _, seen := positions[p.Name()]; !seen {
+			positions[p.Name()] = i
+		}
+	}
+
+	var errs []string
+
+	for i, p := range ps {
+		caps := p.Capabilities().Normalize()
+
+		// Requires — hard AND with ordering.
+		for _, req := range caps.Requires {
+			j, present := positions[req]
+			switch {
+			case !present:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q earlier in the chain, but %q is not configured",
+					p.Name(), req, req))
+			case j >= i:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q earlier in the chain, but %q appears at position %d (this plugin is at %d)",
+					p.Name(), req, req, j, i))
+			}
+		}
+
+		// RequiresLater — hard AND, mirrored ordering. The response passes walk
+		// the chain in reverse, so a dependency on another plugin's response-phase
+		// output needs that plugin at a HIGHER index.
+		for _, req := range caps.RequiresLater {
+			j, present := positions[req]
+			switch {
+			case !present:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q later in the chain, but %q is not configured",
+					p.Name(), req, req))
+			case j <= i:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q later in the chain (it reads what %q publishes while folding response frames, and the response pass runs in reverse), but %q appears at position %d (this plugin is at %d)",
+					p.Name(), req, req, req, j, i))
+			}
+		}
+
+		// RequiresAny — hard OR with ordering.
+		if len(caps.RequiresAny) > 0 {
+			anyPresentAndEarlier := false
+			for _, req := range caps.RequiresAny {
+				j, present := positions[req]
+				if !present {
+					continue
+				}
+				if j >= i {
+					errs = append(errs, fmt.Sprintf(
+						"plugin %q lists %q under RequiresAny; %q must appear earlier (found at position %d, this plugin is at %d)",
+						p.Name(), req, req, j, i))
+					continue
+				}
+				anyPresentAndEarlier = true
+			}
+			if !anyPresentAndEarlier {
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires at least one of %v earlier in the chain, but none are configured",
+					p.Name(), caps.RequiresAny))
+			}
+		}
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("plugin relationship validation failed:\n  - %s", strings.Join(errs, "\n  - "))
+}

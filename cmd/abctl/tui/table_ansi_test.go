@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // A TABLE CELL MUST CARRY NO ANSI, and this test exists because that rule is invisible without

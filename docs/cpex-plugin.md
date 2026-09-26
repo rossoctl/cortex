@@ -221,7 +221,7 @@ The caller's MCP client then surfaces a failed tool call rather than a
 transport break, and the `cpex.*` code rides in `error.data.error` (not
 the HTTP status). Non-MCP requests — and JSON-RPC notifications with no
 id — get the plain 403 / 502 in the table above. (See
-`authlib/listener/httpx/render.go`; the gRPC listener,
+`core/listener/httpx/render.go`; the gRPC listener,
 extproc, doesn't use this renderer.)
 
 ## Bypass list curation
@@ -235,7 +235,7 @@ Default `bypass_hosts` covers `keycloak.*`, `spire-server.*`,
 `spire-agent.*`, `otel-collector.*`, `jaeger.*`, `prometheus.*`,
 matching the IBAC plugin's default set. Default `bypass_paths` covers
 `/healthz`, `/readyz`, `/livez`, `/.well-known/*` via
-`authlib/bypass.DefaultPatterns` — the same set jwt-validation uses.
+`core/bypass.DefaultPatterns` — the same set jwt-validation uses.
 
 Patterns that match everything (`"*"`, `""`, `"/*"`) are rejected at
 Configure time; that gesture is better expressed by removing the cpex

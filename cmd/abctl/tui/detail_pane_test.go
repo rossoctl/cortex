@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // tlsHeader returns "" for plaintext events so callers can prepend
@@ -111,8 +111,8 @@ func TestTunnelHeader_NoInvocations(t *testing.T) {
 func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
 	record := `{"cost_usd":0.25,"settled":true}`
 	wire := []byte(`{"phase":"response","plugins":{` +
-		`"` + costevent.Key + `":` + record + `,` +
-		`"` + costevent.PluginName + `":` + record + `,` +
+		`"` + event.Key + `":` + record + `,` +
+		`"` + event.PluginName + `":` + record + `,` +
 		`"tool-prune":{"bytesRemoved":900}}}`)
 
 	var got map[string]any
@@ -123,10 +123,10 @@ func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
 	if !ok {
 		t.Fatalf("no plugins block survived: %v", got)
 	}
-	if _, ok := pl[costevent.Key]; !ok {
+	if _, ok := pl[event.Key]; !ok {
 		t.Errorf("the current cost key was dropped: %v", pl)
 	}
-	if _, ok := pl[costevent.PluginName]; ok {
+	if _, ok := pl[event.PluginName]; ok {
 		t.Errorf("the legacy duplicate is still rendered: %v", pl)
 	}
 	// Unrelated plugin events are untouched — this filters a duplicate, not a category.
@@ -137,13 +137,13 @@ func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
 
 // A proxy older than the rename writes ONLY the legacy key, and its cost must still render.
 func TestFilterForDetail_KeepsALoneLegacyRecord(t *testing.T) {
-	wire := []byte(`{"phase":"response","plugins":{"` + costevent.PluginName + `":{"cost_usd":0.25}}}`)
+	wire := []byte(`{"phase":"response","plugins":{"` + event.PluginName + `":{"cost_usd":0.25}}}`)
 	var got map[string]any
 	if err := json.Unmarshal(filterForDetail(wire, pipeline.SessionResponse), &got); err != nil {
 		t.Fatal(err)
 	}
 	pl, _ := got["plugins"].(map[string]any)
-	if _, ok := pl[costevent.PluginName]; !ok {
+	if _, ok := pl[event.PluginName]; !ok {
 		t.Errorf("a lone legacy record was dropped, so an older proxy shows no cost: %v", pl)
 	}
 }

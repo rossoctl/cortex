@@ -19,14 +19,14 @@ lint: ## Run all linters (pre-commit hooks)
 	pre-commit run --all-files
 
 fmt: ## Run formatters across all sub-projects
-	cd authlib && go fmt ./...
+	cd core && go fmt ./...
 	cd cmd/abctl && go fmt ./...
 	cd cmd/authbridge-proxy && go fmt ./...
 	cd cmd/authbridge-envoy && go fmt ./...
 	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
 	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
 	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
-	@# `--exclude tests` also drops sparc-service/tests, and `--exclude /tests`
+	@# `--exclude tests` also drops deploy/sparc-service/tests, and `--exclude /tests`
 	@# stops excluding root tests/ entirely.
 	ruff format . --exclude ./tests
 
@@ -36,7 +36,7 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 ##@ Sub-project Targets
 
 build-proxy-init: ## Build the proxy-init iptables init container
-	cd proxy-init && make docker-build-init
+	cd deploy/proxy-init && make docker-build-init
 
 pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
 ifndef COMMIT
@@ -48,9 +48,9 @@ endif
 	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
 	@# machine, not a property of this repo, and hardcoding it broke the target for
 	@# anyone whose proxy is the only route out.
-	cd authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
-		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
-	cd authlib && go test ./pricing/ -run TestBundled
+	cd core && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
+		go run ./cost/pricing/internal/gen -commit $(COMMIT) -dir ./cost/pricing
+	cd core && go test ./cost/pricing/ -run TestBundled
 
 ##@ Binary Targets
 

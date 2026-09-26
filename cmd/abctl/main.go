@@ -24,10 +24,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rossoctl/cortex/authlib/observe/claude"
 	"github.com/rossoctl/cortex/cmd/abctl/cluster"
 	"github.com/rossoctl/cortex/cmd/abctl/edit"
 	"github.com/rossoctl/cortex/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
 // version is the abctl build version, overridden at release time via
@@ -268,7 +268,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// EVERY OTHER READ ERROR FALLS THROUGH SILENTLY rather than disabling titles or warning
 		// here, because this position cannot tell which of them Harvest will recover from. The
 		// sentinel that says "this one does not parse" is unexported, and exporting it would
-		// widen authlib's API to let this pre-flight re-derive a decision Harvest makes a few
+		// widen core's API to let this pre-flight re-derive a decision Harvest makes a few
 		// lines later anyway.
 		//
 		// So the split is by what a human can DO, not by what went wrong: the two cases above

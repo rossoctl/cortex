@@ -282,6 +282,6 @@ For an in-cluster stub, apply
 **Run the plugin tests:**
 
 ```bash
-cd authlib
+cd core
 go test ./plugins/sessionbudget/... -v -count=1
 ```

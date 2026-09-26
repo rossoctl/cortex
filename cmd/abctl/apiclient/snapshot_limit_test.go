@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // The limit has to be ON THE REQUEST, not merely assumed from the server's default.

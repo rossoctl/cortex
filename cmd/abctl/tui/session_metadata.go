@@ -9,21 +9,21 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/authlib/observe/claude"
+	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
 // SessionMetadata is what a coding agent knows about one of its own sessions that Cortex
-// does not. Owned by authlib/observe/claude, which is where its documentation lives.
+// does not. Owned by core/observe/claude, which is where its documentation lives.
 //
 // An ALIAS, not a distinct type. The shape is the on-disk contract between the harvester
-// and this reader, and authlib cannot import tui, so the definition had to move there —
+// and this reader, and core cannot import tui, so the definition had to move there —
 // but aliasing means map[string]SessionMetadata here and map[string]claude.SessionMetadata
 // there are the SAME type, so every consumer in this package keeps its own spelling and
 // assigns what the harvester returns with no conversion.
 type SessionMetadata = claude.SessionMetadata
 
 // SessionMetadataRel is the harvested metadata file, relative to the user's home.
-// Re-exported from authlib/observe/claude so this package's readers and its tests keep one
+// Re-exported from core/observe/claude so this package's readers and its tests keep one
 // spelling; a const cannot be aliased.
 const SessionMetadataRel = claude.SessionMetadataRel
 
@@ -144,7 +144,7 @@ func (m *model) sessionLabel(id string) string {
 
 // HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.
 //
-// A function on RunOptions rather than a direct call into authlib/observe/claude, so this
+// A function on RunOptions rather than a direct call into core/observe/claude, so this
 // package keeps knowing nothing about where titles come from: it renders a map. main supplies
 // the Claude Code implementation, and a test supplies a stub without needing a transcript tree
 // on disk.
@@ -233,7 +233,7 @@ func (m *model) untitledSettled(now time.Time) bool {
 		}
 		// TWO CLOCKS, NOT ONE, and this subtraction is the only place in the pane where that
 		// costs anything. now is the laptop's; UpdatedAt was stamped inside the pod
-		// (authlib/session/store.go, sess.UpdatedAt = now) or carried on a streamed event, and
+		// (core/session/store.go, sess.UpdatedAt = now) or carried on a streamed event, and
 		// the two are reached through a kubectl port-forward with nothing keeping them in step.
 		// Kubernetes does not synchronise node clocks, and a laptop that slept is the common
 		// way this gets large.

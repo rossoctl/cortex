@@ -33,7 +33,7 @@ HR_MCP_IMAGE     ?= hr-mcp:dev
 AGENT_IMAGE      ?= hr-cpex-agent:dev
 
 # Source paths for the images. authbridge-cpex builds from the
-# repo root (cmd/ + authlib/, two levels up from this demo
+# repo root (cmd/ + core/, two levels up from this demo
 # dir); hr-mcp and the agent are vendored alongside the manifests so
 # the demo is self-contained.
 AUTHBRIDGE_ROOT := $(abspath $(CURDIR)/../..)

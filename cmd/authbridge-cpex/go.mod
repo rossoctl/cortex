@@ -2,7 +2,7 @@ module github.com/rossoctl/cortex/cmd/authbridge-cpex
 
 go 1.26.5
 
-require github.com/rossoctl/cortex/authlib v0.0.0-00010101000000-000000000000
+require github.com/rossoctl/cortex/core v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -38,4 +38,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/rossoctl/cortex/authlib => ../../authlib
+replace github.com/rossoctl/cortex/core => ../../core

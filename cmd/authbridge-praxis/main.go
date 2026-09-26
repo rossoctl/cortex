@@ -12,10 +12,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/praxis"
-	"github.com/rossoctl/cortex/authlib/runtimeutil"
-	"github.com/rossoctl/cortex/authlib/spiffe"
+	"github.com/rossoctl/cortex/core/bootstrap"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/praxis"
+	"github.com/rossoctl/cortex/core/spiffe"
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
 	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
@@ -112,8 +112,8 @@ func main() {
 		return
 	}
 
-	runtimeutil.InitLogging("authbridge-praxis")
-	runtimeutil.StartSignalToggle()
+	bootstrap.InitLogging("authbridge-praxis")
+	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
 		log.Fatal("--config is required")

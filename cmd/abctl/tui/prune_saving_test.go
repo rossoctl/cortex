@@ -4,18 +4,18 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // These tests used to cover abctl's own byte-to-token-to-dollar arithmetic. That arithmetic
-// moved to the proxy (authlib/costing, authlib/pricing), where it is tested against the real
+// moved to the proxy (core/cost/settle, core/cost/pricing), where it is tested against the real
 // parser, and abctl's remaining job is reading a figure off the record. So these now cover
 // the reading — including the cases where there is nothing to read, which must render as
 // "not reported" rather than as zero.
 
 // recordEvent builds a response event carrying a cost record, as the proxy publishes it.
-func recordEvent(t *testing.T, ev costevent.Event) *pipeline.SessionEvent {
+func recordEvent(t *testing.T, ev event.Event) *pipeline.SessionEvent {
 	t.Helper()
 	raw, err := json.Marshal(ev)
 	if err != nil {
@@ -23,15 +23,15 @@ func recordEvent(t *testing.T, ev costevent.Event) *pipeline.SessionEvent {
 	}
 	return &pipeline.SessionEvent{
 		Phase:   pipeline.SessionResponse,
-		Plugins: map[string]json.RawMessage{costevent.Key: raw},
+		Plugins: map[string]json.RawMessage{event.Key: raw},
 	}
 }
 
 func TestSavingFor_ReadsTheAttributedComponent(t *testing.T) {
-	e := recordEvent(t, costevent.Event{
+	e := recordEvent(t, event.Event{
 		CostUSD: 0.04,
 		Settled: true,
-		Avoided: []costevent.Saving{
+		Avoided: []event.Saving{
 			{Component: "some-other-plugin", TokensAvoided: 1, USD: 0.99},
 			{Component: "tool-prune", TokensAvoided: 10_577, USD: 0.0041, Tier: "cache_write", Estimated: true},
 		},
@@ -63,7 +63,7 @@ func TestSavingFor_AbsentIsNotZero(t *testing.T) {
 	}{
 		{"nil event", nil},
 		{"no plugins", &pipeline.SessionEvent{Phase: pipeline.SessionResponse}},
-		{"a record with no savings", recordEvent(t, costevent.Event{CostUSD: 0.04, Settled: true})},
+		{"a record with no savings", recordEvent(t, event.Event{CostUSD: 0.04, Settled: true})},
 		{"only the prune facts, no record", &pipeline.SessionEvent{
 			Plugins: map[string]json.RawMessage{"tool-prune": json.RawMessage(`{"bytesRemoved":900}`)},
 		}},
@@ -77,11 +77,11 @@ func TestSavingFor_AbsentIsNotZero(t *testing.T) {
 }
 
 // A record present but unpriced still yields its saving. That is the whole point of
-// costevent.Record answering presence separately from pricedness: a request the table cannot
+// event.Record answering presence separately from pricedness: a request the table cannot
 // price is exactly the one whose token saving is most worth showing.
 func TestSavingFor_SurvivesAnUnpricedRecord(t *testing.T) {
-	e := recordEvent(t, costevent.Event{
-		Avoided: []costevent.Saving{{Component: "tool-prune", TokensAvoided: 500, Tier: "input", Estimated: true}},
+	e := recordEvent(t, event.Event{
+		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 500, Tier: "input", Estimated: true}},
 	})
 	got, ok := pruneSavingFor(e)
 	if !ok {
@@ -101,16 +101,16 @@ func TestSavingFor_SurvivesAnUnpricedRecord(t *testing.T) {
 
 // The legacy key still decodes, because a proxy older than the rename writes only that one.
 func TestSavingFor_ReadsTheLegacyKey(t *testing.T) {
-	raw, err := json.Marshal(costevent.Event{
+	raw, err := json.Marshal(event.Event{
 		PromptUSD: 0.0395,
-		Avoided:   []costevent.Saving{{Component: "tool-prune", TokensAvoided: 10, USD: 0.001}},
+		Avoided:   []event.Saving{{Component: "tool-prune", TokensAvoided: 10, USD: 0.001}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e := &pipeline.SessionEvent{
 		Phase:   pipeline.SessionResponse,
-		Plugins: map[string]json.RawMessage{costevent.PluginName: raw},
+		Plugins: map[string]json.RawMessage{event.PluginName: raw},
 	}
 	if _, ok := pruneSavingFor(e); !ok {
 		t.Error("saving not read from the legacy key")

@@ -244,8 +244,8 @@ level=ERROR msg="token-broker: broker request failed" error="token broker reques
 
 | Path | Description |
 |------|-------------|
-| `authlib/plugins/tokenbroker.go` | Plugin implementation |
-| `authlib/tokenbroker/client.go` | HTTP client for broker service |
-| `authlib/tokenbroker/error.go` | Structured error type |
-| `authlib/plugins/tokenbroker_test.go` | Plugin tests |
-| `authlib/tokenbroker/client_test.go` | Client tests |
+| `core/plugins/tokenbroker.go` | Plugin implementation |
+| `core/tokenbroker/client.go` | HTTP client for broker service |
+| `core/tokenbroker/error.go` | Structured error type |
+| `core/plugins/tokenbroker_test.go` | Plugin tests |
+| `core/tokenbroker/client_test.go` | Client tests |

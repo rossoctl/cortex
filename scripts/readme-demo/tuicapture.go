@@ -28,14 +28,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/costledger"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
-	"github.com/rossoctl/cortex/authlib/usage"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // Turn is one request/response exchange with a model.
@@ -76,7 +76,7 @@ type Fixture struct {
 type Capturer struct {
 	store  *session.Store
 	usage  *usage.Aggregator
-	ledger *costledger.Writer
+	ledger *ledger.Writer
 	ts     *httptest.Server
 	cancel context.CancelFunc
 
@@ -94,7 +94,7 @@ type Capturer struct {
 // tierShare splits a turn's prompt cost across the three prompt tiers, weighted
 // by what each tier actually bills, so the `$` breakdown explains the COST
 // column instead of contradicting it.
-func tierShare(t Turn) *costevent.TierCost {
+func tierShare(t Turn) *event.TierCost {
 	// A cache read bills at ~0.1x input and a write at ~1.25x. Weighting by
 	// these rather than by raw token counts is what makes the breakdown reflect
 	// spend rather than volume — the whole point of the pane.
@@ -103,9 +103,9 @@ func tierShare(t Turn) *costevent.TierCost {
 	wWr := float64(t.CacheWrite) * 1.25
 	total := wIn + wRd + wWr
 	if total == 0 {
-		return &costevent.TierCost{Output: t.OutputUSD}
+		return &event.TierCost{Output: t.OutputUSD}
 	}
-	return &costevent.TierCost{
+	return &event.TierCost{
 		Input:      t.PromptUSD * wIn / total,
 		CacheRead:  t.PromptUSD * wRd / total,
 		CacheWrite: t.PromptUSD * wWr / total,
@@ -117,9 +117,9 @@ func tierShare(t Turn) *costevent.TierCost {
 // response event. The COST column, the spend band and the `$` tier breakdown all
 // read it, so a fixture without one shows dashes everywhere money belongs.
 func costPlugins(t Turn) map[string]json.RawMessage {
-	ev := costevent.Event{
+	ev := event.Event{
 		CostUSD:   t.PromptUSD + t.OutputUSD,
-		Source:    costevent.SourceUsageFallback,
+		Source:    event.SourceUsageFallback,
 		PromptUSD: t.PromptUSD,
 		OutputUSD: t.OutputUSD,
 		Tiers:     tierShare(t),
@@ -128,7 +128,7 @@ func costPlugins(t Turn) map[string]json.RawMessage {
 	if err != nil {
 		panic(err) // a struct we own; a marshal failure is a programming error
 	}
-	return map[string]json.RawMessage{costevent.Key: raw}
+	return map[string]json.RawMessage{event.Key: raw}
 }
 
 // WriteTitles writes the session-title metadata abctl reads from
@@ -160,7 +160,7 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string) (*Capturer, error)
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 
-	ledger, err := costledger.New(ledgerDir)
+	ledger, err := ledger.New(ledgerDir)
 	if err != nil {
 		return nil, fmt.Errorf("cost ledger: %w", err)
 	}

@@ -12,7 +12,7 @@ pipeline:
   outbound:
     plugins:
       # Order matters: RunResponseFrame dispatches in REVERSE declaration
-      # order (see authlib/pipeline/pipeline.go:196). session-budget reads
+      # order (see core/pipeline/pipeline.go:196). session-budget reads
       # pctx.Extensions.Inference.TotalTokens, so inference-parser must
       # run first on the response — meaning it must be declared LAST here.
       - name: session-budget

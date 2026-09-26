@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // oldStyleConfig is shaped like a config written before the pins existed.

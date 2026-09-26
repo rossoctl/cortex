@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // pagingEpoch is the base timestamp for fixture events, so a test can place one batch

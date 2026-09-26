@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rossoctl/cortex/authlib/clientstate"
-	"github.com/rossoctl/cortex/authlib/config"
-	"github.com/rossoctl/cortex/authlib/tlsbridge"
+	"github.com/rossoctl/cortex/core/clientstate"
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
 // The variables Claude Code needs to route through Cortex. Claude Code
@@ -71,7 +71,7 @@ const (
 
 // managedState is the ownership record. A nil entry means the key was absent
 // before enable, so disable deletes it; a non-nil entry is the value to restore.
-// managedState is authlib/clientstate.State: the shape is shared with
+// managedState is core/clientstate.State: the shape is shared with
 // authbridge-proxy, which reads this file back to check the client is still pointed
 // at the CA in force. Aliased rather than redeclared so a field rename cannot leave
 // the reader silently returning nothing.
@@ -321,7 +321,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 // URL from execEnv — so a refusal points at the thing the reader can go and change.
 // errBridgeDisabled already took this parameter for exactly that reason; this
 // applies the same reasoning to the forward_proxy_addr refusal, which had lost the
-// path when the derivation became shared.
+// path when the derivation became memstore.
 func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, error) {
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {

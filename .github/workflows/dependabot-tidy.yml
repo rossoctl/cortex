@@ -1,7 +1,7 @@
 name: Dependabot go mod tidy
 
-# When Dependabot bumps a dep in authlib, the cmd/* modules'
-# go.sum files go stale — they reference authlib's transitive deps via
+# When Dependabot bumps a dep in core, the cmd/* modules'
+# go.sum files go stale — they reference core's transitive deps via
 # replace directives but Dependabot only tidies the directory it updated.
 # CI's `go fmt`/`go vet` then fails with "updates to go.mod needed".
 #
@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authlib/go.mod
+          go-version-file: core/go.mod
 
       - name: Run go mod tidy in every module
         run: |
@@ -68,7 +68,7 @@ jobs:
           git commit -s -m "chore: go mod tidy across modules
 
           Auto-tidied by dependabot-tidy workflow to keep cmd/* go.sum
-          files in sync with authlib after a Dependabot bump."
+          files in sync with core after a Dependabot bump."
           git push
           echo "changed=true" >> "$GITHUB_OUTPUT"
 

@@ -3,14 +3,14 @@ module github.com/rossoctl/cortex/cmd/authbridge-envoy
 go 1.26.5
 
 replace (
-	github.com/rossoctl/cortex/authlib => ../../authlib
-	github.com/rossoctl/cortex/storage/redis => ../../storage/redis
+	github.com/rossoctl/cortex/core => ../../core
+	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )
 
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0
-	github.com/rossoctl/cortex/authlib v0.0.0
-	github.com/rossoctl/cortex/storage/redis v0.0.0
+	github.com/rossoctl/cortex/core v0.0.0
+	github.com/rossoctl/cortex/core/storage/redis v0.0.0
 	google.golang.org/grpc v1.83.2
 )
 

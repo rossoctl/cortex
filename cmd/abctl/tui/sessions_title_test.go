@@ -15,9 +15,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/authlib/observe/claude"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/observe/claude"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // A harvested title reaches the row; an id nobody harvested renders empty.
@@ -882,7 +882,7 @@ func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
 // THE CROSS-MODULE CONTRACT: the harvester's rune cap is safe only because this package
 // re-truncates by display width.
 //
-// Each side was tested independently and neither held the relationship. authlib/observe/claude can
+// Each side was tested independently and neither held the relationship. core/observe/claude can
 // assert only that MaxTitleLen counts runes — it has no width library — and this package asserts only
 // that cells fit their column. So deleting the renderer's truncation broke no test, while the
 // harvester's own comment warned that 80 runes of CJK occupy 160 columns.

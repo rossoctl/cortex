@@ -4,7 +4,7 @@
 # plugins). Built with -tags cpex; links libcpex_ffi.a from a
 # pinned CPEX release.
 #
-# Build context: . (repository root; needs authlib/ and cmd/authbridge-cpex/)
+# Build context: . (repository root; needs core/ and cmd/authbridge-cpex/)
 #
 # Why not just authbridge-proxy: that image is pure-Go, CGO_ENABLED=0.
 # CPEX requires cgo. Operators switch images (not build flags) to
@@ -118,7 +118,7 @@ RUN apk add --no-cache git ca-certificates gcc musl-dev
 
 WORKDIR /app
 
-COPY authlib/ authlib/
+COPY core/ core/
 COPY cmd/authbridge-cpex/ cmd/authbridge-cpex/
 
 COPY --from=ffi /ffi/libcpex_ffi.a /libs/libcpex_ffi.a

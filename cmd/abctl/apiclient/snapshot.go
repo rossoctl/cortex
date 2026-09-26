@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/url"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // GetSessionPage fetches up to limit events ending just BEFORE the given Seq — the page

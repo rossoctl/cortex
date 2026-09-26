@@ -3,8 +3,8 @@ module github.com/rossoctl/cortex/cmd/authbridge-proxy
 go 1.26.5
 
 require (
-	github.com/rossoctl/cortex/authlib v0.0.0
-	github.com/rossoctl/cortex/storage/redis v0.0.0
+	github.com/rossoctl/cortex/core v0.0.0
+	github.com/rossoctl/cortex/core/storage/redis v0.0.0
 )
 
 require (
@@ -130,6 +130,6 @@ require (
 )
 
 replace (
-	github.com/rossoctl/cortex/authlib => ../../authlib
-	github.com/rossoctl/cortex/storage/redis => ../../storage/redis
+	github.com/rossoctl/cortex/core => ../../core
+	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )

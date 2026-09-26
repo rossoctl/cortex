@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // EVERY COUNTER usage.Degraded CARRIES MUST HAVE A CLAUSE in costDegradedText, and this asserts

@@ -31,10 +31,10 @@ cd cortex
 # Install pre-commit hooks
 pre-commit install
 
-# Build the proxy-init image (one-target Makefile in proxy-init/).
-# For every image at once, use scripts/local-build-and-test.sh —
+# Build the proxy-init image (one-target Makefile in deploy/proxy-init/).
+# For every image at once, use scripts/dev/local-build-and-test.sh —
 # see "Testing against a local cluster" below.
-cd proxy-init && make docker-build-init
+cd deploy/proxy-init && make docker-build-init
 ```
 
 Most day-to-day work needs no cluster: `make abctl` / `make authbridge-proxy`
@@ -62,14 +62,14 @@ auth rather than client secrets, that repo's
 `deployments/envs/dev_values_federated-jwt.yaml` sets
 `authBridge.clientAuthType: federated-jwt`.
 
-**2. Build and load your local images.** `scripts/local-build-and-test.sh` is
+**2. Build and load your local images.** `scripts/dev/local-build-and-test.sh` is
 the supported path — it builds from both repos and loads everything into Kind. It
 requires the cluster to exist already, which is why it comes second:
 
 ```bash
 cd cortex
 export KIND_EXPERIMENTAL_PROVIDER=podman   # Podman only
-CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./scripts/local-build-and-test.sh
+CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./scripts/dev/local-build-and-test.sh
 ```
 
 Pass `CLUSTER_NAME` explicitly: this script defaults to `rossoctl-dev` while
@@ -93,7 +93,7 @@ under Podman). On Podman the script also loads via tar archives, because
 
 ```bash
 cd cortex
-./scripts/verify-spire-keycloak.sh
+./scripts/dev/verify-spire-keycloak.sh
 ```
 
 It checks the SPIRE server, the OIDC discovery provider, the JWKS `use` field,
@@ -227,7 +227,7 @@ Smaller pull requests are typically easier to review and merge. If your pull req
   `gofmt` is not — CI's lint step runs `go fmt`, which rewrites files and exits 0,
   so unformatted code still goes green. There are no Go hooks in pre-commit either.
 - Run per-module with `GOWORK=off` — how the root Makefile builds, and how every
-  CI job but authlib runs.
+  CI job but core runs.
 - If your change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module — CI gates on it, and `build`/`vet`/`test`
   all pass while it fails.

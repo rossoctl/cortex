@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // benchContextEvents is a session shaped like a real one: one-shot calls carrying a big context

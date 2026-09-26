@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // sessionTotals are the values this column has to render, including the two from the

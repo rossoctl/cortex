@@ -7,12 +7,12 @@ Framework-level reference for AuthBridge's plugin pipeline: types, composition, 
 - **Framework reference** — this file. Pipeline internals and Go surface.
 
 **Audience:**
-- Framework maintainers editing `authlib/pipeline/`.
+- Framework maintainers editing `core/pipeline/`.
 - Plugin authors who need to understand pipeline composition, lifecycle hooks, the shared state shape, or the observability contract in depth.
 - Anyone debugging the plugin flow via `abctl` or the `:9094` session API.
 
 **Scope:**
-- The Go surface in `authlib/pipeline/` and `authlib/session/`.
+- The Go surface in `core/pipeline/` and `core/session/`.
 - The observability contract carried by `SessionEvent` on the `:9094` API.
 - What the pipeline *does* and *does not* own at the boundary with the listener.
 
@@ -244,11 +244,11 @@ MCP, A2A, Inference, plus Security and Delegation. These are:
 
 A parser populates its slot AND records an Invocation with `ActionObserve`. The slot carries the structured payload (method, token counts, etc.); the Invocation carries the attribution.
 
-Adding a named slot is an authlib-core change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
+Adding a named slot is a `core` change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
 
-**Capability interfaces on the slot types.** Named-slot extensions may implement optional capability interfaces declared in [`authlib/contracts/`](../authlib/contracts/) so consumer plugins can interact with them without importing any specific parser package. The current capability is [`ContentSource`](../authlib/contracts/content.go) — implemented by `A2AExtension`, `MCPExtension`, and `InferenceExtension` — which lets guardrail plugins iterate inspectable text fragments via `pctx.ContentSources()`. Parser authors opt in by adding one method (`Fragments() []contracts.Fragment`); consumers see a uniform view across every protocol that implements the contract. See [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails) for the pattern.
+**Capability interfaces on the slot types.** Named-slot extensions may implement optional capability interfaces declared in [`core/capabilities/`](../core/capabilities/) so consumer plugins can interact with them without importing any specific parser package. The current capability is [`ContentSource`](../core/capabilities/content.go) — implemented by `A2AExtension`, `MCPExtension`, and `InferenceExtension` — which lets guardrail plugins iterate inspectable text fragments via `pctx.ContentSources()`. Parser authors opt in by adding one method (`Fragments() []capabilities.Fragment`); consumers see a uniform view across every protocol that implements the contract. See [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails) for the pattern.
 
-**Classification on the slot types.** Each protocol extension also carries an `IsAction bool` field — the parser's verdict on whether the request is a user-meaningful action (judge it) or protocol mechanics (skip it). Parsers explicitly set `IsAction = true` for the small set of known action methods (`tools/call`, `prompts/get`, `resources/read` for MCP; `message/send`, `message/stream` for A2A; every populated case for inference); everything else inherits the zero-value false. Guardrails read the verdict aggregated across every populated extension via [`pctx.Classification()`](../authlib/pipeline/context.go), which returns `(anyAction, anyBypass)`. A defense-in-depth guardrail (IBAC pattern) skips on `anyBypass`, passes through on `!anyAction`, and judges only when `anyAction && !anyBypass`. This keeps protocol-specific knowledge in the parsers — adding a new guardrail or a new protocol doesn't multiply work at the guardrail layer.
+**Classification on the slot types.** Each protocol extension also carries an `IsAction bool` field — the parser's verdict on whether the request is a user-meaningful action (judge it) or protocol mechanics (skip it). Parsers explicitly set `IsAction = true` for the small set of known action methods (`tools/call`, `prompts/get`, `resources/read` for MCP; `message/send`, `message/stream` for A2A; every populated case for inference); everything else inherits the zero-value false. Guardrails read the verdict aggregated across every populated extension via [`pctx.Classification()`](../core/pipeline/context.go), which returns `(anyAction, anyBypass)`. A defense-in-depth guardrail (IBAC pattern) skips on `anyBypass`, passes through on `!anyAction`, and judges only when `anyAction && !anyBypass`. This keeps protocol-specific knowledge in the parsers — adding a new guardrail or a new protocol doesn't multiply work at the guardrail layer.
 
 ### `Custom map[string]any` — plugin-private state + escape-hatch public events
 Two access patterns share the same map, disambiguated by key suffix.
@@ -287,7 +287,7 @@ The suffix is the opt-in marker — private state stays out of the session strea
 
 ### Built-in extension shapes
 
-All at `authlib/pipeline/extensions.go`:
+All at `core/pipeline/extensions.go`:
 
 ```go
 type MCPExtension struct {
@@ -677,8 +677,8 @@ The pipeline **does not own**:
 | Body buffering negotiation (`ProcessingMode: BUFFERED`) | Listener reads `Pipeline.NeedsBody()` | Only listener can respond to the ext_proc handshake |
 | JWT issuance, client registration, Keycloak admin calls | Outside the pipeline (agent sidecars / operator) | Async concerns happening before/after any request flow |
 | Session store writes (`Store.Append`) | Listener, called after each phase | Plugins see only the read-only `SessionView` |
-| SSE streaming of events to abctl | `authlib/sessionapi` | Observability API, not a plugin concern |
-| **mTLS handshake + peer-cert verification** | **`authlib/listener/...` (proxy-sidecar) using `authlib/tls` + `authlib/spiffe`** | **Transport-level concern; happens before any plugin sees a decrypted HTTP message** |
+| SSE streaming of events to abctl | `core/sessionapi` | Observability API, not a plugin concern |
+| **mTLS handshake + peer-cert verification** | **`core/listener/...` (proxy-sidecar) using `core/tlsconfig` + `core/spiffe`** | **Transport-level concern; happens before any plugin sees a decrypted HTTP message** |
 
 ### 8a. mTLS layer
 
@@ -694,14 +694,14 @@ identity:
 - `pctx.TLS *tls.ConnectionState` — the inbound handshake state when
   the connection went through TLS. Convenience accessor
   `pctx.PeerCertificate()` returns the verified leaf cert. Plugins
-  that want per-caller policy use `authlib/tls.PeerSPIFFEID` to extract
+  that want per-caller policy use `core/tlsconfig.PeerSPIFFEID` to extract
   the URI SAN. Most plugins ignore it.
 - `SessionEvent.TLS *EventTLS` — version, cipher, peer SPIFFE ID per
   event. Listeners populate it; abctl renders it in the events
   detail pane. Pure observability.
 
-The mTLS code lives in `authlib/tls` + `authlib/spiffe` (framework-
-shared) and `authlib/listener/internal/tlssniff` (listener-internal
+The mTLS code lives in `core/tlsconfig` + `core/spiffe` (framework-
+shared) and `core/listener/internal/tlssniff` (listener-internal
 byte-peek dispatcher). Only `cmd/authbridge-proxy` wires it up (this
 also covers the `authbridge-lite` image — the same binary built with the
 `lite` profile); `cmd/authbridge-envoy` stays on
@@ -723,14 +723,14 @@ The pipeline **does own**:
 
 ## 9. Config hot-reload
 
-Editing `authbridge-config-<agent>` no longer requires a pod restart. `authlib/reloader` watches the mounted config file and atomically swaps the inbound / outbound pipelines when content changes; listeners drain onto the new pipeline, old in-flight requests finish on the previous one.
+Editing `authbridge-config-<agent>` no longer requires a pod restart. `core/reloader` watches the mounted config file and atomically swaps the inbound / outbound pipelines when content changes; listeners drain onto the new pipeline, old in-flight requests finish on the previous one.
 
 **The moving parts**
 
 | Component | Responsibility |
 |---|---|
 | `pipeline.Holder` | `atomic.Pointer[*Pipeline]` slot that listeners read every request. Delegating methods (`Run`, `RunResponse`, `NeedsBody`, `Ready`, `NotReadyPlugin`, `Plugins`) so call sites don't change. |
-| `authlib/reloader.Reloader` | Owns the fsnotify watcher, debouncer, content-hash dedup, validation, and drain scheduling. |
+| `core/reloader.Reloader` | Owns the fsnotify watcher, debouncer, content-hash dedup, validation, and drain scheduling. |
 | `main.go` | Provides a `PipelineBuilder` closure that mirrors the startup `Load → ApplyPreset → Validate → plugins.Build` sequence, so startup and reload run identical code. |
 
 **Operator workflow**
@@ -770,7 +770,7 @@ curl http://localhost:9093/config               # now-active config
 | `mode` (`envoy-sidecar` / `proxy-sidecar`) | ❌ | Different wire protocol + listener set; refuse reload |
 | `listener.*` (ports) | ❌ | Bound sockets; refuse reload |
 | `session.*` (TTL, MaxEvents, MaxSessions, ID headers) | ❌ | Every consumer reads the block once at startup — `session.New(...)` in each `cmd` main, `forwardproxy.Server.SessionIDHeaders` assigned before `ListenAndServe`. There is no live object to reach; refuse reload |
-| `cost_ledger.*` (`enabled`, `dir`, `retention_days`) | ❌ | The ledger is a `*costledger.Writer` opened once at startup and handed to the session store as a `Recorder`. Refuse reload |
+| `cost_ledger.*` (`enabled`, `dir`, `retention_days`) | ❌ | The ledger is a `*ledger.Writer` opened once at startup and handed to the session store as a `Recorder`. Refuse reload |
 
 **Why `session.*` and `cost_ledger.*` are refused rather than "reloaded but ineffective".**
 Both used to be accepted: the reload succeeded, `ReloadsOK` incremented,
@@ -823,11 +823,11 @@ The plugin interface is **not** semver-stable yet (AuthBridge is pre-1.0). Chang
 - **Unified invocation contract**: `AuthExtension` + `InboundAuth` + `OutboundAuth` collapsed into `Invocations` + `Invocation`. Every plugin (gate, parser, future) emits an Invocation record per pipeline pass using the 5-value `InvocationAction` vocabulary (allow / deny / skip / modify / observe). `SessionEvent.Auth` is now `SessionEvent.Invocations`.
 - **`pctx.Record` helpers**: `Allow` / `Skip` / `Observe` / `Modify` / `Record` / `DenyAndRecord` on `Context`. Framework-managed attribution (`currentPlugin`, `currentPhase`, `Path`) fills Invocation fields automatically.
 - **Open plugin registry**: plugins self-register from `init()` via `plugins.RegisterPlugin`. Third-party plugins in external modules drop in via a side-effect import. Closed `registry` map literal removed.
-- **Config hot-reload**: new `pipeline.Holder` (atomic wrapper) + `authlib/reloader` package (fsnotify-driven). Listeners receive `*Holder` instead of `*Pipeline`; the reloader atomically swaps the holder's contents when the config file changes. `mode` and `listener.*` edits are refused (pod restart required); any other change is picked up within the kubelet sync window (~60s). See §9.
+- **Config hot-reload**: new `pipeline.Holder` (atomic wrapper) + `core/reloader` package (fsnotify-driven). Listeners receive `*Holder` instead of `*Pipeline`; the reloader atomically swaps the holder's contents when the config file changes. `mode` and `listener.*` edits are refused (pod restart required); any other change is picked up within the kubelet sync window (~60s). See §9.
 - **Body mutation**: `PluginCapabilities.BodyAccess` split into `ReadsBody` / `WritesRequestBody`. New `pctx.SetBody` / `pctx.SetResponseBody` helpers flip a mutation flag; all three listeners (extproc / forwardproxy / reverseproxy) propagate the rewrite to the upstream with correct `Content-Length` and cleared `Content-Encoding`. `BodyAccess` was kept as a deprecated alias at the time; it has since been removed. See §6, "Body mutation."
 - **Detyped framework**: `pipeline/` no longer imports plugin-specific packages. **Breaking**: `Context.Claims *validation.Claims` → `Context.Identity Identity` (interface with `Subject()`/`ClientID()`/`Scopes()`); plugins publish adapters. `Context.Route` removed (was dead code). `Invocation`'s nine jwt-validation + token-exchange specific fields (`ExpectedIssuer`, `TokenSubject`, `RouteHost`, `CacheHit`, etc.) collapsed into `Details map[string]string`; built-in plugins migrated to `Details["expected_issuer"]` etc. `SessionEvent.TargetAudience` removed (was only populated from dead `pctx.Route`). Third-party plugins get a clean diagnostic slot they can populate without framework edits.
-- **Single-owner packages relocated**: `authlib/validation` → `authlib/plugins/jwtvalidation/validation`. `authlib/exchange` / `authlib/cache` / `authlib/spiffe` → `authlib/plugins/tokenexchange/{exchange,cache,spiffe}`. Each plugin now lives in its own directory (`plugins/jwtvalidation/plugin.go`, `plugins/tokenexchange/plugin.go`) and self-registers via its own init(). `authlib/bypass`, `authlib/routing`, `authlib/auth` stay shared.
-- **Plugin relationship declarations**: `PluginCapabilities` extended with four chain-scoped fields — `Requires` (all-must-be-earlier), `RequiresAny` (at-least-one-earlier), `After` (soft ordering), `Claims` (mutex on a semantic resource). Validated at `plugins.Build` time (startup + hot-reload); all errors per chain are collected into one report. `authlib/contracts/claims.go` ships `ClaimAuthorizationHeader` as the initial canonical claim constant. `token-exchange` and `token-broker` migrated to declare it, so configuring both on the same outbound chain now fails startup instead of silently clobbering each other's Authorization header. See [`plugin-reference.md` "Declaring plugin relationships"](./plugin-reference.md#declaring-plugin-relationships).
+- **Single-owner packages relocated**: `core/validation` → `core/plugins/jwtvalidation/validation`. `core/exchange` / `core/cache` / `core/spiffe` → `core/plugins/tokenexchange/{exchange,cache,spiffe}`. Each plugin now lives in its own directory (`plugins/jwtvalidation/plugin.go`, `plugins/tokenexchange/plugin.go`) and self-registers via its own init(). `core/bypass`, `core/routing`, `core/auth` stay shared.
+- **Plugin relationship declarations**: `PluginCapabilities` extended with four chain-scoped fields — `Requires` (all-must-be-earlier), `RequiresAny` (at-least-one-earlier), `After` (soft ordering), `Claims` (mutex on a semantic resource). Validated at `plugins.Build` time (startup + hot-reload); all errors per chain are collected into one report. `core/capabilities/claims.go` ships `ClaimAuthorizationHeader` as the initial canonical claim constant. `token-exchange` and `token-broker` migrated to declare it, so configuring both on the same outbound chain now fails startup instead of silently clobbering each other's Authorization header. See [`plugin-reference.md` "Declaring plugin relationships"](./plugin-reference.md#declaring-plugin-relationships).
 - **Per-request finish hook (`Finisher`)**: new optional interface `Finisher { OnFinish(ctx, pctx) }` gives stateful plugins a guaranteed release point that fires after every request end — regardless of whether the pipeline allowed, denied, or errored. Dispatch is LIFO across Finisher-implementing plugins whose OnRequest was invoked (including the denier). `pctx.Outcome()` returns a non-nil `*Outcome{FinalAction, StatusCode, DenyingPlugin, Duration}` during OnFinish and nil in all other phases. OnFinish runs under a fresh ctx derived from `context.Background()` with a framework-set deadline (default 2s, `WithFinishTimeout` overrides) so client disconnect during the request doesn't cancel cleanup I/O. Best-effort: panics are recovered; OnFinish is silent (no auto-emitted Invocations); `pctx.Record` / `SetBody` / `SetResponseBody` called during OnFinish are dropped with WARN logs since the SessionEvent is published and the response is on the wire. Closes the rate-limiter / audit / lease class of "cleanup leaks on denial" bugs. See §6 "Per-request finish hook".
 
 Breaking changes will be announced in `CHANGELOG.md` (TBD) before a 1.0 tag.
@@ -851,12 +851,12 @@ Breaking changes will be announced in `CHANGELOG.md` (TBD) before a 1.0 tag.
 - `context.go` — `Context`, `Direction`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
 - `extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions, `GetState` / `SetState`.
 - `session.go` — `SessionEvent`, `SessionView`, `SessionPhase`, marshalers.
-- `authlib/reloader/` — `Reloader`, `Status`, `PipelineBuilder`, `WithDrainWindow` / `WithDebounce` / `WithStartTimeout`, `Handler()` (serves `/reload/status`).
+- `core/reloader/` — `Reloader`, `Status`, `PipelineBuilder`, `WithDrainWindow` / `WithDebounce` / `WithStartTimeout`, `Handler()` (serves `/reload/status`).
 
 **Downstream integrators:**
 
-- `authlib/session/` — `Store`, `SessionSummary`, ring buffer, TTL / max-events caps.
-- `authlib/sessionapi/` — HTTP API (`/v1/sessions`, `/v1/events`, `/v1/pipeline`) surfacing all of the above.
-- `authlib/plugins/` — built-in plugin implementations and registry.
+- `core/session/` — `Store`, `SessionSummary`, ring buffer, TTL / max-events caps.
+- `core/sessionapi/` — HTTP API (`/v1/sessions`, `/v1/events`, `/v1/pipeline`) surfacing all of the above.
+- `core/plugins/` — built-in plugin implementations and registry.
 - `cmd/authbridge/listener/extproc/` — reference usage for all three phases.
 - `cmd/abctl/` — TUI consumer of the session API, useful as a reference integrator.

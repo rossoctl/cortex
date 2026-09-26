@@ -28,7 +28,7 @@ jobs:
           # set up traffic redirection. Proxy-sidecar mode does not
           # need this (HTTP_PROXY env var routing replaces iptables).
           - name: proxy-init
-            context: ./proxy-init
+            context: ./deploy/proxy-init
             dockerfile: Dockerfile.init
 
           # AuthBridge envoy-sidecar combined image —
@@ -67,9 +67,9 @@ jobs:
             dockerfile: cmd/authbridge-cpex/Dockerfile
 
           # SPARC reflection service — the backend the `sparc` plugin calls.
-          # Deployed once per cluster via sparc-service/deploy.
+          # Deployed once per cluster via deploy/sparc-service/deploy.
           - name: sparc-service
-            context: ./sparc-service
+            context: ./deploy/sparc-service
             dockerfile: Dockerfile
 
     steps:

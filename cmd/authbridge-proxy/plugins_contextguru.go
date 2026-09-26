@@ -7,4 +7,4 @@
 // proxy binary — which is why it is opt-in rather than profiled.
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/contextguru"
+import _ "github.com/rossoctl/cortex/core/plugins/contextguru"

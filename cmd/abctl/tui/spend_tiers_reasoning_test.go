@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // reasoningCounts is tierCounts plus a reported reasoning split: 948 of 1,593

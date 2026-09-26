@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/usage"
+	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // Client is a handle to a session API endpoint. Safe for concurrent use.
@@ -242,7 +242,7 @@ type PipelinePlugin struct {
 	Metrics     []PluginMetric  `json:"metrics,omitempty"`
 }
 
-// PluginMetric mirrors authlib/pipeline.Metric on the wire. Kept as a local
+// PluginMetric mirrors core/pipeline.Metric on the wire. Kept as a local
 // type rather than importing the server struct, matching PluginFieldEntry:
 // the client owns its decode shape, and a decode test guards the tags
 // against drift.

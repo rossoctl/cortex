@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authlib/config"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // TAGGED cpex, like main.go, because it reads a symbol defined there. This module is
@@ -105,7 +105,7 @@ func TestCostLedgerInertClaim_NoLedgerOrAggregatorIsLinkedHere(t *testing.T) {
 	}
 	for _, imp := range file.Imports {
 		path := strings.Trim(imp.Path.Value, `"`)
-		if strings.HasSuffix(path, "/authlib/costledger") || strings.HasSuffix(path, "/authlib/usage") {
+		if strings.HasSuffix(path, "/core/cost/ledger") || strings.HasSuffix(path, "/core/cost/usage") {
 			t.Errorf("main.go imports %s, so cost_ledger may no longer be inert in this binary — "+
 				"wire the block through and delete warnCostLedgerInert, or narrow its message", path)
 		}

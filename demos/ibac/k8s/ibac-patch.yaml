@@ -71,7 +71,7 @@ outbound_append:
 
       # Optional: override the judge's system prompt. When unset (the
       # default in this demo), the plugin uses defaultSystemPrompt
-      # from authlib/plugins/ibac/judge.go — a generic
+      # from core/plugins/ibac/judge.go — a generic
       # security-policy-judge instruction that's deliberately
       # conservative ("when in doubt, deny"). Override when the
       # default's tone or schema doesn't fit the deployment.

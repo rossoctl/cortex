@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // costEvent is the litellm-budget-track per-response event.
@@ -13,7 +13,7 @@ import (
 // response, but a streamed response always reports 0 there, so those are priced
 // from the plugin's own per-token rates instead. Source says which happened.
 //
-// An ALIAS, not a copy: this is authlib's costevent.Event, so the compiler — not
+// An ALIAS, not a copy: this is core's event.Event, so the compiler — not
 // a decode test — is what keeps abctl and the producer agreeing on the wire. This
 // file used to redeclare the struct and its decoder, which meant a field rename
 // in the plugin silently blanked a column here until a test happened to catch it.
@@ -26,7 +26,7 @@ import (
 // request-side cost, which is modelled too. Marking one and not the other would be
 // the inconsistency. DailyTotalUSD / DailyMaxUSD are likewise carried but not yet
 // rendered.
-type costEvent = costevent.Event
+type costEvent = event.Event
 
 // decodeCostEvent pulls the litellm-budget-track event off a response event, if
 // present. Absent whenever the plugin is not in the pipeline, or the response
@@ -34,9 +34,9 @@ type costEvent = costevent.Event
 // false return is the normal case, not an error.
 //
 // Kept as a local name because the TUI reads better for it; the logic, the
-// lookup key and the non-positive-cost rejection all live in authlib/costevent.
+// lookup key and the non-positive-cost rejection all live in core/cost/event.
 func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
-	return costevent.Decode(e)
+	return event.Decode(e)
 }
 
 // promptCost is what the PROMPT of one request cost, read off the cost record.
@@ -50,7 +50,7 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 // False when the proxy could not model it, which is an older proxy or a model with no rate,
 // rather than a $0.00 that would read as a free prompt.
 func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
-	ev, ok := costevent.Record(resp)
+	ev, ok := event.Record(resp)
 	if !ok || ev.PromptUSD <= 0 {
 		return 0, false
 	}
@@ -67,7 +67,7 @@ func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 // is what made this column read as cumulative, and a total in a per-row cell is wrong by
 // more than it is right.
 func outputCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
-	ev, ok := costevent.Record(resp)
+	ev, ok := event.Record(resp)
 	if !ok || ev.OutputUSD <= 0 {
 		return 0, false
 	}
@@ -95,7 +95,7 @@ func savingSign(projected bool) string {
 // renders exact instead.
 //
 // No third glyph for estimated. "~" already means projected, and every saving published today
-// is estimated (costing derives them from a byte ratio), so a marker on 100% of rows would
+// is estimated (cost/settle derives them from a byte ratio), so a marker on 100% of rows would
 // distinguish nothing while adding noise to every one. The moment a component reports a
 // saving counted by a tokenizer, it renders differently here without a legend to learn.
 //

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/authlib/costevent"
-	"github.com/rossoctl/cortex/authlib/pipeline"
-	"github.com/rossoctl/cortex/authlib/session"
-	"github.com/rossoctl/cortex/authlib/sessionapi"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // seedAgentTurns appends n request/response pairs shaped like a long-running
@@ -61,7 +61,7 @@ func seedAgentTurns(store *session.Store, sid string, n int) {
 				// prompt-only and output-only figures (1.9e-5 per output token,
 				// 5x the input rate) and the saving now travel here rather than
 				// being derived in the UI from rates on the request event.
-				costevent.Key: json.RawMessage(fmt.Sprintf(
+				event.Key: json.RawMessage(fmt.Sprintf(
 					`{"cost_usd":%.4f,"source":"gateway-header","daily_total_usd":%.4f,"daily_max_usd":5,`+
 						`"prompt_usd":%.5f,"output_usd":%.5f,`+
 						`"avoided":[{"component":"tool-prune","tokensAvoided":9899,`+

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // decodeSessionView walks the object by hand, so it can drift from what a plain Decode

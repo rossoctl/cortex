@@ -6,4 +6,4 @@
 // with no build error.
 package main
 
-import _ "github.com/rossoctl/cortex/authlib/plugins/sparc"
+import _ "github.com/rossoctl/cortex/core/plugins/sparc"
