@@ -3,8 +3,8 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // maxPagesHeld bounds how many pages of one session abctl keeps stitched together.

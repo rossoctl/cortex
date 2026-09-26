@@ -24,10 +24,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/rossoctl/cortex/core/observe/claude"
 	"github.com/rossoctl/cortex/cmd/abctl/cluster"
 	"github.com/rossoctl/cortex/cmd/abctl/edit"
 	"github.com/rossoctl/cortex/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
 // version is the abctl build version, overridden at release time via

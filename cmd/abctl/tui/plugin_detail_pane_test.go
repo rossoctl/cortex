@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 func TestShowPluginDetailRendersConfig(t *testing.T) {

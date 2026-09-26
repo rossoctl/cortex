@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 
 // hostToken is the per-row marker these fixtures use. Unique per row and short

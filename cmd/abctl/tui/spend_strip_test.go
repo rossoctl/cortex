@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // figureProbe is the short prefix every "a surviving figure is never half a figure" assertion in

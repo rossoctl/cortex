@@ -8,9 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
-	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 
 // #870: users reported the events they were investigating vanishing after a

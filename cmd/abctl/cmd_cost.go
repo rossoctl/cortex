@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
-	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 )
 
 // costFetchTimeout bounds the one request this command makes. Longer than the
