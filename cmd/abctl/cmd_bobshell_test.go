@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -420,13 +421,26 @@ func TestBobShellDisable(t *testing.T) {
 				t.Errorf("stdout missing %q:\n%s", tc.wantSays, out.String())
 			}
 
+			// The no-file row asserts the file is still ABSENT, not that its
+			// contents match. Comparing contents cannot fail there: the row sets
+			// content "" so want is "", and os.ReadFile on a missing file also
+			// yields "" — `"" != ""` is false whether disable left the file alone
+			// or created an empty one. Confirmed by mutation: making disable
+			// os.WriteFile(path, nil, 0o644) on the not-exist branch left the whole
+			// suite at EXIT:0. Absence is the property that row is actually about.
+			got, err := os.ReadFile(rc)
+			if tc.content == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("disable created %s (contents %q); a file that was not there must stay not there", rc, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
 			want := tc.wantFinal
 			if want == "=" {
 				want = tc.content
-			}
-			got, err := os.ReadFile(rc)
-			if err != nil && tc.content != "" {
-				t.Fatal(err)
 			}
 			if string(got) != want {
 				t.Errorf("file = %q, want %q", got, want)
@@ -1010,13 +1024,24 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 	// verb keeps the path under test byte-for-byte as enable emitted it, which
 	// rebuilding the line from rc would not.
 	runnable := ". " + strings.TrimPrefix(sourceLine, "source ")
+	ran := 0
 	for _, sh := range []string{"/bin/sh", "/bin/bash", "/bin/zsh"} {
 		if _, err := os.Stat(sh); err != nil {
 			continue // not every runner has all three
 		}
+		ran++
 		if outBytes, err := exec.Command(sh, "-c", runnable).CombinedOutput(); err != nil {
 			t.Errorf("%s could not run the printed command %q (as %q): %v\n%s", sh, sourceLine, runnable, err, outBytes)
 		}
+	}
+	// Counted, because a loop whose every iteration is skipped asserts nothing
+	// while still passing. Point all three paths at files that do not exist and
+	// this test went green at EXIT:0 with the comment above still claiming the
+	// command had been run — the same unfailable-assertion shape review found
+	// five of earlier in this file. /bin/sh is on every POSIX system, so zero is
+	// a broken environment and worth failing loudly rather than skipping.
+	if ran == 0 {
+		t.Fatal("no shell was found to run the printed command, so nothing above was verified")
 	}
 }
 

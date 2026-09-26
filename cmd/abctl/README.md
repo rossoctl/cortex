@@ -309,6 +309,18 @@ abctl configure bobshell disable   # remove exactly that block
 abctl configure bobshell status    # is bob routed in THIS shell?
 ```
 
+Both `enable` and `disable` ask before writing, and `--yes` skips the question:
+
+```sh
+abctl configure bobshell enable --yes    # no prompt
+```
+
+With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
+rather than prompt, print `Re-run with --yes to apply`, write nothing and exit
+**0**. That is deliberate, and it is the same "advice printed, nothing applied"
+exit 0 as an unrecognised `$SHELL`, but it means an unattended caller that omits
+`--yes` is a silent no-op. Scripted callers should pass it.
+
 `abctl configure bob` no longer exists — it is `bobshell`, because what gets
 configured is the Bob Shell integration and not Bob itself. This is a breaking
 change and not an alias: the old spelling printed "coming soon" and exited 0,
@@ -393,7 +405,7 @@ startup script would mean parsing shell, which is the thing this command
 deliberately does not do.
 
 What the variable proves is narrower than "`bob` is routed", which is why the
-report is two lines. The variable is exported, so every child process inherits
+report separates the two. The variable is exported, so every child process inherits
 it — including a **non-interactive** subshell or a script, which does not read
 your startup file and therefore has no `bob` function at all. There, `bob` is the
 plain binary and Cortex is not in the path of the call, while the variable still
