@@ -58,14 +58,16 @@ for a usage error.
 // quotes `abctl exec -- <agent>` in backticks, and a backtick is what would end a raw
 // literal. Printed commands are quoted this way elsewhere too (cmd_exec.go:152,
 // main.go's deprecation notices).
-// product is the name in the closing clause. Both remaining callers pass the same
-// value for display and product, so nothing here currently demonstrates the split;
-// it is kept because the two are not the same KIND of name — display names the
-// thing abctl configures, product the thing that then runs — and the pair came
-// apart once already, when `bob` configured as "Bob" but ran as "IBM Bob".
-func comingSoon(display, binary, product string) string {
+// display appears twice: once in the opening sentence and once in the closing
+// clause. There was a third parameter for the closing one, on the argument that
+// "the thing abctl configures" and "the thing that then runs" are different kinds
+// of name and had come apart once — `bob` configured as "Bob" but ran as "IBM
+// Bob". That caller is the one this change removes, and with it the only instance;
+// both survivors passed the same value twice, so the split had become a claim with
+// nothing behind it and a parameter two callers could transpose undetectably.
+func comingSoon(display, binary string) string {
 	return "Persistent " + display + " configuration coming soon.  Until then, use " +
-		"`abctl exec -- " + binary + "` to run " + product + " under Cortex.\n"
+		"`abctl exec -- " + binary + "` to run " + display + " under Cortex.\n"
 }
 
 // runConfigure dispatches on the agent name. Returns the process exit code.
@@ -105,10 +107,10 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// no configuring. The binary it runs is still called "bob".
 		return runBobShell(args[1:], stdout, stderr)
 	case "codex":
-		fmt.Fprint(stdout, comingSoon("Codex", "codex", "Codex"))
+		fmt.Fprint(stdout, comingSoon("Codex", "codex"))
 		return 0
 	case "opencode":
-		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode", "OpenCode"))
+		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode"))
 		return 0
 	default:
 		// The named list is the answer to a typo; the usage block after it is the

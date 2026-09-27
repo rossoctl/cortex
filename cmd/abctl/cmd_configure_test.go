@@ -225,30 +225,30 @@ func TestConfigure_BobIsNoLongerAnAgent(t *testing.T) {
 	}
 }
 
-// comingSoon's three parameters land in three distinct places.
+// comingSoon's two parameters land in three distinct places.
 //
-// The table above cannot show this: both surviving agents pass the same value for
-// display and product, so swapping those two arguments in the body leaves every
-// assertion passing. Review found exactly that — `go test -run TestConfigure`
-// stayed green with the two transposed — and it became undetectable when this PR
-// removed `bob`, the one caller where they differed ("Bob" configured, "IBM Bob"
-// ran).
+// The table above cannot show this: both surviving agents pass a display name that
+// matches their binary but for case, so a body that dropped one and reused the
+// other would satisfy every assertion there. Two deliberately dissimilar values
+// here, so each slot is pinned by a string that can only have come from its own
+// parameter.
 //
-// Three deliberately different values, so each parameter is pinned by a string
-// that can only have come from its own slot. This keeps the distinction the
-// signature claims without inventing a fake agent in the dispatch table or
-// dropping a parameter whose two names are genuinely different KINDS of name.
+// display is asserted TWICE because it fills two slots — the opening sentence and
+// the closing clause. That second assertion is what the removed third parameter
+// used to cover: with both callers passing the same value twice, the parameter was
+// transposable without any test noticing, so it was dropped and the clause it fed
+// now reads display directly. Losing either occurrence still fails here.
 func TestComingSoonPlacesEachNameInItsOwnSlot(t *testing.T) {
-	got := comingSoon("DisplayName", "binaryname", "ProductName")
+	got := comingSoon("DisplayName", "binaryname")
 
 	for _, want := range []string{
-		// display: the thing abctl configures, in the opening sentence.
+		// display, in the opening sentence.
 		"Persistent DisplayName configuration coming soon.",
 		// binary: what the user types, in backticks. The backticks are asserted
 		// because losing them is the silent half of a rewrite.
 		"`abctl exec -- binaryname`",
-		// product: the thing that then runs, in the closing clause.
-		"to run ProductName under Cortex.",
+		// display again, in the closing clause.
+		"to run DisplayName under Cortex.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
