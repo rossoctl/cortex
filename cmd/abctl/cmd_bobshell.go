@@ -24,7 +24,8 @@ enable appends a block to your shell's rc file defining a "bob" shell function
 that runs "abctl exec -- bob", and exporting ` + bobShellEnvVar + `=1. Open a new
 terminal, or source the file, for it to take effect. disable removes exactly that
 block. Neither touches anything else in the file. Both ask before writing; --yes
-skips the question, and with no terminal to ask on they write nothing and say so.
+skips the question, and with no terminal to ask on they write nothing, say so, and
+exit 3 — so an unattended caller can tell a skipped change from an applied one.
 
 Which file: the basename of $SHELL picks it — zsh gets ~/.zshrc, bash gets
 ~/.bashrc. Any other shell gets the block printed for you to place yourself,
@@ -42,8 +43,9 @@ that just ran enable, until you source the file or open a new terminal. It reads
 no files: recognising the block inside a startup script means parsing shell, and a
 variable the shell itself exported is the more honest answer.
 
-Exit status: 0 applied, already correct, or advice printed, 3 declined at the
-prompt, 1 something went wrong, 2 a usage error.
+Exit status: 0 applied, already correct, or advice printed, 3 declined — at the
+prompt or because there was no terminal to ask on, 1 something went wrong, 2 a
+usage error.
 `
 
 const (
@@ -148,7 +150,21 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// a startup file, which is the same class of change, and review found the
 	// asymmetry: this command had no flags at all, so there was no way to say yes
 	// in advance and nothing to pass from a script or an installer.
-	yes := fs.Bool("yes", false, "do not prompt for confirmation")
+	//
+	// Registered for enable and disable ONLY. status writes nothing, so it has
+	// nothing to confirm and usage documents --yes only for the other two; when it
+	// was registered unconditionally `status --yes` parsed and was silently
+	// ignored, which is the same "accepted and did nothing" that `status extra` is
+	// already a usage error for.
+	//
+	// The value is read back into a plain bool below rather than kept as the
+	// pointer, so the two call sites cannot nil-deref. Keeping the pointer would
+	// compile only because status returns before them — which makes a verb added
+	// in between a panic rather than a compile error.
+	var yesFlag *bool
+	if action == "enable" || action == "disable" {
+		yesFlag = fs.Bool("yes", false, "do not prompt for confirmation")
+	}
 	// The FlagSet's own usage would print a bare header and a one-flag list.
 	// Printing this command's usage instead is the useful answer, and suppressing
 	// it here keeps -h's single copy on stdout below.
@@ -164,6 +180,7 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	yes := yesFlag != nil && *yesFlag
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "abctl: bobshell %s takes no arguments (got %q)\n", action, fs.Arg(0))
 		return 2
@@ -204,6 +221,23 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// through it is exactly the surprise the hop limit exists to avoid. The error
 	// value is identical in both cases; only the hop count separates them.
 	if err != nil && !(hops == 0 && errors.Is(err, os.ErrNotExist)) {
+		// A DANGLING LINK is advice-and-0: the arrangement is the user's, abctl can
+		// describe it exactly, and printing the block is a useful answer. Anything
+		// else here — EACCES on the file or a directory above it, EIO — is abctl
+		// failing to look, not a link needing sorting out. Those exit 1: a caller
+		// that cannot even stat the file has learned nothing it can act on from a
+		// success code, and "Sort the link out" is wrong advice when there is no
+		// link. Separated by the error value, not the hop count, because a dangling
+		// link at hop 1 and an unreadable file at hop 0 both arrive here.
+		//
+		// ELOOP is deliberately NOT in this branch and cannot reach it: rcTarget
+		// caps its walk at maxRCSymlinkHops, so a link cycle returns hops > limit
+		// with a nil error and takes the "deeper than" path below. Verified with a
+		// self-referential link.
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "abctl: cannot read %s: %v\n", path, err)
+			return 1
+		}
 		fmt.Fprintf(stdout, "abctl: cannot follow %s: %v\n\n", path, err)
 		fmt.Fprint(stdout, "Sort the link out, or do it by hand.\n\n")
 		return bobShellAdviseManual(action, "the real file", stdout)
@@ -224,9 +258,9 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// Only enable and disable reach here: help and status returned above, and any
 	// other verb was refused before the home directory was read.
 	if action == "enable" {
-		return bobShellEnable(target, *yes, stdout, stderr)
+		return bobShellEnable(target, yes, stdout, stderr)
 	}
-	return bobShellDisable(target, *yes, stdout, stderr)
+	return bobShellDisable(target, yes, stdout, stderr)
 }
 
 // bobShellRCPath maps the shell's basename to the rc file to edit.

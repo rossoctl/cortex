@@ -1287,3 +1287,218 @@ func TestBobShellFollowsOneHopIntoTheTrackedFile(t *testing.T) {
 		})
 	}
 }
+
+// An unreadable rc file is exit 1, not the advice-and-0 a dangling link gets.
+//
+// Both arrive at the same branch as an error from Lstat, and for a long time both
+// took the dangling path: exit 0, "Sort the link out, or do it by hand", and the
+// block printed. That is wrong twice over for EACCES. There is no link to sort
+// out, so the advice names something that does not exist; and 0 tells a scripted
+// caller the command did its job when abctl could not even look at the file. The
+// split is on the error VALUE, not the hop count, because a dangling link at hop 1
+// and an unreadable file at hop 0 both land here.
+//
+// Not covered here, because it cannot reach this branch: a symlink LOOP. rcTarget
+// caps its walk at maxRCSymlinkHops and returns a nil error, so a cycle takes the
+// "deeper than" path that TestBobShellUnwritableLinkAdvisesPerVerb pins at 0. The
+// review suggested ELOOP as a second exit-1 case; running a self-referential link
+// through the real binary showed it never gets here.
+func TestBobShellUnreadableRCFileIsAFailureNotAdvice(t *testing.T) {
+	if os.Geteuid() == 0 {
+		// Mode bits do not constrain root, so the chmod below is a no-op and the
+		// file stays readable. Skipped rather than silently asserting nothing.
+		t.Skip("running as root: a 0o000 directory is still readable")
+	}
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			// The rc file is unreachable because a directory ABOVE it is unreadable,
+			// which is what produces EACCES from Lstat on the file itself. Chmod'ing
+			// the file would not: Lstat only needs the parent's search bit.
+			outer := t.TempDir()
+			home := filepath.Join(outer, "home")
+			if err := os.Mkdir(home, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export EDITOR=vim\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(home, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			// Restored so t.TempDir's cleanup can recurse into it; without this the
+			// test leaves an undeletable directory behind and t.TempDir reports the
+			// failure against this test.
+			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
+
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", "/bin/zsh")
+
+			var out, errb bytes.Buffer
+			code := runBobShell([]string{verb, "--yes"}, &out, &errb)
+			if code != 1 {
+				t.Errorf("exit = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			}
+			// On stderr, because it is a failure: a caller piping stdout for the
+			// block must not find an error message mixed into it.
+			if errb.Len() == 0 {
+				t.Error("nothing on stderr for an operational failure")
+			}
+			// And NOT the dangling-link advice, which is the specific wrong answer
+			// this replaced. Asserted as absence, so rewording the real message
+			// cannot silently reintroduce it.
+			if strings.Contains(out.String(), "Sort the link out") {
+				t.Errorf("still advising the user to fix a link that does not exist:\n%s", out.String())
+			}
+			if strings.Contains(out.String(), bobShellBlock) {
+				t.Errorf("printed the block for a failure the user cannot act on:\n%s", out.String())
+			}
+		})
+	}
+}
+
+// --yes is registered for the writing verbs only, so `status --yes` is a usage
+// error rather than a flag that parses and does nothing.
+//
+// status writes nothing, so it has nothing to confirm, and the usage block
+// documents --yes under enable and disable alone. While it was registered
+// unconditionally the flag was accepted and ignored — the same "accepted and did
+// nothing" that `status extra` was already a usage error for, which is the
+// inconsistency this pins.
+func TestBobShellStatusRejectsYes(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	fakeHome(t)
+
+	var out, errb bytes.Buffer
+	if code := runBobShell([]string{"status", "--yes"}, &out, &errb); code != 2 {
+		t.Errorf("status --yes exit = %d, want 2\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+	}
+	if errb.Len() == 0 {
+		t.Error("usage error said nothing on stderr")
+	}
+
+	// The two halves that must NOT have changed with it: status without the flag
+	// still works, and the writing verbs still take it. Without these, deleting the
+	// flag outright would pass the assertion above.
+	var out2, errb2 bytes.Buffer
+	if code := runBobShell([]string{"status"}, &out2, &errb2); code != 0 {
+		t.Errorf("plain status exit = %d, want 0; stderr: %s", code, errb2.String())
+	}
+	var out3, errb3 bytes.Buffer
+	if code := runBobShell([]string{"enable", "--yes"}, &out3, &errb3); code != 0 {
+		t.Errorf("enable --yes exit = %d, want 0; stderr: %s", code, errb3.String())
+	}
+}
+
+// writeRCFile's failure arms: a directory it cannot create a temp file in.
+//
+// Every arm past the first returns a wrapped error and relies on a defer to take
+// the temp file with it, and none of that was exercised — the reviewer noted the
+// return-1 paths and the cleanup defer were unreached by any test. A 0o500
+// directory (readable and searchable, not writable) fails os.CreateTemp, which is
+// the first arm and the only one reachable without faking the filesystem.
+//
+// Asserted through runBobShell rather than by calling writeRCFile directly, so the
+// exit code the user actually gets is what is pinned, not just the error value.
+func TestBobShellWriteFailureIsExit1AndLeavesNoLitter(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a 0o500 directory is still writable")
+	}
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			home := t.TempDir()
+			// disable needs the block present so it gets past "not enabled" and
+			// actually attempts a write; enable needs only a file to append to.
+			content := "export EDITOR=vim\n"
+			if verb == "disable" {
+				content += bobShellBlock
+			}
+			rc := filepath.Join(home, ".zshrc")
+			if err := os.WriteFile(rc, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(home, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
+
+			t.Setenv("HOME", home)
+			t.Setenv("SHELL", "/bin/zsh")
+
+			var out, errb bytes.Buffer
+			if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 1 {
+				t.Errorf("exit = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			}
+			if errb.Len() == 0 {
+				t.Error("write failure said nothing on stderr")
+			}
+
+			// The original is intact: the whole point of temp-then-rename is that a
+			// failed write is not a half-written startup file.
+			got, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != content {
+				t.Errorf("rc file changed despite the failure:\ngot:\n%s\nwant:\n%s", got, content)
+			}
+
+			// And no temp litter. os.CreateTemp failed here so there is nothing to
+			// clean up yet, but the assertion is what makes a later arm's missing
+			// defer visible instead of silent.
+			ents, err := os.ReadDir(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range ents {
+				if strings.HasPrefix(e.Name(), ".abctl-bobshell-") {
+					t.Errorf("left a temp file behind: %s", e.Name())
+				}
+			}
+		})
+	}
+}
+
+// The usage text's exit-status claims must match the codes the verbs return.
+//
+// This is the assertion that was missing, and its absence is why the same defect
+// kept coming back: the exit-code contract has drifted in --help, in a doc comment
+// and in the README across three review rounds, and every time the suite stayed
+// green because nothing read the words. Mutating "3 declined" to "0 declined" in
+// the usage block passed the entire suite before this existed.
+//
+// Pinned as the specific numbers next to the specific conditions, not as a
+// snapshot of the paragraph: rewording is fine, renumbering is not. The codes
+// themselves are asserted against the constant and against the behaviour by the
+// decline, usage-error and failure tests above; this ties the DOCUMENTATION to
+// them so the three cannot diverge again.
+func TestBobShellUsageDocumentsTheRealExitCodes(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := runBobShell([]string{"--help"}, &out, &errb); code != 0 {
+		t.Fatalf("--help exit = %d, want 0; stderr: %s", code, errb.String())
+	}
+	usage := out.String()
+
+	// exitDeclined is 3 and the text must say 3 — written via the constant so a
+	// change to it fails here rather than silently making the docs wrong.
+	declined := fmt.Sprintf("%d declined", exitDeclined)
+	if !strings.Contains(usage, declined) {
+		t.Errorf("usage does not say %q; exitDeclined is %d:\n%s", declined, exitDeclined, usage)
+	}
+	// The no-terminal case returns the same code without ever prompting, which the
+	// text used to attribute to the prompt alone ("3 declined at the prompt") — so
+	// a scripted caller reading --help concluded it could not get 3.
+	if !strings.Contains(usage, "no terminal") {
+		t.Errorf("usage does not tell a scripted caller the no-terminal case also exits %d:\n%s", exitDeclined, usage)
+	}
+	// --yes prose names the code too, since that is the paragraph an unattended
+	// caller reads first.
+	if !strings.Contains(usage, "exit 3") {
+		t.Errorf("the --yes paragraph does not name the code it returns:\n%s", usage)
+	}
+	// And the other three, so a renumbering anywhere is caught here.
+	for _, want := range []string{"0 applied", "1 something went wrong", "2 a"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage missing exit-status claim %q:\n%s", want, usage)
+		}
+	}
+}
