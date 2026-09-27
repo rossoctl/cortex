@@ -1502,3 +1502,146 @@ func TestBobShellUsageDocumentsTheRealExitCodes(t *testing.T) {
 		}
 	}
 }
+
+// A 2-hop chain must DECLINE. This pins maxRCSymlinkHops itself.
+//
+// The constant is the documented dotfiles safety guarantee, and nothing pinned the
+// value: raising it to 2 flips a real user-visible outcome — a 2-hop chain goes
+// from "declined, block printed" to "written through" — and the whole suite stayed
+// green. TestBobShellUnwritableLinkAdvisesPerVerb uses a FOUR-hop chain for its own
+// reason (it needs a chain longer than limit+1 to catch a truncated hop count), so
+// it keeps passing at a limit of 2 and cannot pin the boundary.
+//
+// Exactly 2 hops, therefore: the first value the limit must reject. One hop is
+// followed and written through, which is asserted separately by
+// TestBobShellFollowsOneHopIntoTheTrackedFile. Together the two fix the boundary
+// from both sides, which is what makes the constant's value load-bearing in the
+// suite rather than just in its comment.
+func TestBobShellDeclinesExactlyTwoHops(t *testing.T) {
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			home := fakeHome(t)
+			t.Setenv("SHELL", "/bin/zsh")
+
+			// .zshrc -> mid -> real. Two hops to reach a regular file.
+			real := filepath.Join(home, "real")
+			original := "export EDITOR=vim\n"
+			if verb == "disable" {
+				original += bobShellBlock
+			}
+			if err := os.WriteFile(real, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mid := filepath.Join(home, "mid")
+			if err := os.Symlink(real, mid); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(home, ".zshrc")
+			if err := os.Symlink(mid, link); err != nil {
+				t.Fatal(err)
+			}
+
+			var out, errb bytes.Buffer
+			// Declining here is advice, not failure: the chain is the user's
+			// deliberate arrangement and abctl can describe it exactly.
+			if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 0 {
+				t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			}
+			if !strings.Contains(out.String(), "deeper than") {
+				t.Errorf("did not decline the 2-hop chain:\n%s", out.String())
+			}
+
+			// The load-bearing half: the endpoint is untouched. At a limit of 2 this
+			// file would have been rewritten, which is the behaviour change the
+			// unpinned constant allowed.
+			got, err := os.ReadFile(real)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != original {
+				t.Errorf("wrote through a 2-hop chain:\ngot:\n%s\nwant:\n%s", got, original)
+			}
+			// And both links survive as links.
+			for _, p := range []string{link, mid} {
+				st, err := os.Lstat(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("%s is no longer a symlink", p)
+				}
+			}
+		})
+	}
+}
+
+// The ReadFile error arms in bobShellEnable and bobShellDisable.
+//
+// Both were unreachable by the suite — verified by replacing each with panic() and
+// watching the whole suite pass. TestBobShellUnreadableRCFileIsAFailureNotAdvice
+// does not reach them: it makes the PARENT unreadable, which fails earlier in
+// rcTarget's Lstat and takes the exit-1 branch there instead.
+//
+// The fixture is the file itself at 0o000 with a readable parent, which is the one
+// arrangement that separates the two: Lstat needs only the parent's search bit and
+// succeeds, so resolution completes normally and the failure lands on the open in
+// ReadFile. Confirmed against the real binary — the message is "read <path>: open
+// ... permission denied", distinct from rcTarget's "cannot read <path>: lstat ...".
+func TestBobShellUnreadableFileWithReadableParentIsExit1(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a 0o000 file is still readable")
+	}
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			home := fakeHome(t)
+			t.Setenv("SHELL", "/bin/zsh")
+
+			rc := filepath.Join(home, ".zshrc")
+			if err := os.WriteFile(rc, []byte("export EDITOR=vim\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The PARENT stays readable. That is the whole point of this fixture.
+			if err := os.Chmod(rc, 0o000); err != nil {
+				t.Fatal(err)
+			}
+
+			var out, errb bytes.Buffer
+			if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 1 {
+				t.Errorf("exit = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			}
+			// "read", the ReadFile arm's word — not rcTarget's "cannot read ... lstat".
+			// Asserted so the test cannot pass by reaching the earlier branch, which
+			// is exactly how the existing exit-1 test misses these two arms.
+			if !strings.Contains(errb.String(), "read "+rc) {
+				t.Errorf("not the ReadFile arm's message:\n%s", errb.String())
+			}
+			if strings.Contains(errb.String(), "lstat") {
+				t.Errorf("failed in rcTarget, not ReadFile, so the arm is still uncovered:\n%s", errb.String())
+			}
+		})
+	}
+}
+
+// The root guard on the exit-1 tests is honest, but it means a root CI run would
+// verify none of them on a green result. This asserts the guard is not firing.
+//
+// The Go job that runs these (go-ci-authbridge-cmd in ci.yaml) is runs-on:
+// ubuntu-latest with no container: key anywhere in the file, so it executes as the
+// non-root `runner` user and the skips stay inert. That is true today by
+// circumstance, not by anything that would notice a change: adding a container:
+// image, which several other repos do for toolchain pinning, silently turns three
+// exit-1 tests into no-ops on a passing run.
+//
+// So this fails loudly in CI instead. Locally it is a skip, because running the
+// suite under sudo is a thing people legitimately do and should not be an error.
+// The distinction is the CI env var, which GitHub Actions always sets.
+func TestExitOneCoverageIsNotSkippedInCI(t *testing.T) {
+	if os.Geteuid() != 0 {
+		return // the normal case: the guarded tests ran
+	}
+	if os.Getenv("CI") == "" {
+		t.Skip("running as root locally; the exit-1 tests skipped, which is not a CI problem")
+	}
+	t.Error("running as root in CI: the exit-1 tests silently skipped and that contract is unverified. " +
+		"Run the Go job as a non-root user (ubuntu-latest without a container:, which is how ci.yaml does it).")
+}
