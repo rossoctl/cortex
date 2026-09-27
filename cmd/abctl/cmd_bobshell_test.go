@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -469,6 +471,12 @@ func TestBobShellStatus(t *testing.T) {
 		// Any value counts as set. The block writes 1, but a user who exported it
 		// by hand should not get a different answer for an equivalent setting.
 		{name: "some other value", set: true, value: "yes", wantSays: "configured", wantNotSays: "not enabled"},
+		// Present but EMPTY, which is the only input that tells the presence bit
+		// apart from a value test: every other row reads the same either way, so
+		// without this one `os.Getenv(...) != ""` passed the whole suite. The block
+		// exports 1 and never this, but `export CORTEX_BOBSHELL=` by hand — or a
+		// value cleared rather than unset — still means the rc file ran.
+		{name: "set but empty", set: true, value: "", wantSays: "configured", wantNotSays: "not enabled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.set {
@@ -699,15 +707,25 @@ func TestBobShellUnwritableLinkAdvisesPerVerb(t *testing.T) {
 			}
 		}},
 		{"past the hop limit", func(t *testing.T, home string) {
+			// FOUR hops, not the two that just clear the limit. rcTarget stops
+			// walking at the limit and returns hops+1, so the count it reports is a
+			// floor: a 4-hop chain and a 2-hop one both yield 2. A message printing
+			// that as exact ("is 2 symlinks deep, ending at <first link>") is wrong
+			// in both the number and the named endpoint, and only a chain longer
+			// than the limit+1 can tell the two wordings apart.
 			real := filepath.Join(home, "real")
 			if err := os.WriteFile(real, nil, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			mid := filepath.Join(home, "mid")
-			if err := os.Symlink(real, mid); err != nil {
-				t.Fatal(err)
+			prev := real
+			for _, name := range []string{"l3", "l2", "mid"} {
+				link := filepath.Join(home, name)
+				if err := os.Symlink(prev, link); err != nil {
+					t.Fatal(err)
+				}
+				prev = link
 			}
-			if err := os.Symlink(mid, filepath.Join(home, ".zshrc")); err != nil {
+			if err := os.Symlink(prev, filepath.Join(home, ".zshrc")); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -746,6 +764,28 @@ func TestBobShellUnwritableLinkAdvisesPerVerb(t *testing.T) {
 				}
 				if st.Mode()&os.ModeSymlink == 0 {
 					t.Error(".zshrc is no longer a symlink: the refusal wrote over it")
+				}
+				// The deep-chain message must not state the truncated walk as fact.
+				// Until this assertion existed, reverting to "is %d symlinks deep
+				// (ending at %s)" kept the whole suite green while telling the user a
+				// 4-hop chain was 2 deep and naming the first link as its end.
+				if shape.name == "past the hop limit" {
+					// Asserted as the ABSENCE of the two false claims rather than the
+					// presence of a phrase, so rewording the sentence cannot silently
+					// unbind this. The chain built above is 4 hops; rcTarget stops at
+					// the limit, so any message asserting "4" would be luck and any
+					// asserting "2" is the truncated floor stated as fact.
+					if strings.Contains(out.String(), "is 2 symlinks deep") {
+						t.Errorf("deep-chain message states the truncated count as exact:\n%s", out.String())
+					}
+					if strings.Contains(out.String(), "ending at") {
+						t.Errorf("deep-chain message names an endpoint it did not walk to:\n%s", out.String())
+					}
+					// It must still say the chain is too deep, or the two checks above
+					// pass against a message that says nothing at all.
+					if !strings.Contains(out.String(), "symlink chain") {
+						t.Errorf("deep-chain message does not say the chain is too deep:\n%s", out.String())
+					}
 				}
 			})
 		}
@@ -1045,10 +1085,22 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 	}
 }
 
-// Without --yes, and with no terminal to prompt on, both verbs must write
-// NOTHING. `go test` has no controlling terminal, so confirm's /dev/tty open
-// fails and it declines — which is the CI and container case, and the reason
-// --yes exists at all.
+// Without --yes, and with the prompt declining, both verbs must write NOTHING.
+//
+// The prompt is SUBSTITUTED rather than left to decline on its own. An earlier
+// version of this test claimed "`go test` has no controlling terminal, so
+// confirm's /dev/tty open fails" — true in CI, false on a developer's machine,
+// where the test binary inherits the terminal it was launched from. There the
+// real prompt opened /dev/tty successfully and blocked in Fscanln until the
+// 10-minute panic, and redirecting stdin could not prevent it: confirm opens
+// /dev/tty directly, not stdin. So the suite passed in CI and hung locally —
+// the inverse of the usual trap, and worse, because the hang looks like a
+// deadlock in the code under test.
+//
+// The stub stands in for the whole bobShellConfirm wrapper, so it has to print
+// what the real pair prints when it declines — the filename line from the
+// wrapper, the "--yes" advice from confirm's no-tty branch — or the two output
+// assertions below would pass vacuously against a silent stub.
 //
 // This is the guard on a real hazard in the confirm/--yes pair: the prompt sits
 // between "decided to write" and "wrote", so a mistake there does not fail
@@ -1056,9 +1108,20 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 // rc file is untouched. Every other test in this file passes --yes, so without
 // this one nothing exercises the unconfirmed path and deleting the prompt
 // entirely would keep the suite green.
-func TestBobShellWithoutYesAndWithoutATerminalWritesNothing(t *testing.T) {
+func TestBobShellWithoutYesAndWhenTheUserDeclinesWritesNothing(t *testing.T) {
 	for _, verb := range []string{"enable", "disable"} {
 		t.Run(verb, func(t *testing.T) {
+			// Restored by t.Cleanup via the closure below, so neither the other
+			// subtest nor any later test sees the stub.
+			realConfirm := bobShellConfirm
+			t.Cleanup(func() { bobShellConfirm = realConfirm })
+			var prompted int
+			bobShellConfirm = func(path, what string, stdout io.Writer) bool {
+				prompted++
+				fmt.Fprintf(stdout, "%s %s\n", what, path)
+				fmt.Fprintln(stdout, "Not a terminal, so not prompting. Re-run with --yes to apply.")
+				return false
+			}
 			home := fakeHome(t)
 			t.Setenv("SHELL", "/bin/zsh")
 			rc := filepath.Join(home, ".zshrc")
@@ -1108,6 +1171,12 @@ func TestBobShellWithoutYesAndWithoutATerminalWritesNothing(t *testing.T) {
 			// And which file was at stake, since $SHELL chose it rather than the user.
 			if !strings.Contains(out.String(), rc) {
 				t.Errorf("stdout does not name the file %q:\n%s", rc, out.String())
+			}
+			// The whole test is vacuous if the verb returned before ever asking —
+			// which is exactly how disable passes for the wrong reason when no block
+			// is present. Counted, not just flagged, so a double prompt shows too.
+			if prompted != 1 {
+				t.Errorf("confirm was called %d times, want 1", prompted)
 			}
 		})
 	}

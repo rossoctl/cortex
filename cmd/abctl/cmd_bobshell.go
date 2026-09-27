@@ -124,10 +124,11 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// The verb is validated HERE, before any environment or filesystem work,
 	// because three of the steps below answer successfully on their own: an
 	// unrecognised $SHELL, a dangling rc symlink, and a chain past the hop limit
-	// each print the block and return 0. Validating the action last meant
-	// `bobshell enabel` under fish printed the block and exited 0 — reporting
+	// each print by-hand advice and return 0. Validating the action last meant
+	// `bobshell enabel` under fish printed that advice and exited 0 — reporting
 	// success for a verb that does not exist. Nothing downstream can reach this
-	// check, so it has to come first.
+	// check, so it has to come first. (The advice became verb-specific in
+	// dcde856; before that all three arms printed the block itself.)
 	switch action {
 	case "enable", "disable", "status":
 	default:
@@ -208,7 +209,14 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		return bobShellAdviseManual(action, "the real file", stdout)
 	}
 	if hops > maxRCSymlinkHops {
-		fmt.Fprintf(stdout, "abctl: %s is %d symlinks deep (ending at %s).\n\n", path, hops, target)
+		// "deeper than", and no endpoint named: rcTarget stops walking at the limit,
+		// so hops is a floor and target is the link it stopped ON, not the end of
+		// the chain. Printed as exact, a 4-hop chain and a 2-hop one both claimed
+		// "is 2 symlinks deep" and named the first link as the destination. The
+		// limit is stated instead of the count, because the limit is the fact abctl
+		// actually knows.
+		fmt.Fprintf(stdout, "abctl: %s is a symlink chain deeper than the %d abctl will follow.\n\n",
+			path, maxRCSymlinkHops)
 		fmt.Fprint(stdout, "That is deliberate enough that abctl will not write through it.\n\n")
 		return bobShellAdviseManual(action, "the real file", stdout)
 	}
@@ -471,11 +479,14 @@ func bobShellStatus(stdout io.Writer) int {
 // with claude-code, and the whole point of the question here is WHICH startup
 // file is about to change — $SHELL picked it, not the user.
 //
-// confirm reads /dev/tty rather than stdin and declines when there is no
-// terminal, printing "re-run with --yes". That is the behaviour we want: in CI or
-// a container this writes nothing and exits 0, the same "advice printed, nothing
-// applied" outcome as an unrecognised $SHELL.
-func bobShellConfirm(path, what string, stdout io.Writer) bool {
+// confirm reads /dev/tty rather than stdin, so it declines only where there is no
+// terminal to open — CI, a container — and there this writes nothing and exits 0,
+// the same "advice printed, nothing applied" outcome as an unrecognised $SHELL.
+// Where a terminal DOES exist it blocks for an answer, and redirecting stdin
+// cannot change that; that is why this is a var rather than a plain func. A test
+// that wants the declined path has to substitute it, because `go test` inherits
+// the terminal it was launched from and would otherwise hang waiting on a human.
+var bobShellConfirm = func(path, what string, stdout io.Writer) bool {
 	fmt.Fprintf(stdout, "%s %s\n", what, path)
 	return confirm(stdout)
 }

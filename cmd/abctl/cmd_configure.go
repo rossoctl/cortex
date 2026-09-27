@@ -58,8 +58,11 @@ for a usage error.
 // quotes `abctl exec -- <agent>` in backticks, and a backtick is what would end a raw
 // literal. Printed commands are quoted this way elsewhere too (cmd_exec.go:152,
 // main.go's deprecation notices).
-// product is the name in the closing clause, which is not always the configuration
-// name — hence the third parameter rather than deriving it from the second.
+// product is the name in the closing clause. Both remaining callers pass the same
+// value for display and product, so nothing here currently demonstrates the split;
+// it is kept because the two are not the same KIND of name — display names the
+// thing abctl configures, product the thing that then runs — and the pair came
+// apart once already, when `bob` configured as "Bob" but ran as "IBM Bob".
 func comingSoon(display, binary, product string) string {
 	return "Persistent " + display + " configuration coming soon.  Until then, use " +
 		"`abctl exec -- " + binary + "` to run " + product + " under Cortex.\n"
