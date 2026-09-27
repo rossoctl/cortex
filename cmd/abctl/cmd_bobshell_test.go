@@ -1518,17 +1518,34 @@ func TestBobShellUsageDocumentsTheRealExitCodes(t *testing.T) {
 // from both sides, which is what makes the constant's value load-bearing in the
 // suite rather than just in its comment.
 func TestBobShellDeclinesExactlyTwoHops(t *testing.T) {
-	for _, verb := range []string{"enable", "disable"} {
-		t.Run(verb, func(t *testing.T) {
-			home := fakeHome(t)
-			t.Setenv("SHELL", "/bin/zsh")
-
+	// Two shapes, because the hop cap does two jobs and only one of them was
+	// pinned. The 2-hop chain pins the BOUNDARY: it is the first depth the limit
+	// must reject, and raising maxRCSymlinkHops to 2 writes through it. The cycle
+	// pins the cap's other job — terminating the walk at all. Deleting
+	//
+	//	if hops >= maxRCSymlinkHops { return current, hops + 1, nil }
+	//
+	// from rcTarget is semantically identical for every finite chain (a 4-hop
+	// chain returns 4 instead of 2; both are > the limit, so both decline), which
+	// is why it looked like an equivalent mutant. A cycle is the one input that
+	// separates them: without the cap rcTarget spins forever. Measured against the
+	// real binary — cap removed, a self-referential ~/.zshrc hangs (exit 124 under
+	// `timeout 5`); cap present, it declines at exit 0.
+	//
+	// So the cycle row fails by TIMEOUT rather than by assertion, and that is the
+	// point: `go test` kills the package at its deadline and reports this test.
+	// The comment at rcTarget's cap said "a loop of links would otherwise spin
+	// here" and nothing in the suite carried it.
+	for _, shape := range []struct {
+		name string
+		// setup builds the rc arrangement under home and returns the path whose
+		// contents must not change, or "" when the shape has no reachable endpoint
+		// (a cycle does not).
+		setup func(t *testing.T, home, original string) string
+	}{
+		{"two hops", func(t *testing.T, home, original string) string {
 			// .zshrc -> mid -> real. Two hops to reach a regular file.
 			real := filepath.Join(home, "real")
-			original := "export EDITOR=vim\n"
-			if verb == "disable" {
-				original += bobShellBlock
-			}
 			if err := os.WriteFile(real, []byte(original), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -1536,42 +1553,69 @@ func TestBobShellDeclinesExactlyTwoHops(t *testing.T) {
 			if err := os.Symlink(real, mid); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Symlink(mid, filepath.Join(home, ".zshrc")); err != nil {
+				t.Fatal(err)
+			}
+			return real
+		}},
+		{"self-referential link", func(t *testing.T, home, original string) string {
+			// The degenerate cycle: one link pointing at itself. Readlink keeps
+			// returning the same path, so an uncapped walk never reaches a
+			// non-symlink and never terminates.
 			link := filepath.Join(home, ".zshrc")
-			if err := os.Symlink(mid, link); err != nil {
+			if err := os.Symlink(link, link); err != nil {
 				t.Fatal(err)
 			}
+			return ""
+		}},
+	} {
+		for _, verb := range []string{"enable", "disable"} {
+			t.Run(shape.name+"/"+verb, func(t *testing.T) {
+				home := fakeHome(t)
+				t.Setenv("SHELL", "/bin/zsh")
 
-			var out, errb bytes.Buffer
-			// Declining here is advice, not failure: the chain is the user's
-			// deliberate arrangement and abctl can describe it exactly.
-			if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 0 {
-				t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
-			}
-			if !strings.Contains(out.String(), "deeper than") {
-				t.Errorf("did not decline the 2-hop chain:\n%s", out.String())
-			}
+				original := "export EDITOR=vim\n"
+				if verb == "disable" {
+					original += bobShellBlock
+				}
+				endpoint := shape.setup(t, home, original)
+				link := filepath.Join(home, ".zshrc")
 
-			// The load-bearing half: the endpoint is untouched. At a limit of 2 this
-			// file would have been rewritten, which is the behaviour change the
-			// unpinned constant allowed.
-			got, err := os.ReadFile(real)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != original {
-				t.Errorf("wrote through a 2-hop chain:\ngot:\n%s\nwant:\n%s", got, original)
-			}
-			// And both links survive as links.
-			for _, p := range []string{link, mid} {
-				st, err := os.Lstat(p)
+				var out, errb bytes.Buffer
+				// Declining here is advice, not failure: the chain is the user's
+				// deliberate arrangement and abctl can describe it exactly.
+				if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 0 {
+					t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+				}
+				if !strings.Contains(out.String(), "deeper than") {
+					t.Errorf("did not decline the chain:\n%s", out.String())
+				}
+
+				// The load-bearing half for a finite chain: the endpoint is
+				// untouched. At a limit of 2 this file would have been rewritten,
+				// which is the behaviour change the unpinned constant allowed. A
+				// cycle has no endpoint to check — reaching this line at all is its
+				// assertion, since the alternative is not a wrong value but a hang.
+				if endpoint != "" {
+					got, err := os.ReadFile(endpoint)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(got) != original {
+						t.Errorf("wrote through the chain:\ngot:\n%s\nwant:\n%s", got, original)
+					}
+				}
+				// The link survives as a link either way: a write to the path would
+				// have replaced it with a regular file.
+				st, err := os.Lstat(link)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if st.Mode()&os.ModeSymlink == 0 {
-					t.Errorf("%s is no longer a symlink", p)
+					t.Errorf("%s is no longer a symlink", link)
 				}
-			}
-		})
+			})
+		}
 	}
 }
 

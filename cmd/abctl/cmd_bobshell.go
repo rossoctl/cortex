@@ -232,8 +232,9 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		//
 		// ELOOP is deliberately NOT in this branch and cannot reach it: rcTarget
 		// caps its walk at maxRCSymlinkHops, so a link cycle returns hops > limit
-		// with a nil error and takes the "deeper than" path below. Verified with a
-		// self-referential link.
+		// with a nil error and takes the "deeper than" path below. Pinned by
+		// TestBobShellDeclinesExactlyTwoHops/self-referential_link, which reaches
+		// that path and not this one.
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(stderr, "abctl: cannot read %s: %v\n", path, err)
 			return 1
@@ -316,7 +317,11 @@ func rcTarget(path string) (string, int, error) {
 			return current, hops, nil
 		}
 		// Stop counting once past the limit. The caller only needs to know the
-		// chain is too long, and a loop of links would otherwise spin here.
+		// chain is too long, and a loop of links would otherwise spin here — which
+		// is the half of this line that no assertion can catch, since its failure
+		// mode is a hang rather than a wrong answer. Pinned by
+		// TestBobShellDeclinesExactlyTwoHops/self-referential_link: delete these
+		// three lines and that subtest stops the package at its deadline.
 		if hops >= maxRCSymlinkHops {
 			return current, hops + 1, nil
 		}
