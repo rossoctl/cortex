@@ -317,9 +317,11 @@ abctl configure bobshell enable --yes    # no prompt
 
 With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
 rather than prompt, print `Re-run with --yes to apply`, write nothing and exit
-**0**. That is deliberate, and it is the same "advice printed, nothing applied"
-exit 0 as an unrecognised `$SHELL`, but it means an unattended caller that omits
-`--yes` is a silent no-op. Scripted callers should pass it.
+**3**. Not 0: a decline is not a failure, but it is also not an applied change,
+and 3 is what lets an unattended caller tell the two apart — the same code
+`configure claude-code` and `service` return when they are declined. An
+unattended caller that omits `--yes` is still a no-op; it is just no longer a
+silent one. Scripted callers should pass `--yes`.
 
 `abctl configure bob` no longer exists — it is `bobshell`, because what gets
 configured is the Bob Shell integration and not Bob itself. This is a breaking

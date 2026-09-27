@@ -42,8 +42,8 @@ that just ran enable, until you source the file or open a new terminal. It reads
 no files: recognising the block inside a startup script means parsing shell, and a
 variable the shell itself exported is the more honest answer.
 
-Exit status: 0 applied, already correct, or advice printed, 1 something went
-wrong, 2 a usage error.
+Exit status: 0 applied, already correct, or advice printed, 3 declined at the
+prompt, 1 something went wrong, 2 a usage error.
 `
 
 const (
@@ -333,7 +333,16 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	// the question. Past this point a write is certain, so this is the last moment
 	// that is still honest.
 	if !yes && !bobShellConfirm(path, "Add the cortex bobshell block to", stdout) {
-		return 0
+		// exitDeclined, not 0, and this is the ONLY arm of this verb that returns it.
+		// The other returns above are abctl's own answers, not the user's refusal:
+		// "already enabled" is the requested state already holding, and "there is a
+		// block I do not recognise" is abctl declining to guess — it printed what it
+		// found and why it stopped, which is the most it can honestly do. A prompt
+		// refusal is different in kind: abctl was ready and willing, and the caller
+		// is the one who said no. That is exactly the distinction exitDeclined was
+		// added to carry — see its comment in cmd_claudecode.go. Returning 0 here
+		// made a script branching on 3 read a declined prompt as an applied change.
+		return exitDeclined
 	}
 
 	if err := writeRCFile(path, out); err != nil {
@@ -374,7 +383,10 @@ func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 		// Only this branch writes. The other three report and return 0, so the
 		// prompt lives here rather than above the switch.
 		if !yes && !bobShellConfirm(path, "Remove the cortex bobshell block from", stdout) {
-			return 0
+			// exitDeclined for the same reason as enable's: the sibling arms report
+			// states the caller can live with, this one reports that the caller's
+			// request did not happen.
+			return exitDeclined
 		}
 		if err := writeRCFile(path, out); err != nil {
 			fmt.Fprintf(stderr, "abctl: %v\n", err)

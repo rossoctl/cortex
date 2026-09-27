@@ -1151,11 +1151,17 @@ func TestBobShellWithoutYesAndWhenTheUserDeclinesWritesNothing(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := runBobShell([]string{verb}, &out, &errb)
 
-			// Declining is not a failure: nothing was asked for that could not be
-			// done, so this is the same "advice printed, nothing applied" exit 0 as
-			// an unrecognised $SHELL.
-			if code != 0 {
-				t.Errorf("exit = %d, want 0; stderr: %s", code, errb.String())
+			// exitDeclined, and NOT the 0 this asserted at first. Declining is not a
+			// failure, which is why it is not 1 — but it is also not the same outcome
+			// as an unrecognised $SHELL, which is where the old reasoning went wrong.
+			// There, abctl did everything it could and the file is in a state the
+			// caller can live with. Here the caller asked for a change and did not
+			// get it, and 0 leaves a script no way to tell that apart from "applied".
+			// configureUsage documents 3 for a decline, and claude-code and
+			// `service` both already returned it; bobshell was the only one that did
+			// not.
+			if code != exitDeclined {
+				t.Errorf("exit = %d, want exitDeclined (%d); stderr: %s", code, exitDeclined, errb.String())
 			}
 			after, err := os.ReadFile(rc)
 			if err != nil {
@@ -1200,5 +1206,78 @@ func TestBobShellStatusAdvisesTypeNotWhich(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "which bob") {
 		t.Errorf("status still advises \"which bob\", which is wrong in bash:\n%s", out.String())
+	}
+}
+
+// One hop must be WRITTEN THROUGH: the block lands in the symlink's target, and
+// the link itself survives as a link.
+//
+// This is the dotfiles arrangement — ~/.zshrc symlinked into a tracked repo — and
+// the reason maxRCSymlinkHops is 1 rather than 0. Both halves are asserted because
+// each catches a different half of the same break. Writing to the link PATH still
+// produces a correct-looking rc file and still prints "Enabled": os.Rename
+// replaces the link with a regular file, so the shell reads the right lines and
+// nothing complains. What is lost is silent and off-screen — the tracked copy in
+// the repo keeps its old contents, `git status` shows nothing to commit, and the
+// next `git pull` in the dotfiles repo has no idea a change happened here.
+//
+// Checked with Lstat, not Stat: Stat follows the link and reports the target's
+// mode, so it reads "regular file" for a healthy symlink as well and could never
+// tell the two apart.
+func TestBobShellFollowsOneHopIntoTheTrackedFile(t *testing.T) {
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			home := fakeHome(t)
+			t.Setenv("SHELL", "/bin/zsh")
+
+			// The target lives OUTSIDE $HOME, as a checked-out dotfiles repo does.
+			// Inside home it would still pass, but it would no longer demonstrate
+			// that the write follows the link off the path abctl computed.
+			repo := t.TempDir()
+			tracked := filepath.Join(repo, "zshrc")
+			// disable needs the block already present to have something to remove;
+			// enable needs it absent. Same fixture either way but for that.
+			original := "export EDITOR=vim\n"
+			if verb == "disable" {
+				original += bobShellBlock
+			}
+			if err := os.WriteFile(tracked, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(home, ".zshrc")
+			if err := os.Symlink(tracked, link); err != nil {
+				t.Fatal(err)
+			}
+
+			var out, errb bytes.Buffer
+			if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 0 {
+				t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			}
+
+			// Half one: the link is still a link. A write to the path would have
+			// turned it into a regular file holding the new contents.
+			st, err := os.Lstat(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("%s replaced the symlink with a regular file", verb)
+			}
+
+			// Half two: the TARGET changed. Without this, a verb that wrote nothing
+			// at all would pass half one — and "wrote nothing" is precisely what a
+			// refusal does.
+			got, err := os.ReadFile(tracked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verb == "enable" {
+				if !strings.Contains(string(got), bobShellBlock) {
+					t.Errorf("tracked file did not receive the block:\n%s", got)
+				}
+			} else if strings.Contains(string(got), bobShellBlock) {
+				t.Errorf("tracked file still holds the block:\n%s", got)
+			}
+		})
 	}
 }
