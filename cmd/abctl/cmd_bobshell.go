@@ -492,8 +492,9 @@ func bobShellStatus(stdout io.Writer) int {
 // file is about to change — $SHELL picked it, not the user.
 //
 // confirm reads /dev/tty rather than stdin, so it declines only where there is no
-// terminal to open — CI, a container — and there this writes nothing and exits 0,
-// the same "advice printed, nothing applied" outcome as an unrecognised $SHELL.
+// terminal to open — CI, a container — and there this writes nothing and the verb
+// exits exitDeclined. Not 0: an unattended caller that omits --yes is still a
+// no-op, but 3 is what lets it tell that no-op apart from an applied change.
 // Where a terminal DOES exist it blocks for an answer, and redirecting stdin
 // cannot change that; that is why this is a var rather than a plain func. A test
 // that wants the declined path has to substitute it, because `go test` inherits

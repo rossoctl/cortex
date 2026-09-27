@@ -272,16 +272,20 @@ func TestBobShellEnableDeclinesAHandEditedBlock(t *testing.T) {
 	home := fakeHome(t)
 	t.Setenv("SHELL", "/bin/zsh")
 	rc := filepath.Join(home, ".zshrc")
-	// Same fixture shape as the disable row, so the two refusals are visibly the
-	// same case seen from either verb.
+	// Same fixture shape as the disable row, so the two cases are visibly the same
+	// one seen from either verb.
 	content := bobShellMarkerStart + "\nbob() { echo my own version; }\n" + bobShellMarkerEnd + "\n"
 	if err := os.WriteFile(rc, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	var out, errb bytes.Buffer
-	// Exit 0, like disable's refusal: declining with an explanation is a successful
-	// outcome, not a failure to be scripted against.
+	// Exit 0, like disable's equivalent. This is abctl declining to GUESS, which is
+	// not the same thing as the user declining a prompt: --yes is passed, so nothing
+	// asked. abctl found a block it does not recognise, said what it found and why
+	// it stopped, and that is the most it can honestly do — a successful outcome for
+	// a command whose job is "or do nothing". A refused PROMPT is exitDeclined (3);
+	// see the decline test below. Do not unify the two.
 	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
@@ -411,8 +415,10 @@ func TestBobShellDisable(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			// Every one of these is exit 0: a refusal that explains itself is a
-			// successful outcome for a command whose job is "or do nothing".
+			// Every one of these is exit 0, for the same reason as enable's sibling
+			// case above: --yes is passed, so no prompt is reached and nobody
+			// declined anything. abctl is the one stopping, and it explains why.
+			// Only a refused prompt is exitDeclined (3).
 			if code := runBobShell([]string{"disable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 			}
