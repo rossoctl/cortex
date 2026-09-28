@@ -408,7 +408,7 @@ func TestRenderUsage_ScopeIsTheSessionLabel(t *testing.T) {
 // by design rather than exotic: a 14-column budget returned 27 columns before the fix.
 func TestTruncLeft_BudgetsInDisplayColumns(t *testing.T) {
 	for _, s := range []string{
-		"/Users/snible/src/cortex/.worktrees/claudesessions",
+		"/Users/person/src/cortex/.worktrees/claudesessions",
 		"日本語のセッションタイトルです日本語のセッション",
 		"🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉",
 		"mixed 日本語 and ascii together",

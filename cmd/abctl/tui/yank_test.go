@@ -294,7 +294,7 @@ func TestYankAcceptsACleanDir(t *testing.T) {
 
 // The reported symptom: on a ~72-column terminal the footer read
 //
-//	● connected  0.0 events/sec   yanked → /Users/snible/.cortex/abctl-
+//	● connected  0.0 events/sec   yanked → /Users/person/.cortex/abctl-
 //
 // and the filename — the part you retype — was off the right edge. A sticky flash
 // now gets the whole line from column 0, and truncates from the LEFT so the tail

@@ -1002,13 +1002,13 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 
 // The "run:" line enable prints is the one thing in its output meant to be COPIED
 // AND EXECUTED, so it has to survive a $HOME with a space in it — which is not
-// exotic: a macOS account named "Ed Snible" produces one, as does every Windows
+// exotic: a macOS account named "Jane Doe" produces one, as does every Windows
 // "Documents and Settings" descendant.
 //
 // The break this pins is nastier than a cosmetic one. The rc file is written to the
 // right path, so enable is not wrong about what it did; only the instructions for
 // loading it are wrong, and they fail in the user's own shell minutes later with
-// "no such file or directory: /Users/Ed" — a path the user never typed and cannot
+// "no such file or directory: /Users/Jane" — a path the user never typed and cannot
 // map back to this command.
 //
 // Verified by actually running it, rather than by inspecting the string. A
@@ -1019,7 +1019,7 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 // alongside it names the fix, so a regression that half-quotes — double quotes,
 // say, which leave $ and backtick live — is caught as well.
 func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "Ed Snible")
+	home := filepath.Join(t.TempDir(), "Jane Doe")
 	if err := os.Mkdir(home, 0o700); err != nil {
 		t.Fatal(err)
 	}

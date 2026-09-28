@@ -172,7 +172,7 @@ func alignSessionsHeaders(cols []table.Column) []table.Column {
 //
 // Narrow for a path, deliberately: truncLeft keeps the TAIL, so 14 columns of
 // "…s/claudesessions" still says which session this is, where the same 14 from the left would
-// say "/Users/snible/" and distinguish nothing. Wider terminals grow it from slack — see
+// say "/Users/person/" and distinguish nothing. Wider terminals grow it from slack — see
 // growSessionsTitle — so this is a floor rather than the usual case.
 const sessionsTitleWidth = 11
 
@@ -397,8 +397,8 @@ func (m *model) sessionTitle(id string) string {
 // sessionTitleCell is sessionTitle fitted to the TITLE column, truncated from the LEFT.
 //
 // Truncating from the left because the titles are mostly paths. bubbles truncates every cell
-// from the right, which on "/Users/snible/src/cortex/.worktrees/claudesessions" keeps
-// "/Users/snible/src/cor…" — the half every session on the machine shares, and none of the
+// from the right, which on "/Users/person/src/cortex/.worktrees/claudesessions" keeps
+// "/Users/person/src/cor…" — the half every session on the machine shares, and none of the
 // half that says which one this is. Keeping the tail instead gives "…es/claudesessions".
 //
 // Pre-truncated here rather than left to bubbles because bubbles offers no choice of side, so
