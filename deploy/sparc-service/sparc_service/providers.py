@@ -114,13 +114,13 @@ def _patch_empty_response_retry(client_cls, max_retries: int = 3):
                 if attempt <= max_retries:
                     _debug_log.debug(
                         "[LLM_DEBUG] empty-response retry %d/%d after ValueError: %s",
-                        attempt, max_retries, exc,
+                        attempt,
+                        max_retries,
+                        exc,
                     )
                     await asyncio.sleep(0.5 * attempt)
                 else:
-                    _debug_log.debug(
-                        "[LLM_DEBUG] empty-response retry exhausted (%d attempts)", max_retries + 1
-                    )
+                    _debug_log.debug("[LLM_DEBUG] empty-response retry exhausted (%d attempts)", max_retries + 1)
         raise last_exc  # type: ignore[misc]
 
     client_cls.generate_async = patched_generate_async
@@ -156,16 +156,18 @@ def _patch_debug_logging(client_cls):
         schema_full = _json.dumps(schema, ensure_ascii=False) if isinstance(schema, dict) else str(type(schema))
 
         _debug_log.debug(
-            "[LLM_DEBUG] >>> generate_async called\n"
-            "  schema_field=%s  retries=%s\n"
-            "  schema=%s\n"
-            "  prompt=%s",
-            schema_field, retries, schema_full, prompt_full,
+            "[LLM_DEBUG] >>> generate_async called\n  schema_field=%s  retries=%s\n  schema=%s\n  prompt=%s",
+            schema_field,
+            retries,
+            schema_full,
+            prompt_full,
         )
 
         try:
             result = await original_generate_async(self, prompt, *args, **kwargs)
-            result_preview = _json.dumps(result, ensure_ascii=False)[:400] if isinstance(result, dict) else str(result)[:400]
+            result_preview = (
+                _json.dumps(result, ensure_ascii=False)[:400] if isinstance(result, dict) else str(result)[:400]
+            )
             _debug_log.debug("[LLM_DEBUG] <<< generate_async SUCCESS result=%s", result_preview)
             return result
         except Exception as exc:

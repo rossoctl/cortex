@@ -155,13 +155,22 @@ class ReflectionEngine:
         # and are logged as-is.
         log.info(
             "reflect ts=%s tool=%s decision=%s score=%s ms=%s track=%s session=%s",
-            ts, tool_name, decision, score_str, ms_str,
-            track, request.session_id or "-",
+            ts,
+            tool_name,
+            decision,
+            score_str,
+            ms_str,
+            track,
+            request.session_id or "-",
         )
         log.debug(
             "reflect ts=%s tool=%s decision=%s score=%s ms=%s"
             " track=%s session=%s tokens_in=%s tokens_out=%s messages=%s",
-            ts, tool_name, decision, score_str, ms_str,
+            ts,
+            tool_name,
+            decision,
+            score_str,
+            ms_str,
             track,
             request.session_id or "-",
             _tok("tokens_in", "input_tokens"),

@@ -166,9 +166,7 @@ class Settings:
             )
 
         strip_tool_arg_keys: frozenset[str] = frozenset(
-            k.strip()
-            for k in os.getenv("SPARC_STRIP_TOOL_ARG_KEYS", "").split(",")
-            if k.strip()
+            k.strip() for k in os.getenv("SPARC_STRIP_TOOL_ARG_KEYS", "").split(",") if k.strip()
         )
 
         return cls(

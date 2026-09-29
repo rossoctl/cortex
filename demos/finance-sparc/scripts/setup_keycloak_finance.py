@@ -10,6 +10,7 @@ Idempotent. Run via:  uv run --with python-keycloak python setup_keycloak_financ
 Env overrides: KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_ADMIN_USERNAME/PASSWORD,
 UI_CLIENT_ID, NAMESPACE, AGENT_SA.
 """
+
 import os
 import sys
 
@@ -26,8 +27,14 @@ AGENT_SA = os.environ.get("AGENT_SA", "finance-agent")
 ROPC_CLIENT_ID = os.environ.get("ROPC_CLIENT_ID", "finance-sparc-e2e")
 USER_NAME = "alice"
 USER_PASS = "alice123"
-USER = {"username": USER_NAME, "email": "alice@example.com",
-        "enabled": True, "emailVerified": True, "firstName": "Alice", "lastName": "Demo"}
+USER = {
+    "username": USER_NAME,
+    "email": "alice@example.com",
+    "enabled": True,
+    "emailVerified": True,
+    "firstName": "Alice",
+    "lastName": "Demo",
+}
 
 
 def main() -> int:
@@ -35,24 +42,40 @@ def main() -> int:
     scope_name = f"agent-{NAMESPACE}-{AGENT_SA}-aud"
     print(f"Keycloak: {KEYCLOAK_URL}  realm={KEYCLOAK_REALM}  agent aud={agent_spiffe}")
 
-    kc = KeycloakAdmin(server_url=KEYCLOAK_URL, username=ADMIN_USER, password=ADMIN_PASS,
-                       realm_name=KEYCLOAK_REALM, user_realm_name="master")
+    kc = KeycloakAdmin(
+        server_url=KEYCLOAK_URL,
+        username=ADMIN_USER,
+        password=ADMIN_PASS,
+        realm_name=KEYCLOAK_REALM,
+        user_realm_name="master",
+    )
 
     # 1) audience client scope + mapper → agent SPIFFE id in aud
     scope_id = next((s["id"] for s in kc.get_client_scopes() if s["name"] == scope_name), None)
     if not scope_id:
-        scope_id = kc.create_client_scope({
-            "name": scope_name, "protocol": "openid-connect",
-            "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
-        }, skip_exists=True)
+        scope_id = kc.create_client_scope(
+            {
+                "name": scope_name,
+                "protocol": "openid-connect",
+                "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
+            },
+            skip_exists=True,
+        )
     print(f"  client scope {scope_name} -> {scope_id}")
     try:
-        kc.add_mapper_to_client_scope(scope_id, {
-            "name": scope_name + "-aud-mapper", "protocol": "openid-connect",
-            "protocolMapper": "oidc-audience-mapper",
-            "config": {"included.custom.audience": agent_spiffe,
-                       "id.token.claim": "false", "access.token.claim": "true"},
-        })
+        kc.add_mapper_to_client_scope(
+            scope_id,
+            {
+                "name": scope_name + "-aud-mapper",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "config": {
+                    "included.custom.audience": agent_spiffe,
+                    "id.token.claim": "false",
+                    "access.token.claim": "true",
+                },
+            },
+        )
     except Exception as e:
         print(f"  (mapper exists or: {e})")
     try:
@@ -63,12 +86,22 @@ def main() -> int:
 
     # 2) public ROPC client for scripted drive
     if not kc.get_client_id(ROPC_CLIENT_ID):
-        kc.create_client({"clientId": ROPC_CLIENT_ID, "name": "finance-sparc E2E (direct access)",
-                          "enabled": True, "publicClient": True, "standardFlowEnabled": True,
-                          "directAccessGrantsEnabled": True}, skip_exists=True)
+        kc.create_client(
+            {
+                "clientId": ROPC_CLIENT_ID,
+                "name": "finance-sparc E2E (direct access)",
+                "enabled": True,
+                "publicClient": True,
+                "standardFlowEnabled": True,
+                "directAccessGrantsEnabled": True,
+            },
+            skip_exists=True,
+        )
     ropc_internal = kc.get_client_id(ROPC_CLIENT_ID)
-    for label, cid in [("ROPC " + ROPC_CLIENT_ID, ropc_internal),
-                       ("UI " + UI_CLIENT_ID, kc.get_client_id(UI_CLIENT_ID))]:
+    for label, cid in [
+        ("ROPC " + ROPC_CLIENT_ID, ropc_internal),
+        ("UI " + UI_CLIENT_ID, kc.get_client_id(UI_CLIENT_ID)),
+    ]:
         if cid:
             try:
                 kc.add_client_default_client_scope(cid, scope_id, {})

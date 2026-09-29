@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/rossoctl/cortex/core/storage"
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/rossoctl/cortex/core/storage"
 )
 
 func init() {

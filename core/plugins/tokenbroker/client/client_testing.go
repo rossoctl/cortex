@@ -43,4 +43,3 @@ func (h *TestHelper) NewErrorBroker(statusCode int, oauthError, message string) 
 		})
 	}))
 }
-

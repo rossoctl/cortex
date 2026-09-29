@@ -6,6 +6,7 @@ session or the `default` bucket depending on timing), de-duplicates, and prints
 each SPARC verdict. Pass the session-API base URL as the first argument
 (default http://localhost:19094).
 """
+
 import json
 import sys
 import urllib.request
@@ -45,9 +46,7 @@ for s in sessions:
             seen.add(key)
             score_s = f"  score={score}" if score not in (None, "") else ""
             rows.append(
-                "  SPARC {}/{}  tool={}{}".format(
-                    inv.get("action"), inv.get("reason"), det.get("tool"), score_s
-                )
+                "  SPARC {}/{}  tool={}{}".format(inv.get("action"), inv.get("reason"), det.get("tool"), score_s)
             )
 
 print("\n".join(rows) if rows else "  (no sparc verdicts found in any session; check `make logs-sparc`)")

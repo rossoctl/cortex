@@ -82,11 +82,11 @@ SENT_EMAILS: list[dict[str, Any]] = []
 # Fake repo fixtures — names + visibility match what Cedar policy
 # expects in `args.repo_name` / `args.visibility`.
 REPOS: list[dict[str, Any]] = [
-    {"name": "internal/web-app",       "visibility": "internal", "stars": 24, "language": "TypeScript"},
-    {"name": "internal/api-gateway",   "visibility": "internal", "stars": 18, "language": "Rust"},
+    {"name": "internal/web-app", "visibility": "internal", "stars": 24, "language": "TypeScript"},
+    {"name": "internal/api-gateway", "visibility": "internal", "stars": 18, "language": "Rust"},
     {"name": "internal/data-pipeline", "visibility": "internal", "stars": 11, "language": "Python"},
-    {"name": "public/showcase-site",   "visibility": "public",   "stars": 2840, "language": "Astro"},
-    {"name": "external/partner-sdk",   "visibility": "external", "stars": 47, "language": "Go"},
+    {"name": "public/showcase-site", "visibility": "public", "stars": 2840, "language": "Astro"},
+    {"name": "external/partner-sdk", "visibility": "external", "stars": 47, "language": "Go"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -139,9 +139,7 @@ def tool_display_compensation(args: dict[str, Any]) -> dict[str, Any]:
         "department": employee["department"],
         "title": employee["title"],
         "salary_band": (
-            "senior" if employee["salary"] >= 120000 else
-            "mid" if employee["salary"] >= 80000 else
-            "junior"
+            "senior" if employee["salary"] >= 120000 else "mid" if employee["salary"] >= 80000 else "junior"
         ),
         "has_bonus": employee["bonus"] > 0,
     }
@@ -153,12 +151,14 @@ def tool_get_directory(args: dict[str, Any]) -> list[dict[str, Any]]:
     for emp in EMPLOYEES.values():
         if department and emp["department"].lower() != department.lower():
             continue
-        entries.append({
-            "name": emp["name"],
-            "department": emp["department"],
-            "title": emp["title"],
-            "email": emp["email"],
-        })
+        entries.append(
+            {
+                "name": emp["name"],
+                "department": emp["department"],
+                "title": emp["title"],
+                "email": emp["email"],
+            }
+        )
     return entries
 
 
@@ -196,7 +196,7 @@ def _redact_token(value: str) -> str:
     """Trim long bearer tokens in logs so audiences can see the prefix
     without 800 chars of base64 noise."""
     if value.startswith("Bearer ") and len(value) > 50:
-        return f"{value[:40]}…[{len(value)-40} chars elided]"
+        return f"{value[:40]}…[{len(value) - 40} chars elided]"
     return value
 
 
@@ -217,7 +217,9 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
     logger.info("=" * 64)
     logger.info("INBOUND REQUEST  (this is what reached the MCP server)")
     interesting_headers = [
-        "authorization", "x-user-token", "x-cpex-violation",
+        "authorization",
+        "x-user-token",
+        "x-cpex-violation",
     ]
     for name in interesting_headers:
         v = request.headers.get(name)
@@ -282,9 +284,7 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "jsonrpc": "2.0",
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(out, indent=2)}]
-            },
+            "result": {"content": [{"type": "text", "text": json.dumps(out, indent=2)}]},
             "id": rpc_id,
         },
     )

@@ -11,7 +11,9 @@ from .settings import Settings
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s", datefmt="%Y-%m-%dT%H:%M:%SZ")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s", datefmt="%Y-%m-%dT%H:%M:%SZ"
+    )
     # Demote noisy third-party loggers — their INFO adds no operational value
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     if os.getenv("SPARC_DEBUG_LLM", "").strip().lower() in ("1", "true", "yes"):

@@ -197,7 +197,7 @@ def _call_with_response_format() -> dict | None:
         messages=PROMPT,
         api_key=API_KEY,
         api_base=API_BASE,
-        response_format=pydantic_schema,   # Pydantic model, NOT a json_schema dict
+        response_format=pydantic_schema,  # Pydantic model, NOT a json_schema dict
         timeout=30,
     )
     msg = response.choices[0].message
@@ -245,7 +245,7 @@ def test_response_format_intermittent_empty(n_calls: int = 10):
         result = _call_with_response_format()
         results.append(result)
         status = "EMPTY" if result["empty"] else "OK"
-        print(f"  call {i+1:02d}: {status}  content_len={len(result['content'] or '')}")
+        print(f"  call {i + 1:02d}: {status}  content_len={len(result['content'] or '')}")
         if result["empty"]:
             empty_count += 1
 
@@ -270,15 +270,13 @@ def test_system_prompt_mode_no_empty(n_calls: int = 10):
     for i in range(n_calls):
         result = _call_with_system_prompt()
         status = "EMPTY" if result["empty"] else "OK"
-        print(f"  call {i+1:02d}: {status}  content_len={len(result['content'] or '')}")
+        print(f"  call {i + 1:02d}: {status}  content_len={len(result['content'] or '')}")
         if result["empty"]:
             empty_count += 1
 
     print(f"\nSummary: {empty_count}/{n_calls} calls returned empty content")
 
-    assert empty_count == 0, (
-        f"{empty_count}/{n_calls} calls returned empty content even with system-prompt mode"
-    )
+    assert empty_count == 0, f"{empty_count}/{n_calls} calls returned empty content even with system-prompt mode"
 
 
 if __name__ == "__main__":
@@ -292,7 +290,7 @@ if __name__ == "__main__":
     for i in range(N):
         r = _call_with_response_format()
         status = "EMPTY" if r["empty"] else f"OK ({len(r['content'] or '')} chars)"
-        print(f"  call {i+1:02d}: {status}")
+        print(f"  call {i + 1:02d}: {status}")
         if r["empty"]:
             empty += 1
     print(f"Result: {empty}/{N} empty\n")
@@ -302,7 +300,7 @@ if __name__ == "__main__":
     for i in range(N):
         r = _call_with_system_prompt()
         status = "EMPTY" if r["empty"] else f"OK ({len(r['content'] or '')} chars)"
-        print(f"  call {i+1:02d}: {status}")
+        print(f"  call {i + 1:02d}: {status}")
         if r["empty"]:
             empty += 1
     print(f"Result: {empty}/{N} empty")

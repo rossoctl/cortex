@@ -22,8 +22,10 @@ type markerPlugin struct {
 	calls atomic.Int32
 }
 
-func (p *markerPlugin) Name() string                              { return "marker" }
-func (p *markerPlugin) Capabilities() pipeline.PluginCapabilities { return pipeline.PluginCapabilities{} }
+func (p *markerPlugin) Name() string { return "marker" }
+func (p *markerPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
 func (p *markerPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }

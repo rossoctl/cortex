@@ -33,9 +33,7 @@ log = logging.getLogger(__name__)
 # Use for infrastructure tools (e.g. message, calculate) that have no policy
 # risk and would cause false-positive rejects.
 # Example: SPARC_SKIP_TOOLS=message,calculate
-_SKIP_TOOLS: frozenset[str] = frozenset(
-    t.strip() for t in os.getenv("SPARC_SKIP_TOOLS", "").split(",") if t.strip()
-)
+_SKIP_TOOLS: frozenset[str] = frozenset(t.strip() for t in os.getenv("SPARC_SKIP_TOOLS", "").split(",") if t.strip())
 
 
 def _strip_tool_arg_keys(tool_calls: list[dict], keys: frozenset[str]) -> list[dict]:
@@ -73,7 +71,9 @@ def create_app(engine: ReflectionEngine | None = None) -> FastAPI:
 
     # INFO: announce skip list once at startup so operators know what is bypassed
     if _SKIP_TOOLS:
-        log.info("SPARC_SKIP_TOOLS: the following tools will be auto-approved without evaluation: %s", sorted(_SKIP_TOOLS))
+        log.info(
+            "SPARC_SKIP_TOOLS: the following tools will be auto-approved without evaluation: %s", sorted(_SKIP_TOOLS)
+        )
 
     @app.get("/healthz")
     def healthz() -> dict[str, object]:

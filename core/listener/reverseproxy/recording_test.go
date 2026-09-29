@@ -18,8 +18,10 @@ import (
 // manual SetCurrentPlugin is needed here.
 type allowOnlyPlugin struct{}
 
-func (allowOnlyPlugin) Name() string                              { return "test-allow" }
-func (allowOnlyPlugin) Capabilities() pipeline.PluginCapabilities { return pipeline.PluginCapabilities{} }
+func (allowOnlyPlugin) Name() string { return "test-allow" }
+func (allowOnlyPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
 func (allowOnlyPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	pctx.Allow("ok") // records ActionAllow; holder stamps the plugin name
 	return pipeline.Action{Type: pipeline.Continue}
