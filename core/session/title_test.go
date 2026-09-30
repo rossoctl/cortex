@@ -1150,3 +1150,68 @@ func TestSessionTitle_NestedReminders(t *testing.T) {
 		t.Errorf("title leaked a reminder tag: %q", got)
 	}
 }
+
+// A local-command block must not become the title, and must not hide the text behind it.
+func TestSessionTitle_StripsLocalCommand(t *testing.T) {
+	const caveat = "<local-command-caveat>Caveat: generated while running a local command</local-command-caveat>"
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"caveat alone leaves the ask behind it",
+			caveat + " the real ask",
+			"the real ask",
+		},
+		{
+			"message, name and args envelopes all go",
+			caveat + " <command-message>x</command-message> <command-name>/x</command-name> <command-args>a</command-args> the real ask",
+			"the real ask",
+		},
+		{
+			// An args-less command emits no <command-args>, so consuming each envelope to a later
+			// sibling's close would run past the text this keeps.
+			"command with no args",
+			caveat + " <command-message>clear</command-message> <command-name>/clear</command-name> the real ask",
+			"the real ask",
+		},
+		{
+			"stdout envelope goes too",
+			caveat + " <local-command-stdout>output</local-command-stdout> the real ask",
+			"the real ask",
+		},
+		{
+			"a user query behind the block still wins",
+			caveat + " <command-name>/x</command-name> <user_query>the real ask</user_query>",
+			"the real ask",
+		},
+		{
+			"nothing behind the block names nothing",
+			caveat + " <command-name>/clear</command-name> <command-args></command-args>",
+			"",
+		},
+		{
+			"unterminated envelope yields no markup",
+			caveat + " <command-name>/clear dangling",
+			"",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// An unterminated open tag in prose is left alone, as stripReminders does.
+func TestSessionTitle_UnterminatedLocalCommandIsLeftAlone(t *testing.T) {
+	in := "what does <local-command-caveat> mean here"
+	if got := candidateTitle(userEvent(in)); got != in {
+		t.Errorf("got %q, want the message unchanged %q", got, in)
+	}
+}
+
+// A /rename the user typed keeps winning; the block must not shadow the prefix that arm tests.
+func TestSessionTitle_RenameSurvivesLocalCommandStrip(t *testing.T) {
+	if got := candidateTitle(userEvent(renameMsg("chosen"))); got != "chosen" {
+		t.Errorf("got %q, want %q", got, "chosen")
+	}
+}

@@ -195,6 +195,8 @@ func quickRank(content string) int {
 // quickRank screens instead; this settles only the guesses that are not reliable.
 func titleFrom(content string) (int, string) {
 	content = stripReminders(content)
+	// Before the arms below, which test prefixes this block would hide.
+	content = stripLocalCommands(content)
 	// A TRANSCRIPT ENVELOPE IS MACHINERY, NOT AN ASK. Observed live: a message opening with this tag
 	// titled a session `\", \"` — the fold reduced a wall of quoted JSONL to its punctuation.
 	// Discarded rather than ranked, so the walk reaches a real title behind it.
@@ -257,7 +259,63 @@ const (
 	// tag observed in the harness payload is exactly this, and every widening of the match moves
 	// it toward the prose case that must keep working. See titleFrom.
 	transcriptOpen = "<transcript>"
+
+	localCommandOpen  = "<local-command-caveat>"
+	localCommandClose = "</local-command-caveat>"
 )
+
+// localCommandEnvelopes are tag pairs that wrap local-command machinery rather than a user's own
+// words. Extend the table to cover more of them.
+var localCommandEnvelopes = [][2]string{
+	{"<command-message>", "</command-message>"},
+	{"<command-name>", "</command-name>"},
+	{"<command-args>", "</command-args>"},
+	{"<local-command-stdout>", "</local-command-stdout>"},
+}
+
+// stripLocalCommands drops a local-command block and any envelopes following it, keeping whatever
+// text remains.
+func stripLocalCommands(s string) string {
+	i := strings.Index(s, localCommandOpen)
+	if i < 0 {
+		return s
+	}
+	j := strings.Index(s[i:], localCommandClose)
+	if j < 0 {
+		// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
+		return s
+	}
+	rest := s[i+j+len(localCommandClose):]
+	// Each iteration must consume something or stop, so a malformed tail cannot loop.
+	for {
+		trimmed := strings.TrimLeft(rest, " \t\r\n")
+		next := ""
+		for _, env := range localCommandEnvelopes {
+			if strings.HasPrefix(trimmed, env[0]) {
+				next = env[1]
+				break
+			}
+		}
+		if next == "" {
+			rest = trimmed
+			break
+		}
+		k := strings.Index(trimmed, next)
+		if k < 0 {
+			// Unterminated envelope: dropped rather than kept, so markup cannot become a title.
+			rest = ""
+			break
+		}
+		rest = trimmed[k+len(next):]
+	}
+	head := s[:i]
+	if head == "" {
+		return rest
+	}
+	// A space, for the reason stripReminders splices with one: nothing in the vocabulary
+	// contains a space, so a halved tag cannot reassemble across the join.
+	return head + " " + rest
+}
 
 // stripReminders returns what surrounds the reminder blocks: everything before the FIRST
 // <system-reminder> joined to everything after the LAST </system-reminder>. The harness injects
