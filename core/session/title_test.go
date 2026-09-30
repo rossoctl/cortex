@@ -1308,17 +1308,110 @@ func TestSessionTitle_LocalCommandBehindReminder(t *testing.T) {
 // leading whitespace — trimming for everyone quietly changed how a space-led <transcript> and a
 // space-led /rename rank, neither of which is this PR's business.
 func TestSessionTitle_NoCaveatMeansNoTrim(t *testing.T) {
+	// ONE CASE, AND IT HAS TO BE THE TRANSCRIPT TAG. The other arms cannot witness this: /rename's
+	// envelope opener is itself an anchor now, so the strip fires and the space never reaches it, and
+	// the <user_query> arm tolerates surrounding whitespace by construction. The transcript arm is
+	// the one whose anchor both refuses whitespace and sits outside the strip's table.
 	for _, tc := range []struct{ name, content, want string }{
-		// Ranked as prose, markup and all: the transcript arm's anchor does not see past the space.
 		{"space then transcript", " " + transcriptOpen + "stuff", " " + transcriptOpen + "stuff"},
-		// Likewise the /rename arm — so this is the literal envelope, not "x".
-		{"space then rename", " " + renameMsg("x"), " " + renameMsg("x")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := candidateTitle(userEvent(tc.content)); got != sanitizeTitle(tc.want) {
 				t.Errorf("got %q, want %q", got, sanitizeTitle(tc.want))
 			}
 		})
+	}
+}
+
+// A MESSAGE THAT IS NOTHING BUT MACHINERY offers its arguments, or nothing. The four shapes below are
+// the ones local transcripts actually carry; none has any prose behind the envelopes, so before this
+// the whole message was the title — the literal markup, which is non-blank and therefore sticks under
+// first-wins for the life of the session.
+func TestSessionTitle_MachineryOffersItsArgs(t *testing.T) {
+	const caveat = "<local-command-caveat>Caveat: generated while running a local command</local-command-caveat>"
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"skill invocation titles as its args",
+			"<command-message>restructure-flattened-md</command-message>\n" +
+				"<command-name>/restructure-flattened-md</command-name>\n" +
+				"<command-args>ONS_084</command-args>",
+			"ONS_084",
+		},
+		{
+			// Whichever order the envelopes arrive in.
+			"args before the other envelopes",
+			"<command-args>jons/ONS_084.md</command-args>\n<command-name>/fix-ocr</command-name>",
+			"jons/ONS_084.md",
+		},
+		{
+			// /model and friends. A blank body is not a title, so the event names nothing and the
+			// walk is free to find real prose in an earlier message.
+			"empty args name nothing",
+			"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>",
+			"",
+		},
+		{
+			"no args at all names nothing",
+			"<command-message>byo</command-message>\n<command-name>/byo</command-name>",
+			"",
+		},
+		{
+			// The caveat block by itself — 140 of them locally, every one previously titled with the
+			// caveat's own boilerplate, which is identical across every session that has one.
+			"a bare caveat names nothing",
+			caveat,
+			"",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// THE ARGS ARE A LAST RESORT, NOT A PREFERENCE: real text behind the envelopes still wins, and a
+// /rename still outranks everything. Without this the args would shadow the very prose the strip
+// exists to uncover.
+func TestSessionTitle_ArgsLoseToRealText(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"prose behind the envelopes wins",
+			"<command-name>/ask</command-name><command-args>ignored</command-args> the real ask",
+			"the real ask",
+		},
+		{
+			"a rename behind the envelopes still outranks",
+			"<command-message>m</command-message>" + renameMsg("chosen"),
+			"chosen",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// THE WIDENED ANCHOR IS STILL AN ANCHOR, and quickRank still cannot under-promise with it. The
+// property is the same one TestQuickRank_DoesNotUnderPromiseOnLocalCommands asserts; these are the
+// shapes the envelope-led anchor newly admits, including the one where an envelope displaces a
+// /rename from the front.
+func TestQuickRank_DoesNotUnderPromiseOnEnvelopeLedMachinery(t *testing.T) {
+	for _, c := range []string{
+		"<command-message>m</command-message>\n<command-name>/rename</command-name><command-args>x</command-args>",
+		" <command-name>/rename</command-name><command-args>x</command-args>",
+		reminderOpen + "r" + reminderClose + "<command-message>m</command-message>" + renameMsg("y"),
+		"<command-message>restructure</command-message>\n<command-args>ONS_084</command-args>",
+		"<command-name>/model</command-name><command-args></command-args>",
+		"why does <command-args>x</command-args> appear in my titles?",
+	} {
+		settled, _ := titleFrom(c)
+		if q := quickRank(c); q > settled {
+			t.Errorf("quickRank(%q) = %d, settles at %d — the screen may guess better, never worse", c, q, settled)
+		}
 	}
 }
 

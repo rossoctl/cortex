@@ -168,21 +168,21 @@ func quickRank(content string) int {
 	if strings.Contains(content, "<user_query>") {
 		return rankUserQuery
 	}
-	// A REMINDER OR A CAVEAT BLOCK AT THE FRONT is the only thing that can displace a /rename envelope
-	// from the front, which is why the HasPrefix above misses one and this exists. Both are what
-	// titleFrom strips before testing its own prefix, so both have to be tolerated here or the guess
-	// lands under where titleFrom settles — and a deferred rank-2 guess is only sound when the guess
-	// cannot be too low. THE ANCHORS ARE A COST DECISION: an unanchored Contains for the 37-byte
-	// envelope, scanned over the whole message to answer "no" for almost all of them, cost +45% on
-	// 500-byte prose (325µs→472µs), and gating it on an unanchored leading test cost the same. `<`
-	// discriminates nothing — prose with a code snippet has one. An envelope behind PROSE is
-	// deliberately not caught: titleFrom tests a prefix too, so rank 2 here agrees with where it
-	// settles.
-	// The caveat test trims first, matching the tolerance titleFrom's strip has, so the two agree on
-	// every shape rather than only the ones a splice happens to produce. The trim runs on the tail of
-	// a HasPrefix that has already said no for almost every message.
-	if strings.HasPrefix(content, reminderOpen) ||
-		strings.HasPrefix(strings.TrimLeft(content, " \t\r\n"), localCommandOpen) {
+	// MACHINERY AT THE FRONT is the only thing that can displace a /rename envelope from the front,
+	// which is why the HasPrefix above misses one and this exists. Everything titleFrom strips before
+	// testing its own prefix has to be tolerated here, or the guess lands under where titleFrom
+	// settles — and a deferred rank-2 guess is only sound when the guess cannot be too low. THE
+	// ANCHORS ARE A COST DECISION: an unanchored Contains for the 37-byte envelope, scanned over the
+	// whole message to answer "no" for almost all of them, cost +45% on 500-byte prose
+	// (325µs→472µs), and gating it on an unanchored leading test cost the same. `<` discriminates
+	// nothing — prose with a code snippet has one. Machinery behind PROSE is deliberately not caught:
+	// titleFrom tests a prefix too, so rank 2 here agrees with where it settles.
+	//
+	// The second test trims first, matching the tolerance titleFrom's strip has, so the two agree on
+	// every shape rather than only the ones a splice happens to produce, and it asks the same
+	// question stripLocalCommands anchors on rather than a copy of it. The trim runs on the tail of a
+	// HasPrefix that has already said no for almost every message.
+	if strings.HasPrefix(content, reminderOpen) || stripsAsLocalCommand(content) {
 		if strings.Contains(content, renamePrefix) {
 			return rankRename
 		}
@@ -273,36 +273,55 @@ const (
 	localCommandClose = "</local-command-caveat>"
 )
 
+// argsOpen / argsClose wrap the arguments a user typed after a command name. Named because
+// stripLocalCommands keeps that one body rather than only discarding it; the table below refers to
+// these so the two cannot drift apart.
+const (
+	argsOpen  = "<command-args>"
+	argsClose = "</command-args>"
+)
+
 // localCommandEnvelopes are tag pairs that wrap local-command machinery rather than a user's own
 // words. Extend the table to cover more of them.
 var localCommandEnvelopes = [][2]string{
 	{"<command-message>", "</command-message>"},
 	{"<command-name>", "</command-name>"},
-	{"<command-args>", "</command-args>"},
+	{argsOpen, argsClose},
 	{"<local-command-stdout>", "</local-command-stdout>"},
 }
 
 // stripLocalCommands drops a leading local-command block and any envelopes following it, keeping
-// whatever text remains.
+// whatever text remains — or, when nothing does, the arguments those envelopes carried.
 //
 // ANCHORED, like every other tag test here: a message merely mentioning the tag as prose keeps its
 // own words. Unanchored, it lost them.
 //
-// LEADING WHITESPACE IS TOLERATED ON THE CAVEAT PATH ONLY, because this runs after stripReminders
+// THE ANCHOR IS THE CAVEAT **OR** ANY ENVELOPE OPENER, because the caveat is not always what comes
+// first — a message can open directly on an envelope, and requiring the caveat left those showing
+// their own markup as the title.
+//
+// LEADING WHITESPACE IS TOLERATED ON THE MACHINERY PATH ONLY, because this runs after stripReminders
 // and that splices with a space — so a block the reminder used to precede arrives one space in. The
 // original is returned otherwise: trimming unconditionally would hand the arms below a string they
 // did not receive before, and their anchors deliberately do not tolerate whitespace.
 func stripLocalCommands(orig string) string {
-	s := strings.TrimLeft(orig, " \t\r\n")
-	if !strings.HasPrefix(s, localCommandOpen) {
+	if !stripsAsLocalCommand(orig) {
 		return orig
 	}
-	j := strings.Index(s, localCommandClose)
-	if j < 0 {
-		// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
-		return s
+	// Past the caveat block if there is one; a message can also open straight into the envelopes.
+	rest := strings.TrimLeft(orig, " \t\r\n")
+	if strings.HasPrefix(rest, localCommandOpen) {
+		j := strings.Index(rest, localCommandClose)
+		if j < 0 {
+			// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
+			return rest
+		}
+		rest = rest[j+len(localCommandClose):]
 	}
-	rest := s[j+len(localCommandClose):]
+	// args holds the last <command-args> body seen. A message that is nothing but machinery has no
+	// text to keep, and its arguments are the only part a user typed — so they stand in as the title
+	// rather than letting the whole message name nothing.
+	args := ""
 	// Each iteration must consume something or stop, so a malformed tail cannot loop.
 	for {
 		trimmed := strings.TrimLeft(rest, " \t\r\n")
@@ -311,14 +330,19 @@ func stripLocalCommands(orig string) string {
 		if strings.HasPrefix(trimmed, renamePrefix) {
 			return trimmed
 		}
-		next := ""
+		open, next := "", ""
 		for _, env := range localCommandEnvelopes {
 			if strings.HasPrefix(trimmed, env[0]) {
-				next = env[1]
+				open, next = env[0], env[1]
 				break
 			}
 		}
 		if next == "" {
+			if trimmed == "" {
+				// Machinery all the way down: the arguments are all that is left to offer, and a
+				// blank pair (observed on argument-less commands) offers nothing.
+				return args
+			}
 			return trimmed
 		}
 		k := strings.Index(trimmed, next)
@@ -326,8 +350,30 @@ func stripLocalCommands(orig string) string {
 			// Unterminated envelope: dropped rather than kept, so markup cannot become a title.
 			return ""
 		}
+		if open == argsOpen {
+			args = strings.TrimSpace(trimmed[len(open):k])
+		}
 		rest = trimmed[k+len(next):]
 	}
+}
+
+// stripsAsLocalCommand reports whether stripLocalCommands would treat s as machinery rather than
+// prose. ONE DEFINITION OF THE ANCHOR, shared with quickRank: a second copy of this test is how the
+// screen comes to disagree with where titleFrom settles, which is the one direction the screen may
+// not be wrong in.
+func stripsAsLocalCommand(s string) bool {
+	s = strings.TrimLeft(s, " \t\r\n")
+	return strings.HasPrefix(s, localCommandOpen) || opensEnvelope(s)
+}
+
+// opensEnvelope reports whether s begins with one of the envelope openers.
+func opensEnvelope(s string) bool {
+	for _, env := range localCommandEnvelopes {
+		if strings.HasPrefix(s, env[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripReminders returns what surrounds the reminder blocks: everything before the FIRST
