@@ -273,22 +273,33 @@ var localCommandEnvelopes = [][2]string{
 	{"<local-command-stdout>", "</local-command-stdout>"},
 }
 
-// stripLocalCommands drops a local-command block and any envelopes following it, keeping whatever
-// text remains.
+// stripLocalCommands drops a leading local-command block and any envelopes following it, keeping
+// whatever text remains.
+//
+// ANCHORED, like every other tag test here: a message merely mentioning the tag as prose keeps its
+// own words. Unanchored, it lost them.
+//
+// LEADING WHITESPACE IS TOLERATED, unlike in the arms below, because this runs after stripReminders
+// and that splices with a space — so the block a reminder used to precede arrives one space in.
 func stripLocalCommands(s string) string {
-	i := strings.Index(s, localCommandOpen)
-	if i < 0 {
+	s = strings.TrimLeft(s, " \t\r\n")
+	if !strings.HasPrefix(s, localCommandOpen) {
 		return s
 	}
-	j := strings.Index(s[i:], localCommandClose)
+	j := strings.Index(s, localCommandClose)
 	if j < 0 {
 		// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
 		return s
 	}
-	rest := s[i+j+len(localCommandClose):]
+	rest := s[j+len(localCommandClose):]
 	// Each iteration must consume something or stop, so a malformed tail cannot loop.
 	for {
 		trimmed := strings.TrimLeft(rest, " \t\r\n")
+		// A /rename is a title the user typed, not machinery: hand the arms below the envelope
+		// they test for rather than consuming it.
+		if strings.HasPrefix(trimmed, renamePrefix) {
+			return trimmed
+		}
 		next := ""
 		for _, env := range localCommandEnvelopes {
 			if strings.HasPrefix(trimmed, env[0]) {
@@ -297,24 +308,15 @@ func stripLocalCommands(s string) string {
 			}
 		}
 		if next == "" {
-			rest = trimmed
-			break
+			return trimmed
 		}
 		k := strings.Index(trimmed, next)
 		if k < 0 {
 			// Unterminated envelope: dropped rather than kept, so markup cannot become a title.
-			rest = ""
-			break
+			return ""
 		}
 		rest = trimmed[k+len(next):]
 	}
-	head := s[:i]
-	if head == "" {
-		return rest
-	}
-	// A space, for the reason stripReminders splices with one: nothing in the vocabulary
-	// contains a space, so a halved tag cannot reassemble across the join.
-	return head + " " + rest
 }
 
 // stripReminders returns what surrounds the reminder blocks: everything before the FIRST

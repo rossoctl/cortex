@@ -1210,8 +1210,51 @@ func TestSessionTitle_UnterminatedLocalCommandIsLeftAlone(t *testing.T) {
 }
 
 // A /rename the user typed keeps winning; the block must not shadow the prefix that arm tests.
+// A /rename IS THE ONE TITLE THE USER TYPED, so the strip must hand it to the arm that reads it
+// rather than consuming it as machinery.
+//
+// THE CAVEAT CASES ARE THE LOAD-BEARING ONES: a bare rename returns at the anchor check and never
+// reaches the walk, so asserting only that shape says nothing about the walk. Behind a caveat —
+// which is how a slash command actually arrives — the walk does run, and it used to eat the rename
+// envelope and the <command-args> after it, leaving the session unnamed.
 func TestSessionTitle_RenameSurvivesLocalCommandStrip(t *testing.T) {
-	if got := candidateTitle(userEvent(renameMsg("chosen"))); got != "chosen" {
-		t.Errorf("got %q, want %q", got, "chosen")
+	caveat := localCommandOpen + "the user typed /rename" + localCommandClose
+	for _, tc := range []struct{ name, content string }{
+		{"bare", renameMsg("chosen")},
+		{"behind a caveat", caveat + renameMsg("chosen")},
+		{"behind a caveat and whitespace", caveat + "\n" + renameMsg("chosen")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.content)); got != "chosen" {
+				t.Errorf("got %q, want %q", got, "chosen")
+			}
+		})
+	}
+}
+
+// A REMINDER IN FRONT OF THE BLOCK IS THE LIVE SHAPE, and it is why the anchor tolerates leading
+// whitespace: stripReminders splices with a space, so the block arrives one space in. Anchoring
+// without the tolerance put the raw markup back in three live sessions' titles.
+func TestSessionTitle_LocalCommandBehindReminder(t *testing.T) {
+	// The reminder opens the message, as it does live — so the splice leaves only its own space in
+	// front of the block. Text BEFORE the reminder would leave that text there instead, and the
+	// block would not be stripped; that limit is TestSessionTitle_LocalCommandTagsInProseAreLeftAlone's
+	// case seen from the other side, and the anchor is what declines to widen past it.
+	content := reminderOpen + "noise" + reminderClose + "\n\n" +
+		localCommandOpen + "Caveat: ..." + localCommandClose +
+		"<command-name>/clear</command-name><command-message>clear</command-message>" +
+		"<command-args></command-args>\n\nthe real ask"
+	if got := candidateTitle(userEvent(content)); got != "the real ask" {
+		t.Errorf("got %q, want %q", got, "the real ask")
+	}
+}
+
+// PROSE MENTIONING THE TAGS KEEPS ITS OWN WORDS — the reason the strip anchors. A terminated pair
+// quoted mid-sentence is the case an unanchored match got wrong: it excised the pair and spliced
+// the halves, titling the session with a gap where the user's example had been.
+func TestSessionTitle_LocalCommandTagsInProseAreLeftAlone(t *testing.T) {
+	const content = "why does " + localCommandOpen + "x" + localCommandClose + " appear in my titles?"
+	if got := candidateTitle(userEvent(content)); got != content {
+		t.Errorf("got %q, want %q", got, content)
 	}
 }
