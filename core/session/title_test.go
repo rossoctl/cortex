@@ -155,14 +155,14 @@ func TestSessionTitle_LastUserMessage(t *testing.T) {
 }
 
 // THE EAGER LOOP'S ROLE GUARD, which the mixed-role case in TestSessionTitle_LastUserMessage does
-// not reach. That one uses plain prose, which is a rank-2 guess and so is filtered by the DEFERRED
-// arm's guard; the eager loop only ever sees rank-0 and rank-1 guesses. So the envelope has to be
+// not reach. That one uses plain prose, which is a rankUserMsg guess and so is filtered by the DEFERRED
+// arm's guard; the eager loop only ever sees rankRename and rankUserQuery guesses. So the envelope has to be
 // on the non-user message for this guard to be the thing rejecting it.
 //
 // WHY IT MATTERS MORE HERE THAN AT RANK 2: these are the two ranks that beat ordinary prose, and
-// rank 0 is sticky even against a later /rename's override. A model echoing a /rename envelope or
+// rankRename is sticky even against a later /rename's override. A model echoing a /rename envelope or
 // quoting a <user_query> back — which is exactly what an assistant summarising a conversation
-// does — would otherwise name the session, and at rank 0 nothing in the session could displace it.
+// does — would otherwise name the session, and at rankRename nothing in the session could displace it.
 func TestSessionTitle_NonUserRoleCannotTitleAtAnyRank(t *testing.T) {
 	for _, tc := range []struct{ name, payload string }{
 		{"rename envelope", renameMsg("a name the model echoed")},
@@ -203,7 +203,7 @@ func TestSessionTitle_EmptyUserContentSkipped(t *testing.T) {
 	}
 }
 
-// The harness attaches a <system-reminder> block to the user turn it belongs to, so a rank-2
+// The harness attaches a <system-reminder> block to the user turn it belongs to, so a rankUserMsg
 // candidate that takes the message verbatim titles the session with the reminder and never
 // reaches the prompt. Live payload shape: the reminder leads, the real ask follows.
 func TestSessionTitle_StripsReminder(t *testing.T) {
@@ -277,16 +277,16 @@ func TestSessionTitle_StripsReminder(t *testing.T) {
 // the last, so a tag halved across that junction would reassemble if the two met bare — letting a
 // client synthesize a title out of markup it never actually sent.
 //
-// THE /rename HALF IS THE ONE THAT MATTERS, because rank 0 is STICKY: Append's fold lets a rename
+// THE /rename HALF IS THE ONE THAT MATTERS, because rankRename is STICKY: Append's fold lets a rename
 // override an existing title, so a synthesized one holds the session until a later GENUINE rename
-// displaces it. The <user_query> half is milder (rank 1 beats prose but loses to a rename) and is
+// displaces it. The <user_query> half is milder (rankUserQuery beats prose but loses to a rename) and is
 // covered here too, since both ride the same junction.
 //
 // WHY THIS IS NOT REDUNDANT WITH TestSessionTitle_StripsReminder's fusion row: that row asserts a
 // title reads correctly, so it fails on a cosmetic regression. This one asserts a RANK, which is
 // what quickRank's one-directional bound and titleCandidate's deferral both rest on. Delete the
 // separator and the fusion row fails too — but it reports a mangled string, not a client-controlled
-// rank-0 title, so the actual consequence would be easy to misread as cosmetic.
+// rankRename title, so the actual consequence would be easy to misread as cosmetic.
 func TestSessionTitle_SpliceCannotManufactureATag(t *testing.T) {
 	block := reminderOpen + "noise" + reminderClose
 	// Each input halves a tag across the junction: the head ends mid-tag, the tail resumes it.
@@ -296,14 +296,14 @@ func TestSessionTitle_SpliceCannotManufactureATag(t *testing.T) {
 	}{
 		{
 			// "<user_qu" + "ery>ask</user_query>" would splice into a valid <user_query>.
-			"halved user_query does not reach rank 1",
+			"halved user_query does not reach rankUserQuery",
 			"<user_qu" + block + "ery>ask</user_query>",
 			rankUserMsg,
 		},
 		{
 			// The /rename envelope halved mid-tag. Spliced bare this titles the session "SPLICED"
-			// at rank 0, and only a later genuine rename could ever displace it.
-			"halved rename envelope does not reach rank 0",
+			// at rankRename, and only a later genuine rename could ever displace it.
+			"halved rename envelope does not reach rankRename",
 			renamePrefix[:10] + block + renamePrefix[10:] + "<command-args>SPLICED</command-args>",
 			rankUserMsg,
 		},
@@ -389,7 +389,7 @@ func TestSessionTitle_DemotedPickFallsBackWithinEvent(t *testing.T) {
 //
 // THE TRUNCATION WAS WORSE THAN A BLANK, which is what made it more than cosmetic. A blank result
 // falls through to a real title in an earlier message
-// (TestSessionTitle_ReminderOnlyFallsThrough), but "why is" is non-blank, so it won rank 2 — and
+// (TestSessionTitle_ReminderOnlyFallsThrough), but "why is" is non-blank, so it won rankUserMsg — and
 // under Store.Append's first-wins fold a filled rank is never revisited, so it permanently blocked
 // the session's real title. TestAppend_UnterminatedReminderDoesNotBlockTheTitle pins that end of it;
 // this pins the picker.
@@ -420,7 +420,7 @@ func TestSessionTitle_UnterminatedReminderIsLeftAlone(t *testing.T) {
 	}
 }
 
-// Why the strip runs before EVERY rank arm and not only the rank-2 one. Both nestings are
+// Why the strip runs before EVERY rank arm and not only the rankUserMsg one. Both nestings are
 // wrong when it runs later: a reminder inside the query brackets rides along into the title,
 // and a <user_query> inside a reminder — a reminder quoting an earlier turn is enough — gets
 // mistaken for the real ask.
@@ -540,7 +540,7 @@ func TestSessionTitle_UnclosedTag(t *testing.T) {
 	}
 }
 
-// An argument-less /rename names nothing. If it claimed rank 0 with "", it would end the
+// An argument-less /rename names nothing. If it claimed rankRename with "", it would end the
 // walk and lose a real title sitting behind it.
 func TestSessionTitle_EmptyCommandArgs(t *testing.T) {
 	events := []pipeline.SessionEvent{
@@ -558,7 +558,7 @@ func TestSessionTitle_EmptyCommandArgs(t *testing.T) {
 // It asserts RANKS, not served titles, and that distinction is the whole point of a separate test.
 // Every blank-bodied row below is already caught downstream by foldsBlank in titleCandidate, so
 // TestSessionTitle_BlankAfterSanitizeFallsThrough passes with or without this guard — what it
-// cannot see is a message claiming rank 1 on a whitespace body, which outranks genuine prose and is
+// cannot see is a message claiming rankUserQuery on a whitespace body, which outranks genuine prose and is
 // a lie even when a net catches it. Rank is also what the deferral in titleCandidate rests on.
 //
 // THE LAST ROW IS AN ACCEPTED LIMIT, NOT A PASSING CASE. A trailing non-blank byte defeats the
@@ -589,7 +589,7 @@ func TestSessionTitle_EnvelopeAnchorLimits(t *testing.T) {
 		{"unterminated open", "what does <user_query> mean in this code", rankUserMsg},
 		// Mis-pairing shapes: a tag inside the anchored span declines the guard.
 		{"close before open", "a</user_query>b<user_query>c", rankUserMsg},
-		// Two envelopes, the second real — and it does NOT reach rank 1, which is pre-existing and
+		// Two envelopes, the second real — and it does NOT reach rankUserQuery, which is pre-existing and
 		// not this guard's doing. between() pairs the FIRST open with the FIRST close, so it reads
 		// the empty body, returns "", and the message falls to prose. The guard declines it (a tag
 		// sits inside the anchored span), so the behavior is unchanged in both directions; the row
@@ -776,7 +776,7 @@ func TestSessionSummary_TitleOmittedWhenEmpty(t *testing.T) {
 // and control runes are non-empty until sanitizeTitle folds them away.
 //
 // All three rank arms, because the two better ones fail worse: a whitespace-only /rename claims
-// rank 0, which also BREAKS the walk, so nothing behind it is examined at all.
+// rankRename, which also BREAKS the walk, so nothing behind it is examined at all.
 //
 // EACH CASE RUNS TWICE, in two events and in one, and the two are not the same assertion. The
 // separate-event form is satisfied by the fold's own blank screen in Append; the same-event form
@@ -835,21 +835,22 @@ func TestSessionTitle_OnlyBlankCandidateIsUnnamed(t *testing.T) {
 }
 
 // quickRank is an upper bound in ONE direction only, and the code used to claim both. An
-// unterminated <user_query> guesses rank 1 and settles at rank 2, so a rank recorded from the
+// unterminated <user_query> guesses rankUserQuery and settles at rankUserMsg, so a rank recorded from the
 // guess would outrank a genuine <user_query> elsewhere in the session.
 func TestSessionTitle_UnterminatedUserQueryDoesNotOutrank(t *testing.T) {
-	// The prose mentioning the tag comes LAST, so an unsettled rank-1 guess would win.
+	// The prose mentioning the tag comes LAST, so an unsettled rankUserQuery guess would win.
 	events := []pipeline.SessionEvent{
 		userEvent("<user_query>the genuine query</user_query>"),
 		userEvent("what does <user_query> mean in this code"),
 	}
 	if got := foldTitle(t, events...); got != "the genuine query" {
-		t.Errorf("got %q, want %q — an unterminated <user_query> was recorded as rank 1", got, "the genuine query")
+		t.Errorf("got %q, want %q — an unterminated <user_query> was recorded as rankUserQuery",
+			got, "the genuine query")
 	}
 }
 
 // THE SAME THING WITHIN ONE EVENT, which is where the two-pass pick lost it: titleFrom demoted
-// the pick to a non-empty rank-2 title, and the retry loop only re-picked on EMPTY, so a
+// the pick to a non-empty rankUserMsg title, and the retry loop only re-picked on EMPTY, so a
 // better-ranked message sitting in front of it was discarded.
 func TestSessionTitle_DemotedNonEmptyPickKeepsBetterRank(t *testing.T) {
 	msgs := []string{"<user_query>the real ask</user_query>", "what does <user_query> mean here"}
@@ -860,21 +861,22 @@ func TestSessionTitle_DemotedNonEmptyPickKeepsBetterRank(t *testing.T) {
 
 // A DEMOTED GUESS AND A DEFERRED ONE AT THE SAME RANK: the later message wins, per title.go's
 // last-match rule. Neither test above reaches this, and the reason is worth stating because it is
-// how the bug survived a review: both put a GENUINE <user_query> at index 0, which settles at rank 1
-// and outranks everything, so the deferred-candidate loop never runs at all. Plain prose at index 0
-// is what forces the tie — index 0 defers at rank 2, index 1 guesses rank 1 and titleFrom demotes it
-// to 2, and the two are then equal-ranked with the deferred one EARLIER.
+// how the bug survived a review: both put a GENUINE <user_query> at index 0, which settles at
+// rankUserQuery and outranks everything, so the deferred-candidate loop never runs at all. Plain
+// prose at index 0 is what forces the tie — index 0 defers at rankUserMsg, index 1 guesses
+// rankUserQuery and titleFrom demotes it to rankUserMsg, and the two are then equal-ranked with the
+// deferred one EARLIER.
 //
 // titleCandidate used to return the deferred candidate unconditionally here, on a stated invariant
 // that a deferred index is always the later of the two. It is not: the reverse scan meets the newest
-// rank-2 GUESS first, but a rank-0/1 guess can demote to rank 2 from anywhere, including after it.
+// rankUserMsg GUESS first, but a better guess can demote to rankUserMsg from anywhere, including after it.
 func TestSessionTitle_DeferredLosesToLaterDemotedAtEqualRank(t *testing.T) {
 	for _, tc := range []struct{ name, early, late string }{
 		// An unterminated <user_query> is the shape that reaches this: quickRank sees the opening
-		// tag and guesses rank 1, titleFrom finds no closing tag and settles at rank 2.
+		// tag and guesses rankUserQuery, titleFrom finds no closing tag and settles at rankUserMsg.
 		{"unterminated user_query", "early plain prose", "what does <user_query> mean here"},
 		{"tag named mid-sentence", "plain earlier", "later prose mentioning <user_query> tag"},
-		// NOT a case here: a /rename envelope behind prose. quickRank guesses rank 2 for it (the
+		// NOT a case here: a /rename envelope behind prose. quickRank guesses rankUserMsg for it (the
 		// test below pins that), so both messages defer and the deferred loop's own newest-first
 		// walk picks the later one — it passes with or without the index comparison, which is the
 		// kind of case that hid this bug in the first place.
@@ -913,9 +915,9 @@ func TestSessionTitle_DeferredOnlyWithNothingSettled(t *testing.T) {
 		{"blank then prose", []string{"   ", "real prose"}, "real prose"},
 		{"prose then blank", []string{"real prose", "   "}, "real prose"},
 		{"all blank names nothing", []string{"   ", "\t"}, ""},
-		// Index 0 guesses rank 1 on its unterminated <user_query> and is DEMOTED to rank 2 by
+		// Index 0 guesses rankUserQuery on its unterminated <user_query> and is DEMOTED to rankUserMsg by
 		// titleFrom (between() finds no close), so the eager loop settles bestRank at rankUserMsg
-		// with bestIdx 0. Index 1 is a plain rank-2 guess, deferred, and is the LATER message — so
+		// with bestIdx 0. Index 1 is a plain rankUserMsg guess, deferred, and is the LATER message — so
 		// the deferred loop must still run and hand it the title. A gate that rankUserMsg fails
 		// skips that loop and serves index 0 instead.
 		{"settled demotion does not preempt a later deferred pick",
@@ -940,7 +942,7 @@ func TestSessionTitle_LaterDeferredLosesToBetterRank(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := candidateTitle(userEvent(tc.first, tc.second))
 			if got != tc.want {
-				t.Errorf("got %q, want %q — a later rank-2 message beat a better rank", got, tc.want)
+				t.Errorf("got %q, want %q — a later rankUserMsg message beat a better rank", got, tc.want)
 			}
 		})
 	}
@@ -949,7 +951,7 @@ func TestSessionTitle_LaterDeferredLosesToBetterRank(t *testing.T) {
 // quickRank DELIBERATELY does not detect a /rename envelope sitting behind prose — only behind a
 // reminder — and that blind spot is only safe while titleFrom tests the prefix too. Pinned so the
 // two functions cannot silently desynchronize: if quickRank ever starts calling such a message
-// rank 0 while titleFrom still refuses it, or vice versa, one of these fails.
+// rankRename while titleFrom still refuses it, or vice versa, one of these fails.
 func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
 	content := "please run " + renameMsg("a name") + " for me"
 	if got := quickRank(content); got != rankUserMsg {
@@ -958,10 +960,10 @@ func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
 	if got, _ := titleFrom(content); got != rankUserMsg {
 		t.Errorf("titleFrom rank = %d, want %d (rankUserMsg) — desynchronized from quickRank", got, rankUserMsg)
 	}
-	// And it must therefore lose to a real /rename anywhere in the session, not win at rank 0.
+	// And it must therefore lose to a real /rename anywhere in the session, not win at rankRename.
 	events := []pipeline.SessionEvent{userEvent(renameMsg("the real name")), userEvent(content)}
 	if got := foldTitle(t, events...); got != "the real name" {
-		t.Errorf("got %q, want %q — a prose-embedded envelope claimed rank 0", got, "the real name")
+		t.Errorf("got %q, want %q — a prose-embedded envelope claimed rankRename", got, "the real name")
 	}
 }
 
@@ -976,7 +978,7 @@ func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
 // Pinned in this direction now so a future reader does not reintroduce a cap here believing it
 // still guards a lock.
 func TestSessionTitle_NoScanCeiling(t *testing.T) {
-	// A /rename is rank 0, the strongest possible candidate, so placing it in the oldest event
+	// A /rename is rankRename, the strongest possible candidate, so placing it in the oldest event
 	// proves the walk reached the end rather than stopping at some window.
 	build := func(titleAt int, total int) []pipeline.SessionEvent {
 		evs := make([]pipeline.SessionEvent, 0, total)
@@ -1066,9 +1068,9 @@ func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
 // beside it is anchored, and the asymmetry is easy to read as an oversight — so this pins it.
 //
 // IT IS NOT MERELY AN OPTIMIZATION, which is the part worth having a test for. On a single message
-// the anchored screen costs nothing observable: the guess drops to rank 2, the message is deferred,
+// the anchored screen costs nothing observable: the guess drops to rankUserMsg, the message is deferred,
 // and the deferred loop's titleFrom recovers the same title. But rank is also how two candidates in
-// one event are ORDERED, so demoting one changes which of them wins — with a genuine rank-1 message
+// one event are ORDERED, so demoting one changes which of them wins — with a genuine rankUserQuery message
 // EARLIER in the same event, HasPrefix serves the earlier one and breaks the last-match rule.
 // Verified: the second assertion below returns "earlier genuine" under that mutation.
 func TestSessionTitle_UserQueryBehindProseKeepsItsRank(t *testing.T) {
@@ -1080,8 +1082,8 @@ func TestSessionTitle_UserQueryBehindProseKeepsItsRank(t *testing.T) {
 		t.Errorf("alone: got %q, want %q", got, "the real question")
 	}
 
-	// THE ORDERING CASE. Both messages settle at rank 1, so the LATER one wins; the envelope sitting
-	// behind prose must not cost it that. Under an anchored screen this message is deferred to rank 2
+	// THE ORDERING CASE. Both messages settle at rankUserQuery, so the LATER one wins; the envelope sitting
+	// behind prose must not cost it that. Under an anchored screen this message is deferred to rankUserMsg
 	// and the earlier one outranks it.
 	const earlier = "<user_query>earlier genuine</user_query>"
 	if got := candidateTitle(userEvent(earlier, behind)); got != "the real question" {
@@ -1161,9 +1163,13 @@ func TestSessionTitle_StripsLocalCommand(t *testing.T) {
 			"the real ask",
 		},
 		{
+			// All three envelope pairs are consumed — what proves it is that nothing between the caveat
+			// and the end leaks into the title. The ARGUMENTS are what titles it, not the text behind
+			// them, because they are non-blank; TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede is
+			// where that preference lives.
 			"message, name and args envelopes all go",
 			caveat + " <command-message>x</command-message> <command-name>/x</command-name> <command-args>a</command-args> the real ask",
-			"the real ask",
+			"a",
 		},
 		{
 			// An args-less command emits no <command-args>, so consuming each envelope to a later
@@ -1234,8 +1240,8 @@ func TestSessionTitle_RenameSurvivesLocalCommandStrip(t *testing.T) {
 }
 
 // A CAVEAT-PREFIXED /rename MUST WIN FROM ANY POSITION IN THE EVENT, which a single-message case
-// cannot show: titleCandidate defers rank-2 guesses to a second loop and skips that loop entirely
-// once a rank-0/1 guess has settled, so a rename only survives if quickRank rates it 0 — the
+// cannot show: titleCandidate defers rankUserMsg guesses to a second loop and skips that loop entirely
+// once a better guess has settled, so a rename only survives if quickRank rates it rankRename — the
 // screen's one-directional bound. It does not hold by luck. quickRank tests a PREFIX, and a caveat
 // block sits in front of the envelope exactly as a reminder can, so the caveat had to join the
 // reminder in that test; without it the rename scored 2, lost the deferred ordering to any later
@@ -1247,10 +1253,10 @@ func TestSessionTitle_RenameBehindCaveatWinsFromAnyPosition(t *testing.T) {
 		contents []string
 		want     string
 	}{
-		// Prose after the rename outranks nothing, but it is the newest rank-2 message and the
+		// Prose after the rename outranks nothing, but it is the newest rankUserMsg message and the
 		// deferred loop returns the newest one that yields a title.
 		{"prose after", []string{caveat + renameMsg("chosen"), "later prose"}, "chosen"},
-		// A <user_query> settles at rank 1 eagerly, which is what skips the deferred loop.
+		// A <user_query> settles at rankUserQuery eagerly, which is what skips the deferred loop.
 		{"user_query after", []string{caveat + renameMsg("chosen"), "<user_query>q</user_query>"}, "chosen"},
 		// WITHIN one event the LAST rename wins, and this is the case quickRank's displacer test
 		// exists for: the earlier bare rename scores 0 and the later one must too, or it loses.
@@ -1267,7 +1273,7 @@ func TestSessionTitle_RenameBehindCaveatWinsFromAnyPosition(t *testing.T) {
 
 // THE SCREEN MAY NOT UNDER-PROMISE, stated as a property over the shapes this PR taught titleFrom to
 // see through. quickRank is allowed to guess BETTER than titleFrom settles (it over-promises in two
-// documented ways) but never worse: titleCandidate records a deferred rank-2 guess without settling
+// documented ways) but never worse: titleCandidate records a deferred rankUserMsg guess without settling
 // it, so a message that settles at 0 or 1 while guessing 2 is silently demoted. See quickRank.
 func TestQuickRank_DoesNotUnderPromiseOnLocalCommands(t *testing.T) {
 	caveat := localCommandOpen + "Caveat: ..." + localCommandClose
@@ -1323,10 +1329,14 @@ func TestSessionTitle_NoCaveatMeansNoTrim(t *testing.T) {
 	}
 }
 
-// A MESSAGE THAT IS NOTHING BUT MACHINERY offers its arguments, or nothing. The four shapes below are
-// the ones local transcripts actually carry; none has any prose behind the envelopes, so before this
-// the whole message was the title — the literal markup, which is non-blank and therefore sticks under
+// A MESSAGE THAT IS NOTHING BUT MACHINERY offers its arguments, or nothing. The shapes below are the
+// ones local transcripts actually carry; none has any prose behind the envelopes, so before this the
+// whole message was the title — the literal markup, which is non-blank and therefore sticks under
 // first-wins for the life of the session.
+//
+// These cases have nothing to compete with the arguments. Where something does, the arguments still
+// win unless they are blank — TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede and
+// TestSessionTitle_ArgsLoseToRealText are the two sides of that.
 func TestSessionTitle_MachineryOffersItsArgs(t *testing.T) {
 	const caveat = "<local-command-caveat>Caveat: generated while running a local command</local-command-caveat>"
 	for _, tc := range []struct{ name, in, want string }{
@@ -1371,14 +1381,21 @@ func TestSessionTitle_MachineryOffersItsArgs(t *testing.T) {
 	}
 }
 
-// THE ARGS ARE A LAST RESORT, NOT A PREFERENCE: real text behind the envelopes still wins, and a
-// /rename still outranks everything. Without this the args would shadow the very prose the strip
-// exists to uncover.
+// A BLANK ARGUMENT BODY LEAVES THE PROSE ALONE, which is what keeps rankCommandArgs from shadowing
+// the very text the strip exists to uncover. This is the live shape it protects: /clear and friends
+// are what users type ahead of their own words, and they carry an empty pair.
+//
+// The /rename case is the other way arguments lose — by rank rather than by blankness.
 func TestSessionTitle_ArgsLoseToRealText(t *testing.T) {
 	for _, tc := range []struct{ name, in, want string }{
 		{
-			"prose behind the envelopes wins",
-			"<command-name>/ask</command-name><command-args>ignored</command-args> the real ask",
+			"blank args leave the prose behind them",
+			"<command-name>/clear</command-name><command-args></command-args> the real ask",
+			"the real ask",
+		},
+		{
+			"whitespace args count as blank",
+			"<command-name>/clear</command-name><command-args>  </command-args> the real ask",
 			"the real ask",
 		},
 		{
@@ -1389,6 +1406,62 @@ func TestSessionTitle_ArgsLoseToRealText(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// THE SHAPE THIS RANK EXISTS FOR, taken from live traffic: a command invoked with arguments, followed
+// by the boilerplate it expands to. Both are ordinary text once the strip is done, so without the rank
+// the expansion titles the session — and it is byte-identical across every session invoking that
+// command, while the arguments are what tell those invocations apart.
+//
+// THE FIRST CASE IS THE ONE THAT MATTERS, and it is ONE message: consecutive user messages reach the
+// proxy concatenated, so the invocation and the expansion are not separate messages the way the
+// on-disk transcript records them. A fixture that splits them tests a shape the proxy never sees —
+// which is why the two-message cases below are here as well, not instead.
+func TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede(t *testing.T) {
+	const invoke = "<command-message>restructure-flattened-md</command-message>\n" +
+		"<command-name>/restructure-flattened-md</command-name>\n" +
+		"<command-args>jons/ONS_084.md</command-args>"
+	const expansion = "Base directory for this skill: /Users/x/.claude/skills/restructure-flattened-md"
+
+	for _, tc := range []struct {
+		name string
+		msgs []string
+		want string
+	}{
+		{"expansion concatenated after the invocation", []string{invoke + "\n\n" + expansion}, "jons/ONS_084.md"},
+		{"expansion in a later message", []string{invoke, expansion}, "jons/ONS_084.md"},
+		{"invocation in a later message", []string{expansion, invoke}, "jons/ONS_084.md"},
+		{
+			// The tag-bearing ranks are unaffected: they still outrank arguments from any position.
+			"a user_query still outranks the args",
+			[]string{invoke, "<user_query>the actual ask</user_query>"},
+			"the actual ask",
+		},
+		{
+			// An invocation with nothing to offer must not claim the rank and shadow the expansion —
+			// /model is the live example. rankNone lets the prose behind it title the event.
+			"argument-less invocation yields to the expansion",
+			[]string{"<command-name>/model</command-name>\n<command-args></command-args>", expansion},
+			expansion,
+		},
+		{
+			// VERBATIM FROM ONE LIVE SESSION, whose title was the defect that prompted this: a caveat,
+			// then /clear with an empty pair, then the real invocation, then its expansion — all one
+			// message. The LAST non-blank arguments win, so the empty /clear pair ahead of them neither
+			// claims the title nor blocks the ones that follow.
+			"a blank invocation ahead of a real one in the same message",
+			[]string{"<local-command-caveat>c</local-command-caveat>\n\n" +
+				"<command-name>/clear</command-name>\n<command-args></command-args>\n\n" +
+				"<local-command-stdout></local-command-stdout>\n\n" + invoke + "\n\n" + expansion},
+			"jons/ONS_084.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.msgs...)); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})

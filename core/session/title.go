@@ -24,11 +24,21 @@ const maxTitleLen = 80
 // WITHIN ONE RANK THE TIE-BREAK DEPENDS ON THE SCOPE, and the two differ: titleCandidate takes the
 // LAST match among one event's messages, while Store.Append's fold across events keeps the FIRST
 // unless the tie is at rankRename. See entry.Title for why that pairing is what it wants.
+//
+// rankCommandArgs IS FOR A TITLE TAKEN FROM A COMMAND'S ARGUMENTS, which outranks ordinary prose
+// because of what the competing prose IS, not because arguments are inherently better words: it is
+// the boilerplate the command expanded to, identical across every session that invokes that command,
+// while the arguments are what tell those invocations apart. Only stripLocalCommands can tell the two
+// apart — see there for why a blank argument body is the whole test — so the rank exists to carry that
+// distinction past the point where both are just a string.
+//
+// Both tag-bearing ranks still outrank it: a /rename or a <user_query> is a better answer than either.
 const (
-	rankRename    = 0
-	rankUserQuery = 1
-	rankUserMsg   = 2
-	rankNone      = 3
+	rankRename      = 0
+	rankUserQuery   = 1
+	rankCommandArgs = 2
+	rankUserMsg     = 3
+	rankNone        = 4
 )
 
 const renamePrefix = "<command-name>/rename</command-name>"
@@ -42,22 +52,23 @@ const renamePrefix = "<command-name>/rename</command-name>"
 //
 // TWO CLASSES OF MESSAGE, because quickRank is a bound and a bound is not a rank:
 //
-//   - a rank-0 or rank-1 guess (rare, since the tags are) is SETTLED EAGERLY by calling titleFrom,
-//     because such a guess can be demoted and must not be recorded before it is settled.
-//   - a rank-2 guess (the majority) is DEFERRED to the second loop below: calling titleFrom on
+//   - a guess BETTER than rankUserMsg (rare, since the tags and the leading machinery are) is
+//     SETTLED EAGERLY by calling titleFrom, because such a guess can be demoted and must not be
+//     recorded before it is settled.
+//   - a rankUserMsg guess (the majority) is DEFERRED to the second loop below: calling titleFrom on
 //     every message cost +70%, so the scan remembers the index instead. This is the one direction
-//     of the bound that holds — a message with no <user_query> and no reminder-hidden /rename
-//     prefix has nothing for the strip to uncover. See quickRank.
+//     of the bound that holds — a message with no <user_query>, no leading machinery and no
+//     reminder-hidden /rename prefix has nothing for the strip to uncover. See quickRank.
 func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	if e.Inference == nil {
 		return rankNone, ""
 	}
 	msgs := e.Inference.Messages
 	bestRank, bestTitle, bestIdx := rankNone, "", -1
-	// deferredHead is the index one past the newest rank-2 guess not yet settled. The deferred
-	// candidates are scanned lazily below, latest first, because a rank-2 guess can still settle
-	// at rankNone — a message that is nothing but reminders guesses 2 and names nothing — and the
-	// next one back must then get its turn. Storing a single index lost exactly that case.
+	// deferredHead is the index one past the newest rankUserMsg guess not yet settled. The deferred
+	// candidates are scanned lazily below, latest first, because such a guess can still settle at
+	// rankNone — a message that is nothing but reminders guesses rankUserMsg and names nothing — and
+	// the next one back must then get its turn. Storing a single index lost exactly that case.
 	deferredHead := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != capabilities.RoleUser {
@@ -72,7 +83,7 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 			}
 			continue
 		}
-		// A rank-0 or rank-1 guess. Settle it now; titleFrom may demote it to 2 or refuse it.
+		// A guess better than rankUserMsg. Settle it now; titleFrom may demote or refuse it.
 		r, t := titleFrom(msgs[i].Content)
 		if t == "" || r >= bestRank {
 			continue
@@ -95,11 +106,11 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 			return bestRank, bestTitle // nothing in this event can outrank it
 		}
 	}
-	// Settle the deferred rank-2 candidates only if nothing better was found — and, at equal rank,
-	// only if the deferred one is LATER in event order, per the last-match rule.
+	// Settle the deferred rankUserMsg candidates only if nothing better was found — and, at equal
+	// rank, only if the deferred one is LATER in event order, per the last-match rule.
 	//
-	// THE INDEX COMPARISON IS NOT REDUNDANT. The scan runs newest-first, so the first rank-2 guess it
-	// meets is the newest — but a rank-0/1 guess that titleFrom DEMOTES to rank 2 can sit anywhere,
+	// THE INDEX COMPARISON IS NOT REDUNDANT. The scan runs newest-first, so the first deferred guess it
+	// meets is the newest — but an eager guess that titleFrom DEMOTES to rankUserMsg can sit anywhere,
 	// including after deferredHead, and is then the later of the two.
 	//
 	// THE GATE MUST NOT TIGHTEN TO rankNone, which (being the numerically LARGEST rank) is the
@@ -113,8 +124,8 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	if deferredHead >= 0 && bestRank >= rankUserMsg {
 		for i := deferredHead - 1; i >= 0; i-- {
 			// No quickRank here: re-classifying costs a second scan of every message (+45% on
-			// prose), and titleFrom is the authority anyway. A rank-0/1 message reaching this
-			// point was already settled and rejected by the loop above.
+			// prose), and titleFrom is the authority anyway. A message that guessed better than
+			// rankUserMsg and reaches this point was already settled and rejected by the loop above.
 			if msgs[i].Role != capabilities.RoleUser {
 				continue
 			}
@@ -141,23 +152,26 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 // every message of every event.
 //
 // A SCREEN, NOT A RANK. titleFrom is the only authority on what a message settles at; this exists
-// solely to keep titleFrom off the messages where the answer is almost always rank 2.
+// solely to keep titleFrom off the messages where the answer is almost always rankUserMsg.
 //
 // THE BOUND HOLDS IN ONE DIRECTION ONLY — the guess can be too GOOD but never too bad, which is the
-// asymmetry titleCandidate's two loops are shaped around: a rank-0/1 guess MUST be settled by
-// titleFrom before its rank is recorded, a rank-2 guess can be DEFERRED. It over-promises in two
-// ways, both tested (rank 1 for an unterminated <user_query>; rank 0/1 for a payload that is empty
-// once extracted), and the deferred arm still calls titleFrom rather than recording the guess,
-// because a rank-2 guess can settle at rankNone — a message that is nothing but reminders.
+// asymmetry titleCandidate's two loops are shaped around: a guess better than rankUserMsg MUST be
+// settled by titleFrom before its rank is recorded, a rankUserMsg guess can be DEFERRED. It
+// over-promises in three ways, all tested (rankUserQuery for an unterminated <user_query>; a
+// tag-bearing rank for a payload that is empty once extracted; rankCommandArgs for leading machinery
+// that turns out to have prose or nothing behind it), and the deferred arm still calls titleFrom
+// rather than recording the guess, because a rankUserMsg guess can settle at rankNone — a message
+// that is nothing but reminders.
 //
 // IT CANNOT UNDER-PROMISE, AND THAT RESTS ON stripReminders' SPLICE SEPARATOR: a splice that could
-// MANUFACTURE a tag would let a deferred rank-2 guess settle at rank 1 or a sticky rank 0, making
-// the deferral unsound rather than merely lazy. See stripReminders, and do not weaken it.
+// MANUFACTURE a tag would let a deferred rankUserMsg guess settle at rankUserQuery or a sticky
+// rankRename, making the deferral unsound rather than merely lazy. See stripReminders, and do not
+// weaken it.
 //
 // Contains for BOTH tags, not HasPrefix for the /rename envelope: HasPrefix systematically
-// under-rates a reminder-prefixed /rename to rank 2, which is how a later genuine /rename loses to
-// an earlier one inside the same event. The prefix test belongs in titleFrom, where the reminders
-// are already stripped and a prefix is the right question.
+// under-rates a reminder-prefixed /rename to rankUserMsg, which is how a later genuine /rename
+// loses to an earlier one inside the same event. The prefix test belongs in titleFrom, where the
+// reminders are already stripped and a prefix is the right question.
 func quickRank(content string) int {
 	if content == "" {
 		return rankNone
@@ -171,12 +185,13 @@ func quickRank(content string) int {
 	// MACHINERY AT THE FRONT is the only thing that can displace a /rename envelope from the front,
 	// which is why the HasPrefix above misses one and this exists. Everything titleFrom strips before
 	// testing its own prefix has to be tolerated here, or the guess lands under where titleFrom
-	// settles — and a deferred rank-2 guess is only sound when the guess cannot be too low. THE
+	// settles — and a deferred rankUserMsg guess is only sound when the guess cannot be too low. THE
 	// ANCHORS ARE A COST DECISION: an unanchored Contains for the 37-byte envelope, scanned over the
 	// whole message to answer "no" for almost all of them, cost +45% on 500-byte prose
 	// (325µs→472µs), and gating it on an unanchored leading test cost the same. `<` discriminates
 	// nothing — prose with a code snippet has one. Machinery behind PROSE is deliberately not caught:
-	// titleFrom tests a prefix too, so rank 2 here agrees with where it settles.
+	// titleFrom's strip anchors too, so it leaves such a message whole and settles it at rankUserMsg,
+	// which is exactly what falling past this block guesses.
 	//
 	// The second test trims first, matching the tolerance titleFrom's strip has, so the two agree on
 	// every shape rather than only the ones a splice happens to produce, and it asks the same
@@ -186,17 +201,23 @@ func quickRank(content string) int {
 		if strings.Contains(content, renamePrefix) {
 			return rankRename
 		}
+		// MACHINERY AT THE FRONT CAN NOW SETTLE AT rankCommandArgs, so that rather than rankUserMsg is
+		// where the guess has to land: a strip that reaches arguments offers them, and a rankUserMsg
+		// guess here would sit BELOW that — the one direction this screen may not go. Over-promising is
+		// free, and this over-promises freely: most such messages settle at rankUserMsg on surviving
+		// prose, or at rankNone on nothing. titleFrom decides which.
+		return rankCommandArgs
 	}
 	return rankUserMsg
 }
 
 // titleFrom ranks one user message and returns the title it offers.
 //
-// <system-reminder> blocks are excised first, before every rank arm rather than only the rank-2
-// one. All three need it and two are wrong without it: a reminder nested INSIDE a <user_query> rides
-// along into the title, and a <user_query> nested inside a REMINDER (one quoting an earlier turn is
-// enough) is mistaken for the real ask. The /rename arm tests a PREFIX, so a reminder in front of an
-// envelope hides it entirely.
+// <system-reminder> blocks are excised first, before every rank arm rather than only the
+// rankUserMsg one. All three need it and two are wrong without it: a reminder nested INSIDE a
+// <user_query> rides along into the title, and a <user_query> nested inside a REMINDER (one quoting
+// an earlier turn is enough) is mistaken for the real ask. The /rename arm tests a PREFIX, so a
+// reminder in front of an envelope hides it entirely.
 //
 // THE STRIP IS NOT FREE, which is why titleCandidate does not call this on every message: excising a
 // tag that can sit anywhere means scanning the whole message and building a new string, and per
@@ -205,7 +226,14 @@ func quickRank(content string) int {
 func titleFrom(content string) (int, string) {
 	content = stripReminders(content)
 	// Before the arms below, which test prefixes this block would hide.
-	content = stripLocalCommands(content)
+	content, fromArgs := stripLocalCommands(content)
+	// RETURNED BEFORE THE ARMS BELOW, not through them: this is already an extracted body rather than
+	// a message, so re-testing it for envelopes would rank a quoted tag inside someone's arguments as
+	// though the message itself carried one. Non-blank by construction — the strip declines to report
+	// blank arguments, which is also what keeps this arm from claiming a rank it cannot fill.
+	if fromArgs {
+		return rankCommandArgs, content
+	}
 	// A TRANSCRIPT ENVELOPE IS MACHINERY, NOT AN ASK. Observed live: a message opening with this tag
 	// titled a session `\", \"` — the fold reduced a wall of quoted JSONL to its punctuation.
 	// Discarded rather than ranked, so the walk reaches a real title behind it.
@@ -217,7 +245,7 @@ func titleFrom(content string) (int, string) {
 		return rankNone, ""
 	}
 	// AN ENVELOPE THAT IS THE WHOLE MESSAGE YIELDS ITS BODY OR NOTHING, and must never fall through
-	// to the generic rank-2 arm: falling through takes the LITERAL MARKUP as the title, which is
+	// to the generic rankUserMsg arm: falling through takes the LITERAL MARKUP as the title, which is
 	// non-blank, so foldsBlank cannot reject it and under first-wins it blocks the session's real
 	// title for the rest of its life. rankNone lets the walk reach a real title behind it instead.
 	//
@@ -232,7 +260,7 @@ func titleFrom(content string) (int, string) {
 	if strings.Contains(content, "<user_query>") {
 		// BLANK, NOT EMPTY. The two blank shapes arrive by different routes: an empty body yields ""
 		// from between() and falls to the generic arm (markup as title, per above), while a whitespace
-		// body reaches rank 1 — the worse lie, since rank 1 outranks genuine prose. foldsBlank covers
+		// body reaches rankUserQuery — the worse lie, since it outranks genuine prose. foldsBlank covers
 		// both, and being sanitizeTitle's own predicate it still ranks any body that would survive
 		// the fold.
 		//
@@ -290,8 +318,25 @@ var localCommandEnvelopes = [][2]string{
 	{"<local-command-stdout>", "</local-command-stdout>"},
 }
 
-// stripLocalCommands drops a leading local-command block and any envelopes following it, keeping
-// whatever text remains — or, when nothing does, the arguments those envelopes carried.
+// stripLocalCommands drops a leading local-command block and any envelopes following it, preferring
+// the arguments those envelopes carried and falling back to whatever text remains.
+//
+// fromArgs DISTINGUISHES THE TWO OUTCOMES, because they rank differently: surviving text is ordinary
+// prose, while arguments outrank it. Without the flag the caller cannot tell them apart, both being
+// just a string. See the rank constants.
+//
+// ARGUMENTS WIN OVER SURVIVING TEXT, AND A BLANK ARGUMENT BODY IS THE WHOLE TEST — no inspection of
+// the surviving text, which is why this needs no notion of what an expansion looks like. What makes
+// that sufficient is the shape of the traffic: a message does NOT end at the invocation, because
+// consecutive user messages arrive concatenated into one, so the text after the envelopes is either
+// what the user typed next or the boilerplate the command expanded to. Those two divide exactly along
+// the blank test — a command invoked WITH arguments is followed by its own expansion, while the
+// commands users type ahead of their own prose (/clear and friends) carry an empty pair. So blank
+// args keep the prose and non-blank args displace boilerplate, with no case needing both.
+//
+// A COUNT IS NOT A JUSTIFICATION HERE, and a message-shape survey is the wrong instrument anyway: the
+// transcripts on disk record the invocation and the expansion as separate entries, so they show this
+// shape zero times. Only the concatenated form the proxy receives has it.
 //
 // ANCHORED, like every other tag test here: a message merely mentioning the tag as prose keeps its
 // own words. Unanchored, it lost them.
@@ -304,9 +349,9 @@ var localCommandEnvelopes = [][2]string{
 // and that splices with a space — so a block the reminder used to precede arrives one space in. The
 // original is returned otherwise: trimming unconditionally would hand the arms below a string they
 // did not receive before, and their anchors deliberately do not tolerate whitespace.
-func stripLocalCommands(orig string) string {
+func stripLocalCommands(orig string) (text string, fromArgs bool) {
 	if !stripsAsLocalCommand(orig) {
-		return orig
+		return orig, false
 	}
 	// Past the caveat block if there is one; a message can also open straight into the envelopes.
 	rest := strings.TrimLeft(orig, " \t\r\n")
@@ -314,13 +359,12 @@ func stripLocalCommands(orig string) string {
 		j := strings.Index(rest, localCommandClose)
 		if j < 0 {
 			// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
-			return rest
+			return rest, false
 		}
 		rest = rest[j+len(localCommandClose):]
 	}
-	// args holds the last <command-args> body seen. A message that is nothing but machinery has no
-	// text to keep, and its arguments are the only part a user typed — so they stand in as the title
-	// rather than letting the whole message name nothing.
+	// args holds the last <command-args> body seen — the last, because a message can carry several
+	// invocations and the one a title should name is the one the user ended on.
 	args := ""
 	// Each iteration must consume something or stop, so a malformed tail cannot loop.
 	for {
@@ -328,7 +372,7 @@ func stripLocalCommands(orig string) string {
 		// A /rename is a title the user typed, not machinery: hand the arms below the envelope
 		// they test for rather than consuming it.
 		if strings.HasPrefix(trimmed, renamePrefix) {
-			return trimmed
+			return trimmed, false
 		}
 		open, next := "", ""
 		for _, env := range localCommandEnvelopes {
@@ -338,17 +382,17 @@ func stripLocalCommands(orig string) string {
 			}
 		}
 		if next == "" {
-			if trimmed == "" {
-				// Machinery all the way down: the arguments are all that is left to offer, and a
-				// blank pair (observed on argument-less commands) offers nothing.
-				return args
+			// NON-EMPTY ARGUMENTS BEAT WHATEVER SURVIVED THEM, and the blank test is the whole
+			// discrimination — see the doc comment for why nothing needs to inspect the surviving text.
+			if args != "" {
+				return args, true
 			}
-			return trimmed
+			return trimmed, false
 		}
 		k := strings.Index(trimmed, next)
 		if k < 0 {
 			// Unterminated envelope: dropped rather than kept, so markup cannot become a title.
-			return ""
+			return "", false
 		}
 		if open == argsOpen {
 			args = strings.TrimSpace(trimmed[len(open):k])
@@ -400,7 +444,7 @@ func opensEnvelope(s string) bool {
 // and hide the block from this scan.
 func stripReminders(s string) string {
 	// The common case is no reminder at all, and this runs on every message of every event: a
-	// session whose best rank is 2 can never terminate the reverse walk early, since rank 2 is
+	// session whose best rank is rankUserMsg can never terminate the reverse walk early, since it is
 	// always beatable. One Index over the message beats building a string for each.
 	i := strings.Index(s, reminderOpen)
 	if i < 0 {
@@ -414,7 +458,7 @@ func stripReminders(s string) string {
 		// NO CLOSE AFTER THE FIRST OPEN, so there is no block to excise — just a tag name sitting in
 		// prose. Return the message UNCHANGED rather than its head, matching titleFrom's policy for
 		// an unclosed <user_query>: returning s[:i] serves "why is" for "why is <system-reminder>
-		// leaking into my session titles?", which is non-blank, so under first-wins it claims rank 2
+		// leaking into my session titles?", which is non-blank, so under first-wins it claims rankUserMsg
 		// and blocks the session's real title permanently.
 		//
 		// Compared against i, not 0: a close sitting in prose BEFORE the first open is not the end
@@ -425,14 +469,14 @@ func stripReminders(s string) string {
 	// it. Head and tail were never adjacent, so joining them bare both fuses words across the gap
 	// ("my question<sr>noise</sr>and the follow-up" → "my questionand the follow-up") and lets a
 	// halved tag REASSEMBLE, which is the serious half: no tag in the vocabulary contains a space, so
-	// the separator is the only thing stopping a client synthesizing a rank-1 or sticky rank-0 title
+	// the separator is the only thing stopping a client synthesizing a rankUserQuery or sticky rankRename title
 	// out of markup it never sent. TestSessionTitle_SpliceCannotManufactureATag is what catches that
 	// — the fusion case is not — so do not "simplify" the separator away.
 	//
 	// NOT WHEN THE HEAD IS EMPTY, and that guard is load-bearing too. Splicing unconditionally looks
 	// safe because sanitizeTitle drops leading whitespace, but titleFrom reads this string BEFORE
-	// anything trims it, and its rank-0 and transcript arms are HasPrefix tests that a leading space
-	// defeats — every reminder-prefixed /rename would demote from rank 0 to rank 2. It is also the
+	// anything trims it, and its rankRename and transcript arms are HasPrefix tests that a leading space
+	// defeats — every reminder-prefixed /rename would demote from rankRename to rankUserMsg. It is also the
 	// common case: 242 of the 253 reminder-bearing messages in the corpus are reminder-only, landing
 	// here with an empty head that must stay exactly "" for foldsBlank to screen it.
 	//
@@ -489,7 +533,7 @@ func between(s, open, closing string) string {
 // most one U+0020, and the result is clipped to maxTitleLen runes.
 //
 // Applied ONCE, to the winner — not per candidate and not per event. Both were measured: either
-// one roughly doubles BenchmarkListSessions_Title/user-text (326µs→635-651µs), because rank 2 never
+// one roughly doubles BenchmarkListSessions_Title/user-text (326µs→635-651µs), because rankUserMsg never
 // terminates the walk so every message would pay a fold. foldsBlank supplies the one thing that
 // does have to happen earlier — a candidate folding to blank must not claim a rank — as a predicate
 // that builds no string.
