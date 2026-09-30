@@ -51,6 +51,7 @@ func sessionsColumns() []table.Column {
 		// read row[0] as the session id, so a column at index 0 would silently make the
 		// cursor restore and every Enter act on a title instead.
 		{Title: "TITLE", Width: sessionsTitleWidth},
+		{Title: "MODEL", Width: modelColWidth},
 		{Title: "UPDATED", Width: 14},
 		{Title: "EVENTS", Width: 8},
 		{Title: "TOKENS", Width: 10},
@@ -83,6 +84,66 @@ func sessionsColumns() []table.Column {
 // leaves, and a column narrower than its own heading would have bubbles truncate the heading to
 // "CONTEXT(1…", which states no scale at all.
 const contextColumnTitle = "CONTEXT(1M)"
+
+// modelColWidth is the MODEL column's width — the first model this session was seen using, folded
+// server-side and published on SessionSummary.
+//
+// Named rather than inlined in the column literal, on the pattern of methodColWidth in
+// events_pane.go: two independent numbers drift apart the moment one of them is narrowed. THE
+// SAME MEASUREMENT that set methodColWidth to 18 applies here — the values reaching this column
+// are the same model ids the METHOD column truncates, and dated provider ids share long prefixes:
+// "claude-sonnet-4-5-20250929" (26) and "claude-sonnet-4-20250514" (25) both render as
+// "claude-sonnet…" at 14, which makes the column unable to say which model the row beside it is
+// reporting. DELIBERATELY ITS OWN CONSTANT rather than shared with the events table, so a future
+// change to one pane's budget cannot silently move the other's.
+//
+// THE FLOOR THE GATE ENFORCES. 12 rather than the fitter's global floor of four: a truncated
+// model id is not merely clipped, it is a WRONG one, because ids share long prefixes
+// ("claude-sonnet-4-5-…" and "claude-sonnet-4-…" are different models), and this column exists
+// to say WHICH model. Measured on those two real prefixes: at 12 both render
+// "claude-sonne…" — already ambiguous; below 12 everything is. sessionsShowModel is what keeps
+// the column from being seated at that width at all, on the pattern of sessionsShowTitle's
+// floor, which exists for the same reason on a path-shaped value.
+const modelColWidth = 18
+
+// sessionsShowModel reports whether this terminal is wide enough to afford MODEL.
+//
+// MODEL IS THE FIRST CASUALTY AS THE TERMINAL NARROWS — the most expendable column this table
+// has. Two reasons it earns that spot: it is the widest optional column (18 against TITLE's 11),
+// and its absence costs the least — the per-event model is on every row of the events pane's
+// METHOD column, so a session's model is recoverable one drill-in away, where a session's TITLE
+// is not recoverable anywhere else on this screen.
+//
+// THE POINT OF YIELDING FIRST IS THAT THE NARROW TABLE DOES NOT MOVE. Below MODEL's threshold
+// the pane's column set is byte-identical to the one every existing width test was written
+// against: TITLE still renders from 73, the money columns still return at 97, and TOKENS still
+// holds "999.9M" down to 40 columns. Seating MODEL unconditionally moved all of those — measured,
+// TOKENS truncated at 42 — which is the failure sessionsShowMoney's own doc refuses for COST:
+// a column that breaks another column's floor is dropped, not seated at its expense.
+//
+// MEASURED AGAINST THE FULL DECLARED SET, not against whatever the other gates admit at this
+// width. MODEL yields to every other column, so "the set that outranks it" is simply all of
+// sessionsColumns — and measuring a smaller admitted set bought MODEL a room the money columns
+// would later claim back: measured, MODEL rendered from 89, vanished at 97 when COST and SAVED
+// returned, and came back at 113. A column that leaves as the terminal WIDENS breaks the
+// presence-monotonicity this table otherwise holds, and a reader who had found the model would
+// reasonably read its disappearance as a fault. Against the full set, MODEL is granted only
+// where it holds its floor beside everything: it arrives at 113, last, and never leaves.
+//
+// VALIDATED AGAINST THE FITTED SET, exactly as sessionsShowTitle validates TITLE's: admission
+// arithmetic alone is not a floor, because the fitter then shrinks MODEL freely and a gate that
+// admits a column the fitter narrows past its floor has granted nothing.
+func sessionsShowModel(termWidth int) bool {
+	if termWidth <= 0 {
+		return true
+	}
+	return sessionsColumnWidth(fitTableColumns(sessionsColumns(), termWidth), "MODEL") >= sessionsModelCellMin
+}
+
+// sessionsModelCellMin is MODEL's floor: the narrowest cell worth granting the column. MODEL is
+// dropped rather than narrowed below it, exactly as TITLE is dropped below sessionsTitleWidth.
+// 12 for the prefix-ambiguity reason modelColWidth's doc gives.
+const sessionsModelCellMin = 12
 
 // contextWindowTokens is the denominator every gauge is drawn against.
 //
@@ -227,6 +288,9 @@ func (m *model) rebuildSessionsTable() {
 	// makes every cell after it render under the wrong heading — or, when the arity differs,
 	// panics inside bubbles' SetColumns.
 	showTitle := sessionsShowTitle(m.width)
+	// MODEL is decided by the same chain and yields before either of them — see
+	// sessionsShowModel, which reads both gates above.
+	showModel := sessionsShowModel(m.width)
 	// The header this rebuild will install, computed first because the money cells are rendered
 	// against their column's FITTED width — the fitter shrinks columns on a narrow terminal, so
 	// the declared 10 is a ceiling rather than the budget.
@@ -244,6 +308,7 @@ func (m *model) rebuildSessionsTable() {
 	idW := sessionsColumnWidth(want, "SESSION")
 	// From `want`, the header about to be installed, not from the table's current one.
 	titleW := sessionsColumnWidth(want, "TITLE")
+	modelW := sessionsColumnWidth(want, "MODEL")
 	eventsW := sessionsColumnWidth(want, "EVENTS")
 	tokensW := sessionsColumnWidth(want, "TOKENS")
 	// The gauge is drawn to the FITTED width like every other cell, so a narrow terminal gets a
@@ -265,6 +330,11 @@ func (m *model) rebuildSessionsTable() {
 			// one into the other: this loop has the summary in hand and should not pay a
 			// lookup, and the header path has only an id and cannot avoid one.
 			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
+		}
+		// Straight off the summary, the first model the server folded for this session — see
+		// sessionModelCell for the em dash's meaning and for what a cached-only row does instead.
+		if showModel {
+			row = append(row, trunc(sessionModelCell(s.Model), modelW))
 		}
 		row = append(row,
 			relTime(now, s.UpdatedAt),
@@ -309,6 +379,12 @@ func (m *model) rebuildSessionsTable() {
 			// listing, so the cell can still fill from that. Named constant rather than a bare
 			// "" so the absence reads as a fact about this row, not a forgotten argument.
 			row = append(row, m.sessionTitleCell(id, noServedTitle, titleW))
+		}
+		// No model: the summary is what carries it, and these rows exist precisely because the
+		// server no longer lists the session — see sessionModelCell for why the cached events
+		// are not scanned for a stand-in.
+		if showModel {
+			row = append(row, emptyCell)
 		}
 		row = append(row,
 			// "cached" sits in UPDATED now, where an em dash used to, because ACTIVE is gone
@@ -1124,6 +1200,28 @@ func sessionTokens(serverTotal int, cached []pipeline.SessionEvent) string {
 	return formatCompact(float64(total))
 }
 
+// sessionModelCell is the MODEL column's cell: the first model this session was seen using,
+// straight off the server's SessionSummary.
+//
+// "—" MEANS NOT KNOWN, per the standing rule emptyCell states, and two very different rows land
+// on it: a session with no inference events (MCP-only traffic — there is no model to show), and
+// a proxy older than the field. A blank string would read as the column failing rather than as
+// an answer, which is the difference this package keeps apart everywhere a figure can be absent.
+//
+// NO CLIENT-SIDE FALLBACK, unlike sessionTokens beside it, and the asymmetry is deliberate.
+// Tokens can be recomputed from cached events because a SUM over a suffix still approximates the
+// whole; the model is FIRST-WINS server-side, so the first model in abctl's cache is not the
+// first in the session — abctl attached partway through — and scanning the cache would render a
+// stand-in that is neither the server's answer nor honestly labeled. The cached-only rows
+// (server no longer lists the session) take the em dash for the same reason: the events are
+// there, but the fact they could support is not derivable from them.
+func sessionModelCell(model string) string {
+	if model == "" {
+		return emptyCell
+	}
+	return model
+}
+
 // selectedSessionID returns the cursor row's session ID, or "".
 func (m *model) selectedSessionID() string {
 	// OUT OF BAND, never the rendered cell: see model.sessionRowIDs for what reading the cell
@@ -1360,10 +1458,15 @@ func sessionsShowMoney(termWidth int) bool {
 	// floor is one of the minimums below rather than a check somewhere else: each column
 	// individually "fitting" while the row as a whole was unreadable is the failure that reached
 	// review, with TITLE squeezed to eight columns beside money cells that all passed.
+	//
+	// MODEL IS EXCLUDED TOO, because it yields to these columns rather than competing with them
+	// (see sessionsShowModel, which reads this gate): admitting it here would let an
+	// unseatable MODEL shrink the very cells this function is protecting.
 	cols := make([]table.Column, 0, len(sessionsColumns()))
 	title := sessionsShowTitle(termWidth)
 	for _, c := range sessionsColumns() {
-		if headerTitle(c) == "TITLE" && !title {
+		t := headerTitle(c)
+		if t == "TITLE" && !title || t == "MODEL" {
 			continue
 		}
 		cols = append(cols, c)
@@ -1420,6 +1523,20 @@ func sessionsColumnsFor(termWidth int) []table.Column {
 		}
 		cols = out
 	}
+	// AND MODEL LAST, after everything else has claimed its room: it yields to TITLE and the
+	// money columns alike (see sessionsShowModel, which reads both gates), so dropping it after
+	// them keeps the narrow table byte-identical to the pre-MODEL layout rather than shifting
+	// every floor by MODEL's width. The per-event model remains available in the events pane.
+	if !sessionsShowModel(termWidth) {
+		out := make([]table.Column, 0, len(cols))
+		for _, c := range cols {
+			if headerTitle(c) == "MODEL" {
+				continue
+			}
+			out = append(out, c)
+		}
+		cols = out
+	}
 	return growSessionsTitle(cols, termWidth)
 }
 
@@ -1433,12 +1550,6 @@ func sessionsShowTitle(termWidth int) bool {
 	if termWidth <= 0 {
 		return true
 	}
-	// ONE STATEMENT, REPLACING SIX. Earlier revisions stacked a paragraph per attempt without
-	// retiring the last, so this block named thresholds of 78, 80, 82, 98 and 104 — none of them
-	// the answer — and two of its paragraphs were near-verbatim duplicates contradicting each
-	// other about whether a change raised or lowered the threshold. In a file where the comments
-	// are the only statement of design intent, that leaves the next reader unable to tell which
-	// paragraph is live.
 	//
 	// What the function does: TITLE is granted when the FITTED set leaves it its floor, measured
 	// without the money columns because those are what yield to it. TITLE renders from 73; COST
@@ -1459,11 +1570,13 @@ func sessionsShowTitle(termWidth int) bool {
 	// Measured WITHOUT the money columns, because they are what yields: this gate is decided
 	// first and sessionsShowMoney reads it, so COST and SAVED take only what is left once a
 	// legible title has its room. They are absent from 73 to 96 for that reason and return at
-	// 97, where the full set holds every minimum at once.
+	// 97, where the full set holds every minimum at once. MODEL IS EXCLUDED FOR THE SAME
+	// REASON IN REVERSE: it yields to TITLE (see sessionsShowModel), so seating it here would
+	// let the column this gate protects be narrowed by one that gives way to it.
 	keep := make([]table.Column, 0, len(sessionsColumns()))
 	for _, c := range sessionsColumns() {
 		switch headerTitle(c) {
-		case "COST", "SAVED":
+		case "COST", "SAVED", "MODEL":
 			continue
 		}
 		keep = append(keep, c)
@@ -1501,6 +1614,22 @@ func growSessionsTitle(cols []table.Column, termWidth int) []table.Column {
 		reserved := 0
 		for _, c := range sessionsColumns() {
 			if t := headerTitle(c); t == "COST" || t == "SAVED" {
+				reserved += c.Width + 2
+			}
+		}
+		if slack -= reserved; slack <= 0 {
+			return cols
+		}
+	}
+	// AND MODEL'S ROOM IS NOT SLACK EITHER, for the same reason at a wider band: MODEL is
+	// absent below its own threshold and TITLE absorbs the room, then returns (at 113 as
+	// measured) and the fitter claws TITLE back to its floor — the same non-monotonicity,
+	// arriving by the same door. Reserved with cellPadding spelled out as 2 to match the
+	// money branch's idiom rather than reaching for the constant across the file boundary.
+	if !sessionsShowModel(termWidth) {
+		reserved := 0
+		for _, c := range sessionsColumns() {
+			if headerTitle(c) == "MODEL" {
 				reserved += c.Width + 2
 			}
 		}

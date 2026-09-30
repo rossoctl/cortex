@@ -121,6 +121,30 @@ type entry struct {
 	Title     string
 	titleRank int
 
+	// Model is the id of the FIRST model this session was seen using, folded by Append and
+	// read by ListSessions. The source is InferenceExtension.Model, which inference-parser
+	// reads off every inference request's body — the model is not on any header this proxy
+	// sees.
+	//
+	// FIRST-WINS, like Title's ordinary-conversation arm and unlike its rename override: the
+	// first inference event's model names the session and later models do not displace it.
+	// A session that mixes models — Claude Code's one-shot calls (title generation, the
+	// permission monitor) run under the same session id and can target a smaller model than
+	// the conversation does — therefore shows the first one to arrive, which can be a
+	// one-shot's. A majority-vote display would fix that and is deliberately deferred; this
+	// is the known cost of the simple rule, not an oversight.
+	//
+	// AN EXTREMUM-CLASS FOLD, in Title's family rather than cost's: nothing is accumulated,
+	// so a trim has nothing to subtract and the model OUTLIVES the event it was read from.
+	// The counterfactual is the same one entry.Title documents — recomputing over the
+	// survivors would say nothing for a session whose early events aged out, which is worse
+	// than an occasionally-stale name.
+	//
+	// FOLDED AT APPEND FOR THE READ PATH'S SAKE, same as Title and context: ListSessions
+	// must stay a field read (abctl polls every two seconds) and must not walk events under
+	// the read lock.
+	Model string
+
 	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
 	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
 	// client states its role, the one with the MOST MESSAGES where it does not. Maintained by
@@ -445,6 +469,21 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 			sess.Title, sess.titleRank = t, titleRank
 		}
 	}
+	// AND THE MODEL, which is Title's fold without the rank machinery. Read from &event, the
+	// local parameter, so the model outlives the event it was read from — see entry.Model and
+	// entry.context just above for why sourcing the candidate from the stored slice is what
+	// breaks that property.
+	//
+	// NOT HOISTED ABOVE THE LOCK like titleCandidate, because there is nothing to hoist: two
+	// nil checks and a field read, in context.Add's cost class rather than titleCandidate's.
+	// It is a guard on the FIRST inference event rather than a check on every append — a
+	// non-inference event (an MCP call, a CONNECT tunnel) lands here with no model to offer
+	// and must not clear what an earlier event established.
+	if sess.Model == "" {
+		if inf := event.Inference; inf != nil && inf.Model != "" {
+			sess.Model = inf.Model
+		}
+	}
 	sess.UpdatedAt = now
 	s.activeID = sessionID
 
@@ -743,7 +782,18 @@ type SessionSummary struct {
 	// field decides what an operator sees are exactly those with no transcript on the machine
 	// running abctl — an agent that routes through the proxy without writing Claude Code
 	// transcripts is the case that motivated it. Do not assume a change here is invisible.
-	Title       string `json:"title,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Model is the id of the FIRST model this session was seen using — first-wins, not a
+	// majority: a session that mixes models shows the first one to arrive, and a
+	// majority-vote refinement is deliberately deferred (see entry.Model for the known cost,
+	// which is that Claude Code's one-shot calls share the session id and can name it with a
+	// smaller model than the conversation uses).
+	//
+	// ABSENT RATHER THAN "" ON THE WIRE, per the standing rule Title and CostMicros state:
+	// a session with no inference events (MCP-only traffic) and a proxy predating the field
+	// are both "not known", and a client must be able to draw an em dash for both. RETENTION-
+	// INDEPENDENT like Title — the fold outlives the event it was read from.
+	Model       string `json:"model,omitempty"`
 	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
 	// the records the session itself holds.
@@ -854,6 +904,8 @@ func (s *Store) ListSessions() []SessionSummary {
 			// reappearing here — they would diverge immediately if one did. This obeys the rule
 			// PromptContext states below, which rejects an O(events) walk under the read lock.
 			Title: sess.Title,
+			// Read, not computed — same fold, same class as Title one line above.
+			Model: sess.Model,
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),

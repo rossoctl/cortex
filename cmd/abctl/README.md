@@ -588,8 +588,8 @@ and return to the pane you pressed it on. There is no tab strip: Sessions is wha
 abctl is for, and the other three are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
-  recently updated first. Columns: session (truncated), title, updated
-  (relative), event count, tokens, cost, saved, context. `TITLE` comes from
+  recently updated first. Columns: session (truncated), title, model,
+  updated (relative), event count, tokens, cost, saved, context. `TITLE` comes from
   Claude Code's transcripts — see
   [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
   — and **falls back to the title the proxy serves** on `/v1/sessions`, which it
@@ -603,6 +603,17 @@ abctl is for, and the other three are surfaces you visit and leave.
   the better string; the two sides rank candidates differently and may not agree
   on a given session. The column does not say which source it used. Numerics are
   right-aligned so the digits line up between rows.
+
+  `MODEL` is the first model the session was seen using, published by the proxy
+  on `/v1/sessions` and read straight off the summary. It is first-wins, so a
+  session that mixes models — Claude Code's own one-shot calls share the session
+  id and can target a smaller model than the conversation does — shows the first
+  one to arrive rather than the majority; refining that is future work. An em
+  dash means no model is known: a session with no inference traffic, a proxy
+  older than the field, or a row kept alive by cached events alone (the cache is
+  not a stand-in, because first-in-cache is not first-in-session). The column
+  yields first on a narrow terminal — the per-event model is still on every row
+  of the timeline's METHOD column — and renders from 113 columns wide.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
@@ -692,19 +703,19 @@ abctl is for, and the other three are surfaces you visit and leave.
   the durable cost ledger and survives restarts. `[?]` states both facts; the
   title deliberately does not, since no single span is true of every row.
 
-  Rendered at 100 columns, which is the narrowest terminal that carries every
+  Rendered at 113 columns, which is the narrowest terminal that carries every
   column at once:
 
   ```
   abctl · http://localhost:9094
   LAST 1H    TODAY   7 DAYS    MONTH
     $4.04   $18.80  $216.44  $703.18
-  ────────────────────────────────────────────────────────────────────────────────────────────────────
-   SESSION       TITLE        UPDATED         EVENTS      TOKENS        COST      SAVED~  CONTEXT(1M)
-   ctx-abc-123…  …pend-spans  3s ago              42       48.2k       $0.12       $0.01  ▕███████▎ ▏
-   ctx-def-567…  weather-ag…  18m ago             15        1.2k      <$0.01           —  ▕▏        ▏
-   ctx-ghi-901…               42m ago              7        2.9k           —           —  ▕███▊     ▏
-   default                    1h ago               8           —           —           —            —
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   SESSION      TITLE        MODEL         UPDATED         EVENTS      TOKENS        COST      SAVED~  CONTEXT(1M)
+   ctx-abc-12…  Billing re…  claude-opus…  3s ago              42       48.2k       $0.12       $0.01  ▕███████▍ ▏
+   ctx-def-56…  Rotate keys  gpt-5.2-mini  18m ago             15        1.2k      <$0.01           —  ▕▋        ▏
+   ctx-ghi-90…  Runbook he…  claude-haik…  42m ago              7        2.9k           —           —  ▕███▌     ▏
+   default                   —             1h ago               8           —           —           —            —
 
   ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
   [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [p] pause  [P] pipeline  [?] keys  [q] quit
@@ -717,6 +728,18 @@ abctl is for, and the other three are surfaces you visit and leave.
   columns yield to it, so from 73 to 96 the table carries `TITLE` and no money, and
   at 97 the whole set holds every minimum at once. `sessionsShowMoney` states the
   arithmetic.
+
+  `MODEL` is the next casualty of the same squeeze, and yields before the money
+  columns do: a truncated model id is not a shorter model id but a *wrong* one —
+  dated ids share prefixes, and `claude-sonnet-4-5-…` cannot say whether it is
+  `claude-sonnet-4-5-20250929` or its differently-dated sibling — so the column
+  renders only from 113 columns, where it holds its floor of 12, and is dropped
+  below that rather than squeezed further; it grows back to its full 18 by 124.
+  Below 113 the table carries the same columns as it did before `MODEL` arrived,
+  which is the point of the ordering: the new column takes room only from the
+  terminal, never from an existing column's honesty — though TITLE does grow a
+  little less below 113, holding room for the column that arrives there.
+  `sessionsShowModel` states the arithmetic.
 
   `SAVED~` carries the tilde in its **heading** rather than on every row: a
   saving is always an estimate, so the caveat belongs to the column rather than

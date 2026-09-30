@@ -1012,6 +1012,139 @@ func summaryFor(t *testing.T, s *Store, id string) SessionSummary {
 	return SessionSummary{}
 }
 
+// The model lands on the summary, and the rule is FIRST-WINS — the fold Title uses for ordinary
+// conversation, without its rename override. The fixture that motivates the rule is real: Claude
+// Code's one-shot calls (title generation, the permission monitor) run under the same session id
+// and can target a smaller model than the conversation does, so the SECOND model to arrive must
+// not rename the session after the fact. A majority-vote display is the deferred refinement.
+//
+// Two sessions, not one, so the second half also pins that the fold is per-session: a model
+// appended to "later" cannot name "first".
+func TestAppend_ModelFoldIsFirstWinsPerSession(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	inf := func(model string) *pipeline.InferenceExtension {
+		return &pipeline.InferenceExtension{Model: model}
+	}
+
+	s.Append("first", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, Inference: inf("claude-opus-5"),
+	})
+	// Same session, a later turn on a different model — and an intervening event with nothing
+	// to offer, which the fold must not treat as a model or as a reason to clear what it holds.
+	s.Append("first", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, MCP: &pipeline.MCPExtension{Method: "tools/call"},
+	})
+	s.Append("first", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, Inference: inf("claude-haiku-4-5"),
+	})
+	s.Append("later", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, Inference: inf("gpt-5.2"),
+	})
+
+	if got := summaryFor(t, s, "first").Model; got != "claude-opus-5" {
+		t.Errorf("first.Model = %q, want %q — first-wins was not held", got, "claude-opus-5")
+	}
+	if got := summaryFor(t, s, "later").Model; got != "gpt-5.2" {
+		t.Errorf("later.Model = %q, want %q — the fold is not per-session", got, "gpt-5.2")
+	}
+}
+
+// A session with no inference events carries NO model, and that must reach the wire as an absent
+// key rather than "" — the standing rule Title and CostMicros state, and the one a client needs
+// to draw an em dash rather than an empty string that reads as a blank answer.
+//
+// Also pins the fold's response-side arm: response events copy the extension (SnapshotInference),
+// so a session whose first event is a RESPONSE still gets its model — the parser sets Model on
+// the request and the response carries it too. And an inference event with no model string
+// (unparsed body) must leave the fold alone rather than claim it with "".
+func TestSessionSummary_ModelOmittedAndResponseBorne(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	s.Append("mcp-only", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, MCP: &pipeline.MCPExtension{Method: "tools/call"},
+	})
+	s.Append("unparsed", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, Inference: &pipeline.InferenceExtension{},
+	})
+	s.Append("response-borne", pipeline.SessionEvent{
+		Phase: pipeline.SessionResponse, Direction: pipeline.Outbound,
+		Inference: &pipeline.InferenceExtension{Model: "claude-sonnet-5"},
+	})
+
+	if got := summaryFor(t, s, "mcp-only").Model; got != "" {
+		t.Errorf("mcp-only.Model = %q, want absent", got)
+	}
+	if got := summaryFor(t, s, "unparsed").Model; got != "" {
+		t.Errorf("unparsed.Model = %q, want absent — an empty model string claimed the fold", got)
+	}
+	if got := summaryFor(t, s, "response-borne").Model; got != "claude-sonnet-5" {
+		t.Errorf("response-borne.Model = %q, want %q", got, "claude-sonnet-5")
+	}
+
+	// Case-insensitive contains, on the pattern of the PromptContext omission test: an untagged
+	// field marshals under its exact Go name, so a case-sensitive check would pass whether or
+	// not the tag exists.
+	b, err := json.Marshal(SessionSummary{ID: "s"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(b)), "model") {
+		t.Errorf("an absent model serialized as %s, want the field absent", b)
+	}
+	b, err = json.Marshal(SessionSummary{ID: "s", Model: "claude-opus-5"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back SessionSummary
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Model != "claude-opus-5" {
+		t.Errorf("round-tripped to %q", back.Model)
+	}
+}
+
+// THE MODEL OUTLIVES THE EVENTS IT WAS READ FROM — the same trim property
+// TestAppend_PromptContextSurvivesATrim pins for context, and for the same reason: the store
+// evicts the beginning of a session first, and the first event is exactly where the model was
+// read. A fold recomputed over survivors would go blank for a long session, which is worse than
+// an occasionally-stale name.
+func TestAppend_ModelSurvivesATrim(t *testing.T) {
+	const maxEvents = 4
+	s := New(time.Hour, maxEvents, 0)
+	defer s.Close()
+
+	// The naming event, then enough model-less traffic to evict it. MCP events carry no
+	// Inference extension, so the trim is a plain FIFO drop and the naming event really does
+	// leave the slice.
+	s.Append("sess", pipeline.SessionEvent{
+		Phase: pipeline.SessionRequest, Direction: pipeline.Outbound,
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5"},
+	})
+	for i := 0; i < maxEvents*2; i++ {
+		s.Append("sess", pipeline.SessionEvent{
+			Phase: pipeline.SessionRequest, Direction: pipeline.Outbound,
+			MCP: &pipeline.MCPExtension{Method: "tools/call"},
+		})
+	}
+
+	if got := summaryFor(t, s, "sess").Model; got != "claude-opus-5" {
+		t.Errorf("Model = %q after the trim, want %q — the fold did not outlive its event", got, "claude-opus-5")
+	}
+	live := s.View("sess").Events
+	if len(live) != maxEvents {
+		t.Fatalf("the entry holds %d events, want the cap of %d — this test's subject is what "+
+			"survives a trim, and nothing was trimmed", len(live), maxEvents)
+	}
+	for _, e := range live {
+		if e.Inference != nil && e.Inference.Model != "" {
+			t.Fatalf("an inference event survived (seq %d), so the stored model could have been "+
+				"recomputed and this test proves nothing about the trim", e.Seq)
+		}
+	}
+}
+
 // A SUBAGENT'S TURN MUST NOT REACH THE WIRE, asserted at the Append boundary and not only one
 // package down.
 //
