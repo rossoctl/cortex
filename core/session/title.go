@@ -342,8 +342,9 @@ func stripLocalCommands(orig string) (text string, fromArgs bool) {
 	if strings.HasPrefix(rest, localCommandOpen) {
 		j := strings.Index(rest, localCommandClose)
 		if j < 0 {
-			// No close: a tag name sitting in prose, not a block. Unchanged, per stripReminders.
-			return rest, false
+			// Truncated block, not prose — the anchor already ruled prose out. Dropped, because the
+			// boilerplate is byte-identical across sessions and non-blank titles stick under first-wins.
+			return "", false
 		}
 		rest = rest[j+len(localCommandClose):]
 	}
@@ -374,7 +375,11 @@ func stripLocalCommands(orig string) (text string, fromArgs bool) {
 		}
 		k := strings.Index(trimmed, next)
 		if k < 0 {
-			// Unterminated envelope: dropped rather than kept, so markup cannot become a title.
+			// Unterminated envelope: dropped rather than kept, so markup cannot become a title. Args
+			// captured from a well-formed earlier envelope still stand.
+			if args != "" {
+				return args, true
+			}
 			return "", false
 		}
 		if open == argsOpen {
