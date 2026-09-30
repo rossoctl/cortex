@@ -1524,3 +1524,33 @@ func TestAppend_TitleAbsentWhenNothingNamedIt(t *testing.T) {
 		t.Errorf("the retired \"(empty session)\" sentinel reached the wire: %s", b)
 	}
 }
+
+// A COMMAND RUN MID-SESSION MUST NOT RETITLE IT. Arguments rank as ordinary prose, so first-wins keeps
+// the opening prompt; a rank above prose regressed exactly this, since every request carries the whole
+// conversation and the command message settles wherever it sits.
+func TestAppend_TitleFoldKeepsFirstPromptOverArgs(t *testing.T) {
+	const invoke = "<command-message>restructure</command-message>\n" +
+		"<command-name>/restructure</command-name>\n" +
+		"<command-args>jons/ONS_084.md</command-args>"
+	const want = "fix the flaky login test"
+
+	t.Run("command after the prompt", func(t *testing.T) {
+		if got := foldTitle(t, titleEvent(want), titleEvent(invoke)); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	// A /rename still overrides from any position — the one rank that outranks a held title.
+	t.Run("a rename still overrides", func(t *testing.T) {
+		got := foldTitle(t, titleEvent(want), titleEvent(invoke),
+			titleEvent(renamePrefix+"<command-args>chosen</command-args>"))
+		if got != "chosen" {
+			t.Errorf("got %q, want %q", got, "chosen")
+		}
+	})
+	// With no earlier prompt the arguments are the best thing the session has, and do name it.
+	t.Run("command first still names the session", func(t *testing.T) {
+		if got := foldTitle(t, titleEvent(invoke), titleEvent("later prose")); got != "jons/ONS_084.md" {
+			t.Errorf("got %q, want %q", got, "jons/ONS_084.md")
+		}
+	})
+}

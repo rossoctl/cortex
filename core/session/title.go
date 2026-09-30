@@ -25,20 +25,14 @@ const maxTitleLen = 80
 // LAST match among one event's messages, while Store.Append's fold across events keeps the FIRST
 // unless the tie is at rankRename. See entry.Title for why that pairing is what it wants.
 //
-// rankCommandArgs IS FOR A TITLE TAKEN FROM A COMMAND'S ARGUMENTS, which outranks ordinary prose
-// because of what the competing prose IS, not because arguments are inherently better words: it is
-// the boilerplate the command expanded to, identical across every session that invokes that command,
-// while the arguments are what tell those invocations apart. Only stripLocalCommands can tell the two
-// apart — see there for why a blank argument body is the whole test — so the rank exists to carry that
-// distinction past the point where both are just a string.
-//
-// Both tag-bearing ranks still outrank it: a /rename or a <user_query> is a better answer than either.
+// A COMMAND'S ARGUMENTS RANK AS ORDINARY PROSE, deliberately. They beat the boilerplate they expand
+// to by being SELECTED over it inside one message (see stripLocalCommands), not by outranking it — a
+// rank is session-global, so a rank above prose would also displace an earlier turn's real prompt.
 const (
-	rankRename      = 0
-	rankUserQuery   = 1
-	rankCommandArgs = 2
-	rankUserMsg     = 3
-	rankNone        = 4
+	rankRename    = 0
+	rankUserQuery = 1
+	rankUserMsg   = 2
+	rankNone      = 3
 )
 
 const renamePrefix = "<command-name>/rename</command-name>"
@@ -157,9 +151,8 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 // THE BOUND HOLDS IN ONE DIRECTION ONLY — the guess can be too GOOD but never too bad, which is the
 // asymmetry titleCandidate's two loops are shaped around: a guess better than rankUserMsg MUST be
 // settled by titleFrom before its rank is recorded, a rankUserMsg guess can be DEFERRED. It
-// over-promises in three ways, all tested (rankUserQuery for an unterminated <user_query>; a
-// tag-bearing rank for a payload that is empty once extracted; rankCommandArgs for leading machinery
-// that turns out to have prose or nothing behind it), and the deferred arm still calls titleFrom
+// over-promises in two ways, both tested (rankUserQuery for an unterminated <user_query>; a
+// tag-bearing rank for a payload that is empty once extracted), and the deferred arm still calls titleFrom
 // rather than recording the guess, because a rankUserMsg guess can settle at rankNone — a message
 // that is nothing but reminders.
 //
@@ -201,12 +194,9 @@ func quickRank(content string) int {
 		if strings.Contains(content, renamePrefix) {
 			return rankRename
 		}
-		// MACHINERY AT THE FRONT CAN NOW SETTLE AT rankCommandArgs, so that rather than rankUserMsg is
-		// where the guess has to land: a strip that reaches arguments offers them, and a rankUserMsg
-		// guess here would sit BELOW that — the one direction this screen may not go. Over-promising is
-		// free, and this over-promises freely: most such messages settle at rankUserMsg on surviving
-		// prose, or at rankNone on nothing. titleFrom decides which.
-		return rankCommandArgs
+		// Over-promises freely: such a message settles at rankUserMsg on surviving prose or arguments,
+		// or at rankNone on nothing. titleFrom decides which.
+		return rankUserMsg
 	}
 	return rankUserMsg
 }
@@ -227,12 +217,10 @@ func titleFrom(content string) (int, string) {
 	content = stripReminders(content)
 	// Before the arms below, which test prefixes this block would hide.
 	content, fromArgs := stripLocalCommands(content)
-	// RETURNED BEFORE THE ARMS BELOW, not through them: this is already an extracted body rather than
-	// a message, so re-testing it for envelopes would rank a quoted tag inside someone's arguments as
-	// though the message itself carried one. Non-blank by construction — the strip declines to report
-	// blank arguments, which is also what keeps this arm from claiming a rank it cannot fill.
+	// Returned before the arms below, not through them: this is an extracted body, so re-testing it
+	// would rank a tag quoted inside someone's arguments as though the message carried one.
 	if fromArgs {
-		return rankCommandArgs, content
+		return rankUserMsg, content
 	}
 	// A TRANSCRIPT ENVELOPE IS MACHINERY, NOT AN ASK. Observed live: a message opening with this tag
 	// titled a session `\", \"` — the fold reduced a wall of quoted JSONL to its punctuation.
@@ -321,22 +309,18 @@ var localCommandEnvelopes = [][2]string{
 // stripLocalCommands drops a leading local-command block and any envelopes following it, preferring
 // the arguments those envelopes carried and falling back to whatever text remains.
 //
-// fromArgs DISTINGUISHES THE TWO OUTCOMES, because they rank differently: surviving text is ordinary
-// prose, while arguments outrank it. Without the flag the caller cannot tell them apart, both being
-// just a string. See the rank constants.
+// fromArgs tells the caller the text came from arguments, which is what lets it skip re-testing an
+// extracted body for envelopes. Both outcomes rank the same; see the rank constants.
 //
-// ARGUMENTS WIN OVER SURVIVING TEXT, AND A BLANK ARGUMENT BODY IS THE WHOLE TEST — no inspection of
-// the surviving text, which is why this needs no notion of what an expansion looks like. What makes
-// that sufficient is the shape of the traffic: a message does NOT end at the invocation, because
-// consecutive user messages arrive concatenated into one, so the text after the envelopes is either
-// what the user typed next or the boilerplate the command expanded to. Those two divide exactly along
-// the blank test — a command invoked WITH arguments is followed by its own expansion, while the
-// commands users type ahead of their own prose (/clear and friends) carry an empty pair. So blank
-// args keep the prose and non-blank args displace boilerplate, with no case needing both.
+// A BLANK ARGUMENT BODY IS THE WHOLE TEST for preferring arguments over surviving text — nothing
+// inspects that text, so this needs no notion of what an expansion looks like. Consecutive user
+// messages arrive concatenated, so text after the envelopes is either what the user typed next or the
+// boilerplate the command expanded to, and the two divide on blankness: an invocation WITH arguments
+// is followed by its expansion, while commands typed ahead of the user's own prose (/clear and
+// friends) carry an empty pair.
 //
-// A COUNT IS NOT A JUSTIFICATION HERE, and a message-shape survey is the wrong instrument anyway: the
-// transcripts on disk record the invocation and the expansion as separate entries, so they show this
-// shape zero times. Only the concatenated form the proxy receives has it.
+// Do not survey the on-disk transcripts for this shape — they record invocation and expansion as
+// separate entries and show it zero times. Only the concatenated form the proxy receives has it.
 //
 // ANCHORED, like every other tag test here: a message merely mentioning the tag as prose keeps its
 // own words. Unanchored, it lost them.
@@ -382,8 +366,7 @@ func stripLocalCommands(orig string) (text string, fromArgs bool) {
 			}
 		}
 		if next == "" {
-			// NON-EMPTY ARGUMENTS BEAT WHATEVER SURVIVED THEM, and the blank test is the whole
-			// discrimination — see the doc comment for why nothing needs to inspect the surviving text.
+			// Non-empty arguments beat whatever survived them; see the doc comment.
 			if args != "" {
 				return args, true
 			}

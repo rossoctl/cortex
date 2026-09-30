@@ -1165,7 +1165,7 @@ func TestSessionTitle_StripsLocalCommand(t *testing.T) {
 		{
 			// All three envelope pairs are consumed — what proves it is that nothing between the caveat
 			// and the end leaks into the title. The ARGUMENTS are what titles it, not the text behind
-			// them, because they are non-blank; TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede is
+			// them, because they are non-blank; TestSessionTitle_ArgsBeatTheExpansionTheyPrecede is
 			// where that preference lives.
 			"message, name and args envelopes all go",
 			caveat + " <command-message>x</command-message> <command-name>/x</command-name> <command-args>a</command-args> the real ask",
@@ -1335,7 +1335,7 @@ func TestSessionTitle_NoCaveatMeansNoTrim(t *testing.T) {
 // first-wins for the life of the session.
 //
 // These cases have nothing to compete with the arguments. Where something does, the arguments still
-// win unless they are blank — TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede and
+// win unless they are blank — TestSessionTitle_ArgsBeatTheExpansionTheyPrecede and
 // TestSessionTitle_ArgsLoseToRealText are the two sides of that.
 func TestSessionTitle_MachineryOffersItsArgs(t *testing.T) {
 	const caveat = "<local-command-caveat>Caveat: generated while running a local command</local-command-caveat>"
@@ -1381,9 +1381,9 @@ func TestSessionTitle_MachineryOffersItsArgs(t *testing.T) {
 	}
 }
 
-// A BLANK ARGUMENT BODY LEAVES THE PROSE ALONE, which is what keeps rankCommandArgs from shadowing
-// the very text the strip exists to uncover. This is the live shape it protects: /clear and friends
-// are what users type ahead of their own words, and they carry an empty pair.
+// A BLANK ARGUMENT BODY LEAVES THE PROSE ALONE, so the strip does not shadow the very text it exists
+// to uncover. This is the live shape it protects: /clear and friends are what users type ahead of
+// their own words, and they carry an empty pair.
 //
 // The /rename case is the other way arguments lose — by rank rather than by blankness.
 func TestSessionTitle_ArgsLoseToRealText(t *testing.T) {
@@ -1412,16 +1412,15 @@ func TestSessionTitle_ArgsLoseToRealText(t *testing.T) {
 	}
 }
 
-// THE SHAPE THIS RANK EXISTS FOR, taken from live traffic: a command invoked with arguments, followed
-// by the boilerplate it expands to. Both are ordinary text once the strip is done, so without the rank
-// the expansion titles the session — and it is byte-identical across every session invoking that
-// command, while the arguments are what tell those invocations apart.
+// ARGUMENTS BEAT THE BOILERPLATE THEY EXPAND TO, which is a within-message preference and not a rank:
+// see stripLocalCommands. The expansion is byte-identical across every session invoking that command,
+// while the arguments are what tell those invocations apart.
 //
-// THE FIRST CASE IS THE ONE THAT MATTERS, and it is ONE message: consecutive user messages reach the
-// proxy concatenated, so the invocation and the expansion are not separate messages the way the
-// on-disk transcript records them. A fixture that splits them tests a shape the proxy never sees —
-// which is why the two-message cases below are here as well, not instead.
-func TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede(t *testing.T) {
+// EVERY CASE HERE IS ONE MESSAGE because that is the only shape live traffic has — consecutive user
+// messages arrive concatenated (measured: 857 such messages, 0 with the expansion split into the next
+// one). A split fixture would pin a shape the proxy never receives, and a rank high enough to satisfy
+// one also retitles a session mid-conversation; see TestAppend_TitleFoldKeepsFirstPromptOverArgs.
+func TestSessionTitle_ArgsBeatTheExpansionTheyPrecede(t *testing.T) {
 	const invoke = "<command-message>restructure-flattened-md</command-message>\n" +
 		"<command-name>/restructure-flattened-md</command-name>\n" +
 		"<command-args>jons/ONS_084.md</command-args>"
@@ -1433,8 +1432,6 @@ func TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede(t *testing.T) {
 		want string
 	}{
 		{"expansion concatenated after the invocation", []string{invoke + "\n\n" + expansion}, "jons/ONS_084.md"},
-		{"expansion in a later message", []string{invoke, expansion}, "jons/ONS_084.md"},
-		{"invocation in a later message", []string{expansion, invoke}, "jons/ONS_084.md"},
 		{
 			// The tag-bearing ranks are unaffected: they still outrank arguments from any position.
 			"a user_query still outranks the args",
@@ -1442,10 +1439,10 @@ func TestSessionTitle_ArgsOutrankTheExpansionTheyPrecede(t *testing.T) {
 			"the actual ask",
 		},
 		{
-			// An invocation with nothing to offer must not claim the rank and shadow the expansion —
-			// /model is the live example. rankNone lets the prose behind it title the event.
+			// An invocation with nothing to offer must not shadow the text behind it — /model is the
+			// live example, and it carries an empty pair.
 			"argument-less invocation yields to the expansion",
-			[]string{"<command-name>/model</command-name>\n<command-args></command-args>", expansion},
+			[]string{"<command-name>/model</command-name>\n<command-args></command-args>\n\n" + expansion},
 			expansion,
 		},
 		{
