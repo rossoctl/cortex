@@ -1223,12 +1223,66 @@ func TestSessionTitle_RenameSurvivesLocalCommandStrip(t *testing.T) {
 		{"bare", renameMsg("chosen")},
 		{"behind a caveat", caveat + renameMsg("chosen")},
 		{"behind a caveat and whitespace", caveat + "\n" + renameMsg("chosen")},
+		{"behind a reminder and a caveat", reminderOpen + "n" + reminderClose + caveat + renameMsg("chosen")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := candidateTitle(userEvent(tc.content)); got != "chosen" {
 				t.Errorf("got %q, want %q", got, "chosen")
 			}
 		})
+	}
+}
+
+// A CAVEAT-PREFIXED /rename MUST WIN FROM ANY POSITION IN THE EVENT, which a single-message case
+// cannot show: titleCandidate defers rank-2 guesses to a second loop and skips that loop entirely
+// once a rank-0/1 guess has settled, so a rename only survives if quickRank rates it 0 — the
+// screen's one-directional bound. It does not hold by luck. quickRank tests a PREFIX, and a caveat
+// block sits in front of the envelope exactly as a reminder can, so the caveat had to join the
+// reminder in that test; without it the rename scored 2, lost the deferred ordering to any later
+// message, and the session kept the wrong title under first-wins.
+func TestSessionTitle_RenameBehindCaveatWinsFromAnyPosition(t *testing.T) {
+	caveat := localCommandOpen + "the user typed /rename" + localCommandClose
+	for _, tc := range []struct {
+		name     string
+		contents []string
+		want     string
+	}{
+		// Prose after the rename outranks nothing, but it is the newest rank-2 message and the
+		// deferred loop returns the newest one that yields a title.
+		{"prose after", []string{caveat + renameMsg("chosen"), "later prose"}, "chosen"},
+		// A <user_query> settles at rank 1 eagerly, which is what skips the deferred loop.
+		{"user_query after", []string{caveat + renameMsg("chosen"), "<user_query>q</user_query>"}, "chosen"},
+		// WITHIN one event the LAST rename wins, and this is the case quickRank's displacer test
+		// exists for: the earlier bare rename scores 0 and the later one must too, or it loses.
+		{"later rename wins", []string{renameMsg("a"), caveat + renameMsg("b")}, "b"},
+		{"later rename wins, both behind caveats", []string{caveat + renameMsg("a"), caveat + renameMsg("b")}, "b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.contents...)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// THE SCREEN MAY NOT UNDER-PROMISE, stated as a property over the shapes this PR taught titleFrom to
+// see through. quickRank is allowed to guess BETTER than titleFrom settles (it over-promises in two
+// documented ways) but never worse: titleCandidate records a deferred rank-2 guess without settling
+// it, so a message that settles at 0 or 1 while guessing 2 is silently demoted. See quickRank.
+func TestQuickRank_DoesNotUnderPromiseOnLocalCommands(t *testing.T) {
+	caveat := localCommandOpen + "Caveat: ..." + localCommandClose
+	for _, content := range []string{
+		caveat + renameMsg("x"),
+		caveat + "\n" + renameMsg("x"),
+		" " + caveat + renameMsg("x"),
+		reminderOpen + "n" + reminderClose + caveat + renameMsg("x"),
+		caveat + "<user_query>q</user_query>",
+		caveat + "ordinary prose",
+	} {
+		settled, _ := titleFrom(content)
+		if guess := quickRank(content); guess > settled {
+			t.Errorf("quickRank=%d under-promises against titleFrom=%d for %q", guess, settled, content)
+		}
 	}
 }
 
@@ -1246,6 +1300,25 @@ func TestSessionTitle_LocalCommandBehindReminder(t *testing.T) {
 		"<command-args></command-args>\n\nthe real ask"
 	if got := candidateTitle(userEvent(content)); got != "the real ask" {
 		t.Errorf("got %q, want %q", got, "the real ask")
+	}
+}
+
+// THE WHITESPACE TOLERANCE IS CONFINED TO THE CAVEAT PATH. A message with no caveat block must
+// reach the arms below byte-for-byte as it arrived, because their anchors deliberately reject
+// leading whitespace — trimming for everyone quietly changed how a space-led <transcript> and a
+// space-led /rename rank, neither of which is this PR's business.
+func TestSessionTitle_NoCaveatMeansNoTrim(t *testing.T) {
+	for _, tc := range []struct{ name, content, want string }{
+		// Ranked as prose, markup and all: the transcript arm's anchor does not see past the space.
+		{"space then transcript", " " + transcriptOpen + "stuff", " " + transcriptOpen + "stuff"},
+		// Likewise the /rename arm — so this is the literal envelope, not "x".
+		{"space then rename", " " + renameMsg("x"), " " + renameMsg("x")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.content)); got != sanitizeTitle(tc.want) {
+				t.Errorf("got %q, want %q", got, sanitizeTitle(tc.want))
+			}
+		})
 	}
 }
 

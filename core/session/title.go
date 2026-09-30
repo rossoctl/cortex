@@ -168,15 +168,24 @@ func quickRank(content string) int {
 	if strings.Contains(content, "<user_query>") {
 		return rankUserQuery
 	}
-	// A REMINDER AT THE FRONT is the only thing that can displace a /rename envelope from the front,
-	// which is why the HasPrefix above misses one and this exists. BOTH TESTS ARE ANCHORED, as a cost
-	// decision: an unanchored Contains for the 37-byte envelope, scanned over the whole message to
-	// answer "no" for almost all of them, cost +45% on 500-byte prose (325µs→472µs), and gating it on
-	// an unanchored reminder test cost the same. `<` discriminates nothing — prose with a code snippet
-	// has one. An envelope behind PROSE is deliberately not caught: titleFrom tests a prefix too, so
-	// rank 2 here agrees with where it settles.
-	if strings.HasPrefix(content, reminderOpen) && strings.Contains(content, renamePrefix) {
-		return rankRename
+	// A REMINDER OR A CAVEAT BLOCK AT THE FRONT is the only thing that can displace a /rename envelope
+	// from the front, which is why the HasPrefix above misses one and this exists. Both are what
+	// titleFrom strips before testing its own prefix, so both have to be tolerated here or the guess
+	// lands under where titleFrom settles — and a deferred rank-2 guess is only sound when the guess
+	// cannot be too low. THE ANCHORS ARE A COST DECISION: an unanchored Contains for the 37-byte
+	// envelope, scanned over the whole message to answer "no" for almost all of them, cost +45% on
+	// 500-byte prose (325µs→472µs), and gating it on an unanchored leading test cost the same. `<`
+	// discriminates nothing — prose with a code snippet has one. An envelope behind PROSE is
+	// deliberately not caught: titleFrom tests a prefix too, so rank 2 here agrees with where it
+	// settles.
+	// The caveat test trims first, matching the tolerance titleFrom's strip has, so the two agree on
+	// every shape rather than only the ones a splice happens to produce. The trim runs on the tail of
+	// a HasPrefix that has already said no for almost every message.
+	if strings.HasPrefix(content, reminderOpen) ||
+		strings.HasPrefix(strings.TrimLeft(content, " \t\r\n"), localCommandOpen) {
+		if strings.Contains(content, renamePrefix) {
+			return rankRename
+		}
 	}
 	return rankUserMsg
 }
@@ -279,12 +288,14 @@ var localCommandEnvelopes = [][2]string{
 // ANCHORED, like every other tag test here: a message merely mentioning the tag as prose keeps its
 // own words. Unanchored, it lost them.
 //
-// LEADING WHITESPACE IS TOLERATED, unlike in the arms below, because this runs after stripReminders
-// and that splices with a space — so the block a reminder used to precede arrives one space in.
-func stripLocalCommands(s string) string {
-	s = strings.TrimLeft(s, " \t\r\n")
+// LEADING WHITESPACE IS TOLERATED ON THE CAVEAT PATH ONLY, because this runs after stripReminders
+// and that splices with a space — so a block the reminder used to precede arrives one space in. The
+// original is returned otherwise: trimming unconditionally would hand the arms below a string they
+// did not receive before, and their anchors deliberately do not tolerate whitespace.
+func stripLocalCommands(orig string) string {
+	s := strings.TrimLeft(orig, " \t\r\n")
 	if !strings.HasPrefix(s, localCommandOpen) {
-		return s
+		return orig
 	}
 	j := strings.Index(s, localCommandClose)
 	if j < 0 {
