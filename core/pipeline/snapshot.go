@@ -3,10 +3,14 @@ package pipeline
 import (
 	"github.com/tidwall/gjson"
 
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -193,6 +197,55 @@ func DeriveError(pctx *Context) *EventError {
 		}
 	}
 	return nil
+}
+
+// EventErrorOr returns fail when the caller has an explicit failure to report,
+// else what DeriveError can infer from the response. fail must win: it is only
+// set where the upstream call failed outright, and there DeriveError returns nil.
+func EventErrorOr(pctx *Context, fail *EventError) *EventError {
+	if fail != nil {
+		return fail
+	}
+	return DeriveError(pctx)
+}
+
+// TransportError classifies a failed upstream call — one that never produced a
+// response, so there is no status or body for DeriveError to read. Each surfaces
+// to the client as the same synthetic 502, so Kind is what tells an operator
+// whether to look at the network, the upstream, DNS, or a trust store.
+//
+// Matched with errors.Is/errors.As, unlike handshakeFailureReason, which cannot:
+// these arrive wrapped in *url.Error, which unwraps. TestTransportError verifies
+// every branch against a real failed request.
+//
+// ORDER MATTERS: *url.Error implements net.Error, so every error here satisfies
+// errors.As(&netErr) and only Timeout() discriminates — hence timeout first, and
+// a bare net.Error is never a classifier.
+func TransportError(err error) *EventError {
+	if err == nil {
+		return nil
+	}
+	kind := "upstream_error"
+	var netErr net.Error
+	var dnsErr *net.DNSError
+	var certErr *tls.CertificateVerificationError
+	var alertErr tls.AlertError
+	switch {
+	case errors.As(err, &netErr) && netErr.Timeout():
+		// Deliberately wide: covers a Client.Timeout and a caller's context
+		// deadline, which also satisfies errors.Is(err, context.DeadlineExceeded).
+		kind = "upstream_timeout"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		kind = "upstream_refused"
+	case errors.As(err, &dnsErr):
+		kind = "upstream_dns"
+	case errors.As(err, &certErr), errors.As(err, &alertErr):
+		// Unverifiable chain, or the peer sent an alert. A version/cipher/ALPN
+		// mismatch has no typed error and falls through to upstream_error;
+		// catching it would mean matching message text.
+		kind = "upstream_tls"
+	}
+	return &EventError{Kind: kind, Message: err.Error()}
 }
 
 // upstreamErrorKind extracts the provider's machine-readable error type from an

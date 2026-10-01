@@ -47,7 +47,7 @@ func TestRecordOutboundResponse_PinsRequestSession(t *testing.T) {
 	}
 
 	// Record the streaming response — must land in the pinned conv-A.
-	s.recordOutboundResponseEvent(pctx, 200)
+	s.recordOutboundResponseEvent(pctx, 200, nil)
 
 	countResp := func(id string) int {
 		v := store.View(id)
@@ -85,7 +85,7 @@ func TestRecordOutboundResponse_FallsBackToActiveSession(t *testing.T) {
 	// No OutboundSessionID set.
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: "x.example", StartedAt: time.Now()}
 
-	s.recordOutboundResponseEvent(pctx, 200)
+	s.recordOutboundResponseEvent(pctx, 200, nil)
 
 	v := store.View("conv-B")
 	if v == nil || len(v.Events) != 2 {

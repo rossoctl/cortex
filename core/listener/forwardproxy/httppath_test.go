@@ -25,7 +25,7 @@ func TestRecordOutboundResponse_CarriesMethodAndPath(t *testing.T) {
 		Path:      "/v2/tokens",
 		StartedAt: time.Now(),
 	}
-	s.recordOutboundResponseEvent(pctx, 200)
+	s.recordOutboundResponseEvent(pctx, 200, nil)
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 1 {

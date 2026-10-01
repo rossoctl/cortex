@@ -608,12 +608,32 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	return nil
 }
 
-func (s *Server) errorHandler(w http.ResponseWriter, _ *http.Request, err error) {
+// errorHandler answers what ReverseProxy could not complete: a plugin that
+// rejected the response, or a backend call that failed at the transport level.
+//
+// r is read for its context, which carries the pctx handleRequest parked under
+// pctxKey{}. It survives even though the stdlib passes its own outreq here,
+// that being req.Clone(ctx). The nil check is load-bearing, not habit: some
+// ErrorHandler call sites fire for conditions preceding handleRequest (a
+// misconfigured Director, say).
+func (s *Server) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	if rErr, ok := err.(*responseRejectedError); ok {
+		// A plugin's verdict, not a transport failure: it has an Action to
+		// account for and belongs in a denial row. Left unrecorded, as it is
+		// today — a sibling of #1045 with a different answer.
 		httpx.WriteRejection(w, rErr.action)
 		return
 	}
+	slog.Warn("reverse-proxy: backend request failed", "host", r.Host, "method", r.Method, "error", err)
 	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+
+	// Record it, so the failure is not visible only on the wire (#1045). See
+	// the twin comment in forwardproxy for why the 502 stays off pctx.StatusCode.
+	pctx, _ := r.Context().Value(pctxKey{}).(*pipeline.Context)
+	if pctx == nil {
+		return
+	}
+	s.recordInboundResponseEvent(pctx, http.StatusBadGateway, pipeline.TransportError(err))
 }
 
 // recordInboundReject emits a SessionDenied event for inbound requests
@@ -715,7 +735,7 @@ func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipelin
 		pipeline: s.InboundPipeline,
 		pctx:     pctx,
 		onClose: func(statusCode int) {
-			s.recordInboundResponseEvent(pctx, statusCode)
+			s.recordInboundResponseEvent(pctx, statusCode, nil)
 		},
 		statusCode: resp.StatusCode,
 	}
@@ -726,7 +746,10 @@ func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipelin
 // bottom of modifyResponse; lives here so the streaming body's
 // onClose callback can record without holding a reference to the
 // status code that close arrived with.
-func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode int) {
+//
+// fail is set only by errorHandler's transport-failure path, where DeriveError
+// cannot supply an error because pctx.StatusCode stays zero. Nil everywhere else.
+func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) {
 	if s.Sessions == nil {
 		return
 	}
@@ -758,7 +781,7 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		HTTPMethod:  pctx.Method,
 		HTTPPath:    pctx.Path,
 		StatusCode:  statusCode,
-		Error:       pipeline.DeriveError(pctx),
+		Error:       pipeline.EventErrorOr(pctx, fail),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 		TLS:         eventTLS(pctx),
 	})

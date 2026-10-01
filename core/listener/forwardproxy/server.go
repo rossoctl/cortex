@@ -502,7 +502,19 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	resp, err := client.Do(r)
 	if err != nil {
+		slog.Warn("forward-proxy: upstream request failed", "host", r.Host, "method", r.Method, "error", err)
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+		// Without this the request event is the only trace, and a row with no
+		// status reads as a request still in flight (#1045). Same reason the
+		// CONNECT dial-failure path below records.
+		//
+		// The 502 goes on the EVENT ONLY, never onto pctx.StatusCode:
+		// OutcomeFromContext reads zero as OutcomeError and any non-zero as
+		// OutcomeAllow, so assigning it would tell every Finisher this
+		// succeeded and have lineage label the span "ok".
+		if !skipped {
+			s.recordOutboundResponseEvent(pctx, http.StatusBadGateway, pipeline.TransportError(err))
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -632,7 +644,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			resp.Header.Del("Content-Encoding")
 		}
 
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}
 
 	for key, values := range resp.Header {
@@ -970,7 +982,11 @@ func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
 // streaming path can call it once at end-of-stream and the buffered
 // path can call it once after RunResponse — both go through the same
 // gate and snapshotting logic.
-func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode int) {
+//
+// fail is set only on the transport-failure path, where DeriveError cannot
+// supply an error because pctx.StatusCode stays zero (see that call site). Nil
+// everywhere else.
+func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) {
 	if s.Sessions == nil {
 		return
 	}
@@ -1000,7 +1016,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		HTTPMethod:  pctx.Method,
 		HTTPPath:    pctx.Path,
 		StatusCode:  statusCode,
-		Error:       pipeline.DeriveError(pctx),
+		Error:       pipeline.EventErrorOr(pctx, fail),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 		Client:      pctx.ClientInfo(),
 	}
@@ -1074,7 +1090,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			slog.Warn("forward-proxy: streaming response rejected on finalization (headers already sent)",
 				"host", r.Host, "violation", finalAction.Violation)
 		}
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}()
 
 	// Forward headers and the streaming status code BEFORE the first
@@ -1177,7 +1193,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 
 	// Record the response event on every exit path (normal EOF, upstream read
 	// error, downstream write error) so a SessionResponse row still lands.
-	defer s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+	defer s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 
 	// Forward headers + status before the first byte. Drop Content-Length since
 	// we relay an open-ended chunked stream.
@@ -1297,7 +1313,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	}
-	s.recordOutboundResponseEvent(pctx, resp.StatusCode)
+	s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)

@@ -545,7 +545,19 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
 - `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). agentop renders one row per invocation, so operators see an explicit per-plugin timeline.
 - `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in agentop. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
-- `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context.
+- `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context. **A
+  502 here is not always the upstream's answer.** When the upstream call fails at the
+  transport level — timed out, refused, DNS, TLS — the proxy synthesizes the 502 itself
+  and records the response row that carries it, with `error.kind` saying which
+  (`upstream_timeout`, `upstream_refused`, `upstream_dns`, `upstream_tls`, else
+  `upstream_error`) and `error.message` holding the error verbatim, naming the address.
+  Before that was recorded the row did not exist at all, so a failed request was
+  indistinguishable from one still in flight and raised no error rate (#1045). Note the
+  deliberate asymmetry with the Finisher's view: `Outcome.StatusCode` stays **0** for
+  these, because that zero is what marks the request as `OutcomeError` rather than an
+  allow — the event and the outcome disagree on purpose. An opaque CONNECT that could not
+  be dialed reports the same situation one layer down as `tunnelReason: "dial-failed"`
+  with `error.kind: "dial_failed"`.
 - `tunnel`, `tunnelReason`, `bytesUp`, `bytesDown` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached (`tunnelReason: "dial-failed"`) — plus `durationMs` for how long the tunnel stayed open and the bytes it carried each way (up = client to destination). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel's open is recorded with its first decrypted request — in that request's session, directly before it, stamped with its time — and records no close, because the request carries its own response; a bridged tunnel that recorded no request gets its open and a close when it ends. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency.
 - `httpMethod`, `httpPath` — the HTTP verb and path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line. The path is query-stripped and percent-decoded, so query-borne credentials never reach the timeline, but a secret in a path *segment* (a bot token, a webhook path) does survive on this unauthenticated surface — worth knowing before exporting events off-box.
 
