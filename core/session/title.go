@@ -37,6 +37,124 @@ const (
 
 const renamePrefix = "<command-name>/rename</command-name>"
 
+// A tag is three independent facts: how to recognize it, what to take from it, and what rank that
+// earns. titleRules states each as a row; titleFrom is a loop over it. Add a tag by adding a row.
+//
+// stripReminders and stripLocalCommands stay out of the table. They rewrite the message before any row
+// is tested, and neither is a plain "strip this tag": the reminder splice separator is a security
+// boundary, and the local-command walk prefers a <command-args> body over what survives it.
+
+// tagMatch is how a rule recognizes its tag.
+type tagMatch int
+
+const (
+	// matchPrefix: the tag opens the message. The anchor is what keeps a message that merely MENTIONS
+	// the tag as prose — a bug report quoting it — from being treated as machinery.
+	matchPrefix tagMatch = iota
+	// matchContains: the tag may sit anywhere. Only <user_query>, which the harness nests.
+	matchContains
+)
+
+// tagTake is what a rule extracts once its tag matched.
+type tagTake int
+
+const (
+	// takeDiscard: the message is machinery and names nothing.
+	takeDiscard tagTake = iota
+	// takeFirstLine: the body between open and close, reduced to one line by firstLine.
+	takeFirstLine
+	// takeArgs: the <command-args> body, wherever it sits. The /rename body follows its tag rather than
+	// sitting inside it.
+	takeArgs
+	// takeQueryBody: the body, preferring a whole-message envelope over a bracketed one.
+	takeQueryBody
+)
+
+// titleRule is one tag's row: recognize `open`, extract per `take`, rank the result `rank`.
+type titleRule struct {
+	open  string
+	close string // the matching close tag; unused by takeDiscard and takeArgs
+	match tagMatch
+	take  tagTake
+	rank  int
+}
+
+// takeOutcome says what a blank extraction means. The two are not interchangeable.
+//
+// It is a property of which extraction path hit, not of the row: a <user_query> claims as a
+// whole-message envelope and declines as a loose tag in prose.
+type takeOutcome int
+
+const (
+	// takeClaimed: the row is the machinery here. titleFrom answers rankNone, so the walk looks behind
+	// it. This is what stops the literal markup becoming the title — markup is non-blank, so foldsBlank
+	// cannot reject it, and under first-wins it would block the real title permanently.
+	takeClaimed takeOutcome = iota
+	// takeDeclined: the tag was probably not acting as a tag. The message keeps its own words at the
+	// generic prose arm. "what does <user_query> mean in this code" is prose ABOUT the tag.
+	takeDeclined
+)
+
+// titleRules is the ordered tag table titleFrom walks. First match wins.
+//
+// ORDER IS PRECEDENCE AND IS LOAD-BEARING. Two orderings are deliberate:
+//
+//   - <transcript> leads because it discards. Its body is quoted JSONL that can contain any other tag
+//     here, so a row above it would mine a title out of someone else's quoted turn.
+//   - /rename sits above <user_query>, matching the rank constants. Both can appear in one message.
+//
+// The three leading envelopes are mutually exclusive in practice; their relative order says nothing.
+var titleRules = []titleRule{
+	// Machinery, not an ask. Observed live: a message opening with this tag titled a session `\", \"`,
+	// the fold having reduced a wall of quoted JSONL to its punctuation.
+	{open: transcriptOpen, match: matchPrefix, take: takeDiscard, rank: rankNone},
+
+	// A leading envelope's body is the title; what follows the close is machinery. The close need not
+	// end the message — captured output follows <bash-input>, instructions follow <session>.
+	//
+	// <conversation> is a handoff brief whose body is a markdown document, which is what
+	// takeFirstLine's heading rule is for. It is matched on its open alone like the other two even
+	// though live messages do close on it: a both-ends match would let one trailing byte drop the
+	// message to the generic arm and put its own markup in the title.
+	{open: "<bash-input>", close: "</bash-input>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
+	{open: "<session>", close: "</session>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
+	{open: "<conversation>", close: "</conversation>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
+
+	// The one title the user typed, so it outranks everything.
+	{open: renamePrefix, match: matchPrefix, take: takeArgs, rank: rankRename},
+
+	// The only unanchored row, and so the only one that can decline a message rather than claim it: an
+	// unanchored match can land on prose discussing the tag. See takeQueryBody.
+	{open: "<user_query>", close: "</user_query>", match: matchContains, take: takeQueryBody, rank: rankUserQuery},
+}
+
+// screenedTags returns the rows quickRank must test: those ranking above rankUserMsg. A row at
+// rankUserMsg or rankNone needs no test, because quickRank's fall-through already guesses rankUserMsg
+// and its bound only has to hold downward.
+//
+// quickRank's tests are written out by hand rather than driven from this, because it runs on every
+// message of every event and a slice loop there is measurably slower. This exists so the duplication
+// cannot drift: TestScreenedRules_CoversEveryHighRankingTag checks quickRank against these rows. A tag
+// the screen misses is guessed rankUserMsg, deferred, and then recorded without titleFrom ever
+// settling it.
+func screenedTags() []screenRow {
+	var out []screenRow
+	for _, r := range titleRules {
+		if r.rank < rankUserMsg {
+			out = append(out, screenRow{open: r.open, prefix: r.match == matchPrefix, rank: r.rank})
+		}
+	}
+	return out
+}
+
+// screenRow is one tag that must be screened: the tag, whether it is anchored, and the rank a hit
+// guesses.
+type screenRow struct {
+	open   string
+	prefix bool
+	rank   int
+}
+
 // titleCandidate returns the best-ranked title this event's user messages offer.
 //
 // ONE REVERSE SCAN, NO RETRIES — reverse so that the first acceptance at any rank is the LAST such
@@ -161,14 +279,17 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 // rankRename, making the deferral unsound rather than merely lazy. See stripReminders, and do not
 // weaken it.
 //
-// Contains for BOTH tags, not HasPrefix for the /rename envelope: HasPrefix systematically
-// under-rates a reminder-prefixed /rename to rankUserMsg, which is how a later genuine /rename
-// loses to an earlier one inside the same event. The prefix test belongs in titleFrom, where the
-// reminders are already stripped and a prefix is the right question.
+// IT SCREENS ONLY THE TAGS THAT RANK ABOVE rankUserMsg, which is what keeps it cheap. A tag ranking at
+// rankUserMsg (the leading envelopes) or at rankNone (<transcript>) needs no test here: falling through
+// to the rankUserMsg guess below is already sound for it, the bound being allowed to be too good but
+// never too bad. screenedTags selects that set from titleRules for the test below.
 func quickRank(content string) int {
 	if content == "" {
 		return rankNone
 	}
+	// Hand-written, one comparison per high-ranking tag, and kept in step with titleRules by
+	// TestScreenedRules_CoversEveryHighRankingTag rather than by sharing its loop. Each test's anchor
+	// matches its row's match column: /rename is a prefix, <user_query> is not.
 	if strings.HasPrefix(content, renamePrefix) {
 		return rankRename
 	}
@@ -215,67 +336,31 @@ func quickRank(content string) int {
 // quickRank screens instead; this settles only the guesses that are not reliable.
 func titleFrom(content string) (int, string) {
 	content = stripReminders(content)
-	// Before the arms below, which test prefixes this block would hide.
+	// Before the table, whose anchored rows this block would otherwise hide.
 	content, fromArgs := stripLocalCommands(content)
-	// Returned before the arms below, not through them: this is an extracted body, so re-testing it
-	// would rank a tag quoted inside someone's arguments as though the message carried one.
+	// Returned WITHOUT consulting the table: this is an extracted body, so testing it would rank a tag
+	// quoted inside someone's arguments as though the message carried one.
 	if fromArgs {
 		return rankUserMsg, content
 	}
-	// A TRANSCRIPT ENVELOPE IS MACHINERY, NOT AN ASK. Observed live: a message opening with this tag
-	// titled a session `\", \"` — the fold reduced a wall of quoted JSONL to its punctuation.
-	// Discarded rather than ranked, so the walk reaches a real title behind it.
-	//
-	// ANCHORED, WITH NO LEADING-WHITESPACE TOLERANCE, and every arm below anchors for the same reason:
-	// of the local-transcript user messages mentioning this tag, the only one does so as PROSE — a bug
-	// report quoting it — so an unanchored match discards exactly the message a reader wants.
-	if strings.HasPrefix(content, transcriptOpen) {
-		return rankNone, ""
-	}
-	// A LEADING ENVELOPE'S BODY IS THE TITLE, and what follows the close is machinery. Anchored like
-	// the arms around it, so prose quoting the tag keeps its own words.
-	for _, env := range leadingEnvelopes {
-		if !strings.HasPrefix(content, env[0]) {
+	// One pass over the tag table; first match wins. See titleRules for why its order matters.
+	for _, r := range titleRules {
+		if !tagPresent(content, r.open, r.match) {
 			continue
 		}
-		if t := between(content, env[0], env[1]); !foldsBlank(t) {
-			return rankUserMsg, t
+		// BLANK, NOT EMPTY. The two shapes arrive by different routes: an empty body yields "" from
+		// between(), while a whitespace body would otherwise reach rankUserQuery and outrank genuine
+		// prose. foldsBlank covers both and is sanitizeTitle's own predicate, so it still ranks any body
+		// that would survive the fold.
+		t, outcome := r.extract(content)
+		if !foldsBlank(t) {
+			return r.rank, t
+		}
+		// Named nothing. What that means is the extraction's call, not the row's. See takeOutcome.
+		if outcome == takeDeclined {
+			break // keep the message's own words: on to the generic prose arm
 		}
 		return rankNone, ""
-	}
-	// AN ENVELOPE THAT IS THE WHOLE MESSAGE YIELDS ITS BODY OR NOTHING, and must never fall through
-	// to the generic rankUserMsg arm: falling through takes the LITERAL MARKUP as the title, which is
-	// non-blank, so foldsBlank cannot reject it and under first-wins it blocks the session's real
-	// title for the rest of its life. rankNone lets the walk reach a real title behind it instead.
-	//
-	// Each arm anchors "the whole message" differently — HasPrefix here, since a /rename body follows
-	// its tag; both ends below, since an envelope body sits between them.
-	if strings.HasPrefix(content, renamePrefix) {
-		if t := between(content, "<command-args>", "</command-args>"); t != "" {
-			return rankRename, t
-		}
-		return rankNone, ""
-	}
-	if strings.Contains(content, "<user_query>") {
-		// BLANK, NOT EMPTY. The two blank shapes arrive by different routes: an empty body yields ""
-		// from between() and falls to the generic arm (markup as title, per above), while a whitespace
-		// body reaches rankUserQuery — the worse lie, since it outranks genuine prose. foldsBlank covers
-		// both, and being sanitizeTitle's own predicate it still ranks any body that would survive
-		// the fold.
-		//
-		// ONE ACCEPTED LIMIT follows from the anchor: a trailing non-blank byte defeats the suffix, so
-		// "<user_query></user_query>x" is still titled with its own markup. Widening to "both tags
-		// present anywhere" fixes it and regresses the prose case — the trade this shape declines.
-		// TestSessionTitle_EnvelopeAnchorLimits pins both halves, the fixed and the accepted.
-		if t, ok := wholeMessageEnvelope(content); ok {
-			if foldsBlank(t) {
-				return rankNone, ""
-			}
-			return rankUserQuery, t
-		}
-		if t := between(content, "<user_query>", "</user_query>"); t != "" {
-			return rankUserQuery, t
-		}
 	}
 	// A user-role message whose payload was a tool result or an image flattens to "" (see
 	// pipeline.InferenceMessage.ContentBytes) — it is the last message of every agentic turn
@@ -286,6 +371,52 @@ func titleFrom(content string) (int, string) {
 		return rankUserMsg, content
 	}
 	return rankNone, ""
+}
+
+// tagPresent reports whether tag is present in content the way m requires.
+//
+// A matchPrefix row anchors with no leading-whitespace tolerance. The user messages that mention these
+// tags mention them as prose — a bug report quoting one — so an unanchored match would discard exactly
+// the message a reader wants.
+//
+// Takes two fields rather than a titleRule receiver: this runs once per row per message of every event,
+// and the narrower signature keeps it inlinable.
+func tagPresent(content, tag string, m tagMatch) bool {
+	if m == matchContains {
+		return strings.Contains(content, tag)
+	}
+	return strings.HasPrefix(content, tag)
+}
+
+// extract pulls this rule's title text out of a message its tag already matched, and says what a blank
+// result means. See takeOutcome.
+func (r titleRule) extract(content string) (string, takeOutcome) {
+	switch r.take {
+	case takeDiscard:
+		return "", takeClaimed
+	case takeFirstLine:
+		// Anchored on the open, so a match is the machinery. A blank body claims the message.
+		return firstLine(between(content, r.open, r.close)), takeClaimed
+	case takeArgs:
+		// Anchored likewise. A message opening on the /rename envelope is a /rename whether or not it
+		// carried arguments.
+		return between(content, argsOpen, argsClose), takeClaimed
+	case takeQueryBody:
+		// A whole-message envelope claims the message: nothing else is in it, so a blank body names
+		// nothing rather than letting the markup through.
+		//
+		// ONE ACCEPTED LIMIT follows from anchoring both ends. A trailing non-blank byte defeats the
+		// suffix, so "<user_query></user_query>x" is still titled with its own markup. Widening to "both
+		// tags present anywhere" fixes that and regresses the prose case.
+		// TestSessionTitle_EnvelopeAnchorLimits pins both halves.
+		if t, ok := wholeMessageEnvelope(content); ok {
+			return t, takeClaimed
+		}
+		// Anything else declines. This is the unanchored row, so a body that will not extract is the
+		// signal that the tag is loose in prose.
+		return between(content, r.open, r.close), takeDeclined
+	}
+	return "", takeClaimed
 }
 
 const (
@@ -299,18 +430,6 @@ const (
 	localCommandOpen  = "<local-command-caveat>"
 	localCommandClose = "</local-command-caveat>"
 )
-
-// leadingEnvelopes wrap the user's own words in a tag the harness opens the message with, and are
-// followed by machinery rather than closing the message. The BODY is the title; extend the table to
-// cover more of them.
-//
-// Distinct from wholeMessageEnvelope, which requires the close to end the message. No live message
-// has that shape for these tags (measured: 0 of 22), because something always follows — captured
-// output after <bash-input>, title-writing instructions after <session>.
-var leadingEnvelopes = [][2]string{
-	{"<bash-input>", "</bash-input>"},
-	{"<session>", "</session>"},
-}
 
 // argsOpen / argsClose wrap the arguments a user typed after a command name. Named because
 // stripLocalCommands keeps that one body rather than only discarding it; the table below refers to
@@ -519,6 +638,85 @@ func wholeMessageEnvelope(s string) (string, bool) {
 		return "", false
 	}
 	return body, true
+}
+
+// firstLine reduces an envelope body to the one line that names it: its first markdown ATX heading
+// with the `#` markers stripped, else its first non-blank line.
+//
+// A body need not be one line. sanitizeTitle folds a multi-line body rather than choosing within it, so
+// a markdown document arrives as its subject followed by the next heading down and whatever else fit.
+//
+// The heading is searched for, not only tested at the top, because a brief may open on a lead
+// paragraph. The first heading wins regardless of level: ranking levels would mean reading the whole
+// body to find a `#` that may not exist.
+//
+// Only a bounded prefix of the body is scanned, because this runs under the store's write lock and a
+// body is unbounded. A heading deep in a long document is therefore not found.
+//
+// Returns "" for an entirely blank body. titleFrom's foldsBlank check turns that into rankNone.
+func firstLine(body string) string {
+	// Hand-scanned rather than strings.Split, which would allocate a slice proportional to a body this
+	// deliberately refuses to read all of.
+	//
+	// The budget is in BYTES CONSUMED, not lines examined. A line budget bounds neither of the two
+	// unbounded shapes: one enormous line, and many short ones. It is generous against maxTitleLen so a
+	// heading can still be found a few lines down behind a lead paragraph.
+	const budget = maxTitleLen * 16
+	rest := body
+	if len(rest) > budget {
+		rest = rest[:budget]
+	}
+	firstProse := ""
+	for rest != "" {
+		line := rest
+		if i := strings.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = ""
+		}
+		line = strings.Trim(line, " \t\r")
+		if line == "" {
+			continue
+		}
+		if t, ok := atxHeading(line); ok {
+			if t != "" {
+				return t
+			}
+			// A bare rule of '#' names nothing. Keep scanning; a real heading may follow.
+			continue
+		}
+		if firstProse == "" {
+			firstProse = line
+			// A first line that already fills the title ends the search. A heading behind it could not be
+			// a better name, and looking for one is the unbounded scan the budget exists to prevent.
+			// Compared in bytes against a rune cap, so this is conservative.
+			if len(firstProse) >= maxTitleLen {
+				break
+			}
+		}
+	}
+	return firstProse
+}
+
+// atxHeading reports whether line is a markdown ATX heading and returns its text.
+//
+// The whitespace after the markers is the whole test, as in CommonMark. It is what separates
+// `# Heading` from `#hashtag` and `#!/bin/sh`, which are ordinary prose lines.
+//
+// A line of nothing but markers is a heading with empty text: ok is true and text is "". firstLine
+// skips those. The trailing markers of a closed ATX heading (`## x ##`) come off with the text's trim.
+func atxHeading(line string) (string, bool) {
+	h := strings.TrimLeft(line, "#")
+	if h == line {
+		return "", false // no markers at all
+	}
+	if h == "" {
+		return "", true // nothing but markers
+	}
+	if h[0] != ' ' && h[0] != '\t' {
+		return "", false // #hashtag, #!/bin/sh — markers glued to the text
+	}
+	return strings.Trim(h, " \t#"), true
 }
 
 // between returns the text bracketed by open and closing, or "" if either is absent.

@@ -1281,6 +1281,101 @@ func TestSessionTitle_LeadingEnvelopeYieldsItsBody(t *testing.T) {
 	})
 }
 
+// A <conversation> handoff brief is titled by its first heading. Verbatim from a live session, which
+// served `<conversation> # Restructure flattened content in ONS_125 and ONS_126 ## Context` — the whole
+// markdown document folded onto one line until the clip cut it.
+func TestSessionTitle_ConversationEnvelopeYieldsItsFirstHeading(t *testing.T) {
+	const live = "<conversation>\n" +
+		"# Restructure flattened content in ONS_125 and ONS_126\n\n" +
+		"## Context\n\n" +
+		"`detect-missing-tables screen` showed `FLATTENED 2 ... MISSING 0 UNKNOWN 0` for\n" +
+		"ONS_125, and `restore-headings scan` showed clusters of `UNMATCHED` headings\n" +
+		"</conversation>"
+	if got, want := candidateTitle(userEvent(live)), "Restructure flattened content in ONS_125 and ONS_126"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// firstLine's rules, stated on an envelope rather than on the helper, so each case is a title a session
+// could actually be served.
+func TestSessionTitle_EnvelopeBodyReducesToOneLine(t *testing.T) {
+	conv := func(body string) string { return "<conversation>" + body + "</conversation>" }
+	for _, tc := range []struct{ name, in, want string }{
+		{"heading markers come off", conv("\n# The subject\n\n## Context\n\nprose\n"), "The subject"},
+		{"a deeper first heading still wins", conv("\n### Deep\n\n# Shallow later\n"), "Deep"},
+		{"a closed ATX heading loses both ends", conv("\n## The subject ##\n\nprose\n"), "The subject"},
+		// A brief may open on a lead paragraph; the heading behind it is still the subject.
+		{"a heading behind prose is found", conv("\nsome lead-in text\n\n# The subject\n\nmore\n"), "The subject"},
+		// No heading anywhere: the first non-blank line.
+		{"no heading falls back to the first line", conv("\nplease finish the refactor\n\nit broke the build\n"), "please finish the refactor"},
+		{"leading blank lines are skipped", conv("\n\n\n   \n# The subject\n"), "The subject"},
+		// ATX requires whitespace after the markers, so these are ordinary prose lines, markers and all.
+		{"a hashtag is not a heading", conv("\n#hashtag not a heading\n\nmore prose\n"), "#hashtag not a heading"},
+		{"a shebang is not a heading", conv("\n#!/bin/sh\necho hi\n"), "#!/bin/sh"},
+		// Being prose, a hashtag does not stop the search for a real heading behind it.
+		{"a heading behind a hashtag still wins", conv("\n#hashtag\n\n# The subject\n"), "The subject"},
+		// A bare rule of markers names nothing, so the scan keeps going.
+		{"a bare rule of markers is skipped", conv("\n###\n\n# The subject\n"), "The subject"},
+		// A blank body yields rankNone, so the walk reaches a real title behind it.
+		{"an empty body names nothing", conv(""), ""},
+		{"a blank body names nothing", conv("\n  \n\t\n"), ""},
+		{"a body of nothing but a rule names nothing", conv("\n##\n###\n"), ""},
+		// Anchored, like every other tag test here.
+		{
+			"prose mentioning the tag keeps its own words",
+			"why did <conversation> end up in my session title?",
+			"why did <conversation> end up in my session title?",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// The reduction applies to envelope bodies only. Ordinary prose opening on a markdown heading keeps
+	// folding whole.
+	t.Run("ordinary prose is not reduced", func(t *testing.T) {
+		const in = "# The subject\n\nand the rest of what I typed"
+		const want = "# The subject and the rest of what I typed"
+		if got := candidateTitle(userEvent(in)); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	// A real prompt behind a blank brief still names the session, as for the other envelopes.
+	t.Run("a real prompt behind a blank brief still names the session", func(t *testing.T) {
+		const want = "the real ask"
+		if got := foldTitle(t, titleEvent(conv("\n  \n")), titleEvent(want)); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// firstLine reads a bounded prefix of the body, not all of it. Both unbounded shapes are covered: many
+// short lines, and one enormous line.
+func TestFirstLine_BoundedByBodyPrefix(t *testing.T) {
+	// A heading past the budget is not found. What matters is that the scan stops, asserted by the
+	// fallback being the first line.
+	deep := strings.Repeat("filler line\n", 4096) + "# never reached\n"
+	if got := firstLine(deep); got != "filler line" {
+		t.Errorf("got %q, want the first line — the scan read past its budget", got)
+	}
+	// One enormous first line: the scan must not read on looking for a heading behind it. Asserted as a
+	// prefix relationship rather than an exact budget.
+	huge := strings.Repeat("x", 190*1024)
+	got := firstLine(huge + "\n# behind it")
+	if got == "" || !strings.HasPrefix(huge, got) {
+		t.Fatalf("got %q, want a prefix of the first line", got)
+	}
+	if len(got) >= len(huge) {
+		t.Errorf("got %d bytes, want well under the line's %d — the whole line was scanned", len(got), len(huge))
+	}
+	// The clip that follows makes the truncation invisible: a title is 80 runes either way.
+	if n := utf8.RuneCountInString(sanitizeTitle(got)); n != maxTitleLen {
+		t.Errorf("sanitized to %d runes, want %d", n, maxTitleLen)
+	}
+}
+
 // A /rename the user typed keeps winning; the block must not shadow the prefix that arm tests.
 // A /rename IS THE ONE TITLE THE USER TYPED, so the strip must hand it to the arm that reads it
 // rather than consuming it as machinery.
@@ -1359,10 +1454,42 @@ func TestQuickRank_DoesNotUnderPromiseOnLocalCommands(t *testing.T) {
 		"<bash-input></bash-input>\n<bash-stdout>out</bash-stdout>",
 		"<session>\nthe ask\n</session>\n\ninstructions",
 		"<session>  </session>\n\ninstructions",
+		// quickRank does not anchor on <conversation>, so it guesses rankUserMsg. That is where titleFrom
+		// settles a brief with a body, and above where it settles a blank one — sound in the one direction
+		// that matters.
+		"<conversation>\n# The subject\n\nprose\n</conversation>",
+		"<conversation>\nno heading, just prose\n</conversation>",
+		"<conversation>  </conversation>",
+		"<conversation>\n###\n</conversation>",
 	} {
 		settled, _ := titleFrom(content)
 		if guess := quickRank(content); guess > settled {
 			t.Errorf("quickRank=%d under-promises against titleFrom=%d for %q", guess, settled, content)
+		}
+	}
+}
+
+// The screen must know every tag ranking above rankUserMsg. quickRank's tests are hand-written rather
+// than driven from titleRules, so this keeps the two in step: adding a row above rankUserMsg without
+// teaching quickRank fails here.
+//
+// A tag the screen does not know is guessed rankUserMsg, deferred, and then recorded without titleFrom
+// ever settling it. A genuine /rename then loses to any later message in the same event, and first-wins
+// keeps the wrong title.
+func TestScreenedRules_CoversEveryHighRankingTag(t *testing.T) {
+	rows := screenedTags()
+	if len(rows) == 0 {
+		t.Fatal("no high-ranking rows found — the table or the rank constants moved")
+	}
+	for _, r := range rows {
+		// Built from the row's own anchor, so the case cannot drift from the table.
+		msg := r.open + "body"
+		if !r.prefix {
+			msg = "prose then " + r.open + "body"
+		}
+		if got := quickRank(msg); got != r.rank {
+			t.Errorf("quickRank(%q) = %d, want %d — the screen does not know the %q row; "+
+				"add a comparison to quickRank", msg, got, r.rank, r.open)
 		}
 	}
 }
