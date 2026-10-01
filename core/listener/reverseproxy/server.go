@@ -59,6 +59,25 @@ func (e *responseRejectedError) Error() string {
 	return "response rejected"
 }
 
+// responseBufferError marks a failure to buffer a response the backend DID
+// send — a body read that errored, or one over maxBodySize. Both reach
+// errorHandler, which otherwise cannot tell them from a backend that was never
+// reached: it sees only an error value, and the client gets the same 502 either
+// way.
+//
+// Worth a type because the distinction is the whole content of the event. On
+// this path pctx.StatusCode already holds the backend's real status (set at the
+// top of modifyResponse, before the read), so classifying it as a transport
+// failure would blame the upstream for our own buffer limit AND throw away a
+// status we know. status carries that real status to the recording site.
+type responseBufferError struct {
+	status int
+	err    error
+}
+
+func (e *responseBufferError) Error() string { return e.err.Error() }
+func (e *responseBufferError) Unwrap() error { return e.err }
+
 // Server is an HTTP reverse proxy with inbound JWT validation.
 //
 // InboundPipeline is a holder so the bound pipeline can be hot-swapped
@@ -492,11 +511,16 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if s.InboundPipeline.NeedsBody() && resp.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 		if err != nil {
-			return err
+			// Wrapped so errorHandler records the backend's own status rather
+			// than attributing our buffering failure to the upstream.
+			return &responseBufferError{status: resp.StatusCode, err: err}
 		}
 		resp.Body.Close()
 		if len(body) > maxBodySize {
-			return fmt.Errorf("response body too large (%d bytes)", len(body))
+			return &responseBufferError{
+				status: resp.StatusCode,
+				err:    fmt.Errorf("response body too large (%d bytes)", len(body)),
+			}
 		}
 		pctx.ResponseBody = body
 		resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -631,6 +655,17 @@ func (s *Server) errorHandler(w http.ResponseWriter, r *http.Request, err error)
 	// the twin comment in forwardproxy for why the 502 stays off pctx.StatusCode.
 	pctx, _ := r.Context().Value(pctxKey{}).(*pipeline.Context)
 	if pctx == nil {
+		return
+	}
+	// Two failures arrive here, and only one of them is the upstream's. A
+	// responseBufferError means the backend answered and WE could not buffer
+	// what it sent, so the event keeps its real status and says proxy_error —
+	// calling that upstream_error would blame the backend for our 1MB limit.
+	if bErr, ok := err.(*responseBufferError); ok {
+		s.recordInboundResponseEvent(pctx, bErr.status, &pipeline.EventError{
+			Kind:    "proxy_error",
+			Message: bErr.Error(),
+		})
 		return
 	}
 	s.recordInboundResponseEvent(pctx, http.StatusBadGateway, pipeline.TransportError(err))

@@ -1,6 +1,7 @@
 package forwardproxy
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -277,4 +278,61 @@ func allEvents(t *testing.T, store *session.Store) []pipeline.SessionEvent {
 		out = append(out, v.Events...)
 	}
 	return out
+}
+
+// bodyReadingPlugin forces the buffered response path, where the two
+// response-buffering failures live.
+type bodyReadingPlugin struct{}
+
+func (bodyReadingPlugin) Name() string { return "body-reader" }
+func (bodyReadingPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{ReadsBody: true}
+}
+
+func (bodyReadingPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func (bodyReadingPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestForwardProxy_OversizeResponse_RecordsProxyErrorNotUpstream is the outbound
+// twin of the reverseproxy case. A response the upstream delivered fine but that
+// exceeds our own buffer ceiling must keep the upstream's real status and be
+// labelled proxy_error — the upstream did nothing wrong, and a 502/upstream_*
+// row would point an operator at the wrong end.
+//
+// These two returns also recorded NOTHING before, which is the #1045 bug on a
+// second pair of paths.
+func TestForwardProxy_OversizeResponse_RecordsProxyErrorNotUpstream(t *testing.T) {
+	huge := bytes.Repeat([]byte("x"), maxBodySize+1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(huge)
+	}))
+	defer backend.Close()
+
+	proxy, store := failureProxy(t, nil, bodyReadingPlugin{})
+
+	if got := viaProxy(t, proxy, backend.URL+"/big", 30*time.Second); got != http.StatusBadGateway {
+		t.Errorf("client status = %d, want 502 (we cannot relay what we cannot buffer)", got)
+	}
+
+	events := allEvents(t, store)
+	var resp *pipeline.SessionEvent
+	for i := range events {
+		if events[i].Phase == pipeline.SessionResponse {
+			resp = &events[i]
+		}
+	}
+	if resp == nil {
+		t.Fatalf("no response event recorded; events = %+v", events)
+	}
+	if resp.Error == nil || resp.Error.Kind != "proxy_error" {
+		t.Errorf("Error = %+v, want kind proxy_error", resp.Error)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200 (what the upstream actually sent)", resp.StatusCode)
+	}
 }

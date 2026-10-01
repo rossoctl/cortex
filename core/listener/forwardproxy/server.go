@@ -580,15 +580,29 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 
 		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
+			// Both failures below record the UPSTREAM's status, not the 502 we
+			// answer with, and say proxy_error: the upstream replied fine and we
+			// could not buffer what it sent. Blaming it for our own ceiling would
+			// send an operator looking at the wrong end. Recorded at all for the
+			// same reason as the transport-failure path above (#1045) — these
+			// returns left no trace either.
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 			if err != nil {
 				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
 				http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+				s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
+					Kind:    "proxy_error",
+					Message: err.Error(),
+				})
 				return
 			}
 			if len(respBody) > maxBodySize {
 				slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
 				http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+				s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
+					Kind:    "proxy_error",
+					Message: fmt.Sprintf("response body too large (%d bytes)", len(respBody)),
+				})
 				return
 			}
 			pctx.ResponseBody = respBody
@@ -1239,15 +1253,25 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 // correctly-parsed completion. Production ResponseWriters implement
 // http.Flusher so this path is mostly hit in tests.
 func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
+	// Both buffering failures keep the upstream's status and say proxy_error, as
+	// on the non-streaming path — see the comment there.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 	if err != nil {
 		slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
 		http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
+			Kind:    "proxy_error",
+			Message: err.Error(),
+		})
 		return
 	}
 	if len(respBody) > maxBodySize {
 		slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
 		http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
+			Kind:    "proxy_error",
+			Message: fmt.Sprintf("response body too large (%d bytes)", len(respBody)),
+		})
 		return
 	}
 	pctx.ResponseBody = respBody

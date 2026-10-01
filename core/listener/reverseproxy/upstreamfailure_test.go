@@ -1,6 +1,7 @@
 package reverseproxy
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -170,4 +171,83 @@ func closedAddr(t *testing.T) string {
 		t.Fatalf("close: %v", err)
 	}
 	return addr
+}
+
+// bodyReader forces the listener onto the buffered response path, which is where
+// the two buffering failures live.
+type bodyReader struct{}
+
+func (bodyReader) Name() string { return "body-reader" }
+func (bodyReader) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{ReadsBody: true}
+}
+
+func (bodyReader) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.Allow("ok")
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func (bodyReader) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.Observe("resp-ok")
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestReverseProxy_OversizeResponse_RecordsProxyErrorNotUpstream guards the
+// distinction a reviewer caught. A response the backend sent fine but that we
+// could not buffer (over maxBodySize) reaches errorHandler too — and must NOT be
+// recorded as a transport failure. The backend answered 200; attributing our own
+// 1MB ceiling to the upstream as a 502/upstream_error would send an operator
+// looking at the wrong end of the connection, and throw away a status we have.
+func TestReverseProxy_OversizeResponse_RecordsProxyErrorNotUpstream(t *testing.T) {
+	// One byte over the cap is enough, and keeps the test cheap.
+	huge := bytes.Repeat([]byte("x"), maxBodySize+1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(huge)
+	}))
+	defer backend.Close()
+
+	p, err := pipeline.New([]pipeline.Plugin{bodyReader{}})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	store := session.New(5*time.Minute, 100, 100)
+	defer store.Close()
+
+	srv, err := NewServer(pipeline.NewHolder(p), store, backend.URL, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	resp, err := http.Get(proxy.URL + "/big")
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+	resp.Body.Close()
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil {
+		t.Fatal("no session recorded")
+	}
+	var respEvent *pipeline.SessionEvent
+	for i := range v.Events {
+		if v.Events[i].Phase == pipeline.SessionResponse {
+			respEvent = &v.Events[i]
+		}
+	}
+	if respEvent == nil {
+		t.Fatalf("no response event recorded; events = %+v", v.Events)
+	}
+	if respEvent.Error == nil {
+		t.Fatal("Error = nil, want the buffering failure")
+	}
+	if respEvent.Error.Kind != "proxy_error" {
+		t.Errorf("Error.Kind = %q, want proxy_error — the backend replied; the buffer limit is ours", respEvent.Error.Kind)
+	}
+	// The backend's real status, not the 502 we answered the client with.
+	if respEvent.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200 (the status the backend actually sent)", respEvent.StatusCode)
+	}
 }

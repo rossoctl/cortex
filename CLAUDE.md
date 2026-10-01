@@ -552,7 +552,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   (`upstream_timeout`, `upstream_refused`, `upstream_dns`, `upstream_tls`, else
   `upstream_error`) and `error.message` holding the error verbatim, naming the address.
   Before that was recorded the row did not exist at all, so a failed request was
-  indistinguishable from one still in flight and raised no error rate (#1045). Note the
+  indistinguishable from one still in flight and raised no error rate (#1045).
+  **`error.kind: "proxy_error"` is the one that is NOT the upstream's fault** — the
+  backend replied and the proxy could not buffer what it sent (a body read error, or one
+  over the listener's `maxBodySize`: 1MB inbound, 10MB outbound). Those rows keep the
+  **upstream's real status**, not the 502 the client got, because the status is known and
+  blaming the backend for our own ceiling points an operator at the wrong end. Note the
   deliberate asymmetry with the Finisher's view: `Outcome.StatusCode` stays **0** for
   these, because that zero is what marks the request as `OutcomeError` rather than an
   allow — the event and the outcome disagree on purpose. An opaque CONNECT that could not
