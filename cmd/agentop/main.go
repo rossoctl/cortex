@@ -375,7 +375,7 @@ type observeFlags struct {
 func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 	return observeFlags{
 		endpoint: fs.String("endpoint", "",
-			"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, agentop connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker; --kubernetes forces the picker either way."),
+			"Cortex session API URL (e.g. http://localhost:9094). When omitted, agentop connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker; --kubernetes forces the picker either way."),
 		// Named --prefs rather than --config: `agentop service` and `agentop claude-code`
 		// already spell the PROXY's config that way, and one flag name meaning two
 		// different files in one binary is worse than a second word.

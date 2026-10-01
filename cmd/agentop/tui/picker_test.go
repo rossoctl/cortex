@@ -71,7 +71,7 @@ func TestNamespacesPaneEmptyState(t *testing.T) {
 	updated, _ := m.Update(loaded)
 	mm := updated.(*model)
 	view := mm.View()
-	if !strings.Contains(view, "No AuthBridge agents found") {
+	if !strings.Contains(view, "No Cortex agents found") {
 		t.Fatalf("empty-state hint missing from view:\n%s", view)
 	}
 	if !strings.Contains(view, "--endpoint") {

@@ -2169,7 +2169,7 @@ func (m *model) paneView() string {
 		var body string
 		if m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "" {
 			body = styleHint.Render(
-				"No AuthBridge agents found in this cluster.\n" +
+				"No Cortex agents found in this cluster.\n" +
 					"Press [l] to connect to " + m.localEndpointOr() + " (an existing\n" +
 					"port-forward), or use `agentop --endpoint http://...`.")
 		} else {

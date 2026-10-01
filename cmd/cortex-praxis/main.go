@@ -276,7 +276,7 @@ func writePraxisConfig(cfg *config.Config, outPath, policyPath, audienceFile str
 		"filterChains", len(res.Config.FilterChains),
 		"unmappedPlugins", len(res.Unmapped))
 	for _, u := range res.Unmapped {
-		slog.Warn("AuthBridge plugin not represented in the generated Praxis config", "detail", u)
+		slog.Warn("Cortex plugin not represented in the generated Praxis config", "detail", u)
 	}
 	for _, w := range res.Warnings {
 		slog.Warn("Praxis config translation note", "detail", w)
