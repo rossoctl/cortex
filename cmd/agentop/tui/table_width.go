@@ -32,8 +32,9 @@ const minColumnWidth = 4
 // fitted width and not its declared one: fitTableColumns shrinks columns on a narrow terminal,
 // and a title padded to a width the column no longer has is a title bubbles truncates — which
 // costs the heading its last letter instead of aligning it. The events table's fitColumns only
-// ever DROPS whole columns, never narrows a surviving one, so there the two widths are the same
-// number and tableColumns passes eventColumn.width directly.
+// ever DROPS whole columns, and its content sizing (sizedColumns) narrows the eventColumn itself
+// before tableColumns sees it, so there eventColumn.width already is the rendered width and
+// tableColumns passes it directly.
 func rightAlignHeader(title string, width int) string { return padLeft(title, width) }
 
 // headerTitle is a column's NAME, with any alignment padding rightAlignHeader added stripped

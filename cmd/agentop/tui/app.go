@@ -557,9 +557,13 @@ type model struct {
 	// 500 rows on every SSE event and every resize.
 	eventColumns map[eventColumnID]bool
 	// eventColsDropped is how many selected columns did not fit the terminal on the
-	// last rebuild. Surfaced in the footer: with every column on the table needs
-	// ~168 columns, and the excess was clipped with nothing saying so (#866).
+	// last rebuild. Surfaced in the footer: the default columns alone can need 166,
+	// and the excess was clipped with nothing saying so (#866).
 	eventColsDropped int
+	// eventColWidths is the width each selected fitsContent column needs for the
+	// selected session's rows, measured by rebuildEventsTable. Kept so the column
+	// picker fits the widths the table does — see layoutColumns.
+	eventColWidths map[eventColumnID]int
 	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
 	// column within it.
 	colPicker bool
@@ -2147,7 +2151,7 @@ func (m *model) View() string {
 	// the popup drawn over a pane it does not belong to.
 	if m.colPicker && m.pane == paneEvents {
 		return overlayCenter(base,
-			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height,
+			renderColumnPicker(m.eventColumns, m.eventColWidths, m.colCursor, m.width, m.height,
 				m.sortCol, m.sortDesc),
 			m.width, m.height)
 	}

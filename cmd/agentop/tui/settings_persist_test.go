@@ -576,7 +576,7 @@ func TestColumnPicker_HidingTheSortedColumnKeepsTheSortRecoverable(t *testing.T)
 		t.Errorf("footer does not name the ordering of a hidden sorted column: %q", st)
 	}
 	// The picker still lists it, unchecked, so the cursor can reach it again.
-	pk := stripANSI(renderColumnPicker(m.eventColumns, m.colCursor, 160, 40, m.sortCol, m.sortDesc))
+	pk := stripANSI(renderColumnPicker(m.eventColumns, m.eventColWidths, m.colCursor, 160, 40, m.sortCol, m.sortDesc))
 	if !strings.Contains(pk, "[ ] DURATION") {
 		t.Errorf("picker does not offer the hidden sorted column: %q", pk)
 	}

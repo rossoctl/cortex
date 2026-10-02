@@ -126,9 +126,32 @@ func (m *model) rebuildEventsTable() {
 	// exchange is read off the timeline.
 	ids, partner := computeEventPairs(eventRows)
 
-	// One selection per rebuild, fitted to the terminal. Both the header and every
-	// row cell come from `cols`, so they cannot disagree.
-	cols, dropped := fitColumns(selectedColumns(m.eventColumns), m.width)
+	// One cellContext per row of the SESSION, before any filter. The fitsContent
+	// columns are measured over all of them (see contentWidths), and the row loop
+	// below renders from these same contexts, so a column cannot be sized from one
+	// reading of a row and filled from another.
+	//
+	// That computes invocations and rowAction for rows a filter then hides, which the
+	// loop used to skip. It is what the unfiltered view pays on every rebuild anyway,
+	// so filtering never makes a rebuild dearer than not filtering.
+	ctxs := make([]cellContext, len(eventRows))
+	for i, er := range eventRows {
+		// One invocations and one rowAction per row: hideInactive below reads invs,
+		// and the ACTION and PLUGIN cells read this one rowAction result rather than
+		// each recomputing the pair and discarding half of it. Both consider the
+		// folded tunnel's invocations too.
+		invs := er.invocations()
+		action, plugin := rowAction(er, invs)
+		ctxs[i] = cellContext{
+			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
+			invs: invs, action: action, plugin: plugin,
+		}
+	}
+
+	// One selection per rebuild, sized to the session and fitted to the terminal.
+	// Both the header and every row cell come from `cols`, so they cannot disagree.
+	m.eventColWidths = contentWidths(selectedColumns(m.eventColumns), ctxs)
+	cols, dropped := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
 	m.eventColsDropped = dropped
 
 	// Rows are built first and handed to the table together with their columns at
@@ -153,17 +176,15 @@ func (m *model) rebuildEventsTable() {
 			}
 		}
 	}
-	for i, er := range eventRows {
-		if m.filter != "" && !matchEventRow(er, m.filter) {
+	for _, cc := range ctxs {
+		if m.filter != "" && !matchEventRow(cc.row, m.filter) {
 			continue
 		}
 		// hideInactive (the `s` toggle) is off by default — every message is
 		// shown, including passthrough/skip-only ones, per "I should see all
 		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow). Both the filter and the
-		// headline consider the folded tunnel's invocations too.
-		invs := er.invocations()
-		if m.hideInactive && eventInactive(invs) {
+		// activity (deny/modify/observe/allow).
+		if m.hideInactive && eventInactive(cc.invs) {
 			m.hiddenInactive++
 			continue
 		}
@@ -181,14 +202,6 @@ func (m *model) rebuildEventsTable() {
 		// notation, so both rows claimed to contain each other and the output was
 		// actively misleading. The # column pairs exchanges exactly (by the
 		// proxy-stamped RequestID), which is what the glyphs approximated.
-		// One rowAction per row, reusing the invs computed for hideInactive above:
-		// the ACTION and PLUGIN cells read this result rather than each recomputing
-		// the pair and discarding half of it.
-		action, plugin := rowAction(er, invs)
-		cc := cellContext{
-			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
-			invs: invs, action: action, plugin: plugin,
-		}
 		row := make(table.Row, 0, len(cols))
 		for _, c := range cols {
 			// render, not cell: it sets cc.width from the column AND applies the
@@ -198,7 +211,7 @@ func (m *model) rebuildEventsTable() {
 			row = append(row, c.render(cc))
 		}
 		rows = append(rows, row)
-		m.visibleRows = append(m.visibleRows, er)
+		m.visibleRows = append(m.visibleRows, cc.row)
 		// Keyed from the SAME cellContext that just rendered the row, so the value
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
@@ -230,8 +243,16 @@ func (m *model) rebuildEventsTable() {
 	// The equality check is what makes the poll a no-op — the columns only change
 	// when someone toggles one or the terminal is resized past a fit boundary, and
 	// re-anchoring then is fine.
+	//
+	// A change of WIDTH alone skips the clear. The fitsContent columns produce one
+	// whenever a wider TOKENS or COST figure lands, which happens mid-stream rather
+	// than because the operator did anything, so it must not re-anchor the pane the
+	// way a toggle may. Same headings means the same number of columns, so the rows
+	// being replaced have no cell for renderRow to index past the end with.
 	if newCols := tableColumns(cols, m.sortCol, m.sortDesc); !slices.Equal(m.eventsTbl.Columns(), newCols) {
-		m.eventsTbl.SetRows(nil)
+		if !sameHeadings(m.eventsTbl.Columns(), newCols) {
+			m.eventsTbl.SetRows(nil)
+		}
 		m.eventsTbl.SetColumns(newCols)
 	}
 	m.eventsTbl.SetRows(rows)

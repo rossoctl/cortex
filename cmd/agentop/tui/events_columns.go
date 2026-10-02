@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -100,6 +102,15 @@ type eventColumn struct {
 	// named. Declaring the alignment on the column means the header cannot be left
 	// out of it: render and tableColumns read this same field.
 	rightAlign bool
+	// fitsContent makes width a cap rather than the width: the column renders as wide
+	// as its widest cell in the session, and never narrower than its heading with a
+	// sort glyph. See contentWidths.
+	//
+	// For columns whose widest cell is rare. TOKENS and COST are sized for a tool-prune
+	// saving appended to the figure, which most pipelines never produce — and because
+	// they right-align, every column reserved for it was blank space to the left of
+	// every figure (#1208).
+	fitsContent bool
 	// defaultOn is whether the column shows without the user asking.
 	defaultOn bool
 	// desc is the one-line explanation shown beside the name in the picker. Twelve
@@ -196,10 +207,12 @@ var eventColumns = []eventColumn{
 			}
 			return ""
 		}},
+	// 11 is that format's width, which every value has.
+	//
 	// UnixNano, not the rendered "15:04:05.00": that string drops the date and
 	// truncates to hundredths, so it collates two events a day apart as equal and
 	// sorts 23:59 above 00:01 from the following morning.
-	{id: colTime, width: 12, defaultOn: true, keep: keepNormal,
+	{id: colTime, width: 11, defaultOn: true, keep: keepNormal,
 		desc:    "wall-clock time the message was recorded",
 		cell:    func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.At.UnixNano()) }},
@@ -207,8 +220,10 @@ var eventColumns = []eventColumn{
 		desc:    "in = toward your agent, out = toward an upstream",
 		cell:    func(c cellContext) string { return shortDirection(c.row.event.Direction) },
 		sortKey: func(c cellContext) sortValue { return strKey(shortDirection(c.row.event.Direction)) }},
-	{id: colPhase, width: 7, defaultOn: true, keep: keepNormal,
-		desc:    "req, resp, or denied",
+	// 6 is the heading with a sort glyph; no value is wider than "resp". It was 7 for
+	// the bracket glyphs that used to prefix the phase ("└│ resp").
+	{id: colPhase, width: 6, defaultOn: true, keep: keepNormal,
+		desc:    "req or resp; a denied request shows as req",
 		cell:    func(c cellContext) string { return shortPhase(c.row.event.Phase) },
 		sortKey: func(c cellContext) sortValue { return strKey(shortPhase(c.row.event.Phase)) }},
 	// c.action, the value the cell shows — not actionRank. The rank orders by
@@ -239,14 +254,21 @@ var eventColumns = []eventColumn{
 		sortKey: func(c cellContext) sortValue { return strKey(eventMethodValue(*c.row.event)) }},
 	// The integer, not statusCell's string: the cell can carry an error marker, and
 	// a numeric sort is what puts the 5xx rows together at one end.
-	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal,
+	//
+	// Right-aligned like the figures after it. Left-aligned, the spare room of its
+	// own 7 columns and of DURATION's 9 met between a status and its duration, which
+	// put the widest gap in the row between two values of the same exchange.
+	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal, rightAlign: true,
 		desc:    "HTTP status of the response",
 		cell:    func(c cellContext) string { return statusCell(*c.row.event) },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.StatusCode) }},
 	// The Duration itself. This is the column #865 is about ("the events with the
 	// longest duration"), and the one where sorting the rendered string is most
 	// obviously wrong: "340ms" > "1.20s" lexically.
-	{id: colDuration, width: 10, defaultOn: true, keep: keepLow, rightAlign: true,
+	//
+	// 9 is the heading with a sort glyph, which is wider than anything durationCell
+	// produces ("12.34s", "59m59s").
+	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
 		sortKey: durationSortKey},
@@ -257,11 +279,18 @@ var eventColumns = []eventColumn{
 		desc:    "bytes an opaque tunnel carried: ↑ sent, ↓ received",
 		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},
-	// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)". Million-token
-	// contexts are in service, and bubbles truncates a cell at the column width, so
-	// 15 rendered "1,048,576(−1…" — dropping the saving, which is the half of this
-	// cell that appears nowhere else.
-	{id: colTokens, width: 17, defaultOn: true, keep: keepLow, rightAlign: true,
+	// 18: sized for a SEVEN-digit prompt with a counted saving, "1,048,576(−12,300)".
+	// Million-token contexts are in service, and bubbles truncates a cell at the column
+	// width, which drops the saving — the half of this cell that appears nowhere else.
+	// It was 17, sized for an ESTIMATED saving, which renders compact
+	// ("1,048,576(−12.3k)"); formatTokensWithSaving prints a counted one exactly, so
+	// the first counted saving would have rendered "1,048,576(−12,30…".
+	//
+	// That is the cap, not the width it renders at (fitsContent). The saving only
+	// renders when tool-prune saved something, and without it no cell is wider than
+	// "1,048,576" — so a fixed width left eight or more blank columns on every row,
+	// between DURATION and the figure.
+	{id: colTokens, width: 18, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
 		desc: "tokens used, and what tool-prune saved",
 		cell: func(c cellContext) string {
 			return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event)
@@ -270,7 +299,9 @@ var eventColumns = []eventColumn{
 	// 19 fits the widest cell the formatter can produce: "<$0.0001(−<$0.0001)",
 	// where both halves fell under the four-decimal floor. The ordinary shape is
 	// "$0.2546(−$0.0037)" at 17.
-	{id: colCost, width: 19, defaultOn: true, keep: keepLow, rightAlign: true,
+	//
+	// A cap, like TOKENS': without a saving the ordinary cell is "$0.2546", at 7.
+	{id: colCost, width: 19, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
 		desc: "estimated cost, and what tool-prune saved",
 		cell: func(c cellContext) string {
 			return c.m.costCell(c.rows, c.partner, c.i, c.row.event)
@@ -400,10 +431,12 @@ func selectedColumns(sel map[eventColumnID]bool) []eventColumn {
 // bubbles v1.0.0, headersView renders
 // runewidth.Truncate(col.Title, col.Width, "…"), and Truncate leaves a string
 // whose width EQUALS the limit alone. Every header plus one glyph fits its
-// declared width, with STATUS (7 of 7) and DIR (4 of 4) exactly on the boundary —
-// so no column had to be widened and fitColumns' arithmetic is untouched.
-// TestTableColumns_SortGlyphFitsEveryWidth pins that, since a longer header or a
-// tighter width would silently start clipping the column's NAME.
+// declared width, with DIR (4 of 4), PHASE (6 of 6), STATUS (7 of 7) and
+// DURATION (9 of 9) exactly on the boundary — so no column had to be widened and
+// fitColumns' arithmetic is untouched. TestTableColumns_SortGlyphFitsEveryWidth
+// pins that, since a longer header or a tighter width would silently start
+// clipping the column's NAME. A fitsContent column can render narrower than its
+// declared width, so contentWidths floors it at the same header plus glyph.
 const (
 	sortGlyphAsc  = "▲"
 	sortGlyphDesc = "▼"
@@ -437,6 +470,74 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 		out = append(out, table.Column{Title: title, Width: c.width})
 	}
 	return out
+}
+
+// sameHeadings reports whether a and b head the same columns in the same order, ignoring
+// the padding rightAlignHeader adds — so two sets that differ only in width compare equal.
+//
+// The sort glyph is not ignored: a sort that moves it is a change of heading.
+func sameHeadings(a, b []table.Column) bool {
+	return slices.EqualFunc(a, b, func(x, y table.Column) bool {
+		return headerTitle(x) == headerTitle(y)
+	})
+}
+
+// contentWidths measures each fitsContent column in cols: the width its widest cell in
+// ctxs needs, no narrower than its heading with a sort glyph and no wider than its
+// declared width.
+//
+// The floor includes the glyph whether or not the column is sorted, so sorting a column
+// cannot widen it — the same reason every declared width leaves room for one (see
+// sortGlyphAsc).
+//
+// ctxs should be every row of the session, not only those the filter keeps. Measured over
+// the visible rows, a filter typed one letter at a time would resize the columns on every
+// keystroke, and hiding the one row with a saving would narrow TOKENS until the filter was
+// cleared.
+func contentWidths(cols []eventColumn, ctxs []cellContext) map[eventColumnID]int {
+	widths := make(map[eventColumnID]int)
+	for _, c := range cols {
+		if !c.fitsContent {
+			continue
+		}
+		w := max(lipgloss.Width(string(c.id)+sortGlyphAsc), lipgloss.Width(string(c.id)+sortGlyphDesc))
+		for _, cc := range ctxs {
+			if w >= c.width {
+				break
+			}
+			// At the cap, so a cell that truncates against its width is measured at the
+			// most it could be given. cc is a copy; nothing leaks into the row loop.
+			cc.width = c.width
+			w = max(w, lipgloss.Width(c.cell(cc)))
+		}
+		widths[c.id] = min(w, c.width)
+	}
+	return widths
+}
+
+// sizedColumns returns cols with each fitsContent column at the width contentWidths
+// measured for it. A column widths has no entry for keeps its declared width — the cap, so
+// an unmeasured column is over-reserved rather than clipped.
+func sizedColumns(cols []eventColumn, widths map[eventColumnID]int) []eventColumn {
+	out := slices.Clone(cols)
+	for i, c := range out {
+		if w, ok := widths[c.id]; ok && c.fitsContent {
+			out[i].width = w
+		}
+	}
+	return out
+}
+
+// layoutColumns is the events table's columns as they render: the selection, with each
+// fitsContent column sized to the session, fitted to the terminal.
+//
+// One function because three places need this answer and must agree on it: the table,
+// the picker's "(no room)" marker, and the tests that read cells by column. A picker
+// fitting declared widths would mark COST as having no room on a terminal where the table
+// is showing it.
+func layoutColumns(sel map[eventColumnID]bool, widths map[eventColumnID]int,
+	termWidth int) (fitted []eventColumn, dropped int) {
+	return fitColumns(sizedColumns(selectedColumns(sel), widths), termWidth)
 }
 
 // cellPadding is what bubbles adds to every cell's declared width.
@@ -477,8 +578,8 @@ func columnsWidth(cols []eventColumn) int {
 // fitColumns keeps as many selected columns as the terminal holds, and reports how
 // many it had to drop.
 //
-// Explicit rather than letting bubbles clip: with every column on the table needs
-// ~168 terminal columns (144 of declared width plus two of bubbles padding per
+// Explicit rather than letting bubbles clip: at their declared widths the default
+// columns need 166 terminal columns (142 of width plus two of bubbles padding per
 // column, see columnsWidth), so HOST simply was not there and nothing said so. The
 // count feeds the footer, which is what issue #866 asks for.
 //
@@ -562,9 +663,12 @@ func fitColumns(cols []eventColumn, width int) (fitted []eventColumn, dropped in
 // A column that is selected but will not fit the current terminal is marked, so
 // enabling something and seeing no change is explained in place rather than only
 // by the footer's count.
-func renderColumnPicker(sel map[eventColumnID]bool, cursor, width, height int,
-	sortCol eventColumnID, sortDesc bool) string {
-	fitted, _ := fitColumns(selectedColumns(sel), width)
+//
+// widths is what the table measured for its fitsContent columns (model.eventColWidths), so
+// the marker is judged against the widths the table is actually using.
+func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int,
+	cursor, width, height int, sortCol eventColumnID, sortDesc bool) string {
+	fitted, _ := layoutColumns(sel, widths, width)
 	visible := make(map[eventColumnID]bool, len(fitted))
 	for _, c := range fitted {
 		visible[c.id] = true

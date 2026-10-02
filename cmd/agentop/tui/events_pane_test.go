@@ -1184,7 +1184,7 @@ func sortTestModel(events []pipeline.SessionEvent) *model {
 // on what the operator sees rather than on an internal index.
 func cellAt(t *testing.T, m *model, row int, id eventColumnID) string {
 	t.Helper()
-	cols, _ := fitColumns(selectedColumns(m.eventColumns), m.width)
+	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
 	for i, c := range cols {
 		if c.id == id {
 			rows := m.eventsTbl.Rows()

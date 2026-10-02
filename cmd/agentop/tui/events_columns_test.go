@@ -192,7 +192,7 @@ func TestEventColumns_AllHaveCellFuncs(t *testing.T) {
 // what DIR or METHOD meant.
 func TestRenderColumnPicker(t *testing.T) {
 	sel := defaultColumnSelection()
-	out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
+	out := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, "", false))
 
 	for _, c := range eventColumns {
 		if !strings.Contains(out, string(c.id)) {
@@ -222,7 +222,7 @@ func TestRenderColumnPicker(t *testing.T) {
 func TestRenderColumnPicker_ShowsUncheckedBoxes(t *testing.T) {
 	sel := defaultColumnSelection()
 	sel[colHost] = false
-	out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
+	out := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, "", false))
 	if !strings.Contains(out, "[ ]") {
 		t.Errorf("no empty box for a disabled column: %q", out)
 	}
@@ -231,11 +231,11 @@ func TestRenderColumnPicker_ShowsUncheckedBoxes(t *testing.T) {
 // A selected column that cannot fit is marked in place. Without it, ticking HOST in
 // an 80-column window looks like the checkbox did nothing.
 func TestRenderColumnPicker_MarksColumnsThatDoNotFit(t *testing.T) {
-	narrow := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 80, 40, "", false))
+	narrow := stripANSI(renderColumnPicker(defaultColumnSelection(), nil, 0, 80, 40, "", false))
 	if !strings.Contains(narrow, "no room") {
 		t.Errorf("narrow terminal does not flag unfittable columns: %q", narrow)
 	}
-	wide := stripANSI(renderColumnPicker(defaultColumnSelection(), 0, 200, 40, "", false))
+	wide := stripANSI(renderColumnPicker(defaultColumnSelection(), nil, 0, 200, 40, "", false))
 	if strings.Contains(wide, "no room") {
 		t.Errorf("wide terminal wrongly flags a column as unfittable: %q", wide)
 	}
@@ -496,7 +496,7 @@ func TestColumnPicker_FitsTheTerminal(t *testing.T) {
 	}
 	for _, w := range []int{60, 80, 100, 200} {
 		for _, c := range []int{0, len(eventColumns) - 1} {
-			out := renderColumnPicker(sel, c, w, 40, "", false)
+			out := renderColumnPicker(sel, nil, c, w, 40, "", false)
 			for _, ln := range strings.Split(out, "\n") {
 				if n := lipgloss.Width(ln); n > w {
 					t.Errorf("width %d, cursor %d: a row is %d columns wide:\n%s", w, c, n, ln)
@@ -515,7 +515,7 @@ func TestColumnPicker_HintsSurviveAShortTerminal(t *testing.T) {
 	sel := defaultColumnSelection()
 	base := strings.Repeat("row\n", 11)
 	for _, h := range []int{40, 24, 18, 14, 12, 10, 8} {
-		panel := renderColumnPicker(sel, 0, 100, h, "", false)
+		panel := renderColumnPicker(sel, nil, 0, 100, h, "", false)
 		if got := len(strings.Split(panel, "\n")); got > h {
 			t.Errorf("height %d: panel is %d lines, so overlayCenter will clip it", h, got)
 		}
@@ -532,7 +532,7 @@ func TestColumnPicker_CursorStaysVisibleWhenClipped(t *testing.T) {
 	sel := defaultColumnSelection()
 	// 12 lines leaves room for only a few column rows.
 	last := len(eventColumns) - 1
-	out := renderColumnPicker(sel, last, 100, 12, "", false)
+	out := renderColumnPicker(sel, nil, last, 100, 12, "", false)
 	if !strings.Contains(out, string(eventColumns[last].id)) {
 		t.Errorf("cursor row %q is not rendered in a clipped popup:\n%s", eventColumns[last].id, out)
 	}
@@ -956,20 +956,20 @@ func TestTableColumns_SortGlyph(t *testing.T) {
 func TestRenderColumnPicker_ShowsSort(t *testing.T) {
 	sel := defaultColumnSelection()
 
-	if out := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false)); !strings.Contains(out, "[s] sort") {
+	if out := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, "", false)); !strings.Contains(out, "[s] sort") {
 		t.Errorf("picker hint omits the sort key: %q", out)
 	}
 
-	desc := stripANSI(renderColumnPicker(sel, 0, 160, 40, colDuration, true))
+	desc := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, colDuration, true))
 	if !strings.Contains(desc, string(colDuration)+sortGlyphDesc) {
 		t.Errorf("picker does not mark DURATION as descending: %q", desc)
 	}
-	asc := stripANSI(renderColumnPicker(sel, 0, 160, 40, colDuration, false))
+	asc := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, colDuration, false))
 	if !strings.Contains(asc, string(colDuration)+sortGlyphAsc) {
 		t.Errorf("picker does not mark DURATION as ascending: %q", asc)
 	}
 	// Unsorted: no glyph anywhere.
-	none := stripANSI(renderColumnPicker(sel, 0, 160, 40, "", false))
+	none := stripANSI(renderColumnPicker(sel, nil, 0, 160, 40, "", false))
 	if strings.Contains(none, sortGlyphDesc) || strings.Contains(none, sortGlyphAsc) {
 		t.Errorf("picker marks a sort when none is active: %q", none)
 	}
