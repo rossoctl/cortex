@@ -1655,6 +1655,36 @@ func TestClose_IsIdempotent(t *testing.T) {
 	}
 }
 
+// Flush with nothing held must still wait for a late row already queued. Issue #1057.
+func TestFlush_WaitsForALateRowAlreadyQueued(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+
+	w.Record("s1", costedEvent(t, "gw", "m", 0.25, 100, 50))
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	// Stall the writer goroutine, then record into the flushed minute: queued, not held.
+	w.writeMu.Lock()
+	w.Record("s1", costedEvent(t, "gw", "m", 0.10, 10, 5))
+
+	flushed := make(chan error, 1)
+	go func() { flushed <- w.Flush() }()
+	select {
+	case <-flushed:
+		w.writeMu.Unlock()
+		t.Fatal("Flush returned before the queued row was written")
+	case <-time.After(50 * time.Millisecond):
+	}
+	w.writeMu.Unlock()
+	if err := <-flushed; err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if rows := readAllRows(t, dir); len(rows) != 2 {
+		t.Errorf("got %d rows on disk after Flush, want 2", len(rows))
+	}
+}
+
 // Flush after Close still writes: main flushes the ledger during shutdown, and a
 // Writer whose goroutine has gone must do the work inline rather than queue it for
 // nobody.
