@@ -1068,8 +1068,9 @@ func (w *Writer) settleClosedMinute() {
 // land, so "Flush returned" means "every row recorded before this call is on disk".
 // Tests depend on that ordering, and so does the shutdown sequence in main.
 //
-// Returns the store's error so a shutdown path can log it, unlike Record, which has a
-// request to serve and must not.
+// Returns the store's error for the rows it held, so a shutdown path can log it, unlike
+// Record, which has a request to serve and must not. A late row that was already queued
+// reports a failed write through the log and Dropped() instead.
 func (w *Writer) Flush() error {
 	b := w.take()
 	if len(b.rows) == 0 && b.pruneAt.IsZero() {
@@ -1098,19 +1099,21 @@ func (w *Writer) take() batch {
 // microsecond-wide gap that self-heals on the next read. See the type doc.
 func (w *Writer) sync() error {
 	if w.closed.Load() {
+		// Close writes or counts in Dropped() whatever is still queued.
 		return nil
 	}
 	done := make(chan error, 1)
 	select {
 	case w.ops <- batch{done: done}:
 	case <-w.quit:
-		return nil
+		return errClosedWhileFlushing
 	}
 	select {
 	case err := <-done:
 		return err
 	case <-w.quit:
-		return nil
+		// Unconfirmed, as in submit.
+		return errClosedWhileFlushing
 	}
 }
 

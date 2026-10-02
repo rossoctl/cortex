@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1682,6 +1683,33 @@ func TestFlush_WaitsForALateRowAlreadyQueued(t *testing.T) {
 	}
 	if rows := readAllRows(t, dir); len(rows) != 2 {
 		t.Errorf("got %d rows on disk after Flush, want 2", len(rows))
+	}
+}
+
+// A Close that interrupts that wait is reported, not passed off as a flush.
+func TestFlush_InterruptedByCloseIsReported(t *testing.T) {
+	w := newTestWriter(t, t.TempDir(), func() time.Time { return at })
+
+	w.Record("s1", costedEvent(t, "gw", "m", 0.25, 100, 50))
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	// Stalled on the late row, the goroutine cannot confirm the barrier or let Close finish.
+	w.writeMu.Lock()
+	w.Record("s1", costedEvent(t, "gw", "m", 0.10, 10, 5))
+
+	flushed := make(chan error, 1)
+	go func() { flushed <- w.Flush() }()
+	closed := make(chan error, 1)
+	go func() { closed <- w.Close() }()
+
+	err := <-flushed
+	w.writeMu.Unlock()
+	if !errors.Is(err, errClosedWhileFlushing) {
+		t.Errorf("Flush = %v, want errClosedWhileFlushing", err)
+	}
+	if cerr := <-closed; cerr != nil {
+		t.Fatalf("Close: %v", cerr)
 	}
 }
 
