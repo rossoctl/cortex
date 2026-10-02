@@ -2,12 +2,21 @@ package pipeline
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+// secretQuery rides on every request below, because the forward proxy's errors
+// quote the request URL — query string and all — and a query is where clients
+// put API keys (Gemini's ?key=). It must never reach Message.
+const secretQuery = "?api_key=SECRET1045"
 
 // TestTransportError drives each branch with an error from a REAL failed
 // request rather than a hand-built one. That is the whole point of the test:
@@ -39,7 +48,7 @@ func TestTransportError(t *testing.T) {
 			name: "connection refused",
 			want: "upstream_refused",
 			do: func(t *testing.T) error {
-				_, err := http.Get("http://" + closedAddr(t))
+				_, err := hermeticClient(nil).Get("http://" + closedAddr(t) + "/" + secretQuery)
 				return err
 			},
 		},
@@ -47,8 +56,9 @@ func TestTransportError(t *testing.T) {
 			name: "client timeout",
 			want: "upstream_timeout",
 			do: func(*testing.T) error {
-				c := &http.Client{Timeout: 150 * time.Millisecond}
-				_, err := c.Get(slow.URL)
+				c := hermeticClient(nil)
+				c.Timeout = 150 * time.Millisecond
+				_, err := c.Get(slow.URL + "/" + secretQuery)
 				return err
 			},
 		},
@@ -60,22 +70,51 @@ func TestTransportError(t *testing.T) {
 			do: func(t *testing.T) error {
 				ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 				defer cancel()
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL, nil)
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL+"/"+secretQuery, nil)
 				if err != nil {
 					t.Fatalf("new request: %v", err)
 				}
-				_, err = http.DefaultClient.Do(req)
+				_, err = hermeticClient(nil).Do(req)
+				return err
+			},
+		},
+		{
+			// A deadline UNDER a wrapping layer, shaped exactly as forwardproxy's
+			// mtlsDialer returns a handshake that ran out of time. *url.Error's
+			// Timeout() only asks its immediate cause, and that is the %w wrapper,
+			// so this read as upstream_error until the classifier asked for the
+			// deadline itself.
+			name: "wrapped handshake deadline",
+			want: "upstream_timeout",
+			do: func(t *testing.T) error {
+				addr := silentAddr(t)
+				tr := hermeticTransport()
+				tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+					plain, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+					if err != nil {
+						return nil, err
+					}
+					hsCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+					defer cancel()
+					tlsConn := tls.Client(plain, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // never completes
+					if err := tlsConn.HandshakeContext(hsCtx); err != nil {
+						_ = tlsConn.Close()
+						return nil, fmt.Errorf("forwardproxy mtls: handshake to %s failed: %w", addr, err)
+					}
+					return tlsConn, nil
+				}
+				_, err := (&http.Client{Transport: tr}).Get("http://" + addr + "/" + secretQuery)
 				return err
 			},
 		},
 		{
 			name: "dns failure",
 			want: "upstream_dns",
-			do: func(*testing.T) error {
-				// .invalid is reserved by RFC 2606 and can never resolve, so
-				// this does not depend on the resolver the test host happens
-				// to have.
-				_, err := http.Get("http://no-such-host.1045.invalid")
+			do: func(t *testing.T) error {
+				// Resolved against a stub that answers NXDOMAIN to everything, so
+				// the case depends neither on the host's resolver answering
+				// promptly nor on .invalid staying unresolvable there.
+				_, err := hermeticClient(nxdomainResolver(t)).Get("http://no-such-host.1045.invalid/" + secretQuery)
 				return err
 			},
 		},
@@ -87,7 +126,24 @@ func TestTransportError(t *testing.T) {
 				// the default client does not trust.
 				srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 				defer srv.Close()
-				_, err := http.Get(srv.URL)
+				_, err := hermeticClient(nil).Get(srv.URL + "/" + secretQuery)
+				return err
+			},
+		},
+		{
+			// The peer refusing the handshake with an alert. Over TCP that is a
+			// *net.OpError with Op "remote error", not tls.AlertError — that type
+			// is QUIC's, and matching it caught nothing here.
+			name: "peer alert",
+			want: "upstream_tls",
+			do: func(*testing.T) error {
+				srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+				srv.TLS = &tls.Config{MaxVersion: tls.VersionTLS12}
+				srv.StartTLS()
+				defer srv.Close()
+				tr := hermeticTransport()
+				tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true} //nolint:gosec // the version is under test
+				_, err := (&http.Client{Transport: tr}).Get(srv.URL + "/" + secretQuery)
 				return err
 			},
 		},
@@ -106,17 +162,67 @@ func TestTransportError(t *testing.T) {
 			if got.Kind != tc.want {
 				t.Errorf("Kind = %q, want %q (err: %v)", got.Kind, tc.want, err)
 			}
-			// The message is the operator's only route to the address and the
-			// cause, so an empty one would make the kind the whole diagnosis.
-			if got.Message != err.Error() {
-				t.Errorf("Message = %q, want the error verbatim (%q)", got.Message, err.Error())
-			}
+			assertCause(t, got.Message, err)
 			// Code is for an HTTP status; a transport failure has none, and a
 			// synthetic "502" here would claim the upstream answered.
 			if got.Code != "" {
 				t.Errorf("Code = %q, want empty", got.Code)
 			}
 		})
+	}
+}
+
+// assertCause pins what Message may and may not carry. It is the operator's
+// only route to the cause, so it must hold it; and it must not hold the request
+// URL a *url.Error quotes, because that URL keeps its query string and the
+// session API serving this message is unauthenticated.
+func assertCause(t *testing.T, msg string, err error) {
+	t.Helper()
+	if strings.Contains(msg, "SECRET1045") {
+		t.Errorf("Message = %q carries the request's query string", msg)
+	}
+	if msg == "" || !strings.HasSuffix(err.Error(), msg) {
+		t.Errorf("Message = %q, want the cause at the tail of %q", msg, err.Error())
+	}
+}
+
+// TestExchangeFailure_ClientCanceled is the case that made ExchangeFailure
+// necessary. Neither proxy times out a slow upstream, so a hung one ends when
+// the CLIENT gives up — and the error the proxy holds then is a cancellation,
+// not a failure of the upstream. It must not be recorded as a 502 nobody got.
+func TestExchangeFailure_ClientCanceled(t *testing.T) {
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	defer slow.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL+"/"+secretQuery, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	_, err = hermeticClient(nil).Do(req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want a cancellation", err)
+	}
+
+	status, fail := ExchangeFailure(ctx, err)
+	if status != StatusClientClosedRequest {
+		t.Errorf("status = %d, want %d — a 502 here counts a response nobody received", status, StatusClientClosedRequest)
+	}
+	if fail == nil || fail.Kind != "client_canceled" {
+		t.Fatalf("fail = %+v, want kind client_canceled", fail)
+	}
+	assertCause(t, fail.Message, err)
+
+	// The same error with the client still there is the upstream's failure, and
+	// the client got a 502 for it.
+	status, fail = ExchangeFailure(context.Background(), err)
+	if status != http.StatusBadGateway || fail == nil || fail.Kind != "upstream_error" {
+		t.Errorf("live client: got %d %+v, want 502 upstream_error", status, fail)
 	}
 }
 
@@ -140,11 +246,98 @@ func TestTransportError_UnclassifiedStillReports(t *testing.T) {
 	if got.Kind != "upstream_error" {
 		t.Errorf("Kind = %q, want %q", got.Kind, "upstream_error")
 	}
+	if got.Message != (errUnclassified{}).Error() {
+		t.Errorf("Message = %q, want the error verbatim", got.Message)
+	}
 }
 
 type errUnclassified struct{}
 
 func (errUnclassified) Error() string { return "something else went wrong" }
+
+// hermeticTransport is a transport that ignores HTTP_PROXY / HTTPS_PROXY. The
+// default one honours them, and this repo's own laptop setup exports one — under
+// it the refused case came back as a proxyconnect error and the DNS case as the
+// proxy's answer.
+func hermeticTransport() *http.Transport {
+	return &http.Transport{Proxy: nil}
+}
+
+// hermeticClient is a client over hermeticTransport, resolving through r when
+// it is non-nil.
+func hermeticClient(r *net.Resolver) *http.Client {
+	tr := hermeticTransport()
+	if r != nil {
+		tr.DialContext = (&net.Dialer{Resolver: r}).DialContext
+	}
+	return &http.Client{Transport: tr}
+}
+
+// nxdomainResolver is a pure-Go resolver whose only nameserver is a stub that
+// answers every query NXDOMAIN, so a lookup fails the way an unknown name does,
+// through the real resolver code, without consulting the host's.
+func nxdomainResolver(t *testing.T) *net.Resolver {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+			// The query echoed back as its own answer: same ID and question, the
+			// QR bit set, RCODE 3 (NXDOMAIN).
+			msg := append([]byte(nil), buf[:n]...)
+			msg[2] |= 0x80
+			msg[3] = msg[3]&0xF0 | 0x03
+			_, _ = pc.WriteTo(msg, from)
+		}
+	}()
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "udp", pc.LocalAddr().String())
+		},
+	}
+}
+
+// silentAddr returns an address that accepts TCP connections and never writes
+// a byte, so a TLS handshake against it can only run out of time.
+func silentAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns = append(conns, c)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
 
 // closedAddr returns an address nothing is listening on: bind to an ephemeral
 // port, note it, then release it. Mirrors the helper of the same name in

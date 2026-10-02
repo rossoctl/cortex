@@ -502,18 +502,27 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	resp, err := client.Do(r)
 	if err != nil {
-		slog.Warn("forward-proxy: upstream request failed", "host", r.Host, "method", r.Method, "error", err)
+		// A 502 with the cause, or a 499 when the client hung up first — which,
+		// with no timeout on this client, is how a hung upstream usually ends.
+		// See pipeline.ExchangeFailure.
+		status, fail := pipeline.ExchangeFailure(r.Context(), err)
+		if r.Context().Err() != nil {
+			slog.Debug("forward-proxy: client went away before the upstream answered", "host", r.Host, "method", r.Method)
+		} else {
+			// fail.Message, not err: err's text quotes the request URL, query and all.
+			slog.Warn("forward-proxy: upstream request failed", "host", r.Host, "method", r.Method, "kind", fail.Kind, "error", fail.Message)
+		}
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 		// Without this the request event is the only trace, and a row with no
 		// status reads as a request still in flight (#1045). Same reason the
 		// CONNECT dial-failure path below records.
 		//
-		// The 502 goes on the EVENT ONLY, never onto pctx.StatusCode:
+		// The status goes on the EVENT ONLY, never onto pctx.StatusCode:
 		// OutcomeFromContext reads zero as OutcomeError and any non-zero as
 		// OutcomeAllow, so assigning it would tell every Finisher this
 		// succeeded and have lineage label the span "ok".
 		if !skipped {
-			s.recordOutboundResponseEvent(pctx, http.StatusBadGateway, pipeline.TransportError(err))
+			s.recordOutboundResponseEvent(pctx, status, fail)
 		}
 		return
 	}
@@ -580,29 +589,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 
 		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
-			// Both failures below record the UPSTREAM's status, not the 502 we
-			// answer with, and say proxy_error: the upstream replied fine and we
-			// could not buffer what it sent. Blaming it for our own ceiling would
-			// send an operator looking at the wrong end. Recorded at all for the
-			// same reason as the transport-failure path above (#1045) — these
-			// returns left no trace either.
-			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
-			if err != nil {
-				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
-				http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
-				s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
-					Kind:    "proxy_error",
-					Message: err.Error(),
-				})
-				return
-			}
-			if len(respBody) > maxBodySize {
-				slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
-				http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
-				s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
-					Kind:    "proxy_error",
-					Message: fmt.Sprintf("response body too large (%d bytes)", len(respBody)),
-				})
+			respBody, ok := s.bufferResponseBody(w, r, resp, pctx)
+			if !ok {
 				return
 			}
 			pctx.ResponseBody = respBody
@@ -997,9 +985,10 @@ func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
 // path can call it once after RunResponse — both go through the same
 // gate and snapshotting logic.
 //
-// fail is set only on the transport-failure path, where DeriveError cannot
-// supply an error because pctx.StatusCode stays zero (see that call site). Nil
-// everywhere else.
+// fail is set where the exchange failed — the client.Do call, or
+// bufferResponseBody — and statusCode is then what the client got, not anything
+// the upstream sent. Nil when the response was delivered, leaving the error to
+// DeriveError.
 func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) {
 	if s.Sessions == nil {
 		return
@@ -1038,6 +1027,50 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
 	s.Sessions.Append(sid, ev)
+}
+
+// bufferResponseBody reads resp's body whole for the response phase. When it
+// cannot, it answers the client with a 502, records the response row the request
+// is owed, and returns false — these returns used to leave no trace at all, which
+// is #1045 on the paths that did reach the upstream.
+//
+// The row's statusCode is what the CLIENT got, and error.code is what the
+// upstream sent. Every consumer keys on statusCode, so keeping the upstream's 200
+// there would count a failed exchange as a healthy one in /v1/usage and agentop.
+//
+// Of the two failures only the size limit is ours, so only it says proxy_error.
+// A read that errors usually means the upstream reset or truncated mid-body, and
+// is classified like a failed call; less often the client hung up while we read,
+// which ExchangeFailure reports as such.
+//
+// pctx.StatusCode goes back to zero, as on a failed call: the upstream's response
+// was never delivered, and OutcomeFromContext would otherwise report its status
+// as an allow — lineage labelling "ok" an exchange the client saw fail.
+func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+	if err == nil && len(body) <= maxBodySize {
+		return body, true
+	}
+	var status int
+	var fail *pipeline.EventError
+	if err != nil {
+		status, fail = pipeline.ExchangeFailure(r.Context(), err)
+		if r.Context().Err() == nil {
+			slog.Warn("forward-proxy: response body read error", "host", r.Host, "kind", fail.Kind, "error", fail.Message)
+		}
+		http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+	} else {
+		slog.Warn("forward-proxy: response body too large", "host", r.Host, "limit", maxBodySize)
+		http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+		status, fail = http.StatusBadGateway, &pipeline.EventError{
+			Kind:    "proxy_error",
+			Message: fmt.Sprintf("response body over the %d-byte buffer limit", maxBodySize),
+		}
+	}
+	fail.Code = strconv.Itoa(resp.StatusCode)
+	pctx.StatusCode = 0
+	s.recordOutboundResponseEvent(pctx, status, fail)
+	return nil, false
 }
 
 // isEventStream reports whether a Content-Type header value names the
@@ -1253,25 +1286,8 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 // correctly-parsed completion. Production ResponseWriters implement
 // http.Flusher so this path is mostly hit in tests.
 func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, resp *http.Response, pctx *pipeline.Context) {
-	// Both buffering failures keep the upstream's status and say proxy_error, as
-	// on the non-streaming path — see the comment there.
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
-	if err != nil {
-		slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
-		http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
-			Kind:    "proxy_error",
-			Message: err.Error(),
-		})
-		return
-	}
-	if len(respBody) > maxBodySize {
-		slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
-		http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, &pipeline.EventError{
-			Kind:    "proxy_error",
-			Message: fmt.Sprintf("response body too large (%d bytes)", len(respBody)),
-		})
+	respBody, ok := s.bufferResponseBody(w, r, resp, pctx)
+	if !ok {
 		return
 	}
 	pctx.ResponseBody = respBody

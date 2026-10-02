@@ -650,7 +650,7 @@ type SessionEvent struct {
     Plugins     map[string]json.RawMessage // plugin-public events (escape-hatch /event suffix)
     Identity    *EventIdentity             // Subject, ClientID, AgentID, Scopes
     StatusCode  int                        // response phase only
-    Error       *EventError                // 4xx/5xx, a guardrail block, or a transport failure
+    Error       *EventError                // 4xx/5xx, a guardrail block, or a failed upstream exchange
     Host        string                     // :authority
     Duration    time.Duration              // response: wall-clock since request entry
 }

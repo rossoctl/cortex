@@ -60,6 +60,33 @@ func TestRecord_UpstreamFailureCountsAsError(t *testing.T) {
 	}
 }
 
+// TestRecord_ClientHangupStaysOutOf5xx pins what the 499 a hangup records is
+// for. The listeners record it rather than a 502 because, with no timeout on the
+// upstream call, the client giving up is how a hung upstream usually ends — and
+// a 502 per abandoned request would be counted as a response nobody received.
+// It is still an error, but under its own label rather than inside the 5xx
+// series an upstream outage is read from.
+func TestRecord_ClientHangupStaysOutOf5xx(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+	a.Record("s1", reqEvent(now, "req-1"))
+	hangup := respEvent(now, pipeline.StatusClientClosedRequest, 300*time.Millisecond, "", 0)
+	hangup.RequestID = "req-1"
+	hangup.Error = &pipeline.EventError{Kind: "client_canceled", Message: "context canceled"}
+	a.Record("s1", hangup)
+
+	b := a.Snapshot(time.Minute, BucketWidth, "", GroupStatus).Buckets[0]
+	if b.Requests != 1 || b.Errors != 1 {
+		t.Errorf("requests/errors = %d/%d, want 1/1", b.Requests, b.Errors)
+	}
+	if got := b.Series["499"]; got.Requests != 1 {
+		t.Errorf("series[499].requests = %d, want 1; series = %+v", got.Requests, b.Series)
+	}
+	if got := b.Series["502"]; got.Requests != 0 {
+		t.Errorf("series[502].requests = %d, want 0 — a hangup is not an upstream failure", got.Requests)
+	}
+}
+
 // errRefused stands in for a refused dial. The classification of real net errors
 // is pinned in pipeline.TestTransportError against actual failed requests; here
 // all that matters is that an EventError rides along on the event.

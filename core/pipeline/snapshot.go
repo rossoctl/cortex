@@ -3,11 +3,15 @@ package pipeline
 import (
 	"github.com/tidwall/gjson"
 
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -200,8 +204,11 @@ func DeriveError(pctx *Context) *EventError {
 }
 
 // EventErrorOr returns fail when the caller has an explicit failure to report,
-// else what DeriveError can infer from the response. fail must win: it is only
-// set where the upstream call failed outright, and there DeriveError returns nil.
+// else what DeriveError can infer from the response. fail must win: it is set
+// where the exchange failed — at the call, or while buffering the response — and
+// DeriveError reads only the response. With no response it returns nil; with one
+// it describes the upstream's status as though that had been delivered. A fail
+// for a response the upstream did send carries that status in Code.
 func EventErrorOr(pctx *Context, fail *EventError) *EventError {
 	if fail != nil {
 		return fail
@@ -209,18 +216,42 @@ func EventErrorOr(pctx *Context, fail *EventError) *EventError {
 	return DeriveError(pctx)
 }
 
-// TransportError classifies a failed upstream call — one that never produced a
-// response, so there is no status or body for DeriveError to read. Each surfaces
-// to the client as the same synthetic 502, so Kind is what tells an operator
-// whether to look at the network, the upstream, DNS, or a trust store.
+// ExchangeFailure is what a listener records for an exchange with the upstream
+// that ended in err instead of a response it could deliver: the status for the
+// event, and why. err must be non-nil.
 //
-// Matched with errors.Is/errors.As, unlike handshakeFailureReason, which cannot:
-// these arrive wrapped in *url.Error, which unwraps. TestTransportError verifies
-// every branch against a real failed request.
+// ctx is the CLIENT's request context, and it is asked first. A client that hangs
+// up cancels the upstream call under it, so err is then context.Canceled — and
+// since neither proxy bounds how long the upstream may take to answer
+// (forwardproxy.NewServer says why), that is how a hung upstream usually ends:
+// the client gives up first. Recording a 502 upstream failure there would count a
+// 502 nobody received, once per abandoned request, and leave upstream_timeout
+// unreachable for the case it names. So it is client_canceled with a 499, which
+// /v1/usage still counts as an error but keeps out of the 5xx series.
 //
-// ORDER MATTERS: *url.Error implements net.Error, so every error here satisfies
+// Otherwise the client got a 502, and TransportError says why.
+func ExchangeFailure(ctx context.Context, err error) (int, *EventError) {
+	if ctx.Err() != nil {
+		return StatusClientClosedRequest, &EventError{Kind: "client_canceled", Message: causeOf(err)}
+	}
+	return http.StatusBadGateway, TransportError(err)
+}
+
+// TransportError classifies a failed exchange with the upstream: a call that
+// produced no response, or a response body that broke off while being read. Each
+// surfaces to the client as the same synthetic 502, so Kind is what tells an
+// operator whether to look at the network, the upstream, DNS, or a trust store.
+//
+// Matched on types with errors.Is/errors.As, unlike handshakeFailureReason, which
+// cannot. TestTransportError verifies every branch against a real failed request.
+//
+// ORDER MATTERS for the forward proxy, whose client.Do wraps every error in a
+// *url.Error. That implements net.Error, so each of its errors satisfies
 // errors.As(&netErr) and only Timeout() discriminates — hence timeout first, and
-// a bare net.Error is never a classifier.
+// a bare net.Error is never a classifier. The reverse proxy hands over raw
+// RoundTrip errors, with no *url.Error around them; the checks hold either way.
+//
+// Message is the cause without the request URL — see causeOf.
 func TransportError(err error) *EventError {
 	if err == nil {
 		return nil
@@ -229,23 +260,64 @@ func TransportError(err error) *EventError {
 	var netErr net.Error
 	var dnsErr *net.DNSError
 	var certErr *tls.CertificateVerificationError
-	var alertErr tls.AlertError
 	switch {
-	case errors.As(err, &netErr) && netErr.Timeout():
-		// Deliberately wide: covers a Client.Timeout and a caller's context
-		// deadline, which also satisfies errors.Is(err, context.DeadlineExceeded).
+	case errors.As(err, &netErr) && netErr.Timeout(),
+		// errors.As stops at the outermost net.Error, and a *url.Error's Timeout()
+		// asks only its immediate cause. A deadline under a wrapping layer —
+		// forwardproxy's mtlsDialer wraps its handshake error with %w — reads
+		// false there, so ask for the deadline itself too.
+		errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, os.ErrDeadlineExceeded):
 		kind = "upstream_timeout"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		kind = "upstream_refused"
 	case errors.As(err, &dnsErr):
 		kind = "upstream_dns"
-	case errors.As(err, &certErr), errors.As(err, &alertErr):
-		// Unverifiable chain, or the peer sent an alert. A version/cipher/ALPN
-		// mismatch has no typed error and falls through to upstream_error;
-		// catching it would mean matching message text.
+	case errors.As(err, &certErr), isTLSAlert(err):
+		// Unverifiable chain, or the peer refused the handshake with an alert. A
+		// mismatch the client detects itself has no typed error and falls through
+		// to upstream_error; catching it would mean matching message text.
 		kind = "upstream_tls"
 	}
-	return &EventError{Kind: kind, Message: err.Error()}
+	return &EventError{Kind: kind, Message: causeOf(err)}
+}
+
+// isTLSAlert reports whether the peer refused the TLS handshake with an alert: a
+// protocol version it will not speak, a client certificate it requires.
+//
+// Not tls.AlertError, which is the QUIC transport's type. Over TCP, crypto/tls
+// reports a received alert as a *net.OpError with Op "remote error" around an
+// unexported alert value, so the Op is the typed part to match. Walked layer by
+// layer because errors.As would stop at the first *net.OpError, and the
+// transport's "proxyconnect" one can sit above it.
+func isTLSAlert(err error) bool {
+	for ; err != nil; err = errors.Unwrap(err) {
+		if op, ok := err.(*net.OpError); ok && op.Op == "remote error" {
+			return true
+		}
+	}
+	return false
+}
+
+// causeOf is err's text without the request URL a *url.Error puts in front of it.
+//
+// That URL is why this exists. net/http strips the password from the URL it
+// quotes but not the query string, so `Get "https://…?key=…": …` would carry a
+// query-borne credential (Gemini's ?key=, any api_key=) onto the unauthenticated
+// session API and into the log — exactly what HTTPPath is query-stripped to keep
+// out. Nothing is lost: the event already carries the host, method and path.
+func causeOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlErr *url.Error
+	for errors.As(err, &urlErr) {
+		if urlErr.Err == nil {
+			return urlErr.Op
+		}
+		err = urlErr.Err
+	}
+	return err.Error()
 }
 
 // upstreamErrorKind extracts the provider's machine-readable error type from an

@@ -1,13 +1,19 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/skiphost"
@@ -41,8 +47,10 @@ func failureProxy(t *testing.T, skip *skiphost.Matcher, plugins ...pipeline.Plug
 	srv := &Server{
 		OutboundPipeline: pipeline.NewHolder(p),
 		Sessions:         store,
-		Client:           http.DefaultClient,
-		SkipHosts:        skip,
+		// Not http.DefaultClient: its transport honours HTTP_PROXY / HTTPS_PROXY,
+		// which this repo's own laptop setup exports.
+		Client:    &http.Client{Transport: &http.Transport{Proxy: nil}},
+		SkipHosts: skip,
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	t.Cleanup(proxy.Close)
@@ -116,9 +124,18 @@ func TestForwardProxy_UpstreamRefused_RecordsResponseEvent(t *testing.T) {
 	}
 }
 
-// TestForwardProxy_UpstreamTimeout_RecordsResponseEvent is the issue's own
-// reproduction: a hanging upstream and a client that gives up first.
-func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
+// TestForwardProxy_ClientGivesUp_RecordsClientCanceled is the issue's own
+// reproduction — a hanging upstream and a client that gives up first — driven
+// through NewServer, because the production client is what decides the outcome.
+// It has no Client.Timeout and no ResponseHeaderTimeout (NewServer says why), so
+// nothing on the proxy side ever times a hung upstream out: the client's hangup
+// cancels the call, and that cancellation is the error the proxy holds.
+//
+// Recorded as a 502 upstream failure, every Esc before headers would raise the
+// error rate and the 502 series for a response nobody received, and log a WARN
+// besides. It is a 499 client_canceled instead, and stays quiet.
+func TestForwardProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
+	logs := captureWarnings(t)
 	release := make(chan struct{})
 	// Hang until the test ends rather than sleeping a fixed span — httptest.Close
 	// waits for outstanding handlers, so a sleep would be added to the run.
@@ -128,26 +145,83 @@ func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
 	defer hang.Close()
 	defer close(release)
 
-	// The timeout has to be the PROXY's, not the test client's: a client that
-	// gives up first never reads the proxy's 502, and the recording happens on
-	// the proxy side either way. So give the proxy's upstream client the short
-	// budget and let the test client wait.
+	fin := &outcomeRecorder{}
+	p, err := plugintesting.BuildPipeline([]pipeline.Plugin{fin})
+	if err != nil {
+		t.Fatalf("build pipeline: %v", err)
+	}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	srv, err := NewServer(pipeline.NewHolder(p), store, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	c := &http.Client{
+		Timeout:   300 * time.Millisecond,
+		Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))},
+	}
+	if _, err := c.Get(hang.URL + "/slow"); err == nil {
+		t.Fatal("request succeeded; wanted the client to give up on a hung upstream")
+	}
+
+	// The proxy records once the cancellation reaches it, after the client has
+	// already returned.
+	resp := waitForResponseEvent(t, store)
+	if resp.StatusCode != pipeline.StatusClientClosedRequest {
+		t.Errorf("StatusCode = %d, want %d — a 502 here is a response nobody received", resp.StatusCode, pipeline.StatusClientClosedRequest)
+	}
+	if resp.Error == nil || resp.Error.Kind != "client_canceled" {
+		t.Errorf("Error = %+v, want kind client_canceled", resp.Error)
+	}
+	if got := fin.seen(); got == nil || got.FinalAction != pipeline.OutcomeError {
+		t.Errorf("Outcome = %+v, want OutcomeError", got)
+	}
+	if strings.Contains(logs.String(), "upstream request failed") {
+		t.Errorf("logged a WARN for a client hangup: %s", logs.String())
+	}
+}
+
+// TestForwardProxy_UpstreamTimeout_RecordsResponseEvent is the timeout the
+// production transport DOES enforce — the TLS handshake — so upstream_timeout is
+// shown reachable on the client NewServer builds, not on one only a test builds.
+// The budget is shortened from NewServer's 10s; nothing else is changed.
+func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
 	p, err := plugintesting.BuildPipeline(nil)
 	if err != nil {
 		t.Fatalf("build pipeline: %v", err)
 	}
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
-	srv := &Server{
-		OutboundPipeline: pipeline.NewHolder(p),
-		Sessions:         store,
-		Client:           &http.Client{Timeout: 150 * time.Millisecond},
+	srv, err := NewServer(pipeline.NewHolder(p), store, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
 	}
+	srv.Client.Transport.(*http.Transport).TLSHandshakeTimeout = 150 * time.Millisecond
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
-	if got := viaProxy(t, proxy, hang.URL+"/slow", 10*time.Second); got != http.StatusBadGateway {
-		t.Errorf("client status = %d, want 502", got)
+	// An absolute https:// request line, as a client speaking to an HTTP proxy
+	// without CONNECT sends it, to an upstream that accepts and never answers.
+	target := silentAddr(t)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := fmt.Fprintf(conn, "GET https://%s/slow HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	got, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read proxy response: %v", err)
+	}
+	got.Body.Close()
+	if got.StatusCode != http.StatusBadGateway {
+		t.Errorf("client status = %d, want 502", got.StatusCode)
 	}
 
 	events := allEvents(t, store)
@@ -160,6 +234,32 @@ func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Kind != "upstream_timeout" {
 		t.Errorf("Error = %+v, want kind upstream_timeout", resp.Error)
+	}
+}
+
+// TestForwardProxy_UpstreamFailure_KeepsQueryOffTheTimeline guards the leak a
+// *url.Error carries. client.Do quotes the request URL in its error, and net/http
+// strips the password from it but not the query — where clients put API keys.
+// The session API is unauthenticated, and HTTPPath is query-stripped precisely to
+// keep those off it; the error and the WARN must not put them back.
+func TestForwardProxy_UpstreamFailure_KeepsQueryOffTheTimeline(t *testing.T) {
+	logs := captureWarnings(t)
+	proxy, store := failureProxy(t, nil)
+
+	viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing?api_key=SECRET1045", 5*time.Second)
+
+	events := allEvents(t, store)
+	if len(events) != 2 || events[1].Error == nil {
+		t.Fatalf("want a recorded failure, got %+v", events)
+	}
+	if msg := events[1].Error.Message; strings.Contains(msg, "SECRET1045") || msg == "" {
+		t.Errorf("Error.Message = %q, want the cause without the request's query string", msg)
+	}
+	if strings.Contains(logs.String(), "SECRET1045") {
+		t.Errorf("the WARN carries the query string: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "upstream request failed") {
+		t.Errorf("no WARN logged for a refused upstream; logs = %q", logs.String())
 	}
 }
 
@@ -297,15 +397,16 @@ func (bodyReadingPlugin) OnResponse(context.Context, *pipeline.Context) pipeline
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// TestForwardProxy_OversizeResponse_RecordsProxyErrorNotUpstream is the outbound
-// twin of the reverseproxy case. A response the upstream delivered fine but that
-// exceeds our own buffer ceiling must keep the upstream's real status and be
-// labelled proxy_error — the upstream did nothing wrong, and a 502/upstream_*
-// row would point an operator at the wrong end.
+// TestForwardProxy_OversizeResponse_RecordsProxyError is the outbound twin of
+// the reverseproxy case. A response the upstream delivered fine but that exceeds
+// our own buffer ceiling is the proxy's failure, so it says proxy_error. The
+// row's status is the 502 the client got — every consumer keys on it, and the
+// upstream's 200 there would count this as a healthy exchange — and the 200
+// survives as error.code.
 //
-// These two returns also recorded NOTHING before, which is the #1045 bug on a
-// second pair of paths.
-func TestForwardProxy_OversizeResponse_RecordsProxyErrorNotUpstream(t *testing.T) {
+// These returns also recorded NOTHING before, which is the #1045 bug on a second
+// pair of paths.
+func TestForwardProxy_OversizeResponse_RecordsProxyError(t *testing.T) {
 	huge := bytes.Repeat([]byte("x"), maxBodySize+1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -313,26 +414,237 @@ func TestForwardProxy_OversizeResponse_RecordsProxyErrorNotUpstream(t *testing.T
 	}))
 	defer backend.Close()
 
-	proxy, store := failureProxy(t, nil, bodyReadingPlugin{})
+	fin := &outcomeRecorder{}
+	proxy, store := failureProxy(t, nil, bodyReadingPlugin{}, fin)
 
 	if got := viaProxy(t, proxy, backend.URL+"/big", 30*time.Second); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502 (we cannot relay what we cannot buffer)", got)
 	}
 
-	events := allEvents(t, store)
-	var resp *pipeline.SessionEvent
-	for i := range events {
-		if events[i].Phase == pipeline.SessionResponse {
-			resp = &events[i]
+	resp := onlyResponseEvent(t, store)
+	assertBufferingFailure(t, resp, http.StatusBadGateway, "proxy_error", "200")
+	assertOutcomeError(t, fin)
+}
+
+// TestForwardProxy_TruncatedResponse_RecordsUpstreamFailure is the other
+// buffering failure, and the reason only the size limit says proxy_error. A body
+// that breaks off mid-read is almost always the upstream resetting or truncating
+// its own response, so it is classified like a failed call.
+func TestForwardProxy_TruncatedResponse_RecordsUpstreamFailure(t *testing.T) {
+	backend := truncatingBackend(t)
+	fin := &outcomeRecorder{}
+	proxy, store := failureProxy(t, nil, bodyReadingPlugin{}, fin)
+
+	if got := viaProxy(t, proxy, backend+"/cut", 5*time.Second); got != http.StatusBadGateway {
+		t.Errorf("client status = %d, want 502", got)
+	}
+
+	resp := onlyResponseEvent(t, store)
+	assertBufferingFailure(t, resp, http.StatusBadGateway, "upstream_error", "200")
+	assertOutcomeError(t, fin)
+}
+
+// TestForwardProxy_FallbackBuffered_BufferingFailures covers the same failures on
+// streamFallbackBuffered, the SSE path's buffered sibling, which records through
+// the same helper and had no test of either. Driven directly, as
+// TestForwardProxy_BufferedFallbackFinalizesAfterAHangup is, because the
+// conditions that reach it — a ResponseWriter with no Flush, a cancelled request
+// context — are properties of the caller.
+func TestForwardProxy_FallbackBuffered_BufferingFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   io.Reader
+		hungUp bool
+		status int
+		kind   string
+	}{
+		{
+			name:   "read error",
+			body:   io.MultiReader(strings.NewReader("data: {\"type\""), iotest.ErrReader(io.ErrUnexpectedEOF)),
+			status: http.StatusBadGateway, kind: "upstream_error",
+		},
+		{
+			// The read failed because the client went away while we read: the
+			// body's error is then the cancellation, and nobody got the 502.
+			name:   "read error after a hangup",
+			body:   io.MultiReader(strings.NewReader("data: {\"type\""), iotest.ErrReader(context.Canceled)),
+			hungUp: true,
+			status: pipeline.StatusClientClosedRequest, kind: "client_canceled",
+		},
+		{
+			name:   "over the buffer limit",
+			body:   strings.NewReader(strings.Repeat("x", maxBodySize+1)),
+			status: http.StatusBadGateway, kind: "proxy_error",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pipe, err := pipeline.New([]pipeline.Plugin{&frameProbe{}})
+			if err != nil {
+				t.Fatalf("New pipeline: %v", err)
+			}
+			store := session.New(5*time.Minute, 100, 0)
+			defer store.Close()
+			s := &Server{OutboundPipeline: pipeline.NewHolder(pipe), Sessions: store}
+
+			ctx := context.Background()
+			if tc.hungUp {
+				c, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = c
+			}
+			r := httptest.NewRequest(http.MethodPost, "http://gw.internal/v1/messages", nil).WithContext(ctx)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       io.NopCloser(tc.body),
+			}
+			pctx := &pipeline.Context{
+				Direction:  pipeline.Outbound,
+				Host:       "gw.internal",
+				Method:     http.MethodPost,
+				Path:       "/v1/messages",
+				StatusCode: resp.StatusCode, // as serveOutbound sets it before this runs
+			}
+
+			rec := httptest.NewRecorder()
+			s.streamFallbackBuffered(noFlushWriter{rec}, r, resp, pctx)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Errorf("client status = %d, want 502", rec.Code)
+			}
+			assertBufferingFailure(t, onlyResponseEvent(t, store), tc.status, tc.kind, "200")
+			// What OutcomeFromContext reads: zero is an error, the upstream's 200
+			// would be an allow for an exchange the client saw fail.
+			if pctx.StatusCode != 0 {
+				t.Errorf("pctx.StatusCode = %d, want 0 so the Outcome is an error, not an allow", pctx.StatusCode)
+			}
+		})
+	}
+}
+
+// assertBufferingFailure checks the shape every buffering failure records: the
+// status the client got (or 499), why, and the upstream's own status as Code.
+func assertBufferingFailure(t *testing.T, resp pipeline.SessionEvent, status int, kind, code string) {
+	t.Helper()
+	if resp.StatusCode != status {
+		t.Errorf("StatusCode = %d, want %d — the status the client got, not the upstream's", resp.StatusCode, status)
+	}
+	if resp.Error == nil {
+		t.Fatal("Error = nil, want the buffering failure")
+	}
+	if resp.Error.Kind != kind {
+		t.Errorf("Error.Kind = %q, want %q", resp.Error.Kind, kind)
+	}
+	if resp.Error.Code != code {
+		t.Errorf("Error.Code = %q, want %q (what the upstream actually sent)", resp.Error.Code, code)
+	}
+}
+
+// assertOutcomeError checks the Finisher saw a failure. The upstream did send a
+// status, and left in pctx.StatusCode it would read as an allow — lineage
+// labelling "ok" an exchange the client saw fail.
+func assertOutcomeError(t *testing.T, fin *outcomeRecorder) {
+	t.Helper()
+	got := fin.seen()
+	if got == nil {
+		t.Fatal("OnFinish never ran, so the outcome is unasserted")
+	}
+	if got.FinalAction != pipeline.OutcomeError {
+		t.Errorf("Outcome.FinalAction = %v, want OutcomeError", got.FinalAction)
+	}
+}
+
+// onlyResponseEvent returns the single response event in the store, failing the
+// test on none or several — one per request is what /v1/usage pairs on.
+func onlyResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEvent {
+	t.Helper()
+	var out []pipeline.SessionEvent
+	for _, ev := range allEvents(t, store) {
+		if ev.Phase == pipeline.SessionResponse {
+			out = append(out, ev)
 		}
 	}
-	if resp == nil {
-		t.Fatalf("no response event recorded; events = %+v", events)
+	if len(out) != 1 {
+		t.Fatalf("recorded %d response event(s), want exactly 1: %+v", len(out), out)
 	}
-	if resp.Error == nil || resp.Error.Kind != "proxy_error" {
-		t.Errorf("Error = %+v, want kind proxy_error", resp.Error)
+	return out[0]
+}
+
+// waitForResponseEvent polls for the response event a failure records after the
+// client has already given up and returned.
+func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEvent {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, ev := range allEvents(t, store) {
+			if ev.Phase == pipeline.SessionResponse {
+				return ev
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("StatusCode = %d, want 200 (what the upstream actually sent)", resp.StatusCode)
+	t.Fatalf("no response event recorded; events = %+v", allEvents(t, store))
+	return pipeline.SessionEvent{}
+}
+
+// truncatingBackend returns the URL of an upstream that promises a 1000-byte
+// body, sends 11 bytes of it, and closes — a real mid-body failure, read through
+// the real transport.
+func truncatingBackend(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nContent-Type: application/json\r\n\r\nhello world")
+		_ = buf.Flush()
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// silentAddr returns an address that accepts TCP connections and never writes a
+// byte, so a TLS handshake against it can only run out of time.
+func silentAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conns = append(conns, c)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return ln.Addr().String()
+}
+
+// captureWarnings routes slog's default logger at WARN and above into a buffer
+// for the rest of the test. Safe because this package's tests do not run in
+// parallel; see TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams.
+func captureWarnings(t *testing.T) *syncBuffer {
+	t.Helper()
+	buf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
 }
