@@ -1045,6 +1045,57 @@ func TestSessionTitle_ProseMentioningTranscriptSurvives(t *testing.T) {
 	}
 }
 
+// budgetEvent is userEvent with the request's max_tokens set.
+func budgetEvent(maxTokens int, contents ...string) pipeline.SessionEvent {
+	ev := userEvent(contents...)
+	ev.Inference.MaxTokens = &maxTokens
+	return ev
+}
+
+// A ONE-TOKEN REQUEST NAMES NOTHING, and the budget is the whole test: the same message under any
+// larger budget, or none stated, is a terse prompt and keeps its title.
+func TestSessionTitle_OneTokenProbeNamesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   pipeline.SessionEvent
+		want string
+	}{
+		{"no budget stated", userEvent("quota"), "quota"},
+		{"two tokens", budgetEvent(2, "quota"), "quota"},
+		{"one token", budgetEvent(1, "quota"), ""},
+		{"zero tokens", budgetEvent(0, "quota"), ""},
+		{"negative", budgetEvent(-1, "quota"), ""},
+		// At every rank, not just prose: the screen runs before the scan, so a probe cannot claim
+		// even the rank that overrides a held title.
+		{"rename in a probe", budgetEvent(1, renameMsg("chosen")), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(tc.ev); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// THE REPORTED SHAPE: the quota probe is the first request through the proxy and its response the
+// second, both under the conversation's session id, and first-wins used to keep "quota" for the
+// rest of the session. The response carries the request's messages and budget, so it is refused on
+// the same test.
+func TestSessionTitle_QuotaProbeCannotClaimTheSession(t *testing.T) {
+	probe := budgetEvent(1, "quota")
+	probe.Inference.Model = "claude-haiku-4-5-20251001"
+	reply := probe
+	reply.Phase = pipeline.SessionResponse
+	inf := *probe.Inference
+	inf.Completion, inf.FinishReason, inf.CompletionTokens = "#", "max_tokens", 1
+	reply.Inference = &inf
+
+	const want = "fix the flaky login test"
+	if got := foldTitle(t, probe, reply, budgetEvent(64000, want)); got != want {
+		t.Errorf("got %q, want %q — a quota probe named the session", got, want)
+	}
+}
+
 // LAST MATCH IN EVENT ORDER WINS (title.go's stated rule), even when a reminder hides the later
 // match's /rename prefix. quickRank used HasPrefix, so the reminder-prefixed rename guessed rank
 // 2 and the earlier bare rename took it.

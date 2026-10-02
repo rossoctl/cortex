@@ -175,6 +175,11 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	if e.Inference == nil {
 		return rankNone, ""
 	}
+	// A request capped at one output token is a probe (e.g. Claude Code's "quota" check), not a
+	// turn, so it names nothing — not even through a /rename.
+	if mt := e.Inference.MaxTokens; mt != nil && *mt <= 1 {
+		return rankNone, ""
+	}
 	msgs := e.Inference.Messages
 	bestRank, bestTitle, bestIdx := rankNone, "", -1
 	// deferredHead is the index one past the newest rankUserMsg guess not yet settled. The deferred
