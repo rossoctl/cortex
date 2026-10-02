@@ -104,12 +104,16 @@ type eventColumn struct {
 	rightAlign bool
 	// fitsContent makes width a cap rather than the width: the column renders as wide
 	// as its widest cell in the session, and never narrower than its heading with a
-	// sort glyph. See contentWidths.
+	// sort glyph. See measureColumns.
 	//
 	// For columns whose widest cell is rare. TOKENS and COST are sized for a tool-prune
 	// saving appended to the figure, which most pipelines never produce — and because
 	// they right-align, every column reserved for it was blank space to the left of
 	// every figure (#1208).
+	//
+	// Such a cell must not read cc.width. It is evaluated once per row, before the width
+	// is known, and the row shows that string rather than evaluating it again.
+	// TestFitsContentCellsIgnoreWidth holds every fitsContent column to it.
 	fitsContent bool
 	// defaultOn is whether the column shows without the user asking.
 	defaultOn bool
@@ -329,7 +333,12 @@ var eventColumns = []eventColumn{
 // The header counterpart is tableColumns, which reads the same rightAlign field.
 func (c eventColumn) render(cc cellContext) string {
 	cc.width = c.width
-	v := c.cell(cc)
+	return c.align(c.cell(cc))
+}
+
+// align is the alignment half of render, for a value already evaluated — a measured
+// column's cell, which measureColumns produced and the row loop does not evaluate again.
+func (c eventColumn) align(v string) string {
 	if c.rightAlign {
 		return padLeft(v, c.width)
 	}
@@ -436,7 +445,7 @@ func selectedColumns(sel map[eventColumnID]bool) []eventColumn {
 // fitColumns' arithmetic is untouched. TestTableColumns_SortGlyphFitsEveryWidth
 // pins that, since a longer header or a tighter width would silently start
 // clipping the column's NAME. A fitsContent column can render narrower than its
-// declared width, so contentWidths floors it at the same header plus glyph.
+// declared width, so measureColumns floors it at the same header plus glyph.
 const (
 	sortGlyphAsc  = "▲"
 	sortGlyphDesc = "▼"
@@ -472,19 +481,15 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 	return out
 }
 
-// sameHeadings reports whether a and b head the same columns in the same order, ignoring
-// the padding rightAlignHeader adds — so two sets that differ only in width compare equal.
+// measureColumns evaluates each fitsContent column in cols for every row in ctxs. It returns
+// the width each needs — its widest cell, no narrower than its heading with a sort glyph and
+// no wider than its declared width — and the cells themselves, indexed like ctxs.
 //
-// The sort glyph is not ignored: a sort that moves it is a change of heading.
-func sameHeadings(a, b []table.Column) bool {
-	return slices.EqualFunc(a, b, func(x, y table.Column) bool {
-		return headerTitle(x) == headerTitle(y)
-	})
-}
-
-// contentWidths measures each fitsContent column in cols: the width its widest cell in
-// ctxs needs, no narrower than its heading with a sort glyph and no wider than its
-// declared width.
+// The cells are returned so the row loop shows them rather than evaluating them again. TOKENS
+// and COST each decode the cost record, and evaluating them twice made a rebuild of a
+// 2,000-event session 1.76x slower (BenchmarkRebuildEventsTable) — paid on every SSE event.
+// That reuse is why a fitsContent cell must not read cc.width: it is evaluated here, before
+// the width is known.
 //
 // The floor includes the glyph whether or not the column is sorted, so sorting a column
 // cannot widen it — the same reason every declared width leaves room for one (see
@@ -494,28 +499,27 @@ func sameHeadings(a, b []table.Column) bool {
 // the visible rows, a filter typed one letter at a time would resize the columns on every
 // keystroke, and hiding the one row with a saving would narrow TOKENS until the filter was
 // cleared.
-func contentWidths(cols []eventColumn, ctxs []cellContext) map[eventColumnID]int {
-	widths := make(map[eventColumnID]int)
+func measureColumns(cols []eventColumn, ctxs []cellContext) (widths map[eventColumnID]int,
+	cells map[eventColumnID][]string) {
+	widths = make(map[eventColumnID]int)
+	cells = make(map[eventColumnID][]string)
 	for _, c := range cols {
 		if !c.fitsContent {
 			continue
 		}
 		w := max(lipgloss.Width(string(c.id)+sortGlyphAsc), lipgloss.Width(string(c.id)+sortGlyphDesc))
-		for _, cc := range ctxs {
-			if w >= c.width {
-				break
-			}
-			// At the cap, so a cell that truncates against its width is measured at the
-			// most it could be given. cc is a copy; nothing leaks into the row loop.
-			cc.width = c.width
-			w = max(w, lipgloss.Width(c.cell(cc)))
+		vs := make([]string, len(ctxs))
+		for i, cc := range ctxs {
+			vs[i] = c.cell(cc)
+			w = max(w, lipgloss.Width(vs[i]))
 		}
 		widths[c.id] = min(w, c.width)
+		cells[c.id] = vs
 	}
-	return widths
+	return widths, cells
 }
 
-// sizedColumns returns cols with each fitsContent column at the width contentWidths
+// sizedColumns returns cols with each fitsContent column at the width measureColumns
 // measured for it. A column widths has no entry for keeps its declared width — the cap, so
 // an unmeasured column is over-reserved rather than clipped.
 func sizedColumns(cols []eventColumn, widths map[eventColumnID]int) []eventColumn {
