@@ -3,6 +3,7 @@
 package peerproc
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -424,10 +425,21 @@ func TestEnviron_ReadsAChildsEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
+	// Start returns before the kernel has finished the exec: Linux closes the child's
+	// close-on-exec descriptors, which is what Start waits on, before it records where the
+	// new image's environment lies, and /proc/<pid>/environ reads empty until it does.
+	// The child's own output is the first sign that the exec is done.
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("child said %q, %v; want \"ready\"", line, err)
+	}
 
 	env, err := Environ(int32(cmd.Process.Pid))
 	if err != nil {
@@ -438,12 +450,13 @@ func TestEnviron_ReadsAChildsEnvironment(t *testing.T) {
 	}
 }
 
-// TestEnvironHelperProcess is the child TestEnviron_ReadsAChildsEnvironment reads: it waits
-// for its stdin to close, so it is alive while the test reads it.
+// TestEnvironHelperProcess is the child TestEnviron_ReadsAChildsEnvironment reads: it writes
+// "ready" to stdout and waits for its stdin to close, so it is alive while the test reads it.
 func TestEnvironHelperProcess(t *testing.T) {
 	if os.Getenv("PEERPROC_ENVIRON_HELPER") != "1" {
 		return
 	}
+	fmt.Println("ready")
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	os.Exit(0)
 }
