@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"gopkg.in/yaml.v3"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -2723,6 +2725,16 @@ func Run(ctx context.Context, opts RunOptions) error {
 			_ = m.activePF.Close()
 		}
 	}()
+	// Application cursor-key mode (DECCKM) is what makes Terminal.app turn a trackpad
+	// or wheel scroll over the alt screen into Up/Down keypresses, as it does for vi and
+	// less. Without it the gesture scrolls the terminal's own scrollback, carrying the
+	// user away from agentop. Mouse reporting would deliver the wheel too, but it takes
+	// click-and-drag selection away from the terminal, and copying text out of a pane is
+	// worth more than scrolling the pane under the pointer. bubbletea has no option for
+	// the mode and already parses both arrow encodings, so it is set here, before the
+	// renderer starts and after it stops, where the write cannot land inside a frame.
+	fmt.Fprint(os.Stdout, ansi.SetModeCursorKeys)
+	defer fmt.Fprint(os.Stdout, ansi.ResetModeCursorKeys)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	return err
@@ -2738,9 +2750,44 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 		editor = "vi"
 	}
 	c := exec.Command("sh", "-c", editor+" "+path)
-	return tea.ExecProcess(c, func(err error) tea.Msg {
+	return tea.Exec(cursorKeysCmd{c}, func(err error) tea.Msg {
 		return editorExitedMsg{gen: gen, err: err}
 	})
+}
+
+// cursorKeysCmd runs a command that borrows the terminal and sets application
+// cursor-key mode again once it exits, because an editor resets the mode on its
+// way out (vi's rmkx does) and bubbletea's RestoreTerminal does not know to set it.
+// Without this, one `e` would leave the trackpad scrolling the terminal's
+// scrollback for the rest of the session. Run is called while bubbletea has
+// released the terminal, so the write cannot interleave with a frame.
+type cursorKeysCmd struct{ *exec.Cmd }
+
+// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
+func (c cursorKeysCmd) SetStdin(r io.Reader) {
+	if c.Stdin == nil {
+		c.Stdin = r
+	}
+}
+
+func (c cursorKeysCmd) SetStdout(w io.Writer) {
+	if c.Stdout == nil {
+		c.Stdout = w
+	}
+}
+
+func (c cursorKeysCmd) SetStderr(w io.Writer) {
+	if c.Stderr == nil {
+		c.Stderr = w
+	}
+}
+
+func (c cursorKeysCmd) Run() error {
+	err := c.Cmd.Run()
+	if c.Stdout != nil {
+		_, _ = io.WriteString(c.Stdout, ansi.SetModeCursorKeys)
+	}
+	return err
 }
 
 // shortHost renders an endpoint for a cramped footer: "http://localhost:9094"

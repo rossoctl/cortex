@@ -1266,6 +1266,13 @@ Layered on top of all of them:
 | `Esc` | edit/{waiting,rollback} | background the watch; result lands as a footer flash |
 | `q` / `Ctrl+C` | any | quit (closes the key-help overlay first, if open) |
 
+**A trackpad or wheel scroll is `↑ ↓`**, in whichever pane has focus. agentop puts the
+terminal in application cursor-key mode, as vi does, which is what makes Terminal.app
+translate a scroll over a full-screen program into arrow keys rather than scrolling its
+own scrollback. agentop does not ask for mouse reporting, so click-and-drag selection
+stays the terminal's and copying text out of a pane works as it does at a shell prompt.
+The cost is that a scroll moves the focused pane, not the one under the pointer.
+
 **The picker also opens itself at startup**, once per connection, when two or more
 agents have spent in the window or own a listed session — the same two-agent rule `A`
 applies, so a one-agent proxy goes straight to the sessions pane and says nothing. The
