@@ -9,6 +9,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// The mode breaks Home and End wherever the terminal follows xterm, so it is set
+// only in Terminal.app, the terminal it was added for.
+func TestWantCursorKeysOnlyInTerminalApp(t *testing.T) {
+	for _, tc := range []struct {
+		termProgram string
+		want        bool
+	}{
+		{"Apple_Terminal", true},
+		{"iTerm.app", false},
+		{"tmux", false},
+		{"vscode", false},
+		{"", false},
+	} {
+		t.Setenv("TERM_PROGRAM", tc.termProgram)
+		if got := wantCursorKeys(); got != tc.want {
+			t.Errorf("TERM_PROGRAM=%q: wantCursorKeys() = %v, want %v", tc.termProgram, got, tc.want)
+		}
+	}
+}
+
 // An editor resets application cursor-key mode as it exits, so the mode has to be
 // set again after the command's own output, not before it. This is the order that
 // keeps trackpad scrolling working after `e`; reversing it would pass a test that

@@ -2733,11 +2733,32 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// worth more than scrolling the pane under the pointer. bubbletea has no option for
 	// the mode and already parses both arrow encodings, so it is set here, before the
 	// renderer starts and after it stops, where the write cannot land inside a frame.
-	fmt.Fprint(os.Stdout, ansi.SetModeCursorKeys)
-	defer fmt.Fprint(os.Stdout, ansi.ResetModeCursorKeys)
+	// Only on Terminal.app — see wantCursorKeys for what the mode costs elsewhere.
+	if wantCursorKeys() {
+		fmt.Fprint(os.Stdout, ansi.SetModeCursorKeys)
+		defer fmt.Fprint(os.Stdout, ansi.ResetModeCursorKeys)
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	return err
+}
+
+// wantCursorKeys reports whether agentop is running in Terminal.app, the terminal
+// application cursor-key mode was added for. The mode is not free: terminals that
+// follow xterm (the xterm-256color terminfo says khome=\EOH, kend=\EOF) then send
+// Home and End as ESC O H and ESC O F, and bubbletea v1.3.10 cannot read either —
+// it splits each into alt+O and a bare letter, so the tables' home/end bindings
+// stop working and Home in the filter box types an H. Terminal.app keeps Home and
+// End for scrolling its own window by default, so it pays nothing for the mode.
+// GNOME Terminal, Konsole, Alacritty and kitty are believed to turn an alt-screen
+// scroll into arrows without it (not verified here), so elsewhere the mode would
+// likely cost those keys and buy nothing.
+//
+// TERM_PROGRAM rather than GOOS, because the cost belongs to the terminal: iTerm2
+// runs on the same Macs and is not known to share Terminal.app's Home/End default.
+// tmux sets its own TERM_PROGRAM, and the scroll is tmux's to handle there anyway.
+func wantCursorKeys() bool {
+	return os.Getenv("TERM_PROGRAM") == "Apple_Terminal"
 }
 
 // openEditorCmd returns a tea.Cmd that suspends bubbletea, runs $EDITOR
@@ -2750,9 +2771,13 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 		editor = "vi"
 	}
 	c := exec.Command("sh", "-c", editor+" "+path)
-	return tea.Exec(cursorKeysCmd{c}, func(err error) tea.Msg {
+	exited := func(err error) tea.Msg {
 		return editorExitedMsg{gen: gen, err: err}
-	})
+	}
+	if wantCursorKeys() {
+		return tea.Exec(cursorKeysCmd{c}, exited)
+	}
+	return tea.ExecProcess(c, exited)
 }
 
 // cursorKeysCmd runs a command that borrows the terminal and sets application
