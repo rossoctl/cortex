@@ -762,6 +762,8 @@ type model struct {
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error
+	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
+	agentsFetchedAt time.Time
 	// agentsGateOwesALook is the startup gate held open for one session list. Its reply can land
 	// before the connection's first list, and the list now votes — agentChoices counts the agents
 	// its sessions name — so a decline made without one is provisional. Set when the gate declines
@@ -1587,7 +1589,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the point is not to suggest otherwise to the next reader.
 			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd())
 		}
-		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd(), harvestNow)
+		var agentsNow tea.Cmd
+		if m.pane == paneAgents && time.Since(m.agentsFetchedAt) >= agentsPollInterval {
+			agentsNow = m.fetchAgentRowsCmd(agentsOpenNever, paneNone)
+		}
+		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd(), harvestNow, agentsNow)
 
 	case pipelineLoadedMsg:
 		m.pipelineFetching = false

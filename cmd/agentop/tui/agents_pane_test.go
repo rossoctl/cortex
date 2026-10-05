@@ -669,3 +669,28 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		t.Fatal("no agentRowsLoadedMsg came out of initSessionView's batch — the startup gate is not armed")
 	}
 }
+
+// The open pane refetches its rows every agentsPollInterval, so an agent that starts sending
+// traffic while the reader watches appears without an `A` press (#1209).
+func TestAgentsPane_PollsWhileOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pane paneID
+		age  time.Duration
+		want bool
+	}{
+		{"open and due", paneAgents, agentsPollInterval, true},
+		{"open and fetched recently", paneAgents, agentsPollInterval / 2, false},
+		{"another pane", paneSessions, agentsPollInterval, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := time.Now().Add(-tc.age)
+			m := &model{pane: tc.pane, previousPane: paneNone, agentsTbl: newAgentsTable(),
+				client: deadClient(), agentsFetchedAt: before}
+			m.Update(refreshTickMsg(time.Now()))
+			if got := m.agentsFetchedAt.After(before); got != tc.want {
+				t.Errorf("refresh tick fetched agent rows = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

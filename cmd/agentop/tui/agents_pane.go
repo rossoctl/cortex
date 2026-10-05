@@ -142,6 +142,9 @@ func (m *model) agentChoices() []agentRow {
 // before we give up".
 const agentsFetchTimeout = 5 * time.Second
 
+// agentsPollInterval is how often the open pane refetches its rows.
+const agentsPollInterval = 20 * time.Second
+
 // agentsWindow is the span the breakdown covers.
 //
 // A SYMBOLIC WINDOW, so the figures come from the durable cost ledger rather than the
@@ -199,6 +202,7 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 		return nil
 	}
 	client := m.client
+	m.agentsFetchedAt = time.Now()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), agentsFetchTimeout)
 		defer cancel()
