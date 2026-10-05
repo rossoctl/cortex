@@ -1312,9 +1312,12 @@ it. The raw User-Agents are still in the unscoped drawer's agent axis and in
 While a scope is active, two things on the usage pane change and both say so:
 `[b]` disappears from the footer, because the scope needs `group=agent` on the
 wire and there is no second axis left to break down by; and the latency metric
-reports that it is unavailable per agent rather than plotting zeroes. Response
-times are recorded per bucket across every agent that shared it, so
-`/v1/usage` carries nothing that could attribute them to one.
+plots that agent's own response times, which agentop asks of the server with
+`/v1/usage?agent=` — the `group=agent` series carries none, because a bucket's
+latency covers every agent that shared it. The server keeps them for each
+recognised agent, so the metric reports that latency is unavailable per agent,
+rather than plotting zeroes, under `Other`, within one session, and against a
+proxy too old to keep them.
 
 Elsewhere, the sessions pane lists only that agent's sessions — the `default` and
 `pending:` buckets belong to no one agent and are listed under `Other` — and every pane's title

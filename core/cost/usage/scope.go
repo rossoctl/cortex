@@ -158,8 +158,10 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 // LATENCY IS ZEROED RATHER THAN CARRIED, and it is the one reading this narrowing cannot
 // produce: Series is map[string]Counts and Counts holds no latency, so LatMeanMs, LatStdDevMs
 // and LatSamples describe every agent that shared the bucket. Keeping them would draw one
-// agent's chart out of another's response times. A caller that offers a latency view has to say
-// it is unavailable under a scope; there is no per-agent latency on the wire to offer instead.
+// agent's chart out of another's response times. A caller that offers a latency view under a scope
+// has to read it from somewhere else or say it is unavailable. The somewhere else is AgentSnapshot,
+// which answers a recognised agent with no session from that agent's own ring, latency included —
+// agentop's usage pane takes it from there (tui.graftAgentLatency) and says unavailable otherwise.
 func narrowBucketsToAgent(buckets []Bucket, agent string) []Bucket {
 	out := make([]Bucket, 0, len(buckets))
 	for _, b := range buckets {

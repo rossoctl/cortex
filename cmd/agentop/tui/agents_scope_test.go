@@ -152,7 +152,11 @@ const usageSnapshotJSON = `{
 func TestFetchUsage_ScopedAsksForTheAgentAxis(t *testing.T) {
 	var gotQuery string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
+		// The narrowing read's query, not the latency read's that follows it and asks for agent=
+		// instead. See graftAgentLatency.
+		if !r.URL.Query().Has("agent") {
+			gotQuery = r.URL.RawQuery
+		}
 		_, _ = w.Write([]byte(usageSnapshotJSON))
 	}))
 	defer ts.Close()

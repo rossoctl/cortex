@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -32,6 +33,8 @@ type usageLoadedMsg struct {
 	snap *usage.Snapshot
 	// windowUnits is snap.Currencies before any agent scope narrowed it; see costUngroupedRow.
 	windowUnits []string
+	// agentLatency reports that snap's latency is the scoped agent's own; see graftAgentLatency.
+	agentLatency bool
 	// req is the monotonic id of the request this answers. Update discards any
 	// reply whose id is not the newest one issued.
 	//
@@ -59,9 +62,11 @@ type usageState struct {
 	snap      *usage.Snapshot
 	// windowUnits is the window's units, which the whole-window residual is in; see usageLoadedMsg.
 	windowUnits []string
-	err         error
-	loading     bool
-	lastFetch   time.Time
+	// agentLatency is usageLoadedMsg's, assigned with snap.
+	agentLatency bool
+	err          error
+	loading      bool
+	lastFetch    time.Time
 
 	// group is the active breakdown; GroupNone renders the ungrouped bars.
 	group usage.Group
@@ -168,11 +173,13 @@ func (m *model) fetchUsage() tea.Cmd {
 		if err == nil {
 			windowUnits = snap.Currencies
 		}
+		var agentLatency bool
 		if err == nil && scope != "" {
 			// NarrowBuckets, not KeepBuckets: this pane renders a chart from Buckets, and
 			// narrowing only the totals would title a whole-window chart with one agent's name.
-			// The cost is that the narrowed buckets carry no latency — see the renderUsage
-			// branch that says so rather than plotting the zeros.
+			// The cost is that the narrowed buckets carry no latency, which graftAgentLatency
+			// restores where the server can supply it — and the renderUsage branch says so where
+			// it cannot, rather than plotting the zeros.
 			//
 			// A FAILURE IS REPORTED, not swallowed. A scope stops matching on its own as the
 			// window moves past an agent's last request.
@@ -182,9 +189,57 @@ func (m *model) fetchUsage() tea.Cmd {
 				snap = foldOtherAgents(snap)
 			}
 			snap, err = usage.ScopeToAgent(snap, scope, usage.NarrowBuckets)
+			// Not for Other, which no server keeps a ring for, nor within a session, which the
+			// server answers by the same narrowing as this — neither reply could carry latency.
+			if err == nil && scope != otherAgents && session == "" {
+				agentLatency, err = graftAgentLatency(ctx, client, snap, window, resolution, scope)
+			}
 		}
-		return usageLoadedMsg{snap: snap, windowUnits: windowUnits, req: req, err: err}
+		return usageLoadedMsg{snap: snap, windowUnits: windowUnits, agentLatency: agentLatency, req: req, err: err}
 	}
+}
+
+// graftAgentLatency copies the scoped agent's own latency onto snap, whose narrowed buckets carry
+// none, and reports whether it did.
+//
+// FROM A SECOND READ, agent=scope, because the server keeps a ring per recognised agent
+// (usage.Aggregator.agents) and answers that from it, latency included. ONLY THE LATENCY IS
+// TAKEN, not the whole answer: it has no whole-window residual for costUngroupedRow to disclose
+// and no window's units to state it in, so counts and cost stay on the narrowing they have always
+// come from. Matched by bucket time rather than position, since a minute can turn between the
+// two reads.
+//
+// FALSE, AND SNAP UNTOUCHED, WHERE THE ANSWER CANNOT BE THE AGENT'S OWN. No agent echo is a
+// server that ignored agent= and answered for every agent — grafting that would title everyone's
+// response times with one agent's name. An echo with requests but no latency sample in any bucket
+// is a server that narrowed the agent axis, as every one did before the per-agent rings; a ring
+// cannot produce that unless every request went unmeasured. An agent with no requests at all is
+// true: nothing is missing, and renderWhiskers says the window has no samples.
+func graftAgentLatency(ctx context.Context, client *apiclient.Client, snap *usage.Snapshot, window, resolution time.Duration, scope string) (bool, error) {
+	own, err := client.GetUsageWindowForAgent(ctx, window.String(), resolution, "", scope, usage.GroupNone)
+	if err != nil {
+		return false, err
+	}
+	if own.Agent != scope {
+		return false, nil
+	}
+	byAt := make(map[int64]usage.Bucket, len(own.Buckets))
+	for _, b := range own.Buckets {
+		if b.LatSamples > 0 {
+			byAt[b.At.Unix()] = b
+		}
+	}
+	if len(byAt) == 0 {
+		return own.Totals.Requests == 0, nil
+	}
+	// In place: snap.Buckets is the slice the narrowing allocated, owned by no one else.
+	for i := range snap.Buckets {
+		if b, ok := byAt[snap.Buckets[i].At.Unix()]; ok {
+			snap.Buckets[i].LatMeanMs, snap.Buckets[i].LatStdDevMs, snap.Buckets[i].LatSamples =
+				b.LatMeanMs, b.LatStdDevMs, b.LatSamples
+		}
+	}
+	return true, nil
 }
 
 // usageTick schedules the next poll for the given generation.
@@ -377,19 +432,31 @@ func (m *model) renderUsage(width, height int) string {
 		b.WriteString("  Loading…\n")
 	case m.usage.snap == nil:
 		b.WriteString("  (no data)\n")
-	case m.agentScope != "" && m.usage.metric.isLatency():
+	case m.agentScope != "" && m.usage.metric.isLatency() && !m.usage.agentLatency:
 		// SAID HERE RATHER THAN LEFT TO renderWhiskers, which would answer "no latency samples
 		// in this window" — true of the narrowed snapshot and false about the window, and it
 		// would send the reader looking for traffic that is there. usage.ScopeToAgent zeroes the
 		// latency fields because Bucket.Series is map[string]Counts and Counts carries no
-		// latency, so a bucket's mean describes every agent that shared it. There is no
-		// per-agent latency on the wire to offer instead, which is why this names the way out
-		// rather than suggesting a different window.
+		// latency, so a bucket's mean describes every agent that shared it. graftAgentLatency
+		// puts them back from the agent's own ring, and this branch is where there was none.
+		//
+		// THE REASON IS NAMED, because the three cases have different fixes: Other and a session
+		// are views to leave, while a proxy without per-agent rings is one to upgrade.
 		b.WriteString("  (latency is not available per agent)\n")
 		b.WriteString("\n")
-		b.WriteString("  Response times are recorded per bucket, across every agent that\n")
-		b.WriteString("  shared it, so they cannot be attributed to one. To plot latency for\n")
-		b.WriteString("  all of them, clear the scope: [A], [enter] on All agents, then [u].\n")
+		switch {
+		case m.agentScope == otherAgents:
+			b.WriteString("  Other pools agents the proxy keeps no response times of their own\n")
+			b.WriteString("  for, so its latency cannot be told from every other agent's.\n")
+		case m.usage.session != "":
+			b.WriteString("  Within a session, response times are recorded across every agent\n")
+			b.WriteString("  that shared it, so they cannot be attributed to one.\n")
+		default:
+			b.WriteString("  This proxy keeps no response times for this agent alone — it\n")
+			b.WriteString("  predates per-agent latency, or does not recognise the agent.\n")
+		}
+		b.WriteString("  To plot latency for every agent instead, clear the scope:\n")
+		b.WriteString("  [A], [enter] on All agents, then [u].\n")
 		b.WriteString("\n")
 		b.WriteString(renderUsageSummary(m.usage.snap))
 		b.WriteString("\n")
