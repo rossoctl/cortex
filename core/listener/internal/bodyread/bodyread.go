@@ -9,8 +9,11 @@ package bodyread
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // LogError logs a failed body-buffering attempt. listener names the caller
@@ -53,4 +56,31 @@ func Rejection(err error) (int, string) {
 		return http.StatusRequestEntityTooLarge, `{"error":"request body too large"}`
 	}
 	return http.StatusBadRequest, `{"error":"request body unreadable"}`
+}
+
+// Failure is what a listener records for a request whose body it could not
+// buffer: the status for the row, and why. The pipeline never ran on such a
+// request, so this row is the only trace it leaves; without one, a request the
+// client saw fail did not appear in the session timeline at all.
+//
+// An overrun is proxy_error, the kind for a limit that is ours, and its message
+// carries the announced size when there is one: that is the figure that says
+// how far over the limit the client went. A body that broke off because the
+// client went away is client_canceled with a 499, as for an exchange the client
+// abandons — net/http cancels the request context on the read error, and nobody
+// received the 400. Anything else is request_unreadable, named for the log
+// line and the JSON error the client got.
+func Failure(r *http.Request, limit int64, err error) (int, *pipeline.EventError) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		msg := fmt.Sprintf("request body over the %d-byte buffer limit", limit)
+		if r.ContentLength >= 0 {
+			msg = fmt.Sprintf("request body of %d bytes is over the %d-byte buffer limit", r.ContentLength, limit)
+		}
+		return http.StatusRequestEntityTooLarge, &pipeline.EventError{Kind: "proxy_error", Message: msg}
+	}
+	if r.Context().Err() != nil {
+		return pipeline.StatusClientClosedRequest, &pipeline.EventError{Kind: "client_canceled", Message: err.Error()}
+	}
+	return http.StatusBadRequest, &pipeline.EventError{Kind: "request_unreadable", Message: err.Error()}
 }

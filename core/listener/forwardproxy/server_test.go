@@ -434,25 +434,19 @@ func TestForwardProxy_BodyBuffering(t *testing.T) {
 	}
 }
 
-// TestForwardProxy_RequestOverResponseCap pins the request cap apart from the
-// response one. 12,284,233 bytes is the largest POST /v1/messages the proxy
-// refused at the old shared 10MB cap (#1250) — a Claude Code conversation the
-// Anthropic API would have taken — so it must now reach both the pipeline and
-// the upstream whole.
-func TestForwardProxy_RequestOverResponseCap(t *testing.T) {
-	const size = 12_284_233
-	if size <= maxBodySize || size > maxRequestBodySize {
-		t.Fatalf("fixture %d must sit between maxBodySize %d and maxRequestBodySize %d",
-			size, maxBodySize, maxRequestBodySize)
-	}
-
+// postThroughBodyReader sends a size-byte POST through a forward proxy whose
+// pipeline buffers request bodies, and reports the status the client got and
+// how many bytes the plugin and the upstream each saw — -1 for a side the
+// request never reached.
+func postThroughBodyReader(t *testing.T, size int) (status, pluginLen, upstreamLen int) {
+	t.Helper()
 	recorder := &bodyRecorderPlugin{}
 	p, err := pipeline.New([]pipeline.Plugin{recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var upstreamLen int
+	upstreamLen = -1
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		upstreamLen = len(b)
@@ -477,14 +471,57 @@ func TestForwardProxy_RequestOverResponseCap(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+
+	pluginLen = -1
+	if recorder.receivedBody != nil {
+		pluginLen = len(recorder.receivedBody)
 	}
-	if len(recorder.receivedBody) != size {
-		t.Errorf("plugin got %d bytes, want %d", len(recorder.receivedBody), size)
+	return resp.StatusCode, pluginLen, upstreamLen
+}
+
+// TestForwardProxy_RequestOverResponseCap pins the request cap apart from the
+// response one. 12,284,233 bytes is the largest POST /v1/messages the proxy
+// refused at the old shared 10MB cap (#1250) — a Claude Code conversation the
+// Anthropic API would have taken — so it must now reach both the pipeline and
+// the upstream whole.
+func TestForwardProxy_RequestOverResponseCap(t *testing.T) {
+	const size = 12_284_233
+	if size <= maxBodySize || size > maxRequestBodySize {
+		t.Fatalf("fixture %d must sit between maxBodySize %d and maxRequestBodySize %d",
+			size, maxBodySize, maxRequestBodySize)
+	}
+
+	status, pluginLen, upstreamLen := postThroughBodyReader(t, size)
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if pluginLen != size {
+		t.Errorf("plugin got %d bytes, want %d", pluginLen, size)
 	}
 	if upstreamLen != size {
 		t.Errorf("upstream got %d bytes, want %d", upstreamLen, size)
+	}
+}
+
+// TestForwardProxy_RequestBodyCapIs32MiB pins the cap's VALUE, which a test
+// computed from maxRequestBodySize cannot: TestForwardProxy_BodyTooLarge sends
+// maxRequestBodySize+1, so it passes at any cap. The literals are the point.
+// 32 MiB is the larger reading of the 32 MB the Anthropic Messages API
+// documents, so a body at the line must reach the provider whole, and the next
+// byte over must be ours to refuse.
+func TestForwardProxy_RequestBodyCapIs32MiB(t *testing.T) {
+	const limit = 32 << 20
+
+	status, pluginLen, upstreamLen := postThroughBodyReader(t, limit)
+	if status != http.StatusOK || pluginLen != limit || upstreamLen != limit {
+		t.Errorf("exactly 32 MiB: status %d, plugin %d bytes, upstream %d bytes; want 200 and %d bytes to both",
+			status, pluginLen, upstreamLen, limit)
+	}
+
+	status, pluginLen, upstreamLen = postThroughBodyReader(t, limit+1)
+	if status != http.StatusRequestEntityTooLarge || pluginLen != -1 || upstreamLen != -1 {
+		t.Errorf("32 MiB + 1: status %d, plugin %d bytes, upstream %d bytes; want 413 and neither reached",
+			status, pluginLen, upstreamLen)
 	}
 }
 
@@ -519,6 +556,9 @@ func TestForwardProxy_BodyTooLarge(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", resp.StatusCode)
+	}
+	if recorder.receivedBody != nil {
+		t.Error("plugin should not see an oversized body")
 	}
 }
 

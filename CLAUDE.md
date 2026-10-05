@@ -570,7 +570,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `/v1/usage` but stays out of the 5xx series, and logs no WARN. On all of these the
   Finisher sees `OutcomeError` with `Outcome.StatusCode` **0**, because that zero is
   what marks the request as an error rather than an allow — the event and the outcome
-  disagree about the status on purpose. An opaque CONNECT that could not be dialed
+  disagree about the status on purpose. **A request whose body could not be buffered
+  is the exception:** it never reached the pipeline, so its request row carries no
+  parse and no Finisher runs. Over the forward proxy's `maxRequestBodySize` (32 MiB)
+  it is a 413 `proxy_error` with an empty `error.code`; a client that hung up
+  mid-upload gets a 499 `client_canceled`, which here does log a WARN (`request body
+  unreadable`); anything else unreadable is a 400 `request_unreadable`. Before these
+  were recorded such a request left no row, and on a bridged tunnel only the tunnel's
+  open and a close saying 200. An opaque CONNECT that could not be dialed
   reports the same situation one layer down as `tunnelReason: "dial-failed"` with
   `error.kind: "dial_failed"`.
 - `tunnel`, `tunnelReason`, `bytesUp`, `bytesDown` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached (`tunnelReason: "dial-failed"`) — plus `durationMs` for how long the tunnel stayed open and the bytes it carried each way (up = client to destination). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel's open is recorded with its first decrypted request — in that request's session, directly before it, stamped with its time — and records no close, because the request carries its own response; a bridged tunnel that recorded no request gets its open and a close when it ends. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency.

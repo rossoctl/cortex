@@ -49,7 +49,9 @@ import (
 // judged by the provider, which knows its own limit, rather than by us.
 //
 // A body over the cap is rejected with a 413 before the pipeline runs, so the
-// limit also decides whether telemetry is recorded at all. The whole body is
+// limit also decides whether a request is parsed at all: an over-limit one
+// records only its request row and the 413 (see recordUnbufferedRequest),
+// with no model, tokens or cost. The whole body is
 // held while the pipeline runs, so one in-flight request can hold this much
 // on the request side, on top of the response-side cost described at
 // maxBodySize.
@@ -380,6 +382,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			bodyread.LogError("forward-proxy", r, len(body), maxRequestBodySize, err)
 			status, msg := bodyread.Rejection(err)
 			http.Error(w, msg, status)
+			s.recordUnbufferedRequest(tl, pctx, r, chain, err)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -433,25 +436,6 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		if chain != nil {
 			defer s.Sessions.TouchProcess(sid, chain)
 		}
-		// Snapshot-copy the protocol extension so the request event
-		// doesn't see response-phase mutations on the same MCP/Inference
-		// struct (e.g. token counts assigned in OnResponse).
-		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-		ev := pipeline.SessionEvent{
-			At:          time.Now(),
-			Direction:   pipeline.Outbound,
-			Phase:       pipeline.SessionRequest,
-			RequestID:   pctx.RequestID(),
-			MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
-			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
-			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-			Plugins:     plugins,
-			Identity:    pipeline.SnapshotIdentity(pctx),
-			Host:        pctx.Host,
-			HTTPMethod:  pctx.Method,
-			HTTPPath:    pctx.Path,
-			Client:      pctx.ClientInfo(),
-		}
 		// Record EVERY message that reaches the pipeline — even when no
 		// plugin acted and no parser matched (Invocations/MCP/Inference all
 		// nil). The session API is an observability surface; a request the
@@ -459,7 +443,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// operator wants to see (it carries Host, and the paired response
 		// carries StatusCode). skip_hosts traffic never reaches here (the
 		// !skipped guard above), so it stays suppressed by design.
-		s.appendOutbound(tl, sid, ev)
+		s.recordOutboundRequestEvent(tl, pctx, sid)
 	}
 
 	// Propagate every header mutation the outbound pipeline made to the
@@ -919,6 +903,58 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, 
 		return resolved
 	}
 	return s.resolveOutboundSessionID(clientHeaders, chain)
+}
+
+// recordOutboundRequestEvent records pctx's request row under sid. Its pair is
+// recordOutboundResponseEvent, which files under pctx.OutboundSessionID, so the
+// caller pins that to sid first.
+func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Context, sid string) {
+	// Snapshot-copy the protocol extension so the request event
+	// doesn't see response-phase mutations on the same MCP/Inference
+	// struct (e.g. token counts assigned in OnResponse).
+	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+	ev := pipeline.SessionEvent{
+		At:          time.Now(),
+		Direction:   pipeline.Outbound,
+		Phase:       pipeline.SessionRequest,
+		RequestID:   pctx.RequestID(),
+		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:     plugins,
+		Identity:    pipeline.SnapshotIdentity(pctx),
+		Host:        pctx.Host,
+		HTTPMethod:  pctx.Method,
+		HTTPPath:    pctx.Path,
+		Client:      pctx.ClientInfo(),
+	}
+	s.appendOutbound(tl, sid, ev)
+}
+
+// recordUnbufferedRequest records the request row and its failure row for a
+// request whose body could not be buffered, which therefore never reached the
+// pipeline. This return used to record nothing: a request over the size limit
+// got its 413 and left no row, so the operator could not see it failed, and on
+// a bridged tunnel the only rows were the tunnel's own open and a close saying
+// 200. Recording the request through appendOutbound puts the tunnel's open in
+// the request's session, as any other recorded request does.
+//
+// The session is resolved here rather than taken from serveOutbound's
+// hydration, which runs after the body is read. Resolution reads only the
+// client's headers and process, never the body, so the answer is the one the
+// request would have got.
+func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, r *http.Request, chain []session.Proc, err error) {
+	if s.Sessions == nil {
+		return
+	}
+	sid := s.recordingSessionID("", r.Header, chain)
+	pctx.OutboundSessionID = sid
+	if chain != nil {
+		defer s.Sessions.TouchProcess(sid, chain)
+	}
+	status, fail := bodyread.Failure(r, maxRequestBodySize, err)
+	s.recordOutboundRequestEvent(tl, pctx, sid)
+	s.recordOutboundResponseEvent(pctx, status, fail)
 }
 
 // appendOutbound records ev under sid. For a request decrypted from a bridged tunnel tl is

@@ -131,8 +131,8 @@ func TestTunnelLog_ConcurrentRequestsShareOneOpen(t *testing.T) {
 	}
 }
 
-// A request admitted but never recorded — its body failed to read, say — answers
-// nothing, so the tunnel still owes its open and a close.
+// A request admitted but never recorded — denied by a plugin that appended no
+// invocation, say — answers nothing, so the tunnel still owes its open and a close.
 func TestTunnelLog_UnrecordedRequestStillSettlesTheTunnel(t *testing.T) {
 	store := session.New(0, 0, 0)
 	defer store.Close()
