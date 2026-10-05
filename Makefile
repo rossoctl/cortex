@@ -89,12 +89,17 @@ cortex: ## Build cortex to ./bin/cortex (PROFILE=full|lite|local, default full)
 # removes the pre-rename abctl and authbridge-proxy. One code path, so a dev install
 # cannot drift from a release install.
 
-dev-install: cortex agentop ## Build from this tree and install it with agentop setup (PROFILE=full|lite|local)
-	@# BIN_DIR's agentop, not the installed one: the agentop just built is the one that
-	@# knows how this tree installs. Setup leaves BIN_DIR in place; it deletes only a
-	@# stage the installer made, and only when the installer says so. --yes, because a
-	@# build command that stops to ask is not a one-liner. --no-modify-path, because a
-	@# build target should not edit dotfiles; setup says so when ~/.local/bin is not
-	@# on PATH. --restart, because setup otherwise skips the restart when the rebuild
-	@# is byte-identical.
-	@$(BIN_DIR)/agentop setup --from $(BIN_DIR) --yes --no-modify-path --restart
+# BIN_DIR's agentop, not the installed one: the agentop just built is the one that
+# knows how this tree installs. Setup leaves BIN_DIR in place; it deletes only a
+# stage the installer made, and only when the installer says so. --yes, because a
+# build command that stops to ask is not a one-liner. --no-modify-path, because a
+# build target should not edit dotfiles; setup says so when ~/.local/bin is not on
+# PATH. --restart, because setup otherwise skips the restart when the rebuild is
+# byte-identical.
+DEV_INSTALL_SETUP := $(BIN_DIR)/agentop setup --from $(BIN_DIR) --yes --no-modify-path --restart
+
+dev-install: cortex agentop ## Build from this tree, install it with agentop setup, and restart the proxy (PROFILE=full|lite|local)
+	@# Echoed, because the restart is this line's doing and nothing else on screen says
+	@# so; a setup that refuses names this same command as the one to re-run.
+	@echo "→ running $(DEV_INSTALL_SETUP)"
+	@$(DEV_INSTALL_SETUP)

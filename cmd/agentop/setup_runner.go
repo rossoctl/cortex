@@ -32,6 +32,7 @@ type setupEnv struct {
 	home, goos, shell, pathEnv string
 	binDir, cortexDir, fromDir string
 	opts                       setupOptions
+	argv                       []string // the command this setup was run as, for rerun
 
 	// Established while planning; later plans and the ending read them.
 	freshInstall      bool     // no agentop in binDir before this run
@@ -79,6 +80,29 @@ func (e *setupEnv) newVersion() string {
 		return e.stagedVersion
 	}
 	return version
+}
+
+// rerun is the clause a remedy ends on, naming what to run again once the user has
+// acted on it: the installer, whose stage setup deletes on its way out, or else the
+// command this setup was run as. Spelled out, because that is often not what the user
+// typed: `make dev-install` runs setup, and a bare "re-run" left them to guess which
+// (#1282).
+func (e *setupEnv) rerun() string {
+	if e.opts.fromInstaller() {
+		return "re-run the installer"
+	}
+	if len(e.argv) == 0 {
+		return "re-run agentop setup"
+	}
+	words := make([]string, len(e.argv))
+	for i, a := range e.argv {
+		if filepath.IsAbs(a) {
+			words[i] = e.shellPath(a)
+		} else {
+			words[i] = shellQuote(a)
+		}
+	}
+	return "re-run: " + strings.Join(words, " ")
 }
 
 func (e *setupEnv) configPath() string  { return filepath.Join(e.cortexDir, "config.yaml") }

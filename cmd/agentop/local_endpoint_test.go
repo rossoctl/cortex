@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -76,6 +77,27 @@ func TestLocalSessionEndpoint_NoConfigMeansNoLocalEndpoint(t *testing.T) {
 	}
 }
 
+// A config that is there but will not load is named as such, not reported as no
+// local Cortex at all: the proxy that rejected the same edit may still be serving
+// (#1282). One that loads, or is not there, is no problem.
+func TestLocalConfigProblem(t *testing.T) {
+	withCortexConfig(t, "")
+	if got := localConfigProblem(); got != "" {
+		t.Errorf("no config: %q, want empty", got)
+	}
+	withCortexConfig(t, "127.0.0.1:47601")
+	if got := localConfigProblem(); got != "" {
+		t.Errorf("a config that loads: %q, want empty", got)
+	}
+	cfg := filepath.Join(os.Getenv("HOME"), ".cortex", "config.yaml")
+	if err := os.WriteFile(cfg, []byte("listener:\n  roles: [forward\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := localConfigProblem(); !strings.HasPrefix(got, "~/.cortex/config.yaml will not load: parsing config: ") {
+		t.Errorf("a broken config: %q, want it named", got)
+	}
+}
+
 // TestLocalSessionAPIUp_OnlyWhenSomethingAnswers is what keeps a stale config
 // from hijacking agentop: an install that is no longer running must not steer
 // someone away from the cluster picker.
@@ -137,6 +159,32 @@ func TestLocalSessionEndpoint_RejectsMalformedAddresses(t *testing.T) {
 		withCortexConfig(t, addr)
 		if got := localSessionEndpoint(); got != "" {
 			t.Errorf("session_api_addr %q -> %q, want empty", addr, got)
+		}
+	}
+}
+
+// pipeline get and cost fall back to the local Cortex; with its config broken they
+// name the file, where they used to say no local Cortex was configured (#1282).
+func TestLocalFallbackNamesABrokenConfig(t *testing.T) {
+	withCortexConfig(t, "")
+	dir := filepath.Join(os.Getenv("HOME"), ".cortex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("listener:\n  roles: [forward\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]func(stdout, stderr io.Writer) int{
+		"agentop pipeline get": func(o, e io.Writer) int { return runPipeline([]string{"get"}, o, e) },
+		"agentop cost":         func(o, e io.Writer) int { return runCost(nil, o, e) },
+	} {
+		var out, errOut strings.Builder
+		if code := run(&out, &errOut); code != 1 {
+			t.Errorf("%s: exit %d, want 1", name, code)
+		}
+		want := name + ": no --endpoint given, and ~/.cortex/config.yaml will not load: parsing config: "
+		if !strings.HasPrefix(errOut.String(), want) || strings.Contains(errOut.String(), "no local Cortex is configured") {
+			t.Errorf("%s: stderr =\n%s\nwant it to start %q", name, errOut.String(), want)
 		}
 	}
 }

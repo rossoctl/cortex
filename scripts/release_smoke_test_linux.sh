@@ -81,10 +81,13 @@ assert_contains() {
 	fi
 }
 
+# Both wordings: the fresh install below runs the PREVIOUS release's agentop, which
+# says "healthy: <url>", where this one says "Cortex is healthy according to <url>".
+# GNU grep's \| alternation; this runs on ubuntu.
 assert_healthy() {
 	out="$(mktemp "${TMP_DIR}/status.XXXXXX")"
 	"${AGENTOP}" service status | tee "${out}"
-	assert_contains "${out}" "healthy:" "agentop service status did not report healthy"
+	assert_contains "${out}" 'healthy:\|Cortex is healthy according to' "agentop service status did not report healthy"
 }
 
 # Confirms the systemd unit is actually running the binary just installed, not

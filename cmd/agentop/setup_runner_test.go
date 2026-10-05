@@ -197,6 +197,26 @@ func TestTilde(t *testing.T) {
 	}
 }
 
+// rerun names the command to run again: the one setup was run as, with paths under
+// HOME as ~/…, since `make dev-install` runs setup for the user (#1282); or the
+// installer, whose stage setup deletes on its way out.
+func TestRerunNamesTheCommandToRunAgain(t *testing.T) {
+	env := newTestSetupEnv(t)
+	bin := filepath.Join(env.home, "src", "cortex", "bin")
+	env.argv = []string{filepath.Join(bin, "agentop"), "setup", "--from", bin, "--yes", "--restart"}
+	if got, want := env.rerun(), "re-run: ~/src/cortex/bin/agentop setup --from ~/src/cortex/bin --yes --restart"; got != want {
+		t.Errorf("rerun = %q, want %q", got, want)
+	}
+	env.argv = []string{"agentop", "setup", "--from", "/opt/my bin"}
+	if got, want := env.rerun(), "re-run: agentop setup --from '/opt/my bin'"; got != want {
+		t.Errorf("rerun = %q, want %q", got, want)
+	}
+	env.opts.handoffBytes = 1
+	if got, want := env.rerun(), "re-run the installer"; got != want {
+		t.Errorf("under the installer, rerun = %q, want %q", got, want)
+	}
+}
+
 func TestARollbackWithNothingToUndoSaysNothingChanged(t *testing.T) {
 	var log []string
 	env := newTestSetupEnv(t)

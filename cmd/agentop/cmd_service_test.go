@@ -487,7 +487,7 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 	if code := serviceStatus(p, &out); code != 1 {
 		t.Errorf("exit = %d, want 1 for a proxy that is not answering", code)
 	}
-	want := "NOT answering " + p.healthURL + "\n" +
+	want := "Cortex is NOT answering " + p.healthURL + "\n" +
 		"  Claude Code and OpenCode will fail while this is true. Last log lines:\n"
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("status =\n%s\nwant it to contain\n%s", out.String(), want)

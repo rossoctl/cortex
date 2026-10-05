@@ -178,6 +178,43 @@ func TestSetupProblemsChangeNothing(t *testing.T) {
 	sameFiles(t, before, homeFiles(t, sc.home))
 }
 
+// A config broken by hand is refused before anything applies, --restart or not, so
+// the service it would have restarted is still loaded; and the refusal says so, and
+// names the command to run again, which `make dev-install` did not show (#1282).
+func TestSetupBrokenConfigLeavesTheServiceAlone(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
+		t.Fatalf("install, exit %d:\n%s", code, out)
+	}
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	if err := os.WriteFile(cfg, []byte("listener:\n  roles: [forward\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := homeFiles(t, sc.home)
+	code, out := sc.run(t, "--from", sc.stage, "--yes", "--restart")
+	for _, want := range []string{
+		"  ✗ config",
+		"~/.cortex/config.yaml will not load: parsing config: ",
+		"fix: correct it, then re-run: ",
+		" setup --from " + sc.stage + " --yes --restart\n",
+		"fix: or, to start over from the built-in config, move it aside first: " +
+			"mv ~/.cortex/config.yaml ~/.cortex/config.yaml.broken\n",
+		"  Nothing was changed; Cortex was not stopped or restarted.\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q", want)
+		}
+	}
+	if code != 1 {
+		t.Errorf("exit %d, want 1", code)
+	}
+	if t.Failed() {
+		t.Logf("output:\n%s", out)
+	}
+	wantFile(t, sc.loaded, true, "after the refusal (the service must not have been booted out)")
+	sameFiles(t, before, homeFiles(t, sc.home))
+}
+
 // A sandbox: no supervisor, so the service step starts the stub's --supervise in
 // the background, and the ending says how to stop it.
 func TestSetupUnsupervisedNamesTheStopCommand(t *testing.T) {

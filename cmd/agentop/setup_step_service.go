@@ -112,7 +112,7 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 			reason = "ports " + portList(busy) + " are already in use by something else"
 		}
 		return forwardHold{}, &problem{reason: reason,
-			fix: []string{"free it, or change the ports in " + env.tilde(env.configPath()) + ", then re-run"}}
+			fix: []string{"free it, or change the ports in " + env.tilde(env.configPath()) + ", then " + env.rerun()}}
 	}
 	addr, port := forwardListener(env)
 	pid, exe, ok := portHolder(port)

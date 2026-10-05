@@ -29,7 +29,9 @@ func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 	}
 	if _, err := config.Load(cfg); err != nil {
 		return p, &problem{reason: env.tilde(cfg) + " will not load: " + err.Error(),
-			fix: []string{"fix it, or move it aside and re-run to get the built-in one"}}
+			fix: []string{"correct it, then " + env.rerun(),
+				"or, to start over from the built-in config, move it aside first: mv " +
+					env.shellPath(cfg) + " " + env.shellPath(cfg+".broken")}}
 	}
 	pending, err := configMigrationPending(cfg)
 	if err != nil {

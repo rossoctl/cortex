@@ -194,6 +194,7 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
+	env.argv = append([]string{os.Args[0], "setup"}, args...)
 	ui := checklist.New(stdout, setupAnimate(stdout))
 	defer ui.Close()
 
@@ -227,7 +228,13 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		ui.Blank()
-		ui.Plain("Nothing was changed.")
+		if env.freshInstall {
+			ui.Plain("Nothing was changed.")
+		} else {
+			// Said outright: a refusal is often the first thing a broken edit meets, and
+			// with nothing else on screen about the proxy it read as stopped (#1282).
+			ui.Plain("Nothing was changed; Cortex was not stopped or restarted.")
+		}
 		return 1
 	}
 	if allDone(planned) {

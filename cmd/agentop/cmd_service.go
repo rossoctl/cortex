@@ -446,8 +446,7 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 	reportSessionInterruption(p, stdout)
 	// Whether anything is SERVING, captured before the replacement and reported after it
 	// succeeds — see reportHistoryCleared for why neither half of that is optional.
-	wasServing := adopt > 0 ||
-		(p.healthURL != "" && waitHealthy(p.healthURL, historyProbeBudget))
+	wasServing := adopt > 0 || proxyServing(p)
 
 	if adopt > 0 {
 		fmt.Fprintf(stdout, "Stopping pid %d...\n", adopt)
@@ -661,21 +660,63 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		}
 	}
 
+	// A config that will not load names no health address, and status used to end here
+	// on that: "installed:" alone, exit 0, whether or not anything was serving (#1282).
+	// Both halves are worth saying, because both can be true at once: a running proxy
+	// rejects the bad edit and keeps serving the config it last loaded, and nothing can
+	// start from the file until it is fixed.
+	if p.configErr != nil {
+		fmt.Fprintf(stdout, "config: %s will not load: %v\n", p.configFile, p.configErr)
+		fmt.Fprintf(stdout, "  A running Cortex keeps the config it last loaded, but none can start until this file loads.\n")
+		if waitHealthy(p.probeURL(), 2*time.Second) {
+			fmt.Fprintf(stdout, "Cortex is healthy according to %s, serving the config it last loaded\n", p.probeURL())
+		} else {
+			reportNotAnswering(p.probeURL()+", the built-in health address", p.logFile, stdout)
+		}
+		return 1
+	}
 	if p.healthURL == "" {
 		return 0
 	}
 	if waitHealthy(p.healthURL, 2*time.Second) {
-		fmt.Fprintf(stdout, "healthy: %s\n", p.healthURL)
+		fmt.Fprintf(stdout, "Cortex is healthy according to %s\n", p.healthURL)
 		return 0
 	}
-	// Installed but not serving is the state worth naming loudly: a configured Claude
-	// Code or OpenCode is pointed at a proxy that is not answering.
-	fmt.Fprintf(stdout, "NOT answering %s\n", p.healthURL)
+	reportNotAnswering(p.healthURL, p.logFile, stdout)
+	return 1
+}
+
+// builtinHealthURL is where the built-in config (cortex --local --write-config) serves
+// /healthz. It stands in for the configured address when the config will not load, as
+// defaultCortexStatsURL stands in for the stats address: the file that names the real
+// one cannot be read. A var so a test probes its own server rather than the Cortex on
+// the machine running it.
+var builtinHealthURL = "http://127.0.0.1:47604/healthz"
+
+// probeURL is the health endpoint to ask whether a Cortex is serving: the configured
+// one, or builtinHealthURL when the config will not load.
+func (p servicePaths) probeURL() string {
+	if p.configErr != nil {
+		return builtinHealthURL
+	}
+	return p.healthURL
+}
+
+// proxyServing reports whether a Cortex answers its health check now, in the short
+// probe install takes before replacing one.
+func proxyServing(p servicePaths) bool {
+	u := p.probeURL()
+	return u != "" && waitHealthy(u, historyProbeBudget)
+}
+
+// reportNotAnswering names the state worth naming loudly: installed but not serving,
+// so a configured Claude Code or OpenCode is pointed at a proxy that is not answering.
+func reportNotAnswering(where, logFile string, stdout io.Writer) {
+	fmt.Fprintf(stdout, "Cortex is NOT answering %s\n", where)
 	fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Last log lines:\n")
-	for _, line := range lastLines(p.logFile, 5) {
+	for _, line := range lastLines(logFile, 5) {
 		fmt.Fprintf(stdout, "    %s\n", line)
 	}
-	return 1
 }
 
 // serviceControl is the whole reason users never need launchctl or systemctl: a
@@ -687,11 +728,25 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 			"  agentop service install\n", p.unitFile)
 		return 1
 	}
-	// Counted BEFORE the stop, while the connections still exist.
+	// Refused before anything is stopped, as install refuses it. A running proxy that
+	// rejected the edit is still serving the config it last loaded; what a start brings
+	// up exits at once. On macOS the --supervise parent hides that, as launchd reports
+	// the parent running, and the config names no health URL to probe, so a restart
+	// onto a broken file would kill a serving proxy and report it restarted (#1282). A
+	// stop needs no config.
+	if action != "stop" && p.configErr != nil {
+		fmt.Fprintf(stderr, "agentop: %s will not load, so Cortex could not start:\n  %v\n"+
+			"  Nothing was stopped or started: a running Cortex keeps the config it last loaded.\n"+
+			"  Fix the file, then run: agentop service %s\n", p.configFile, p.configErr, action)
+		return 1
+	}
+	// Both BEFORE the action: the connections still exist, and whether a proxy was
+	// serving decides what the action did to it.
 	n := -1
 	if action == "stop" {
 		n = establishedConns(p.forwardAddr)
 	}
+	verb := controlVerb(runtime.GOOS, action, proxyServing(p))
 	if action == "start" || action == "restart" {
 		rotateLog(p.logFile, maxLogBytes)
 		// tightenLog must follow every rotation, not just the install. Rotation renames
@@ -712,7 +767,11 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 	}
 	switch action {
 	case "stop":
-		fmt.Fprintln(stdout, "Stopped, and it will stay stopped across logins.")
+		if verb == "stopped" {
+			fmt.Fprintln(stdout, "Cortex proxy stopped, and it will stay stopped across logins.")
+		} else {
+			fmt.Fprintln(stdout, "Cortex proxy was not running; it will stay stopped across logins.")
+		}
 		fmt.Fprintln(stdout, "  agentop service start")
 		if n > 0 {
 			fmt.Fprintf(stdout, "\n  %d connection(s) were attached to %s and have just been cut.\n",
@@ -727,24 +786,53 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 		// Same gate install uses: an unadopted proxy holding the ports answers the
 		// probe while OUR job crash-loops on the bind, so health alone would report a
 		// restart that did not happen.
+		did := verb
+		if did == "" {
+			did = "started"
+		}
 		if running, why := supervisorRunning(runtime.GOOS, p); !running {
-			fmt.Fprintf(stderr, "agentop: %sed, but the supervisor does not report it running (%s).\n"+
-				"  Check for a Cortex started by hand holding the ports: pgrep -lx cortex\n", action, why)
+			fmt.Fprintf(stderr, "agentop: Cortex proxy %s, but the supervisor does not report it running (%s).\n"+
+				"  Check for a Cortex started by hand holding the ports: pgrep -lx cortex\n", did, why)
 			for _, line := range lastLines(p.logFile, 5) {
 				fmt.Fprintf(stderr, "    %s\n", line)
 			}
 			return 1
 		}
 		if p.healthURL != "" && !waitHealthy(p.healthURL, serviceReadyTimeout) {
-			fmt.Fprintf(stderr, "agentop: %sed, but nothing answered %s. Last log lines:\n", action, p.healthURL)
+			fmt.Fprintf(stderr, "agentop: Cortex proxy %s, but nothing answered %s. Last log lines:\n", did, p.healthURL)
 			for _, line := range lastLines(p.logFile, 5) {
 				fmt.Fprintf(stderr, "    %s\n", line)
 			}
 			return 1
 		}
-		fmt.Fprintf(stdout, "%sed.\n", strings.ToUpper(action[:1])+action[1:])
+		if verb == "" {
+			fmt.Fprintln(stdout, "Cortex proxy was already running.")
+		} else {
+			fmt.Fprintf(stdout, "Cortex proxy %s.\n", verb)
+		}
 		return 0
 	}
+}
+
+// controlVerb is what start, restart or stop did to the proxy, given whether one was
+// serving before: named for what happened, not for the command that asked, because a
+// bare "Restarted." says neither what restarted nor whether anything had been running
+// (#1282). A restart with nothing serving started one, and a start over one that was
+// serving restarted it on macOS, where loadService boots out the running job first.
+// "" is an action that changed nothing: a stop with nothing serving, or a start that
+// systemd's enable --now answers by leaving an active unit alone.
+func controlVerb(goos, action string, wasServing bool) string {
+	switch {
+	case action == "stop" && wasServing:
+		return "stopped"
+	case action == "stop":
+		return "" // there was nothing serving to stop
+	case !wasServing:
+		return "started"
+	case action == "start" && goos != "darwin":
+		return ""
+	}
+	return "restarted"
 }
 
 // tightenLog makes the proxy log owner-only before the supervisor opens it.

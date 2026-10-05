@@ -350,8 +350,16 @@ Two assumptions that do not hold in such environments, and what happens:
 agentop service status
 ```
 
-`installed:` names the unit file, `healthy:` names the endpoint that answered. If it
-says `NOT answering`, the proxy is loaded but not serving — check `~/.cortex/proxy.log`.
+`installed:` names the unit file, `Cortex is healthy according to` names the endpoint
+that answered. If it says `Cortex is NOT answering`, the proxy is loaded but not
+serving — check `~/.cortex/proxy.log`.
+
+If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it. A
+proxy that was already running rejected that edit and keeps serving the config it last
+loaded, which status checks on the built-in health address, `127.0.0.1:47604`. But
+nothing can start from the file until it loads again, so `service start` and
+`service restart` refuse until then, as `service install` and `agentop setup` do.
+Status exits 1 while the file is broken, even if a proxy is serving.
 
 To see traffic rather than status, run `agentop` with no arguments.
 

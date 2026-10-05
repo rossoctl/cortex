@@ -103,6 +103,11 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 		target = localSessionEndpoint()
 	}
 	if target == "" {
+		if why := localConfigProblem(); why != "" {
+			fmt.Fprintf(stderr, "agentop pipeline get: no --endpoint given, and %s\n", why)
+			fmt.Fprintln(stderr, "  fix the file; `agentop service status` says whether Cortex is still serving")
+			return 1
+		}
 		fmt.Fprintln(stderr, "agentop pipeline get: no --endpoint given and no local Cortex is configured")
 		fmt.Fprintln(stderr, "  is Cortex installed and running? `agentop service status`")
 		return 1

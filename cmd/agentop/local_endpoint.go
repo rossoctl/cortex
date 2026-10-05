@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -50,6 +51,23 @@ func localCortexConfig() (*config.Config, string, error) {
 		return nil, "", err
 	}
 	return cfg, path, nil
+}
+
+// localConfigProblem is why ~/.cortex/config.yaml names no local Cortex when the file
+// is there but will not load, and "" when it loads or is not there. The commands that
+// fall back to the local Cortex say this rather than that none is configured: a proxy
+// that was running rejected the same edit and is still serving the config it loaded
+// before (#1282).
+func localConfigProblem() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	_, err = config.Load(filepath.Join(home, ".cortex", "config.yaml"))
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	return "~/.cortex/config.yaml will not load: " + err.Error()
 }
 
 // localEditTargets returns the config file a local pipeline edit writes and the

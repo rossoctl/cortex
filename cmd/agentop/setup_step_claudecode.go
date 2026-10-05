@@ -38,7 +38,7 @@ func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 			if cur, ok := vals[k]; ok && !isCortexValue(k, cur) {
 				return p, &problem{
 					reason: fmt.Sprintf("%s is already set to %q in %s", k, cur, env.tilde(settings)),
-					fix:    []string{"remove it, or edit the file by hand, then re-run"},
+					fix:    []string{"remove it, or edit the file by hand, then " + env.rerun()},
 				}
 			}
 		}
