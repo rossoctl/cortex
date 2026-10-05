@@ -29,11 +29,18 @@ func (sc serviceScene) writeUnit(t *testing.T) {
 	}
 }
 
-// breakConfig overwrites the scene's config with one that will not load, and
-// resolves the paths again, as the next agentop command would.
-func (sc *serviceScene) breakConfig(t *testing.T) {
+// spoilConfig leaves the scene's config one that will not load, broken as a hand
+// edit leaves it or missing as setup's "move it aside" remedy leaves it, and resolves
+// the paths again, as the next agentop command would.
+func (sc *serviceScene) spoilConfig(t *testing.T, missing bool) {
 	t.Helper()
-	if err := os.WriteFile(sc.p.configFile, []byte(brokenConfig), 0o600); err != nil {
+	var err error
+	if missing {
+		err = os.Remove(sc.p.configFile)
+	} else {
+		err = os.WriteFile(sc.p.configFile, []byte(brokenConfig), 0o600)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	p, err := resolveServicePaths(sc.p.configFile, sc.p.unitFile, sc.p.binary)
@@ -41,7 +48,7 @@ func (sc *serviceScene) breakConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.configErr == nil {
-		t.Fatal("the broken config loaded")
+		t.Fatal("the spoiled config loaded")
 	}
 	sc.p = p
 }
@@ -76,32 +83,64 @@ func TestServiceControl_SaysWhatHappenedToTheProxy(t *testing.T) {
 
 // A start or restart onto a config that will not load is refused before the
 // supervisor is asked anything, so the proxy that rejected the edit keeps serving
-// the config it last loaded. A stop needs no config, and still works.
+// the config it last loaded. A stop needs no config, and still works. A missing
+// config is worded as install words it, not as a file to fix.
 func TestServiceControl_RefusesToStartOntoABrokenConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		missing bool
+		what    func(sc serviceScene) string
+		fix     string
+	}{
+		{"broken", false, func(sc serviceScene) string {
+			return "$HOME/.cortex/config.yaml will not load: " + sc.p.configErr.Error()
+		}, "Fix the file"},
+		{"missing", true, func(serviceScene) string {
+			return "no config at $HOME/.cortex/config.yaml"
+		}, "Create it with `cortex --local --write-config`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded := fakeSupervisor(t)
+			sc := newServiceSceneServing(t, loaded)
+			sc.writeUnit(t)
+			if r := sc.control(t, "restart"); r.code != 0 {
+				t.Fatalf("restart onto a good config, exit %d: %s%s", r.code, r.out, r.errOut)
+			}
+			// The scene's health endpoint follows the fake job, as the built-in one
+			// would follow a proxy serving from before the edit.
+			withBuiltinHealthURL(t, sc.p.healthURL)
+			sc.spoilConfig(t, tc.missing)
+
+			for _, action := range []string{"restart", "start"} {
+				want := "agentop: " + tc.what(sc) + ", so Cortex could not start.\n" +
+					"  Nothing was stopped or started: a running Cortex keeps the config it last loaded.\n" +
+					"  " + tc.fix + ", then run: agentop service " + action + "\n"
+				sc.control(t, action).check(t, 1, "", want)
+				wantFile(t, loaded, true, "after a refused "+action+" (the job must not have been booted out)")
+			}
+
+			sc.control(t, "stop").check(t, 0,
+				"Cortex proxy stopped, and it will stay stopped across logins.\n  agentop service start\n", "")
+			wantFile(t, loaded, false, "after a stop with a "+tc.name+" config")
+		})
+	}
+}
+
+// With the config unreadable, a stop asks the built-in health address whether
+// anything was serving, and silence there is not a no: the file may have moved
+// health_addr. So the stop says what is now true rather than "was not running".
+func TestServiceControl_StopCannotTellWithABrokenConfig(t *testing.T) {
 	loaded := fakeSupervisor(t)
 	sc := newServiceSceneServing(t, loaded)
 	sc.writeUnit(t)
 	if r := sc.control(t, "restart"); r.code != 0 {
 		t.Fatalf("restart onto a good config, exit %d: %s%s", r.code, r.out, r.errOut)
 	}
-	// The scene's health endpoint follows the fake job, as the built-in one would
-	// follow a proxy serving from before the edit.
-	withBuiltinHealthURL(t, sc.p.healthURL)
-	sc.breakConfig(t)
-
-	for _, action := range []string{"restart", "start"} {
-		r := sc.control(t, action)
-		want := "agentop: $HOME/.cortex/config.yaml will not load, so Cortex could not start:\n" +
-			"  " + sc.p.configErr.Error() + "\n" +
-			"  Nothing was stopped or started: a running Cortex keeps the config it last loaded.\n" +
-			"  Fix the file, then run: agentop service " + action + "\n"
-		r.check(t, 1, "", want)
-		wantFile(t, loaded, true, "after a refused "+action+" (the job must not have been booted out)")
-	}
-
+	withBuiltinHealthURL(t, "http://127.0.0.1:1/healthz") // the file had moved it
+	sc.spoilConfig(t, false)
 	sc.control(t, "stop").check(t, 0,
-		"Cortex proxy stopped, and it will stay stopped across logins.\n  agentop service start\n", "")
-	wantFile(t, loaded, false, "after a stop with a broken config")
+		"Cortex proxy is stopped, and it will stay stopped across logins.\n  agentop service start\n", "")
+	wantFile(t, loaded, false, "after the stop")
 }
 
 func TestControlVerb(t *testing.T) {
@@ -129,13 +168,16 @@ func TestControlVerb(t *testing.T) {
 	}
 }
 
-// statusScene is an installed service whose config will not load.
-func statusScene(t *testing.T) servicePaths {
+// statusScene is an installed service whose config will not load: broken, or
+// missing.
+func statusScene(t *testing.T, missing bool) servicePaths {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfg, []byte(brokenConfig), 0o600); err != nil {
-		t.Fatal(err)
+	if !missing {
+		if err := os.WriteFile(cfg, []byte(brokenConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	unit := filepath.Join(dir, "unit")
 	if err := os.WriteFile(unit, []byte("unit"), 0o600); err != nil {
@@ -153,42 +195,58 @@ func statusScene(t *testing.T) servicePaths {
 
 // Status on a config that will not load used to print "installed:" alone and exit 0,
 // whether or not a proxy was serving (#1282). It now names the config error, asks the
-// built-in health address, and exits 1 either way: the file needs fixing.
+// built-in health address, and exits 1 either way: the file needs fixing. Silence at
+// that address is reported as only that, since the file may have moved health_addr.
 func TestServiceStatus_BrokenConfig(t *testing.T) {
-	t.Run("a proxy serving from before the edit", func(t *testing.T) {
-		p := statusScene(t)
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
-		t.Cleanup(srv.Close)
-		withBuiltinHealthURL(t, srv.URL+"/healthz")
+	status := func(t *testing.T, p servicePaths, health string) string {
+		t.Helper()
+		withBuiltinHealthURL(t, health)
 		var out bytes.Buffer
 		if code := serviceStatus(p, &out); code != 1 {
 			t.Errorf("exit = %d, want 1", code)
 		}
-		for _, want := range []string{
-			"config: " + p.configFile + " will not load: parsing config: ",
-			"  A running Cortex keeps the config it last loaded, but none can start until this file loads.\n",
-			"Cortex is healthy according to " + srv.URL + "/healthz, serving the config it last loaded\n",
-		} {
-			if !strings.Contains(out.String(), want) {
-				t.Errorf("status lacks %q:\n%s", want, out.String())
+		return out.String()
+	}
+	wantAll := func(t *testing.T, out string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(out, want) {
+				t.Errorf("status lacks %q:\n%s", want, out)
+			}
+		}
+	}
+	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	t.Cleanup(serving.Close)
+
+	t.Run("a proxy serving from before the edit", func(t *testing.T) {
+		p := statusScene(t, false)
+		wantAll(t, status(t, p, serving.URL+"/healthz"),
+			"config: "+p.configFile+" will not load: parsing config: ",
+			"\n  Fix the file. A running Cortex keeps the config it last loaded, but none can start until then.\n",
+			"Cortex is healthy according to "+serving.URL+"/healthz, serving the config it last loaded\n")
+	})
+	t.Run("nothing at the built-in address", func(t *testing.T) {
+		p := statusScene(t, false)
+		out := status(t, p, "http://127.0.0.1:1/healthz")
+		wantAll(t, out,
+			"config: "+p.configFile+" will not load: parsing config: ",
+			"Nothing answers http://127.0.0.1:1/healthz, the built-in health address.\n"+
+				"  The config is what names the address Cortex serves on, so this does not say whether it is running.\n"+
+				"  Last log lines:\n")
+		for _, never := range []string{"NOT answering", "will fail"} {
+			if strings.Contains(out, never) {
+				t.Errorf("status claims %q from silence at the built-in address:\n%s", never, out)
 			}
 		}
 	})
-	t.Run("nothing serving", func(t *testing.T) {
-		p := statusScene(t)
-		withBuiltinHealthURL(t, "http://127.0.0.1:1/healthz")
-		var out bytes.Buffer
-		if code := serviceStatus(p, &out); code != 1 {
-			t.Errorf("exit = %d, want 1", code)
-		}
-		for _, want := range []string{
-			"config: " + p.configFile + " will not load: parsing config: ",
-			"Cortex is NOT answering http://127.0.0.1:1/healthz, the built-in health address\n" +
-				"  Claude Code and OpenCode will fail while this is true. Last log lines:\n",
-		} {
-			if !strings.Contains(out.String(), want) {
-				t.Errorf("status lacks %q:\n%s", want, out.String())
-			}
+	t.Run("missing", func(t *testing.T) {
+		p := statusScene(t, true)
+		out := status(t, p, serving.URL+"/healthz")
+		wantAll(t, out,
+			"config: no config at "+p.configFile+"\n"+
+				"  Create it with `cortex --local --write-config`. A running Cortex keeps the config it last loaded, but none can start until then.\n")
+		if strings.Contains(out, "no such file") {
+			t.Errorf("status passes on the read error for a missing file:\n%s", out)
 		}
 	})
 }

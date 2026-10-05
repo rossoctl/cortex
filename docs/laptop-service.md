@@ -354,12 +354,14 @@ agentop service status
 that answered. If it says `Cortex is NOT answering`, the proxy is loaded but not
 serving — check `~/.cortex/proxy.log`.
 
-If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it. A
-proxy that was already running rejected that edit and keeps serving the config it last
-loaded, which status checks on the built-in health address, `127.0.0.1:47604`. But
-nothing can start from the file until it loads again, so `service start` and
-`service restart` refuse until then, as `service install` and `agentop setup` do.
-Status exits 1 while the file is broken, even if a proxy is serving.
+If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it
+(`config: no config at …` means the file is gone). A proxy that was already running
+rejected that edit and keeps serving the config it last loaded. Status looks for one on
+the built-in health address, `127.0.0.1:47604`, since the file that names the real one
+cannot be read; if your config had moved `health_addr`, silence there does not mean
+Cortex is stopped. Nothing can start from the file until it loads again, so
+`service start` and `service restart` refuse until then, as `service install` and
+`agentop setup` do. Status exits 1 while the file is broken, even if a proxy is serving.
 
 To see traffic rather than status, run `agentop` with no arguments.
 

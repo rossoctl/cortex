@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -666,12 +667,21 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 	// rejects the bad edit and keeps serving the config it last loaded, and nothing can
 	// start from the file until it is fixed.
 	if p.configErr != nil {
-		fmt.Fprintf(stdout, "config: %s will not load: %v\n", p.configFile, p.configErr)
-		fmt.Fprintf(stdout, "  A running Cortex keeps the config it last loaded, but none can start until this file loads.\n")
+		what, fix := p.configProblem()
+		fmt.Fprintf(stdout, "config: %s\n"+
+			"  %s. A running Cortex keeps the config it last loaded, but none can start until then.\n", what, fix)
 		if waitHealthy(p.probeURL(), 2*time.Second) {
 			fmt.Fprintf(stdout, "Cortex is healthy according to %s, serving the config it last loaded\n", p.probeURL())
-		} else {
-			reportNotAnswering(p.probeURL()+", the built-in health address", p.logFile, stdout)
+			return 1
+		}
+		// Not "NOT answering": silence at the built-in address says nothing about a
+		// Cortex the file had moved to another health_addr, and claiming agents will
+		// fail would be the misleading status this branch exists to replace.
+		fmt.Fprintf(stdout, "Nothing answers %s, the built-in health address.\n"+
+			"  The config is what names the address Cortex serves on, so this does not say whether it is running.\n"+
+			"  Last log lines:\n", p.probeURL())
+		for _, line := range lastLines(p.logFile, 5) {
+			fmt.Fprintf(stdout, "    %s\n", line)
 		}
 		return 1
 	}
@@ -693,6 +703,18 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 // the machine running it.
 var builtinHealthURL = "http://127.0.0.1:47604/healthz"
 
+// configProblem is what is wrong with a config that will not load, and what fixes
+// it. A missing file is its own case, worded as install words it: "will not load:
+// reading config: open …: no such file or directory … Fix the file" names a fix for
+// a file that is not there, and setup's own remedy for a broken one is to move it
+// aside.
+func (p servicePaths) configProblem() (what, fix string) {
+	if errors.Is(p.configErr, fs.ErrNotExist) {
+		return "no config at " + p.configFile, "Create it with `cortex --local --write-config`"
+	}
+	return p.configFile + " will not load: " + p.configErr.Error(), "Fix the file"
+}
+
 // probeURL is the health endpoint to ask whether a Cortex is serving: the configured
 // one, or builtinHealthURL when the config will not load.
 func (p servicePaths) probeURL() string {
@@ -703,7 +725,9 @@ func (p servicePaths) probeURL() string {
 }
 
 // proxyServing reports whether a Cortex answers its health check now, in the short
-// probe install takes before replacing one.
+// probe install takes before replacing one. A no is only sure when the config loads:
+// otherwise the probe went to builtinHealthURL, and a Cortex on a health_addr the file
+// moved does not answer there.
 func proxyServing(p servicePaths) bool {
 	u := p.probeURL()
 	return u != "" && waitHealthy(u, historyProbeBudget)
@@ -735,18 +759,22 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 	// onto a broken file would kill a serving proxy and report it restarted (#1282). A
 	// stop needs no config.
 	if action != "stop" && p.configErr != nil {
-		fmt.Fprintf(stderr, "agentop: %s will not load, so Cortex could not start:\n  %v\n"+
+		what, fix := p.configProblem()
+		fmt.Fprintf(stderr, "agentop: %s, so Cortex could not start.\n"+
 			"  Nothing was stopped or started: a running Cortex keeps the config it last loaded.\n"+
-			"  Fix the file, then run: agentop service %s\n", p.configFile, p.configErr, action)
+			"  %s, then run: agentop service %s\n", what, fix, action)
 		return 1
 	}
 	// Both BEFORE the action: the connections still exist, and whether a proxy was
-	// serving decides what the action did to it.
+	// serving decides what the action did to it. Only a stop can get here with a
+	// config that will not load, and for it a probe that found nothing is not a no.
 	n := -1
 	if action == "stop" {
 		n = establishedConns(p.forwardAddr)
 	}
-	verb := controlVerb(runtime.GOOS, action, proxyServing(p))
+	wasServing := proxyServing(p)
+	known := wasServing || p.configErr == nil
+	verb := controlVerb(runtime.GOOS, action, wasServing)
 	if action == "start" || action == "restart" {
 		rotateLog(p.logFile, maxLogBytes)
 		// tightenLog must follow every rotation, not just the install. Rotation renames
@@ -767,9 +795,12 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 	}
 	switch action {
 	case "stop":
-		if verb == "stopped" {
+		switch {
+		case !known:
+			fmt.Fprintln(stdout, "Cortex proxy is stopped, and it will stay stopped across logins.")
+		case verb == "stopped":
 			fmt.Fprintln(stdout, "Cortex proxy stopped, and it will stay stopped across logins.")
-		} else {
+		default:
 			fmt.Fprintln(stdout, "Cortex proxy was not running; it will stay stopped across logins.")
 		}
 		fmt.Fprintln(stdout, "  agentop service start")
