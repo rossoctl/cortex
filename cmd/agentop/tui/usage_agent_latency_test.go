@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 )
@@ -169,5 +172,129 @@ func TestUsagePane_UnavailableScopedLatencyNamesTheReason(t *testing.T) {
 				t.Errorf("want the unavailable note with %q:\n%s", tc.want, body)
 			}
 		})
+	}
+}
+
+// fiveMinuteAxis is a group=agent answer at 5m resolution, the 1h window's, whose buckets start at
+// the given minutes past 10:00.
+func fiveMinuteAxis(minutes ...int) string {
+	var bs []string
+	for _, m := range minutes {
+		bs = append(bs, fmt.Sprintf(`{"at":"2026-09-29T10:%02d:00Z","requests":10,"latMeanMs":50,"latSamples":10,
+			"series":{"claude-code":{"requests":6},"bob-shell":{"requests":4}}}`, m))
+	}
+	return fmt.Sprintf(`{"window":"1h0m0s","bucketSeconds":300,"group":"agent","buckets":[%s],"totals":{"requests":%d}}`,
+		strings.Join(bs, ","), 10*len(minutes))
+}
+
+// fiveMinuteOwn is claude-code's own ring at the same resolution, its latency 80ms where the
+// window's is 50ms.
+func fiveMinuteOwn(minutes ...int) string {
+	var bs []string
+	for _, m := range minutes {
+		bs = append(bs, fmt.Sprintf(`{"at":"2026-09-29T10:%02d:00Z","requests":6,"latMeanMs":80,"latSamples":6}`, m))
+	}
+	return fmt.Sprintf(`{"window":"1h0m0s","bucketSeconds":300,"group":"none","agent":"claude-code","buckets":[%s],"totals":{"requests":%d}}`,
+		strings.Join(bs, ","), 6*len(minutes))
+}
+
+// movingServer answers the n-th window read with axis[n] and the n-th agent= read with own[n],
+// repeating the last of each, and counts both.
+func movingServer(t *testing.T, axis, own []string) (ts *httptest.Server, axisReads, ownReads *atomic.Int32) {
+	t.Helper()
+	axisReads, ownReads = new(atomic.Int32), new(atomic.Int32)
+	nth := func(answers []string, n int32) string { return answers[min(int(n), len(answers))-1] }
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("agent") {
+			_, _ = w.Write([]byte(nth(own, ownReads.Add(1))))
+			return
+		}
+		_, _ = w.Write([]byte(nth(axis, axisReads.Add(1))))
+	}))
+	t.Cleanup(ts.Close)
+	return ts, axisReads, ownReads
+}
+
+// A MINUTE TURNING BETWEEN THE TWO READS IS READ AGAIN, not reported as missing latency.
+//
+// The server folds minutes from the window's oldest, so at 5m resolution every bucket's time moves
+// by a minute each minute: a turn between the reads leaves the two answers with no bucket time in
+// common. Taken as no latency, the pane would say "no latency samples in this window", or blame
+// the proxy, for latency it keeps.
+func TestFetchUsage_ScopedLatencyRereadsWhenTheWindowMoved(t *testing.T) {
+	ts, axisReads, ownReads := movingServer(t,
+		[]string{fiveMinuteAxis(0, 5), fiveMinuteAxis(1, 6)},
+		[]string{fiveMinuteOwn(1, 6)})
+	m := &model{client: apiclient.New(ts.URL), agentScope: "claude-code"}
+	m.usage.windowIdx = 1 // 1h @ 5m
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err != nil || msg.latencyErr != nil {
+		t.Fatalf("fetch errored: %v, latency %v", msg.err, msg.latencyErr)
+	}
+	if axisReads.Load() != 2 || ownReads.Load() != 2 {
+		t.Errorf("%d window and %d agent= reads, want both read twice", axisReads.Load(), ownReads.Load())
+	}
+	if !msg.agentLatency {
+		t.Fatal("agentLatency is false after the reread lined the buckets up")
+	}
+	for i, b := range msg.snap.Buckets {
+		if want := time.Date(2026, 9, 29, 10, 1+5*i, 0, 0, time.UTC); !b.At.Equal(want) || b.LatMeanMs != 80 || b.Requests != 6 {
+			t.Errorf("bucket %d = %v, %d requests at %vms; want the reread's %v, 6 requests at the agent's 80ms",
+				i, b.At, b.Requests, b.LatMeanMs, want)
+		}
+	}
+}
+
+// A window that moves again on the reread is reported as a latency error — and only that: the
+// window read answered everything else.
+func TestFetchUsage_ScopedLatencyReportsAWindowThatKeepsMoving(t *testing.T) {
+	ts, _, _ := movingServer(t,
+		[]string{fiveMinuteAxis(0, 5), fiveMinuteAxis(1, 6)},
+		[]string{fiveMinuteOwn(1, 6), fiveMinuteOwn(2, 7)})
+	m := &model{client: apiclient.New(ts.URL), agentScope: "claude-code"}
+	m.usage.windowIdx = 1
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err != nil {
+		t.Fatalf("the window read's err = %v; a latency problem must not take down the other metrics", msg.err)
+	}
+	if !errors.Is(msg.latencyErr, errUsageWindowMoved) || msg.agentLatency {
+		t.Errorf("latencyErr = %v, agentLatency %v; want errUsageWindowMoved and false", msg.latencyErr, msg.agentLatency)
+	}
+	if msg.snap.Totals.Requests != 12 || msg.snap.Buckets[0].LatSamples != 0 {
+		t.Errorf("totals %d, first bucket %d samples; want the narrowed 12 requests and no grafted latency",
+			msg.snap.Totals.Requests, msg.snap.Buckets[0].LatSamples)
+	}
+}
+
+// A FAILED LATENCY READ IS REPORTED WHERE LATENCY IS SHOWN, and nowhere else: the count metrics
+// keep their chart, and the latency metric says the read failed rather than that the proxy keeps
+// no latency.
+func TestUsagePane_AFailedLatencyReadLeavesTheOtherMetrics(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("agent") {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(usageAgentAxisJSON))
+	}))
+	defer ts.Close()
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.client = apiclient.New(ts.URL)
+	m.agentScope = "claude-code"
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err != nil || msg.latencyErr == nil {
+		t.Fatalf("err = %v, latencyErr = %v; want the failure on latencyErr alone", msg.err, msg.latencyErr)
+	}
+	next, _ := m.Update(msg)
+	m = next.(*model)
+	if body := m.renderUsage(m.width, m.bodyHeight); strings.Contains(body, "Error") || !strings.Contains(body, "REQUESTS 14") {
+		t.Errorf("the count metric does not show the narrowed window, or shows the latency error:\n%s", body)
+	}
+	for !m.usage.metric.isLatency() {
+		m.usage.cycleMetric()
+	}
+	body := m.renderUsage(m.width, m.bodyHeight)
+	if !strings.Contains(body, "Error reading this agent's latency") || strings.Contains(body, "not available per agent") {
+		t.Errorf("the latency metric does not report the failed read as one:\n%s", body)
 	}
 }
