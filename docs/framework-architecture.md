@@ -627,7 +627,7 @@ The flags (not byte-compare) are the source of truth. A rewrite that produces by
 
 Every mutation path also **clears `Content-Encoding`**: the framework can't know whether the plugin decompressed a gzipped body before rewriting, so shipping plain bytes without the old encoding header beats shipping a malformed archive. Auto-decompress/recompress is a possible future feature, explicitly out of scope today.
 
-**Body-size limits.** Bodies over `maxBodySize` (1 MB) are rejected by the listener at buffer time — before the mutator sees anything. Plugins don't need to guard against oversized input.
+**Body-size limits.** Bodies over the listener's buffer cap are rejected at buffer time — before the mutator sees anything. On the forward proxy that is 32 MiB for a request (`maxRequestBodySize`) and 10 MB for a response (`maxBodySize`); on the reverse proxy it is 1 MB either way. Plugins don't need to guard against oversized input.
 
 **Streaming.** Only buffered mutation is supported. Responses that stream (SSE, chunked bodies beyond the buffer cap) are not mutable today; a streaming-transform API is a separate project.
 

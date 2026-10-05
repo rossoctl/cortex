@@ -434,6 +434,60 @@ func TestForwardProxy_BodyBuffering(t *testing.T) {
 	}
 }
 
+// TestForwardProxy_RequestOverResponseCap pins the request cap apart from the
+// response one. 12,284,233 bytes is the largest POST /v1/messages the proxy
+// refused at the old shared 10MB cap (#1250) — a Claude Code conversation the
+// Anthropic API would have taken — so it must now reach both the pipeline and
+// the upstream whole.
+func TestForwardProxy_RequestOverResponseCap(t *testing.T) {
+	const size = 12_284_233
+	if size <= maxBodySize || size > maxRequestBodySize {
+		t.Fatalf("fixture %d must sit between maxBodySize %d and maxRequestBodySize %d",
+			size, maxBodySize, maxRequestBodySize)
+	}
+
+	recorder := &bodyRecorderPlugin{}
+	p, err := pipeline.New([]pipeline.Plugin{recorder})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var upstreamLen int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamLen = len(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("POST", backend.URL+"/v1/messages", strings.NewReader(strings.Repeat("x", size)))
+	req.Header.Set("Content-Type", "application/json")
+
+	proxyClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(mustParseURL(proxy.URL)),
+		},
+	}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(recorder.receivedBody) != size {
+		t.Errorf("plugin got %d bytes, want %d", len(recorder.receivedBody), size)
+	}
+	if upstreamLen != size {
+		t.Errorf("upstream got %d bytes, want %d", upstreamLen, size)
+	}
+}
+
 func TestForwardProxy_BodyTooLarge(t *testing.T) {
 	recorder := &bodyRecorderPlugin{}
 	p, err := pipeline.New([]pipeline.Plugin{recorder})
@@ -450,8 +504,7 @@ func TestForwardProxy_BodyTooLarge(t *testing.T) {
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
-	// Send body larger than maxBodySize (1MB)
-	bigBody := strings.Repeat("x", maxBodySize+1)
+	bigBody := strings.Repeat("x", maxRequestBodySize+1)
 	req, _ := http.NewRequest("POST", backend.URL+"/mcp", strings.NewReader(bigBody))
 	req.Header.Set("Content-Type", "application/json")
 

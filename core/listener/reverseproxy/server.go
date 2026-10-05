@@ -33,14 +33,16 @@ import (
 // on the SSE reader.
 //
 // Left at Envoy's default per_stream_buffer_limit_bytes while the forward proxy
-// runs at 10MB: the bodies that forced that raise were outbound agent-to-LLM
-// requests, which do not traverse this listener in the deployments observed so
-// far. The same growth applies in principle on the inbound path — an agent
-// receiving a large request, or an in-cluster LLM route through a sidecar — so
-// raise this to match if an oversized-body rejection is ever observed here.
+// buffers requests up to 32 MiB and responses up to 10MB: the bodies that forced
+// those raises were outbound agent-to-LLM requests, which do not traverse this
+// listener in the deployments observed so far. The same growth applies in
+// principle on the inbound path — an agent receiving a large request, or an
+// in-cluster LLM route through a sidecar — so raise this to match if an
+// oversized-body rejection is ever observed here.
 // The two are deliberately independent: the inbound and outbound size profiles
 // differ, and a shared constant would tie one listener's ceiling to the other's
-// traffic. See the forward proxy's maxBodySize for the measurement behind 10MB.
+// traffic. See the forward proxy's maxRequestBodySize and maxBodySize for the
+// reasons behind its two values.
 const maxBodySize = 1 << 20 // 1MB — matches Envoy's default per_stream_buffer_limit_bytes
 
 type pctxKey struct{}

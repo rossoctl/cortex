@@ -35,25 +35,44 @@ import (
 	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 )
 
-// maxBodySize is TWO ceilings, not one: the buffered request/response body cap,
-// and the per-frame cap passed to sseframe.NewReader on both streaming paths
-// (see handleStreamingResponse and streamFallbackBuffered). Raising it moves
-// both, so worst-case resident bytes for one in-flight request are roughly
-// 2x this value — a body buffer plus a frame scratch buffer — and the practical
-// ceiling for a listener is that times the number of concurrent requests.
+// maxRequestBodySize caps a buffered request body. It is separate from
+// maxBodySize because requests outgrow responses: an agent resends the whole
+// conversation plus its full tool manifest on every turn, so a long session's
+// requests keep growing while its responses do not.
 //
-// An earlier value of 1 << 20 (1MB) matched Envoy's default
-// per_stream_buffer_limit_bytes, but proved too small for LLM traffic: a
-// Claude Code session against the Anthropic endpoint produced a 5,250,133-byte
-// request, since an agent resends the whole conversation plus its full tool
-// manifest on every turn. A body over the cap is rejected before the pipeline
-// runs, so the limit also decides whether telemetry is recorded at all.
+// 32 MiB follows Anthropic's documented 32 MB limit for the Messages API
+// (https://platform.claude.com/docs/en/api/errors#request-size-limits). At
+// the previous 10MB the proxy refused requests that limit allows: one laptop
+// logged 30 rejected POST /v1/messages in a week, from 10,489,160 to
+// 12,284,233 bytes (#1250). The docs do not say whether "32 MB" means 10^6 or
+// 2^20 bytes; the larger reading is used so that a body near the line is
+// judged by the provider, which knows its own limit, rather than by us.
 //
-// The frame cap is the more generous half of the raise: a single SSE event is
-// far smaller than a full request body, so 10MB per frame is well above
-// anything observed. Splitting the two into separate constants would let the
-// frame cap stay tight, and is worth doing if per-request memory ever matters
-// more than the simplicity of one number.
+// A body over the cap is rejected with a 413 before the pipeline runs, so the
+// limit also decides whether telemetry is recorded at all. The whole body is
+// held while the pipeline runs, so one in-flight request can hold this much
+// on the request side, on top of the response-side cost described at
+// maxBodySize.
+const maxRequestBodySize = 32 << 20 // 32 MiB
+
+// maxBodySize is TWO ceilings, not one: the buffered response body cap, and
+// the per-frame cap passed to sseframe.NewReader on both streaming paths (see
+// handleStreamingResponse and streamFallbackBuffered). Raising it moves both,
+// so worst-case resident bytes on the response side of one in-flight request
+// are roughly 2x this value — a body buffer plus a frame scratch buffer — and
+// the practical ceiling for a listener is that times the number of concurrent
+// requests.
+//
+// It capped request bodies too until they got maxRequestBodySize, and that is
+// where 10MB came from: an earlier value of 1 << 20 (1MB) matched Envoy's
+// default per_stream_buffer_limit_bytes, but proved too small for LLM traffic,
+// where a Claude Code session against the Anthropic endpoint produced a
+// 5,250,133-byte request.
+//
+// The frame cap is the more generous half: a single SSE event is far smaller
+// than a whole response, so 10MB per frame is well above anything observed.
+// Splitting the two would let the frame cap stay tight, and is worth doing if
+// per-request memory ever matters more than the simplicity of one number.
 const maxBodySize = 10 << 20 // 10 MB
 
 // streamReadIdleTimeout caps how long the proxy waits for the next
@@ -355,10 +374,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 
 	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			bodyread.LogError("forward-proxy", r, len(body), maxBodySize, err)
+			bodyread.LogError("forward-proxy", r, len(body), maxRequestBodySize, err)
 			status, msg := bodyread.Rejection(err)
 			http.Error(w, msg, status)
 			return
