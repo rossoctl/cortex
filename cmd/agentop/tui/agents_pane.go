@@ -82,67 +82,23 @@ func agentRowsFromBuckets(buckets []usage.Bucket) []agentRow {
 	return out
 }
 
-// agentsPaneApplies reports whether the AGENTS pane is worth entering.
-//
-// FEWER THAN TWO AGENTS SKIPS THE PANE, and this is the property that keeps the feature from
-// costing every existing user something. A picker offering one row is a keystroke that cannot
-// change what is displayed, and one agent is EVERY deployment today — so entering
-// unconditionally would put a new mandatory step in front of everyone to no purpose. Mirrors
-// the Namespaces → Pods picker, which is likewise conditional.
-//
-// ZERO SKIPS TOO, and that case is reachable rather than theoretical: a proxy that has served
-// no inference yet reports no agent series, and an empty picker with nothing to select is a
-// worse answer than going straight to the view.
-//
-// A RULE OVER DATA rather than a branch inside the navigation code, so it is assertable
-// without driving the TUI and cannot be satisfied by an incidental detail of how panes happen
-// to be entered.
+// agentsPaneApplies reports whether the startup gate enters the AGENTS pane: two or more agents.
+// A one-row picker at startup is a keystroke that changes nothing, and one agent is the common
+// case. An `A` press opens the pane whatever this says.
 func agentsPaneApplies(rows []agentRow) bool {
 	return len(rows) >= 2
 }
 
-// agentsPaneRefusal is why the pane will not open, or "" when it will.
-//
-// EXACTLY THE INVERSE OF agentsPaneApplies, pinned by
-// TestAgentsPaneRefusal_AgreesWithAgentsPaneApplies. Two functions answering one question is
-// how the spend drawer came to print the wrong refusal on two panes: the decision and the
-// sentence explaining it drifted. They are separate here only because one is a branch and the
-// other is prose, and the test makes the agreement the compiler's-equivalent of enforced.
-//
-// A REFUSAL MAY NEVER BE SILENT, which is the contract spendDrawerHostPane keeps and which
-// this package has twice been bitten by breaking. `A` doing nothing looks like a broken
-// binding, and a reader cannot tell that from a pane deciding it had nothing worth showing.
-//
-// The two cases get DIFFERENT SENTENCES because they are different situations: no agents means
-// nothing has been observed yet and waiting may fix it; one agent means the breakdown would
-// restate a total the reader already has, and waiting will not change that until a second
-// agent appears.
-func agentsPaneRefusal(rows []agentRow) string {
-	switch len(rows) {
-	case 0:
-		return "agents: no agent traffic seen in this window yet"
-	case 1:
-		// Names the agent, so it is visible that a per-agent breakdown would be one row
-		// repeating the figure already on screen. Other is no agent's name, so that case says
-		// what it means instead.
-		if rows[0].label == otherAgents {
-			return "agents: no recognised agent has been seen — a breakdown would be one row"
-		}
-		return "agents: only " + rows[0].label + " has been seen — a breakdown would be one row"
-	}
-	return ""
-}
-
 // agentChoices is m.agents plus a row for every recognised agent that owns a listed session but
-// has no row there, because the window saw no traffic from it. It is what agentsPaneApplies and
-// agentsPaneRefusal are asked about, and what pickerRows builds on.
+// has no row there, because the window saw no traffic from it. It is what agentsPaneApplies is
+// asked about, and what pickerRows builds on.
 //
 // THE PICKER SCOPES THE SESSIONS LIST, AND THE LIST IS NOT WINDOWED. Sessions outlive the day
 // (session.ttl defaults to never), so rows taken from today's spending alone go stale at midnight:
 // the morning after a night of three agents, the list still held OpenCode's and Bob's sessions
-// while the window had seen only Claude Code, so `A` refused with "only claude-code has been
-// seen" and nothing could narrow the list to the other two. An agent with sessions is an agent
-// the reader can pick, whatever it spent today.
+// while the window had seen only Claude Code, so the picker offered nothing that could narrow the
+// list to the other two. An agent with sessions is an agent the reader can pick, whatever it spent
+// today.
 //
 // RECOGNISED AGENTS ONLY, so the gate stays what it was for the single-agent user. The default
 // bucket names no agent, and a session from an unrecognised client belongs to Other — counting
@@ -198,16 +154,16 @@ const agentsWindow = usage.WindowToday
 
 // agentsOpen says what the reply to a rows fetch is allowed to do with them.
 //
-// AN ENUM RATHER THAN A BOOL because there are three answers, not two, and the third differs
-// from the second only in whether it may speak. `A` is owed an answer either way — a key that
-// appears to do nothing is the defect agentsPaneRefusal exists to prevent. The startup gate is
-// owed the opposite: nobody asked for it, so it enters or it stays quiet.
+// AN ENUM RATHER THAN A BOOL because there are three answers, not two. `A` is owed an answer
+// either way; the startup gate is owed the opposite: nobody asked for it, so it enters or it
+// stays quiet.
 type agentsOpen int
 
 const (
-	// agentsOpenNever is a background refresh: update the rows, enter nothing, say nothing.
+	// agentsOpenNever is a background refresh: update the rows, enter nothing, say nothing. Sent by
+	// `A` on the pane itself and by esc from a list reached through the picker.
 	agentsOpenNever agentsOpen = iota
-	// agentsOpenOnPress is an `A` press. It enters, or it flashes the reason it will not.
+	// agentsOpenOnPress is an `A` press. It enters, or it flashes the fetch error.
 	agentsOpenOnPress
 	// agentsOpenAtStartup is the gate run once per connection. It enters when
 	// agentsPaneApplies, and otherwise does nothing AND says nothing — see
@@ -293,11 +249,7 @@ func agentsColumns() []table.Column {
 // happens a beat later, if it happens. A gate that waited would add its own latency to every
 // startup, including the majority that it declines.
 func (m *model) startupAgentsGateCmd() tea.Cmd {
-	// paneNone: this gate has no caller pane. It interrupts the sessions view before the
-	// operator has pressed anything, so there is no press-time pane to record — and the esc
-	// arm's paneNone fallback already lands on Sessions, which that arm documents as the one
-	// pane always defensible to land on. The reply handler does not read this field on the
-	// startup path at all; see the agentsOpenAtStartup case in Update for why not.
+	// paneNone: the gate has no caller pane, and its reply does not read this field.
 	return m.fetchAgentRowsCmd(agentsOpenAtStartup, paneNone)
 }
 
@@ -403,41 +355,29 @@ func agentCostCellIn(c usage.Counts, units []string, budget int) string {
 	return emptyCell
 }
 
-// enterAgentsOrRefuse opens the pane, or returns the reason it will not.
+// enterAgents opens the pane as an overlay over `from`, the pane `A` was pressed on.
 //
-// ONE DECISION POINT for every caller, so no two can drift on what counts as available. The
-// refusal string is agentsPaneRefusal's, never rephrased here.
-//
-// `from` IS PASSED IN, NOT READ OFF m.pane. This runs when the reply lands, and by then the
-// reader may have moved or may already be standing on AGENTS — reading the current pane here
-// recorded `paneAgents` as its own caller on a refetch, which left the first esc silently inert
-// against the rule paneCatalog's esc arm states. keys.go's `case "A":` resolves the caller at
-// press time, the way `case "C":` does, and agentRowsLoadedMsg.from carries it across the
-// round trip.
-func (m *model) enterAgentsOrRefuse(from paneID) (entered bool, refusal string) {
-	if why := agentsPaneRefusal(m.agentChoices()); why != "" {
-		return false, why
-	}
+// `from` IS PASSED IN, NOT READ OFF m.pane: this runs when the reply lands, and by then the reader
+// may have moved. agentRowsLoadedMsg.from carries the press-time pane across the round trip.
+func (m *model) enterAgents(from paneID) {
 	m.previousPane = from
+	m.agentsAboveSessions = false
 	m.pane = paneAgents
 	m.rebuildAgentsTable()
-	return true, ""
 }
 
 // enterAgentsAtStartup is the startup gate's entry: it enters when agentsPaneApplies and reports
 // whether it did, and it never speaks. Shared by the gate's reply and its one look at the first
 // session list, so the two cannot decide differently. The caller checks it is on Sessions.
 //
-// paneNone, and the reply's `from` is deliberately NOT read here. The gate has no caller pane to
-// return to — it interrupted the sessions view — and the esc arm's existing paneNone fallback
-// already lands on Sessions, which that arm documents as the one pane always defensible to land
-// on. Reading `from` instead would put the correctness of esc in an argument supplied a round trip
-// earlier, where a test driving this message cannot see what production passes.
+// It enters as the level above Sessions, so esc backs out of the connection rather than returning
+// to a caller; the reply's `from` is deliberately not read.
 func (m *model) enterAgentsAtStartup() bool {
 	if !agentsPaneApplies(m.agentChoices()) {
 		return false
 	}
 	m.previousPane = paneNone
+	m.agentsAboveSessions = true
 	m.pane = paneAgents
 	m.rebuildAgentsTable()
 	return true
@@ -474,23 +414,19 @@ func (m *model) selectedAgentScope() (scope string, ok bool) {
 	return picker[i-1].label, true
 }
 
-// leaveAgentsPane returns to whichever pane opened the AGENTS pane: esc's exit.
+// leaveAgentsPane is esc's exit. As the level above Sessions it backs out of the connection the
+// way esc on Sessions does: to the pods picker, or nowhere in --endpoint mode. As an overlay it
+// returns to whichever pane `A` was pressed on, or to Sessions when none was recorded.
 //
-// ESC ONLY. Enter shared it until a pick from a session's events returned the reader to that
-// session, which the scope does not narrow; it lists the picked agent's sessions instead (see the
-// Enter arm in keys.go). A key-opened surface still owes its caller a way back, and esc is it;
-// without an exit at all this pane was a dead end reachable only by `q`.
-//
-// THE FALLBACK IS SESSIONS, and for paneCatalog's stated reason rather than by imitation:
-// Sessions is the one pane that is always a defensible place to land, while the enum's zero
-// value is the Kubernetes namespace picker, which would look like the connection had gone away.
-// The startup gate leans on this fallback deliberately — it records paneNone because it has no
-// caller pane at all.
-//
-// RETURNING INTO USAGE RESTARTS ITS POLLING CHAIN. This pane holds no ticker of its own, but the
-// usage pane's tick was dropped by its `m.pane != paneUsage` guard while this pane was up, so
-// without the resume its 20s auto-refresh is silently dead.
+// RETURNING INTO USAGE RESTARTS ITS POLLING CHAIN, which its `m.pane != paneUsage` guard dropped
+// while this pane was up.
 func (m *model) leaveAgentsPane() tea.Cmd {
+	if m.agentsAboveSessions {
+		if m.parentCtx != nil {
+			m.backToPodsPane()
+		}
+		return nil
+	}
 	if m.previousPane != paneNone {
 		m.pane = m.previousPane
 		m.previousPane = paneNone
@@ -501,6 +437,16 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 		return m.resumeUsagePolling()
 	}
 	return nil
+}
+
+// returnToAgentsPane is esc from a sessions list reached by picking an agent: back to the picker,
+// as the level above Sessions, with its rows refreshed.
+func (m *model) returnToAgentsPane() tea.Cmd {
+	m.previousPane = paneNone
+	m.agentsAboveSessions = true
+	m.pane = paneAgents
+	m.rebuildAgentsTable()
+	return m.fetchAgentRowsCmd(agentsOpenNever, paneNone)
 }
 
 // agentSessionsCell counts the listed sessions that belong to the agent a row names, or a dash

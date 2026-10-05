@@ -1240,7 +1240,7 @@ Layered on top of all of them:
 | `r` | namespaces, pods | reload agent list from cluster |
 | `Enter` / `→` / `l` | sessions, events | drill into selection |
 | `Esc` / `←` / `h` | detail, events | back out |
-| `Esc` | sessions | (picker mode) tear down port-forward and back to pods. The only pane that does this — every key-opened surface returns to its caller instead |
+| `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
 | `/` | sessions, events | filter (substring match; Enter commits and saves, Esc cancels the edit and saves nothing; clear the box and press Enter to remove a saved filter) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
@@ -1261,10 +1261,10 @@ Layered on top of all of them:
 | `Esc` | pipeline | back to the pane `P` was pressed on |
 | `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
-| `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today, plus a row of dashes for any agent that owns a listed session but has spent nothing today, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents**, counting both kinds of row, and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
+| `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today, plus a row of dashes for any agent that owns a listed session but has spent nothing today, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
 | `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer; `agentop cost --agent` is a separate process |
-| `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
+| `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
 | `N` | edit/diff | abort the edit |
@@ -1284,12 +1284,14 @@ shell prompt. The cost is that a scroll moves the focused pane, not the one unde
 pointer.
 
 **The picker also opens itself at startup**, once per connection, when two or more
-agents have spent in the window or own a listed session — the same two-agent rule `A`
-applies, so a one-agent proxy goes straight to the sessions pane and says nothing. The
+agents have spent in the window or own a listed session, so a one-agent proxy goes
+straight to the sessions pane and says nothing; `A` still opens it there. The
 `default` bucket and unrecognised clients' sessions never count toward the two. When the
 spending reply beats the first session list, that list gets one more look, and only
-while the sessions pane is still showing. The cursor
-starts on `All agents`, so `↵` and `Esc` both keep every agent in view. Nothing is
+while the sessions pane is still showing. The cursor starts on `All agents`, so `↵`
+keeps every agent in view. Opened this way the picker is the level above the sessions
+list: `Esc` on a list reached by picking an agent comes back to it, and `Esc` on the
+picker backs out to the pods picker, or does nothing with `--endpoint`. Nothing is
 remembered between runs: a second agent appearing is exactly when the picker
 becomes worth showing, so a remembered dismissal would go stale then.
 

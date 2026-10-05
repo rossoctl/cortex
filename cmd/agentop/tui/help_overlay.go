@@ -197,7 +197,7 @@ var jumpTargets = []jumpTarget{
 	{key: "C", pane: paneCatalog,
 		desc: "every plugin the proxy offers, from /v1/plugins"},
 	{key: "A", pane: paneAgents,
-		desc: "what each coding agent has spent today; refuses below two agents"},
+		desc: "what each coding agent has spent today; pick one to scope the views"},
 	{key: "$", pane: paneNone, label: "spend",
 		desc: "a drawer over the spend band: tiers and a breakdown"},
 }
@@ -295,7 +295,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
 			{"/", "filter"},
-			{"esc", "back to pods picker"},
+			{"esc", "back to the agents picker, else pods picker"},
 		},
 	},
 	paneEvents: {
@@ -388,7 +388,7 @@ var paneKeys = map[paneID]keyGroup{
 		// the same narrowing `agentop cost --agent` uses, and the endpoint's limit now bounds WHICH
 		// views can honour it rather than whether any can.
 		notes: []string{
-			"Opens only when two or more agents have been seen. It scopes the sessions " +
+			"Opens by itself when two or more agents have been seen. It scopes the sessions " +
 				"list, the usage pane and the spend band. Other pools every agent the proxy " +
 				"does not recognise.",
 		},

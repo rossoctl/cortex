@@ -119,17 +119,16 @@ func TestAgentsPane_APressOpensWhenOnlySessionsNameTheSecondAgent(t *testing.T) 
 func TestAgentsPane_OpensOnSessionsAloneAndShowsTheTable(t *testing.T) {
 	m := morningAfterFixture()
 	m.agents = nil
-	if entered, why := m.enterAgentsOrRefuse(paneSessions); !entered {
-		t.Fatalf("refused with %q on three agents' sessions and no spend", why)
-	}
+	m.enterAgents(paneSessions)
 	if view := m.View(); strings.Contains(view, "no agent traffic") || !strings.Contains(view, "opencode") {
 		t.Errorf("the pane did not render the session-only rows:\n%s", view)
 	}
 }
 
-// What the gate has always protected stays protected: one recognised agent, the default bucket and
-// an unrecognised client's session do not make a second agent, at startup or on `A`.
-func TestAgentsPane_OneAgentAndOtherSessionsStillDoNotOpen(t *testing.T) {
+// #1231: one recognised agent, the default bucket and an unrecognised client's session. The
+// startup gate still skips the picker, but `A` opens it — and it has more than one row, because
+// the sessions that name no recognised agent belong to Other.
+func TestAgentsPane_OneAgentAndOtherSessions_StartupSkipsButAOpens(t *testing.T) {
 	m := morningAfterFixture()
 	m.sessions = []session.SessionSummary{
 		{ID: "claude-1", UpdatedAt: time.Now(), Agent: "claude-code"},
@@ -143,8 +142,14 @@ func TestAgentsPane_OneAgentAndOtherSessionsStillDoNotOpen(t *testing.T) {
 	}
 	updated, _ = m.Update(agentRowsLoadedMsg{rows: m.agents, open: agentsOpenOnPress, from: paneSessions})
 	m = updated.(*model)
-	if m.pane != paneSessions || !strings.Contains(m.flash, "only claude-code") {
-		t.Errorf("`A` landed on %v with flash %q, want the one-agent refusal", m.pane, m.flash)
+	if m.pane != paneAgents || m.flash != "" {
+		t.Fatalf("`A` landed on %v with flash %q, want the pane and silence", m.pane, m.flash)
+	}
+	if got, want := pickerLabels(m.pickerRows()), []string{"claude-code", otherAgents}; !slices.Equal(got, want) {
+		t.Errorf("picker rows = %v, want %v", got, want)
+	}
+	if view := m.View(); !strings.Contains(view, otherAgents) {
+		t.Errorf("the pane does not show the Other row:\n%s", view)
 	}
 }
 

@@ -578,6 +578,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case paneEvents:
 			m.pane = paneSessions
 		case paneSessions:
+			if m.sessionsViaAgents {
+				return m.returnToAgentsPane()
+			}
 			// Picker mode: back to Pods pane, tearing down the current
 			// port-forward + SSE stream. Bypass mode: no-op (parentCtx
 			// is nil; nowhere to go back to).
@@ -607,9 +610,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// it changes nothing, so going back is all it can mean. previousPane is spent as
 			// leaveAgentsPane spends it, since the catalog shares the field. The spend band and
 			// drawer restart under the new scope, so no figure from the old one stays on screen
-			// beneath it.
+			// beneath it. esc on that list comes back here.
 			m.pane = paneSessions
 			m.previousPane = paneNone
+			m.sessionsViaAgents = true
 			m.rebuildSessionsTable()
 			return m.startSpendPolling()
 		case paneSessions:
@@ -850,14 +854,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		//
 		// `A` CAPITALISED, for the reason `P` is: lowercase `a` is the spend drawer's axis
 		// cycle. Available wherever `C` is — anywhere past the pickers, since it needs a
-		// connection — plus one gate no other pane has: it refuses below two agents, because a
-		// one-row breakdown restates a total the reader already has.
+		// connection.
 		//
-		// ALWAYS REFETCHED, never decided from cached rows. How many agents have been seen
-		// changes while agentop runs, and a second agent starting up is exactly the event that
-		// makes this pane worth opening — so deciding from a stale count would refuse a pane
-		// that had just become useful. The reply carries open:true and decides there, through
-		// the one enterAgentsOrRefuse both paths share.
+		// ALWAYS REFETCHED, never opened from cached rows: how many agents have been seen changes
+		// while agentop runs. The reply enters the pane.
 		if m.client == nil {
 			return nil
 		}
@@ -865,20 +865,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case paneNamespaces, panePods:
 			return nil
 		}
-		// THE CALLER IS RESOLVED HERE, AT PRESS TIME, the way `case "C":` below resolves its
-		// own — and then carried on the message rather than re-read when the reply lands. The
-		// fetch is a round trip, so m.pane at reply time is whatever pane the reader has since
-		// navigated to, which is not who pressed the key.
-		//
-		// A press while already ON the pane is a refetch, not a new entry, so it keeps the
-		// caller it already has. Recording paneAgents as its own caller is what made the first
-		// esc afterwards a no-op — the arm sets pane to previousPane, which was the pane it was
-		// already on — and a key-opened surface owes its caller a way back.
-		from := m.pane
-		if from == paneAgents {
-			from = m.previousPane
+		// On the pane itself it is a refresh, leaving the pane's caller and place as they are.
+		if m.pane == paneAgents {
+			return m.fetchAgentRowsCmd(agentsOpenNever, paneNone)
 		}
-		return m.fetchAgentRowsCmd(agentsOpenOnPress, from)
+		// THE CALLER IS RESOLVED HERE, AT PRESS TIME, and carried on the message: by the time the
+		// reply lands the reader may have navigated elsewhere.
+		return m.fetchAgentRowsCmd(agentsOpenOnPress, m.pane)
 
 	case "C":
 		// Open the registered-plugin catalog. Available from any
@@ -951,8 +944,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case paneAgents:
 		// Without this arm the pane's navigation keys fell off the end of the switch and
 		// returned nil, while its footer printed "[↑↓] nav" and the help overlay listed
-		// "↑↓ / jk  navigate" — an advertised key that does nothing, which is the same defect
-		// agentsPaneRefusal exists to prevent on the way in. The table is built
+		// "↑↓ / jk  navigate" — an advertised key that does nothing. The table is built
 		// WithFocused(true), so it drew a selection highlight on a cursor nothing could move.
 		//
 		// NO `r` BRANCH, unlike the catalog above: the rows are refetched by every `A` press,
@@ -1159,14 +1151,12 @@ func (m *model) helpView() string {
 		// cheaply (the hints it outlives are the two most guessable on the line) so it
 		// is worth having, but it is not the difference between visible and invisible
 		// at 80 that the first draft of this comment claimed.
-		// [A] agents IS DELIBERATELY ABSENT, which is the one exception to the rule the two
-		// paragraphs above argue for. It is a cost key, so by that rule it belongs beside [u]
-		// and [$] — but it REFUSES below two agents, and one agent is every deployment today.
-		// Advertising it on the always-visible line would spend width, taken from the front of
-		// a line already at 98 columns, on a key that answers "only claude-code has been seen"
-		// for almost every reader. The [?] overlay names it instead, and its jump section shows
-		// it only from the panes it works on, so it is discoverable without being promoted.
-		// Revisit when two agents is the common case rather than the exception.
+		// [A] agents is absent for width: the line is already 98 columns, and with one agent —
+		// the common case — the breakdown is a single row. The [?] overlay names it. esc names
+		// the picker instead when this list was reached through it.
+		if m.sessionsViaAgents {
+			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [esc] agents  [p] pause  [P] pipeline  [?] keys  [q] quit"
+		}
 		if m.parentCtx != nil {
 			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [esc] pods  [p] pause  [P] pipeline  [?] keys  [q] quit"
 		}
@@ -1283,7 +1273,14 @@ func (m *model) helpView() string {
 		if scope, ok := m.selectedAgentScope(); ok && scope == "" {
 			enterHint = "  [↵] all agents"
 		}
-		return "[↑↓] nav" + enterHint + "  [esc] back  [?] keys  [q] quit"
+		escHint := "  [esc] back"
+		if m.agentsAboveSessions {
+			escHint = ""
+			if m.parentCtx != nil {
+				escHint = "  [esc] pods"
+			}
+		}
+		return "[↑↓] nav" + enterHint + escHint + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

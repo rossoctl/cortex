@@ -771,6 +771,13 @@ type model struct {
 	// list changed in the refresh between. Cleared by backToPodsPane, since it is owed by the
 	// connection being left.
 	agentsGateOwesALook bool
+	// agentsAboveSessions is the AGENTS pane showing as the level above Sessions — entered by the
+	// startup gate, or by esc from a list reached through it — rather than as an overlay `A`
+	// opened. esc on it then backs out of the connection instead of returning to a caller.
+	agentsAboveSessions bool
+	// sessionsViaAgents is the sessions list having been reached by picking an agent, so esc on
+	// it returns to the picker. Cleared by backToPodsPane.
+	sessionsViaAgents bool
 
 	pickerErr string // single-line picker error shown in footer
 
@@ -1032,6 +1039,8 @@ func (m *model) backToPodsPane() {
 	// The startup gate's owed look belongs to the connection being left. Kept, the next pod's
 	// first list would spend it against the rows the last pod reported.
 	m.agentsGateOwesALook = false
+	m.agentsAboveSessions = false
+	m.sessionsViaAgents = false
 	m.previousPane = paneNone
 	// Same reason: a return pane recorded against the pod being left would send
 	// the next `P`-then-esc back into a pane belonging to the previous connection.
@@ -1414,15 +1423,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case msg.open == agentsOpenAtStartup:
 			// THE GATE, and the one path here that is allowed to decline in silence. Nobody
-			// asked for this fetch: the operator asked for the sessions view and got it, so a
-			// refusal sentence about a pane they never requested is noise, and an error line
-			// about it competes with the connection message the pane they ARE looking at will
-			// print for itself. m.agentsErr is set above either way, so a later `A` press
-			// reports what happened rather than showing an empty grid.
-			//
-			// agentsPaneApplies rather than enterAgentsOrRefuse: the refusal STRING is written
-			// for someone owed an answer, and this caller is not one. The two agree by test,
-			// so consulting the predicate cannot drift from the sentence.
+			// asked for this fetch: the operator asked for the sessions view and got it, so an
+			// error line about a pane they never requested competes with the connection message
+			// the pane they ARE looking at will print for itself. m.agentsErr is set above either
+			// way, so a later `A` press reports what happened rather than showing an empty grid.
 			//
 			// ONLY FROM SESSIONS: the reply lands a round trip after the view opened, and an
 			// operator who has already moved is left where they are.
@@ -1433,14 +1437,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case msg.err != nil:
 			// The `A` press cannot open a pane whose contents failed to load, and it must not
-			// fail silently either — see agentsPaneRefusal on why no refusal here may be mute.
+			// fail silently either.
 			m.setFlash("agents: " + msg.err.Error())
 		default:
 			// msg.from, not m.pane: the caller was resolved when `A` was pressed, and this
 			// runs a round trip later. See agentRowsLoadedMsg.from.
-			if entered, why := m.enterAgentsOrRefuse(msg.from); !entered {
-				m.setFlash(why)
-			}
+			m.enterAgents(msg.from)
 		}
 		return m, nil
 
@@ -2322,9 +2324,7 @@ func (m *model) paneView() string {
 			// Named, not blank: an unreachable endpoint and a quiet day look identical
 			// otherwise, and only one of them is worth waiting out.
 			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
-		case len(m.agentChoices()) == 0:
-			// Reachable in principle only by a refresh emptying the rows after entry — `A`
-			// refuses this state — so it says what happened rather than rendering an empty grid.
+		case len(m.pickerRows()) == 0:
 			body = styleHint.Render("(no agent traffic in this window)")
 		default:
 			body = m.agentsTbl.View()

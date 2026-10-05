@@ -110,81 +110,6 @@ func TestAgentsPaneApplies_SkippedBelowTwoAgents(t *testing.T) {
 	}
 }
 
-// Refusing the pane says WHY, and the reason names the actual count.
-//
-// A key that does nothing is the failure this package has been bitten by twice — paneUsage
-// shipped reachable and undocumented, and the spend drawer once printed the wrong refusal
-// reason on two panes. So `A` below two agents must not be silently inert: it refuses and
-// says what it found, the same contract spendDrawerHostPane keeps, whose test requires that
-// no refusal be silent.
-//
-// The two refusals are DIFFERENT SENTENCES because they are different situations: no agents
-// means nothing has been observed yet and waiting may fix it, while one agent means the
-// breakdown would have a single row and waiting will not. Collapsing them into "not enough
-// agents" tells a reader nothing about which of those they are looking at.
-func TestAgentsPaneRefusal_NamesWhyAndIsSilentOnlyWhenAvailable(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		rows     []agentRow
-		wantSome bool     // a refusal is expected
-		contains []string // fragments the refusal must carry
-	}{
-		{
-			name: "no agents seen yet", rows: nil, wantSome: true,
-			contains: []string{"no agent"},
-		},
-		{
-			name: "one agent", rows: []agentRow{{label: "claude-code/2.1.270"}}, wantSome: true,
-			// The agent's own name, so the reader can see the breakdown would be a
-			// restatement of the total they already have.
-			contains: []string{"claude-code/2.1.270"},
-		},
-		{
-			name: "two agents is available", rows: []agentRow{
-				{label: "claude-code/2.1.270"}, {label: "bob-shell/2.0.5"},
-			}, wantSome: false,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := agentsPaneRefusal(tc.rows)
-			if !tc.wantSome {
-				if got != "" {
-					t.Fatalf("agentsPaneRefusal = %q, want empty — the pane is available here", got)
-				}
-				return
-			}
-			if got == "" {
-				t.Fatal("agentsPaneRefusal = empty; a refusal may never be silent")
-			}
-			for _, frag := range tc.contains {
-				if !strings.Contains(got, frag) {
-					t.Errorf("refusal %q does not mention %q", got, frag)
-				}
-			}
-		})
-	}
-}
-
-// The refusal and the availability rule can never disagree.
-//
-// Two functions answering one question is how the spend drawer's wrong-reason bug happened:
-// the decision and the sentence explaining it drifted apart. Asserted over both sides of the
-// boundary rather than at it, so a change to either that forgets the other fails here.
-func TestAgentsPaneRefusal_AgreesWithAgentsPaneApplies(t *testing.T) {
-	for n := 0; n <= 3; n++ {
-		rows := make([]agentRow, n)
-		for i := range rows {
-			rows[i] = agentRow{label: string(rune('a' + i))}
-		}
-		applies := agentsPaneApplies(rows)
-		refused := agentsPaneRefusal(rows) != ""
-		if applies == refused {
-			t.Errorf("%d agents: agentsPaneApplies=%v but refused=%v — these must be exact opposites",
-				n, applies, refused)
-		}
-	}
-}
-
 // The help overlay tells the two "agent" panes apart.
 //
 // This repo uses the word for two unrelated things: paneNamespaces lists KUBERNETES
@@ -324,7 +249,7 @@ func TestAgentsPane_RecordsTheCallerAtPressTimeNotAtReplyTime(t *testing.T) {
 			previousPane: paneNone,
 		},
 		{
-			// A refetch. The reply-time read made the pane its own caller and esc went nowhere.
+			// A refresh. The reply-time read made the pane its own caller and esc went nowhere.
 			name:      "A pressed again while already on the pane keeps the original caller",
 			pressedOn: paneAgents, movedTo: paneAgents, wantBack: paneUsage,
 			previousPane: paneUsage,
@@ -355,7 +280,7 @@ func TestAgentsPane_RecordsTheCallerAtPressTimeNotAtReplyTime(t *testing.T) {
 			// The reader moves before the reply arrives. A reply-time read of m.pane sees this
 			// pane; the press never did.
 			m.pane = tc.movedTo
-			updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenOnPress, from: failed.from})
+			updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: failed.open, from: failed.from})
 			m = updated.(*model)
 			if m.pane != paneAgents {
 				t.Fatalf("reply did not open the pane: pane = %v", m.pane)
@@ -571,37 +496,48 @@ func TestAgentsPane_StartupEntersOnlyWhereTheGateApplies(t *testing.T) {
 	}
 }
 
-// esc from the startup picker lands on Sessions, so the operator ends up where they were headed
-// rather than on the pane enum's zero value — the Kubernetes namespace picker, which would look
-// like the connection had gone away.
-//
-// It gets there through leaveAgentsPane's paneNone fallback rather than by recording a caller:
-// the gate has no caller pane, which is what that function's doc says it leans on.
-func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
+// The startup picker is the level above Sessions, so esc on it backs out of the connection the way
+// esc on Sessions does: to the pods picker, and nowhere in --endpoint mode.
+func TestAgentsPane_StartupPickerEscBacksOutOfTheConnection(t *testing.T) {
 	rows := []agentRow{
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
 		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
 	}
-	// previousPane is seeded with a pane the startup arm MUST overwrite. Seeding paneNone — the
-	// value that arm assigns — let the fixture supply the mechanism the comment above credits, and
-	// two mutants survived on it: deleting `m.previousPane = paneNone` from the arm, and setting it
-	// to paneSessions instead. Neither can survive a seed the arm has to clear.
-	m := &model{pane: paneSessions, previousPane: panePipeline, agentsTbl: newAgentsTable(), client: deadClient()}
-	updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
-	m = updated.(*model)
-	if m.pane != paneAgents {
-		t.Fatalf("startup did not enter the pane: %v", m.pane)
-	}
-	// paneNone, asserted directly. Landing on Sessions is the same observable outcome whether the
-	// arm recorded paneNone and leaveAgentsPane fell back, or the arm recorded paneSessions
-	// itself — so the esc assertion below cannot tell the documented mechanism from the other one.
-	if m.previousPane != paneNone {
-		t.Errorf("the gate recorded previousPane=%v, want paneNone: it has no caller pane, and the "+
-			"esc arm's fallback is what the comment above credits", m.previousPane)
-	}
-	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-	if m.pane != paneSessions {
-		t.Errorf("esc from the startup picker landed on %v, want paneSessions", m.pane)
+	for _, tc := range []struct {
+		name     string
+		picker   bool
+		want     paneID
+		wantHint string
+	}{
+		{"pods picker mode", true, panePods, "[esc] pods"},
+		{"--endpoint mode", false, paneAgents, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// previousPane is seeded with a pane the startup arm must overwrite.
+			m := &model{pane: paneSessions, previousPane: panePipeline, agentsTbl: newAgentsTable(), client: deadClient()}
+			if tc.picker {
+				m.parentCtx = context.Background()
+				m.ctx, m.cancel = context.WithCancel(m.parentCtx)
+				defer func() { m.cancel() }()
+			}
+			updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
+			m = updated.(*model)
+			if m.pane != paneAgents || m.previousPane != paneNone || !m.agentsAboveSessions {
+				t.Fatalf("startup: pane %v previousPane %v above %v, want the picker above Sessions",
+					m.pane, m.previousPane, m.agentsAboveSessions)
+			}
+			footer := m.helpView()
+			if tc.wantHint != "" && !strings.Contains(footer, tc.wantHint) {
+				t.Errorf("footer %q omits %q", footer, tc.wantHint)
+			}
+			if tc.wantHint == "" && strings.Contains(footer, "[esc]") {
+				t.Errorf("footer %q offers esc, which goes nowhere here", footer)
+			}
+			m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+			if m.pane != tc.want {
+				t.Errorf("esc from the startup picker landed on %v, want %v", m.pane, tc.want)
+			}
+		})
 	}
 }
 

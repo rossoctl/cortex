@@ -204,9 +204,6 @@ func TestPickerRows_SessionsAloneShowOtherButNeverOpenThePane(t *testing.T) {
 	if agentsPaneApplies(m.agentChoices()) {
 		t.Fatal("one recognised agent opens the pane")
 	}
-	if entered, _ := m.enterAgentsOrRefuse(paneSessions); entered {
-		t.Error("`A` entered on one recognised agent and the default bucket")
-	}
 
 	m.agents = []agentRow{{label: "claude-code"}, {label: "bob-shell"}}
 	rows := m.pickerRows()
@@ -277,13 +274,5 @@ func TestFetchUsage_OtherScopeNarrowsToTheFold(t *testing.T) {
 	}
 	if msg.snap.Totals.Requests != 23 || msg.snap.Buckets[0].Requests != 23 {
 		t.Errorf("totals %d, bucket %d, want Other's 23 in both", msg.snap.Totals.Requests, msg.snap.Buckets[0].Requests)
-	}
-}
-
-// A picker of Other alone has nothing to break down, and the refusal says so without naming Other
-// as if it were a program.
-func TestAgentsPaneRefusal_OtherAloneIsNoRecognisedAgent(t *testing.T) {
-	if got := agentsPaneRefusal([]agentRow{{label: otherAgents}}); !strings.Contains(got, "no recognised agent") {
-		t.Errorf("refusal %q", got)
 	}
 }
