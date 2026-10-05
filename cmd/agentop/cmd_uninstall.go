@@ -405,7 +405,7 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 // record disable restores from and then deletes, or "" for none. The record is
 // read as the removal runs, which is first, before --purge could delete it.
 func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
-	pl, planErr := planClaudeCodeDisable(settings)
+	pl, planErr := planClaudeCodeDisable(settings, env.configPath())
 	where := ""
 	if settings != filepath.Join(env.home, settingsRel) {
 		where = " · " + env.tilde(settings)

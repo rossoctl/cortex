@@ -102,7 +102,7 @@ func TestPlanApplyClaudeCodeDisable_RestoresWhatTheUserHad(t *testing.T) {
 		t.Fatalf("fixture: enable left %s at the stale %q, so a restore is unobservable", envProxy, got)
 	}
 	before, _ := os.ReadFile(settings)
-	pl, err := planClaudeCodeDisable(settings)
+	pl, err := planClaudeCodeDisable(settings, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,5 +128,47 @@ func TestPlanApplyClaudeCodeDisable_RestoresWhatTheUserHad(t *testing.T) {
 	}
 	if _, err := os.Stat(state); err == nil {
 		t.Error("the state record survived disable")
+	}
+}
+
+func TestApplyClaudeCodeDisable_KeepsManualEdits(t *testing.T) {
+	// After enable, a hand-edited managed key must survive disable (#1289).
+	settings, cfg := fixture(t, `{"env":{}}`)
+	state := filepath.Join(t.TempDir(), "state.json")
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable failed: %s", errb.String())
+	}
+
+	const userProxy = "http://proxy.example:8080"
+	doc, err := readSettings(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envRaw(doc)[envProxy] = userProxy
+	if err := writeSettings(settings, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	errb.Reset()
+	pl, err := planClaudeCodeDisable(settings, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := applyClaudeCodeDisable(pl, state, &errb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range restored {
+		if k == envProxy {
+			t.Fatalf("disable restored %s despite a manual edit", envProxy)
+		}
+	}
+	env := readEnv(t, settings)
+	if env[envProxy] != userProxy {
+		t.Fatalf("%s = %q, want manual edit %q", envProxy, env[envProxy], userProxy)
+	}
+	if !strings.Contains(errb.String(), "keeping your edit to "+envProxy) {
+		t.Fatalf("stderr missing keep-edit notice: %q", errb.String())
 	}
 }

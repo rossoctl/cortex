@@ -559,7 +559,7 @@ func TestClaudeCodeDisable_RestoresAValueTheUserSetFirst(t *testing.T) {
 	if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
 		t.Fatalf("enable: %s", errb.String())
 	}
-	if code := claudeCodeDisable2(settings, state, true, &out, &errb); code != 0 {
+	if code := claudeCodeDisable2(settings, state, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: %s", errb.String())
 	}
 
@@ -615,7 +615,7 @@ func TestClaudeCodeDisable_NoStateFallsBackToRemoval(t *testing.T) {
 	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("enable: %s", errb.String())
 	}
-	if code := claudeCodeDisable2(settings, filepath.Join(t.TempDir(), "absent.json"), true, &out, &errb); code != 0 {
+	if code := claudeCodeDisable2(settings, filepath.Join(t.TempDir(), "absent.json"), cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: %s", errb.String())
 	}
 	env := readEnv(t, settings)
@@ -648,7 +648,7 @@ func TestClaudeCodeDisable_WarnsOnCorruptState(t *testing.T) {
 
 	out.Reset()
 	errb.Reset()
-	if code := claudeCodeDisable2(settings, state, true, &out, &errb); code != 0 {
+	if code := claudeCodeDisable2(settings, state, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: %s", errb.String())
 	}
 	if !strings.Contains(errb.String(), "cannot read the record") {
@@ -776,7 +776,7 @@ func TestClaudeCodeDisable_RestoresPriorCAValues(t *testing.T) {
 	if got := readEnv(t, settings)[envSSLCert]; got == stale {
 		t.Fatalf("%s was not updated, so the restore below proves nothing", envSSLCert)
 	}
-	if code := claudeCodeDisable2(settings, state, true, &out, &errb); code != 0 {
+	if code := claudeCodeDisable2(settings, state, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: %s", errb.String())
 	}
 
@@ -857,7 +857,7 @@ func TestClaudeCodeDisableWithNothingPresentTouchesNothing(t *testing.T) {
 		{"no settings file", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			settings, _ := fixture(t, tc.settings)
+			settings, cfg := fixture(t, tc.settings)
 			state := filepath.Join(t.TempDir(), "state.json")
 			if err := writeState(state, managedState{Settings: settings, Prior: map[string]*string{envProxy: nil}}); err != nil {
 				t.Fatal(err)
@@ -870,7 +870,7 @@ func TestClaudeCodeDisableWithNothingPresentTouchesNothing(t *testing.T) {
 			if (beforeErr != nil) != (tc.settings == "") {
 				t.Fatalf("fixture: reading %s: %v", settings, beforeErr)
 			}
-			pl, err := planClaudeCodeDisable(settings)
+			pl, err := planClaudeCodeDisable(settings, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

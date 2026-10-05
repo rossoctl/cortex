@@ -30,10 +30,10 @@ func runEnable(t *testing.T, settings, cfg, state string, yes bool) ccRun {
 	return ccRun{code, out.String(), errb.String()}
 }
 
-func runDisable(t *testing.T, settings, state string, yes bool) ccRun {
+func runDisable(t *testing.T, settings, state, cfg string, yes bool) ccRun {
 	t.Helper()
 	var out, errb bytes.Buffer
-	code := claudeCodeDisable2(settings, state, yes, &out, &errb)
+	code := claudeCodeDisable2(settings, state, cfg, yes, &out, &errb)
 	return ccRun{code, out.String(), errb.String()}
 }
 
@@ -216,7 +216,7 @@ func TestCharacterize_ClaudeCodeInteractiveAccept(t *testing.T) {
 		settings, cfg := fixture(t, settingsWithSecret)
 		state := filepath.Join(t.TempDir(), "state.json")
 		runEnable(t, settings, cfg, state, true)
-		runDisable(t, settings, state, false).check(t, 0,
+		runDisable(t, settings, state, cfg, false).check(t, 0,
 			"This will remove from "+settings+": "+allManaged+"\n\n"+
 				"Apply? [y/N] \nDisabled. Claude Code no longer routes through Cortex.\n", "")
 		if got, ok := readEnv(t, settings)["HTTPS_PROXY"]; ok {
@@ -264,7 +264,7 @@ func TestCharacterize_ClaudeCodeDisable(t *testing.T) {
 		settings, cfg := fixture(t, settingsWithSecret)
 		state := filepath.Join(t.TempDir(), "state.json")
 		runEnable(t, settings, cfg, state, true)
-		runDisable(t, settings, state, true).check(t, 0,
+		runDisable(t, settings, state, cfg, true).check(t, 0,
 			"This will remove from "+settings+": "+allManaged+"\n\n"+
 				"\nDisabled. Claude Code no longer routes through Cortex.\n", "")
 		if _, err := os.Stat(state); err == nil {
@@ -275,21 +275,21 @@ func TestCharacterize_ClaudeCodeDisable(t *testing.T) {
 		settings, cfg := fixture(t, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
 		state := filepath.Join(t.TempDir(), "state.json")
 		runEnable(t, settings, cfg, state, true)
-		runDisable(t, settings, state, true).check(t, 0,
+		runDisable(t, settings, state, cfg, true).check(t, 0,
 			"This will remove from "+settings+": "+allManaged+"\n\n"+
 				"\nRestored to the value(s) you had before: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\n"+
 				"\nDisabled. Claude Code no longer routes through Cortex.\n", "")
 	})
 	t.Run("nothing to do", func(t *testing.T) {
-		settings, _ := fixture(t, `{}`)
-		runDisable(t, settings, "", true).check(t, 0,
+		settings, cfg := fixture(t, `{}`)
+		runDisable(t, settings, "", cfg, true).check(t, 0,
 			"Nothing to do: none of the Cortex variables are set in "+settings+".\n", "")
 	})
 	t.Run("declined", func(t *testing.T) {
 		answerPrompt(t, &claudeCodeConfirm, "n\n")
 		settings, cfg := fixture(t, settingsWithSecret)
 		runEnable(t, settings, cfg, "", true)
-		runDisable(t, settings, "", false).check(t, exitDeclined,
+		runDisable(t, settings, "", cfg, false).check(t, exitDeclined,
 			"This will remove from "+settings+": "+allManaged+"\n\nApply? [y/N] Not changed.\n", "")
 	})
 }

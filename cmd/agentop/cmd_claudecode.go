@@ -256,7 +256,7 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	case "enable":
 		return claudeCodeEnable2(*settingsPath, *cortexCfg, statePath, *yes, stdout, stderr)
 	case "disable":
-		return claudeCodeDisable2(*settingsPath, statePath, *yes, stdout, stderr)
+		return claudeCodeDisable2(*settingsPath, statePath, *cortexCfg, *yes, stdout, stderr)
 	case "status":
 		return claudeCodeStatus(*settingsPath, stdout)
 	default:
@@ -538,16 +538,22 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 type claudeCodeDisablePlan struct {
 	settingsPath string
 	doc          map[string]any
-	present      []string // managed keys set in the file, in managedKeys order; none = nothing to do
+	present      []string          // managed keys set in the file, in managedKeys order; none = nothing to do
+	want         map[string]string // managed values enable writes; nil when the Cortex config is unknown
 }
 
-func planClaudeCodeDisable(settingsPath string) (claudeCodeDisablePlan, error) {
+func planClaudeCodeDisable(settingsPath, cortexCfgPath string) (claudeCodeDisablePlan, error) {
 	doc, err := readSettings(settingsPath)
 	if err != nil {
 		return claudeCodeDisablePlan{}, err
 	}
 	env := envStrings(doc)
 	pl := claudeCodeDisablePlan{settingsPath: settingsPath, doc: doc}
+	if cortexCfgPath != "" {
+		if want, werr := wanted(cortexCfgPath); werr == nil {
+			pl.want = want
+		}
+	}
 	for _, k := range managedKeys {
 		if _, ok := env[k]; ok {
 			pl.present = append(pl.present, k)
@@ -580,6 +586,15 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	for _, k := range pl.present {
 		if st != nil && st.Settings == pl.settingsPath {
 			if prior, recorded := st.Prior[k]; recorded {
+				// If the current value is not what enable wrote, the user edited
+				// it by hand after enable. Keep their edit instead of silently
+				// restoring the pre-enable value (#1289).
+				if cur, isStr := raw[k].(string); isStr && pl.want != nil {
+					if wrote, ok := pl.want[k]; ok && cur != wrote {
+						fmt.Fprintf(stderr, "agentop: keeping your edit to %s; not restoring the pre-enable value\n", k)
+						continue
+					}
+				}
 				if prior == nil {
 					delete(raw, k)
 				} else {
@@ -607,8 +622,8 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	return restored, nil
 }
 
-func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planClaudeCodeDisable(settingsPath)
+func claudeCodeDisable2(settingsPath, statePath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
+	pl, err := planClaudeCodeDisable(settingsPath, cortexCfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
@@ -819,5 +834,5 @@ func claudeCodeEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stde
 }
 
 func claudeCodeDisable(settingsPath string, yes bool, stdout, stderr io.Writer) int {
-	return claudeCodeDisable2(settingsPath, "", yes, stdout, stderr)
+	return claudeCodeDisable2(settingsPath, "", "", yes, stdout, stderr)
 }
