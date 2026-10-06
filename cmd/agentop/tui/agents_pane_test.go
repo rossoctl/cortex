@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -692,5 +693,48 @@ func TestAgentsPane_PollsWhileOpen(t *testing.T) {
 				t.Errorf("refresh tick fetched agent rows = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A refresh that reorders the rows keeps the cursor on the agent it was on, so the next ↵
+// scopes to that agent rather than to whichever one moved into its row.
+func TestAgentsPane_RefreshKeepsTheCursorOnItsAgent(t *testing.T) {
+	row := func(label string, cost int64) agentRow {
+		return agentRow{label: label, Counts: usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: cost}}
+	}
+	for _, tc := range []struct {
+		name  string
+		after []agentRow
+	}{
+		{"agents swap places", []agentRow{row("opencode", 9), row("claude-code", 5)}},
+		{"a new agent lands above", []agentRow{row("ibm-bob", 9), row("claude-code", 5), row("opencode", 1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model{pane: paneAgents, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+			m.agents = []agentRow{row("claude-code", 5), row("opencode", 1)}
+			m.rebuildAgentsTable()
+			m.agentsTbl.SetCursor(2)
+			if got, _ := m.selectedAgentScope(); got != "opencode" {
+				t.Fatalf("fixture cursor is on %q, want opencode", got)
+			}
+			m.Update(agentRowsLoadedMsg{rows: tc.after, open: agentsOpenNever})
+			if got, _ := m.selectedAgentScope(); got != "opencode" {
+				t.Errorf("after the refresh the cursor selects %q, want opencode", got)
+			}
+		})
+	}
+}
+
+// A failed refresh keeps the rows it already has on screen, with the error beneath them.
+func TestAgentsPane_FailedRefreshKeepsTheTable(t *testing.T) {
+	for _, dim := range fitSizes {
+		m := fitModel(t, paneAgents, dim[0], dim[1], nil)
+		m.agentsErr = errors.New(`Get "http://127.0.0.1:47601/v1/usage?group=agent&window=today": context deadline exceeded`)
+		label := fmt.Sprintf("%dx%d", dim[0], dim[1])
+		view := m.View()
+		if !strings.Contains(view, "claude-code") || !strings.Contains(view, "refresh failed") {
+			t.Errorf("%s: want the table and the error, got:\n%s", label, view)
+		}
+		assertFits(t, m, label)
 	}
 }

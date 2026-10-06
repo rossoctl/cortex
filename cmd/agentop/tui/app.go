@@ -759,6 +759,8 @@ type model struct {
 	// restoring into.
 	agentScope string
 	agentsTbl  table.Model
+	// agentRowLabels is the scope each agentsTbl row selects, "" for All agents.
+	agentRowLabels []string
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error
@@ -2326,13 +2328,21 @@ func (m *model) paneView() string {
 		if m.agentScope != "" {
 			title += " · scoped to " + sanitizeLabel(m.agentScope)
 		}
+		hasRows := len(m.pickerRows()) > 0
 		switch {
-		case m.agentsErr != nil:
+		case m.agentsErr != nil && !hasRows:
 			// Named, not blank: an unreachable endpoint and a quiet day look identical
 			// otherwise, and only one of them is worth waiting out.
 			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
-		case len(m.pickerRows()) == 0:
+		case !hasRows:
 			body = styleHint.Render("(no agent traffic in this window)")
+		case m.agentsErr != nil:
+			// A failed refresh keeps the rows on screen, one line shorter to fit the hint.
+			tbl := m.agentsTbl
+			if m.bodyHeight > 1 {
+				tbl.SetHeight(m.bodyHeight - 1)
+			}
+			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+m.agentsErr.Error()+")", m.width))
 		default:
 			body = m.agentsTbl.View()
 		}
