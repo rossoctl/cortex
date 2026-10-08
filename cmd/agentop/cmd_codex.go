@@ -38,10 +38,15 @@ const (
 )
 
 // codexKeys is exactly what enable writes and disable removes: the four proxy
-// spellings (same reasoning as execProxyVars — different libraries check different
-// casings, and Codex does not document which one its own HTTP client reads) plus
-// Codex's own CA override. All-or-nothing: codexWanted refuses outright when the
-// bridge is off, so there is no partial "proxy only, no CA" state to track here.
+// spellings plus Codex's own CA override. All four spellings are set rather than
+// just one — not only the same inherited caution execProxyVars documents for
+// other tools, but confirmed independently for Codex itself: setting each one
+// alone (the other three absent) and running a bare `codex exec` showed Cortex's
+// own proxy log pick up Codex's MCP handshake every time, for all four. Codex
+// checks for (and uses) whichever spelling is present rather than committing to
+// one, so there is no single "right" one to pick. All-or-nothing: codexWanted
+// refuses outright when the bridge is off, so there is no partial "proxy only, no
+// CA" state to track here.
 var codexKeys = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", envCodexCA}
 
 // codexCanonicalKey is the name isCortexValue knows k by. isCortexValue's switch
