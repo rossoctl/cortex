@@ -57,6 +57,7 @@ names the command that fixes it.
 |---|---|---|
 | **Claude Code** | `agentop configure claude-code enable` | [Guide](./docs/agents/claude-code.md) |
 | **OpenCode** | `agentop configure opencode enable` | [Guide](./docs/agents/opencode.md) |
+| **Codex** | `agentop configure codex enable` | [Guide](./docs/agents/codex.md) |
 | **IBM Bob** | `agentop configure bob enable` | [Guide](./cmd/agentop/README.md#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob) |
 | **Bob Shell** | `agentop configure bobshell enable` | [Guide](./cmd/agentop/README.md#typing-bob-instead-of-agentop-exec----bob-agentop-configure-bobshell) |
 | **Any other agent** | `agentop exec -- <command>` | [Guide](./cmd/agentop/README.md#running-one-command-through-cortex-agentop-exec) |
