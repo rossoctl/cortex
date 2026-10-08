@@ -244,11 +244,20 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 // distinguishable by the block index the provider stamps on each frame.
 // openTool is the fallback for a provider that omits the index.
 //
-// responsesToolCalls holds the Responses API's tool calls instead — a
-// different shape with the same destination. foldResponsesFrame reads a
-// completed call whole off a single response.output_item.done event (see
-// responses.go), so there is nothing to assemble: no index map, no
-// in-progress fallback, just a plain append-as-they-complete list.
+// responsesToolOrder/responsesToolIndex track the Responses API's tool
+// calls instead — a different shape with the same destination. Unlike
+// Anthropic's tool_use blocks, a Responses API call is announced on
+// response.output_item.added (call_id + name, no arguments yet) and
+// restated whole on response.output_item.done (see responses.go), so
+// tracking needs an id-keyed lookup to update the "added" placeholder in
+// place rather than a plain append-on-done list — a plain list would
+// either double-count a call that gets both events, or (if done only
+// updated by index) drop a call that announces "added" but never reaches
+// "done" at all, e.g. a stream cut short by client cancellation.
+// responsesToolOrder preserves emission order for finalize; each entry's
+// excluded flag is set when output_item.done marks the item
+// "incomplete"/"in_progress" (see responsesOutputItem's Status doc) and
+// makes finalize skip it instead of recording cut-off arguments.
 type inferenceStreamState struct {
 	completion strings.Builder
 	usage      parsercommon.TokenUsage
@@ -258,7 +267,64 @@ type inferenceStreamState struct {
 	toolsByIndex map[int]*anthropicToolCallState
 	openTool     *anthropicToolCallState
 
-	responsesToolCalls []pipeline.InferenceToolCall
+	responsesToolOrder []*responsesToolCallState
+	responsesToolIndex map[string]*responsesToolCallState
+}
+
+// responsesToolCallState is one Responses API tool call tracked across its
+// output_item.added/output_item.done lifecycle — see inferenceStreamState's
+// doc for why an id-keyed entry is needed instead of a plain list.
+type responsesToolCallState struct {
+	call     pipeline.InferenceToolCall
+	excluded bool
+}
+
+// addResponsesToolCall records a tool call's call_id and name as soon as
+// response.output_item.added announces it, before its arguments are known.
+// If the stream ends without a matching output_item.done — a cancelled
+// Codex turn — this placeholder (name known, arguments empty) is what
+// finalize emits, instead of losing the call entirely. A duplicate added
+// for the same call_id (not expected on live traffic, but cheap to guard)
+// is a no-op rather than resetting the entry.
+func (s *inferenceStreamState) addResponsesToolCall(callID, name string) {
+	if s.responsesToolIndex == nil {
+		s.responsesToolIndex = make(map[string]*responsesToolCallState)
+	}
+	if _, exists := s.responsesToolIndex[callID]; exists {
+		return
+	}
+	entry := &responsesToolCallState{call: pipeline.InferenceToolCall{ID: callID, Name: name}}
+	s.responsesToolIndex[callID] = entry
+	s.responsesToolOrder = append(s.responsesToolOrder, entry)
+}
+
+// finishResponsesToolCall fills in a tool call's arguments once
+// response.output_item.done delivers them whole, updating the placeholder
+// addResponsesToolCall created rather than appending a second entry — this
+// is what keeps a call seen on both added and done from being double
+// counted. When status marks the item "incomplete" or "in_progress", the
+// entry is excluded instead: its captured arguments were cut off mid-write,
+// so recording them would hand a consumer a call that looks complete but
+// silently isn't. Falls back to creating the entry here if no
+// output_item.added was seen for this call_id — not expected on live
+// traffic (added always precedes done), but tolerated rather than dropping
+// the call.
+func (s *inferenceStreamState) finishResponsesToolCall(callID, name, arguments, status string) {
+	if s.responsesToolIndex == nil {
+		s.responsesToolIndex = make(map[string]*responsesToolCallState)
+	}
+	entry, ok := s.responsesToolIndex[callID]
+	if !ok {
+		entry = &responsesToolCallState{}
+		s.responsesToolIndex[callID] = entry
+		s.responsesToolOrder = append(s.responsesToolOrder, entry)
+	}
+	if status == "incomplete" || status == "in_progress" {
+		entry.excluded = true
+		return
+	}
+	entry.call = pipeline.InferenceToolCall{ID: callID, Name: name, Arguments: arguments}
+	entry.excluded = false
 }
 
 // finalize copies the accumulated stream state onto the public extension
@@ -270,7 +336,7 @@ func (s *inferenceStreamState) finalize(ext *pipeline.InferenceExtension) {
 	if s.hasUsage {
 		s.usage.Fill(ext)
 	}
-	calls := make([]pipeline.InferenceToolCall, 0, len(s.toolCalls)+len(s.responsesToolCalls))
+	calls := make([]pipeline.InferenceToolCall, 0, len(s.toolCalls)+len(s.responsesToolOrder))
 	for _, tc := range s.toolCalls {
 		calls = append(calls, pipeline.InferenceToolCall{
 			ID:        tc.id,
@@ -278,7 +344,12 @@ func (s *inferenceStreamState) finalize(ext *pipeline.InferenceExtension) {
 			Arguments: tc.args.String(),
 		})
 	}
-	calls = append(calls, s.responsesToolCalls...)
+	for _, entry := range s.responsesToolOrder {
+		if entry.excluded {
+			continue
+		}
+		calls = append(calls, entry.call)
+	}
 	if len(calls) == 0 {
 		return
 	}
