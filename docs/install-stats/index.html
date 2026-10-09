@@ -323,9 +323,14 @@ function renderReleases(snapshots) {
   // against one checksums file, so a raw tarball count double-counts. Halving is
   // exact for anything installed normally; a hand-downloaded single binary makes
   // a platform column land on .5, which is rounded and so may not sum to the
-  // checksums count. checksums is the figure to trust if they disagree -- and on
-  // the early alphas they disagree by a lot (alpha.7 is 49 halved tarballs against
-  // 26 checksums), because those tarballs were fetched without the installer.
+  // checksums count. checksums is the figure to trust if they disagree.
+  //
+  // They disagree on more rows than rounding explains -- 26 of 42 today. Two
+  // different causes, and neither is "somebody skipped the installer": the v0.1 to
+  // v0.4 releases named the file kagenti-extensions_<ver>_checksums.txt, which
+  // platform_of's test("^checksums") files under "other", so they read 0 through no
+  // fault of their own. That is a collector bug, out of scope here, and it also
+  // understates the checksums total behind the daily table.
   const perInstall = 2;
   const half = (n) => Math.round(n / perInstall);
 
@@ -419,7 +424,11 @@ function renderReleases(snapshots) {
     // data.json holds cannot adjust a release that has stopped being current, so
     // the claim is scoped instead of the number being guessed at.
     const linuxCell = linuxEst === null
-      ? `<span class="delta" title="not adjusted for CI — this release is not the current one, so the runs that installed it cannot be identified">${r.linux}</span>`
+      // The reason has to hold for all three ways of landing here, not just the
+      // common one: this release is not current, OR latest_release is null, OR no
+      // snapshot carries smoke_runs. Naming only the first would put "not the
+      // current one" on a row badged `current`.
+      ? `<span class="delta" title="not adjusted for CI — the smoke runs that installed this release cannot be identified">${r.linux}</span>`
       : linuxEst.underflow
         ? `<span class="delta" title="${r.linux} Linux installs including CI, against ${ciInstalls} CI, so this would be ${linuxEst.raw}">~0</span>`
         // A floor subtracted gives an upper bound, not a figure.
@@ -460,9 +469,8 @@ function renderReleases(snapshots) {
     while it was current, plus one install from its own tag's smoke run.
     Both columns come from tarball downloads, halved because each install fetches
     two binaries of one platform, so they can disagree with the independent
-    <code>checksums.txt</code> count — by one or two on recent releases, and by
-    much more on the early alphas, where tarballs were fetched without the
-    installer. <code>checksums.txt</code> is the figure to trust where they differ.
+    <code>checksums.txt</code> count. <code>checksums.txt</code> is the figure to
+    trust where they differ.
     <strong>CI Tests</strong> is one install per successful run of the smoke test,
     filled for the current release only: a run carries no tag, so what is known is
     that it installed whichever release was newest at the time.
