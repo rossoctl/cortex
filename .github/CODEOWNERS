@@ -9,15 +9,17 @@
 # be updated when MAINTAINERS.md changes.
 #
 # A rule naming a user or team that does not exist, or that lacks write access here, is
-# silently ignored -- the matched paths end up with no owner and no warning. If you edit this
-# file, confirm every handle still has access.
+# ignored -- the matched paths end up with no owner. GitHub reports this only in the file
+# view and via the API; after editing, `gh api repos/rossoctl/cortex/codeowners/errors`
+# must return an empty list. That one call checks existence, visibility and write access
+# for every handle in this file.
 
 # Default owners for everything. The AuthBridge components used to carry their
 # own rule for authbridge/; that tree is now the repo root, so `*` covers it.
 * @rossoctl/maintainers
 
-# CI/CD and GitHub configuration. Hai owns the Cortex proxy and plugin pipeline and has
-# written most of this tree; Gloire owns org-wide CI and repo governance.
+# CI/CD and GitHub configuration, owned per MAINTAINERS.md (Cortex proxy & plugin
+# pipeline; org-wide CI & repo governance).
 .github/ @huang195 @rubambiza
 
 # Documentation
