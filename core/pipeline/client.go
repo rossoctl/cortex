@@ -299,6 +299,32 @@ var knownClients = map[string]string{
 	// see productVersion. It arrives with its own detection work: its session header is
 	// session.SessionIDHeader, and `agentop configure opencode` sets it up.
 	"opencode": "opencode",
+	// Codex, which the paragraph above named as waiting for its own detection work. That work
+	// is here: inferenceparser reads its Responses API dialect, and `agentop configure codex`
+	// sets it up by writing ~/.codex/.env.
+	//
+	// THE PRODUCT TOKEN IS "codex_exec", WITH AN UNDERSCORE, not "codex" — which is why the key
+	// is not the canonical name, as with claude-cli. Codex sends two forms of it, differing only
+	// by a trailing "(codex_exec; <version>)" comment:
+	//
+	//	codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown (codex_exec; 0.160.1)
+	//	codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown
+	//
+	// One entry covers both: the token is FIRST in each, so ParseUserAgent's first rule matches
+	// and the trailing scan is never reached. Both carry the version where it is expected, so
+	// productVersion needs no case for this agent. Captured 2026-10-08 from Codex 0.160.1 on
+	// macOS, on /backend-api/codex/responses among others.
+	"codex_exec": "codex",
+	// Codex's MCP client, a separate product token on the same release, seen on
+	// /backend-api/ps/mcp: "codex-mcp-client/0.160.1". Folded to the same canonical name
+	// deliberately — it is one agent's component rather than a second agent, so its traffic
+	// belongs in Codex's row and its session, the way OpenCode's service and TUI share one.
+	"codex-mcp-client": "codex",
+	// NOT CLAIMED: "OTel-OTLP-Exporter-Rust/0.31.0", which Codex's telemetry sends to
+	// ab.chatgpt.com/otlp/v1/metrics. The token names the generic Rust OTLP exporter, not
+	// Codex, so claiming it would file every Rust program using that crate under Codex's
+	// name — the mis-mapping this map's godoc calls worse than no answer. It carries no
+	// inference either.
 }
 
 // IsKnownAgent reports whether name is the canonical name of a coding agent ParseUserAgent

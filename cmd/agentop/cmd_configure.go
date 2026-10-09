@@ -17,7 +17,9 @@ Usage:
   agentop configure bobshell enable | disable | status
   agentop configure opencode enable | disable [--yes] [--config PATH] [--opencode BIN]
   agentop configure opencode status [--config PATH] [--opencode BIN]
-  agentop configure codex
+  agentop configure codex enable  [--yes] [--env PATH] [--config PATH]
+  agentop configure codex disable [--yes] [--env PATH]
+  agentop configure codex status  [--env PATH] [--config PATH]
 
 Agents:
   claude-code    writes the proxy and CA variables into ~/.claude/settings.json, so
@@ -33,24 +35,26 @@ Agents:
   opencode       sets the proxy and CA variables in OpenCode's background-service
                  environment, which sends all of OpenCode's traffic. Run
                  "agentop configure opencode --help" for the detail.
-  codex          not yet persistent — use "agentop exec -- codex"
+  codex          writes the proxy and CA variables into Codex's own ~/.codex/.env,
+                 which Codex loads itself at startup. Run
+                 "agentop configure codex --help" for the detail.
 
 One verb for every agent, because "how do I point X at Cortex" is the same question
 whatever X is, and the answer used to be spelled differently per agent: a top-level
 "agentop claude-code" for the one agent with a settings file, and nothing at all for
-the ones without. An agent that cannot yet be configured persistently says so and
-names the command that works today, rather than being absent and leaving the reader
-to conclude Cortex cannot drive it.
+the ones without.
 
-Four agents persist, by three different mechanisms. Claude Code and Bob read settings
+Five agents persist, by four different mechanisms. Claude Code and Bob read settings
 files, so their configuration goes there — the key differs (Claude Code keeps an "env"
 block, Bob is a VS Code fork and reads "http.proxy"), and Bob additionally needs the
 bridge CA trusted by the OS, which "configure bob enable" prints rather than performs.
 Bob Shell gets a shell function written into the rc file instead, so the routing is
 applied when you type the command. OpenCode's background service keeps an environment
-of its own, so its configuration goes there, through the opencode CLI. Codex reads the
-process environment and nothing else, so its routing lasts exactly as long as the
-process — which is what "agentop exec" is for.
+of its own, so its configuration goes there, through the opencode CLI. Codex has no
+settings file and no background service, but loads a dotenv file, ~/.codex/.env, on
+its own at startup — confirmed against the real Codex CLI — so its configuration goes
+there, scanning the whole file for an existing definition of each key rather than only
+a block agentop wrote itself.
 
 "agentop claude-code" is the old spelling of "agentop configure claude-code". It still
 works, and prints a notice pointing here.
@@ -59,31 +63,6 @@ Exit status: whatever the agent's own action returns (0 applied or already corre
 3 declined, 1 something went wrong), 0 for an agent that only prints guidance, or 2
 for a usage error.
 `
-
-// comingSoon is the message for an agent Cortex can already run but cannot yet
-// configure persistently.
-//
-// A helper rather than three near-identical literals: the value that differs is the
-// name twice over — once display-cased for the sentence, once as the binary — and
-// three hand-written copies is three chances for that pair to disagree. Which is not
-// hypothetical; the request this implements had exactly that slip in two of its three
-// messages.
-//
-// Built by concatenation rather than written as a raw string because the message
-// quotes `agentop exec -- <agent>` in backticks, and a backtick is what would end a raw
-// literal. Printed commands are quoted this way elsewhere too (cmd_exec.go:152,
-// main.go's deprecation notices).
-// display appears twice: once in the opening sentence and once in the closing
-// clause. There was a third parameter for the closing one, on the argument that
-// "the thing agentop configures" and "the thing that then runs" are different kinds
-// of name and had come apart once — `bob` configured as "Bob" but ran as "IBM
-// Bob". That caller is the one this change removes, and with it the only instance;
-// both survivors passed the same value twice, so the split had become a claim with
-// nothing behind it and a parameter two callers could transpose undetectably.
-func comingSoon(display, binary string) string {
-	return "Persistent " + display + " configuration coming soon.  Until then, use " +
-		"`agentop exec -- " + binary + "` to run " + display + " under Cortex.\n"
-}
 
 // runConfigure dispatches on the agent name. Returns the process exit code.
 //
@@ -134,8 +113,9 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 	case "bobshell":
 		return runBobShell(args[1:], stdout, stderr)
 	case "codex":
-		fmt.Fprint(stdout, comingSoon("Codex", "codex"))
-		return 0
+		// Codex has no settings file and no background service, but loads a
+		// dotenv file of its own at startup: see cmd_codex.go.
+		return runCodex(args[1:], stdout, stderr)
 	case "opencode":
 		// OpenCode's background service keeps an environment of its own, which is what
 		// made it configurable at all: see cmd_opencode.go.

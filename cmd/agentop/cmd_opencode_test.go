@@ -1582,23 +1582,24 @@ func TestConfigure_OpenCodeReachesRunOpenCode(t *testing.T) {
 // configure's own usage names the new command and no longer sends OpenCode users to exec.
 func TestConfigureUsage_OpenCodePersists(t *testing.T) {
 	if want := "  agentop configure opencode enable | disable [--yes] [--config PATH] [--opencode BIN]\n" +
-		"  agentop configure opencode status [--config PATH] [--opencode BIN]\n" +
-		"  agentop configure codex\n"; !strings.Contains(configureUsage, want) {
+		"  agentop configure opencode status [--config PATH] [--opencode BIN]\n"; !strings.Contains(configureUsage, want) {
 		t.Errorf("configureUsage lacks %q", want)
 	}
 	// The prose is wrapped, so it is compared with its whitespace collapsed.
 	prose := strings.Join(strings.Fields(configureUsage), " ")
 	for _, want := range []string{
 		`"agentop configure opencode --help"`,
-		"Four agents persist, by three different mechanisms.",
+		"Five agents persist, by four different mechanisms.",
 		"OpenCode's background service keeps an environment of its own, so its configuration goes there, through the opencode CLI.",
-		"Codex reads the process environment and nothing else",
 	} {
 		if !strings.Contains(prose, want) {
 			t.Errorf("configureUsage lacks %q", want)
 		}
 	}
-	for _, stale := range []string{`use "agentop exec -- opencode"`, "Codex and OpenCode read", "configure codex | opencode"} {
+	for _, stale := range []string{
+		`use "agentop exec -- opencode"`, "Codex and OpenCode read", "configure codex | opencode",
+		"Four agents persist, by three different mechanisms.", "Codex reads the process environment and nothing else",
+	} {
 		if strings.Contains(prose, stale) {
 			t.Errorf("configureUsage still says %q", stale)
 		}

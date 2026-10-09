@@ -47,45 +47,6 @@ func TestClaudeCodeUnknownAction_StillErrors(t *testing.T) {
 	}
 }
 
-// The agents Cortex can run but cannot yet configure persistently.
-//
-// Each case asserts the message names ITS OWN agent, in both the opening clause and
-// the exec command. That is the point of the table: the change request that introduced
-// these messages carried a copy-paste slip in two of the three ("Persistent Bob
-// configuration" under codex, "run Codex" under opencode), and a per-agent assertion
-// is what catches that class of error. Bob and OpenCode have since grown real
-// implementations and left this table — see TestConfigure_BobShellReachesTheSameLogic
-// and TestConfigure_OpenCodeReachesRunOpenCode.
-func TestConfigure_ComingSoonAgents(t *testing.T) {
-	for _, tc := range []struct{ agent, display, product string }{
-		{"codex", "Codex", "Codex"},
-	} {
-		t.Run(tc.agent, func(t *testing.T) {
-			var out, errb bytes.Buffer
-			// Exit 0: printing the guidance is the whole job, and it succeeded.
-			if code := runConfigure([]string{tc.agent}, &out, &errb); code != 0 {
-				t.Errorf("exit = %d, want 0", code)
-			}
-			got := out.String()
-			if want := "Persistent " + tc.display + " configuration coming soon."; !strings.Contains(got, want) {
-				t.Errorf("missing %q:\n%s", want, got)
-			}
-			// Backticks included: they are part of the message, and losing them is the
-			// silent half of a rewrite.
-			if want := "`agentop exec -- " + tc.agent + "`"; !strings.Contains(got, want) {
-				t.Errorf("missing %q:\n%s", want, got)
-			}
-			if want := "to run " + tc.product + " under Cortex."; !strings.Contains(got, want) {
-				t.Errorf("missing %q:\n%s", want, got)
-			}
-			// An answer on stderr cannot be piped.
-			if errb.Len() != 0 {
-				t.Errorf("stderr not empty: %q", errb.String())
-			}
-		})
-	}
-}
-
 // `configure claude-code` must be an alternate spelling, not a reimplementation.
 //
 // Asserted as equality against the old spelling rather than against a hardcoded
@@ -261,36 +222,5 @@ func TestConfigure_BobAndBobShellAreDifferentAgents(t *testing.T) {
 	var aliasOut, aliasErr bytes.Buffer
 	if code := runConfigure([]string{"bobshell", "status", "--settings", settings}, &aliasOut, &aliasErr); code != 2 {
 		t.Errorf("bobshell accepted bob's --settings: exit = %d, want 2", code)
-	}
-}
-
-// comingSoon's two parameters land in three distinct places.
-//
-// The table above cannot show this: the agent left in it passes a display name that
-// matches its binary but for case, so a body that dropped one and reused the other
-// would satisfy every assertion there. Two deliberately dissimilar values
-// here, so each slot is pinned by a string that can only have come from its own
-// parameter.
-//
-// display is asserted TWICE because it fills two slots — the opening sentence and
-// the closing clause. That second assertion is what the removed third parameter
-// used to cover: with both callers passing the same value twice, the parameter was
-// transposable without any test noticing, so it was dropped and the clause it fed
-// now reads display directly. Losing either occurrence still fails here.
-func TestComingSoonPlacesEachNameInItsOwnSlot(t *testing.T) {
-	got := comingSoon("DisplayName", "binaryname")
-
-	for _, want := range []string{
-		// display, in the opening sentence.
-		"Persistent DisplayName configuration coming soon.",
-		// binary: what the user types, in backticks. The backticks are asserted
-		// because losing them is the silent half of a rewrite.
-		"`agentop exec -- binaryname`",
-		// display again, in the closing clause.
-		"to run DisplayName under Cortex.",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q:\n%s", want, got)
-		}
 	}
 }
