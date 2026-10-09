@@ -2,8 +2,24 @@
   "snapshots": [
     {
       "date": "2026-10-09",
-      "taken_at": "2026-10-09T18:31:08Z",
+      "taken_at": "2026-10-09T22:14:35Z",
       "smoke_runs": [
+        {
+          "created_at": "2026-10-09T22:08:04Z",
+          "id": 37997518851
+        },
+        {
+          "created_at": "2026-10-09T20:38:46Z",
+          "id": 37988366356
+        },
+        {
+          "created_at": "2026-10-09T19:25:46Z",
+          "id": 37980159047
+        },
+        {
+          "created_at": "2026-10-09T18:35:33Z",
+          "id": 37974348700
+        },
         {
           "created_at": "2026-10-09T17:16:00Z",
           "id": 37965040117
@@ -209,7 +225,7 @@
           "id": 37074325861
         }
       ],
-      "smoke_runs_total_count": 71,
+      "smoke_runs_total_count": 76,
       "latest_release": "v0.8.1",
       "releases": [
         {
@@ -255,9 +271,9 @@
           "platforms": {
             "darwin_amd64": 0,
             "darwin_arm64": 31,
-            "linux_amd64": 112,
+            "linux_amd64": 120,
             "linux_arm64": 0,
-            "checksums": 71
+            "checksums": 75
           }
         },
         {
@@ -756,9 +772,9 @@
       "totals": {
         "darwin_amd64": 122,
         "darwin_arm64": 440,
-        "linux_amd64": 242,
+        "linux_amd64": 250,
         "linux_arm64": 123,
-        "checksums": 242,
+        "checksums": 246,
         "other": 79
       }
     }
