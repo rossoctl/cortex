@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,6 +300,156 @@ func TestCodexStatus_ReportsSetAndUnset(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "enabled in "+envPath) {
 		t.Errorf("status does not report enabled:\n%s", out.String())
+	}
+}
+
+// A bridge that is off means Cortex terminates no TLS, so there is nothing for Codex to
+// trust and every https request would fail verification. enable must refuse before it
+// writes anything, as claude-code's and OpenCode's do.
+//
+// codexWanted's OTHER refusal — a bridge with no ca_dir — has no test because it cannot
+// be reached through a config that loads: config.Validate rejects
+// "tls_bridge.mode=enabled requires ca_dir", and a bridge that is absent or disabled is
+// caught by the check above it. It stays as defence against a caller that builds a
+// Config in memory.
+func TestCodexEnable_RefusesADisabledBridge(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := strings.Replace(string(body), "mode: enabled", "mode: disabled", 1)
+	if err := os.WriteFile(cfgPath, []byte(off), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (refusal)", code)
+	}
+	if want := "agentop: " + errBridgeDisabled(cfgPath).Error() + "\n"; errb.String() != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", errb.String(), want)
+	}
+	// Refused before any write: the file it would have created must not exist.
+	if _, serr := os.Stat(envPath); !os.IsNotExist(serr) {
+		t.Errorf("a refused enable created %s", envPath)
+	}
+}
+
+// Declining at the prompt changes nothing and exits 3 — distinct from 1, so a caller can
+// tell a refusal (a normal outcome) from a failure. Both verbs prompt, so both are pinned.
+func TestCodexDeclining(t *testing.T) {
+	// codexConfirm is a var precisely so a test can answer it; `go test` inherits the
+	// terminal it was launched from, so an unstubbed prompt would block on a human.
+	declineAll := func(t *testing.T) *int {
+		t.Helper()
+		prompts := 0
+		prev := codexConfirm
+		t.Cleanup(func() { codexConfirm = prev })
+		codexConfirm = func(io.Writer) bool { prompts++; return false }
+		return &prompts
+	}
+
+	t.Run("enable", func(t *testing.T) {
+		envPath, cfgPath := codexFixture(t, "")
+		statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+		prompts := declineAll(t)
+
+		var out, errb bytes.Buffer
+		if code := codexEnable(envPath, cfgPath, statePath, false, &out, &errb); code != exitDeclined {
+			t.Errorf("exit = %d, want %d", code, exitDeclined)
+		}
+		if !strings.HasSuffix(out.String(), "Not changed.\n") {
+			t.Errorf("stdout = %q, want it to end with Not changed.", out.String())
+		}
+		if *prompts != 1 {
+			t.Errorf("prompted %d times, want once", *prompts)
+		}
+		if _, serr := os.Stat(envPath); !os.IsNotExist(serr) {
+			t.Errorf("a declined enable wrote %s", envPath)
+		}
+		if _, serr := os.Stat(statePath); !os.IsNotExist(serr) {
+			t.Error("a declined enable recorded state")
+		}
+	})
+
+	t.Run("disable", func(t *testing.T) {
+		envPath, cfgPath := codexFixture(t, "")
+		statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+
+		var enOut, enErr bytes.Buffer
+		if code := codexEnable(envPath, cfgPath, statePath, true, &enOut, &enErr); code != 0 {
+			t.Fatalf("enable: exit %d: %s", code, enErr.String())
+		}
+		before, err := os.ReadFile(envPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompts := declineAll(t)
+
+		var out, errb bytes.Buffer
+		if code := codexDisable(envPath, statePath, false, &out, &errb); code != exitDeclined {
+			t.Errorf("exit = %d, want %d", code, exitDeclined)
+		}
+		if !strings.HasSuffix(out.String(), "Not changed.\n") {
+			t.Errorf("stdout = %q, want it to end with Not changed.", out.String())
+		}
+		if *prompts != 1 {
+			t.Errorf("prompted %d times, want once", *prompts)
+		}
+		after, err := os.ReadFile(envPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Errorf("a declined disable changed the file:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		if _, serr := os.Stat(statePath); serr != nil {
+			t.Errorf("a declined disable removed the record: %v", serr)
+		}
+	})
+}
+
+// Usage errors and the stdout/stderr split they turn on: an explicit --help is a successful
+// answer (stdout, 0), anything malformed is an error (stderr, 2).
+//
+// Every case here returns before runCodex resolves a home directory, which is what keeps
+// the real ~/.codex/.env out of reach. HOME is pointed at a temp dir anyway, so a case
+// added later that does reach the dispatch cannot touch the real file either.
+func TestCodex_Usage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		code     int
+		onStdout bool
+	}{
+		{name: "no args", args: nil, code: 2},
+		{name: "--help", args: []string{"--help"}, code: 0, onStdout: true},
+		{name: "-h", args: []string{"-h"}, code: 0, onStdout: true},
+		{name: "help after the action", args: []string{"status", "--help"}, code: 0, onStdout: true},
+		{name: "unknown action", args: []string{"enabel"}, code: 2},
+		// status writes nothing, so there is nothing for --yes to skip; registering it
+		// there would be a flag that parses and does nothing.
+		{name: "status --yes", args: []string{"status", "--yes"}, code: 2},
+		{name: "a stray argument", args: []string{"enable", "now"}, code: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			code := runCodex(tc.args, &out, &errb)
+			if code != tc.code {
+				t.Errorf("exit %d, want %d; stderr %q", code, tc.code, errb.String())
+			}
+			if got := strings.Contains(out.String(), "agentop configure codex —"); got != tc.onStdout {
+				t.Errorf("usage on stdout = %v, want %v:\n%s", got, tc.onStdout, out.String())
+			}
+			// An unknown action must say so rather than only print usage, so a typo
+			// names itself.
+			if tc.name == "unknown action" && !strings.Contains(errb.String(), "unknown codex action") {
+				t.Errorf("stderr does not report the unknown action: %q", errb.String())
+			}
+		})
 	}
 }
 
