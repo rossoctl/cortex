@@ -31,7 +31,10 @@ lines setup added, unless other tools in ~/.local/bin still need them; and
 removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
 stays unless --purge. What to remove is read from disk, not from a record of
 the install. A removal that fails is reported with its fix and the rest still
-run, but ~/.cortex then stays; the end lists what was left behind.
+run, but ~/.cortex then stays; the end lists what was left behind. ~/.cortex also
+stays when a setting left in place still points into it — a CA path changed since
+Cortex set it, say — because deleting it would leave that tool trusting a file
+that is gone.
 
   --yes, -y   do not ask; needed when there is no terminal
   --purge     delete ~/.cortex too: config, CA, logs, usage and session history
@@ -55,10 +58,17 @@ type removal struct {
 	dropsAgentop bool   // it removes agentop, so a fix before it cannot use agentop
 	unlessFailed bool   // skipped, and left behind, once a removal before it has failed
 	keep         *kept  // set on a row that removes nothing: it has no consent row and no run
+	// needsCortexDir is why --purge must keep ~/.cortex: what this removal leaves
+	// behind still points into it, as a phrase for the kept row's "why". Empty when
+	// nothing does. Decided at plan time, with the rest of this list, so the consent
+	// row never offers to delete a directory the run then keeps.
+	needsCortexDir string
 }
 
 // kept is a thing uninstall leaves on purpose, and why, as it leaves ~/.cortex
 // without --purge: it is not left behind, and does not change the exit status.
+// why is the whole clause after "Kept: <what>: ", so a row can give its own
+// reason rather than one phrasing having to fit every keeper.
 type kept struct{ what, why string }
 
 // remedy finishes by hand what a removal could not: with agentop, which puts
@@ -228,7 +238,7 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 	ui.Consent(items)
 	ui.Blank()
 	for _, k := range kepts {
-		ui.Faint("Kept: " + k.what + ", which other tools need: " + k.why)
+		ui.Faint("Kept: " + k.what + ": " + k.why)
 	}
 	if keeps {
 		ui.Faint("Kept: " + dir + " (config, CA, logs, usage and session history) — add --purge to delete it")
@@ -369,11 +379,24 @@ func planUninstall(env *setupEnv, opts uninstallOptions) []removal {
 		rs = append(rs, r)
 	}
 	if opts.purge {
-		if r, ok := planPurge(env); ok {
+		if r, ok := planPurge(env, cortexDirNeededBy(rs)); ok {
 			rs = append(rs, r)
 		}
 	}
 	return rs
+}
+
+// cortexDirNeededBy is why --purge must keep ~/.cortex, from the removals planned
+// before it: the reasons each one gives for what it leaves pointing into the
+// directory, in their order. Empty when none does, which is the usual answer.
+func cortexDirNeededBy(rs []removal) []string {
+	var why []string
+	for _, r := range rs {
+		if r.needsCortexDir != "" {
+			why = append(why, r.needsCortexDir)
+		}
+	}
+	return why
 }
 
 // planUnrouteClaudeCode is a removal for each settings file Cortex routed: the
@@ -424,28 +447,30 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 	// disable leaves them: they are this row's "Left behind" rather than its ✗.
 	leftNote := claudeCodeLeftNote(env, settings, pl.left)
 	return removal{
-		label: "unrouted",
-		item:  checklist.Item{Verb: "unroute", What: "Claude Code", Where: env.tilde(settings)},
-		fix:   disable,
+		label:          "unrouted",
+		item:           checklist.Item{Verb: "unroute", What: "Claude Code", Where: env.tilde(settings)},
+		fix:            disable,
+		needsCortexDir: claudeCodeNeedsCortexDir(env, settings, pl),
 		run: func(*checklist.Running) (string, []string, error) {
 			if planErr != nil {
 				return "", []string{env.tilde(settings)}, planErr
 			}
 			if len(pl.present) == 0 {
-				// Keys the file holds but whose values Cortex did not write: nothing
-				// of ours to take out, and the record stays — it is the only note of
-				// what they held before enable, and they are still set.
+				// Nothing of ours to take out: every managed key the file holds was
+				// changed after enable, or it holds none — the file deleted, say.
+				// applyClaudeCodeDisable touches nothing then, so the record it would
+				// have deleted goes here. Left, doctor reads Claude Code as routed for
+				// good, a left key or not: it answers from the record's existence.
+				if state != "" {
+					if err := removeIfExists(state); err != nil {
+						return "", []string{env.tilde(state)}, withFixes(err, manual("rm "+env.shellPath(state)))
+					}
+				}
 				if len(pl.left) > 0 {
 					return "left " + someKeys(pl.left) + " as they are" + where, leftNote, nil
 				}
-				// The record of a routing the file no longer holds, the file deleted
-				// say. applyClaudeCodeDisable touches nothing then, so the record goes
-				// here: left, doctor reads Claude Code as routed for good.
 				if state == "" {
 					return "nothing routed in " + env.tilde(settings), nil, nil
-				}
-				if err := removeIfExists(state); err != nil {
-					return "", []string{env.tilde(state)}, withFixes(err, manual("rm "+env.shellPath(state)))
 				}
 				return "removed Cortex's record (settings had nothing routed)", nil, nil
 			}
@@ -454,7 +479,14 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 			if err != nil {
 				return "", []string{env.tilde(settings)}, err
 			}
+			// Not "no longer goes through Cortex" when a key was left: a left
+			// HTTPS_PROXY still points somewhere, and the row would be claiming the
+			// opposite of the note beside it. Disable's wording, for the same reason
+			// it uses it — see claudeCodeDisable2's closing line.
 			detail := "Claude Code no longer goes through Cortex" + where
+			if len(pl.left) > 0 {
+				detail = "removed what Cortex set" + where
+			}
 			if len(restored) > 0 {
 				detail += " · restored your " + strings.Join(restored, ", ")
 			}
@@ -462,6 +494,50 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 			return detail + stderrNotes(env, errb.String()), leftNote, nil
 		},
 	}
+}
+
+// claudeCodeNeedsCortexDir is why --purge must keep ~/.cortex, given the keys
+// disable leaves in place: the ones whose value names something inside it. Empty
+// when none does — a left HTTPS_PROXY is a port, not a path, and holds the
+// directory back on its own account not at all.
+//
+// Five of the seven managed keys point at a file under ~/.cortex, and --purge
+// deletes that directory. A left key is one the user edited, so it stays set; with
+// the file gone it points at nothing, and that is quiet exactly where it is worst.
+// NODE_EXTRA_CA_CERTS with a missing file is ignored silently — every request
+// tunnels through unparsed and nothing looks wrong — while the four variables that
+// REPLACE the trust store make every TLS call fail, from tools that never meant to
+// talk to Cortex at all. So the directory stays, and the row names what is holding
+// it.
+//
+// Decided from the plan, which is read before any removal runs, so the consent row
+// for --purge is never offered and then declined.
+func claudeCodeNeedsCortexDir(env *setupEnv, settings string, pl claudeCodeDisablePlan) string {
+	var keys []string
+	for _, k := range pl.left {
+		if pathUnder(env.cortexDir, pl.env[k]) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	return someKeys(keys) + " in " + env.tilde(settings) + " still points into it"
+}
+
+// pathUnder reports whether p names dir or something inside it. Lexical, on
+// cleaned paths: the values it is given are the ones enable wrote, which are
+// absolute by construction, so a relative one is somebody's edit to a form we
+// cannot resolve from here and is not claimed to be under anything.
+func pathUnder(dir, p string) bool {
+	if dir == "" || p == "" || !filepath.IsAbs(p) || !filepath.IsAbs(dir) {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(p))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // claudeCodeLeftNote is uninstall's "Left behind" line for the keys disable did not
@@ -822,7 +898,8 @@ func planRemovePATH(env *setupEnv) []removal {
 		if len(others) > 0 {
 			rs = append(rs, removal{label: "PATH", keep: &kept{
 				what: "the PATH lines in " + env.tilde(prof),
-				why:  env.tilde(env.binDir) + " also holds " + strings.Join(others, ", "),
+				why: "other tools need them, as " + env.tilde(env.binDir) + " also holds " +
+					strings.Join(others, ", "),
 			}})
 			continue
 		}
@@ -943,11 +1020,26 @@ func planRemoveBinaries(env *setupEnv) (removal, bool) {
 
 // planPurge deletes ~/.cortex, under --purge only, and last: the removals before
 // it were planned from what it held.
-func planPurge(env *setupEnv) (removal, bool) {
+//
+// needed is why it must not: something a removal before it leaves behind still
+// points into the directory, a managed key disable left in place whose value is a
+// file under it. Then the row keeps the directory and says which — it is not "left
+// behind", since nothing failed and deleting it is the thing that would do harm,
+// so the exit status is the left key's to set. A failed removal keeps the directory
+// the same way, through unlessFailed, but that is a different signal: an error, not
+// a plan, so it cannot be known this early. See claudeCodeNeedsCortexDir.
+func planPurge(env *setupEnv, needed []string) (removal, bool) {
 	if _, err := os.Lstat(env.cortexDir); err != nil {
 		return removal{}, false
 	}
 	dir := env.tilde(env.cortexDir)
+	if len(needed) > 0 {
+		return removal{label: "purged", keep: &kept{
+			what: dir,
+			why: strings.Join(needed, ", and ") + " — delete it once those keys are gone: rm -rf " +
+				env.shellPath(env.cortexDir),
+		}}, true
+	}
 	return removal{
 		label:        "purged",
 		item:         checklist.Item{Verb: "delete", What: dir, Where: "config, CA, logs, usage and session history"},

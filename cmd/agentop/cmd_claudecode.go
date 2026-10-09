@@ -115,7 +115,9 @@ func readState(path string) (*managedState, error) {
 // latest enable — see clientstate.State for the two opposite freshness rules. A
 // re-enable after a port or ca_dir change therefore keeps the recorded Prior and
 // refreshes Written. An unchanged Written is left alone entirely, so the re-run
-// install.sh --claude-code makes on every upgrade still does not touch the file.
+// install.sh --claude-code makes on every upgrade still does not touch the file —
+// which is what lets setup's routed step top the record up unconditionally on its
+// already-routed path without writing on every upgrade.
 func writeState(path string, st managedState) error {
 	// An unreadable existing record is not a reason to overwrite it: if it can be
 	// repaired by hand it is still the only copy of what the user had.
@@ -484,9 +486,15 @@ func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 
 // topUpWritten records what enable WOULD set on an install that is already enabled,
 // so disable's ownership check works on a machine configured before Written existed.
-// Most installs never reach applyClaudeCodeEnable again: `install.sh --claude-code`
-// re-runs on every upgrade and, with nothing to change, returns at "Already enabled"
-// — so without this the fix would not reach the people who already have the bug.
+// Most installs never reach applyClaudeCodeEnable again — an upgrade finds nothing
+// to change — so without this the fix would not reach the people who already have
+// the bug.
+//
+// Both no-change paths call it, and they are different commands: this command's
+// "Already enabled" return, and setup's routed step, which is what `install.sh
+// --claude-code` actually runs on every upgrade (claudeCodeStep.already). The
+// second is the one that matters for reach; the first alone would have fixed
+// almost nobody.
 //
 // It never CREATES a record. The file already holds Cortex's values here, so a Prior
 // computed from them would be Cortex's own, and disable would "restore" those instead
@@ -673,10 +681,18 @@ func changedSinceEnable(st *managedState, key, cur string) bool {
 // first. Going on would create a settings.json where there was none, rewrite one
 // that holds none of the keys (and back it up), and delete the record.
 //
-// The record is deleted only when nothing was left behind. A left key is still in
-// play, and the record is the only machine-readable note of what it held before
-// enable — deleting it would strand the one value that could still be restored, and
-// would also make doctor read Claude Code as unrouted while a managed key remains.
+// The record is deleted whenever this ran, left keys or not, because the record IS
+// how the rest of agentop tells that Cortex routed Claude Code: claudeCodeRouted
+// answers "routed" from its mere existence, so a record outliving the values it
+// describes leaves `agentop doctor` reporting a routing that is gone and offering a
+// fix that puts it back.
+//
+// Keeping it for a left key's sake would buy nothing against that. enable refuses
+// any value that is neither the one it is about to write nor Cortex-shaped
+// (isCortexValue), so a managed key's recorded Prior is nil, "1", or a value of
+// ours — never a setting of the user's that a later restore could hand back. The
+// left key's own value is the one worth keeping, and it is still in settings.json,
+// untouched, which is the whole point of leaving it.
 func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if len(pl.present) == 0 {
 		return nil, nil
@@ -717,7 +733,7 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	if err := writeSettings(pl.settingsPath, pl.doc); err != nil {
 		return nil, err
 	}
-	if statePath != "" && len(pl.left) == 0 {
+	if statePath != "" {
 		_ = os.Remove(statePath)
 	}
 	return restored, nil
@@ -742,6 +758,28 @@ func printClaudeCodeLeft(pl claudeCodeDisablePlan, stdout io.Writer) {
 		pl.settingsPath)
 }
 
+// removeDisabledRecord deletes the ownership record on the disable paths that
+// never reach applyClaudeCodeDisable, because the file holds none of Cortex's own
+// values: all of its managed keys were changed after enable, or it has none at all.
+// Cortex does not route it either way, and the record is what says it does —
+// claudeCodeRouted answers from the record's existence alone, so leaving it makes
+// `agentop doctor` report a routing that is gone and offer a fix that restores it.
+//
+// Only a record naming THIS settings file is ours to delete: one naming another is
+// a different enable's, and `disable --settings` on a project file must not take it
+// away. planClaudeCodeDisable has already applied that rule — pl.st is nil unless
+// the record names this file — so a nil st means there is nothing here to remove.
+// A record that could not be read is left too, for the reason writeState gives.
+func removeDisabledRecord(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) {
+	if statePath == "" || pl.st == nil {
+		return
+	}
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "agentop: could not remove %s (%v); `agentop doctor` will go on\n"+
+			"  reporting Claude Code as routed through Cortex. Delete it by hand.\n", statePath, err)
+	}
+}
+
 func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
 	pl, err := planClaudeCodeDisable(settingsPath, statePath)
 	if err != nil {
@@ -749,6 +787,12 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 		return 1
 	}
 	if len(pl.present) == 0 {
+		// applyClaudeCodeDisable is not reached on either of these, so the record it
+		// would have deleted goes here instead: with none of Cortex's own values left
+		// in the file, Cortex does not route it, and a record saying otherwise is what
+		// doctor reads. See removeDisabledRecord for why the record must not outlive
+		// them.
+		removeDisabledRecord(pl, statePath, stderr)
 		if len(pl.left) == 0 {
 			fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", settingsPath)
 			return 0

@@ -144,6 +144,73 @@ func TestSetupReRunIsOneLine(t *testing.T) {
 	}
 }
 
+// `install.sh --claude-code` is all the already-enabled population ever runs, and
+// it hands off to `agentop setup --claude-code`, never to `agentop configure
+// claude-code enable`. So the ownership record has to be topped up from setup, on
+// the path where the routed step finds nothing to change — and it has two, since a
+// run with nothing at all to change returns before applySteps is reached.
+func TestSetupTopsUpAPreWrittenClaudeCodeRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// run is the re-run, after the record has been aged. It must leave the
+		// routed step with nothing to change.
+		run func(t *testing.T, sc setupScene) (int, string)
+		// want is a line only that path prints, so a test passing on the wrong one
+		// is not possible.
+		want string
+	}{
+		{
+			// Every step done: runSetup's own all-done branch, which never calls
+			// applySteps. This is a re-run of the installer at the same version.
+			name: "nothing at all to change",
+			run: func(t *testing.T, sc setupScene) (int, string) {
+				return sc.run(t, "--from", sc.stage, "--yes", "--claude-code")
+			},
+			want: "  cortex v9.9.9 is installed and healthy.\n",
+		},
+		{
+			// Another step has work, so applySteps runs and draws the routed step's
+			// "·" line: an upgrade, which is what the installer usually is.
+			name: "another step has work",
+			run: func(t *testing.T, sc setupScene) (int, string) {
+				writeHomeFile(t, filepath.Join(sc.home, ".zshrc"), "# no PATH lines\n")
+				return sc.run(t, "--from", sc.stage, "--yes", "--claude-code")
+			},
+			want: markLine("·", "routed") + "Claude Code already routed\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := newSetupScene(t, ok200)
+			if code, out := sc.run(t, "--from", sc.stage, "--yes", "--claude-code"); code != 0 {
+				t.Fatalf("first run: %d\n%s", code, out)
+			}
+			state := filepath.Join(sc.home, stateRel)
+			aged := ageRecord(t, state)
+
+			code, out := tc.run(t, sc)
+			if code != 0 {
+				t.Fatalf("re-run exit %d:\n%s", code, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("output lacks %q, so this is not the path under test:\n%s", tc.want, out)
+			}
+			st, err := readState(state)
+			if err != nil || st == nil {
+				t.Fatalf("no record after the re-run (err %v)", err)
+			}
+			vals := readEnv(t, filepath.Join(sc.home, settingsRel))
+			for _, k := range managedKeys {
+				if got, recorded := st.Written[k]; !recorded || got != vals[k] {
+					t.Errorf("written[%s] = %q (recorded %v), want the file's %q", k, got, recorded, vals[k])
+				}
+			}
+			if len(st.Prior) != len(aged.Prior) {
+				t.Errorf("prior is %v, want the %v the aged record held", st.Prior, aged.Prior)
+			}
+		})
+	}
+}
+
 func TestSetupWithNoTerminalChangesNothing(t *testing.T) {
 	sc := newSetupScene(t, ok200)
 	stubTerminal(t, false, "")

@@ -260,16 +260,22 @@ func TestClaudeCodeDisable_LeavesAKeyChangedSinceEnable(t *testing.T) {
 			t.Errorf("output does not mention %q:\n%s", want, out.String())
 		}
 	}
-	// And the record stays: it is the only note of what that key held before
-	// enable, and the key is still set.
-	if _, err := os.Stat(state); err != nil {
-		t.Errorf("the record was deleted with a managed key still in the file: %v", err)
+	// And the record goes, left key or not: its existence is what tells the rest of
+	// agentop that Cortex routes Claude Code, so a record outliving the values it
+	// describes leaves `agentop doctor` offering to put the routing back. Nothing is
+	// lost with it — the left key's own value is in settings.json, untouched, and the
+	// Prior it recorded can only be a value of ours, which enable's refusal ensures.
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(state)
+		t.Errorf("the record survived a disable (err %v): %s", err, body)
 	}
 }
 
 // Every managed key edited: there is nothing of ours left to take out, so disable
-// must change nothing at all rather than write the file to no effect.
-func TestClaudeCodeDisable_EveryKeyChangedTouchesNothing(t *testing.T) {
+// must leave settings.json exactly as it found it rather than write it to no
+// effect. The record still goes — Cortex routes nothing here now, and the record is
+// what says it does.
+func TestClaudeCodeDisable_EveryKeyChangedLeavesSettingsAlone(t *testing.T) {
 	settings, cfg := fixture(t, settingsWithSecret)
 	state := filepath.Join(t.TempDir(), "state.json")
 	var out, errb bytes.Buffer
@@ -285,10 +291,6 @@ func TestClaudeCodeDisable_EveryKeyChangedTouchesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateBefore, err := os.ReadFile(state)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	out.Reset()
 	errb.Reset()
@@ -298,8 +300,12 @@ func TestClaudeCodeDisable_EveryKeyChangedTouchesNothing(t *testing.T) {
 	if after, _ := os.ReadFile(settings); !bytes.Equal(before, after) {
 		t.Errorf("settings.json changed:\nwas  %s\nnow  %s", before, after)
 	}
-	if after, err := os.ReadFile(state); err != nil || !bytes.Equal(stateBefore, after) {
-		t.Errorf("the record changed: %q (%v)", after, err)
+	// applyClaudeCodeDisable is never reached on this path, so the record's removal
+	// is claudeCodeDisable2's own: without it doctor reads Claude Code as routed
+	// through a Cortex that none of these keys point at any more.
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(state)
+		t.Errorf("the record survived a disable (err %v): %s", err, body)
 	}
 	if !strings.Contains(out.String(), "Nothing to remove") {
 		t.Errorf("output does not say there was nothing to remove:\n%s", out.String())

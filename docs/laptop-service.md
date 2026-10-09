@@ -782,9 +782,12 @@ and not at all if a removal before it failed; this list is only for when that bi
 already gone.
 
 Both of them skip a key whose value you have **changed since enable set it** — that
-edit is yours to keep or drop — and say which under *Left behind*. Those are the keys
-to check against the hazard above before you purge: if what you changed one to still
-points inside `~/.cortex`, remove it by hand here too.
+edit is yours to keep or drop — and say which under *Left behind*. `--purge` then keeps
+`~/.cortex` rather than walking into the hazard above: a key it left behind whose value
+still names a file inside the directory holds the whole directory back, and the `purged`
+row says which key. Delete it yourself once that key is gone. Doing the removal by hand,
+as this section does, there is nothing to do that for you — check the keys you changed
+before you `rm -rf`.
 
 If you configured OpenCode, its background service's environment holds the same kind of
 variables. Remove the ones that point at Cortex with the `opencode` CLI, as
