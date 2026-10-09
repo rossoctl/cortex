@@ -212,6 +212,43 @@ func TestParseUserAgent_IBMBobIDEShellIsNotClaimed(t *testing.T) {
 	}
 }
 
+// Codex's two product tokens both fold to one canonical name, and its telemetry exporter
+// stays unrecognised. All four strings captured live from Codex 0.160.1 on macOS.
+//
+// The two codex_exec forms differ only by a trailing "(codex_exec; <version>)" comment, so
+// this pins that the comment changes nothing: the token is first in both, which is the
+// parser's first rule, and the version comes off that token rather than out of the comment.
+func TestParseUserAgent_Codex(t *testing.T) {
+	for _, tc := range []struct{ ua, name, version string }{
+		{"codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown (codex_exec; 0.160.1)", "codex", "0.160.1"},
+		{"codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown", "codex", "0.160.1"},
+		// Codex's MCP client: a different token, the same agent, so the same row.
+		{"codex-mcp-client/0.160.1", "codex", "0.160.1"},
+		// Its telemetry exporter names the generic Rust OTLP crate, not Codex. Claiming it
+		// would file every Rust program using that crate under Codex's name.
+		{"OTel-OTLP-Exporter-Rust/0.31.0", "", ""},
+	} {
+		got := ParseUserAgent(tc.ua)
+		if got == nil {
+			t.Fatalf("ParseUserAgent(%q) = nil, want a client", tc.ua)
+		}
+		if got.Name != tc.name || got.Version != tc.version {
+			t.Errorf("ParseUserAgent(%q) = {Name: %q, Version: %q}, want {%q, %q}",
+				tc.ua, got.Name, got.Version, tc.name, tc.version)
+		}
+	}
+}
+
+// Session attribution follows the recognised name rather than the comment scan for Codex:
+// AffinityName short-circuits on Name, so the "(codex_exec; 0.160.1)" comment — whose token
+// is the map KEY and not the canonical name — never has to match for this to work.
+func TestAffinityName_CodexUsesTheRecognisedName(t *testing.T) {
+	c := ParseUserAgent("codex_exec/0.160.1 (Mac OS 26.3.0; arm64) unknown (codex_exec; 0.160.1)")
+	if got := c.AffinityName(); got != "codex" {
+		t.Errorf("AffinityName() = %q, want codex", got)
+	}
+}
+
 // IsKnownAgent answers for canonical names only: what AgentName folds a recognised Label to.
 func TestIsKnownAgent(t *testing.T) {
 	for _, tc := range []struct {
@@ -222,9 +259,12 @@ func TestIsKnownAgent(t *testing.T) {
 		{"bob-shell", true},
 		{"ibm-bob", true},
 		{"opencode", true},
+		{"codex", true},
 		// A product token is not a canonical name: claude-cli is how Claude Code is RECOGNISED.
 		{"claude-cli", false},
 		{"bob", false},
+		{"codex_exec", false},
+		{"codex-mcp-client", false},
 		// Versioned labels have to be folded first; the godoc says so.
 		{"claude-code/2.1.285", false},
 		{"curl", false},
