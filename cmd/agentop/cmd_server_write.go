@@ -79,9 +79,8 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	keyStdin := flags.Bool("key-stdin", false, "read the API key from stdin instead of a prompt")
 	yes := flags.Bool("yes", false, "replace an existing server without asking")
 	var models routerconfig.Server
-	flags.StringVar(&models.Opus, "opus", "", "the server's model for Claude Code's opus requests")
-	flags.StringVar(&models.Sonnet, "sonnet", "", "the server's model for Claude Code's sonnet requests")
-	flags.StringVar(&models.Haiku, "haiku", "", "the server's model for Claude Code's haiku requests")
+	flags.StringVar(&models.Main, "main", "", "a word naming the server's model for an agent's main work, such as opus or glm")
+	flags.StringVar(&models.Helper, "helper", "", "a word naming the server's model for an agent's helper calls, such as haiku")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
@@ -102,9 +101,9 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
-	// Before anything is read or asked, like the name and URL: a typo in a model
+	// Before anything is read or asked, like the name and URL: a missing word
 	// should not cost the user a pasted key.
-	if err := checkModelFlags(name, models); err != nil {
+	if err := checkWordFlags(models); err != nil {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
@@ -138,7 +137,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if replacing {
 		// The whole server is replaced, models included, so the question says what it
 		// will map to: re-adding it without the flags drops its mapping.
-		fmt.Fprintf(stdout, "%s is already configured (%s). Replacing it gives it this URL, key and model mapping (%s), "+
+		fmt.Fprintf(stdout, "%s is already configured (%s). Replacing it gives it this URL, key and models (%s), "+
 			"and the sessions on it use them from their next request.\n", name, servers.Host(old), servers.Mapping(models))
 		if !*yes && !serverConfirm(stdout) {
 			return exitDeclined
@@ -164,12 +163,25 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			"cross the network decrypted, key and prompts included.\n", ep.URL())
 	}
 
-	pairs := []string{"url", ep.URL(), "key", key}
-	if models.Mapped() {
-		for _, f := range routerconfig.Families {
-			pairs = append(pairs, f, models.ModelFor(f))
-		}
+	// The words are checked against the server's own list, read with the key just
+	// given, so a word naming none of its models is refused before it is written,
+	// and a wrong key or URL is caught here rather than on the first routed request.
+	models.URL, models.Key = ep.URL(), key
+	ids, err := serverModels(models)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server add: could not read %s's model list: %v. Check its URL and key.\n", name, err)
+		return 1
 	}
+	for _, w := range []struct{ flag, word string }{{"--main", models.Main}, {"--helper", models.Helper}} {
+		m := routerconfig.Resolve(w.word, ids)
+		if m == "" {
+			fmt.Fprintf(stderr, "agentop server add: %s %s names none of %s's models: %s\n", w.flag, w.word, name, strings.Join(ids, ", "))
+			return 1
+		}
+		fmt.Fprintf(stdout, "%s %s → %s\n", strings.TrimPrefix(w.flag, "--"), w.word, m)
+	}
+
+	pairs := []string{"url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"servers", name},
 		Value: edit.MapValue(pairs...), CreatePlugin: true}
 	done := "Added " + name + "."
@@ -186,15 +198,15 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	})
 }
 
-// checkModelFlags checks add's --opus, --sonnet and --haiku: all three or none,
-// as the router maps them, and no $, which config.Load would expand.
-func checkModelFlags(name string, models routerconfig.Server) error {
-	if err := routerconfig.CheckModels(name, models); err != nil {
-		return err
-	}
-	for _, f := range routerconfig.Families {
-		if strings.Contains(models.ModelFor(f), "$") {
-			return fmt.Errorf("--%s contains $, which Cortex reads as an environment variable when it loads the config", f)
+// checkWordFlags checks add's --main and --helper: both given, each a word the router
+// can match, and no $, which config.Load would expand.
+func checkWordFlags(models routerconfig.Server) error {
+	for _, w := range []struct{ flag, word string }{{"--main", models.Main}, {"--helper", models.Helper}} {
+		if err := routerconfig.CheckWord(w.word); err != nil {
+			return fmt.Errorf("%s %w", w.flag, err)
+		}
+		if strings.Contains(w.word, "$") {
+			return fmt.Errorf("%s contains $, which Cortex reads as an environment variable when it loads the config", w.flag)
 		}
 	}
 	return nil
@@ -269,24 +281,15 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	if statsURL != "" {
 		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
 	}
-	// WHICH OF THEM GET THE ERROR, NOT "EACH": the router denies a session pinned to name only
-	// on a request addressed to a server that is left, since that is the only request it still
-	// handles. One addressed to name's own host is no longer an inference server's request
-	// (skip/not_an_inference_server) and goes there untouched, the client's key and all. The
-	// count cannot tell the two apart — the summary says where a session's requests went, not
-	// where they were addressed — so the warning says what happens to each.
 	if n := runningOn(sessionsURL, c, name); n > 0 {
 		fmt.Fprintf(stderr, "agentop server remove: warning: %s last sent inference to %s. A session the proxy routed "+
-			"there gets an error asking for a new session from its next request to a server that is left, until %s is "+
-			"added back; a request addressed to %s's own host is no longer routed, and goes there with the agent's own "+
-			"key.\n", runningSessions(n), name, name, name)
+			"there gets an error asking for a new session, until %s is added back.\n", runningSessions(n), name, name)
 	}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"servers", name}}
 	return runServerWrite(stdout, stderr, path, statsURL, ch, writeReport{
 		done: "Removed " + name + ".",
-		live: fmt.Sprintf("A session the proxy routed to it now gets an error asking for a new session from its next "+
-			"request to a server that is left; a request addressed to %s's own host is no longer routed, and goes "+
-			"there with the agent's own key. Adding %s back routes them to it again.", name, name),
+		live: fmt.Sprintf("A session the proxy routed to it now gets an error asking for a new session. "+
+			"Adding %s back routes them to it again.", name),
 	})
 }
 

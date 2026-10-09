@@ -659,46 +659,52 @@ chooses which one an agent's **new** sessions use, through the
 [`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
 session stays on the server it started on, including one already running when its
 agent is first routed. Routing is opt-in per agent: until an agent is given
-a server, its traffic goes where the agent sends it.
+a server, its traffic goes where the agent sends it. Once it is given one, its
+inference goes to that server wherever the agent addressed it — Anthropic,
+OpenCode Zen, Bob's gateway, or another server — so the agent needs no setting of
+its own beyond going through Cortex.
 
 ```sh
-agentop server add ete https://ete-litellm.example.com   # asks for the key; it does not echo
-agentop server add glm https://glm-litellm.example.com \
-    --opus glm-5.3 --sonnet glm-5.3 --haiku glm-5.3       # its own model for each of Claude Code's families
-agentop server use glm --agent claude-code                # new claude-code sessions → glm
-agentop server                                            # the servers, and two checks
-agentop server reset --agent claude-code                  # stop routing claude-code
+agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
+agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
+agentop server use glm --agent opencode                   # new opencode sessions → glm
+agentop server                                            # the servers, their models, their agents
+agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it
 ```
 
 In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
 
-With Claude Code's `ANTHROPIC_BASE_URL` at `ete`, the listing after `use` reads:
+The listing after `use` reads:
 
 ```
-  ete   ete-litellm.example.com   uses Claude Code's names
-  glm   glm-litellm.example.com   all → glm-5.3              claude-code
-
-  ✓ Claude Code points at ete (~/.claude/settings.json)
-  ✓ Claude Code asks for Claude's own model names (~/.claude/settings.json)
+  ete   ete-litellm.example.com   main opus → aws/claude-opus-5-5 · helper haiku → aws/claude-haiku-4-5
+  glm   glm-litellm.example.com   main glm → rits/zai-org/glm-5-3 · helper nemotron → rits/nvidia/nemotron-3   opencode
 ```
 
-- **`add <name> <url>`** reads the key at a prompt that does not echo, or from
-  stdin with `--key-stdin`, which is refused when stdin is a terminal, where the key
-  would echo as typed. It is never an argument, so it never reaches shell
-  history. A name that exists is replaced only after a yes (`--yes` skips the
-  question), which is how a key is rotated; with no terminal to ask on, nothing is
-  written. A server on a host another server already has, on any port, is
-  refused. The first `add` creates the plugin's entry, last in the outbound
-  pipeline. A key or a model containing `$` is refused: the config loader would
-  read it as an environment variable.
-  For a server that does not serve Claude Code's model names, `--opus`,
-  `--sonnet` and `--haiku` name its model for each of Claude Code's families —
-  all three, or none; a partial set is refused before the key is asked for.
-  Replacing a server replaces its models too: re-adding it without the flags, to
-  rotate its key say, leaves it serving Claude Code's names, and the question
-  before replacing it says which mapping it will have.
+**Models.** A routed request goes with the model the agent asked for, so an agent
+keeps choosing its own models wherever the server serves them. Only when the
+server refuses the name is the
+request sent again, once and before the agent sees the refusal, with one of the
+server's own models: the one `--main` names for a request with tools, the agent's
+main work, and the one `--helper` names for a request without, such as a title.
+Each is a word, not a full name: the newest model on the server's list whose name
+contains it, so a newer model the server adds is used without an edit. The
+refusal is believed for an hour, and a session keeps the model it was given.
+
+- **`add <name> <url> --main <word> --helper <word>`** reads the key at a prompt
+  that does not echo, or from stdin with `--key-stdin`, which is refused when
+  stdin is a terminal, where the key would echo as typed. It is never an argument,
+  so it never reaches shell history. It then reads the server's model list with
+  that key and refuses a word that names none of its models, listing them, so a
+  wrong URL or key is caught here; it prints what each word names now. A name that
+  exists is replaced only after a yes (`--yes` skips the question), which is how a
+  key is rotated; with no terminal to ask on, nothing is written. A server on a
+  host another server already has, on any port, is refused. The first `add`
+  creates the plugin's entry, last in the outbound pipeline. A key or a word
+  containing `$` is refused: the config loader would read it as an environment
+  variable.
 - **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
   including an agent that has not run yet. **`reset --agent <agent>`** stops
   routing it. Either way a session already running stays where it is: its pin holds
@@ -706,34 +712,22 @@ With Claude Code's `ANTHROPIC_BASE_URL` at `ete`, the listing after `use` reads:
 - **`remove <name>`** refuses while an agent is routed to the server, and names
   the command that takes the agent off it; it also refuses the last server. A
   session that started on a removed server gets a 503 asking for a new session
-  until the server is added back. That holds while its requests are
-  addressed to a server that is left: one addressed to the removed server's own
-  host is not routed at all, and goes there with the agent's own key. So when
+  until the server is added back. So when
   sessions the proxy is running last sent their inference to the server, `remove`
-  warns how many, in those terms, before it goes ahead. It leaves
+  warns how many before it goes ahead. It leaves
   out the default and `pending:` buckets, which the router never pins.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
-  `http`), its model mapping and the agents routed to it, then checks
-  `~/.claude/settings.json`: that `ANTHROPIC_BASE_URL` names one of the servers,
-  without which nothing is routed, and that neither the `model` setting nor a
-  model variable names a model other than Claude's (see
-  [Switching inference servers](../../docs/agents/claude-code.md#switching-inference-servers)).
-  It reads that one file, so it cannot see a project's settings, a file passed
-  with `claude --settings`, or a variable set in the shell. When the router's entry
-  has `on_error: observe`, which records what it would route and routes nothing, or
-  `on_error: off`, which stops it running, the listing says so first, and `use` and
-  `add` say so too.
+  `http`), what its main and helper words name on its list now, read with its own
+  key, and the agents routed to it. A server whose list cannot be read shows its
+  words and why. When the router's entry has `on_error: observe`, which records
+  what it would route and routes nothing, or `on_error: off`, which stops it
+  running, the listing says so first, and `use` and `add` say so too.
 
-Two things the router needs that `agentop server` does not check. It routes only
-requests it can read: a plain `http` request sent through the proxy, or an `https`
-one the TLS bridge decrypts, which needs the bridge on and the port the agent
-connects to in `tls_bridge.ports`, 443 and 8443 unless set. An agent whose base URL
-is `https` on another port, such as `:4000`, reaches the proxy as an opaque
-`CONNECT` tunnel and is never routed, although the check above, which matches by
-host alone, shows ✓ for it; a server on such a port can still be where routed
-requests go. And a server is `scheme://host[:port]` only: a routed request keeps
-its own path, so an agent whose base URL has a path needs that same path on every
-server.
+The router routes only requests it can read: a plain `http` request sent through
+the proxy, or an `https` one the TLS bridge decrypts, which needs the bridge on
+and the port the agent connects to in `tls_bridge.ports`, 443 and 8443 unless set.
+An agent whose provider is `https` on another port, such as `:4000`, reaches the
+proxy as an opaque `CONNECT` tunnel and is never routed.
 
 Every change is written to `~/.cortex/config.yaml`, keeping its comments except
 those on the lines the change replaces or removes, every line of a removed block
@@ -1485,8 +1479,8 @@ belong to no one agent. A router under `on_error: observe` records what it would
 route and routes nothing, so it gets no column.
 
 `S` on an agent's row opens a picker over the pane, its cursor on what the agent has
-now: *its own choice (not routed)* first, then each server with its host and model
-mapping. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
+now: *its own choice (not routed)* first, then each server with its host and its
+main and helper words. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
 `Ctrl+C` closes it; choosing what the config file already holds writes nothing — the
 file decides, not where the cursor opened, since the route can change while the
 picker is up. The change is

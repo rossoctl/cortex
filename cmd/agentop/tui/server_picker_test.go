@@ -78,7 +78,7 @@ func TestServerPicker_OpensOnTheCurrentValue(t *testing.T) {
 	}
 	view := m.View()
 	for _, want := range []string{"New claude-code sessions use", ownChoiceEntry, "ete.example.com", "glm.example.com:8443",
-		"uses Claude Code's names", "[↵] choose", "[esc] cancel"} {
+		"main opus · helper haiku", "[↵] choose", "[esc] cancel"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("the picker does not show %q:\n%s", want, view)
 		}
@@ -696,8 +696,8 @@ func TestServerPicker_EnterOnTheEntryItOpenedOnWritesWhatChangedUnderneath(t *te
 // each is sanitised where it is drawn, as the SERVER cells are. The same for a mapping's model
 // names and for the errors a switch reports.
 func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
-	const raw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete"},` +
-		`"g\u001b]0;pwned\u0007lm":{"url":"https://glm.example.com:8443","key":"sk-glm","opus":"m\u001b[2Jx","sonnet":"s","haiku":"h"}},` +
+	const raw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete","main":"opus","helper":"haiku"},` +
+		`"g\u001b]0;pwned\u0007lm":{"url":"https://glm.example.com:8443","key":"sk-glm","main":"m\u001b[2Jx","helper":"h"}},` +
 		`"agents":{"claude-code":"ete"}}`
 	m := serverModel(t, newFakeProxy(t, false))
 	m.pipeline = routerPipeline(raw)

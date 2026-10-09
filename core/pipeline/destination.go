@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -119,6 +120,48 @@ func (c *Context) RedirectTarget() (scheme, host string, ok bool) {
 		return "", "", false
 	}
 	return c.redirectScheme, c.redirectHost, true
+}
+
+// SetRedirectPath sends a redirected request to path on its new host instead of the
+// path the client named. A redirect alone changes only where a request goes, and that
+// is enough between servers that take an API under the same path. A server that takes
+// it under another — /v1/chat/completions where the client named
+// /zen/v1/chat/completions — needs the path too, and this is how a routing plugin says
+// so.
+//
+// Accepted from OnRequest, from a plugin that declares WritesDestination, once a
+// Redirect has taken effect; refused otherwise, with nothing changed. Under on_error:
+// observe a Redirect moves nothing, so there is nothing to give a path to. path must
+// be absolute, with no query or fragment and no ".." segment; the client's query
+// string is kept. Errors quote no part of path.
+//
+// It sets Path, as Redirect sets Host, so the request's row names the path the bytes
+// went to, and the path the client named is kept in the modify/path_rewritten record.
+// The listener applies the copy RedirectPath reports.
+func (c *Context) SetRedirectPath(path string) error {
+	switch {
+	case c.inFinish:
+		return errors.New("pipeline: SetRedirectPath refused in OnFinish: the request has already been sent")
+	case c.currentPhase != InvocationPhaseRequest:
+		return fmt.Errorf("pipeline: SetRedirectPath refused in phase %q: it is accepted only from OnRequest", c.currentPhase)
+	case !c.currentMayRedirect:
+		return fmt.Errorf("pipeline: plugin %q called SetRedirectPath without declaring WritesDestination", c.currentPlugin)
+	case !c.redirected:
+		return errors.New("pipeline: SetRedirectPath refused: no Redirect has taken effect on this request")
+	case !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || slices.Contains(strings.Split(path, "/"), ".."):
+		return errors.New("pipeline: SetRedirectPath path must be absolute, with no query, fragment or \"..\" segment")
+	}
+	from := c.Path
+	c.redirectPath, c.Path = path, path
+	c.Record(Invocation{Action: ActionModify, Reason: "path_rewritten", Details: map[string]string{"from": from, "to": path}})
+	return nil
+}
+
+// RedirectPath is the path SetRedirectPath set, with ok only when one was set on a
+// request a Redirect moved. Listeners apply it with RedirectTarget, never the exported
+// Path, for the reason RedirectTarget gives.
+func (c *Context) RedirectPath() (string, bool) {
+	return c.redirectPath, c.redirected && c.redirectPath != ""
 }
 
 // RequestedHost is the host the client named when a redirect sent the request

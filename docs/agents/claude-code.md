@@ -129,48 +129,29 @@ configuration and without restarting anything. A running conversation stays on
 the server it started on, with the exceptions below.
 See [Choosing an inference server](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
 
-That one configuration is:
+Claude Code needs no setting of its own for this beyond going through Cortex.
+Its inference is captured wherever `ANTHROPIC_BASE_URL` points — Anthropic
+itself, or a gateway — and sent to its server. An `https` base URL is captured
+only when the TLS bridge decrypts it, which needs its port in `tls_bridge.ports`,
+443 and 8443 unless set: on another port, such as `:4000`, the request stays an
+opaque `CONNECT` tunnel and is not routed. An `http` base URL reaches the router
+only if Claude Code sends it through the proxy, and `agentop configure claude-code
+enable` sets `HTTPS_PROXY` only. The host Claude Code names must be up even for
+sessions routed elsewhere: the proxy dials the `CONNECT` target before it sees the
+request inside.
 
-- **`ANTHROPIC_BASE_URL` at one of the configured servers.** Cortex routes only
-  requests addressed to a configured server, so Claude Code pointed anywhere else
-  is not routed. An `https` base URL is routed only when the TLS bridge decrypts
-  it, which needs its port in `tls_bridge.ports`, 443 and 8443 unless set. On
-  another port, such as `:4000`, the request stays an opaque `CONNECT` tunnel and
-  is not routed, although `agentop server`'s check, which matches by host alone,
-  shows ✓.
-  An `http` base URL reaches the router only if Claude Code sends it through the
-  proxy, and `agentop configure claude-code enable` sets `HTTPS_PROXY` only. The
-  server named must be up even for sessions routed elsewhere: the proxy dials the
-  `CONNECT` target before it sees the request inside. And a routed request keeps
-  its path, so a base URL with a path needs that same path on every server.
-- **No model settings**, or only Claude's own names in them: the top-level
-  `model` setting and the variables `ANTHROPIC_MODEL`,
-  `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`,
-  `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `ANTHROPIC_DEFAULT_FABLE_MODEL`,
-  `ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL`. Claude's own names
-  are its aliases — `default`, `best`, `opus`, `opusplan`, `sonnet`, `haiku` and
-  `fable`, with or without a suffix such as `[1m]` — and any model id with `claude`
-  in it. Claude Code then asks for Claude's model names whichever server it talks
-  to — the conversation, auto mode's classifier and the background calls each
-  under its own family's name. A configuration that names one server model for
-  every family leaves nothing to tell them apart, and Claude Code shapes its
-  requests for the model it believes it is using.
-
-`agentop server` checks both. A server that serves other names — GLM behind
-LiteLLM, say — is given its own model for each family:
-`agentop server add glm <url> --opus glm-5.3 --sonnet glm-5.3 --haiku glm-5.3`.
-Claude Code still asks for Claude's names, and each request is sent for the
-server's model of its family, so the conversation, auto mode's classifier and the
-background calls can each have one of their own. A Claude model of no family the
-server maps — `claude-fable-5-1` picked with `/model`, say — is refused with a 400
-naming it, rather than sent to a model nobody chose.
+Claude Code's own model names go first, the conversation's, auto mode's
+classifier's and the background calls' each as it chose them, so `/model` and
+Claude Code's model settings keep working wherever the server serves those names.
+A name the server refuses is sent again, before Claude Code sees the refusal, with
+the server's own model: its `main` for a request with tools, the conversation, and
+its `helper` for one without, such as the title. A GLM server behind LiteLLM, say,
+is added with `agentop server add glm <url> --main glm --helper nemotron`.
 
 The key is the server's: on a routed request the router puts the configured
 server's key in the header Claude Code sent its own in, `X-Api-Key` for
 `ANTHROPIC_API_KEY` and `Authorization` for `ANTHROPIC_AUTH_TOKEN`, so either can
-stay as it is. Those two headers are all it replaces: a credential in any other
-header, such as one set through `ANTHROPIC_CUSTOM_HEADERS`, reaches the server
-unchanged.
+stay as it is.
 
 Claude Code keeps naming the model it asked for, so agentop is where the server
 shows: the sessions table's `SERVER` column names each session's server, the
@@ -204,12 +185,7 @@ server, and start a new session there.
 
 **`/model` may list a server's own names.** If Claude Code asks the gateway for its
 model list, that request is routed like the rest, so the picker can show, say,
-`glm-5.3`. Routing is unaffected, since Claude Code keeps sending its own names,
-but choosing such a name there breaks the rule above. A name from that list goes
-to the server as it is — one of its three models, or any other that is not a
-Claude name and has no family word — and the server answers for it. If Claude
-Code saves that choice as `model` in `~/.claude/settings.json`, `agentop server`
-reports it.
+`glm-5.3`. A name chosen there goes to the server as it is, like any other.
 
 ## Verified depth
 
@@ -231,10 +207,14 @@ Sonnet 5 and Claude Haiku 4.5. This was exercised:
 
 Not exercised: Linux; `install.sh --claude-code`; Claude Code talking to
 `api.anthropic.com` directly rather than through a gateway; Amazon Bedrock and Google
-Vertex AI; routing through `inference-router` with a live Claude Code, which so far is
-covered by unit and listener tests, by scratch-`HOME` runs of `agentop server`
-against a fake stats server, and by `S` driven in agentop against a second Cortex
-whose servers do not resolve.
+Vertex AI.
+
+Routing through `inference-router` was tested live on 2026-10-09 with Claude Code
+2.1.295 (`claude --bare -p`, an API key and no `ANTHROPIC_BASE_URL`), through a scratch
+Cortex: its requests to `api.anthropic.com` were captured and sent to the server. On a
+GLM server `claude-opus-5-5` was refused once and sent again with the server's main
+model, then sent with it from the start; on a server that serves Claude's names it went
+as Claude Code asked. A file was written and read back on each.
 
 ## Known issues
 

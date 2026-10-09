@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -8,12 +9,12 @@ import (
 	"io"
 	"io/fs"
 	"maps"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
@@ -30,33 +31,35 @@ const serverUsage = `agentop server — choose the inference server each coding 
 
 Usage:
   agentop server [--config PATH]
-  agentop server add <name> <url> [--opus M --sonnet M --haiku M] [--key-stdin] [--yes] [--config PATH]
+  agentop server add <name> <url> --main WORD --helper WORD [--key-stdin] [--yes] [--config PATH]
   agentop server remove <name> [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
 
-With no action, lists the servers and the agents routed to each, then checks
-that Claude Code's settings let it be routed.
+With no action, lists the servers, the model each one's main and helper word
+names now, and the agents routed to each.
 
 A server is a gateway, such as LiteLLM, with its own URL and key. Routing is per
 agent and opt-in: until "use" gives an agent a server, its traffic goes wherever
-the agent sends it. A session stays on the server it started on, so a change
-applies to new sessions only, and a proxy restart moves none, since each
-session's server is kept in ~/.cortex. A Claude Code conversation that began
-before routing was set up stays where Claude Code sends it.
+the agent sends it. Once it does, the agent's inference goes to the server
+wherever the agent addressed it — its provider, Anthropic, OpenCode Zen, Bob's
+gateway — so the agent itself needs no setting beyond going through Cortex. A
+session stays on the server it started on, so a change applies to new sessions
+only, and a proxy restart moves none, since each session's server is kept in
+~/.cortex. A conversation that began before routing was set up stays where the
+agent sends it.
 
 "add" reads the server's API key at a prompt that does not echo, or from stdin
 with --key-stdin; it is never an argument. Adding a name that exists asks before
 replacing its URL, key and models (--yes skips the question), which is also how a
 key is rotated.
 
-Claude Code asks for Claude's model names whichever server it talks to. For a
-server that serves other names, --opus, --sonnet and --haiku name its model for
-each of Claude Code's families: all three, or none when the server serves Claude
-Code's own names. Each request is then sent for its family's model, and one that
-already names one of the three goes as it is. A Claude model of no mapped family,
-such as claude-fable-5-1, is refused rather than guessed; any other name passes
-through, for the server to answer.
+A request goes with the model the agent asked for. Only when the server refuses
+that model is it sent again, once and before the agent sees the refusal, with
+one of the server's own: the newest model whose name contains --main for a
+request with tools, the agent's main work, and the one --helper names for a
+request without, such as a title. "add" reads the server's model list and
+refuses a word that names none of its models.
 
 Every change is written to ~/.cortex/config.yaml, or to --config PATH, and returns
 once the proxy has reloaded it. Nothing restarts. Flags go after the action.
@@ -220,7 +223,7 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(&table, 0, 0, 3, ' ', 0)
 	for _, name := range slices.Sorted(maps.Keys(c.Servers)) {
 		s := c.Servers[name]
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), servers.Mapping(s), strings.Join(agentsOn(c, name), ", "))
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), resolvedWords(s), strings.Join(agentsOn(c, name), ", "))
 	}
 	tw.Flush()
 	for line := range strings.Lines(table.String()) {
@@ -228,124 +231,38 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout)
 
-	// First: while it holds, the checks below change nothing.
 	if why := routerInactive(cfg, path); why != "" {
 		printCheck(stdout, false, why)
-	}
-	for _, ck := range claudeCodeChecksAtHome(c) {
-		printCheck(stdout, ck.ok, ck.text)
 	}
 	return 0
 }
 
-// settingsCheck is one line of `agentop server`'s check of Claude Code's settings.
-type settingsCheck struct {
-	ok   bool
-	text string
-}
-
-// claudeCodeModelVars are the env settings that make Claude Code ask for a model by
-// a name other than Claude's own; the settings' top-level "model" key is the other
-// way. The router maps Claude's names, by family, to a server's; a request already
-// carrying a server's name has no family left to map, and Claude Code shapes its
-// requests for the model it believes it is using.
-var claudeCodeModelVars = []string{
-	"ANTHROPIC_MODEL",
-	"ANTHROPIC_DEFAULT_FABLE_MODEL",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL",
-	"ANTHROPIC_DEFAULT_SONNET_MODEL",
-	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-	"ANTHROPIC_SMALL_FAST_MODEL",
-	"CLAUDE_CODE_SUBAGENT_MODEL",
-}
-
-// claudeCodeChecksAtHome is claudeCodeChecks on ~/.claude/settings.json. With no
-// home directory it says so rather than reading .claude/settings.json from wherever
-// agentop was started, which is what joining an empty home would do.
-func claudeCodeChecksAtHome(c routerconfig.Config) []settingsCheck {
-	home, err := os.UserHomeDir()
-	if err == nil && home == "" {
-		err = errors.New("it is empty")
-	}
+// resolvedWords is a server's main and helper words with the models they name on its
+// list now, read with the server's own key, as the router resolves them. A server
+// whose list cannot be read says why rather than showing a model it may not name.
+func resolvedWords(s routerconfig.Server) string {
+	ids, err := serverModels(s)
 	if err != nil {
-		return []settingsCheck{{false, fmt.Sprintf("Claude Code's settings are not checked: cannot determine your home directory (%v)", err)}}
+		return fmt.Sprintf("%s (model list unavailable: %v)", servers.Mapping(s), err)
 	}
-	return claudeCodeChecks(filepath.Join(home, settingsRel), c)
-}
-
-// claudeCodeChecks checks the settings file at settingsPath: that ANTHROPIC_BASE_URL
-// is one of c's servers, and that neither the "model" key nor any model variable
-// names a non-Claude model. It reads that one file, so it cannot see a file passed
-// with `claude --settings`, nor a variable set in the shell.
-func claudeCodeChecks(settingsPath string, c routerconfig.Config) []settingsCheck {
-	shown := homeTilde(settingsPath)
-	doc, err := readSettings(settingsPath)
-	if err != nil {
-		return []settingsCheck{{false, fmt.Sprintf("cannot read %s: %v", shown, err)}}
-	}
-	env := envStrings(doc)
-	model, _ := doc["model"].(string)
-	return append([]settingsCheck{baseURLCheck(env["ANTHROPIC_BASE_URL"], shown, c)}, modelChecks(model, env, shown)...)
-}
-
-func baseURLCheck(raw, shown string, c routerconfig.Config) settingsCheck {
-	if raw == "" {
-		return settingsCheck{false, fmt.Sprintf("%s sets no ANTHROPIC_BASE_URL, so Claude Code talks to Anthropic and nothing is routed. Point it at one of the servers above.", shown)}
-	}
-	// raw is never quoted: a pasted key can sit in the user info, path, query or
-	// fragment. Of a URL that parses, scheme://host[:port] is quoted, and only when raw
-	// has no '@' anywhere: a username containing '/', '?' or '#' ends the authority
-	// early, and url.Parse then takes the key for the host. A URL with an '@' is
-	// still matched to a server by host, but a mismatch names no host.
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return settingsCheck{false, fmt.Sprintf("ANTHROPIC_BASE_URL in %s is not a URL with a host, so nothing is routed. Point it at one of the servers above.", shown)}
-	}
-	// servers.ForHost, the one rule for which server a host is: the router's, port-stripped and
-	// lowercased, and the one the sessions table's SERVER column and both session counts use.
-	if name, ok := servers.ForHost(c, u.Host); ok {
-		return settingsCheck{true, fmt.Sprintf("Claude Code points at %s (%s)", name, shown)}
-	}
-	where := "a URL that is"
-	if !strings.Contains(raw, "@") {
-		where = u.Scheme + "://" + u.Host + ", which is"
-	}
-	return settingsCheck{false, fmt.Sprintf("Claude Code points at %s not one of these servers, so nothing is routed (ANTHROPIC_BASE_URL in %s). Point it at one of the servers above.", where, shown)}
-}
-
-// modelChecks checks model, the settings' top-level "model" key, and env's model
-// variables.
-func modelChecks(model string, env map[string]string, shown string) []settingsCheck {
-	var out []settingsCheck
-	check := func(m, where string) {
-		if m != "" && !isClaudeModel(m) {
-			out = append(out, settingsCheck{false, fmt.Sprintf(
-				"Claude Code asks for %s instead of Claude's models (%s in %s). Cortex can't map that back: remove the line, and give the server its models with agentop server add --opus, --sonnet and --haiku instead.",
-				m, where, shown)})
+	named := func(word string) string {
+		if m := routerconfig.Resolve(word, ids); m != "" {
+			return word + " → " + m
 		}
+		return word + " → none of its models"
 	}
-	check(model, `"model"`)
-	for _, v := range claudeCodeModelVars {
-		check(env[v], v)
-	}
-	if len(out) == 0 {
-		out = append(out, settingsCheck{true, fmt.Sprintf("Claude Code asks for Claude's own model names (%s)", shown)})
-	}
-	return out
+	return "main " + named(s.Main) + " · helper " + named(s.Helper)
 }
 
-// isClaudeModel reports whether m is one of Claude Code's own aliases — with or
-// without a context suffix such as [1m] — or a name containing "claude".
-func isClaudeModel(m string) bool {
-	m = strings.ToLower(strings.TrimSpace(m))
-	if i := strings.IndexByte(m, '['); i > 0 {
-		m = m[:i]
+// serverModels is s's model list. A var so tests can stand in for a server.
+var serverModels = func(s routerconfig.Server) ([]string, error) {
+	ep, err := routerconfig.ParseURL(s.URL)
+	if err != nil {
+		return nil, err
 	}
-	switch m {
-	case "default", "best", "fable", "opus", "opusplan", "sonnet", "haiku":
-		return true
-	}
-	return strings.Contains(m, "claude")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep, s.Key)
 }
 
 // printCheck writes one check as "  ✓ text", wrapped at 80 columns with the

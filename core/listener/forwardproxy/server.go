@@ -435,6 +435,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		if scheme, host, ok := pctx.RedirectTarget(); ok {
 			pctx.Scheme, pctx.Host = scheme, host
 			r.URL.Scheme, r.URL.Host, r.Host = scheme, host, host
+			// The path, when the plugin gave one, from the copy SetRedirectPath
+			// validated, for the reason RedirectTarget is read rather than Host. The
+			// query string is the client's and stays.
+			if path, ok := pctx.RedirectPath(); ok {
+				pctx.Path = path
+				r.URL.Path, r.URL.RawPath = path, ""
+			}
 		}
 
 		if action.Type == pipeline.Reject {
@@ -478,76 +485,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// x-api-key). Content-Length / Content-Encoding are managed by the
 	// body-rewrite block below and the transport, so leave them untouched.
 	// Mirrors reverseproxy's forwarded-request header sync.
-	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
-	}
-	for k := range r.Header {
-		if skip(k) {
-			continue
-		}
-		if _, ok := pctx.Headers[k]; !ok {
-			r.Header.Del(k) // plugin removed it
-		}
-	}
-	for k, vv := range pctx.Headers {
-		if skip(k) {
-			continue
-		}
-		if len(vv) == 0 {
-			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
-			continue
-		}
-		r.Header[k] = append([]string(nil), vv...) // set / overwrite
-	}
+	syncHeaders(r, pctx.Headers)
 
 	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
-		r.Body = io.NopCloser(bytes.NewReader(pctx.Body))
-		r.ContentLength = int64(len(pctx.Body))
-		r.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.Body)))
-		r.Header.Del("Content-Encoding")
+		setBody(r, pctx.Body)
 	}
 
-	// Remove hop-by-hop headers
-	r.Header.Del("Connection")
-	r.Header.Del("Keep-Alive")
-	r.Header.Del("Proxy-Authenticate")
-	r.Header.Del("Proxy-Authorization")
-	r.Header.Del("Proxy-Connection")
-	r.Header.Del("TE")
-	r.Header.Del("Trailer")
-	r.Header.Del("Transfer-Encoding")
-	r.Header.Del("Upgrade")
-
-	// Strip the client's Accept-Encoding so Go's transport negotiates content
-	// coding on its own behalf.
-	//
-	// net/http auto-decompresses a gzip response ONLY when the transport added
-	// Accept-Encoding itself. Forwarding the caller's header suppresses that:
-	// resp.Body then yields raw compressed bytes. Every body-reading plugin
-	// sees binary — the SSE re-framer finds no "data:" lines and reports a
-	// clean EOF on its first ReadFrame, so a gzipped text/event-stream relayed
-	// zero frames downstream and finalized aggregating plugins on empty state.
-	// The symptom is silent in both directions: the client sees a stream that
-	// opens and dies, and token telemetry reads as absent rather than wrong.
-	//
-	// This proxy re-frames and inspects bodies, so it cannot be encoding-blind.
-	// Taking ownership of the negotiation means the transport hands us
-	// plaintext and strips Content-Encoding from resp.Header, keeping the
-	// bytes we relay consistent with the headers we forward.
-	//
-	// Gated on a plugin actually inspecting the response body, mirroring the
-	// reverse proxy (see listener/reverseproxy: same reasoning, same
-	// condition). When nothing reads the body this listener is a pure
-	// pass-through, so leaving the client's header intact avoids forcing an
-	// upstream→client decompression that buys nothing — which matters for a
-	// remote backend or a large non-streamed body, and is harmless either way
-	// on a loopback sidecar hop.
-	if !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders()) {
-		r.Header.Del("Accept-Encoding")
-	}
+	ownEncoding := !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders())
+	stripForUpstream(r, ownEncoding)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
@@ -557,6 +505,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		client = s.TLSBridge.Upstream
 	}
 	resp, err := client.Do(r)
+	if err == nil && !skipped {
+		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
+	}
 	if err != nil {
 		// A 502 with the cause, or a 499 when the client hung up first — which,
 		// with no timeout on this client, is how a hung upstream usually ends.
@@ -957,6 +908,132 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, 
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
 // recordOutboundResponseEvent, which files under pctx.OutboundSessionID, so the
 // caller pins that to sid first.
+// syncHeaders makes r's headers the pipeline's: pctx.Headers started as a clone of
+// r.Header, so a plugin's set, replace and delete on it are the upstream-facing
+// header set. Content-Length and Content-Encoding are left to setBody and the
+// transport.
+func syncHeaders(r *http.Request, h http.Header) {
+	skip := func(k string) bool {
+		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
+	}
+	for k := range r.Header {
+		if skip(k) {
+			continue
+		}
+		if _, ok := h[k]; !ok {
+			r.Header.Del(k) // plugin removed it
+		}
+	}
+	for k, vv := range h {
+		if skip(k) {
+			continue
+		}
+		if len(vv) == 0 {
+			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
+			continue
+		}
+		r.Header[k] = append([]string(nil), vv...) // set / overwrite
+	}
+}
+
+// stripForUpstream removes from r what is the proxy's and not the upstream's: the
+// hop-by-hop headers, and, when ownEncoding, the client's Accept-Encoding. It runs on
+// every request the proxy sends upstream for a client, a resend included.
+func stripForUpstream(r *http.Request, ownEncoding bool) {
+	// Remove hop-by-hop headers
+	r.Header.Del("Connection")
+	r.Header.Del("Keep-Alive")
+	r.Header.Del("Proxy-Authenticate")
+	r.Header.Del("Proxy-Authorization")
+	r.Header.Del("Proxy-Connection")
+	r.Header.Del("TE")
+	r.Header.Del("Trailer")
+	r.Header.Del("Transfer-Encoding")
+	r.Header.Del("Upgrade")
+
+	// Strip the client's Accept-Encoding so Go's transport negotiates content
+	// coding on its own behalf.
+	//
+	// net/http auto-decompresses a gzip response ONLY when the transport added
+	// Accept-Encoding itself. Forwarding the caller's header suppresses that:
+	// resp.Body then yields raw compressed bytes. Every body-reading plugin
+	// sees binary — the SSE re-framer finds no "data:" lines and reports a
+	// clean EOF on its first ReadFrame, so a gzipped text/event-stream relayed
+	// zero frames downstream and finalized aggregating plugins on empty state.
+	// The symptom is silent in both directions: the client sees a stream that
+	// opens and dies, and token telemetry reads as absent rather than wrong.
+	//
+	// This proxy re-frames and inspects bodies, so it cannot be encoding-blind.
+	// Taking ownership of the negotiation means the transport hands us
+	// plaintext and strips Content-Encoding from resp.Header, keeping the
+	// bytes we relay consistent with the headers we forward.
+	//
+	// Gated on a plugin actually inspecting the response body, mirroring the
+	// reverse proxy (see listener/reverseproxy: same reasoning, same
+	// condition). When nothing reads the body this listener is a pure
+	// pass-through, so leaving the client's header intact avoids forcing an
+	// upstream→client decompression that buys nothing — which matters for a
+	// remote backend or a large non-streamed body, and is harmless either way
+	// on a loopback sidecar hop.
+	if ownEncoding {
+		r.Header.Del("Accept-Encoding")
+	}
+}
+
+// setBody gives r the body a plugin wrote, and clears Content-Encoding, since the
+// bytes are the plugin's and carry none.
+func setBody(r *http.Request, body []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	r.Header.Del("Content-Encoding")
+}
+
+// resendIfAsked gives the outbound pipeline's Resenders the one look at a refused
+// answer that pipeline.Resender promises, and sends the request again when one asks.
+// It returns the answer to relay: resp itself, or the second send's.
+//
+// Only a request whose body the pipeline buffered can be sent again, and only a
+// Resender's request could need it, so nothing is read from an answer unless a
+// Resender is in the chain. A refused answer that is sent again is recorded on its own
+// response row, and the second send on a request row of its own under a new request
+// id, so the timeline shows both attempts and each pairs with its own answer. A
+// refused answer that is not sent again goes to the client byte for byte, the bytes
+// read for the Resender included.
+func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool) (*http.Response, error) {
+	if resp.StatusCode/100 == 2 || !s.OutboundPipeline.HasResenders() || !s.OutboundPipeline.NeedsRequestBody() {
+		return resp, nil
+	}
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
+	// The parse as the refused attempt was sent: a Resender may rewrite the model,
+	// and the refused attempt's row must name the one the upstream refused.
+	sent := pipeline.SnapshotInference(pctx.Extensions.Inference)
+	if !s.OutboundPipeline.Resend(r.Context(), pctx, resp.StatusCode, head) {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	if s.Sessions != nil {
+		// The refused answer's row: its status and error, from the bytes read. Put back
+		// at once, because the status of the answer the client gets is the one
+		// OutcomeFromContext must read.
+		resent := pctx.Extensions.Inference
+		pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
+		pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
+		pctx.RenewRequestID()
+		s.recordOutboundRequestEvent(tl, pctx, pctx.OutboundSessionID)
+	}
+	again := r.Clone(r.Context())
+	syncHeaders(again, pctx.Headers)
+	setBody(again, pctx.Body)
+	stripForUpstream(again, ownEncoding)
+	return client.Do(again)
+}
+
 func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Context, sid string) {
 	// Snapshot-copy the protocol extension so the request event
 	// doesn't see response-phase mutations on the same MCP/Inference

@@ -2,6 +2,14 @@
 // new sessions to the inference server chosen for that agent, and keeps every
 // session on the server it started on.
 //
+// The agent needs no setting of its own for that beyond going through the proxy. A
+// request addressed to a server's host is routed, and so is a routed agent's
+// inference request addressed anywhere else — its provider, Anthropic, OpenCode Zen,
+// Bob's gateway — which is captured: sent to the agent's server at the server's path
+// for its API format (see capturedPaths), by how the path the agent named ends.
+// Only a POST inference-parser read as inference is captured, since an agent's own
+// tools can POST to an API whose path happens to end the same way.
+//
 // The choice is plugin config — servers by name, and agents by name to a server —
 // changed by editing it and letting the proxy hot-reload. Sessions are pinned in the
 // process's durable store (storage.StoreConsumer) — on a local install a file under
@@ -41,17 +49,15 @@
 // already running when routing is first configured, quiet while it was, has no pin,
 // and neither has one whose pin lapsed. The session's history tells such a session
 // from a new one: on a pin miss for a routed agent, the latest earlier inference
-// request, not a side request, that agent sent in the session to a server's host
-// keeps the session on that server, and only a session with no such request is new
-// and goes to its agent's current server. Without this, the documented first setup —
-// add the servers, then route Claude Code — would move every conversation that sent
-// nothing between the router's arrival and the route to the new server on its next
-// turn. A request to any other host is no evidence: the router never routes one, so
-// it says nothing about which server the session is on. Reading it as "not routed"
-// would leave an agent that switches providers inside a session, as OpenCode does,
-// unrouted for good once its first request went elsewhere, still sending its own key
-// to the server it then addresses. Only a non-empty history is evidence: a view is
-// empty for a session the store has recorded nothing of yet.
+// request, not a side request, that agent sent in the session decides. One to a
+// server's host keeps the session on that server. One the router would capture,
+// recorded where the agent sent it, was made while the router was not routing the
+// agent — before it was routed, or under observe — so the session ran unrouted and
+// is not routed now: switching an agent onto a server must not move a conversation
+// already running on its provider. Any other request is no evidence. Only a session
+// with no evidence is new and goes to its agent's current server. Only a non-empty
+// history is evidence: a view is empty for a session the store has recorded nothing
+// of yet.
 //
 // With no pin and no history, a Claude Code inference request says itself whether
 // the router is seeing its conversation begin. Its system prompt states the caller,
@@ -62,8 +68,7 @@
 // it is not routed and pinned so, rather than taken for new and moved
 // mid-conversation. The one-shots Claude Code interleaves with a conversation carry
 // no tools, and a subagent's requests are its own conversation's; neither says
-// whether the session began, so neither decides: each goes where Claude Code sent it
-// and leaves the session unpinned. Only Claude Code is read this way, because no
+// whether the session began, so neither decides: each leaves the session unpinned. Only Claude Code is read this way, because no
 // other agent states its role, and one that switches providers, as OpenCode does,
 // sends earlier turns that went elsewhere. A session routed to a server keeps it by
 // its pin and its history, so a restart that keeps neither sends such a conversation
@@ -85,24 +90,18 @@
 // conversation filed there to the first one's server. Their requests follow the
 // agent's current server, unpinned, as a request with no session does.
 //
-// Claude Code keeps its own model names whichever server it talks to. A server
-// that serves other names says which of its models stands for each of Claude
-// Code's families — opus, sonnet and haiku, all three or none — and a request
-// routed there, from any agent, is decided in this order. A name with one family
-// word is sent for the server's model of that family, through
-// pctx.SetRequestModel. Otherwise a name that is one of the server's own models
-// goes as it is. Otherwise a Claude model name — claude-fable-5-1, say — is refused
-// with a 400, never guessed: it asked for one of Claude's models, and the server
-// has none for it. Any other name goes as it is, since it is the client's to choose
-// and the server's to answer: OpenCode asking a GLM server for glm-4.6 is served.
-// A body that names a model the rewrite cannot read — empty, not a string, or
-// "model" named twice or only in another letter case — is refused with a 400 too. A
-// server that names no models gets every name as it was sent, and so does a
-// request whose body names no model — no body, one that is not JSON, or JSON with
-// no "model" key. A refused request reached no server: it pins nothing and never
-// carries the server's key. The rewrite is why the router declares
-// WritesRequestBody, and why the framework's reader rule holds it after every body
-// reader in the chain.
+// The model is the agent's to choose and the server's to answer, and the router does
+// not read a model list to judge it: a server serves aliases it does not list. A
+// routed request goes with the model the agent asked for. When the server refuses
+// that model, the refusal is recorded for
+// an hour and the request is sent again, once, before the agent sees anything, with
+// the server's substitute: its main model for a request with tools, its helper for one
+// without, each the newest model on the server's list whose name contains the word
+// configured for it (routerconfig.Resolve). While the refusal is recorded, requests
+// for that model are sent with the substitute from the start. A session keeps the
+// substitute it was given, so a conversation never changes model part-way when a
+// refusal lapses or a newer model is listed. A request already sent with a
+// substitute is never sent again: a refused substitute reaches the agent.
 package inferencerouter
 
 import (
@@ -112,6 +111,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -121,7 +121,6 @@ import (
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/storage"
-	"github.com/tidwall/gjson"
 )
 
 // Name is the plugin's registered name.
@@ -144,23 +143,13 @@ const (
 	// cannot be reached through the router is the server being unavailable to it,
 	// not the client's mistake.
 	codeUnavailable = "upstream.unreachable"
-
-	// codeNoModel is the violation code of a request for a family its server has no
-	// model for, sent with a 400: the request asks for something this server cannot
-	// serve, and the fix is the client's — another model, or another server.
-	codeNoModel = "inference.no-model-for-family"
-
-	// codeModelRewrite is the violation code of a request whose model could not be
-	// mapped, sent with a 400: what the rewrite refuses is the shape of the client's
-	// body, so the fix is the client's too.
-	codeModelRewrite = "inference.model-rewrite-failed"
 )
 
 // The pin detail on every record that resolved a server.
 const (
 	pinNew      = "new"      // this request pinned the session
 	pinExisting = "existing" // the session was already pinned
-	pinNone     = "none"     // nothing was pinned: no session, a synthetic one, no store, a failed redirect, a refused model, another agent's pin, a side request, or an unparsed request
+	pinNone     = "none"     // nothing was pinned: no session, a synthetic one, no store, a failed redirect, another agent's pin, a side request, or an unparsed request
 )
 
 // The turn detail on a not-routed record, where the request's own turn decided an
@@ -174,9 +163,9 @@ const (
 type route struct {
 	endpoint routerconfig.Endpoint
 	key      string
-	// models is the server's model for each family, nil when it serves Claude
-	// Code's own names.
-	models map[string]string
+	// main and helper are the words naming the server's substitute models, resolved
+	// against its model list when one is needed (see substitute).
+	main, helper string
 }
 
 // target is the server's own scheme and host, where every request routed to it is
@@ -199,6 +188,12 @@ type Router struct {
 	history session.History
 	// now is the clock a stored pin's renewal is judged by.
 	now func() time.Time
+
+	// catalogs is each server's model list, as last fetched; client fetches them, the
+	// models client when nil, and stopCatalogs ends the fetching Init started.
+	catalogs     catalogs
+	client       *http.Client
+	stopCatalogs context.CancelFunc
 
 	// noStore makes the "pins are off" warning once per instance rather than once
 	// per request.
@@ -227,7 +222,7 @@ func (p *Router) Capabilities() pipeline.PluginCapabilities {
 		WritesDestination: true,
 		WritesRequestBody: true, // SetRequestModel, for a server with models of its own
 		Requires:          []string{"inference-parser"},
-		Description:       "Sends each agent's new sessions to its chosen inference server.",
+		Description:       "Sends each agent's new sessions to its chosen server, wherever addressed.",
 	}
 }
 
@@ -257,14 +252,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 				"crosses the network decrypted, its key and prompt included; use https unless the network is trusted",
 				"server", name, "url", ep.URL())
 		}
-		r := route{endpoint: ep, key: s.Key}
-		if s.Mapped() {
-			r.models = make(map[string]string, len(routerconfig.Families))
-			for _, f := range routerconfig.Families {
-				r.models[f] = s.ModelFor(f)
-			}
-		}
-		servers[name] = r
+		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper}
 		byHost[ep.Hostname] = name
 	}
 	p.servers, p.byHost, p.agents = servers, byHost, c.Agents
@@ -283,13 +271,21 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		return cont
 	}
 	// Every path on a server's host is handled — /v1/messages, count_tokens,
-	// /v1/models — because they all belong to the server the session is on.
+	// /v1/models — because they all belong to the server the session is on. A request
+	// to any other host is captured when it is a routed agent's inference request,
+	// and sent to the server's path for its API format.
+	captured := ""
+	addressed := p.byHost[routerconfig.Hostname(pctx.Host)] // the server the request named, "" for none
 	if _, ok := p.byHost[routerconfig.Hostname(pctx.Host)]; !ok {
-		pctx.Skip("not_an_inference_server")
-		return cont
+		path, ok := capture(pctx)
+		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx)) {
+			pctx.Skip("not_an_inference_server")
+			return cont
+		}
+		captured = path
 	}
 
-	name, pin := p.serverFor(pctx)
+	name, pin := p.serverFor(pctx, captured != "")
 	if name == "" {
 		// Not routed: the request, its key included, stays exactly as the client sent it.
 		pin.settle("")
@@ -334,94 +330,29 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
 	}
-	// The model is mapped only once the request has moved, so an observed router maps
-	// nothing and refuses nothing, and a refusal records the server it was for. The
-	// key is set only once the model is mapped, so a refused request never carries it.
-	if srv.models != nil {
-		if refusal, refused := mapModel(pctx, name, srv.models, &pin, details); refused {
-			return refusal
+	if captured != "" {
+		// The table's paths are absolute with no query, so this is refused only by a
+		// drift between the table and SetRedirectPath's rule.
+		if err := pctx.SetRedirectPath(captured); err != nil {
+			pin.forgo()
+			pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
+			return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
 		}
 	}
+	// The model is chosen only once the request has moved, so an observed router
+	// changes nothing.
+	p.chooseModel(pctx, name)
 	pin.settle(name)
+	if addressed != name {
+		dropProviderCredentials(pctx.Headers)
+	}
 	setKey(pctx, srv.key)
-	pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "routed", Details: details()})
+	d := details()
+	if captured != "" {
+		d["captured"] = captured
+	}
+	pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: "routed", Details: d})
 	return cont
-}
-
-// mapModel decides a request routed to the server name, whose models are models,
-// by the order the package doc gives: a family is mapped, one of models goes as it
-// is, a Claude name of no family is refused, and any other name goes as it is.
-// refused is true, with the refusal to return, when the request must not go; a
-// request whose body names no model goes as it is.
-//
-// A refusal leaves a session's existing pin alone, and a first request pins
-// nothing: the request reached no server, and the session's next request can
-// decide again.
-func mapModel(pctx *pipeline.Context, name string, models map[string]string,
-	pin *pinning, details func() map[string]string) (refusal pipeline.Action, refused bool) {
-	requested, ok := pctx.RequestModel()
-	if !ok {
-		if !namesModel(pctx.Body) {
-			return pipeline.Action{}, false
-		}
-		// RequestModel reads no model, yet the body names one. Sent unmapped, the server
-		// would get a name it does not serve, or a second "model" the rewrite could not
-		// reach and the server may be the one to read.
-		pin.forgo()
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "model_rewrite_failed", Details: details()})
-		return pipeline.DenyStatus(http.StatusBadRequest, codeModelRewrite, fmt.Sprintf(
-			`inference-router could not give this request %s's model: its body must name the model once, `+
-				`as a non-empty string under "model" in lowercase`, name)), true
-	}
-	// The family decides first, so a server whose models are Claude's own — a
-	// downgrader sending opus to sonnet — still maps a name that is also one of its
-	// models. SetRequestModel changes nothing when the name is already the model.
-	model := models[routerconfig.Family(requested)]
-	if model == "" {
-		// One of the server's own models — picked from its model list with /model,
-		// say — is what the server serves.
-		for _, own := range models {
-			if requested == own {
-				return pipeline.Action{}, false
-			}
-		}
-		// Any name that is not Claude's is the client's to choose and the server's to
-		// answer: OpenCode asking a GLM server for glm-4.6.
-		if !routerconfig.IsClaudeName(requested) {
-			return pipeline.Action{}, false
-		}
-		// Not guessed: the user asked for a Claude model this server has nothing for.
-		pin.forgo()
-		d := details()
-		d["model"] = requested
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "no_model_for_family", Details: d})
-		return pipeline.DenyStatus(http.StatusBadRequest, codeNoModel,
-			fmt.Sprintf("%s has no model for %s", name, requested)), true
-	}
-	if err := pctx.SetRequestModel(model); err != nil {
-		// Its errors quote nothing from the body, and name no key or URL.
-		pin.forgo()
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "model_rewrite_failed", Details: details()})
-		return pipeline.DenyStatus(http.StatusBadRequest, codeModelRewrite,
-			fmt.Sprintf("inference-router could not give this request %s's model: %v", name, err)), true
-	}
-	return pipeline.Action{}, false
-}
-
-// namesModel reports whether body is a JSON object with a top-level key that is
-// "model" in any letter case: a body that asks for a model, whether or not
-// RequestModel can read which. A body that is not JSON names none — a file upload,
-// say — and nor does JSON with no such key.
-func namesModel(body []byte) bool {
-	if !gjson.ValidBytes(body) {
-		return false
-	}
-	found := false
-	gjson.ParseBytes(body).ForEach(func(key, _ gjson.Result) bool {
-		found = key.Type == gjson.String && strings.EqualFold(key.String(), "model")
-		return !found
-	})
-	return found
 }
 
 func (p *Router) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
@@ -480,7 +411,7 @@ func (pn *pinning) forgo() {
 // Two first requests of one session racing can both miss and both store; they store
 // the same outcome unless a reload lands between them, which is the case the pin
 // cannot rule out and does not need to.
-func (p *Router) serverFor(pctx *pipeline.Context) (string, pinning) {
+func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinning) {
 	agent := agentOf(pctx)
 	choice := p.agents[agent]
 	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
@@ -497,17 +428,30 @@ func (p *Router) serverFor(pctx *pipeline.Context) (string, pinning) {
 	key := pinPrefix + pctx.Session.ID
 	if pn, ok := store.load(key); ok {
 		if pn.agent != agent {
-			server, _, _ := p.unpinned(pctx, agent, choice)
+			server, _, _ := p.unpinned(pctx, agent, choice, captured)
 			return server, pinning{state: pinNone}
 		}
 		store.keep(key, pn)
 		return pn.server, pinning{state: pinExisting}
 	}
-	server, turn, decides := p.unpinned(pctx, agent, choice)
+	server, turn, decides := p.unpinned(pctx, agent, choice, captured)
 	if !decides {
 		return server, pinning{state: pinNone, turn: turn}
 	}
 	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn}
+}
+
+// pinnedToServer reports whether pctx's session holds its agent's pin to a server.
+func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
+	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+		return false
+	}
+	store := p.pinsFor(pctx)
+	if store == nil {
+		return false
+	}
+	pn, ok := store.load(pinPrefix + pctx.Session.ID)
+	return ok && pn.agent == agentOf(pctx) && pn.server != ""
 }
 
 // unpinned is the server for a request in a session its agent holds no pin on, and
@@ -519,10 +463,10 @@ func (p *Router) serverFor(pctx *pipeline.Context) (string, pinning) {
 //     decides nothing.
 //  4. A Claude Code request's own turn (see turnOf): a conversation's opening turn
 //     goes to the agent's current choice; a continuation, a conversation the router
-//     did not see begin, is not routed; a side request is not routed and decides
-//     nothing. turn names the last two, for the record.
+//     did not see begin, is not routed; a side request decides nothing. turn names
+//     the last two, for the record.
 //  5. The agent's current choice.
-func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string) (server, turn string, decides bool) {
+func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides bool) {
 	if choice == "" {
 		return "", "", true
 	}
@@ -536,6 +480,9 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string) (server,
 	case turnContinuation:
 		return "", turnContinuation, true
 	case turnAside:
+		if captured {
+			return choice, turnAside, false
+		}
 		return "", turnAside, false
 	}
 	return choice, "", true
@@ -623,8 +570,17 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 		turnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
 		return "", false
 	}
-	server, ok = p.byHost[routerconfig.Hostname(e.Host)]
-	return server, ok
+	if server, ok = p.byHost[routerconfig.Hostname(e.Host)]; ok {
+		return server, true
+	}
+	// A request the router captures from a routed agent is recorded under its
+	// server's host. One recorded where the agent sent it was made while the router
+	// was not routing the agent — before it was routed, or under observe — so the
+	// session ran unrouted, and moving it now would switch a running conversation.
+	if _, captured := capturePath(e.HTTPMethod, e.HTTPPath); captured && e.RequestedHost == "" {
+		return "", true
+	}
+	return "", false
 }
 
 // synthetic reports a session id the listener files traffic under when it knows no
@@ -642,6 +598,29 @@ func agentOf(pctx *pipeline.Context) string {
 		return ""
 	}
 	return agent
+}
+
+// credentialWords are the words of a header name that make the header a credential.
+var credentialWords = []string{"key", "apikey", "token", "auth", "authorization", "cookie",
+	"secret", "signature", "password", "credential", "credentials"}
+
+// dropProviderCredentials removes from h each header whose name, split at "-" and
+// "_" with case ignored, has one of credentialWords. Authorization and X-Api-Key stay
+// for setKey, which puts the server's key in whichever of them the agent used. The
+// router calls it on a request it sends to a server the request did not name.
+func dropProviderCredentials(h http.Header) {
+	for name := range h {
+		switch http.CanonicalHeaderKey(name) {
+		case "Authorization", "X-Api-Key":
+			continue
+		}
+		for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' }) {
+			if slices.Contains(credentialWords, w) {
+				h.Del(name)
+				break
+			}
+		}
+	}
 }
 
 // setKey puts key in the header the client authenticated with: X-Api-Key when it
@@ -665,6 +644,9 @@ var (
 	_ pipeline.Plugin         = (*Router)(nil)
 	_ pipeline.Configurable   = (*Router)(nil)
 	_ pipeline.SchemaProvider = (*Router)(nil)
+	_ pipeline.Resender       = (*Router)(nil)
+	_ pipeline.Initializer    = (*Router)(nil)
+	_ pipeline.Shutdowner     = (*Router)(nil)
 	_ storage.StoreConsumer   = (*Router)(nil)
 	_ session.HistoryConsumer = (*Router)(nil)
 )

@@ -68,6 +68,14 @@ func (h *Holder) HasStreamingResponders() bool {
 	return h.p.Load().HasStreamingResponders()
 }
 
+// HasResenders is equivalent to h.Load().HasResenders(). See Resender.
+func (h *Holder) HasResenders() bool { return h.p.Load().HasResenders() }
+
+// Resend is equivalent to h.Load().Resend(ctx, pctx, status, body). See Resender.
+func (h *Holder) Resend(ctx context.Context, pctx *Context, status int, body []byte) bool {
+	return h.p.Load().Resend(ctx, pctx, status, body)
+}
+
 // RunFinish is equivalent to h.Load().RunFinish(ctx, pctx, outcome).
 // Listeners call this in a defer at request entry to guarantee
 // Finisher dispatch on every exit path. See Pipeline.RunFinish for

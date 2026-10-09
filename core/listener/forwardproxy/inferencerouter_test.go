@@ -65,7 +65,7 @@ func TestConnectBridge_TheRoutersKeyGoesOnlyToItsServer(t *testing.T) {
 
 	router := inferencerouter.New()
 	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + ete.URL + `", "key": "` + key + `"}},
+		"servers": {"ete": {"url": "` + ete.URL + `", "key": "` + key + `", "main": "opus", "helper": "haiku"}},
 		"agents": {"claude-code": "ete"}
 	}`)); err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -194,7 +194,8 @@ func TestForwardProxy_ASessionRunningBeforeRoutingWasConfiguredStaysOnItsServer(
 	// agentop server add ete, add glm, use glm --agent claude-code: one reload.
 	router := inferencerouter.New()
 	if err := router.Configure(json.RawMessage(`{
-		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key"}, "glm": {"url": "` + glmURL + `", "key": "glm-key"}},
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
 		"agents": {"claude-code": "glm"}
 	}`)); err != nil {
 		t.Fatalf("Configure: %v", err)

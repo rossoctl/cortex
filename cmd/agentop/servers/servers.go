@@ -85,21 +85,10 @@ func Host(s routerconfig.Server) string {
 	return ep.Host
 }
 
-// Mapping is a server's model mapping in one phrase.
+// Mapping is a server's main and helper words in one phrase, as the config gives
+// them; what each resolves to is the server's list's to say.
 func Mapping(s routerconfig.Server) string {
-	switch {
-	case s.Opus == "" && s.Sonnet == "" && s.Haiku == "":
-		return "uses Claude Code's names"
-	case s.Opus == s.Sonnet && s.Sonnet == s.Haiku:
-		return "all → " + s.Opus
-	}
-	or := func(m string) string {
-		if m == "" {
-			return "—"
-		}
-		return m
-	}
-	return fmt.Sprintf("opus → %s · sonnet → %s · haiku → %s", or(s.Opus), or(s.Sonnet), or(s.Haiku))
+	return "main " + s.Main + " · helper " + s.Helper
 }
 
 // ForHost is the server whose host hostport names, compared as the plugin matches a request:

@@ -287,6 +287,8 @@ type Context struct {
 	// See RedirectTarget.
 	redirectScheme string
 	redirectHost   string
+	// redirectPath is the path SetRedirectPath set, "" to keep the client's.
+	redirectPath string
 
 	// bodyMutated / responseBodyMutated flag that some plugin's
 	// SetBody / SetResponseBody took effect on this context. Listeners read

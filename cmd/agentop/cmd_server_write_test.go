@@ -87,7 +87,7 @@ func stubConfirm(t *testing.T, answer bool) *int {
 func TestServerAdd_CreatesTheRouterAtTheEndOfTheChain(t *testing.T) {
 	stats := newFakeStats(t, 0)
 	path := serverEnv(t, stats.addr(), "")
-	code, out, errOut := runServerCmd(t, "sk-ete\n", "add", "ete", "https://ete.example.com/", "--key-stdin", "--config", path)
+	code, out, errOut := runServerCmd(t, "sk-ete\n", "add", "ete", "https://ete.example.com/", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -103,6 +103,8 @@ func TestServerAdd_CreatesTheRouterAtTheEndOfTheChain(t *testing.T) {
             ete:
               url: https://ete.example.com
               key: sk-ete
+              main: opus
+              helper: haiku
 `
 	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
 		t.Errorf("config does not end with the new entry:\n%s", got)
@@ -112,7 +114,7 @@ func TestServerAdd_CreatesTheRouterAtTheEndOfTheChain(t *testing.T) {
 func TestServerAdd_ReadsTheKeyAtTheHiddenPrompt(t *testing.T) {
 	asked := stubKeyPrompt(t, "sk-typed")
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
-	if code, _, errOut := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--config", path); code != 0 {
+	if code, _, errOut := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--config", path); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 	if *asked != "ete" {
@@ -129,7 +131,7 @@ func TestServerAdd_ReplacingAsksFirst(t *testing.T) {
 
 	asks := stubConfirm(t, false)
 	asked := stubKeyPrompt(t, "sk-rotated")
-	code, out, _ := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--config", path)
+	code, out, _ := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--config", path)
 	if code != exitDeclined || *asks != 1 || !strings.Contains(out, "ete is already configured (ete.example.com)") {
 		t.Errorf("declined: exit %d, %d asks, stdout:\n%s", code, *asks, out)
 	}
@@ -137,7 +139,7 @@ func TestServerAdd_ReplacingAsksFirst(t *testing.T) {
 		t.Error("a declined replace read a key or wrote the file")
 	}
 
-	code, out, errOut := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--yes", "--config", path)
+	code, out, errOut := runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--yes", "--config", path)
 	if code != 0 || *asks != 1 || !strings.Contains(out, "Replaced ete.") {
 		t.Errorf("--yes: exit %d, %d asks, stdout:\n%s%s", code, *asks, out, errOut)
 	}
@@ -149,7 +151,7 @@ func TestServerAdd_ReplacingAsksFirst(t *testing.T) {
 func TestServerAdd_AnUnchangedServerIsNotRewritten(t *testing.T) {
 	stubConfirm(t, true)
 	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
-	code, out, _ := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com:443", "--key-stdin", "--yes", "--config", path)
+	code, out, _ := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com:443", "--main", "opus", "--helper", "haiku", "--key-stdin", "--yes", "--config", path)
 	if code != 0 || !strings.Contains(out, "ete already has that URL, key and models; nothing to change.") {
 		t.Errorf("exit %d, stdout:\n%s", code, out)
 	}
@@ -157,7 +159,7 @@ func TestServerAdd_AnUnchangedServerIsNotRewritten(t *testing.T) {
 
 func TestServerAdd_RefusesASecondServerOnOneHost(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
-	code, _, errOut := runServerCmd(t, "sk-x", "add", "east", "http://ETE.example.com:4000", "--key-stdin", "--config", path)
+	code, _, errOut := runServerCmd(t, "sk-x", "add", "east", "http://ETE.example.com:4000", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "ete is already on ete.example.com") {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
@@ -184,7 +186,7 @@ func TestServerAdd_RefusesABadNameOrURLBeforeAskingForAKey(t *testing.T) {
 func TestServerAdd_RefusesAKeyTheConfigLoaderWouldExpand(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	before := readConfig(t, path)
-	code, _, errOut := runServerCmd(t, "sk-$HOME", "add", "ete", "https://ete.example.com", "--key-stdin", "--config", path)
+	code, _, errOut := runServerCmd(t, "sk-$HOME", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "the key contains $") || strings.Contains(errOut, "sk-$HOME") {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
@@ -195,18 +197,22 @@ func TestServerAdd_RefusesAKeyTheConfigLoaderWouldExpand(t *testing.T) {
 
 func TestServerAdd_WarnsOnPlainHTTPToAnotherMachine(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
-	_, _, errOut := runServerCmd(t, "sk", "add", "lan", "http://10.0.0.5:4000", "--key-stdin", "--config", path)
+	_, _, errOut := runServerCmd(t, "sk", "add", "lan", "http://10.0.0.5:4000", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if !strings.Contains(errOut, "plain http on another machine") {
 		t.Errorf("stderr:\n%s", errOut)
 	}
 }
 
-func TestServerAdd_WritesAllThreeModels(t *testing.T) {
+func TestServerAdd_WritesMainAndHelperAndSaysWhatTheyName(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	stubServerModels(t, map[string][]string{"glm.example.com": {"rits/zai-org/glm-4-6", "rits/zai-org/glm-5-3", "rits/nvidia/nemotron-3"}}, nil)
 	code, out, errOut := runServerCmd(t, "sk-glm", "add", "glm", "https://glm.example.com",
-		"--opus", "glm-5.3", "--sonnet", "glm-5.3", "--haiku", "glm-5.3-air", "--key-stdin", "--config", path)
+		"--main", "glm", "--helper", "nemotron", "--key-stdin", "--config", path)
 	if code != 0 || !strings.Contains(out, "Added glm.") {
 		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "main glm → rits/zai-org/glm-5-3") || !strings.Contains(out, "helper nemotron → rits/nvidia/nemotron-3") {
+		t.Errorf("stdout does not say what each word names now:\n%s", out)
 	}
 	want := `      - name: inference-router
         config:
@@ -214,61 +220,80 @@ func TestServerAdd_WritesAllThreeModels(t *testing.T) {
             glm:
               url: https://glm.example.com
               key: sk-glm
-              opus: glm-5.3
-              sonnet: glm-5.3
-              haiku: glm-5.3-air
+              main: glm
+              helper: nemotron
 `
 	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
 		t.Errorf("config does not end with the new entry:\n%s", got)
 	}
 }
 
-// All three or none, refused before the key is asked for: nothing ever falls back
-// silently, and a typo should not cost the user a pasted key.
-func TestServerAdd_RefusesAPartialSetOfModelsBeforeAskingForAKey(t *testing.T) {
+// Both words, refused before the key is asked for: a typo should not cost the user a
+// pasted key.
+func TestServerAdd_RefusesAMissingWordBeforeAskingForAKey(t *testing.T) {
 	asked := stubKeyPrompt(t, "sk")
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	before := readConfig(t, path)
-	code, _, errOut := runServerCmd(t, "", "add", "glm", "https://glm.example.com", "--opus", "glm-5.3", "--config", path)
-	want := "glm names a model for opus but not for sonnet or haiku; give all three, or none if it serves Claude Code's own names"
-	if code != 2 || !strings.Contains(errOut, want) {
-		t.Errorf("exit %d, stderr:\n%s\nwant %q", code, errOut, want)
+	code, _, errOut := runServerCmd(t, "", "add", "glm", "https://glm.example.com", "--main", "glm", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "--helper is empty") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
 	if *asked != "" || readConfig(t, path) != before {
-		t.Error("a partial set of models asked for a key or wrote the file")
+		t.Error("a missing word asked for a key or wrote the file")
 	}
 }
 
-// config.Load expands $NAME across the whole file, so a $ in a model would reach
-// the server as something else.
-func TestServerAdd_RefusesAModelTheConfigLoaderWouldExpand(t *testing.T) {
+// A word is checked against the server's own list, read with the key just given, so
+// a word naming none of its models is refused with the list to choose from, and a
+// list that cannot be read stops the add: its URL or key is wrong.
+func TestServerAdd_RefusesAWordTheServersListDoesNotName(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "sk", "add", "glm", "https://glm.example.com", "--main", "gemini", "--helper", "nemotron",
+		"--key-stdin", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "--main gemini names none of glm's models: "+strings.Join(anyModels, ", ")) {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	stubServerModels(t, nil, nil)
+	code, _, errOut = runServerCmd(t, "sk-wrong", "add", "glm", "https://glm.example.com", "--main", "glm", "--helper", "nemotron",
+		"--key-stdin", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "could not read glm's model list: the server answered 401") || strings.Contains(errOut, "sk-wrong") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("a refused add wrote the file")
+	}
+}
+
+// config.Load expands $NAME across the whole file, so a $ in a word would reach the
+// router as something else.
+func TestServerAdd_RefusesAWordTheConfigLoaderWouldExpand(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	code, _, errOut := runServerCmd(t, "sk", "add", "glm", "https://glm.example.com",
-		"--opus", "glm-$V", "--sonnet", "glm", "--haiku", "glm", "--key-stdin", "--config", path)
-	if code != 2 || !strings.Contains(errOut, "--opus contains $") {
+		"--main", "glm-$V", "--helper", "glm", "--key-stdin", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "--main contains $") {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
 }
 
-// Replacing a server replaces its models too, and the question says what the
-// server will map to, so dropping the flags is not a silent loss of the mapping.
-func TestServerAdd_ReplacingSaysWhatTheServerWillMapTo(t *testing.T) {
-	mapped := strings.Replace(routerBlock, "              key: sk-glm\n",
-		"              key: sk-glm\n              opus: glm-5.3\n              sonnet: glm-5.3\n              haiku: glm-5.3\n", 1)
-	path := serverEnv(t, newFakeStats(t, 0).addr(), mapped)
+// Replacing a server replaces its words too, and the question says what they will
+// be.
+func TestServerAdd_ReplacingSaysWhatTheServerWillUse(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
 	stubConfirm(t, true)
-	code, out, errOut := runServerCmd(t, "sk-glm", "add", "glm", "https://glm.example.com:8443", "--key-stdin", "--config", path)
-	if code != 0 || !strings.Contains(out, "Replacing it gives it this URL, key and model mapping (uses Claude Code's names)") {
+	code, out, errOut := runServerCmd(t, "sk-glm", "add", "glm", "https://glm.example.com:8443",
+		"--main", "nemotron", "--helper", "nemotron", "--key-stdin", "--config", path)
+	if code != 0 || !strings.Contains(out, "Replacing it gives it this URL, key and models (main nemotron · helper nemotron)") {
 		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
 	}
-	if got := readConfig(t, path); strings.Contains(got, "opus:") {
-		t.Errorf("the replaced server kept its models:\n%s", got)
+	if got := readConfig(t, path); strings.Contains(got, "main: glm") {
+		t.Errorf("the replaced server kept its old main word:\n%s", got)
 	}
 }
 
 func TestServerAdd_WithNoProxyRunningWritesForTheNextStart(t *testing.T) {
 	path := serverEnv(t, closedAddr(t), "")
-	code, out, errOut := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--key-stdin", "--config", path)
+	code, out, errOut := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 0 || !strings.Contains(out, "applies when the proxy next starts") {
 		t.Errorf("exit %d, stdout:\n%s%s", code, out, errOut)
 	}
@@ -281,7 +306,7 @@ func TestServerAdd_ReportsAReloadTheProxyRefused(t *testing.T) {
 	// Poll 1 is serverTarget's probe and poll 2 the baseline; the reload fails after.
 	path := serverEnv(t, newFakeStats(t, 3).addr(), "")
 	before := readConfig(t, path)
-	code, _, errOut := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--key-stdin", "--config", path)
+	code, _, errOut := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "the proxy refused it and keeps its previous configuration") ||
 		!strings.Contains(errOut, `configure "inference-router": refused`) {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
@@ -325,6 +350,8 @@ func TestServerRemove_RefusesTheOnlyServer(t *testing.T) {
 	only := strings.Replace(routerBlock, `            glm:
               url: https://glm.example.com:8443
               key: sk-glm
+              main: glm
+              helper: nemotron
           agents:
             claude-code: glm
 `, "", 1)
@@ -431,14 +458,14 @@ func TestServerReset_AnAgentThatIsNotRoutedChangesNothing(t *testing.T) {
 }
 
 // Every write is checked against the plugin's own rules before it lands, so a
-// config the proxy would refuse is never written — here, one a hand edit already
-// broke with one model of the three.
+// config the proxy would refuse is never written — here, one a hand edit left with
+// a field main and helper replaced.
 func TestServerWrites_NeverWriteAConfigThePluginRefuses(t *testing.T) {
 	broken := strings.Replace(routerBlock, "              key: sk-ete\n", "              key: sk-ete\n              opus: glm-5.3\n", 1)
 	path := serverEnv(t, newFakeStats(t, 0).addr(), broken)
 	before := readConfig(t, path)
 	code, _, errOut := runServerCmd(t, "", "use", "ete", "--agent", "opencode", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "ete names a model for opus but not for sonnet or haiku") {
+	if code != 1 || !strings.Contains(errOut, "servers.ete.opus: opus, sonnet and haiku were replaced by main and helper") {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
 	if readConfig(t, path) != before {
@@ -457,7 +484,7 @@ func TestServerAdd_ReplacingShowsNothingOfARefusedStoredURL(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			path := serverEnv(t, newFakeStats(t, 0).addr(), strings.Replace(routerBlock, "https://ete.example.com", raw, 1))
-			code, out, errOut := runServerCmd(t, "sk-new", "add", "ete", "https://ete.example.com", "--key-stdin", "--yes", "--config", path)
+			code, out, errOut := runServerCmd(t, "sk-new", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--yes", "--config", path)
 			if code != 0 {
 				t.Fatalf("exit %d: %s%s", code, out, errOut)
 			}
@@ -506,7 +533,7 @@ func TestServerAdd_RefusesKeyStdinFromATerminal(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	before := readConfig(t, path)
 
-	code, _, errOut := runServerCmd(t, "sk-typed\n", "add", "ete", "https://ete.example.com", "--key-stdin", "--config", path)
+	code, _, errOut := runServerCmd(t, "sk-typed\n", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "stdin is a terminal") || !strings.Contains(errOut, "Pipe the key in, or drop --key-stdin") {
 		t.Errorf("exit %d, stderr:\n%s", code, errOut)
 	}
@@ -539,7 +566,7 @@ func TestServer_SaysWhenTheRouterCannotRoute(t *testing.T) {
 			if !strings.Contains(flat(out), want) {
 				t.Errorf("use:\n%s%s", out, errOut)
 			}
-			_, out, errOut = runServerCmd(t, "sk-lan", "add", "lan", "http://127.0.0.1:4000", "--key-stdin", "--config", path)
+			_, out, errOut = runServerCmd(t, "sk-lan", "add", "lan", "http://127.0.0.1:4000", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 			if !strings.Contains(flat(out), want) {
 				t.Errorf("add:\n%s%s", out, errOut)
 			}
@@ -557,6 +584,8 @@ func TestServerRemove_TheOnlyServerWithAnAgentNamesBothSteps(t *testing.T) {
 	only := strings.Replace(routerBlock, `            ete:
               url: https://ete.example.com
               key: sk-ete
+              main: opus
+              helper: haiku
 `, "", 1)
 	path := serverEnv(t, newFakeStats(t, 0).addr(), only)
 	code, _, errOut := runServerCmd(t, "", "remove", "glm", "--config", path)
@@ -651,11 +680,6 @@ func (k historyKeeper) Prior(id string, after uint64) (session.Prior, bool) {
 // Removing a server that running sessions still use goes ahead, and says how many last sent
 // their inference there. Counted from where each session's inference went, port and case
 // ignored, so ete's two count and glm's one and the tunnel-only session do not.
-//
-// AND SAYS WHICH OF THEM GET THE ERROR, because not all do. A session the router pinned to ete
-// gets it from its next request to a server that is left; one addressed to ete's own host is
-// not routed at all once ete is gone (skip/not_an_inference_server, seen live), and goes there
-// with the agent's own key. "Each gets an error" was true of neither half alone.
 func TestServerRemove_WarnsHowManyRunningSessionsUseIt(t *testing.T) {
 	sessions := sessionsAPI(t, "ete.example.com", "ETE.example.com:443", "glm.example.com:8443")
 	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
@@ -664,13 +688,11 @@ func TestServerRemove_WarnsHowManyRunningSessionsUseIt(t *testing.T) {
 		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
 	}
 	if want := "warning: 2 running sessions last sent inference to ete. A session the proxy routed there gets an error " +
-		"asking for a new session from its next request to a server that is left, until ete is added back; a request " +
-		"addressed to ete's own host is no longer routed, and goes there with the agent's own key."; !strings.Contains(flat(errOut), want) {
+		"asking for a new session, until ete is added back."; !strings.Contains(flat(errOut), want) {
 		t.Errorf("want %q in stderr:\n%s", want, errOut)
 	}
-	if want := "A session the proxy routed to it now gets an error asking for a new session from its next request to a " +
-		"server that is left; a request addressed to ete's own host is no longer routed, and goes there with the agent's " +
-		"own key. Adding ete back routes them to it again."; !strings.Contains(flat(out), want) {
+	if want := "A session the proxy routed to it now gets an error asking for a new session. " +
+		"Adding ete back routes them to it again."; !strings.Contains(flat(out), want) {
 		t.Errorf("want %q in stdout:\n%s", want, out)
 	}
 }
@@ -732,7 +754,7 @@ func TestServerRemove_CountsASessionResumedAfterARestart(t *testing.T) {
 // add points at both ways to route the new server: the agents pane's S and the command.
 func TestServerAdd_NamesBothWaysToRouteIt(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
-	_, out, _ := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--key-stdin", "--config", path)
+	_, out, _ := runServerCmd(t, "sk-ete", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
 	if want := "Added ete. No agent uses it yet: press S on agentop's agents pane, or run\n  agentop server use ete --agent claude-code"; !strings.Contains(out, want) {
 		t.Errorf("want %q in stdout:\n%s", want, out)
 	}

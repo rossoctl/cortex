@@ -269,25 +269,21 @@ without being recorded once the service has named a session. Before that, they a
 recorded. See
 [How traffic is grouped into sessions](../laptop-service.md#how-traffic-is-grouped-into-sessions).
 
-**Switching inference servers is OpenCode's own job.** `opencode.json` defines
-providers, each with its own base URL and key, and OpenCode switches provider and
-model inside a session. Cortex's `inference-router` therefore leaves OpenCode
-alone unless `agentop server use <name> --agent opencode` lists it. Listing it
-sends OpenCode's new sessions that address one of the configured servers to the
-chosen one, whatever provider was picked in OpenCode, so the server must serve
-the model names OpenCode asks for. A server with models of its own (`agentop
-server add --opus --sonnet --haiku`) gets the same rule as every routed agent: a
-name with a Claude family word, `claude-sonnet-4-5` say, is sent for the server's
-model of that family; a Claude name of no family, `claude-fable-5-1`, is refused
-with a 400; and any other name — `glm-4.6`, or one of the server's three models —
-goes as it is, for the server to answer. A session that used another
-provider first is still new to the router when it addresses a server: only a
-request to a configured server says which server a session is on. The reason to do it is to
-keep keys out of `opencode.json`: on a routed request the router puts the
-configured server's key in the `X-Api-Key` or `Authorization` header OpenCode
-sent, and when OpenCode sent neither, it adds `Authorization: Bearer <key>`. No
-other header is replaced, so a credential OpenCode sends in any other header
-reaches the server unchanged.
+**Switching inference servers.** `agentop server use <name> --agent opencode`
+sends OpenCode's new sessions to that server, whatever provider is picked in
+OpenCode: its requests to OpenCode Zen (`/zen/v1/chat/completions`, `/messages`
+and `/responses`) or to any other provider are captured and sent to the server, so
+nothing in `opencode.json` needs to change. OpenCode's own model choice goes first;
+a name the server refuses — every one of Zen's own, such as
+`nemotron-3.5-lightning-free` — is sent again, before OpenCode sees the refusal,
+with the server's `main` model for a request with tools and its `helper` model for
+one without, such as a title. OpenCode keeps showing the name it picked; agentop's
+detail pane shows the model that answered. On a routed request the router puts the
+server's key in the `X-Api-Key` or `Authorization` header OpenCode sent, and adds
+`Authorization: Bearer <key>` when it sent neither. Zen's paid models are only
+offered by OpenCode once it has a Zen key: any value in `OPENCODE_API_KEY` will
+do, since the router replaces it. A session already running on Zen when OpenCode
+is routed stays on Zen.
 
 ## Verified depth
 
@@ -335,9 +331,13 @@ Not tested live:
   [#941](https://github.com/rossoctl/cortex/issues/941) has one user's report of a
   LiteLLM run, started with `agentop exec` under its earlier name, in which token counts
   showed.
-- **Routing through `inference-router`** with a live OpenCode. It is covered so far by
-  unit and listener tests and by scratch-`HOME` runs of `agentop server` against a fake
-  stats server.
+
+Routing through `inference-router` was tested live on 2026-10-09 with OpenCode 2.0.26
+(`opencode run --standalone`), through a scratch Cortex in front of a GLM LiteLLM
+server: Zen's `nemotron-3.5-lightning-free` was captured from `opencode.ai`, refused by
+the server, and sent again with the server's main model for the tool-carrying turns and
+its helper for the title, before OpenCode saw a refusal; a file was written and read
+back.
 
 ## Known issues
 

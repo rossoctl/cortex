@@ -1,11 +1,13 @@
 package forwardproxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -15,11 +17,11 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/storage/filestore"
 
 	// The laptop's outbound chain, built through the registry as cmd/cortex builds it.
 	_ "github.com/rossoctl/cortex/core/plugins/inferenceparser"
@@ -28,11 +30,14 @@ import (
 )
 
 // bodyOrigin is a plain-http inference server that keeps the body and Authorization
-// of every request, and answers each with an Anthropic message reporting usage.
+// of every request, and answers each with an Anthropic message reporting usage — or,
+// for a request naming refuse as its model, with LiteLLM's refusal of a model the
+// team may not use.
 type bodyOrigin struct {
 	mu     sync.Mutex
 	bodies []string
 	keys   []string
+	refuse string
 }
 
 func newBodyOrigin(t *testing.T, usage string) (*httptest.Server, *bodyOrigin) {
@@ -40,11 +45,21 @@ func newBodyOrigin(t *testing.T, usage string) (*httptest.Server, *bodyOrigin) {
 	o := &bodyOrigin{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		if r.Method == http.MethodGet {
+			http.NotFound(w, r) // the router's model-list fetch; the stored list stands
+			return
+		}
 		o.mu.Lock()
 		o.bodies = append(o.bodies, string(b))
 		o.keys = append(o.keys, r.Header.Get("Authorization"))
+		refuse := o.refuse != "" && strings.Contains(string(b), `"model":"`+o.refuse+`"`)
 		o.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if refuse {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"type":"team_model_access_denied","param":"model","code":"403"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"glm-big",` +
 			`"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":` + usage + `}`))
 	}))
@@ -105,8 +120,20 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	// realistic one.
 	ete, eteSaw := newBodyOrigin(t, `{"input_tokens":1300,"output_tokens":5}`)
 	glm, glmSaw := newBodyOrigin(t, `{"input_tokens":1300,"output_tokens":5}`)
+	glmSaw.refuse = "claude-opus-5-5" // glm serves its own models, not Claude Code's name
 	eteURL := ete.URL
 	glmURL := strings.Replace(glm.URL, "127.0.0.1", "localhost", 1)
+
+	// glm's model list, kept in the plugin store as a previous fetch would have left
+	// it, so the router's substitute resolves from the first request.
+	st, err := filestore.Open(filepath.Join(t.TempDir(), "plugin-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Set(context.Background(), "inference-router/models/glm", `["glm-big","glm-small"]`, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	const glmRate, claudeRate = 1e-6, 100e-6
 	chain := []config.PluginEntry{
@@ -114,8 +141,8 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 		{Name: "tool-prune", Config: json.RawMessage(`{"remove": ["Unused"]}`)},
 		{Name: "inference-router", Config: json.RawMessage(`{
 			"servers": {
-				"ete": {"url": "` + eteURL + `", "key": "ete-key"},
-				"glm": {"url": "` + glmURL + `", "key": "glm-key", "opus": "glm-big", "sonnet": "glm-mid", "haiku": "glm-small"}
+				"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+				"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm-big", "helper": "glm-small"}
 			},
 			"agents": {"claude-code": "glm"}
 		}`)},
@@ -123,10 +150,15 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	p, err := plugins.BuildWithDeps(chain, plugins.Deps{
 		Pricing:  inputRates(t, map[string]float64{"glm-big": glmRate, "claude-opus-5-5": claudeRate}),
 		Listener: pipeline.ListenerSupport{Listener: "forward proxy", Destination: true},
+		Store:    st,
 	})
 	if err != nil {
 		t.Fatalf("BuildWithDeps: %v", err)
 	}
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer p.Stop(context.Background())
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 	shared := memstore.New()
@@ -165,16 +197,20 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// The wire: glm got the pruned body for its own model, with its own key.
+	// The wire: glm got the pruned body twice, with its own key: for Claude Code's
+	// name, which it refused, and again for its own model, which it answered.
 	if bodies, _ := eteSaw.seen(); len(bodies) != 0 {
 		t.Errorf("ete received %d requests, want none: the request was routed to glm", len(bodies))
 	}
 	bodies, keys := glmSaw.seen()
-	if len(bodies) != 1 || bodies[0] != want {
-		t.Fatalf("glm received %q, want exactly %q", bodies, want)
+	asked := strings.Replace(want, `"model":"glm-big"`, `"model":"claude-opus-5-5"`, 1)
+	if len(bodies) != 2 || bodies[0] != asked || bodies[1] != want {
+		t.Fatalf("glm received %q, want %q refused and then %q", bodies, asked, want)
 	}
-	if keys[0] != "Bearer glm-key" {
-		t.Errorf("glm received Authorization %q, want Bearer glm-key", keys[0])
+	for _, k := range keys {
+		if k != "Bearer glm-key" {
+			t.Errorf("glm received Authorization %q, want Bearer glm-key", k)
+		}
 	}
 
 	// The session: one request event and one response event for the request.
@@ -182,18 +218,25 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	if v == nil {
 		t.Fatal("no session s1 recorded")
 	}
-	var reqEv, respEv *pipeline.SessionEvent
+	// The last of each is the resent attempt's; the refused one is recorded under
+	// glm, where it went, with the host the client named beside it.
+	var reqEv, respEv, refused *pipeline.SessionEvent
 	for i := range v.Events {
 		e := &v.Events[i]
 		if e.Direction != pipeline.Outbound || e.Inference == nil {
 			continue
 		}
-		switch e.Phase {
-		case pipeline.SessionRequest:
+		switch {
+		case e.Phase == pipeline.SessionRequest:
 			reqEv = e
-		case pipeline.SessionResponse:
+		case e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusForbidden:
+			refused = e
+		case e.Phase == pipeline.SessionResponse:
 			respEv = e
 		}
+	}
+	if refused == nil || refused.Host != strings.TrimPrefix(glmURL, "http://") || refused.RequestedHost != strings.TrimPrefix(eteURL, "http://") {
+		t.Errorf("refused row = %+v; want it under glm's host, requested for ete's", refused)
 	}
 	if reqEv == nil || respEv == nil {
 		t.Fatalf("want an outbound inference request and response in s1, got %d events", len(v.Events))
@@ -202,7 +245,7 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	if got := reasonsOf(reqEv.Invocations, "tool-prune"); !slices.Contains(got, "modify/body_rewritten") {
 		t.Errorf("tool-prune recorded %v, want its modify/body_rewritten", got)
 	}
-	wantRouter := []string{"modify/redirected", "modify/body_rewritten", "modify/model_rewritten", "modify/routed"}
+	wantRouter := []string{"modify/redirected", "modify/routed", "modify/body_rewritten", "modify/model_rewritten", "modify/resent"}
 	if got := reasonsOf(reqEv.Invocations, "inference-router"); !slices.Equal(got, wantRouter) {
 		t.Errorf("the router recorded %v, want %v", got, wantRouter)
 	}
@@ -253,90 +296,5 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	if wantUSD := float64(wantTokens) * glmRate; s.Tier != pricing.TierInput.String() || math.Abs(s.USD-wantUSD) > 1e-9 {
 		t.Errorf("saving priced at $%g in tier %q, want $%g in input: glm-big's rate, not claude-opus-5-5's ($%g)",
 			s.USD, s.Tier, wantUSD, float64(wantTokens)*claudeRate)
-	}
-}
-
-// A request the router refuses for its model was redirected first, and the listener
-// applies the redirect before it answers the refusal. So the denied row names the
-// server's host, with requestedHost the one the client asked for, and /v1/usage
-// counts the denial under the server — where an operator looking for the 400 will
-// look — while agentop's detail pane shows a redirected: line for it.
-func TestForwardProxy_ARouterRefusalIsRecordedUnderTheServer(t *testing.T) {
-	ete, eteSaw := newBodyOrigin(t, `{"input_tokens":1,"output_tokens":1}`)
-	glm, glmSaw := newBodyOrigin(t, `{"input_tokens":1,"output_tokens":1}`)
-	glmURL := strings.Replace(glm.URL, "127.0.0.1", "localhost", 1)
-	p, err := plugins.BuildWithDeps([]config.PluginEntry{
-		{Name: "inference-parser"},
-		{Name: "inference-router", Config: json.RawMessage(`{
-			"servers": {
-				"ete": {"url": "` + ete.URL + `", "key": "ete-key"},
-				"glm": {"url": "` + glmURL + `", "key": "glm-key", "opus": "glm-big", "sonnet": "glm-mid", "haiku": "glm-small"}
-			},
-			"agents": {"claude-code": "glm"}
-		}`)},
-	}, plugins.Deps{Listener: pipeline.ListenerSupport{Listener: "forward proxy", Destination: true}})
-	if err != nil {
-		t.Fatalf("BuildWithDeps: %v", err)
-	}
-	store := session.New(5*time.Minute, 100, 0)
-	defer store.Close()
-	shared := memstore.New()
-	defer shared.Close()
-	srv := &Server{
-		OutboundPipeline: pipeline.NewHolder(p),
-		Sessions:         store,
-		Shared:           shared,
-		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
-		Client:           http.DefaultClient,
-	}
-	proxy := httptest.NewServer(srv.Handler())
-	defer proxy.Close()
-
-	req, err := http.NewRequest(http.MethodPost, ete.URL+"/v1/messages",
-		strings.NewReader(`{"model":"claude-fable-5-1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-cli/2.1.286 (external, cli)")
-	req.Header.Set("Authorization", "Bearer client-key")
-	req.Header.Set(session.ClaudeCodeSessionHeader, "s1")
-	resp, err := proxyClient(proxy, nil).Do(req)
-	if err != nil {
-		t.Fatalf("request through the proxy: %v", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "glm has no model for claude-fable-5-1") {
-		t.Fatalf("response = %d %s, want the router's 400", resp.StatusCode, body)
-	}
-	for name, o := range map[string]*bodyOrigin{"ete": eteSaw, "glm": glmSaw} {
-		if bodies, _ := o.seen(); len(bodies) != 0 {
-			t.Errorf("%s received %d requests, want none: the request was refused", name, len(bodies))
-		}
-	}
-
-	var denied *pipeline.SessionEvent
-	for _, e := range store.View("s1").Events {
-		if e.Phase == pipeline.SessionDenied {
-			denied = &e
-		}
-	}
-	glmHost := strings.TrimPrefix(glmURL, "http://")
-	eteHost := strings.TrimPrefix(ete.URL, "http://")
-	if denied == nil || denied.Host != glmHost || denied.RequestedHost != eteHost {
-		t.Fatalf("denied row = %+v; want host %s and requestedHost %s", denied, glmHost, eteHost)
-	}
-
-	agg := usage.New()
-	agg.Record("s1", denied)
-	var series []string
-	for _, b := range agg.Snapshot(time.Minute, usage.BucketWidth, "", usage.GroupEndpoint).Buckets {
-		for k := range b.Series {
-			series = append(series, k)
-		}
-	}
-	if len(series) != 1 || !strings.Contains(series[0], "localhost") {
-		t.Errorf("/v1/usage endpoint series = %q, want the denial under glm's host (localhost)", series)
 	}
 }

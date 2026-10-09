@@ -11,22 +11,13 @@ import (
 )
 
 var twoServers = routerconfig.Config{Servers: map[string]routerconfig.Server{
-	"ete": {URL: "https://ete.example.com", Key: "k"},
-	"glm": {URL: "https://GLM.example.com:8443", Key: "k"},
+	"ete": {URL: "https://ete.example.com", Key: "k", Main: "opus", Helper: "haiku"},
+	"glm": {URL: "https://GLM.example.com:8443", Key: "k", Main: "glm", Helper: "nemotron"},
 }}
 
 func TestMapping(t *testing.T) {
-	for _, tc := range []struct {
-		s    routerconfig.Server
-		want string
-	}{
-		{routerconfig.Server{}, "uses Claude Code's names"},
-		{routerconfig.Server{Opus: "glm-5.3", Sonnet: "glm-5.3", Haiku: "glm-5.3"}, "all → glm-5.3"},
-		{routerconfig.Server{Opus: "big", Sonnet: "mid", Haiku: "small"}, "opus → big · sonnet → mid · haiku → small"},
-	} {
-		if got := Mapping(tc.s); got != tc.want {
-			t.Errorf("Mapping(%+v) = %q, want %q", tc.s, got, tc.want)
-		}
+	if got := Mapping(routerconfig.Server{Main: "glm", Helper: "nemotron"}); got != "main glm · helper nemotron" {
+		t.Errorf("Mapping = %q, want main glm · helper nemotron", got)
 	}
 }
 
@@ -104,12 +95,12 @@ func TestVerify(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Pipeline.Outbound.Plugins = []config.PluginEntry{
 		{Name: "tool-prune", Config: []byte(`{"remove": []}`)},
-		{Name: PluginName, Config: []byte(`{"servers": {"ete": {"url": "https://ete.example.com", "key": "k"}}, "agents": {"claude-code": "glm"}}`)},
+		{Name: PluginName, Config: []byte(`{"servers": {"ete": {"url": "https://ete.example.com", "key": "k", "main": "opus", "helper": "haiku"}}, "agents": {"claude-code": "glm"}}`)},
 	}
 	if err := Verify(cfg); err == nil || !strings.Contains(err.Error(), `"glm" is not a server listed under servers`) {
 		t.Errorf("Verify = %v, want the plugin's refusal of an agent routed to no server", err)
 	}
-	cfg.Pipeline.Outbound.Plugins[1].Config = []byte(`{"servers": {"ete": {"url": "https://ete.example.com", "key": "k"}}, "agents": {"claude-code": "ete"}}`)
+	cfg.Pipeline.Outbound.Plugins[1].Config = []byte(`{"servers": {"ete": {"url": "https://ete.example.com", "key": "k", "main": "opus", "helper": "haiku"}}, "agents": {"claude-code": "ete"}}`)
 	if err := Verify(cfg); err != nil {
 		t.Errorf("Verify = %v on a valid router entry", err)
 	}

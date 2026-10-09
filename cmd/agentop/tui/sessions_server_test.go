@@ -19,7 +19,7 @@ import (
 )
 
 // oneServerRaw is a router with a single server: nothing for a SERVER column to tell apart.
-const oneServerRaw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete"}}}`
+const oneServerRaw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete","main":"opus","helper":"haiku"}}}`
 
 // serverCellOf is the cell under the column titled title in session id's row, and whether the
 // column is there at all.

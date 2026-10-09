@@ -40,100 +40,47 @@ type Config struct {
 type Server struct {
 	URL    string `json:"url" required:"true" description:"scheme://host[:port] of the server; no path."`
 	Key    string `json:"key" required:"true" description:"API key sent to this server in place of the client's."`
-	Opus   string `json:"opus" description:"This server's model for Claude Code's opus requests. Give opus, sonnet and haiku together, or none when the server serves Claude Code's own names."`
-	Sonnet string `json:"sonnet" description:"This server's model for Claude Code's sonnet requests. Give opus, sonnet and haiku together, or none when the server serves Claude Code's own names."`
-	Haiku  string `json:"haiku" description:"This server's model for Claude Code's haiku requests. Give opus, sonnet and haiku together, or none when the server serves Claude Code's own names."`
+	Main   string `json:"main" required:"true" description:"A word naming this server's model for an agent's main work, a request with tools, sent when the server refuses the model the agent asked for. The newest listed model whose name contains it."`
+	Helper string `json:"helper" required:"true" description:"A word naming this server's model for an agent's helper calls, a request without tools. Resolved as main is."`
 }
 
-// Families are the Claude model families a server maps to models of its own, in
-// the order they are shown.
-var Families = []string{"opus", "sonnet", "haiku"}
-
-// Mapped reports whether s names its own models. A server that does not serves
-// Claude Code's own names, and the router passes every name through to it.
-func (s Server) Mapped() bool { return s.Opus != "" || s.Sonnet != "" || s.Haiku != "" }
-
-// ModelFor is s's model for family, one of Families, and "" for any other.
-func (s Server) ModelFor(family string) string {
-	switch family {
-	case "opus":
-		return s.Opus
-	case "sonnet":
-		return s.Sonnet
-	case "haiku":
-		return s.Haiku
+// CheckWord reports whether word can name a server's main or helper model. A word is
+// matched against a model's name with everything up to the last "/" dropped, so one
+// containing a "/" could never match; whitespace never appears in a model's name.
+func CheckWord(word string) error {
+	switch {
+	case word == "":
+		return errors.New("is empty: give a word of the model's name, such as opus or glm")
+	case strings.Contains(word, "/"):
+		return fmt.Errorf("%q has a /: give a word of the name after the provider's prefix", word)
+	case strings.IndexFunc(word, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0:
+		return fmt.Errorf("%q has whitespace or a control character", word)
 	}
-	return ""
+	return nil
 }
 
-// CheckModels reports whether s names its models the way the router maps them:
-// all three families, or none. name is the server's, for the message. A partial
-// set is refused rather than filled in, because nothing may fall back silently: a
-// family with no model would otherwise reach the server under Claude Code's name.
-func CheckModels(name string, s Server) error {
-	var given, missing []string
-	for _, f := range Families {
-		if s.ModelFor(f) != "" {
-			given = append(given, f)
-		} else {
-			missing = append(missing, f)
+// replacedFields are a server's fields from before main and helper, refused by name
+// so a config written for them says what replaced them.
+var replacedFields = []string{"opus", "sonnet", "haiku"}
+
+// refuseReplaced reports a server that still names its models by Claude family.
+// raw is read leniently here; Decode's strict pass would only say "unknown field".
+func refuseReplaced(raw json.RawMessage) error {
+	var probe struct {
+		Servers map[string]map[string]json.RawMessage `json:"servers"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return nil // the strict pass reports it
+	}
+	for _, name := range slices.Sorted(maps.Keys(probe.Servers)) {
+		for _, f := range replacedFields {
+			if _, ok := probe.Servers[name][f]; ok {
+				return fmt.Errorf("servers.%s.%s: opus, sonnet and haiku were replaced by main and helper, "+
+					"each a word of one of the server's own model names", name, f)
+			}
 		}
 	}
-	if len(given) == 0 || len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s names a model for %s but not for %s; give all three, or none if it serves Claude Code's own names",
-		name, joinWords(given, "and"), joinWords(missing, "or"))
-}
-
-// joinWords is "a", "a and b" or "a, b and c", with conj in place of "and".
-func joinWords(words []string, conj string) string {
-	if len(words) == 1 {
-		return words[0]
-	}
-	return strings.Join(words[:len(words)-1], ", ") + " " + conj + " " + words[len(words)-1]
-}
-
-// Family is the Claude model family a requested model name belongs to: "opus",
-// "sonnet" or "haiku" when exactly one of them is a word of the name — split at
-// anything that is not a letter or a digit, case ignored — and "" otherwise.
-//
-// Read off the name rather than a list of ids, so the mapping survives Claude Code
-// moving to a newer version, and a dated id such as claude-haiku-4-5-20251001 or a
-// provider's prefixed one still maps. A name with no family, such as
-// claude-fable-5-1, has none, and nor does one naming two: the router refuses
-// those rather than guess.
-func Family(model string) string {
-	found := ""
-	for _, w := range nameWords(model) {
-		if !slices.Contains(Families, w) || w == found {
-			continue
-		}
-		if found != "" {
-			return ""
-		}
-		found = w
-	}
-	return found
-}
-
-// IsClaudeName reports whether model is a Claude model name: "claude" is a word of
-// it, split as Family splits, so claude-fable-5-1, a provider's prefixed
-// anthropic/claude-haiku-4-5 or a dated Bedrock id is one, and claudette-7b is not.
-//
-// The router refuses such a name when it has no family the server maps, since it
-// was asked for one of Claude's models and the server serves none of them; any
-// other name is the client's to choose and the server's to answer.
-func IsClaudeName(model string) bool {
-	return slices.Contains(nameWords(model), "claude")
-}
-
-// nameWords is model lowercased and split at anything that is not a letter or a
-// digit: the words Family and IsClaudeName read.
-func nameWords(model string) []string {
-	return strings.FieldsFunc(strings.ToLower(model), func(r rune) bool {
-		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
-	})
+	return nil
 }
 
 // Decode reads raw, the entry's config: block as JSON, refusing unknown fields, and
@@ -143,6 +90,9 @@ func nameWords(model string) []string {
 func Decode(raw json.RawMessage) (Config, error) {
 	var c Config
 	if len(raw) > 0 {
+		if err := refuseReplaced(raw); err != nil {
+			return Config{}, err
+		}
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&c); err != nil {
@@ -188,8 +138,11 @@ func (c Config) Validate() error {
 		if err := CheckKey(s.Key); err != nil {
 			return fmt.Errorf("servers.%s.key: %w", name, err)
 		}
-		if err := CheckModels(name, s); err != nil {
-			return fmt.Errorf("servers.%s: %w", name, err)
+		if err := CheckWord(s.Main); err != nil {
+			return fmt.Errorf("servers.%s.main: %w", name, err)
+		}
+		if err := CheckWord(s.Helper); err != nil {
+			return fmt.Errorf("servers.%s.helper: %w", name, err)
 		}
 	}
 	for _, agent := range slices.Sorted(maps.Keys(c.Agents)) {

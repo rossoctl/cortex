@@ -40,16 +40,20 @@ pipeline:
             ete:
               url: https://ete.example.com
               key: sk-ete
+              main: opus
+              helper: haiku
             glm:
               url: https://glm.example.com:8443
               key: sk-glm
+              main: glm
+              helper: nemotron
           agents:
             claude-code: ete
 `
 
 // routerRaw is routerYAML's router config as /v1/pipeline's source holds it, before redaction.
-const routerRaw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete"},` +
-	`"glm":{"url":"https://glm.example.com:8443","key":"sk-glm"}},"agents":{"claude-code":"ete"}}`
+const routerRaw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete","main":"opus","helper":"haiku"},` +
+	`"glm":{"url":"https://glm.example.com:8443","key":"sk-glm","main":"glm","helper":"nemotron"}},"agents":{"claude-code":"ete"}}`
 
 // routerPipeline is /v1/pipeline with the router configured as raw, its keys redacted as the
 // proxy serves them.

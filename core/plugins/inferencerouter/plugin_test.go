@@ -29,8 +29,8 @@ const (
 func routerConfig(agents string) string {
 	return `{
 		"servers": {
-			"ete": {"url": "https://ete.example.com", "key": "ete-key"},
-			"glm": {"url": "https://glm.example.com:8443", "key": "glm-key"}
+			"ete": {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "https://glm.example.com:8443", "key": "glm-key", "main": "opus", "helper": "haiku"}
 		},
 		"agents": {` + agents + `}
 	}`
@@ -149,10 +149,14 @@ func pinOf(t *testing.T, store *memstore.Store, session string) (string, bool) {
 	return pn.server, true
 }
 
+// A request to a host that is no server, and that no parser read as inference, is
+// not the router's: it goes where the agent sent it. (An inference request there is
+// captured; see models_test.go.)
 func TestRouter_IgnoresAHostThatIsNoServer(t *testing.T) {
 	store := newStore(t)
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	pctx := request(store, "api.anthropic.com", claudeUA, "s1")
+	pctx.Extensions.Inference = nil
 	run(t, p, pctx)
 
 	assertUntouched(t, pctx, "api.anthropic.com")
@@ -517,8 +521,8 @@ func TestConfigure_WarnsOnPlainHTTPToAnotherMachine(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	err := New().Configure(json.RawMessage(`{"servers": {
-		"lan": {"url": "http://10.0.0.5:4000", "key": "k"},
-		"local": {"url": "http://localhost:4000", "key": "k"}}}`))
+		"lan": {"url": "http://10.0.0.5:4000", "key": "k", "main": "opus", "helper": "haiku"},
+		"local": {"url": "http://localhost:4000", "key": "k", "main": "opus", "helper": "haiku"}}}`))
 	if err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -607,28 +611,41 @@ func TestRouter_ARunningSessionTheRouterHasNotSeenStaysWhereItWent(t *testing.T)
 	assertRecord(t, next, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "pin": pinExisting})
 }
 
-// Only a request to a server's host says which server a session is on: the router
-// never routes a request to any other host, so one there says nothing about where
-// the session lives. OpenCode switches providers inside a session, so its first
-// requests can go to Zen or another provider before it addresses a server; that
-// session is new to the router and goes to its agent's server, with the server's
-// key. Treating it as not routed kept the client's own key on the server for the
-// session's whole life, a 401 on every request.
-func TestRouter_AnEarlierRequestToAHostNoServerHasIsNoEvidence(t *testing.T) {
-	for _, tc := range []struct{ name, ua, host string }{
-		{"opencode after another provider", opencodeUA, "opencode.ai"},
-		{"claude-code after api.anthropic.com", claudeUA, "api.anthropic.com"},
+// An earlier request to a host that is no server says where a session ran when it
+// is one the router captures. Recorded where the agent sent it, it was made while
+// the router was not routing the agent, so the session ran unrouted and stays so:
+// switching an agent onto a server must not move a conversation already running on
+// its provider. A request the router captured is recorded under its server's host,
+// so the session is on that server. A row naming no method or path, from before
+// rows carried them, is no evidence either way.
+func TestRouter_AnEarlierRequestToAnotherHost(t *testing.T) {
+	zen := func(requestedHost, host string) pipeline.SessionEvent {
+		e := sent(host, opencodeUA)
+		e.HTTPMethod, e.HTTPPath, e.RequestedHost = http.MethodPost, "/zen/v1/chat/completions", requestedHost
+		return e
+	}
+	for _, tc := range []struct {
+		name     string
+		earlier  pipeline.SessionEvent
+		wantHost string
+		wantPin  string
+	}{
+		{"ran unrouted on its provider", zen("", "opencode.ai"), "opencode.ai", ""},
+		{"captured to a server", zen("opencode.ai", "ete.example.com"), eteHost, "ete"},
+		{"a row with no method or path", sent("opencode.ai", opencodeUA), glmHost, "glm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newStore(t)
-			p := build(t, routerConfig(`"claude-code": "glm", "opencode": "glm"`))
-			pctx := withHistory(request(store, eteHost, tc.ua, "running"), sent(tc.host, tc.ua))
+			p := build(t, routerConfig(`"opencode": "glm"`))
+			pctx := withHistory(request(store, "opencode.ai", opencodeUA, "running"), tc.earlier)
+			pctx.Path = "/zen/v1/chat/completions"
 			run(t, p, pctx)
 
-			assertRouted(t, pctx, glmHost, "glm-key")
-			assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNew})
-			if pin, _ := pinOf(t, store, "running"); pin != "glm" {
-				t.Errorf("pin = %q, want glm", pin)
+			if pctx.Host != tc.wantHost {
+				t.Errorf("Host = %q, want %q", pctx.Host, tc.wantHost)
+			}
+			if pin, ok := pinOf(t, store, "running"); !ok || pin != tc.wantPin {
+				t.Errorf("pin = %q, %v; want %q", pin, ok, tc.wantPin)
 			}
 		})
 	}
