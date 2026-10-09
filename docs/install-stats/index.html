@@ -393,37 +393,36 @@ function renderReleases(snapshots) {
 
   const rows = rels.map((r) => {
     const isCurrent = r.tag === current;
-    // Through people(), not a bare Math.max: the clamp alone renders an underflow
-    // as a bold, plausible 0, which is the failure people() exists to prevent.
+
+    // Both platform columns are NON-CI, so that "Installs" means one thing across
+    // the whole table. CI comes off Linux alone because the smoke test runs only
+    // on Linux, so the Mac figure needs no adjustment.
     //
-    // And from r.installs (checksums.txt), not the halved tarball columns beside
-    // it: checksums is the independent count, it is what the daily table uses, and
-    // the two disagree slightly when a binary is downloaded by hand.
-    const est = isCurrent && ciInstalls !== null
-      ? people(r.installs, ciInstalls) : null;
+    // Through people(), not a bare Math.max: the clamp alone would render an
+    // underflow as a bold, plausible number, which is the failure people() exists
+    // to prevent.
+    const linuxEst = isCurrent && ciInstalls !== null
+      ? people(r.linux, ciInstalls) : null;
+    const linuxCell = linuxEst === null ? String(r.linux)
+      : linuxEst.underflow
+        ? `<span class="delta" title="${r.linux} Linux installs against ${ciInstalls} CI, so this would be ${linuxEst.raw}">~0</span>`
+        // A floor subtracted gives an upper bound, not a figure.
+        : ciPartial
+          ? `<span class="delta" title="CI for this release is a floor, so this is an upper bound">≤${linuxEst.value}</span>`
+          : `<strong class="mac">${linuxEst.value}</strong>`;
 
     return `<tr>
       <td><code>${esc(r.tag)}</code>${
         isCurrent ? ' <span class="pre">current</span>'
           : r.prerelease ? ' <span class="pre">pre-release</span>' : ""
       }</td>
-      <td class="ci">${r.linux}</td>
+      <td class="ci">${linuxCell}</td>
       <td class="mac">${r.mac}</td>
       <td class="delta"${isCurrent && ciRuns !== null
-        ? ` title="${ciRuns} runs × ${CI_INSTALLS_PER_RUN} installs each, since ${esc(r.published_at.slice(0, 10))}${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
+        ? ` title="${ciRuns} runs × ${CI_INSTALLS_PER_RUN} install each, since ${esc(r.published_at.slice(0, 10))}${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
         : ""}>${
         ciInstalls === null || !isCurrent ? "—"
           : (ciPartial ? "≥" : "") + ciInstalls
-      }</td>
-      <td>${
-        est === null ? "—"
-          : est.underflow
-            ? `<span class="delta" title="${r.installs} installs against ${ciInstalls} CI, so this would be ${est.raw}">~0</span>`
-            // Subtracting a floor gives an upper bound, not a figure. When CI is
-            // marked "≥", this has to be marked "≤" or it reads as exact.
-            : ciPartial
-              ? `<span class="delta" title="CI for this release is a floor, so this remainder is an upper bound">≤${est.value}</span>`
-              : `<strong class="mac">${est.value}</strong>`
       }</td>
     </tr>`;
   }).join("");
@@ -432,23 +431,24 @@ function renderReleases(snapshots) {
     <thead><tr>
       <th>Release</th>
       <th>Linux Installs</th><th>Mac Installs</th>
-      <th>CI Tests</th><th>Cortex Installs</th>
+      <th>CI Tests</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <p class="sub" style="margin-top:.7rem">
     <strong>Linux</strong> and <strong>Mac Installs</strong> are lifetime figures
-    including CI, from tarball downloads, halved because each install fetches two
-    binaries of one platform.
-    <strong>CI Tests</strong> counts installs consumed by the release smoke test —
-    one per successful run. It is filled for the current release only: a run
-    carries no tag, so
-    what is known is that it installed whichever release was newest at the time.
-    <code>—</code> means unknown, not zero, and <code>≥</code> means the run history
-    does not reach back to publication so the figure is a floor.
-    <strong>Cortex Installs</strong> is the remainder for that release — the
-    all-time equivalent of the daily table's column, over the release's own
-    lifetime rather than a fixed window.
+    and <strong>exclude CI</strong>, so "Installs" means the same thing here as in
+    the daily table. CI is taken off the Linux column alone, because the release
+    smoke test runs only on Linux. Both come from tarball downloads, halved because
+    each install fetches two binaries of one platform — so they can disagree by one
+    or two with the independent <code>checksums.txt</code> count when somebody
+    fetches a single binary by hand.
+    <strong>CI Tests</strong> is one install per successful run of the smoke test,
+    filled for the current release only: a run carries no tag, so what is known is
+    that it installed whichever release was newest at the time.
+    <code>—</code> means unknown, not zero; <code>≥</code> means the run history does
+    not reach back to publication, so the CI figure is a floor and the Linux figure
+    beside it an upper bound.
   </p>`;
 }
 
