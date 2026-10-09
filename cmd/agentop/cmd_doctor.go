@@ -168,8 +168,13 @@ func wouldChange(p stepPlan) string {
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state
-// record is there (enable writes it, disable deletes it), or settings.json's
-// HTTPS_PROXY is the proxy enable would write from the current config. Any managed
+// record is there, or settings.json's HTTPS_PROXY is the proxy enable would write
+// from the current config. Enable writes the record; disable deletes it, EXCEPT
+// when it left a key behind because the value changed since enable set it — then
+// the record stays, being the only note of what that key held before Cortex, and
+// doctor reads that as still routed. That is the conservative answer: a managed
+// key is still set, so the integration is not off, and the checks that follow — a
+// stale CA above all — are the ones worth running on it. Any managed
 // key being set is not enough: a corporate HTTPS_PROXY is the user's own, and
 // disable, with no record, would remove it. A settings file that cannot be read,
 // or a config that gives no proxy, leaves only the record to go by. It is the

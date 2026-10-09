@@ -33,9 +33,25 @@ const CAEnvVar = "NODE_EXTRA_CA_CERTS"
 // exists so `disable` can restore rather than delete. It is emphatically not what
 // the client currently uses — every enable makes the two differ — so a reader asking
 // "what CA does this client load?" must go through Settings. See CurrentCA.
+//
+// Written holds what agentop ITSELF SET for each managed key, so `disable` can tell
+// its own value from one changed since. Without it, disable restored Prior over
+// whatever the key currently held, which silently threw away an edit made after
+// enable — the key's current value was never looked at.
+//
+// The two have OPPOSITE freshness rules, which is the thing to keep straight when
+// touching either: Prior is frozen on the FIRST enable, because only that run can
+// still see what predated Cortex, while Written tracks the LATEST one, because it
+// goes stale the moment a proxy port or ca_dir changes — and a stale Written makes
+// disable mistake Cortex's own value for someone's edit and leave it behind.
+//
+// Written is omitempty and may be absent or incomplete: a record from before it
+// existed has none, and a key added to the managed set later is missing from an
+// older record. A reader must treat "not recorded" as "unknown", never as "".
 type State struct {
 	Settings string             `json:"settings"`
 	Prior    map[string]*string `json:"prior"`
+	Written  map[string]string  `json:"written,omitempty"`
 }
 
 // Load reads the record at path. A missing file is (nil, nil): absent is a normal

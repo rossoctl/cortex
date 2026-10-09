@@ -655,6 +655,86 @@ func TestUninstallLeavesAnEditedBobShellBlock(t *testing.T) {
 	}
 }
 
+// A managed key the user has changed since enable set it is theirs, exactly as an
+// edited bob shell block is: uninstall unroutes the rest, leaves that one, and
+// lists it. It takes the same care disable does — the row is ! rather than ✓, so
+// a run that leaves a HTTPS_PROXY behind does not report itself as having
+// unrouted Claude Code outright.
+func TestUninstallLeavesAClaudeCodeKeyChangedSinceEnable(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	// A prior value, so the row has a restore to report alongside the key it leaves.
+	writeHomeFile(t, settings, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	sc.setUp(t, "--claude-code")
+	const edited = "http://127.0.0.1:9999"
+	handEdit(t, settings, map[string]string{envProxy: edited})
+
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out,
+		markLine("!", "unrouted")+"Claude Code no longer goes through Cortex · restored your "+envNoTelem+"\n",
+		"\n  Left behind:\n    "+envProxy+" in ~/.claude/settings.json, changed since Cortex set "+
+			"them — remove them by hand if you want them gone\n")
+	env := readEnv(t, settings)
+	if env[envProxy] != edited {
+		t.Errorf("%s = %q, want the edit %q left alone", envProxy, env[envProxy], edited)
+	}
+	if env[envNoTelem] != "1" {
+		t.Errorf("%s = %q, want the prior value restored", envNoTelem, env[envNoTelem])
+	}
+	for _, k := range managedKeys {
+		if k == envProxy || k == envNoTelem {
+			continue
+		}
+		if v, ok := env[k]; ok {
+			t.Errorf("%s = %q survived the unroute", k, v)
+		}
+	}
+	// No value in what the ending prints: it gets pasted into issues and logs.
+	if strings.Contains(out, edited) {
+		t.Errorf("the run named the left key's value:\n%s", out)
+	}
+	// The record stays: it is the only note of what the left key held before
+	// enable, and the key is still set.
+	if !fileExists(filepath.Join(sc.home, stateRel)) {
+		t.Error("the record was deleted with a managed key still in the settings")
+	}
+}
+
+// Every managed key changed: there is nothing of Cortex's to take out, so the
+// unroute must change nothing rather than report an unroute it did not do. This
+// is the branch where the by-hand fix has only the left keys to name, and it must
+// not come out empty — a ✗ with no fix line is what that would look like.
+func TestUninstallLeavesEveryClaudeCodeKeyChangedSinceEnable(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	sc.setUp(t, "--claude-code")
+	edits := map[string]string{}
+	for i, k := range managedKeys {
+		edits[k] = "mine-" + string(rune('a'+i))
+	}
+	handEdit(t, settings, edits)
+	before := readFile(t, settings)
+
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out,
+		markLine("!", "unrouted")+"left "+someKeys(managedKeys)+" as they are\n",
+		"\n  Left behind:\n    "+someKeys(managedKeys)+" in ~/.claude/settings.json, changed since "+
+			"Cortex set them — remove them by hand if you want them gone\n")
+	if got := readFile(t, settings); got != before {
+		t.Errorf("the settings changed to %q, want %q as they were", got, before)
+	}
+	if !fileExists(filepath.Join(sc.home, stateRel)) {
+		t.Error("the record was deleted with every managed key still in the settings")
+	}
+	// remedy.byHand is never empty, and this is the one branch where the keys to
+	// remove and the keys to restore are both empty.
+	byHand := unrouteByHand(&setupEnv{home: sc.home}, settings, filepath.Join(sc.home, stateRel),
+		nil, managedKeys)
+	if !strings.Contains(byHand, "decide about "+someKeys(managedKeys)) {
+		t.Errorf("the by-hand fix is %q, want it to name the keys left", byHand)
+	}
+}
+
 // --purge deletes ~/.cortex last. Claude Code's unroute reads the record there,
 // so a value the user had set before setup comes back rather than going.
 func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {

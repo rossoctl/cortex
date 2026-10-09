@@ -512,6 +512,13 @@ This removes only the keys Cortex added to `~/.claude/settings.json`
 `CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
 straight to the API again. Restart `claude` to pick it up.
 
+It also leaves alone any one of those keys whose value you have **changed since
+enable set it**, and says which: that edit is yours, and restoring what preceded
+Cortex over it would throw it away silently. Those keys are the one case where
+disable does not leave Claude Code fully unwired — a `HTTPS_PROXY` you pointed
+somewhere else still points there. Edit `~/.claude/settings.json` by hand if you
+want them gone.
+
 There are several CA variables because anything Claude Code spawns inherits
 `HTTPS_PROXY` and so must also be able to verify the bridge. They do not all get
 the same file: `NODE_EXTRA_CA_CERTS` **extends** Node's trust store, so it gets
@@ -773,6 +780,11 @@ machine you believe you have just cleaned. `agentop uninstall` removes all seven
 as `agentop configure claude-code disable` does, and `--purge` deletes `~/.cortex` last,
 and not at all if a removal before it failed; this list is only for when that binary is
 already gone.
+
+Both of them skip a key whose value you have **changed since enable set it** — that
+edit is yours to keep or drop — and say which under *Left behind*. Those are the keys
+to check against the hazard above before you purge: if what you changed one to still
+points inside `~/.cortex`, remove it by hand here too.
 
 If you configured OpenCode, its background service's environment holds the same kind of
 variables. Remove the ones that point at Cortex with the `opencode` CLI, as

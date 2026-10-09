@@ -405,19 +405,24 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 // record disable restores from and then deletes, or "" for none. The record is
 // read as the removal runs, which is first, before --purge could delete it.
 func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
-	pl, planErr := planClaudeCodeDisable(settings)
+	pl, planErr := planClaudeCodeDisable(settings, state)
 	where := ""
 	if settings != filepath.Join(env.home, settingsRel) {
 		where = " · " + env.tilde(settings)
 	}
 	keys := managedKeys // which are set is unknown when the file cannot be read
-	if planErr == nil && len(pl.present) > 0 {
+	if planErr == nil && len(pl.present)+len(pl.left) > 0 {
+		// Only the keys disable itself would change: a left key goes in its own
+		// line below, as removing it is the user's call and not part of the fix.
 		keys = pl.present
 	}
 	disable := remedy{
 		agentop: "agentop configure claude-code disable --settings " + env.shellPath(settings),
-		byHand:  unrouteByHand(env, settings, state, keys),
+		byHand:  unrouteByHand(env, settings, state, keys, pl.left),
 	}
+	// Keys whose value is no longer the one enable wrote are the user's edit, so
+	// disable leaves them: they are this row's "Left behind" rather than its ✗.
+	leftNote := claudeCodeLeftNote(env, settings, pl.left)
 	return removal{
 		label: "unrouted",
 		item:  checklist.Item{Verb: "unroute", What: "Claude Code", Where: env.tilde(settings)},
@@ -427,6 +432,12 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 				return "", []string{env.tilde(settings)}, planErr
 			}
 			if len(pl.present) == 0 {
+				// Keys the file holds but whose values Cortex did not write: nothing
+				// of ours to take out, and the record stays — it is the only note of
+				// what they held before enable, and they are still set.
+				if len(pl.left) > 0 {
+					return "left " + someKeys(pl.left) + " as they are" + where, leftNote, nil
+				}
 				// The record of a routing the file no longer holds, the file deleted
 				// say. applyClaudeCodeDisable touches nothing then, so the record goes
 				// here: left, doctor reads Claude Code as routed for good.
@@ -448,9 +459,20 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 				detail += " · restored your " + strings.Join(restored, ", ")
 			}
 			// Its warning, a record it could not read, as rows below.
-			return detail + stderrNotes(env, errb.String()), nil, nil
+			return detail + stderrNotes(env, errb.String()), leftNote, nil
 		},
 	}
+}
+
+// claudeCodeLeftNote is uninstall's "Left behind" line for the keys disable did not
+// touch. Keys and the file, no values, as unrouteByHand names none: this text is
+// printed at the end of a run and gets pasted.
+func claudeCodeLeftNote(env *setupEnv, settings string, left []string) []string {
+	if len(left) == 0 {
+		return nil
+	}
+	return []string{someKeys(left) + " in " + env.tilde(settings) +
+		", changed since Cortex set them — remove them by hand if you want them gone"}
 }
 
 // unrouteByHand is disable's edit to settings as fix lines, for when agentop is
@@ -460,7 +482,12 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 // terminal shows gets pasted and logged. Each list names three keys, then "…", so
 // a line stays near 120 columns. The record is read now, while it is there:
 // --purge deletes it.
-func unrouteByHand(env *setupEnv, settings, state string, keys []string) string {
+//
+// left are the keys changed since enable, which disable does not touch and this
+// does not tell the user to remove either — the value there is theirs, and the
+// point of leaving it was not to decide for them. They get a line of their own
+// instead, so a by-hand unroute does not quietly stop short of those keys.
+func unrouteByHand(env *setupEnv, settings, state string, keys, left []string) string {
 	var st *managedState
 	if state != "" {
 		st, _ = readState(state)
@@ -481,6 +508,10 @@ func unrouteByHand(env *setupEnv, settings, state string, keys []string) string 
 	}
 	if len(restore) > 0 {
 		lines = append(lines, file+"restore "+someKeys(restore)+" — your earlier values are in "+env.tilde(state))
+		file = "and "
+	}
+	if len(left) > 0 {
+		lines = append(lines, file+"decide about "+someKeys(left)+" — changed since Cortex set them, so they are yours")
 	}
 	return strings.Join(lines, "\n")
 }

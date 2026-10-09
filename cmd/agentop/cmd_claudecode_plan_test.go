@@ -102,7 +102,7 @@ func TestPlanApplyClaudeCodeDisable_RestoresWhatTheUserHad(t *testing.T) {
 		t.Fatalf("fixture: enable left %s at the stale %q, so a restore is unobservable", envProxy, got)
 	}
 	before, _ := os.ReadFile(settings)
-	pl, err := planClaudeCodeDisable(settings)
+	pl, err := planClaudeCodeDisable(settings, state)
 	if err != nil {
 		t.Fatal(err)
 	}

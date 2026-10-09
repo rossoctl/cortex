@@ -870,7 +870,7 @@ func TestClaudeCodeDisableWithNothingPresentTouchesNothing(t *testing.T) {
 			if (beforeErr != nil) != (tc.settings == "") {
 				t.Fatalf("fixture: reading %s: %v", settings, beforeErr)
 			}
-			pl, err := planClaudeCodeDisable(settings)
+			pl, err := planClaudeCodeDisable(settings, state)
 			if err != nil {
 				t.Fatal(err)
 			}

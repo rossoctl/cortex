@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -61,11 +62,13 @@ const (
 	settingsRel   = ".claude/settings.json"
 	cortexCfgRel  = ".cortex/config.yaml"
 	// stateRel records what each managed key looked like BEFORE enable, so disable
-	// can put it back. Without it, disable deleted every managed key it found —
-	// including one the user had set themselves, which is indistinguishable by
-	// value (their CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is byte-identical to
-	// ours). Kept outside ~/.claude so this command's bookkeeping never appears in
-	// a file Claude Code owns.
+	// can put it back, and what enable SET, so disable can tell its own value from
+	// one changed since. Without the first, disable deleted every managed key it
+	// found — including one the user had set themselves, which is indistinguishable
+	// by value (their CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is byte-identical
+	// to ours). Without the second, it restored over a later hand edit and lost it.
+	// Kept outside ~/.claude so this command's bookkeeping never appears in a file
+	// Claude Code owns.
 	stateRel = ".cortex/" + clientstate.RelPath
 )
 
@@ -106,6 +109,13 @@ func readState(path string) (*managedState, error) {
 // writeState records ownership on the FIRST enable only. A second enable must not
 // overwrite it with our own values, or the original would be lost exactly when it
 // is needed.
+//
+// Written is the exception, and the reason this is no longer a plain write-once: it
+// records what enable SET rather than what it displaced, so it has to follow the
+// latest enable — see clientstate.State for the two opposite freshness rules. A
+// re-enable after a port or ca_dir change therefore keeps the recorded Prior and
+// refreshes Written. An unchanged Written is left alone entirely, so the re-run
+// install.sh --claude-code makes on every upgrade still does not touch the file.
 func writeState(path string, st managedState) error {
 	// An unreadable existing record is not a reason to overwrite it: if it can be
 	// repaired by hand it is still the only copy of what the user had.
@@ -114,7 +124,10 @@ func writeState(path string, st managedState) error {
 		return fmt.Errorf("refusing to overwrite the existing record: %w", err)
 	}
 	if existing != nil && existing.Settings == st.Settings {
-		return nil
+		if maps.Equal(existing.Written, st.Written) {
+			return nil
+		}
+		st.Prior = existing.Prior
 	}
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -193,7 +206,8 @@ Only those keys are added; every other setting, including any other env entry,
 is left exactly as it was. The first run copies the original file to
 settings.json.bak and never overwrites that copy, so the pristine version
 survives later runs. disable removes only the keys it added, restoring any
-prior value it recorded.
+prior value it recorded, and leaves alone any key whose value has changed since
+enable set it — your edit stays, and disable says which keys it left.
 
 Note: while enabled, Claude Code needs Cortex running — its requests go to the
 proxy address. "agentop configure claude-code disable" is the off switch.
@@ -468,13 +482,51 @@ func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 	}
 }
 
-// applyClaudeCodeEnable records what the managed keys held, then writes the plan's
-// values. Failing to record is a warning on stderr, as it always was: the write still
-// happens, and disable then deletes the keys rather than restoring them.
+// topUpWritten records what enable WOULD set on an install that is already enabled,
+// so disable's ownership check works on a machine configured before Written existed.
+// Most installs never reach applyClaudeCodeEnable again: `install.sh --claude-code`
+// re-runs on every upgrade and, with nothing to change, returns at "Already enabled"
+// — so without this the fix would not reach the people who already have the bug.
+//
+// It never CREATES a record. The file already holds Cortex's values here, so a Prior
+// computed from them would be Cortex's own, and disable would "restore" those instead
+// of removing the keys. An absent record keeps the remove-outright fallback, which is
+// the right answer; only a record that exists gets its Written filled in. A record
+// that cannot be read is not ours to rewrite either — writeState says why.
+//
+// Writing is left to writeState, which keeps Prior and skips the write entirely when
+// Written already matches, so the usual upgrade re-run still touches no file.
+func topUpWritten(pl claudeCodePlan, statePath string, stderr io.Writer) {
+	if statePath == "" {
+		return
+	}
+	st, err := readState(statePath)
+	if err != nil || st == nil || st.Settings != pl.settingsPath {
+		return
+	}
+	st.Written = map[string]string{}
+	for _, k := range managedKeys {
+		st.Written[k] = pl.want[k]
+	}
+	if werr := writeState(statePath, *st); werr != nil {
+		fmt.Fprintf(stderr, "agentop: could not record the values now set (%v); disable will not be\n"+
+			"  able to tell a later edit of yours from Cortex's own value, and may remove it.\n", werr)
+	}
+}
+
+// applyClaudeCodeEnable records what the managed keys held and what it is about to
+// set them to, then writes the plan's values. Failing to record is a warning on
+// stderr, as it always was: the write still happens, and disable then deletes the
+// keys rather than restoring them.
 func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer) error {
-	// Record what was there before, so disable restores rather than deletes.
+	// Record what was there before, so disable restores rather than deletes, and
+	// what we set, so disable can tell our own value from one changed since.
 	if statePath != "" {
-		st := managedState{Settings: pl.settingsPath, Prior: map[string]*string{}}
+		st := managedState{
+			Settings: pl.settingsPath,
+			Prior:    map[string]*string{},
+			Written:  map[string]string{},
+		}
 		for _, k := range managedKeys {
 			if v, ok := pl.env[k]; ok {
 				vv := v
@@ -482,6 +534,7 @@ func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer
 			} else {
 				st.Prior[k] = nil
 			}
+			st.Written[k] = pl.want[k]
 		}
 		if werr := writeState(statePath, st); werr != nil {
 			fmt.Fprintf(stderr, "agentop: could not record prior settings (%v); disable will delete\n"+
@@ -504,6 +557,8 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	}
 	printTrustFileNotes(pl.want, stdout)
 	if len(pl.changes) == 0 {
+		// Nothing to write to settings, but the record may still predate Written.
+		topUpWritten(pl, statePath, stderr)
 		fmt.Fprintf(stdout, "Already enabled: %s routes Claude Code through Cortex.\n", settingsPath)
 		return 0
 	}
@@ -533,57 +588,118 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	return 0
 }
 
-// claudeCodeDisablePlan is what disable would remove, worked out without touching
+// claudeCodeDisablePlan is what disable would change, worked out without touching
 // anything.
+//
+// present and left partition the managed keys the file actually holds: present is
+// what disable restores or removes, left is what it leaves alone because the value
+// is no longer the one enable wrote. The split is made HERE rather than in apply
+// because the confirmation prompt names what is about to change — decided in apply,
+// the prompt would promise to remove a key disable then leaves behind.
 type claudeCodeDisablePlan struct {
 	settingsPath string
 	doc          map[string]any
-	present      []string // managed keys set in the file, in managedKeys order; none = nothing to do
+	env          map[string]string // the env block as read, so output can name a left key's value
+	st           *managedState     // the ownership record, nil when none names this settings file
+	stErr        error             // the record was there and could not be read
+	present      []string          // managed keys disable will change, in managedKeys order
+	left         []string          // managed keys disable will not touch: changed since enable
 }
 
-func planClaudeCodeDisable(settingsPath string) (claudeCodeDisablePlan, error) {
+// planClaudeCodeDisable works out what disable would do to settingsPath, reading the
+// ownership record at statePath to tell Cortex's own values from edits made since.
+// statePath may be "", which means "no record to go by" — see changedSinceEnable.
+func planClaudeCodeDisable(settingsPath, statePath string) (claudeCodeDisablePlan, error) {
 	doc, err := readSettings(settingsPath)
 	if err != nil {
 		return claudeCodeDisablePlan{}, err
 	}
 	env := envStrings(doc)
-	pl := claudeCodeDisablePlan{settingsPath: settingsPath, doc: doc}
-	for _, k := range managedKeys {
-		if _, ok := env[k]; ok {
-			pl.present = append(pl.present, k)
+	pl := claudeCodeDisablePlan{settingsPath: settingsPath, doc: doc, env: env}
+	if statePath != "" {
+		st, sterr := readState(statePath)
+		pl.stErr = sterr
+		// A record naming a different settings file is another enable's, so it says
+		// nothing about this one — the rule the restore below has always applied,
+		// hoisted here so the ownership check uses it too.
+		if st != nil && st.Settings == settingsPath {
+			pl.st = st
 		}
+	}
+	for _, k := range managedKeys {
+		cur, ok := env[k]
+		if !ok {
+			continue
+		}
+		if changedSinceEnable(pl.st, k, cur) {
+			pl.left = append(pl.left, k)
+			continue
+		}
+		pl.present = append(pl.present, k)
 	}
 	return pl, nil
 }
 
-// applyClaudeCodeDisable puts back what enable recorded, removes what it added, and
-// deletes the record. It returns the keys restored to a value the user had set.
+// changedSinceEnable reports whether a managed key holds something other than what
+// enable wrote, which makes it somebody's edit and not ours to revert. Without it,
+// disable restored the recorded prior value over whatever the key held now, so an
+// edit made after enable was silently discarded — the current value was never read.
+//
+// Only an exact match against the record counts. isCortexValue, which the enable
+// path uses for the same ownership question on the way in, is deliberately NOT a
+// fallback here: it is a heuristic over the shapes we happen to write (a 476xx port,
+// a path containing ".cortex/"), so a ca_dir anywhere else reads as foreign and
+// disable would refuse to clear its own value — leaving the client pointed at a
+// Cortex the user is turning off, which is worse than the loss this guards against.
+//
+// With nothing recorded the answer is "not changed": a record written before Written
+// existed, or no record at all, keeps the remove-outright fallback exactly as it was.
+// The next enable then records Written and self-heals — including a re-run that
+// changes nothing in settings, which is the only enable most installs see again; see
+// topUpWritten.
+func changedSinceEnable(st *managedState, key, cur string) bool {
+	if st == nil {
+		return false
+	}
+	written, recorded := st.Written[key]
+	return recorded && cur != written
+}
+
+// applyClaudeCodeDisable puts back what enable recorded and removes what it added,
+// for the plan's present keys only — a key the plan left is not touched at all. It
+// returns the keys restored to a value the user had set.
 //
 // With none of the keys present it touches nothing, so a caller need not check
 // first. Going on would create a settings.json where there was none, rewrite one
 // that holds none of the keys (and back it up), and delete the record.
+//
+// The record is deleted only when nothing was left behind. A left key is still in
+// play, and the record is the only machine-readable note of what it held before
+// enable — deleting it would strand the one value that could still be restored, and
+// would also make doctor read Claude Code as unrouted while a managed key remains.
 func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if len(pl.present) == 0 {
 		return nil, nil
 	}
-	st, sterr := readState(statePath)
-	if sterr != nil {
+	if pl.stErr != nil {
 		// Proceed — the user asked for this off — but say what is about to be lost.
 		// Silence here would repeat the bug the record was added to fix.
 		fmt.Fprintf(stderr, "agentop: cannot read the record of what you had before enabling (%v).\n"+
 			"  Falling back to removing these keys outright. If you had set any of them\n"+
 			"  yourself before running enable, that value is not recoverable from here —\n"+
-			"  check %s afterwards.\n\n", sterr, pl.settingsPath)
+			"  check %s afterwards.\n\n", pl.stErr, pl.settingsPath)
 	}
 	raw := envRaw(pl.doc)
 	var restored []string
 	for _, k := range pl.present {
-		if st != nil && st.Settings == pl.settingsPath {
-			if prior, recorded := st.Prior[k]; recorded {
+		if pl.st != nil {
+			if prior, recorded := pl.st.Prior[k]; recorded {
 				if prior == nil {
 					delete(raw, k)
 				} else {
-					// The user had this set before enable; put their value back.
+					// The user had this set before enable, and the plan has already
+					// established the key still holds what enable wrote, so putting
+					// their value back cannot overwrite a later edit.
 					raw[k] = *prior
 					restored = append(restored, k)
 				}
@@ -601,23 +717,52 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	if err := writeSettings(pl.settingsPath, pl.doc); err != nil {
 		return nil, err
 	}
-	if statePath != "" {
+	if statePath != "" && len(pl.left) == 0 {
 		_ = os.Remove(statePath)
 	}
 	return restored, nil
 }
 
+// printClaudeCodeLeft names the keys disable will not touch, with what they now
+// hold, because the value IS the explanation: it is visibly not the one Cortex
+// wrote, and only the user can say whether to keep it. %q as the enable path's
+// refusal does, for the same reason — the value may be empty or carry spaces.
+//
+// Interactive output only. uninstall reports the same keys without their values;
+// see unrouteByHand for why a proxy URL is not printed there.
+func printClaudeCodeLeft(pl claudeCodeDisablePlan, stdout io.Writer) {
+	if len(pl.left) == 0 {
+		return
+	}
+	fmt.Fprintf(stdout, "Leaving these alone — changed since Cortex set them:\n")
+	for _, k := range pl.left {
+		fmt.Fprintf(stdout, "  %s is now %q\n", k, pl.env[k])
+	}
+	fmt.Fprintf(stdout, "Removing them would lose that edit; edit %s by hand if you want them gone.\n\n",
+		pl.settingsPath)
+}
+
 func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planClaudeCodeDisable(settingsPath)
+	pl, err := planClaudeCodeDisable(settingsPath, statePath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if len(pl.present) == 0 {
-		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", settingsPath)
+		if len(pl.left) == 0 {
+			fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", settingsPath)
+			return 0
+		}
+		// Every managed key the file holds was changed after enable, so there is
+		// nothing of ours to take out and nothing to ask about.
+		fmt.Fprintf(stdout, "Nothing to remove from %s.\n\n", settingsPath)
+		printClaudeCodeLeft(pl, stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will remove from %s: %s\n\n", settingsPath, strings.Join(pl.present, ", "))
+	// Before the question, not after it: what is being left behind is part of what
+	// the answer is about.
+	printClaudeCodeLeft(pl, stdout)
 	if !yes && !claudeCodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -629,6 +774,13 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 	}
 	if len(restored) > 0 {
 		fmt.Fprintf(stdout, "\nRestored to the value(s) you had before: %s\n", strings.Join(restored, ", "))
+	}
+	if len(pl.left) > 0 {
+		// Not "no longer routes through Cortex": a left HTTPS_PROXY still points
+		// somewhere, and claiming otherwise is the kind of confident wrong answer
+		// this command exists to avoid.
+		fmt.Fprintf(stdout, "\nRemoved what Cortex set. The key(s) listed above are still in %s.\n", settingsPath)
+		return 0
 	}
 	fmt.Fprintf(stdout, "\nDisabled. Claude Code no longer routes through Cortex.\n")
 	return 0

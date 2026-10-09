@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,57 @@ func TestLoad_MalformedIsAnError(t *testing.T) {
 	}
 	if _, err := Load(p); err == nil {
 		t.Error("Load of malformed JSON returned no error")
+	}
+}
+
+// TestWritten_RoundTripsAndIsOptional: Written is how agentop's disable tells its
+// own value from one changed since, and it crosses process boundaries as JSON. A
+// record from before the field existed must still load, with "not recorded"
+// readable as unknown rather than as "" — reading it as "" would make disable judge
+// every key changed and leave the whole routing in place.
+func TestWritten_RoundTripsAndIsOptional(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, RelPath)
+	b, err := json.Marshal(State{
+		Settings: filepath.Join(dir, "settings.json"),
+		Prior:    map[string]*string{CAEnvVar: nil},
+		Written:  map[string]string{CAEnvVar: "/live/current.crt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := st.Written[CAEnvVar]; got != "/live/current.crt" {
+		t.Errorf("Written[%s] = %q after a round trip, want the written value", CAEnvVar, got)
+	}
+
+	// A record written before Written existed.
+	old := filepath.Join(dir, "old.json")
+	if err := os.WriteFile(old, []byte(`{"settings":"/s","prior":{"`+CAEnvVar+`":null}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Load(old)
+	if err != nil {
+		t.Fatalf("Load of a pre-Written record: %v", err)
+	}
+	if _, recorded := st.Written[CAEnvVar]; recorded {
+		t.Errorf("Written[%s] reads as recorded in a record that has no written block", CAEnvVar)
+	}
+
+	// And it stays out of the file when there is nothing to record, so a reader
+	// cannot mistake an empty block for a recorded empty value.
+	b, err = json.Marshal(State{Settings: "/s", Prior: map[string]*string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := string(b); strings.Contains(body, "written") {
+		t.Errorf("an empty Written was marshalled: %s", body)
 	}
 }
 
