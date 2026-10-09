@@ -1,9 +1,24 @@
+# Code owners for rossoctl/cortex.
+#
+# Owners here are DERIVED from the project's source of truth for maintainership:
+#   https://github.com/rossoctl/rossoctl/blob/main/MAINTAINERS.md
+#
+# CODEOWNERS cannot reference that file, or any file: GitHub accepts only user and team
+# handles, and it is read only from this repository's root, .github/ or docs/ -- there is no
+# inheritance from rossoctl/rossoctl to lean on. So these names are a copy, and they have to
+# be updated when MAINTAINERS.md changes.
+#
+# A rule naming a user or team that does not exist, or that lacks write access here, is
+# silently ignored -- the matched paths end up with no owner and no warning. If you edit this
+# file, confirm every handle still has access.
+
 # Default owners for everything. The AuthBridge components used to carry their
 # own rule for authbridge/; that tree is now the repo root, so `*` covers it.
 * @rossoctl/maintainers
 
-# CI/CD and GitHub configuration
-.github/ @rossoctl/platform
+# CI/CD and GitHub configuration. Hai owns the Cortex proxy and plugin pipeline and has
+# written most of this tree; Gloire owns org-wide CI and repo governance.
+.github/ @huang195 @rubambiza
 
 # Documentation
 *.md @rossoctl/maintainers
