@@ -62,6 +62,38 @@ func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 	return p, nil
 }
 
+// already tops up the ownership record on the path where the plan found nothing
+// to change, which is the only path most installs ever take again: `install.sh
+// --claude-code` re-runs on every upgrade and hands off to `agentop setup
+// --claude-code`, so with settings already holding Cortex's values this step is
+// "Claude Code already routed" and apply never runs. A record written before
+// Written existed would then never gain it, and disable would go on treating a
+// later edit of the user's as Cortex's own value and remove it. topUpWritten says
+// what it will and will not write; this is the hook that reaches it, since the
+// `agentop configure claude-code enable` path that also calls it is not what an
+// upgrade runs.
+//
+// Called from applySteps only. Not from plan, which must change nothing on disk
+// and which `agentop doctor` calls for every step.
+func (s claudeCodeStep) already(env *setupEnv) string {
+	if env.configFresh {
+		// No config to read the wanted values from, and nothing routed yet either:
+		// a fresh config means this step has never run here.
+		return ""
+	}
+	settings, state := s.paths(env)
+	pl, err := planClaudeCodeEnable(settings, env.configPath())
+	if err != nil || len(pl.changes) > 0 {
+		// Nothing a done row can act on: a refusal is plan's to report, and changes
+		// appearing after the plan mean the file moved under us, which the next run
+		// picks up. Neither is worth a line here.
+		return ""
+	}
+	var errb bytes.Buffer
+	topUpWritten(pl, state, &errb)
+	return stderrNotes(env, errb.String())
+}
+
 // backupWillBeWritten is writeSettings' rule for its .bak: a copy of the file,
 // written once, so only when there is a file and no .bak yet.
 func backupWillBeWritten(settings string) bool {
@@ -75,7 +107,9 @@ func backupWillBeWritten(settings string) bool {
 // apply snapshots settings.json, its .bak and the state file, so the undo puts
 // back those bytes rather than running disable, which re-marshals the file; and
 // it removes ~/.claude again if the write made it and nothing else has used it.
-// Nothing changed, it returns no undo, so a rollback rewrites nothing.
+// A re-plan that finds nothing left to change returns no undo at all: it tops the
+// record up, as already does on the path where apply never runs, and that needs no
+// reversing — see the return itself.
 func (s claudeCodeStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, error) {
 	settings, state := s.paths(env)
 	dir := filepath.Dir(settings)
@@ -107,7 +141,17 @@ func (s claudeCodeStep) apply(env *setupEnv, _ *checklist.Running) (string, undo
 		return "", undo{}, stepError{reason: lines[0], detail: trimAll(lines[1:])}
 	}
 	if len(pl.changes) == 0 {
-		return "Claude Code already routed", undo{}, nil
+		// The plan before consent found changes and they are gone now: the file moved
+		// while the steps before this one ran. Top up the record all the same, as the
+		// done path does — the reason it needs topping up is the same.
+		//
+		// And no undo for it, as the done path has none either: the top-up only writes
+		// what settings.json already holds, and this return leaves settings.json
+		// alone, so a rollback has nothing to put back. Returning u instead would
+		// restore the file from the snapshot above, over any edit made since.
+		var errb bytes.Buffer
+		topUpWritten(pl, state, &errb)
+		return "Claude Code already routed" + stderrNotes(env, errb.String()), undo{}, nil
 	}
 	var errb bytes.Buffer
 	if err := applyClaudeCodeEnable(pl, state, &errb); err != nil {

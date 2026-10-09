@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -260,5 +261,112 @@ func TestClaudeCodeStepPassesOnTheStateRecordWarning(t *testing.T) {
 	if err != nil || first != "Claude Code → Cortex" || !strings.HasPrefix(notes, "could not record prior settings (") ||
 		strings.Contains(notes, env.home) {
 		t.Errorf("apply = %q %v, want the warning, HOME as ~, under the first line", detail, err)
+	}
+}
+
+// ageRecord rewrites the record at path as an agentop from before Written existed
+// wrote it, keeping its Settings and Prior. It returns the record as it now reads.
+func ageRecord(t *testing.T, path string) managedState {
+	t.Helper()
+	st, err := readState(path)
+	if err != nil || st == nil {
+		t.Fatalf("no record at %s (err %v)", path, err)
+	}
+	aged := managedState{Settings: st.Settings, Prior: st.Prior}
+	b, err := json.MarshalIndent(aged, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return aged
+}
+
+// The installed population this fix has to reach was enabled before Written
+// existed, and `install.sh --claude-code` is the only thing it runs again: that
+// hands off to `agentop setup --claude-code`, which finds settings already routed,
+// so the step is done and its apply never runs. already is the hook on that path,
+// and without it the fix would reach almost nobody.
+func TestClaudeCodeStepAlreadyTopsUpAPreWrittenRecord(t *testing.T) {
+	env, path := claudeEnv(t, `{}`)
+	onDiskConfig(t, env)
+	if _, _, err := (claudeCodeStep{}).apply(env, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, state := claudeCodeStep{}.paths(env)
+	aged := ageRecord(t, state)
+
+	// The plan is "already routed" now, which is the path already serves.
+	p, prob := claudeCodeStep{}.plan(env)
+	if prob != nil || !p.done {
+		t.Fatalf("plan = %+v %v, want done — this is not the already path", p, prob)
+	}
+	if notes := (claudeCodeStep{}).already(env); notes != "" {
+		t.Errorf("already warned: %q", notes)
+	}
+	st, err := readState(state)
+	if err != nil || st == nil {
+		t.Fatalf("no record after the top-up (err %v)", err)
+	}
+	vals := readEnv(t, path)
+	for _, k := range managedKeys {
+		if got, recorded := st.Written[k]; !recorded || got != vals[k] {
+			t.Errorf("written[%s] = %q (recorded %v), want the file's %q", k, got, recorded, vals[k])
+		}
+	}
+	// Prior survives: it is still the only note of what predated Cortex.
+	if len(st.Prior) != len(aged.Prior) {
+		t.Errorf("prior is %v, want the %v the aged record held", st.Prior, aged.Prior)
+	}
+	// And the top-up reached disable, which is the whole point of it.
+	pl, err := planClaudeCodeDisable(path, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pl.left) != 0 {
+		t.Errorf("disable would leave %q behind; a topped-up record should claim every key", pl.left)
+	}
+}
+
+// already is reachable from setup only. plan must change nothing on disk, and
+// `agentop doctor` plans every step to report on it — a top-up from there would
+// have doctor writing files.
+func TestClaudeCodeStepPlanWritesNoRecord(t *testing.T) {
+	env, _ := claudeEnv(t, `{}`)
+	onDiskConfig(t, env)
+	if _, _, err := (claudeCodeStep{}).apply(env, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, state := claudeCodeStep{}.paths(env)
+	ageRecord(t, state)
+	before, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // as doctor plans it, twice for good measure
+		if _, prob := (claudeCodeStep{}).plan(env); prob != nil {
+			t.Fatal(prob)
+		}
+	}
+	after, err := os.ReadFile(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("plan wrote to the record:\nwas %s\nnow %s", before, after)
+	}
+}
+
+// A fresh config means this machine has never been enabled from here, so there is
+// no record to top up and nothing to read the wanted values from either.
+func TestClaudeCodeStepAlreadyIsSilentOnAFreshConfig(t *testing.T) {
+	env, _ := claudeEnv(t, `{}`)
+	env.configFresh = true
+	if notes := (claudeCodeStep{}).already(env); notes != "" {
+		t.Errorf("already = %q on a fresh config, want nothing", notes)
+	}
+	if _, state := (claudeCodeStep{}).paths(env); fileExists(state) {
+		t.Error("already created a record on a fresh config")
 	}
 }

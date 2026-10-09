@@ -201,6 +201,40 @@ type step interface {
 	apply(env *setupEnv, act *checklist.Running) (detail string, u undo, err error)
 }
 
+// alreadyStep is a step with bookkeeping to finish even when its plan found
+// nothing to change — a record to top up, say. applySteps calls already on the
+// done path, where apply never runs, and renders what it returns as faint rows
+// under the "·" line, exactly as it does the lines after a detail's first.
+//
+// Deliberately NOT part of step, and deliberately not reachable from plan: plan
+// must not change anything on disk, and `agentop doctor` plans every step to
+// report on it. Only setup applies.
+type alreadyStep interface {
+	already(env *setupEnv) string
+}
+
+// finishAlready lets a done step finish its own bookkeeping and draws whatever it
+// says about it as faint rows, as applySteps draws the lines after a detail's
+// first. It reports whether it drew any.
+//
+// Called from the two places a done step is rendered and its apply does not run:
+// applySteps' done path, and runSetup's own all-done branch, which returns before
+// applySteps is reached at all — and which is the whole of a re-run that finds
+// nothing to change. Not from anywhere `agentop doctor` goes.
+func finishAlready(env *setupEnv, ui *checklist.UI, s step) (drew bool) {
+	a, ok := s.(alreadyStep)
+	if !ok {
+		return false
+	}
+	for _, l := range strings.Split(a.already(env), "\n") {
+		if l != "" {
+			ui.Faint("    " + l)
+			drew = true
+		}
+	}
+	return drew
+}
+
 type plannedStep struct {
 	s step
 	p stepPlan
@@ -258,11 +292,16 @@ func applySteps(env *setupEnv, ui *checklist.UI, ps []plannedStep, interrupted <
 		switch {
 		case p.p.hidden:
 			continue
-		case p.p.done && p.p.advice != nil:
-			ui.Advise(p.p.label, p.p.advice.reason, p.p.advice.fix...)
-			continue
 		case p.p.done:
-			ui.Already(p.p.label, p.p.doneMsg)
+			if p.p.advice != nil {
+				ui.Advise(p.p.label, p.p.advice.reason, p.p.advice.fix...)
+			} else {
+				ui.Already(p.p.label, p.p.doneMsg)
+			}
+			// A done step still gets to finish its own bookkeeping, since its apply
+			// does not run: this is the path every re-run takes for the steps it has
+			// nothing to change about.
+			finishAlready(env, ui, p.s)
 			continue
 		}
 		act := ui.Start(p.p.label)

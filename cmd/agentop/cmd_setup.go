@@ -239,10 +239,17 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	if allDone(planned) {
 		// Nothing to change, but advice still stands: a PATH this shell lacks, say.
+		// And a step's own bookkeeping still runs, as it does on applySteps' done
+		// path — which this branch returns before ever reaching. A re-run of
+		// `install.sh --claude-code` that re-stages the same version lands here, so
+		// it is where the ownership record gets topped up on most machines.
 		advised := false
 		for _, p := range planned {
 			if a := p.p.advice; a != nil && !p.p.hidden {
 				ui.Advise(p.p.label, a.reason, a.fix...)
+				advised = true
+			}
+			if finishAlready(env, ui, p.s) {
 				advised = true
 			}
 		}

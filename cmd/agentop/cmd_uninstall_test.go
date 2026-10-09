@@ -655,6 +655,91 @@ func TestUninstallLeavesAnEditedBobShellBlock(t *testing.T) {
 	}
 }
 
+// A managed key the user has changed since enable set it is theirs, exactly as an
+// edited bob shell block is: uninstall unroutes the rest, leaves that one, and
+// lists it. It takes the same care disable does — the row is ! rather than ✓, so
+// a run that leaves a HTTPS_PROXY behind does not report itself as having
+// unrouted Claude Code outright.
+func TestUninstallLeavesAClaudeCodeKeyChangedSinceEnable(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	// A prior value, so the row has a restore to report alongside the key it leaves.
+	writeHomeFile(t, settings, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	sc.setUp(t, "--claude-code")
+	const edited = "http://127.0.0.1:9999"
+	handEdit(t, settings, map[string]string{envProxy: edited})
+
+	code, out := sc.uninstall(t, "--yes")
+	// Not "no longer goes through Cortex": the left HTTPS_PROXY still points
+	// somewhere, and the row would be contradicting the note right below it.
+	wantLines(t, code, 1, out,
+		markLine("!", "unrouted")+"removed what Cortex set · restored your "+envNoTelem+"\n",
+		"\n  Left behind:\n    "+envProxy+" in ~/.claude/settings.json, changed since Cortex set "+
+			"them — remove them by hand if you want them gone\n")
+	env := readEnv(t, settings)
+	if env[envProxy] != edited {
+		t.Errorf("%s = %q, want the edit %q left alone", envProxy, env[envProxy], edited)
+	}
+	if env[envNoTelem] != "1" {
+		t.Errorf("%s = %q, want the prior value restored", envNoTelem, env[envNoTelem])
+	}
+	for _, k := range managedKeys {
+		if k == envProxy || k == envNoTelem {
+			continue
+		}
+		if v, ok := env[k]; ok {
+			t.Errorf("%s = %q survived the unroute", k, v)
+		}
+	}
+	// No value in what the ending prints: it gets pasted into issues and logs.
+	if strings.Contains(out, edited) {
+		t.Errorf("the run named the left key's value:\n%s", out)
+	}
+	// The record goes, left key or not: it is what tells doctor that Cortex routes
+	// Claude Code, and uninstall has just stopped it doing so.
+	if fileExists(filepath.Join(sc.home, stateRel)) {
+		t.Error("the record survived the unroute, so doctor still reads Claude Code as routed")
+	}
+}
+
+// Every managed key changed: there is nothing of Cortex's to take out, so the
+// unroute must change nothing rather than report an unroute it did not do. This
+// is the branch where the by-hand fix has only the left keys to name, and it must
+// not come out empty — a ✗ with no fix line is what that would look like.
+func TestUninstallLeavesEveryClaudeCodeKeyChangedSinceEnable(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	sc.setUp(t, "--claude-code")
+	edits := map[string]string{}
+	for i, k := range managedKeys {
+		edits[k] = "mine-" + string(rune('a'+i))
+	}
+	handEdit(t, settings, edits)
+	before := readFile(t, settings)
+
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out,
+		markLine("!", "unrouted")+"left "+someKeys(managedKeys)+" as they are\n",
+		"\n  Left behind:\n    "+someKeys(managedKeys)+" in ~/.claude/settings.json, changed since "+
+			"Cortex set them — remove them by hand if you want them gone\n")
+	if got := readFile(t, settings); got != before {
+		t.Errorf("the settings changed to %q, want %q as they were", got, before)
+	}
+	// applyClaudeCodeDisable never runs on this branch, so removing the record is
+	// the removal's own doing: none of these keys is Cortex's any more, and the
+	// record is the only thing still claiming Cortex routes this file.
+	if fileExists(filepath.Join(sc.home, stateRel)) {
+		t.Error("the record survived the unroute, so doctor still reads Claude Code as routed")
+	}
+	// remedy.byHand is never empty, and this is the one branch where the keys to
+	// remove and the keys to restore are both empty.
+	byHand := unrouteByHand(&setupEnv{home: sc.home}, settings, filepath.Join(sc.home, stateRel),
+		nil, managedKeys)
+	if !strings.Contains(byHand, "decide about "+someKeys(managedKeys)) {
+		t.Errorf("the by-hand fix is %q, want it to name the keys left", byHand)
+	}
+}
+
 // --purge deletes ~/.cortex last. Claude Code's unroute reads the record there,
 // so a value the user had set before setup comes back rather than going.
 func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
@@ -682,6 +767,49 @@ func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(sc.home, ".cortex")); !os.IsNotExist(err) {
 		t.Errorf("--purge left ~/.cortex (lstat: %v)", err)
+	}
+}
+
+// Five of the seven managed keys name a file under ~/.cortex, and --purge deletes
+// that directory. A key the user edited since enable is theirs, so disable leaves
+// it set — and with the directory gone it would point at nothing: silently for
+// NODE_EXTRA_CA_CERTS, which only extends the trust store, and by failing every
+// TLS call for the four that replace it, from tools that never meant to talk to
+// Cortex. So --purge keeps the directory and the row names what holds it.
+func TestUninstallPurgeKeepsCortexDirForALeftKeyPointingIntoIt(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	sc.setUp(t, "--claude-code")
+	// Still a path under ~/.cortex, so the directory is still what it needs, but not
+	// the value enable wrote — which is what makes the key the user's to keep.
+	handEdit(t, settings, map[string]string{envSSLCert: filepath.Join(sc.home, ".cortex", "ca", "mine.crt")})
+
+	code, out := sc.uninstall(t, "--yes", "--purge")
+	// Exit 1 is the left key's, not the keep's: nothing failed here.
+	wantLines(t, code, 1, out, markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
+		" in ~/.claude/settings.json still points into it — delete it once those keys are gone: rm -rf ~/.cortex\n")
+	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
+		t.Errorf("--purge deleted ~/.cortex while a left key pointed into it: %v", err)
+	}
+	// And never offered to delete it. The keep is decided from the plan, before any
+	// removal runs, so the consent screen does not promise a delete the run declines.
+	if row := consentRow(out, "delete"); strings.Contains(row, ".cortex") {
+		t.Errorf("--purge asked to delete ~/.cortex and then kept it: %q", row)
+	}
+}
+
+// A left key whose value is not a path into ~/.cortex holds nothing back: a
+// HTTPS_PROXY is a port. The directory goes, as --purge says it will.
+func TestUninstallPurgeDeletesCortexDirForALeftKeyOutsideIt(t *testing.T) {
+	sc := newUninstallScene(t)
+	settings := filepath.Join(sc.home, settingsRel)
+	sc.setUp(t, "--claude-code")
+	handEdit(t, settings, map[string]string{envProxy: "http://127.0.0.1:9999"})
+
+	code, out := sc.uninstall(t, "--yes", "--purge")
+	wantLines(t, code, 1, out, markLine("✓", "purged")+"~/.cortex\n")
+	if _, err := os.Lstat(filepath.Join(sc.home, ".cortex")); !os.IsNotExist(err) {
+		t.Errorf("--purge kept ~/.cortex for a left key that points nowhere near it (lstat: %v)", err)
 	}
 }
 
@@ -1352,9 +1480,11 @@ func TestUninstallKeepsThePATHLinesForOtherToolsInTheBinDir(t *testing.T) {
 				}
 				return
 			}
-			why := "~/.local/bin also holds " + c.names
+			// The whole clause after the colon belongs to the row, so each keeper
+			// gives its own reason; this one's is why the other tools need the lines.
+			why := "other tools need them, as ~/.local/bin also holds " + c.names
 			wantLines(t, code, 0, out,
-				"\n  Kept: the PATH lines in ~/.zshrc, which other tools need: "+why+"\n",
+				"\n  Kept: the PATH lines in ~/.zshrc: "+why+"\n",
 				"\n"+markLine("·", "PATH")+"kept the PATH lines in ~/.zshrc: "+why+"\n",
 				"\n  Uninstalled.\n")
 			if got := readFile(t, rc); got != before {
