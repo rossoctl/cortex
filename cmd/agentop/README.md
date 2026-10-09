@@ -1023,7 +1023,7 @@ agentop is for, and the other three are surfaces you visit and leave.
   cache-read    35% ███████▉          $3.90   claude-haiku-4-5      <$0.01     120 req
   cache-write    8% █▉                $0.98   (other)              <$0.01+       9 req
   input          3% ▊                 $0.39
-   [a] [model] · endpoint · agent   [w] 1h   esc closes
+   [a] [model] · endpoint · agent   [w] 1h   [$] closes
   ```
 
   The tier figures are **modelled, not measured**: the split comes from the rate
@@ -1389,7 +1389,7 @@ Layered on top of all of them:
 | `y` | detail | yank event JSON to `~/.cortex/agentop-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
-| `$` | every pane except the two pickers, usage and agents | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the agents pane, which is itself the per-agent breakdown |
+| `$` | every pane except the two pickers, usage and agents | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. `$` again closes it; `Esc` does not, so it always backs out of the pane in one press. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the agents pane, which is itself the per-agent breakdown |
 | `a` | while the breakdown is open | cycle the axis: model / endpoint / agent. Not `g`, which is the global "jump to top" |
 | `w` | while the breakdown is open | cycle the span: the band's four — last 1h / today / 7 days / month. Without a cost ledger only the hour is distinct; see [Spans and the cost ledger](#spans-and-the-cost-ledger) |
 | `m` | usage | cycle metric: tokens / requests / errors / latency / cost |

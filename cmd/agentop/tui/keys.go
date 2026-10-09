@@ -193,9 +193,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
-	// The spend drawer's four keys, handled where `u` is and gated the same way: not
+	// The spend drawer's three keys, handled where `u` is and gated the same way: not
 	// while searching (they are characters the user is typing), not under the column
 	// picker, not mid-edit.
+	//
+	// `$` BOTH OPENS AND CLOSES IT, and esc does neither. esc used to close the drawer before
+	// reaching the pane, so with the drawer open, leaving a pane took two presses, and which
+	// press did what depended on whether the drawer was open. The drawer is not modal (it
+	// stays open alongside the table, and `a`/`w` are the only keys it takes), so esc keeps
+	// its one meaning on every pane: go back.
 	//
 	// GLOBAL, unlike every pane binding below, because the strip is global — it draws on
 	// every pane except the two pickers, and a breakdown of it that only opened on one
@@ -223,39 +229,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "w":
 			if m.spendDrawerVisible() {
 				return m.cycleSpendWindow()
-			}
-		case "esc":
-			// Closes the drawer FIRST, before esc reaches whatever else it means on this
-			// pane. The drawer is the most recently opened thing on screen, so it is what
-			// a user pressing esc is closing — and esc's other meanings (leave a pane, go
-			// back) are still one more press away, which is the behaviour every overlay in
-			// this package already has.
-			//
-			// GATED ON WHAT IS ON SCREEN, not on the flag. m.spend.expanded survives a move to
-			// a pane that cannot host the drawer and a resize below its height floor, so gating
-			// on the flag swallowed esc for a drawer nobody could see: open it on Sessions,
-			// press `u`, press esc — and the Usage pane did not exit until a second press. That
-			// is the "a key that silently does nothing reads as a broken key" failure
-			// toggleSpendDrawer's own doc argues against, arriving through the other door.
-			//
-			// The flag is left ALONE when the drawer is off screen, deliberately: it is a
-			// strip expansion and the strip is global, so returning to a pane that can host it
-			// should find it as the operator left it.
-			if m.spendDrawerVisible() {
-				m.spend.expanded = false
-				// AND THE SAME INVALIDATION `$` DOES, for the same reason: the drawer owns a poll
-				// chain, a reply already in the air outlives the keypress by up to
-				// spendFetchTimeout, and storing it would leave a snapshot the next open renders
-				// before its own first poll lands. Closing by esc and closing by `$` are the same
-				// event and must leave the same state.
-				//
-				// It is currently harmless to omit only because the OPEN path invalidates too —
-				// and that call is there for snapshot freshness, so an esc close relying on it is
-				// relying on something that is not about closing at all. See toggleSpendDrawer.
-				m.spend.drawer.invalidate()
-				// Same reason toggleSpendDrawer re-lays out: the reserved rows have to go back.
-				m.layout()
-				return nil
 			}
 		}
 	}

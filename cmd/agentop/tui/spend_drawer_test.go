@@ -170,7 +170,7 @@ func TestRenderSpendDrawer_HintLineNamesTheKeysAndTheCurrentAxis(t *testing.T) {
 	hint := lines[len(lines)-1]
 	// "[a]", not "[g]": g is globally "go to top" and the drawer stays open alongside the table,
 	// so it must not shadow that motion. See cycleSpendAxis.
-	for _, want := range []string{"[a]", "[w]", "6h", "esc"} {
+	for _, want := range []string{"[a]", "[w]", "6h", "[$]"} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("hint %q is missing %q", hint, want)
 		}
@@ -313,8 +313,7 @@ func TestToggleSpendDrawer_RefusesOnAShortTerminalAndExplains(t *testing.T) {
 	}
 }
 
-// AND `$` ON A PANE THAT CANNOT HOST THE DRAWER LEAVES IT ALONE, which is the mirror of the gate
-// esc already has.
+// AND `$` ON A PANE THAT CANNOT HOST THE DRAWER LEAVES IT ALONE.
 //
 // m.spend.expanded survives a move to the Usage pane, and the close branch tested that flag alone —
 // before the host check, so it never ran there. Pressing `$` on Usage therefore closed a drawer the
@@ -810,9 +809,11 @@ func TestHandleKey_TheDrawersBindings(t *testing.T) {
 		}
 	})
 
-	// THE REGRESSION. esc used to be gated on the flag rather than on what is on screen, so a
-	// drawer left open on one pane swallowed esc on a pane that cannot host it — the Usage pane
-	// then needed a second press to exit.
+	// esc IS NEVER THE DRAWER'S. It used to close a drawer on screen before the pane saw it, so
+	// leaving a pane with the drawer open took two presses; `$` is now the only close. These three
+	// subtests are the three places the drawer can be when esc arrives: on screen, open but on a
+	// pane that cannot host it, and open below the height floor. In every one the pane gets the
+	// key and the drawer stays as it was.
 	t.Run("esc is not swallowed where the drawer cannot show", func(t *testing.T) {
 		m := newModel(paneSessions)
 		m.handleKey(runeKey('$'))
@@ -839,12 +840,21 @@ func TestHandleKey_TheDrawersBindings(t *testing.T) {
 		}
 	})
 
-	t.Run("esc closes it where it does show", func(t *testing.T) {
-		m := newModel(paneSessions)
+	// ON paneEvents, whose esc backs out to Sessions, so the key's arrival at the pane is
+	// observable — and Sessions hosts the drawer too, so where it lands says whether it survived.
+	t.Run("esc leaves a drawer on screen open and reaches the pane", func(t *testing.T) {
+		m := newModel(paneEvents)
 		m.handleKey(runeKey('$'))
+		if !m.spendDrawerVisible() {
+			t.Fatal("setup: the drawer did not open on Events")
+		}
 		m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
-		if m.spend.expanded {
-			t.Error("esc did not close a drawer that was on screen")
+		if m.pane != paneSessions {
+			t.Errorf("esc did not back out of Events (pane = %v): the drawer took the press, so "+
+				"leaving the pane needs a second one", m.pane)
+		}
+		if !m.spendDrawerVisible() {
+			t.Error("esc closed the drawer: only `$` closes it")
 		}
 	})
 
@@ -1374,8 +1384,8 @@ func TestRenderSpendDrawer_NarrowDropsTheTierColumnNotTheModels(t *testing.T) {
 //
 // The tick handler used to stop on !spendDrawerVisible(), conflating "closed" with "not on
 // screen right now". They are different questions: expanded deliberately survives a move to a
-// pane that cannot host the drawer and a resize below spendDrawerMinHeight — see the esc
-// handler, which leaves the flag alone so returning finds the drawer as the operator left it.
+// pane that cannot host the drawer and a resize below spendDrawerMinHeight — only `$` clears it,
+// so returning finds the drawer as the operator left it.
 //
 // So: open on Sessions, press `u`, and the next tick returned without rescheduling. Nothing
 // re-arms the chain but `$` itself, so coming back rendered the pre-switch snapshot forever —
@@ -1514,7 +1524,7 @@ func TestRenderSpendDrawer_AFailedFetchSaysSo(t *testing.T) {
 	}
 	// The keys still work, so they are still advertised: a failed span is when an operator most
 	// wants to try another.
-	if !strings.Contains(joined, "[w]") || !strings.Contains(joined, "esc") {
+	if !strings.Contains(joined, "[w]") || !strings.Contains(joined, "[$]") {
 		t.Errorf("the hint line is gone, so the keys that recover from this are undiscoverable:\n%s",
 			joined)
 	}
@@ -1525,53 +1535,38 @@ func TestRenderSpendDrawer_AFailedFetchSaysSo(t *testing.T) {
 	}
 }
 
-// CLOSING THE DRAWER DISOWNS ITS POLL CHAIN, BY EITHER KEY — and the two keys are asserted
-// together because the bug was that they had drifted apart.
-//
-// `$` invalidated and esc did not. That was harmless only because the OPEN path also invalidates,
-// for snapshot freshness, which is not about closing at all: a reply already in the air outlives
-// the keypress by up to spendFetchTimeout, and without reqSeq moving it passes
+// CLOSING THE DRAWER DISOWNS ITS POLL CHAIN. Not stopping the reschedule: a reply already in
+// the air outlives the keypress by up to spendFetchTimeout, and without reqSeq moving it passes
 // applySpendDrawerLoaded's guard and is stored against a closed drawer, so the next open renders a
-// stale breakdown before its own first poll lands.
+// stale breakdown before its own first poll lands. That is invisible today only because the OPEN
+// path also invalidates, for snapshot freshness, which is not about closing at all.
 //
 // reqSeq IS THE ASSERTION, not just snap. Clearing the snapshot without bumping the sequence leaves
-// exactly that in-flight reply admissible, which is the half a "did it clear?" test would miss —
-// and removing the esc-path call left the entire package green before this existed.
-func TestClosingTheDrawer_DisownsItsPollChainByEitherKey(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		key  tea.KeyMsg
-	}{
-		{"dollar", keyRune('$')},
-		{"esc", tea.KeyMsg{Type: tea.KeyEsc}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := &model{width: 100, height: 40}
-			m.pane = paneSessions
-			m.handleKey(keyRune('$'))
-			if !m.spendDrawerVisible() {
-				t.Fatalf("the drawer did not open, so this says nothing about closing it")
-			}
-			// A breakdown on screen and a request in flight.
-			m.spend.drawer.snap = &usage.Snapshot{Window: "month", Priced: true}
-			m.spend.drawer.lastFetch = time.Now()
-			seq := m.spend.drawer.reqSeq
+// exactly that in-flight reply admissible, which is the half a "did it clear?" test would miss.
+func TestClosingTheDrawer_DisownsItsPollChain(t *testing.T) {
+	m := &model{width: 100, height: 40}
+	m.pane = paneSessions
+	m.handleKey(keyRune('$'))
+	if !m.spendDrawerVisible() {
+		t.Fatalf("the drawer did not open, so this says nothing about closing it")
+	}
+	// A breakdown on screen and a request in flight.
+	m.spend.drawer.snap = &usage.Snapshot{Window: "month", Priced: true}
+	m.spend.drawer.lastFetch = time.Now()
+	seq := m.spend.drawer.reqSeq
 
-			m.handleKey(tc.key)
+	m.handleKey(keyRune('$'))
 
-			if m.spend.expanded {
-				t.Fatalf("%q did not close the drawer", tc.name)
-			}
-			if m.spend.drawer.snap != nil {
-				t.Errorf("%q left the breakdown behind, so the next open draws a stale one before "+
-					"its own poll lands", tc.name)
-			}
-			if m.spend.drawer.reqSeq == seq {
-				t.Errorf("%q closed the drawer without bumping reqSeq (%d): a reply already in "+
-					"flight is still admissible and will be stored against a closed drawer",
-					tc.name, seq)
-			}
-		})
+	if m.spend.expanded {
+		t.Fatal("a second $ did not close the drawer")
+	}
+	if m.spend.drawer.snap != nil {
+		t.Error("closing left the breakdown behind, so the next open draws a stale one before " +
+			"its own poll lands")
+	}
+	if m.spend.drawer.reqSeq == seq {
+		t.Errorf("closing did not bump reqSeq (%d): a reply already in flight is still "+
+			"admissible and will be stored against a closed drawer", seq)
 	}
 }
 

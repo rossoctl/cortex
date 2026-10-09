@@ -330,13 +330,15 @@ func (m *model) spendDrawerVisible() bool {
 // nobody. Closing invalidates rather than merely ceasing to reschedule — a reply already in
 // the air outlives the keypress by up to spendFetchTimeout, and storing it would leave a
 // snapshot the next open would render before its own first poll lands.
-// THE CLOSE BRANCH IS GATED ON WHAT IS ON SCREEN, not on the flag, for the reason esc is: the
-// flag survives a move to a pane that cannot host the drawer and a resize below the height floor,
-// so `$` on the Usage pane closed a drawer the user could not see and gave no sign it had. Open it
-// on Sessions, press `u`, press `$` — and the breakdown was gone on the way back, with no flash to
-// say why, which is precisely the "a key that silently does nothing reads as a broken key" failure
-// this function's own doc argues against, arriving through the other door. Off screen, `$` now
-// falls through to the refusals below and says which one applies.
+// IT IS THE ONLY WAY TO CLOSE THE DRAWER. esc used to close it too, ahead of the pane, which made
+// leaving a pane cost two presses whenever the drawer was open; see the drawer block in handleKey.
+// THE CLOSE BRANCH IS GATED ON WHAT IS ON SCREEN, not on the flag: the flag survives a move to a
+// pane that cannot host the drawer and a resize below the height floor, so `$` on the Usage pane
+// closed a drawer the user could not see and gave no sign it had. Open it on Sessions, press `u`,
+// press `$` — and the breakdown was gone on the way back, with no flash to say why, which is
+// precisely the "a key that silently does nothing reads as a broken key" failure this function's
+// own doc argues against, arriving through the other door. Off screen, `$` now falls through to
+// the refusals below and says which one applies.
 func (m *model) toggleSpendDrawer() tea.Cmd {
 	if m.spendDrawerVisible() {
 		m.spend.expanded = false
@@ -751,7 +753,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Group, axes []usage.Group, windowLabel string, width int) []string {
 	if err != nil {
 		// The reservation still has to be filled, so this is spendDrawerLinesFor(width) rows with the
-		// diagnostic on the first and the hint line last — the hints stay because `w` and `esc`
+		// diagnostic on the first and the hint line last — the hints stay because `w` and `$`
 		// still work, and a failed span is the moment an operator most wants to try another.
 		out := make([]string, 0, spendDrawerLines)
 		out = append(out, clipRow("  breakdown unavailable for "+windowLabel+": "+
@@ -762,7 +764,7 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Gr
 		return append(out, fitStripFigures(" ", plainFigures(
 			"[a] "+axisHintOf(axis, axes),
 			"[w] "+windowLabel,
-			"esc closes",
+			"[$] closes",
 		), width))
 	}
 	rows := spendDrawerRows(snap, spendDrawerSeries)
@@ -857,7 +859,7 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Gr
 	out = append(out, fitStripFigures(" ", plainFigures(
 		"[a] "+axisHintOf(hintAxis, axes),
 		"[w] "+windowLabel,
-		"esc closes",
+		"[$] closes",
 	), width))
 
 	// PADDED OUT TO THE RESERVATION. layout() holds back spendDrawerLinesFor(width), and it

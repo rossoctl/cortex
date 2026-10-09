@@ -112,13 +112,16 @@ var helpNavKeys = keyGroup{
 // spendDrawerKeys are live only while the spend drawer is open. Their own
 // section, because listing `a` and `w` beside the keys that work everywhere
 // taught two bindings that do nothing most of the time.
+//
+// No `$` row: `$` both opens and closes the drawer, and it is already listed as a jump
+// target. A second row would advertise one key for two things, which
+// TestGlobalKeys_AdvertiseNoKeyTwice refuses, so the purpose line says it closes.
 var spendDrawerKeys = keyGroup{
 	title:   spendDrawerTitle,
-	purpose: "opened with $ over the spend band; a and w are live only while it is up",
+	purpose: "opened and closed with $ over the spend band; a and w are live only while it is up",
 	bindings: []keyBinding{
 		{"a", "cycle the axis"},
 		{"w", "cycle the span (the band's four)"},
-		{"$ · esc", "close"},
 	},
 	// The scope, stated where there is always room for it — and THIS IS STILL THE ONLY PLACE
 	// IT IS SPELLED OUT. The sessions footer used to carry it as a notice, and the pane title

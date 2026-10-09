@@ -84,7 +84,7 @@ func TestCapture_EveryBeatShowsWhatTheStoryboardClaims(t *testing.T) {
 	// The usage pane is excluded from the byte-level staleness check because its
 	// bars slide with the wall clock, so these assertions are the only thing
 	// guarding it. Keep them specific.
-	c.Press("esc", "u")
+	c.Press("$", "u")
 	usage := ansi.Strip(c.Screen())
 	if strings.Contains(usage, "not available on this proxy") {
 		t.Fatalf("usage charts unavailable — the capturer must attach a usage aggregator:\n%s", usage)

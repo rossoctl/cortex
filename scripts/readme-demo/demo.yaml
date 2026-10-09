@@ -133,7 +133,7 @@ acts:
         keys: ["$"]
         hold: 6s
       - label: usage
-        keys: ["esc", "u"]
+        keys: ["$", "u"]
         hold: 4s
       - label: events
         keys: ["esc", "G", "enter"]
