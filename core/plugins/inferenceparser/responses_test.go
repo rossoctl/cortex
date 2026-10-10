@@ -325,10 +325,13 @@ func TestInferenceParser_ResponsesAPI_IncompleteEventFoldsUsage(t *testing.T) {
 	}
 }
 
-// Confirmed on a live Codex turn that ran its `exec` tool: the completed call_id, name,
-// and input arrive whole on a single response.output_item.done event for an item of type
-// "custom_tool_call" — no incremental assembly needed, unlike Anthropic's tool_use blocks,
-// which split id/name and arguments across separate events.
+// Confirmed on a live Codex turn that ran its `exec` tool: response.output_item.added
+// announces the call_id/name first (no arguments yet), and the completed input arrives
+// whole on the matching response.output_item.done — unlike Anthropic's tool_use blocks,
+// which split id/name and arguments across separate events, this API restates id and name
+// again on "done" rather than only filling in arguments. Also pins that seeing BOTH events
+// for the same call_id does not double the entry: added creates one placeholder, done fills
+// it in, finalize emits exactly one.
 func TestInferenceParser_ResponsesAPI_StreamFoldsCustomToolCall(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{Path: "/backend-api/codex/responses"}
@@ -336,6 +339,8 @@ func TestInferenceParser_ResponsesAPI_StreamFoldsCustomToolCall(t *testing.T) {
 
 	frames := [][]byte{
 		[]byte(`{"type":"response.output_text.delta","delta":"I'll inspect the directory."}`),
+		[]byte(`{"type":"response.output_item.added","item":{"type":"custom_tool_call",` +
+			`"call_id":"call_700a03208f0f45d595453da88151178d","name":"exec"}}`),
 		[]byte(`{"type":"response.output_item.done","item":{"type":"custom_tool_call",` +
 			`"call_id":"call_700a03208f0f45d595453da88151178d","name":"exec",` +
 			`"input":"const r = await tools.exec_command({cmd:\"ls\"});\ntext(r.output);\n",` +
@@ -353,7 +358,7 @@ func TestInferenceParser_ResponsesAPI_StreamFoldsCustomToolCall(t *testing.T) {
 		t.Errorf("Completion = %q", ext.Completion)
 	}
 	if len(ext.ToolCalls) != 1 {
-		t.Fatalf("ToolCalls = %+v, want exactly 1", ext.ToolCalls)
+		t.Fatalf("ToolCalls = %+v, want exactly 1 — added+done for the same call_id must not double count", ext.ToolCalls)
 	}
 	tc := ext.ToolCalls[0]
 	if tc.ID != "call_700a03208f0f45d595453da88151178d" || tc.Name != "exec" {
@@ -366,14 +371,17 @@ func TestInferenceParser_ResponsesAPI_StreamFoldsCustomToolCall(t *testing.T) {
 
 // function_call is NOT confirmed on live traffic — Codex's one real tool call used the
 // custom_tool_call shape instead (see the test above). This pins our handling of the
-// documented function_call shape so a regression here is caught even without a live
-// sample to catch it; see responsesOutputItem's doc comment for the caveat.
+// documented function_call shape, including the added+done sequence and the resulting
+// ID, so a regression here is caught even without a live sample to catch it; see
+// responsesOutputItem's doc comment for the caveat.
 func TestInferenceParser_ResponsesAPI_StreamFoldsFunctionCall(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{Path: "/v1/responses"}
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", Stream: true, IsAction: true}
 
 	frames := [][]byte{
+		[]byte(`{"type":"response.output_item.added","item":{"type":"function_call",` +
+			`"call_id":"call_abc","name":"get_weather"}}`),
 		[]byte(`{"type":"response.output_item.done","item":{"type":"function_call",` +
 			`"call_id":"call_abc","name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}`),
 		[]byte(`{"type":"response.completed","response":{"status":"completed"}}`),
@@ -387,14 +395,77 @@ func TestInferenceParser_ResponsesAPI_StreamFoldsFunctionCall(t *testing.T) {
 	if len(ext.ToolCalls) != 1 {
 		t.Fatalf("ToolCalls = %+v, want exactly 1", ext.ToolCalls)
 	}
-	if ext.ToolCalls[0].Name != "get_weather" || ext.ToolCalls[0].Arguments != `{"city":"NYC"}` {
-		t.Errorf("ToolCalls[0] = %+v, want name=get_weather arguments={\"city\":\"NYC\"}", ext.ToolCalls[0])
+	tc := ext.ToolCalls[0]
+	if tc.ID != "call_abc" || tc.Name != "get_weather" || tc.Arguments != `{"city":"NYC"}` {
+		t.Errorf("ToolCalls[0] = %+v, want id=call_abc name=get_weather arguments={\"city\":\"NYC\"}", tc)
+	}
+}
+
+// A stream that announces a call via output_item.added but is cut short before the matching
+// output_item.done ever arrives — a client-cancelled Codex turn is the real-world case this
+// models. Without tracking from "added", this call would be silently lost: finalize must
+// still emit it, call_id and name known, arguments empty, rather than reporting no tool
+// calls at all for a turn that clearly started one.
+func TestInferenceParser_ResponsesAPI_StreamToolCallCancelledMidCall(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/backend-api/codex/responses"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"response.output_item.added","item":{"type":"custom_tool_call",` +
+			`"call_id":"call_cancelled","name":"exec"}}`),
+		// Stream ends here — no matching output_item.done, no response.completed.
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if len(ext.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %+v, want exactly 1 — a cancelled call must still be reported", ext.ToolCalls)
+	}
+	tc := ext.ToolCalls[0]
+	if tc.ID != "call_cancelled" || tc.Name != "exec" {
+		t.Errorf("ToolCalls[0] = %+v, want id=call_cancelled name=exec", tc)
+	}
+	if tc.Arguments != "" {
+		t.Errorf("Arguments = %q, want empty — done never arrived to fill it in", tc.Arguments)
+	}
+}
+
+// response.output_item.done can mark an item "incomplete" (hit a limit) or "in_progress"
+// (a cancelled turn's own partial snapshot) rather than "completed" — either way its
+// Input/Arguments were cut off mid-write, and recording them would hand a consumer a call
+// that looks complete but silently isn't. This pins that such a call is excluded from
+// ToolCalls entirely, not recorded with truncated arguments.
+func TestInferenceParser_ResponsesAPI_StreamToolCallIncompleteExcluded(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/backend-api/codex/responses"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"response.output_item.added","item":{"type":"custom_tool_call",` +
+			`"call_id":"call_cut_short","name":"exec"}}`),
+		[]byte(`{"type":"response.output_item.done","item":{"type":"custom_tool_call",` +
+			`"call_id":"call_cut_short","name":"exec","input":"const r = await tools.ex",` +
+			`"status":"incomplete"}}`),
+		[]byte(`{"type":"response.incomplete","response":{"status":"incomplete"}}`),
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if len(ext.ToolCalls) != 0 {
+		t.Errorf("ToolCalls = %+v, want none — an incomplete item's cut-off arguments must not be recorded", ext.ToolCalls)
 	}
 }
 
 // The non-streaming path reads output_item entries whole too, same as the streaming
 // path's response.output_item.done — this pins that parseResponsesJSON extracts both the
-// text and the tool call from the same output array.
+// text and the tool call from the same output array, for both tool-call item types.
 func TestInferenceParser_ResponsesAPI_NonStreamingToolCall(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{Path: "/v1/responses"}
@@ -416,5 +487,56 @@ func TestInferenceParser_ResponsesAPI_NonStreamingToolCall(t *testing.T) {
 	}
 	if len(ext.ToolCalls) != 1 || ext.ToolCalls[0].Name != "exec" || ext.ToolCalls[0].Arguments != "ls" {
 		t.Errorf("ToolCalls = %+v, want one call: exec(ls)", ext.ToolCalls)
+	}
+}
+
+// function_call's non-streaming shape — JSON-schema arguments in the Arguments field
+// rather than custom_tool_call's freeform Input — was previously only exercised on the
+// streaming path. Pins that parseResponsesJSON reads it too.
+func TestInferenceParser_ResponsesAPI_NonStreamingFunctionCall(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/responses"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", IsAction: true}
+
+	body := []byte(`{
+		"status": "completed",
+		"output": [
+			{"type": "function_call", "call_id": "call_abc", "name": "get_weather", "arguments": "{\"city\":\"NYC\"}"}
+		],
+		"usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if len(ext.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %+v, want exactly 1", ext.ToolCalls)
+	}
+	tc := ext.ToolCalls[0]
+	if tc.ID != "call_abc" || tc.Name != "get_weather" || tc.Arguments != `{"city":"NYC"}` {
+		t.Errorf("ToolCalls[0] = %+v, want id=call_abc name=get_weather arguments={\"city\":\"NYC\"}", tc)
+	}
+}
+
+// Mirrors the streaming incomplete-exclusion test above for the non-streaming path: an
+// output item marked "incomplete" or "in_progress" has no "added"/"done" split to track —
+// it arrives whole — so parseResponsesJSON must skip it directly rather than recording
+// cut-off arguments.
+func TestInferenceParser_ResponsesAPI_NonStreamingToolCallIncompleteExcluded(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/responses"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", IsAction: true}
+
+	body := []byte(`{
+		"status": "incomplete",
+		"output": [
+			{"type": "custom_tool_call", "call_id": "call_cut_short", "name": "exec", "input": "const r = await tools.ex", "status": "incomplete"}
+		],
+		"usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if len(ext.ToolCalls) != 0 {
+		t.Errorf("ToolCalls = %+v, want none — an incomplete item's cut-off arguments must not be recorded", ext.ToolCalls)
 	}
 }

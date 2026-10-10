@@ -255,16 +255,18 @@ type InferenceExtension struct {
 	FinishReason string `json:"finishReason,omitempty"`
 
 	// ToolCalls are the tool invocations the model requested. Populated on
-	// three of the four response paths — both non-streaming dialects and
-	// Anthropic streaming. An OpenAI *stream* leaves it empty: that dialect
-	// splits each call across `choices[].delta.tool_calls[]` fragments keyed
-	// by their own index, a shape the streaming chunk decoder does not read.
+	// every response path except an OpenAI Chat Completions *stream*: that
+	// dialect splits each call across `choices[].delta.tool_calls[]`
+	// fragments keyed by their own index, a shape the streaming chunk
+	// decoder does not read. Every other path — both non-streaming
+	// dialects, Anthropic streaming, and Responses API streaming — reads or
+	// assembles the call whole.
 	//
-	// So empty means "the model requested no tools" only for a non-streaming
-	// response or an Anthropic stream. A consumer that spans dialects — cost
-	// accounting, per-tool attribution — must not read absence as a negative
-	// on a streamed OpenAI turn, where it is indistinguishable from a turn
-	// whose calls were never captured.
+	// So empty means "the model requested no tools" everywhere except a
+	// streamed OpenAI Chat Completions turn. A consumer that spans dialects
+	// — cost accounting, per-tool attribution — must not read absence as a
+	// negative there, where it is indistinguishable from a turn whose calls
+	// were never captured.
 	ToolCalls []InferenceToolCall `json:"toolCalls,omitempty"`
 
 	// Legacy aggregates, derived from the split fields below via
@@ -401,9 +403,17 @@ type InferenceTool struct {
 }
 
 // InferenceToolCall is a tool invocation the model emitted in its response.
-// Arguments is the raw JSON string as returned by the LLM (often needs
-// json.Unmarshal by the caller) — kept as a string so malformed output
+// Arguments is usually the raw JSON string as returned by the LLM (often
+// needs json.Unmarshal by the caller) — kept as a string so malformed output
 // from the model doesn't prevent capture.
+//
+// NOT ALWAYS JSON, though: the Responses API's "custom_tool_call" items
+// (confirmed on live Codex traffic — its own `exec` tool is this type, see
+// core/plugins/inferenceparser/responses.go) carry freeform text here, by
+// design of that tool type, not malformed output. A consumer that calls
+// json.Unmarshal on Arguments unconditionally — opa and sparc both do today
+// — must handle that failure for this dialect rather than treat it as bad
+// data.
 type InferenceToolCall struct {
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name"`

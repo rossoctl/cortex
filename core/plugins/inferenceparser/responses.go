@@ -344,9 +344,11 @@ type responsesNonStreaming struct {
 // response: output items' text parts -> completion, tool-call items ->
 // ToolCalls (same two shapes as foldResponsesFrame's response.output_item.done
 // case — there's no streaming here to tell "added" from "done", the item
-// just arrives complete), usage -> token counts, status -> a best-effort
-// finish reason (see foldResponsesFrame for why this API has no direct
-// finish_reason/stop_reason equivalent).
+// just arrives complete, so an item marked "incomplete"/"in_progress" is
+// simply skipped rather than tracked and excluded later, see
+// responsesOutputItem's Status doc), usage -> token counts, status -> a
+// best-effort finish reason (see foldResponsesFrame for why this API has no
+// direct finish_reason/stop_reason equivalent).
 func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 	var resp responsesNonStreaming
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -365,10 +367,17 @@ func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 			}
 			b.WriteString(part.Text)
 		}
+		incomplete := item.Status == "incomplete" || item.Status == "in_progress"
 		switch item.Type {
 		case "custom_tool_call":
+			if incomplete {
+				continue
+			}
 			calls = append(calls, pipeline.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Input})
 		case "function_call":
+			if incomplete {
+				continue
+			}
 			calls = append(calls, pipeline.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
 		}
 	}
@@ -426,13 +435,25 @@ type responsesStreamEvent struct {
 //     JSON-schema tool, arguments carried in Arguments.
 //
 // A "message" item carries Content instead — its text parts. On the
-// streaming path this struct's Content is never populated: output_text.delta
+// streaming path this struct's Content is never read: output_text.delta
 // events accumulate that text instead, and parsing the same text twice would
 // double it. Content exists on this struct only for the non-streaming path
 // (parseResponsesJSON), which has no deltas to accumulate from and reads the
 // item whole.
+//
+// Status is the item's own completion state — "completed", "incomplete", or
+// "in_progress" per the published schema — distinct from the response-level
+// status foldResponsesFrame reads off the terminal event. A truncated
+// response (hit a token/turn limit, or the client cancelled it) can mark an
+// individual tool-call item "incomplete": its Input/Arguments were cut off
+// mid-write, so capturing them would hand a consumer a call that looks
+// complete but silently isn't. Both call sites below drop such an item
+// rather than record partial arguments. Left empty leniently where absent
+// (older captures, or a dialect variant that omits it) rather than treated
+// as incomplete — the field's absence is not evidence of truncation.
 type responsesOutputItem struct {
 	Type      string `json:"type"`
+	Status    string `json:"status"`
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Input     string `json:"input"`     // custom_tool_call's freeform argument text
@@ -444,25 +465,35 @@ type responsesOutputItem struct {
 
 // foldResponsesFrame folds one Responses API SSE event into the running
 // stream state. The completion accumulates from response.output_text.delta
-// events; a completed tool call arrives whole on response.output_item.done
-// (no incremental assembly needed — unlike Anthropic's tool_use blocks,
-// which split call id/name and arguments across separate events, this API's
-// output_item.done restates the full call_id, name, and input/arguments in
-// one event, confirmed on a live Codex turn that ran its `exec` tool); usage
-// and a best-effort finish reason arrive together on whichever terminal
-// event ends the stream — response.completed on the one live sample this
-// file was built from, plus the two other terminal events the published
-// schema documents: response.incomplete (hit a limit, was cancelled) and
-// response.failed (an upstream error). All three carry the same response
-// snapshot shape, so one case handles them identically; OpenAI's own
-// documented example for response.failed shows usage: null, so the
-// hasAny() guard below is what keeps a failure from asserting a zero usage
-// that was never reported. Every other event type in the sequence carries
-// nothing this parser extracts and is silently ignored — not unrecognized,
-// just uninteresting. Unlike foldAnthropicFrame, an unknown type is not
-// logged here: the full event vocabulary was confirmed on live traffic
-// rather than inferred from docs, so anything outside it is more likely a
-// wire change worth its own look than routine.
+// events. A tool call is tracked across TWO events rather than read whole
+// off response.output_item.done alone: output_item.added fires first,
+// carrying call_id and name before arguments exist, and
+// addResponsesToolCall records a placeholder for it. output_item.done then
+// either fills that placeholder in via finishResponsesToolCall — unlike
+// Anthropic's tool_use blocks, which split call id/name and arguments
+// across separate events, this API's output_item.done restates the full
+// call_id, name, and input/arguments in one event, confirmed on a live
+// Codex turn that ran its `exec` tool — or, when the item's own Status
+// marks it "incomplete"/"in_progress", excludes it instead of recording cut-
+// off arguments (see responsesOutputItem's Status doc). Tracking from
+// "added" rather than only "done" is what keeps a call that never reaches
+// "done" at all — a stream cut short mid-call, e.g. by client cancellation
+// — from being silently dropped: finalize still emits the placeholder, call
+// id and name known, arguments empty, rather than losing the call entirely.
+// Usage and a best-effort finish reason arrive together on whichever
+// terminal event ends the stream — response.completed on the one live
+// sample this file was built from, plus the two other terminal events the
+// published schema documents: response.incomplete (hit a limit, was
+// cancelled) and response.failed (an upstream error). All three carry the
+// same response snapshot shape, so one case handles them identically;
+// OpenAI's own documented example for response.failed shows usage: null, so
+// the hasAny() guard below is what keeps a failure from asserting a zero
+// usage that was never reported. Every other event type in the sequence
+// carries nothing this parser extracts and is silently ignored — not
+// unrecognized, just uninteresting. Unlike foldAnthropicFrame, an unknown
+// type is not logged here: the full event vocabulary was confirmed on live
+// traffic rather than inferred from docs, so anything outside it is more
+// likely a wire change worth its own look than routine.
 func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
 	var ev responsesStreamEvent
 	if err := json.Unmarshal(frame, &ev); err != nil {
@@ -475,23 +506,23 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		if ev.Delta != nil {
 			state.completion.WriteString(*ev.Delta)
 		}
+	case "response.output_item.added":
+		if ev.Item == nil {
+			return
+		}
+		switch ev.Item.Type {
+		case "custom_tool_call", "function_call":
+			state.addResponsesToolCall(ev.Item.CallID, ev.Item.Name)
+		}
 	case "response.output_item.done":
 		if ev.Item == nil {
 			return
 		}
 		switch ev.Item.Type {
 		case "custom_tool_call":
-			state.responsesToolCalls = append(state.responsesToolCalls, pipeline.InferenceToolCall{
-				ID:        ev.Item.CallID,
-				Name:      ev.Item.Name,
-				Arguments: ev.Item.Input,
-			})
+			state.finishResponsesToolCall(ev.Item.CallID, ev.Item.Name, ev.Item.Input, ev.Item.Status)
 		case "function_call":
-			state.responsesToolCalls = append(state.responsesToolCalls, pipeline.InferenceToolCall{
-				ID:        ev.Item.CallID,
-				Name:      ev.Item.Name,
-				Arguments: ev.Item.Arguments,
-			})
+			state.finishResponsesToolCall(ev.Item.CallID, ev.Item.Name, ev.Item.Arguments, ev.Item.Status)
 		}
 	case "response.completed", "response.incomplete", "response.failed":
 		if ev.Response == nil {
