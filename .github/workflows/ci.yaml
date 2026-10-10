@@ -90,6 +90,15 @@ jobs:
       - name: Test
         run: go test -v -race ./peerproc/...
 
+      # The TLS bridge's trust check reaches Security.framework on darwin, which no
+      # Linux job exercises. Only its tests, not the package's: the rest of tlsbridge
+      # is platform-neutral and the Linux job already runs it.
+      - name: Vet (tlsbridge)
+        run: go vet ./tlsbridge/...
+
+      - name: Test (tlsbridge trust check)
+        run: go test -v -race -run 'TestOSTrustCheck|TestClientTrust|TestGoExecutables' ./tlsbridge/...
+
   # The plugin-profile guards live in their own module, so no other job runs
   # them. They have to run on every PR: plugins are all opt-in, and a plugin
   # missing from every profile produces no build error — it just silently

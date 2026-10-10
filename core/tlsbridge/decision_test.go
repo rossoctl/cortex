@@ -472,3 +472,157 @@ func TestDefaultPassthrough_ClaudeCodeUpdater(t *testing.T) {
 		t.Errorf("api.anthropic.com: got %v, want %v (must stay bridged)", v, Terminate)
 	}
 }
+
+// refuseAcrossWindows records n rejections of key, each after the window the one before
+// it earned has ended: a program refusing again when it is next tried, which is the only
+// rejection the program set counts. s's windows must be a few milliseconds for this to
+// be quick.
+func refuseAcrossWindows(s *SkipSet, key string, n int) {
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			time.Sleep(s.ttl + 5*time.Millisecond)
+		}
+		s.Fail(key)
+	}
+}
+
+// TestProgramSkipSet_StopsAfterThreeRejections: a program that keeps refusing the
+// leaf is evidence it will not change during this run, so the third consecutive
+// rejection stops the retries. The window would otherwise re-arm forever (#912).
+func TestProgramSkipSet_StopsAfterThreeRejections(t *testing.T) {
+	s := NewProgramSkipSet()
+	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
+
+	refuseAcrossWindows(s, "p", 2)
+	time.Sleep(10 * time.Millisecond) // past any window two rejections earn
+	if s.Contains("p") {
+		t.Fatal("two rejections stopped the retries; three are required")
+	}
+	s.Fail("p")
+	time.Sleep(10 * time.Millisecond) // past the ceiling
+	if !s.Contains("p") {
+		t.Fatal("three rejections in a row did not stop the retries: the program will fail again when the window ends")
+	}
+}
+
+// TestProgramSkipSet_ABurstCountsOnce: the program set counts a rejection only after a
+// wait. Connections that all passed Contains before the first rejection was recorded
+// land on its still-open window. That is one burst, not three chances the program had
+// to be fixed, so it must not stop the program in under a second.
+func TestProgramSkipSet_ABurstCountsOnce(t *testing.T) {
+	s := NewProgramSkipSet()
+	for i := 0; i < programStopAfter; i++ {
+		s.Fail("p")
+	}
+	s.mu.RLock()
+	e := s.m["p"]
+	s.mu.RUnlock()
+	if e.stopped {
+		t.Fatal("one burst of rejections stopped the program")
+	}
+	if e.failures != 1 {
+		t.Errorf("failures = %d after one burst of %d rejections, want 1", e.failures, programStopAfter)
+	}
+	if got := window(t, s, "p"); got > s.base {
+		t.Errorf("the burst lengthened the window to %v, more than one base (%v)", got, s.base)
+	}
+
+	// Nor does a burst undo a longer window an earlier, counted rejection earned.
+	s.Fail("q")
+	expireWindow(t, s, "q")
+	s.Fail("q") // counted: a 2x window
+	earned := window(t, s, "q")
+	s.Fail("q") // the rest of that connection's burst
+	if got := window(t, s, "q"); got < earned-time.Second {
+		t.Errorf("a burst cut the earned window from %v to %v", earned, got)
+	}
+}
+
+// A transient failure is not evidence about trust, so it must not walk a program
+// toward being passed through for the rest of the run. Each one lands after the window
+// ends, where a rejection would count.
+func TestProgramSkipSet_TransientFailuresDoNotCountTowardStopping(t *testing.T) {
+	s := NewProgramSkipSet()
+	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
+
+	s.Fail("p")
+	for i := 0; i < 5; i++ {
+		time.Sleep(10 * time.Millisecond)
+		s.FailTransient("p")
+	}
+	time.Sleep(10 * time.Millisecond)
+	if s.Contains("p") {
+		t.Fatal("transient failures stopped the retries")
+	}
+}
+
+// A transient failure never adds to the count, but as a program's first failure it
+// starts the count at one, so a hang-up followed by two spaced rejections stops the
+// program — one rejection sooner than three would. The program-refused row in
+// docs/laptop-service.md says so; this pins it.
+func TestProgramSkipSet_AHangUpFirstStartsTheCount(t *testing.T) {
+	s := NewProgramSkipSet()
+	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
+
+	s.FailTransient("p")
+	time.Sleep(10 * time.Millisecond) // past the hang-up's window
+	refuseAcrossWindows(s, "p", 2)
+	time.Sleep(10 * time.Millisecond) // past the ceiling: only a stop still holds it
+	if !s.Contains("p") {
+		t.Fatal("a hang-up and two spaced rejections did not stop the program")
+	}
+}
+
+func TestProgramSkipSet_SucceedClearsAStop(t *testing.T) {
+	s := NewProgramSkipSet()
+	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
+	refuseAcrossWindows(s, "p", programStopAfter)
+	time.Sleep(10 * time.Millisecond) // past the ceiling: only a stop still holds it
+	if !s.Contains("p") {
+		t.Fatal("precondition: the program is not stopped")
+	}
+	s.Succeed("p")
+	if s.Contains("p") {
+		t.Fatal("a completed handshake did not clear a stopped program")
+	}
+}
+
+// The host set keeps today's behaviour: it never stops, because a host is shared by
+// every client and the next one may well trust the CA.
+func TestSkipSet_HostSetNeverStops(t *testing.T) {
+	s := NewSkipSet()
+	s.base, s.ttl = time.Millisecond, 4*time.Millisecond
+	for i := 0; i < 10; i++ {
+		s.Fail("h")
+	}
+	time.Sleep(10 * time.Millisecond)
+	if s.Contains("h") {
+		t.Fatal("the host set stopped retrying; only the program set may")
+	}
+}
+
+// Review focus 5: when the set is full, a stopped program must not be the one evicted
+// while entries that will expire anyway remain — eviction would make it fail again.
+func TestSkipSet_StoppedEntriesAreEvictedLast(t *testing.T) {
+	s := NewProgramSkipSet()
+	s.max = 2
+	// The stopped entry earns a window that has ended by the time the set fills, so it
+	// is both the one expiring soonest and one the sweep would purge as expired. Left at
+	// the default windows its three rejections outlast live's one, and ordering by
+	// expiry alone would pass.
+	s.base, s.ttl = time.Millisecond, time.Millisecond
+	refuseAcrossWindows(s, "stopped", programStopAfter)
+	time.Sleep(5 * time.Millisecond)
+	s.base, s.ttl = skipBackoffBase, skipTTL
+	s.Fail("live")
+	s.Fail("newcomer") // full: one entry must go
+	if !s.Contains("stopped") {
+		t.Error("the stopped entry was evicted while a live window remained")
+	}
+	if s.Contains("live") {
+		t.Error("the live window was kept and something else evicted")
+	}
+	if !s.Contains("newcomer") {
+		t.Error("the new entry was not recorded")
+	}
+}

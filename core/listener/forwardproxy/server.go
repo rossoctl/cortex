@@ -158,9 +158,9 @@ type Server struct {
 	bridgeAttempts  atomic.Uint64
 	bridgedRequests atomic.Uint64
 
-	// caNotBefore is parsed on first use and never changes for the process.
+	// caNotBeforeAt is parsed on first use and never changes for the process.
 	caNotBeforeOnce sync.Once
-	caNotBeforeStr  string
+	caNotBeforeAt   time.Time
 	// caFingerprint is likewise derived once; the CA is fixed for the process.
 	caFingerprintOnce sync.Once
 	caFingerprintStr  string
@@ -763,6 +763,60 @@ func (fw flushWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// bridgeVerdict applies the TLS bridge's rules to a CONNECT, in the order the design
+// gives them (docs/superpowers/specs/2026-10-09-tls-bridge-per-program-design.md): the
+// host's own eligibility, then what is known about the client's program, and the host
+// memory only for a client whose program cannot be named. It returns the reason the
+// bytes stay opaque, or bridge true and no reason. With bridge true and a named
+// program it sets tl.program, so bridgeServe records the outcome against the program.
+func (s *Server) bridgeVerdict(r *http.Request, tl *tunnelLog, host string, first []byte) (reason pipeline.TunnelReason, bridge bool) {
+	prog, named := s.bridgeProgram(r)
+	if !named {
+		// Unchanged from before programs could be named, order included.
+		if s.TLSBridge.Skip.Contains(host) {
+			// Distinct from client-rejected-ca: this client may trust the CA
+			// perfectly well and is being tunnelled because another one did not.
+			return pipeline.TunnelSkipCached, false
+		}
+		v, why := s.TLSBridge.Decision.Classify(host, portOf(r.Host), first)
+		return passthroughReason(why), v == tlsbridge.Terminate
+	}
+	v, why := s.TLSBridge.Decision.Classify(host, portOf(r.Host), first)
+	if v != tlsbridge.Terminate {
+		return passthroughReason(why), false
+	}
+	// Either key: the program's, which every process running it shares, and this
+	// process's own, where bridgeMemory keeps a refusal from a process older than the CA.
+	if s.TLSBridge.Programs.Contains(prog.Key()) || s.TLSBridge.Programs.Contains(prog.ProcessKey()) {
+		return pipeline.TunnelProgramRefused, false
+	}
+	if t := s.TLSBridge.Trust; t != nil && t.OSTrustOnly(prog.Exe) {
+		return pipeline.TunnelOSTrustOnly, false
+	}
+	tl.program = &prog
+	return "", true
+}
+
+// bridgeMemory is where a failed handshake on tl is recorded: the program's entry when
+// the bridge rules named the client's program, and the host's otherwise — which is
+// what the transparent listener, a client whose program could not be named, and an
+// Engine without Programs all get.
+//
+// A process that started before the bridge CA gets an entry of its own instead
+// (Program.ProcessKey). It cannot have loaded that CA, so its refusal says nothing
+// about the program, and under the program's key a stale agent would stop every new
+// instance of it, which shares that key until it names a session. An unknown start or
+// NotBefore is no evidence the process is stale, and it records against the program.
+func (s *Server) bridgeMemory(tl *tunnelLog, host string) (*tlsbridge.SkipSet, string) {
+	if tl == nil || tl.program == nil || s.TLSBridge.Programs == nil {
+		return s.TLSBridge.Skip, host
+	}
+	if nb := s.caNotBeforeTime(); tl.program.Start != 0 && !nb.IsZero() && time.Unix(0, tl.program.Start).Before(nb) {
+		return s.TLSBridge.Programs, tl.program.ProcessKey()
+	}
+	return s.TLSBridge.Programs, tl.program.Key()
+}
+
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
 // connection through the pipeline. Returns true when it handled the connection
 // (bridged, or the client's connection died post-forge and there is nothing left
@@ -808,20 +862,24 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	if err != nil {
 		reason := handshakeFailureReason(err)
 		// Seed a skip either way — the forged handshake killed this connection, so the
-		// client's retry needs a tunnel whatever went wrong. But only ESCALATE for a
-		// real rejection: that is the one failure class that is evidence of a
-		// persistent trust problem. A client that merely cancels requests, or one
-		// tripping a cipher mismatch, would otherwise walk this host up to the ceiling
-		// and take every other client's observability with it — the same defect this
-		// change exists to fix, one level down.
+		// client's retry needs a tunnel whatever went wrong. The skip is the program's
+		// when the bridge rules named the client's program, and the host's otherwise
+		// (bridgeMemory), so a named program's failure costs no other program anything.
+		// But only ESCALATE for a real rejection: that is the one failure class that is
+		// evidence of a persistent trust problem. A client that merely cancels requests,
+		// or one tripping a cipher mismatch, would otherwise walk its entry up to the
+		// ceiling — on the host memory taking every other client's observability with
+		// it, the same defect this change exists to fix, one level down; on the program
+		// memory stopping a program that was never refusing.
 		//
 		// The decision is here rather than inside SkipSet because the reason vocabulary
 		// belongs to the session-event layer, and tlsbridge has no other business
 		// knowing about it.
+		memory, key := s.bridgeMemory(tl, host)
 		if reason == pipeline.TunnelClientRejectedCA {
-			s.TLSBridge.Skip.Fail(host)
+			memory.Fail(key)
 		} else {
-			s.TLSBridge.Skip.FailTransient(host)
+			memory.FailTransient(key)
 		}
 		// UNCONDITIONAL, and it names the client. Success elsewhere must not silence
 		// this: it used to sit behind bridgedRequests == 0, which treats CA trust as a
@@ -839,6 +897,14 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 			"reason", reason,
 			"client", clientAddr(client),
 			"error", err,
+		}
+		if tl != nil && tl.program != nil {
+			args = append(args, "program", tl.program.Exe)
+			// python3 under an agent and python3 alone are remembered apart, and would
+			// otherwise log the same line.
+			if tl.program.Agent != "" {
+				args = append(args, "agent", tl.program.Agent)
+			}
 		}
 		// The restart advice goes ONLY on a real rejection. An EOF or a cipher
 		// mismatch would send someone restarting agents over something that was never
@@ -877,6 +943,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// any skip left by a different client that does not — which is what stops one stale
 	// agent suppressing this host for everyone until a window elapses.
 	s.TLSBridge.Skip.Succeed(host)
+	// A named program's own entries are cleared too, its process's along with its
+	// program's. The host's is cleared either way: a completed handshake proves this
+	// host's leaf works, and a client whose program cannot be named gets the benefit.
+	if tl != nil && tl.program != nil && s.TLSBridge.Programs != nil {
+		s.TLSBridge.Programs.Succeed(tl.program.Key())
+		s.TLSBridge.Programs.Succeed(tl.program.ProcessKey())
+	}
 	// Bridged: defer the open, with no reason, which is what tells agentop to fold this
 	// row into the decrypted inner request whose own action is the interesting one.
 	markBridged(tl)
@@ -1777,36 +1850,30 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		first, _ := pc.Peek(5)
 		authority := r.Host // CONNECT target is already host:port
 		key := hostOnly(r.Host)
-		if s.TLSBridge.Skip.Contains(key) {
-			// Distinct from client-rejected-ca: this client may trust the CA
-			// perfectly well and is being tunnelled because another one did not.
-			reason = pipeline.TunnelSkipCached
-		} else {
-			v, why := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first)
-			reason = passthroughReason(why)
-			if v == tlsbridge.Terminate {
-				s.noteBridgeAttempt()
-				_ = upstream.Close() // bridgeServe dials its own verified upstream
-				if s.bridgeServe(clientConn, authority, key, tl) {
-					return
-				}
-				// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
-				// like any other opaque one.
-				up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
-				if derr != nil {
-					// The client already has its 200, so that stays the status, and the
-					// error says why the tunnel died. Closing the client is what makes
-					// that close row true: the hijacked conn is this handler's to close,
-					// and it used to be left open for the client to time out on.
-					_ = clientConn.Close()
-					tl.close(http.StatusOK, dialError(derr), 0, 0)
-					return
-				}
-				sent, received := tunnel(clientConn, up2)
-				_ = up2.Close()
-				tl.close(http.StatusOK, nil, sent, received)
+		var bridge bool
+		reason, bridge = s.bridgeVerdict(r, tl, key, first)
+		if bridge {
+			s.noteBridgeAttempt()
+			_ = upstream.Close() // bridgeServe dials its own verified upstream
+			if s.bridgeServe(clientConn, authority, key, tl) {
 				return
 			}
+			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
+			// like any other opaque one.
+			up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+			if derr != nil {
+				// The client already has its 200, so that stays the status, and the
+				// error says why the tunnel died. Closing the client is what makes
+				// that close row true: the hijacked conn is this handler's to close,
+				// and it used to be left open for the client to time out on.
+				_ = clientConn.Close()
+				tl.close(http.StatusOK, dialError(derr), 0, 0)
+				return
+			}
+			sent, received := tunnel(clientConn, up2)
+			_ = up2.Close()
+			tl.close(http.StatusOK, nil, sent, received)
+			return
 		}
 	}
 
@@ -2110,13 +2177,13 @@ func clientPort(c net.Conn) string {
 	return "<port>"
 }
 
-// caNotBefore is the bridge CA's NotBefore, which is the line dividing clients
+// caNotBeforeTime is the bridge CA's NotBefore, which is the line dividing clients
 // that can trust it from clients that cannot: CA files are read once at process
-// start, so anything older than this is holding a different CA (or none).
-// Parsed once — the value is fixed for the process.
-func (s *Server) caNotBefore() string {
+// start, so anything older than this is holding a different CA (or none). Zero when
+// there is no CA or it cannot be parsed. Parsed once — the value is fixed for the
+// process.
+func (s *Server) caNotBeforeTime() time.Time {
 	s.caNotBeforeOnce.Do(func() {
-		s.caNotBeforeStr = "unknown"
 		if s.TLSBridge == nil || len(s.TLSBridge.CAPEM) == 0 {
 			return
 		}
@@ -2128,9 +2195,20 @@ func (s *Server) caNotBefore() string {
 		if err != nil {
 			return
 		}
-		s.caNotBeforeStr = crt.NotBefore.Local().Format(time.RFC3339)
+		s.caNotBeforeAt = crt.NotBefore
 	})
-	return s.caNotBeforeStr
+	return s.caNotBeforeAt
+}
+
+// caNotBefore is caNotBeforeTime as the rejection line prints it, "unknown" when it is
+// zero. Rendered from the one parse, so the cutoff the log advises restarting clients
+// against is the one bridgeMemory tells stale processes apart by.
+func (s *Server) caNotBefore() string {
+	nb := s.caNotBeforeTime()
+	if nb.IsZero() {
+		return "unknown"
+	}
+	return nb.Local().Format(time.RFC3339)
 }
 
 // caFingerprint is the bridge CA's SHA-256, in the encoding
@@ -2216,6 +2294,10 @@ type tunnelLog struct {
 	// conn is the CONNECT's client process slot, handed to the requests a bridged tunnel
 	// decrypts; nil off the CONNECT path.
 	conn *connProc
+	// program is the client's program when the bridge rules named it, nil when they did
+	// not. bridgeServe records a handshake's failure against it when set and against the
+	// host when not, which is what the transparent listener and a nameless client get.
+	program *tlsbridge.Program
 
 	mu     sync.Mutex
 	opened bool

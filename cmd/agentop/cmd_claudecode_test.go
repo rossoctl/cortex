@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
@@ -798,16 +799,26 @@ func TestClaudeCodeDisable_RestoresPriorCAValues(t *testing.T) {
 }
 
 // TestDarwinGoNoteNamesTheKeychainRemedy: SSL_CERT_FILE is inert on macOS, so the
-// note is the only place a user learns that the Go tools need the keychain. If it
-// stops naming the command, the gap goes back to being silent.
+// note is the only place a user learns that Cortex passes the Go tools through unread,
+// and that the keychain is how to have them read. If it stops saying either, the gap
+// goes back to being silent. Enable prints it without checking whether macOS already
+// trusts the CA, so it must state that condition: unqualified, it tells a user who
+// already trusts the CA something false, and hands them a command they already ran.
 func TestDarwinGoNoteNamesTheKeychainRemedy(t *testing.T) {
-	note := darwinGoNote("/Users/x/.cortex/ca/ca.crt")
+	const ca = "/Users/x/.cortex/ca/ca.crt"
+	note := darwinGoNote(ca)
 	for _, want := range []string{
 		"security add-trusted-cert", "login.keychain-db",
-		"/Users/x/.cortex/ca/ca.crt", "inert",
+		ca, "unread", "unless\n  macOS trusts Cortex's CA",
 	} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note is missing %q:\n%s", want, note)
+		}
+	}
+	// It goes to a terminal: every line but the CA path's fits 80 columns.
+	for _, line := range strings.Split(note, "\n") {
+		if n := utf8.RuneCountInString(line); n > 80 && !strings.Contains(line, ca) {
+			t.Errorf("line is %d columns, over 80: %q", n, line)
 		}
 	}
 	// It must not claim the other tools are broken — they are not.

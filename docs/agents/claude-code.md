@@ -69,8 +69,10 @@ The other four variables are for the tools Claude Code runs. They inherit
 *replaces* its tool's trust store rather than adding to it, which is why they get
 `bundle.crt` and not `ca.crt`: `ca.crt` alone would leave git, curl or Python trusting
 one private CA and nothing else. On macOS, Go tools (`go`, `gh`) ignore `SSL_CERT_FILE`
-and use the keychain; `enable` prints the `security add-trusted-cert` command for that,
-and [Go tools on macOS](../laptop-service.md#go-tools-on-macos-need-the-keychain-not-a-variable)
+and use the keychain, so unless macOS trusts Cortex's CA, Cortex passes them through
+unread; `enable` prints the `security add-trusted-cert` command that has Cortex read
+them, and
+[Go tools on macOS](../laptop-service.md#go-tools-on-macos-are-passed-through-unread)
 explains it.
 
 **The symptom when trust fails.** `agentop observe` shows Claude Code's requests as
