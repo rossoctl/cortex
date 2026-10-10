@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -22,17 +21,17 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
 // doctorScene is a setup scene for doctor. Its health endpoint answers 503 while
 // down is set, and its /readyz names a plugin that is not ready while notReady
 // is. PATH holds only the scene's stubs and the system dirs, so no agentop or
-// python3 of this machine's is found; and a security stub that finds nothing in
-// the keychain, as doctor runs security on macOS and a test must never reach the
-// real one. calls is that stub's log.
+// python3 of this machine's is found. The unread report is never fetched: the
+// scene serves no stats server, so whatever answered at its config's stats address
+// would be some other proxy on this machine.
 type doctorScene struct {
 	setupScene
-	calls          string
 	down, notReady *atomic.Bool
 }
 
@@ -47,7 +46,6 @@ func newDoctorScene(t *testing.T) doctorScene {
 			http.Error(w, "outbound plugin not ready: tokenexchange", http.StatusServiceUnavailable)
 		}
 	})
-	calls := stubSecurity(t, 1, "")
 	var keep []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if strings.HasPrefix(dir, os.TempDir()) { // installStub's dirs
@@ -55,21 +53,15 @@ func newDoctorScene(t *testing.T) doctorScene {
 		}
 	}
 	t.Setenv("PATH", strings.Join(append(keep, "/usr/bin", "/bin", "/usr/sbin", "/sbin"), string(os.PathListSeparator)))
-	for _, name := range []string{"launchctl", "systemctl", "lsof", "security"} {
+	for _, name := range []string{"launchctl", "systemctl", "lsof"} {
 		if got, err := exec.LookPath(name); err != nil || !strings.HasPrefix(got, os.TempDir()) {
 			t.Fatalf("%s resolves to %q (%v), not the scene's stub", name, got, err)
 		}
 	}
-	return doctorScene{setupScene: sc, calls: calls, down: down, notReady: notReady}
-}
-
-// stubSecurity puts a security on PATH that appends its arguments to the returned
-// log, prints output and exits code. A later stub wins over an earlier one.
-func stubSecurity(t *testing.T, code int, output string) string {
-	t.Helper()
-	calls := filepath.Join(t.TempDir(), "security-calls")
-	installStub(t, "security", fmt.Sprintf("#!/bin/sh\necho \"$*\" >> '%s'\nprintf '%%s' '%s'\nexit %d\n", calls, output, code))
-	return calls
+	saved := fetchUnreadReport
+	fetchUnreadReport = func(string) (tlsbridge.UnreadReport, bool) { return tlsbridge.UnreadReport{}, false }
+	t.Cleanup(func() { fetchUnreadReport = saved })
+	return doctorScene{setupScene: sc, down: down, notReady: notReady}
 }
 
 func (sc setupScene) doctor(t *testing.T, args ...string) (int, string) {
@@ -394,77 +386,6 @@ func TestDoctorChecksTheCA(t *testing.T) {
 	}
 }
 
-// Go tools on macOS read only the keychain: doctor says whether this CA is
-// there, by its SHA-256 rather than its name, which every minted CA shares; as
-// advice that never fails the run, and only when Claude Code is routed.
-func TestDoctorGoToolsIsAdviceOnly(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("the keychain check runs on macOS only")
-	}
-	asked := func(home string) string {
-		return "find-certificate -a -Z -c authbridge-tls-bridge-ca " + filepath.Join(home, "Library", "Keychains", "login.keychain-db") + "\n"
-	}
-	listing := func(hash string) string { // what security prints for one match
-		return "SHA-256 hash: " + hash + "\nSHA-1 hash: 0A1B2C3D4E5F60718293A4B5C6D7E8F901234567\nkeychain: \"login.keychain-db\"\n"
-	}
-	advice := markLine("!", "Go tools") + "go and gh trust only the keychain on macOS — this matters only if you bridge a host they talk to\n" +
-		"      fix: security add-trusted-cert -k ~/Library/Keychains/login.keychain-db -p ssl ~/.cortex/ca/ca.crt\n"
-	inKeychain := markLine("✓", "Go tools") + "the CA is in the login keychain\n"
-	for _, c := range []struct {
-		name string
-		code int
-		out  func(caHash string) string
-		want string
-	}{
-		{"not in the keychain", 44, func(string) string { return "" }, advice},
-		{"an older CA of the same name", 0, func(string) string {
-			return listing("5D41402ABC4B2A76B9719D911017C592AE1F58E7B9F0B8A1C2D3E4F5A6B7C8D9")
-		}, advice},
-		{"this CA", 0, func(h string) string {
-			return listing("5D41402ABC4B2A76B9719D911017C592AE1F58E7B9F0B8A1C2D3E4F5A6B7C8D8") + listing(h)
-		}, inKeychain},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			sc := newDoctorScene(t)
-			sc.installed(t, "--claude-code")
-			calls := stubSecurity(t, c.code, c.out(caSHA256(t, filepath.Join(sc.home, ".cortex", "ca", "ca.crt"))))
-			code, out := sc.doctor(t)
-			if code != 0 || !strings.Contains(out, c.want) {
-				t.Errorf("exit %d, want 0 with %q:\n%s", code, c.want, out)
-			}
-			if b, _ := os.ReadFile(calls); string(b) != asked(sc.home) {
-				t.Errorf("security ran with %q, want %q", b, asked(sc.home))
-			}
-		})
-	}
-	t.Run("Claude Code not routed", func(t *testing.T) {
-		sc := newDoctorScene(t)
-		sc.installed(t)
-		code, out := sc.doctor(t)
-		if code != 0 || strings.Contains(out, "Go tools") {
-			t.Errorf("exit %d, want 0 with no Go tools line:\n%s", code, out)
-		}
-		if _, err := os.Stat(sc.calls); err == nil {
-			t.Error("doctor ran security with Claude Code not routed")
-		}
-	})
-}
-
-// caSHA256 is the uppercase hex SHA-256 of the certificate in the PEM file at
-// path, as security -Z prints it.
-func caSHA256(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	blk, _ := pem.Decode(b)
-	if blk == nil {
-		t.Fatalf("%s holds no PEM", path)
-	}
-	return fmt.Sprintf("%X", sha256.Sum256(blk.Bytes))
-}
-
 // The usage errors return before doctor looks at anything; the scene is there in
 // case one does not.
 func TestDoctorUsage(t *testing.T) {
@@ -530,7 +451,7 @@ func TestDoctorLeavesACorporateProxyAlone(t *testing.T) {
 	sc.installed(t) // no --claude-code
 	writeExe(t, filepath.Join(sc.home, settingsRel), `{"env":{"HTTPS_PROXY":"http://proxy.corp:8080"}}`)
 	code, out := sc.doctor(t)
-	if code != 0 || strings.Contains(out, "✗") || !strings.Contains(out, notRoutedLine) || strings.Contains(out, "Go tools") {
-		t.Errorf("exit %d, want 0 with the not-routed line and no Go tools or ✗ line for a corporate proxy:\n%s", code, out)
+	if code != 0 || strings.Contains(out, "✗") || !strings.Contains(out, notRoutedLine) {
+		t.Errorf("exit %d, want 0 with the not-routed line and no ✗ line for a corporate proxy:\n%s", code, out)
 	}
 }

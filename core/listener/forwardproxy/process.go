@@ -13,6 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
 // maxChain is how many processes a client's chain holds — the client and its parents —
@@ -86,6 +87,36 @@ func (s *Server) clientChain(r *http.Request) []session.Proc {
 	}
 	cp.once.Do(func() { cp.chain = s.lookupChain(r) })
 	return cp.chain
+}
+
+// bridgeProgram names the program behind r's connection for the TLS bridge's
+// per-program rules, and reports false when it cannot: no process lookup here, no
+// program memory on the bridge, a lookup that found nothing, or an executable whose
+// path could not be read. Those clients keep the host memory's behaviour.
+//
+// It shares the connection's process chain with clientChain, looked up once, but not
+// clientChain's precondition. Session filing needs header bucketing; whether a program
+// trusts a certificate has nothing to do with headers.
+func (s *Server) bridgeProgram(r *http.Request) (tlsbridge.Program, bool) {
+	if s.Processes == nil || s.Sessions == nil || s.TLSBridge == nil || s.TLSBridge.Programs == nil {
+		return tlsbridge.Program{}, false
+	}
+	cp := connProcOf(r.Context())
+	if cp == nil {
+		return tlsbridge.Program{}, false
+	}
+	cp.once.Do(func() { cp.chain = s.lookupChain(r) })
+	if len(cp.chain) == 0 || cp.chain[0].Exe == "" {
+		return tlsbridge.Program{}, false
+	}
+	p := tlsbridge.Program{Exe: cp.chain[0].Exe, PID: cp.chain[0].PID, Start: cp.chain[0].Start}
+	for _, proc := range cp.chain {
+		if s.Sessions.IsAgentProcess(proc) {
+			p.Agent = proc.Exe
+			break
+		}
+	}
+	return p, true
 }
 
 func (s *Server) lookupChain(r *http.Request) []session.Proc {

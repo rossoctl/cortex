@@ -491,7 +491,7 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 | 15123 | Envoy | TCP | Outbound listener (iptables redirects app traffic here) |
 | 15124 | Envoy | TCP | Inbound listener (iptables redirects incoming traffic here) |
 | 9090 | authbridge | gRPC | Ext-proc server (called by Envoy) |
-| 9093 | authbridge | HTTP | Stats + config inspection (`/stats`, `/config`, `/reload/status`) |
+| 9093 | authbridge | HTTP | Stats + config inspection (`/stats`, `/config`, `/reload/status`, `/tls-bridge/unread`) |
 | 9094 | authbridge | HTTP | Session events API (JSON snapshots + SSE stream) |
 | 9901 | Envoy | HTTP | Admin interface (bound to 127.0.0.1) |
 

@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/auth"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
+	"github.com/rossoctl/cortex/core/observe"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -177,5 +180,21 @@ func TestServeReverseProxyServer_ServesTheListenerItIsHanded(t *testing.T) {
 	defer func() { _ = srv.Close() }()
 	if got := getStatus(t, "http://"+ln.Addr().String()+"/"); got != http.StatusTeapot {
 		t.Errorf("status = %d, want the backend's %d", got, http.StatusTeapot)
+	}
+}
+
+// cmd/cortex hands ServeStatServer the TLS bridge's report as an extra option, which must
+// reach the server alongside the two it always registers.
+func TestServeStatServer_PassesItsOptionsOn(t *testing.T) {
+	teapot := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	ln := boundListener(t)
+	srv := ServeStatServer(func() *config.Config { return &config.Config{} }, func() *auth.Stats { return auth.NewStats() },
+		teapot, teapot, ln, observe.WithTLSBridgeUnread(teapot))
+	defer func() { _ = srv.Close() }()
+	base := "http://" + ln.Addr().String()
+	for _, path := range []string{"/tls-bridge/unread", "/reload/status", "/pricing/table"} {
+		if got := getStatus(t, base+path); got != http.StatusTeapot {
+			t.Errorf("%s = %d, want the handler's %d", path, got, http.StatusTeapot)
+		}
 	}
 }

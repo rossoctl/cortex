@@ -350,6 +350,30 @@ const (
 	// Distinct from client-rejected-ca either way: THIS client may well trust the CA
 	// and is being tunnelled because an earlier one had trouble.
 	TunnelSkipCached TunnelReason = "skip-cached"
+	// TunnelProgramRefused — an earlier handshake by the program that opened this
+	// connection failed, so no interception was attempted. Usually that failure was a CA
+	// rejection, but, as with skip-cached, any failed handshake seeds it: the connection
+	// died mid-handshake either way, and the program's retry needs a tunnel. The earlier
+	// failure's proxy.log line names the program (program=, and agent= when it runs
+	// under one) and gives its own reason.
+	//
+	// Recorded against the client's program (tlsbridge.Program), not the host, so
+	// another program talking to the same host is still bridged. The window starts at
+	// 30s and doubles only on rejections, and a rejection counts only once the window
+	// before it has ended; after three rejections in a row the program is not retried
+	// until Cortex restarts. A hang-up or a cipher mismatch never adds to the count or
+	// lengthens the window, but when it is the program's first failure it starts the
+	// count at one, so a hang-up followed by two spaced rejections stops the program. A
+	// process that started before the bridge CA is recorded on its own instead
+	// (Program.ProcessKey): it cannot have loaded that CA, so its refusal says nothing
+	// about the program, and restarting that process is enough.
+	TunnelProgramRefused TunnelReason = "program-refused"
+	// TunnelOSTrustOnly — the program trusts only the operating system's certificate
+	// store, and the store does not trust the bridge CA, so no leaf was shown: it could
+	// only have been refused. Today that is a Go program on macOS (tlsbridge.ClientTrust),
+	// which reads no CA file there. The connection works from its first try; adding the
+	// CA to the keychain is what has Cortex read it.
+	TunnelOSTrustOnly TunnelReason = "os-trust-only"
 	// TunnelBridgeDisabled — no TLS bridge is configured.
 	TunnelBridgeDisabled TunnelReason = "bridge-disabled"
 	// TunnelPassthroughPort, TunnelPassthroughNonTLS and TunnelPassthroughHost mirror

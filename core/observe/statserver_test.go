@@ -172,3 +172,27 @@ func TestStatServerClose_ReleasesItsPort(t *testing.T) {
 	}
 	_ = again.Close()
 }
+
+func TestStatServer_TLSBridgeUnread(t *testing.T) {
+	served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"programs":[],"hosts":[]}`)) })
+	s := NewStatServer(":0", func() *config.Config { return newTestConfig() }, func() *auth.Stats { return auth.NewStats() },
+		WithTLSBridgeUnread(served))
+	w := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tls-bridge/unread", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"programs"`) {
+		t.Errorf("GET /tls-bridge/unread = %d %q", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(w.Body.String(), "/tls-bridge/unread") {
+		t.Error("the index does not link /tls-bridge/unread")
+	}
+
+	// Without the option there is no such endpoint: the index page must not answer for it.
+	bare := serveMux(newTestConfig(), auth.NewStats())
+	w = httptest.NewRecorder()
+	bare.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/tls-bridge/unread", nil))
+	if strings.Contains(w.Body.String(), `"programs"`) {
+		t.Error("a server built without the option served the report")
+	}
+}

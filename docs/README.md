@@ -31,7 +31,7 @@ subsystem each one drives rather than in one file, so this table is the index.
 | `cost_ledger:` | The durable per-minute cost ledger | [`laptop-service.md`](laptop-service.md) |
 | `session:` | Session store TTL, event/session caps, id headers | [`framework-architecture.md`](framework-architecture.md) |
 | `session.archive:` | The laptop's on-disk session history, its bounds, and clearing it | [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions) |
-| `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`), default `:9093` | [`framework-architecture.md`](framework-architecture.md) |
+| `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | [`framework-architecture.md`](framework-architecture.md) |
 | `spiffe:` | SVID sourcing over the Workload API and the `/opt` file mirror | [`architecture.md`](architecture.md) |
 | `listener:` | Listener addresses, `skip_hosts`, interception mode | [`framework-architecture.md`](framework-architecture.md) (reload rules), [`kubernetes.md`](kubernetes.md) (`bind_loopback_only`), and `CLAUDE.md` for `skip_hosts` |
 | `mtls:` | Transport mTLS on the listeners, both deployment shapes | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) and `CLAUDE.md` |

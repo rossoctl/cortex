@@ -333,7 +333,8 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 	}
 	for _, reason := range []TunnelReason{
 		TunnelClientRejectedCA, TunnelClientHungUp, TunnelHandshakeFailed,
-		TunnelOriginUnverified, TunnelSkipCached, TunnelBridgeDisabled,
+		TunnelOriginUnverified, TunnelSkipCached, TunnelProgramRefused, TunnelOSTrustOnly,
+		TunnelBridgeDisabled,
 		TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost,
 		TunnelDialFailed,
 	} {

@@ -14,10 +14,11 @@ agentop service uninstall   # stop it and remove the service
 ```
 
 Two commands cover the whole install rather than just the service. `agentop doctor`
-runs setup's checks, and its own of the CA, without changing anything — the binaries,
-PATH, the config, the service, Claude Code's routing — and ends each problem with the
-command that fixes it, usually `agentop setup`. `agentop uninstall` removes it, and
-`~/.cortex` too with `--purge`, as [Remove it](#remove-it) describes.
+runs setup's checks, and its own of the CA and of the programs Cortex is not reading,
+without changing anything — the binaries, PATH, the config, the service, Claude Code's
+routing — and ends each problem with the command that fixes it, usually `agentop setup`.
+`agentop uninstall` removes it, and `~/.cortex` too with `--purge`, as
+[Remove it](#remove-it) describes.
 
 **Never use `kill` or `pkill` to stop it.** The proxy is supervised, so killing it gets
 it restarted within a couple of seconds, which looks like a process refusing to die.
@@ -520,6 +521,9 @@ This removes only the keys Cortex added to `~/.claude/settings.json`
 `CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
 straight to the API again. Restart `claude` to pick it up.
 
+Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
+enable` puts it back.
+
 There are several CA variables because anything Claude Code spawns inherits
 `HTTPS_PROXY` and so must also be able to verify the bridge. They do not all get
 the same file: `NODE_EXTRA_CA_CERTS` **extends** Node's trust store, so it gets
@@ -603,16 +607,34 @@ The other reasons you may see, and what each one asks of you:
 | `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
 | `passthrough-port` | Not a port the bridge watches. | no |
 | `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
-| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a short window. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
+| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for a short window. This applies only to a connection whose program Cortex cannot name — a failed process lookup, or `session.process_attribution: off`; when it can name the program, that program's own record decides instead (`program-refused`). Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
+| `program-refused` | An earlier handshake by the program that opened this connection failed, so Cortex did not try to read this one. Only that program is affected: another program talking to the same host is still read. Usually the earlier failure was a CA rejection, but any failed handshake seeds this — the `proxy.log` line for that failure names the program (`program=`, and `agent=` when it runs under one) and logged its own reason. Cortex tries again after a window that starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch never adds to the count or lengthens the window, and nor does a rejection arriving while the window is still open. After three rejections in a row, each after a window, Cortex stops trying for that program **until Cortex restarts**. A hang-up or a cipher mismatch that is the program's first failure does start the count at one, so a hang-up followed by two such rejections stops it too. A process that started before Cortex's CA (`ca_not_before`) is remembered on its own instead, not as its program: it cannot have loaded that CA, so restarting that process is enough, and a newly started copy of the program is read meanwhile. | find the earlier failure in `proxy.log`; if it was `client-rejected-ca`, restart the client if it started before `ca_not_before`, otherwise point it at the CA, then restart Cortex |
+| `os-trust-only` | A Go program on macOS, while macOS does not trust Cortex's CA. Such a program reads no CA file and trusts only the keychain, so showing it Cortex's certificate could only fail; Cortex passes it through from its first connection instead. See [Go tools on macOS](#go-tools-on-macos-are-passed-through-unread). | only if you want it read: trust the CA in your keychain |
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
 | `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. | check the destination and the network path to it |
 
-Only `client-rejected-ca` asks you to restart anything. The others are either working as
-intended or point somewhere other than your agents — which is why the reason is worth
-reading before acting on it.
+Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
+`program-refused` when the earlier failure it remembers was one. The others are either
+working as intended or point somewhere other than your agents — which is why the reason
+is worth reading before acting on it.
+
+`program-refused` and `os-trust-only` are about a program rather than a host, so Cortex
+also keeps them as a list, which `agentop doctor` prints and the stats listener serves:
+
+```sh
+curl -s http://127.0.0.1:47602/tls-bridge/unread
+```
+
+`programs` has one entry per program Cortex is not reading: `program` and `agent` (the
+executables), `reason`, `connections` (how many of the program's connections Cortex has
+passed through unread since Cortex started), `failures` and `stopped` (on `program-refused`),
+and `lastHost`. `pid` appears on an entry kept for one process that started before Cortex's
+CA. `hosts` is the host memory behind `skip-cached`: the hosts passed through for clients
+whose program cannot be named. On macOS, `osTrustsCA` is whether macOS trusted Cortex's CA
+when it last checked.
 
 ### Developer tooling is not intercepted at all
 
@@ -631,42 +653,51 @@ to it, and `passthrough_hosts: []` intercepts everything. Never list an inferenc
 endpoint there: it would silently remove the parsing and the token savings, with no
 error anywhere to notice it by.
 
-### Go tools on macOS need the keychain, not a variable
+### Go tools on macOS are passed through unread
 
-`SSL_CERT_FILE` — the Go one, covering `go`, `gh` and `agentop` itself — **does
-nothing on macOS**. Go's `crypto/x509` honours it only in `root_unix.go`, which is
-built for `linux || freebsd || …` and excludes darwin; darwin's `loadSystemRoots`
-returns a sentinel that reads no files, and verification is then handed to
-Security.framework, which consults the keychain alone. No environment variable can
-change that.
+`SSL_CERT_FILE` — the Go one, covering `go`, `gh`, `helm` and `agentop` itself — **does
+nothing on macOS**. Go's `crypto/x509` honours it only in `root_unix.go`, which is built
+for `linux || freebsd || …` and excludes darwin; on darwin verification is handed to
+Security.framework, which consults the keychain alone. No environment variable can change
+that.
 
-So on a Mac, when the bridge decrypts a host a Go tool is talking to, that tool
-fails with a bare `x509: certificate signed by unknown authority`. To cover them,
-trust the CA in your login keychain:
+So on a Mac, Cortex shows a Go program its certificate only when macOS trusts Cortex's
+CA. It recognises a Go program from the executable's build information, asks macOS —
+reading, never writing — whether it trusts Cortex's CA, and when it does not, passes the
+program's HTTPS through unread. The row says `os-trust-only`. The program works exactly
+as it does without Cortex, from its first connection; Cortex records the host and the
+bytes, as for any tunnel, but not the content.
+
+To have Cortex read those programs too, trust the CA in your login keychain:
 
 ```sh
 security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \
   -p ssl ~/.cortex/ca/ca.crt
 ```
 
-Undo with:
+Cortex notices within a minute, without a restart. Undo with:
 
 ```sh
 security delete-certificate -c authbridge-tls-bridge-ca \
   ~/Library/Keychains/login.keychain-db
 ```
 
+Trusting the CA does not have every Go program read. One that relays another system's
+traffic — `gvproxy`, which carries the podman VM's, whose clients trust their own CAs — or
+that trusts a CA list of its own without Cortex's CA in it (`helm --ca-file` naming another
+CA, say) is shown Cortex's certificate once macOS trusts it, and refuses it. That
+connection fails, and Cortex passes the program through as `program-refused` for a window
+before trying it again: it fails up to three times per Cortex run, after which Cortex stops
+trying it until Cortex restarts.
+
 `git`, `curl` and Python are **not** affected on macOS — they read their bundles
-through OpenSSL/LibreSSL, which honours the variables on every platform. And on
-Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
+through OpenSSL/LibreSSL, which honours the variables on every platform. On Linux
+`SSL_CERT_FILE` works normally, so a Go program there is read like any other.
 `agentop configure claude-code enable` prints a short form of this note on macOS
 when it changes your settings (not on a re-run that finds them already enabled).
-Setup does not print it. `agentop doctor` gives the same advice, with the command above,
-as a `! Go tools` line, when Claude Code is routed and the CA is not in your login
-keychain.
-
-Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
-enable` puts it back.
+Setup does not print it. `agentop doctor` lists every program Cortex is passing through
+unread, and why, from the proxy's `/tls-bridge/unread` report; on macOS it adds the
+command above when Go programs are among them.
 
 ### Remove it
 

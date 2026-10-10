@@ -47,9 +47,10 @@ const (
 	// loadSystemRoots returns a `systemPool: true` sentinel that reads no files
 	// at all, and verify.go then routes any program that has not set RootCAs
 	// straight to systemVerify — Security.framework, keychain only. So on macOS
-	// a Go tool cannot be pointed at a CA file by environment; the CA has to go
-	// into the keychain instead (see darwinGoNote). It is still written here
-	// because it is correct and necessary everywhere else, including CI.
+	// a Go tool cannot be pointed at a CA file by environment. The proxy passes such
+	// a tool through unread instead (tlsbridge.ClientTrust), so it keeps working, and
+	// the keychain is only how to have it read (see darwinGoNote). It is still written
+	// here because it is correct and necessary everywhere else, including CI.
 	//
 	// The other three are unaffected: git, curl and Python read their bundles
 	// through OpenSSL/LibreSSL, which honours these variables on macOS too.
@@ -140,25 +141,24 @@ var managedKeys = []string{
 var bundleKeys = []string{envSSLCert, envGitCA, envRequestsCA, envCurlCA}
 
 // darwinGoNote is printed on macOS, where SSL_CERT_FILE is inert: Go resolves
-// roots through Security.framework and reads no CA file, so no environment
-// variable can make `go`, `gh` or any other Go tool trust the bridge. Only the
-// keychain can. git, curl and Python are unaffected — they read their bundles
-// through OpenSSL/LibreSSL, which honours the variables on macOS.
+// roots through Security.framework and reads no CA file. Unless macOS trusts the
+// bridge CA, the proxy therefore passes Go tools through unread rather than breaking
+// them, and the note says so, with the one way to have them read. It is printed
+// without checking that trust, so it states the condition rather than the outcome.
 //
-// Said at enable time rather than left to documentation because the failure it
-// predicts is a bare "x509: certificate signed by unknown authority" from a tool
-// the user has just been told is configured — the same "no error points at the
-// cause" problem this command exists to remove.
+// Said at enable time rather than left to documentation because what it describes —
+// a Go tool's HTTPS left unread, with nothing failing to say so — is the same "no
+// error points at the cause" problem this command exists to remove.
 //
 // Said only when enable is about to change the settings, not on the "Already
 // enabled" re-run that install.sh --claude-code makes on every upgrade: repeated
 // there, a note about a case that needs nothing doing was most of the upgrade's
 // output. Short for the same reason; docs/laptop-service.md ("Go tools on macOS
-// need the keychain") carries the why.
+// are passed through unread") carries the why.
 func darwinGoNote(caPath string) string {
-	return "Note: SSL_CERT_FILE is inert on macOS; Go tools (go, gh) use the keychain only.\n" +
-		"  Nothing to do by default: Cortex tunnels GitHub, the Go module proxy and the\n" +
-		"  package registries unread. Only if you bridge a host a Go tool talks to, run:\n" +
+	return "Note: on macOS, Go tools (go, gh, helm) trust only the keychain, so unless\n" +
+		"  macOS trusts Cortex's CA, Cortex passes their HTTPS through unread rather\n" +
+		"  than breaking them. To have Cortex read them:\n" +
 		"    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db -p ssl \\\n" +
 		"      " + caPath + "\n" +
 		"  (undo: security delete-certificate -c authbridge-tls-bridge-ca \\\n" +

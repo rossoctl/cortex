@@ -35,8 +35,9 @@ type ConfigProvider func() *config.Config
 type Option func(*statServerOpts)
 
 type statServerOpts struct {
-	reloadStatus http.Handler
-	pricingTable http.Handler
+	reloadStatus    http.Handler
+	pricingTable    http.Handler
+	tlsBridgeUnread http.Handler
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
@@ -54,6 +55,13 @@ func WithReloadStatus(h http.Handler) Option {
 // discount, so reading the config describes only the part the operator wrote.
 func WithPricingTable(h http.Handler) Option {
 	return func(o *statServerOpts) { o.pricingTable = h }
+}
+
+// WithTLSBridgeUnread registers a /tls-bridge/unread handler (tlsbridge.Engine's
+// UnreadHandler): which client programs the TLS bridge is passing through unread, and
+// why. Omit when no bridge runs.
+func WithTLSBridgeUnread(h http.Handler) Option {
+	return func(o *statServerOpts) { o.tlsBridgeUnread = h }
 }
 
 // NewStatServer builds the stat HTTP server. configProvider is
@@ -76,6 +84,9 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 	if o.pricingTable != nil {
 		mux.Handle("/pricing/table", o.pricingTable)
 	}
+	if o.tlsBridgeUnread != nil {
+		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -88,6 +99,7 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
     <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
     <li><a href="/reload/status">Config reload status</a></li>
     <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
+    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
     </ul>
   </body>
 </html>`)

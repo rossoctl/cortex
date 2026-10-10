@@ -10,8 +10,27 @@ type Engine struct {
 	Decision *Decision
 	Term     *Terminator
 	Skip     *SkipSet
-	Upstream *http.Client
-	CAPEM    []byte
+	// Programs is the skip set keyed by client program (Program.Key), which the forward
+	// proxy records against instead of Skip whenever it can name the client's program —
+	// or by the client process (Program.ProcessKey), when that process started before
+	// the CA. Nil leaves every connection to Skip, as before programs could be named.
+	Programs *SkipSet
+	// Trust predicts programs that could only refuse a leaf, so they are passed through
+	// without being shown one (ClientTrust: a Go program on macOS, while macOS does not
+	// trust the CA). Nil predicts nothing.
+	Trust Trust
+	// Unread remembers, per program, the connections passed through because of the
+	// program, for UnreadReport. Nil records nothing.
+	Unread *UnreadLog
+	// ProcessAlive reports whether process pid, started at start (Unix nanoseconds, as
+	// Program.Start has it), is still running, for UnreadReport. A process's own entry
+	// (Program.ProcessKey) is cleared only by that process completing a handshake, which
+	// it cannot do once it has exited, so without this the report would list it until
+	// Cortex restarts — after the user restarted the process as the rejection advises.
+	// Nil assumes every process is alive.
+	ProcessAlive func(pid int32, start int64) bool
+	Upstream     *http.Client
+	CAPEM        []byte
 
 	// CAFile is the on-disk trust anchor clients must load. Diagnostics only:
 	// the bridge itself works from CAPEM. It exists so a listener that notices

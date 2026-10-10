@@ -40,6 +40,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/memstore"
+	"github.com/rossoctl/cortex/core/observe"
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -889,6 +890,9 @@ func main() {
 			Decision: decision,
 			Term:     tlsbridge.NewTerminator(minter),
 			Skip:     tlsbridge.NewSkipSet(),
+			Programs: tlsbridge.NewProgramSkipSet(),
+			Trust:    tlsbridge.NewClientTrust(minter),
+			Unread:   tlsbridge.NewUnreadLog(),
 			Upstream: up,
 			CAPEM:    src.CACertPEM(),
 			CAFile:   caTrustPath(cfg.TLSBridge.CADir),
@@ -976,6 +980,17 @@ func main() {
 				slog.Warn("process attribution off: this host's process lookup is unavailable", "error", perr)
 			} else {
 				fpSrv.Processes = procs
+				if bridge != nil {
+					// The unread report lists a process's own entry only while that process
+					// runs. A pid alone could be reused, so the start time must match too;
+					// both come from this resolver, whose start times compare with each other.
+					// Nothing locks the field, so it is set before any listener that reaches the
+					// bridge serves: the forward proxy below, and the stats server, its reader.
+					bridge.ProcessAlive = func(pid int32, start int64) bool {
+						ps, err := procs.Ancestry(pid, 1)
+						return err == nil && len(ps) > 0 && ps[0].Start.UnixNano() == start
+					}
+				}
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
 			}
 		}
@@ -1000,8 +1015,12 @@ func main() {
 		sources = append(sources, plugins.CollectStats(outboundH.Load())...)
 		return auth.MergeStats(sources...)
 	}
+	var statOpts []observe.Option
+	if bridge != nil {
+		statOpts = append(statOpts, observe.WithTLSBridgeUnread(bridge.UnreadHandler()))
+	}
 	statSrv := bootstrap.ServeStatServer(rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(),
-		listeners.take("stats"))
+		listeners.take("stats"), statOpts...)
 
 	// Warm the plugin catalog at boot so any factory that violates the
 	// constructor contract surfaces here rather than on the first

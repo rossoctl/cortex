@@ -132,21 +132,21 @@ func ServeHealthServer(inboundH, outboundH *pipeline.Holder, listener net.Listen
 // StartStatServer binds addr for the stats/config-inspection server, serves it
 // in a goroutine, and returns the server for graceful shutdown. A bind failure
 // is returned so the caller can decide how to handle it (the mains log.Fatalf);
-// a serve-time failure after bind is logged.
-func StartStatServer(cfg *config.Config, cfgProvider observe.ConfigProvider, statsProvider observe.StatsProvider, reloadStatus, pricingTable http.Handler, addr string) (*observe.StatServer, error) {
+// a serve-time failure after bind is logged. opts are appended to the reload-status
+// and pricing-table options it always passes, for an endpoint only some binaries have.
+func StartStatServer(cfg *config.Config, cfgProvider observe.ConfigProvider, statsProvider observe.StatsProvider, reloadStatus, pricingTable http.Handler, addr string, opts ...observe.Option) (*observe.StatServer, error) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	return ServeStatServer(cfgProvider, statsProvider, reloadStatus, pricingTable, listener), nil
+	return ServeStatServer(cfgProvider, statsProvider, reloadStatus, pricingTable, listener, opts...), nil
 }
 
 // ServeStatServer is StartStatServer on a listener the caller already bound. See
-// ServeHealthServer for why.
-func ServeStatServer(cfgProvider observe.ConfigProvider, statsProvider observe.StatsProvider, reloadStatus, pricingTable http.Handler, listener net.Listener) *observe.StatServer {
-	srv := observe.NewStatServer(listener.Addr().String(), cfgProvider, statsProvider,
-		observe.WithReloadStatus(reloadStatus),
-		observe.WithPricingTable(pricingTable))
+// ServeHealthServer for why. opts are appended as StartStatServer's are.
+func ServeStatServer(cfgProvider observe.ConfigProvider, statsProvider observe.StatsProvider, reloadStatus, pricingTable http.Handler, listener net.Listener, opts ...observe.Option) *observe.StatServer {
+	all := append([]observe.Option{observe.WithReloadStatus(reloadStatus), observe.WithPricingTable(pricingTable)}, opts...)
+	srv := observe.NewStatServer(listener.Addr().String(), cfgProvider, statsProvider, all...)
 	go func() {
 		slog.Info("stat server listening", "addr", listener.Addr().String())
 		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {

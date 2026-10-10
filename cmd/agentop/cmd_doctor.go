@@ -1,19 +1,15 @@
 package main
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
@@ -26,9 +22,8 @@ Usage:
   agentop doctor
 
 Runs setup's checks without applying any, then checks of its own, such as the
-TLS bridge CA and, on macOS with Claude Code routed, whether the login keychain
-holds it. Each line is ✓ fine, ! advice, or ✗ a problem with the command that
-fixes it.
+TLS bridge CA and which programs the proxy is passing through unread. Each line
+is ✓ fine, ! advice, or ✗ a problem with the command that fixes it.
 
 Exit status: 0 nothing to fix, 1 something to fix, 2 usage.
 `
@@ -117,7 +112,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if checkCA(env, ui, doctorNow()) {
 		failed = true
 	}
-	checkGoTools(env, ui)
+	checkUnread(env, ui)
 	checkPython(env, ui)
 
 	ui.Blank()
@@ -281,48 +276,4 @@ func readCertificate(path string) *x509.Certificate {
 		return nil
 	}
 	return crt
-}
-
-// checkGoTools is darwinGoNote's advice as a check, on macOS with Claude Code
-// routed: Go tools trust only the keychain, so the bridge CA has to be there for
-// one to talk to a bridged host. Advice only, as most hosts a Go tool talks to are
-// tunnelled unread.
-func checkGoTools(env *setupEnv, ui *checklist.UI) {
-	if env.goos != "darwin" || !claudeCodeRouted(env) {
-		return
-	}
-	dir := bridgeCADir(env)
-	if dir == "" {
-		return // no CA to trust
-	}
-	caFile := filepath.Join(dir, "ca.crt")
-	crt := readCertificate(caFile)
-	if crt == nil {
-		return // checkCA has said so
-	}
-	keychain := filepath.Join(env.home, "Library", "Keychains", "login.keychain-db")
-	if keychainHolds(keychain, crt) {
-		ui.Done("Go tools", "the CA is in the login keychain", 0)
-		return
-	}
-	ui.Advise("Go tools", "go and gh trust only the keychain on macOS — this matters only if you bridge a host they talk to",
-		"security add-trusted-cert -k "+env.tilde(keychain)+" -p ssl "+env.tilde(caFile))
-}
-
-// keychainHolds reports whether the keychain holds crt itself. Every CA Cortex
-// mints has the same name, so after a re-mint the old one still matches by name;
-// security's SHA-256 of each match is compared with crt's instead.
-func keychainHolds(keychain string, crt *x509.Certificate) bool {
-	out, err := exec.Command("security", "find-certificate", "-a", "-Z", "-c", bobCACommonName, keychain).Output() //nolint:gosec // a fixed command on our own keychain path
-	if err != nil {
-		return false
-	}
-	sum := sha256.Sum256(crt.Raw)
-	want := hex.EncodeToString(sum[:])
-	for _, l := range strings.Split(string(out), "\n") {
-		if h, ok := strings.CutPrefix(strings.TrimSpace(l), "SHA-256 hash:"); ok && strings.EqualFold(strings.TrimSpace(h), want) {
-			return true
-		}
-	}
-	return false
 }
