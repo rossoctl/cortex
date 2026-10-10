@@ -603,16 +603,18 @@ The other reasons you may see, and what each one asks of you:
 | `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
 | `passthrough-port` | Not a port the bridge watches. | no |
 | `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
-| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a short window. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
+| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for a short window. This applies only to a connection whose program Cortex cannot name — a failed process lookup, or `session.process_attribution: off`; when it can name the program, that program's own record decides instead (`program-refused`). Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
+| `program-refused` | An earlier handshake by the program that opened this connection failed, so Cortex did not try to read this one. Only that program is affected: another program talking to the same host is still read. Usually the earlier failure was a CA rejection, but any failed handshake seeds this — the `proxy.log` line for that failure names the program (`program=`, and `agent=` when it runs under one) and logged its own reason. Cortex tries again after a window that starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never counts, and nor does a rejection arriving while the window is still open. After three rejections in a row, each after a window, Cortex stops trying for that program **until Cortex restarts**. A process that started before Cortex's CA (`ca_not_before`) is remembered on its own instead, not as its program: it cannot have loaded that CA, so restarting that process is enough, and a newly started copy of the program is read meanwhile. | find the earlier failure in `proxy.log`; if it was `client-rejected-ca`, restart the client if it started before `ca_not_before`, otherwise point it at the CA, then restart Cortex |
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
 | `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. | check the destination and the network path to it |
 
-Only `client-rejected-ca` asks you to restart anything. The others are either working as
-intended or point somewhere other than your agents — which is why the reason is worth
-reading before acting on it.
+Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
+`program-refused` when the earlier failure it remembers was one. The others are either
+working as intended or point somewhere other than your agents — which is why the reason
+is worth reading before acting on it.
 
 ### Developer tooling is not intercepted at all
 
