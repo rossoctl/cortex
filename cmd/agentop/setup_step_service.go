@@ -74,7 +74,7 @@ func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 			env.priorService = serviceInstalled(sp) && sp.healthURL != "" && serviceLoaded(env.goos) && waitHealthy(sp.healthURL, time.Second)
 			// serviceIsCurrent only behind priorService: on a job that is not running it
 			// polls the supervisor for its full readiness timeout.
-			if env.priorService && !changing && serviceIsCurrent(sp) {
+			if env.priorService && !changing && serviceIsCurrent(env.goos, sp) {
 				p.done, p.doneMsg = true, supervisorName(env.goos)+" · healthy"
 				return p, nil
 			}

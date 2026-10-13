@@ -88,7 +88,7 @@ func TestServiceInstall_RefusesABrokenConfig(t *testing.T) {
 func TestReportInstallSuccess(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		var out bytes.Buffer
-		reportInstallSuccess(healthy, &out)
+		reportInstallSuccess(runtime.GOOS, healthy, &out)
 		got := out.String()
 
 		if !strings.Contains(got, "Running as a") {

@@ -269,7 +269,7 @@ func TestServiceIsCurrent(t *testing.T) {
 		if err := os.Remove(p.unitFile); err != nil {
 			t.Fatal(err)
 		}
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current with no unit installed")
 		}
 	})
@@ -284,7 +284,7 @@ func TestServiceIsCurrent(t *testing.T) {
 		if err := os.WriteFile(p.unitFile, []byte(stale), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current for a unit another agentop wrote; it pins that agentop's binary")
 		}
 	})
@@ -292,7 +292,7 @@ func TestServiceIsCurrent(t *testing.T) {
 	t.Run("a unit naming a different binary is not current", func(t *testing.T) {
 		p := base(t)
 		p.binary = filepath.Join(t.TempDir(), "some-other-proxy")
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current while the unit names a different binary")
 		}
 	})
@@ -300,7 +300,7 @@ func TestServiceIsCurrent(t *testing.T) {
 	t.Run("a unit naming a different config is not current", func(t *testing.T) {
 		p := base(t)
 		p.configFile = filepath.Join(t.TempDir(), "other.yaml")
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current while the unit names a different config")
 		}
 	})
@@ -308,7 +308,7 @@ func TestServiceIsCurrent(t *testing.T) {
 	t.Run("no health URL means we cannot confirm it is serving", func(t *testing.T) {
 		p := base(t)
 		p.healthURL = ""
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current without being able to confirm it serves")
 		}
 	})
@@ -326,7 +326,7 @@ func TestServiceIsCurrent(t *testing.T) {
 		if err := os.WriteFile(p.unitFile, []byte(no), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if serviceIsCurrent(p) {
+		if serviceIsCurrent(runtime.GOOS, p) {
 			t.Error("claimed current for a unit that lost --supervise")
 		}
 	})
