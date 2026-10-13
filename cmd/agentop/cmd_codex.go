@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -691,16 +690,17 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 // same thing claude-code's status always gives, since it never reads the
 // Cortex config at all — when the config cannot be read: without it, there
 // is nothing to judge the values by.
+// The verdict comes from codexStateFrom (configure_status.go), which is the same
+// value `agentop configure status` renders as one table row — so the paragraph here
+// and the row there cannot disagree. The per-key lines and the duplicate-definition
+// warning stay local: they are what makes this command worth running over the table.
 func codexStatus(envPath, cortexCfgPath string, stdout io.Writer) int {
 	f, err := parseCodexEnv(envPath)
 	if err != nil {
 		fmt.Fprintf(stdout, "not enabled (%v)\n", err)
 		return 0
 	}
-	keys := make([]string, 0, len(codexKeys))
-	keys = append(keys, codexKeys...)
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range sortedKeys(codexKeys) {
 		if v, ok := f.get(k); ok {
 			fmt.Fprintf(stdout, "  %s=%s\n", k, v)
 		} else {
@@ -723,7 +723,12 @@ func codexStatus(envPath, cortexCfgPath string, stdout io.Writer) int {
 			set++
 		}
 	}
-	if set == len(codexKeys) {
+	// codexStateFrom is asked for the verdict rather than re-deriving it from the
+	// count, so the two readings cannot drift. The count is still printed from here:
+	// the table's one-line detail cannot carry it alongside the duplicate warning, so
+	// codexStateFrom answers configureUnknown for a duplicate and this paragraph —
+	// which has already printed the warning above — keeps the figure.
+	if codexStateFrom(envPath, f, want).State == configureOn {
 		fmt.Fprintf(stdout, "enabled in %s\n", envPath)
 	} else {
 		fmt.Fprintf(stdout, "not fully enabled in %s (%d of %d set)\n", envPath, set, len(codexKeys))

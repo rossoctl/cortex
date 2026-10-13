@@ -1284,7 +1284,19 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// business — and it reads as a complaint about a setting agentop deliberately leaves
 	// alone. An unjudgeable loopback value IS probed: it is the shape agentop writes, and
 	// disable would act on it, so its liveness is informative.
+	//
+	// The VERDICT is bobState's (configure_status.go), so this paragraph and the row
+	// `agentop configure status` prints cannot disagree about whether Bob is routed.
+	// Only configureOn becomes bobStatusYes: configurePartial is a drifted loopback
+	// proxy, which this command has always reported as bobStatusNo with the drift in
+	// the detail below, and configureUnknown here is the unjudgeable-loopback case,
+	// which it has always reported as bobStatusNo too — the three "unknown" cases the
+	// table distinguishes are handled by the early returns above, which keep their own
+	// bobStatusUnknown wording.
 	verdict, listening := bobStatusNo, ""
+	if bobState(settingsPath, cortexCfgPath, wantProxy).State == configureOn {
+		verdict = bobStatusYes
+	}
 	switch existing := doc[bobProxyKey].(type) {
 	case nil:
 		add("%q is unset in %s", bobProxyKey, settingsPath)
@@ -1292,7 +1304,6 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 		owns := bobOwns(existing, wantProxy)
 		switch {
 		case owns == bobOurs:
-			verdict = bobStatusYes
 			listening = existing
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
 		case owns == bobUnknown:

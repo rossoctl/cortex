@@ -557,7 +557,10 @@ func openCodeStatus(bin, cortexCfgPath string, stdout, stderr io.Writer) int {
 			set++
 		}
 	}
-	if set == len(openCodeKeys) {
+	// The verdict is openCodeStateFrom's (configure_status.go), the same value the
+	// `agentop configure status` row carries, so the two cannot disagree. The count is
+	// still printed from here: the table's one-line detail says it in its own words.
+	if openCodeStateFrom(env, vals).State == configureOn {
 		fmt.Fprintln(stdout, "enabled")
 	} else {
 		fmt.Fprintf(stdout, "not fully enabled (%d of %d set)\n", set, len(openCodeKeys))

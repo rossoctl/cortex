@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/clientstate"
@@ -843,18 +842,26 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 	return 0
 }
 
+// claudeCodeStatus prints the seven keys and the verdict, and changes nothing.
+//
+// The verdict comes from claudeCodeState (configure_status.go), which is the same
+// value `agentop configure status` renders as one table row — so the paragraph here
+// and the row there cannot disagree about whether Claude Code is routed. The per-key
+// lines stay local to this function: they are what makes this command worth running
+// over the table, and the table has no room for seven of them.
 func claudeCodeStatus(settingsPath string, stdout io.Writer) int {
 	doc, err := readSettings(settingsPath)
-	if err != nil {
-		fmt.Fprintf(stdout, "not enabled (%v)\n", err)
+	st := claudeCodeStateFrom(settingsPath, doc, err)
+	if st.State == configureUnknown {
+		// Wording preserved from before the state was extracted: an unreadable or
+		// non-JSON settings file has no per-key lines to print, so the reason is the
+		// whole report.
+		fmt.Fprintf(stdout, "not enabled (%s)\n", st.Detail)
 		return 0
 	}
 	env := envStrings(doc)
 	set := 0
-	keys := make([]string, 0, len(managedKeys))
-	keys = append(keys, managedKeys...)
-	sort.Strings(keys)
-	for _, k := range keys {
+	for _, k := range sortedKeys(managedKeys) {
 		if v, ok := env[k]; ok {
 			fmt.Fprintf(stdout, "  %s=%s\n", k, v)
 			set++
@@ -862,7 +869,7 @@ func claudeCodeStatus(settingsPath string, stdout io.Writer) int {
 			fmt.Fprintf(stdout, "  %s (unset)\n", k)
 		}
 	}
-	if set == len(managedKeys) {
+	if st.State == configureOn {
 		fmt.Fprintf(stdout, "enabled in %s\n", settingsPath)
 	} else {
 		fmt.Fprintf(stdout, "not fully enabled in %s (%d of %d set)\n", settingsPath, set, len(managedKeys))

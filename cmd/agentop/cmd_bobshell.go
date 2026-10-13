@@ -491,8 +491,13 @@ func bobShellAdviseManual(action, where string, stdout io.Writer) int {
 // The environment, and nothing else. Exits 0 either way: "not enabled" is a
 // successful report, not a failure, which is how claudeCodeStatus behaves and
 // what makes this usable in a script that only wants the text.
+// The branch is taken on bobShellState's verdict (configure_status.go), which is what
+// `agentop configure status` renders as one row — so the two cannot disagree about
+// whether this shell has the variable. bobShellState never answers configureOn, for
+// the reason the paragraph below spells out.
 func bobShellStatus(stdout io.Writer) int {
-	if v, ok := os.LookupEnv(bobShellEnvVar); ok {
+	if bobShellState().State != configureOff {
+		v, _ := os.LookupEnv(bobShellEnvVar)
 		fmt.Fprintf(stdout, "  %s=%s\n", bobShellEnvVar, v)
 		// Two lines, because these are two different facts and the variable only
 		// establishes the first. It is exported, so it is inherited by every child
