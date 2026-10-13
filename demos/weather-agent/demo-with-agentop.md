@@ -71,9 +71,14 @@ automatically and drops you into the **Sessions** pane:
 │  (no sessions yet)                                                             │
 │                                                                                │
 │  ● connected   0.0 events/sec                                                  │
-│  [↑↓] nav  [↵] drill  [/] search  [p] pause  [P] plugins  [?] help  [q]       │
+│  … [/] search  [esc] pods  [p] pause  [P] plugins  [?] keys  [q] quit          │
 ╰────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The footer's leading `…` is agentop, not this page: the full hint line is
+109 columns and the terminal drawn here is 80, so `[↑↓] nav`, `[↵] drill`,
+`[u] usage` and `[$] spend` have been dropped from the front to fit. Widen
+the terminal and they come back. `[?]` lists every key at any width.
 
 Esc backs you out to the Pods pane (and tears down the port-forward) so
 you can switch pods without quitting. `--endpoint http://...` skips the
