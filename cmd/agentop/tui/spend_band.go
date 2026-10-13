@@ -216,8 +216,74 @@ func spendBandCells(s spendSummary, width int) []bandCell {
 //
 // Returns a slice rather than a string so it keeps paneView's shape — spendBandLines rows in, the
 // same number out — and so growing the band back to two rows would not change the signature again.
-func renderSpendBand(s spendSummary, width int) []string {
-	return []string{joinBandCells(spendBandCells(s, width), nil)}
+// scoped says a single session is on screen; see allSessionsMarker. Both forms take it
+// so the plain line stays the exact width of the styled one, which is the property
+// TestRenderSpendBand_StylingCostsNoColumns holds and app.go's reservation relies on.
+func renderSpendBand(s spendSummary, width int, scoped bool) []string {
+	line := joinBandCells(spendBandCells(s, width), nil)
+	if scoped {
+		line = prefixAllSessions(line, width, nil)
+	}
+	return []string{line}
+}
+
+// allSessionsMarker says the band's figures are the whole proxy's, not the session on
+// screen.
+//
+// WHY A LABEL AND NOT A PER-SESSION FIGURE (#1116). A reader who drills into one
+// session and sees "LAST 1H $7.53 · TODAY $31.25" above twelve rows that cost nothing
+// reasonably reads those as this session's — the reporter did, on a Bob session whose
+// own events carried no cost at all. The honest fix is NOT to scope the band: the cost
+// ledger's row key carries no session dimension by design (see fetchSpendSpan), so
+// there is no per-session total to show, and the band is deliberately all-sessions
+// anyway (see spendState) so it keeps reading while the Usage pane is scoped. Showing
+// $0 for the drilled session, which the issue asked for, would be a figure the ledger
+// cannot support — and a wrong number wearing a right label is the one outcome
+// fetchSpendSpan's comment rules out. So the number stays and the ambiguity goes.
+//
+// SHOWN ONLY WHEN DRILLED IN, because on the sessions list the band has nothing to be
+// confused with: there is no single session on screen for a reader to attribute it to.
+const allSessionsMarker = "ALL SESSIONS"
+
+// spendBandNeedsScopeMarker reports whether ONE session is on screen, so the band has
+// something a reader could mistake its figures for (#1116).
+//
+// The two drilled-in panes and no others. paneSessions lists every session, so the band
+// is already unambiguous there and the marker would be noise on the pane a user spends
+// most of their time on. The Usage pane is excluded for a different reason: it says its
+// own scope in its own header, and a user who scoped it to one session chose that
+// scope rather than arriving at it.
+func (m *model) spendBandNeedsScopeMarker() bool {
+	switch m.pane {
+	case paneEvents, paneDetail:
+		return m.selectedSess != ""
+	}
+	return false
+}
+
+// prefixAllSessions puts allSessionsMarker ahead of a rendered band when it fits.
+//
+// CHARGED AGAINST THE WIDTH BUDGET LAST, AND DROPPED FIRST. spendBandCells chooses the
+// best-fitting set of spend cells by enumerating all sixteen subsets over a fixed-size
+// array, and that arithmetic is both measured and monotone in width — so the marker is
+// added here, after the fit, rather than as a fifth cell inside it. A figure is worth
+// more than the label explaining its scope: when the terminal cannot hold both, the
+// reading survives and the marker is what goes.
+//
+// Width-identical in both forms for the reason renderSpendBandStyled documents: the
+// mute wraps text without changing its columns.
+func prefixAllSessions(line string, width int, mute func(string) string) string {
+	if line == "" {
+		return line
+	}
+	marker := allSessionsMarker
+	if lipgloss.Width(line)+lipgloss.Width(marker)+bandSeparatorWidth > width {
+		return line
+	}
+	if mute != nil {
+		marker = mute(marker)
+	}
+	return marker + bandSeparator + line
 }
 
 // renderSpendBandStyled is renderSpendBand with each label muted and each figure left bright, plus
@@ -235,12 +301,20 @@ func renderSpendBand(s spendSummary, width int) []string {
 // visible reading. The alternative, which this replaced, was rendering the band a SECOND time in
 // plain form and calling spendSummary() again for it — twice per frame on bubbletea's per-event
 // render path, with spendSummary walking all four poll chains each time.
-func renderSpendBandStyled(s spendSummary, width int) (lines []string, drew bool) {
+// scoped says a single session is on screen, so the band names its own scope — see
+// allSessionsMarker.
+func renderSpendBandStyled(s spendSummary, width int, scoped bool) (lines []string, drew bool) {
 	cells := spendBandCells(s, width)
 	// Wrapped rather than passed directly: lipgloss's Render is variadic, and a variadic mute would
 	// let a caller pass several strings and get them joined by a rule this file does not own.
-	return []string{joinBandCells(cells, func(s string) string { return styleMuted.Render(s) })},
-		len(cells) > 0
+	mute := func(s string) string { return styleMuted.Render(s) }
+	line := joinBandCells(cells, mute)
+	if scoped {
+		line = prefixAllSessions(line, width, mute)
+	}
+	// `drew` still reports whether a FIGURE reached the screen, which the marker is not:
+	// the drawer must not open under a band that is only a label.
+	return []string{line}, len(cells) > 0
 }
 
 // joinBandCells lays surviving cells out on one line, separated by bandSeparator.

@@ -99,7 +99,7 @@ func TestSpendLabels_NeutraliseAServerSuppliedControlCharacter(t *testing.T) {
 				}
 			}
 			b.spend.chains[spanHour].snap.Window = tc.window
-			lines := renderSpendBand(spendSummary{Spans: b.spanReadings()}, 200)
+			lines := renderSpendBand(spendSummary{Spans: b.spanReadings()}, 200, false)
 			for _, line := range lines {
 				assertNoControlChars(t, "band line", line)
 			}

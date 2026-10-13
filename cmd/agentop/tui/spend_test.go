@@ -1329,7 +1329,7 @@ func TestSpendSummary_AFailedWindowPollStillCarriesTheDayFigure(t *testing.T) {
 	// And the LIVE renderer really shows it, so the two halves are joined rather than each
 	// correct in isolation. Against renderSpendBand for the reason above: through
 	// renderSpendStrip this half vouched for a renderer paneView no longer called.
-	band := strings.Join(renderSpendBand(got, 200), "\n")
+	band := strings.Join(renderSpendBand(got, 200, false), "\n")
 	// $30.94, not $30.93: 30_935_000 micros is exactly half a cent over $30.93, and money now
 	// rounds HALF-UP FROM MICROS so that this cell and `agentop cost`'s headline answer identically.
 	// %.2f gave $30.93 here, because 30.935 has no exact binary form and lands a shade below the

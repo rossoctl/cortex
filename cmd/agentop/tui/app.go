@@ -2518,7 +2518,7 @@ func (m *model) paneView() string {
 			// all four poll chains. `drew` comes back from the renderer rather than being tested
 			// on the string it returns — see renderSpendBandStyled for why the styled form cannot
 			// answer that question.
-			band, drew = renderSpendBandStyled(m.spendSummary(), m.width)
+			band, drew = renderSpendBandStyled(m.spendSummary(), m.width, m.spendBandNeedsScopeMarker())
 		}
 		for len(band) < spendBandLines {
 			band = append(band, "")

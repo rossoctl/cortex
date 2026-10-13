@@ -62,7 +62,7 @@ func TestSpanReadings_ANegativeTotalIsUnpricedNotARefund(t *testing.T) {
 			// and the "-$" this used to look for could never appear. The clause was dead —
 			// dropping the negative guard left it false and only the em-dash count below caught
 			// the regression. spend_drawer_test.go had it right.
-			line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200), "\n")
+			line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200, false), "\n")
 			for _, shape := range []string{"$-", "-$", "−$", "$−"} {
 				if strings.Contains(line, shape) {
 					t.Errorf("%s: band drew %q, a negative figure that reads as a refund:\n%s",
@@ -117,7 +117,7 @@ func TestSpanReadings_ASettledFreeWindowIsPricedAtZero(t *testing.T) {
 				t.Errorf("%s: USD = %v, want 0", def.label, got.USD)
 			}
 			// And on screen it is a figure, not the em dash.
-			line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200), "\n")
+			line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200, false), "\n")
 			if !strings.Contains(line, "$0.00") {
 				t.Errorf("%s: band drew no $0.00 for settled-free traffic:\n%s", def.label, line)
 			}
@@ -142,7 +142,7 @@ func TestSpanReadings_NothingPricedIsNotZero(t *testing.T) {
 	if got.Unpriced != 10 || got.Priceable != 10 {
 		t.Errorf("coverage gap = %d of %d, want 10 of 10", got.Unpriced, got.Priceable)
 	}
-	line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200), "\n")
+	line := strings.Join(renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200, false), "\n")
 	if strings.Contains(line, "$0.00") {
 		t.Errorf("band rendered $0.00 for an unpriced span, asserting the traffic was free:\n%s", line)
 	}
@@ -241,7 +241,7 @@ func TestSpanReadings_CarryTheLedgersDisclosuresToTheCell(t *testing.T) {
 			if !got.Priced {
 				t.Fatalf("the reading is unpriced, so the marker has no figure to ride on")
 			}
-			line := renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200)[0]
+			line := renderSpendBand(spendSummary{Spans: m.spanReadings()}, 200, false)[0]
 			if !strings.Contains(line, tc.want) {
 				t.Errorf("the month's cell carries no %q for %s, so the total is published as "+
 					"though it were whole:\n%s", tc.want, tc.name, line)
