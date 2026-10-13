@@ -774,8 +774,7 @@
         "darwin_arm64": 440,
         "linux_amd64": 250,
         "linux_arm64": 123,
-        "checksums": 246,
-        "other": 79
+        "checksums": 325
       }
     },
     {
@@ -1556,8 +1555,7 @@
         "darwin_arm64": 441,
         "linux_amd64": 254,
         "linux_arm64": 124,
-        "checksums": 248,
-        "other": 79
+        "checksums": 327
       }
     },
     {
@@ -2342,8 +2340,7 @@
         "darwin_arm64": 443,
         "linux_amd64": 258,
         "linux_arm64": 124,
-        "checksums": 249,
-        "other": 79
+        "checksums": 328
       }
     },
     {
@@ -3140,14 +3137,21 @@
         "darwin_arm64": 447,
         "linux_amd64": 264,
         "linux_arm64": 125,
-        "checksums": 254,
-        "other": 79
+        "checksums": 333
       }
     },
     {
       "date": "2026-10-13",
-      "taken_at": "2026-10-13T10:43:37Z",
+      "taken_at": "2026-10-13T16:40:35Z",
       "smoke_runs": [
+        {
+          "created_at": "2026-10-13T15:26:48Z",
+          "id": 38422126875
+        },
+        {
+          "created_at": "2026-10-13T14:32:19Z",
+          "id": 38414214132
+        },
         {
           "created_at": "2026-10-13T00:25:21Z",
           "id": 38327154783
@@ -3397,7 +3401,7 @@
           "id": 37074325861
         }
       ],
-      "smoke_runs_total_count": 86,
+      "smoke_runs_total_count": 88,
       "latest_release": "v0.8.1",
       "releases": [
         {
@@ -3442,10 +3446,10 @@
           "prerelease": false,
           "platforms": {
             "darwin_amd64": 1,
-            "darwin_arm64": 33,
-            "linux_amd64": 138,
+            "darwin_arm64": 35,
+            "linux_amd64": 142,
             "linux_arm64": 0,
-            "checksums": 86
+            "checksums": 89
           }
         },
         {
@@ -3465,7 +3469,7 @@
           "published_at": "2026-09-24T17:59:19Z",
           "prerelease": false,
           "platforms": {
-            "darwin_amd64": 0,
+            "darwin_amd64": 1,
             "darwin_arm64": 24,
             "linux_amd64": 5,
             "linux_arm64": 10,
@@ -3480,7 +3484,7 @@
             "darwin_amd64": 1,
             "darwin_arm64": 10,
             "linux_amd64": 0,
-            "linux_arm64": 0,
+            "linux_arm64": 1,
             "checksums": 5
           }
         },
@@ -3657,7 +3661,7 @@
           "published_at": "2026-04-09T15:33:42Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 0,
             "darwin_arm64": 0,
             "linux_amd64": 0,
@@ -3669,7 +3673,7 @@
           "published_at": "2026-04-09T18:25:09Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 3,
             "darwin_arm64": 0,
             "linux_amd64": 0,
@@ -3681,7 +3685,7 @@
           "published_at": "2026-04-02T01:50:32Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 2,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3693,7 +3697,7 @@
           "published_at": "2026-03-30T18:21:22Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 3,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3705,7 +3709,7 @@
           "published_at": "2026-03-18T14:32:48Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 4,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3717,7 +3721,7 @@
           "published_at": "2026-03-16T20:52:26Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 2,
             "darwin_arm64": 3,
             "linux_amd64": 2,
@@ -3729,7 +3733,7 @@
           "published_at": "2026-03-11T02:16:35Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 2,
             "linux_amd64": 1,
@@ -3741,7 +3745,7 @@
           "published_at": "2026-03-06T19:03:37Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 1,
@@ -3753,7 +3757,7 @@
           "published_at": "2026-02-25T15:51:10Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 1,
@@ -3765,7 +3769,7 @@
           "published_at": "2026-02-24T01:06:18Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 1,
@@ -3777,7 +3781,7 @@
           "published_at": "2026-02-12T14:50:55Z",
           "prerelease": true,
           "platforms": {
-            "other": 4,
+            "checksums": 4,
             "darwin_amd64": 2,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3789,7 +3793,7 @@
           "published_at": "2026-02-06T21:25:51Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 1,
@@ -3801,7 +3805,7 @@
           "published_at": "2026-02-03T18:37:01Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 2,
@@ -3813,7 +3817,7 @@
           "published_at": "2026-01-30T18:07:21Z",
           "prerelease": false,
           "platforms": {
-            "other": 5,
+            "checksums": 5,
             "darwin_amd64": 5,
             "darwin_arm64": 3,
             "linux_amd64": 2,
@@ -3825,7 +3829,7 @@
           "published_at": "2026-01-29T20:54:23Z",
           "prerelease": false,
           "platforms": {
-            "other": 4,
+            "checksums": 4,
             "darwin_amd64": 3,
             "darwin_arm64": 3,
             "linux_amd64": 3,
@@ -3837,7 +3841,7 @@
           "published_at": "2025-12-19T20:36:43Z",
           "prerelease": true,
           "platforms": {
-            "other": 4,
+            "checksums": 4,
             "darwin_amd64": 2,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3849,7 +3853,7 @@
           "published_at": "2025-12-19T20:06:48Z",
           "prerelease": true,
           "platforms": {
-            "other": 4,
+            "checksums": 4,
             "darwin_amd64": 2,
             "darwin_arm64": 2,
             "linux_amd64": 2,
@@ -3861,7 +3865,7 @@
           "published_at": "2025-12-19T16:33:48Z",
           "prerelease": true,
           "platforms": {
-            "other": 4,
+            "checksums": 4,
             "darwin_amd64": 3,
             "darwin_arm64": 4,
             "linux_amd64": 3,
@@ -3873,7 +3877,7 @@
           "published_at": "2025-11-20T21:28:48Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 2,
             "darwin_arm64": 2,
             "linux_amd64": 3,
@@ -3885,7 +3889,7 @@
           "published_at": "2025-11-20T18:11:25Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 2,
@@ -3897,7 +3901,7 @@
           "published_at": "2025-11-20T17:42:50Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 1,
             "darwin_arm64": 1,
             "linux_amd64": 1,
@@ -3909,7 +3913,7 @@
           "published_at": "2025-11-19T23:04:13Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 4,
             "darwin_arm64": 4,
             "linux_amd64": 4,
@@ -3921,7 +3925,7 @@
           "published_at": "2025-11-19T21:53:15Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 4,
             "darwin_arm64": 3,
             "linux_amd64": 3,
@@ -3933,7 +3937,7 @@
           "published_at": "2025-11-19T20:54:54Z",
           "prerelease": true,
           "platforms": {
-            "other": 3,
+            "checksums": 3,
             "darwin_amd64": 4,
             "darwin_arm64": 5,
             "linux_amd64": 4,
@@ -3942,12 +3946,11 @@
         }
       ],
       "totals": {
-        "darwin_amd64": 129,
-        "darwin_arm64": 450,
-        "linux_amd64": 272,
-        "linux_arm64": 127,
-        "checksums": 257,
-        "other": 79
+        "darwin_amd64": 130,
+        "darwin_arm64": 452,
+        "linux_amd64": 276,
+        "linux_arm64": 128,
+        "checksums": 339
       }
     }
   ]
