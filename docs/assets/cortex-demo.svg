@@ -433,7 +433,7 @@ clipPath rect{width:100000px}
 <text class="rv rv4_30" y="598.0"></text>
 <text class="rv rv4_31" y="616.0"></text>
 <text class="rv rv4_32" y="634.0"><tspan x="16.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="125.2" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.0 events/sec</tspan><tspan x="242.8" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   feedback: https://github.com/rossoctl/cortex/issues/new/choose</tspan></text>
-<text class="rv rv4_33" y="652.0"><tspan x="16.0" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] pipeline  [?] keys  [q] quit</tspan></text>
+<text class="rv rv4_33" y="652.0"><tspan x="16.0" textLength="814.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st5 lbl-spend">
 <text y="58.0"><tspan x="16.0" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094</tspan></text>
@@ -493,7 +493,7 @@ clipPath rect{width:100000px}
 <text y="598.0"></text>
 <text y="616.0"></text>
 <text y="634.0"><tspan x="16.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="125.2" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.0 events/sec</tspan><tspan x="242.8" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   feedback: https://github.com/rossoctl/cortex/issues/new/choose</tspan></text>
-<text y="652.0"><tspan x="16.0" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] pipeline  [?] keys  [q] quit</tspan></text>
+<text y="652.0"><tspan x="16.0" textLength="814.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st6 lbl-usage">
 <text y="58.0"><tspan x="16.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094 · usage · all</tspan></text>
@@ -716,6 +716,6 @@ clipPath rect{width:100000px}
 <text y="598.0"></text>
 <text y="616.0"></text>
 <text y="634.0"><tspan x="16.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="125.2" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">0.0 events/sec</tspan><tspan x="242.8" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   feedback: https://github.com/rossoctl/cortex/issues/new/choose</tspan></text>
-<text y="652.0"><tspan x="16.0" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] pipeline  [?] keys  [q] quit</tspan></text>
+<text y="652.0"><tspan x="16.0" textLength="814.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit</tspan></text>
 </g>
 </svg>
