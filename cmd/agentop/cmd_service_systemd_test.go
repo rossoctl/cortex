@@ -70,6 +70,18 @@ func noSystemctlOnPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
+// callLogPrefix marks a logged invocation, so that a call with NO arguments is
+// still a line with content rather than a blank one.
+//
+// `echo "$@"` alone made a zero-argument call write an empty line, and readCallLog
+// drops empty lines — the same reason installStub's reachability check exists, one
+// layer in: a real but bugged zero-argument invocation read as "never called", which
+// is precisely the outcome every assertion here uses to mean the opposite. No current
+// call site passes zero arguments, so nothing in this package exercises it; the point
+// is that it stays distinguishable if one ever does, rather than silently merging
+// into a passing assertion. See #1106.
+const callLogPrefix = "argv:"
+
 // callLog returns a path inside dir and a shell snippet that appends the fake's
 // own arguments to it — so a test can assert exactly what our code invoked, not
 // just that it received a canned answer back.
@@ -79,9 +91,20 @@ func callLog(t *testing.T) (path string, appendLine string) {
 	// shQuote's own doc comment describes it as quoting a systemd ExecStart argument
 	// specifically, but the escaping rule is plain POSIX sh, the same for any word in
 	// any shell command — including this redirect target, not a unit file at all.
-	return path, `echo "$@" >> ` + shQuote(path)
+	//
+	// The prefix and "$@" are separate echo words rather than one "argv: $@" string,
+	// so a zero-argument call logs exactly "argv:" with no trailing space for
+	// readCallLog to have to trim away.
+	return path, `echo ` + callLogPrefix + ` "$@" >> ` + shQuote(path)
 }
 
+// readCallLog returns one entry per invocation, each the arguments that invocation
+// was given — "" for a call that was given none.
+//
+// Every line carries callLogPrefix, so "" here can only come from a zero-argument
+// call and never from the file's own trailing newline. A line WITHOUT the prefix is
+// a hard failure rather than a skip: it means something other than a callLog fake
+// wrote to this path, and silently filtering it would hide whatever that was.
 func readCallLog(t *testing.T, path string) []string {
 	t.Helper()
 	b, err := os.ReadFile(path) //nolint:gosec
@@ -91,13 +114,93 @@ func readCallLog(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatalf("reading the call log: %v", err)
 	}
+	trimmed := strings.TrimRight(string(b), "\n")
+	if trimmed == "" {
+		return nil // the file exists but holds nothing: still never called
+	}
 	var lines []string
-	for _, l := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
-		if l != "" {
-			lines = append(lines, l)
+	for _, l := range strings.Split(trimmed, "\n") {
+		args, ok := strings.CutPrefix(l, callLogPrefix)
+		if !ok {
+			t.Fatalf("call log line %q does not start with %q — something other than a "+
+				"callLog fake wrote to %s", l, callLogPrefix, path)
 		}
+		// One space separates the prefix from the first argument; a zero-argument
+		// call has neither, so TrimPrefix rather than a fixed slice.
+		lines = append(lines, strings.TrimPrefix(args, " "))
 	}
 	return lines
+}
+
+// TestCallLog is a test of the test harness, and it earns its place the way
+// installStub's reachability check does: every assertion in this file reads a zero-entry
+// call log as "our code never invoked this", so the harness must not be able to produce
+// that reading from anything else. `echo "$@"` could — a call with no arguments wrote a
+// blank line, which readCallLog dropped — so a bugged `systemctl` with its arguments
+// lost would have come back as the clean "never called" outcome several subtests here
+// assert deliberately (#1106).
+//
+// Driven through a stub invoked directly rather than through any function under test,
+// because no production call site passes zero arguments today. That is the latency: the
+// harness has to stay honest before some future caller makes it matter, and there is
+// nothing in the code that would exercise it in the meantime.
+func TestCallLog(t *testing.T) {
+	// invoke runs the callLog-writing stub with args and returns what readCallLog
+	// makes of the result.
+	invoke := func(t *testing.T, args ...string) []string {
+		t.Helper()
+		logPath, logLine := callLog(t)
+		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\nexit 0\n")
+		if err := exec.Command("systemctl", args...).Run(); err != nil {
+			t.Fatalf("stub exited non-zero: %v", err)
+		}
+		return readCallLog(t, logPath)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		// The case the harness could not previously express. One entry, not zero: the
+		// call HAPPENED, it just carried nothing.
+		{"a zero-argument call is one entry with empty arguments", nil, []string{""}},
+		// And the ordinary case still round-trips verbatim, prefix stripped — which is
+		// what every other assertion in this file compares against.
+		{"a normal call logs its arguments verbatim", []string{"--user", "daemon-reload"}, []string{"--user daemon-reload"}},
+		// A lone empty argument is NOT the same event as no arguments at all, and
+		// `echo` renders them identically once the prefix is gone. Pinned so nobody
+		// "simplifies" the two into one: they differ in the count, which is the thing
+		// the assertions key on, and not in the text.
+		{"one empty argument is still one entry", []string{""}, []string{""}},
+		// Arguments are joined by the shell, so an argument containing a space is
+		// indistinguishable from two arguments in the log. Recorded as a known limit
+		// rather than a bug: nothing agentop invokes passes an argument with a space,
+		// and a per-argument format would make every existing assertion unreadable.
+		{"an argument containing a space reads as two", []string{"a b"}, []string{"a b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := invoke(t, tc.args...)
+			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("readCallLog = %#v, want %#v", got, tc.want)
+			}
+			if len(got) != len(tc.want) {
+				t.Errorf("entry count = %d, want %d", len(got), len(tc.want))
+			}
+		})
+	}
+
+	// The other half of the distinction: a stub that never ran at all. Asserted in the
+	// same test as the zero-argument case on purpose — the two used to be the same
+	// value, and what makes the fix meaningful is that they now differ.
+	t.Run("a stub that was never invoked reads as nil", func(t *testing.T) {
+		logPath, logLine := callLog(t)
+		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\nexit 0\n")
+		if got := readCallLog(t, logPath); got != nil {
+			t.Errorf("readCallLog = %#v, want nil for a fake that was never called", got)
+		}
+	})
 }
 
 func TestSupervisorRunning_Linux(t *testing.T) {
