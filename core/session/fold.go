@@ -51,15 +51,47 @@ func applyTitle(rank int, title string, candRank int, candText string) (int, str
 	return rank, title
 }
 
-// applyAgent records the first label a coding agent sent into a session. The default and
-// pending buckets name no agent: they collect traffic for no one session. Shared by
+// applyAgent records the first label a client sent into a session, one entry per client. The
+// default and pending buckets name no agent: they collect traffic for no one session. Shared by
 // appendLocked and SummaryFold for applyTitle's reason.
+//
+// RECOGNISED OR NOT — #1214. An agent the proxy does not recognise is keyed by its own label,
+// because an AffinityName is the one thing it has not got; agentOfLocked then reports that label
+// only when no recognised agent in the session can answer, so a session that already named an
+// agent keeps naming it. Before this, such a session carried no agents entry at all and served
+// no `agent` field, so nothing in /v1/sessions said which program it belonged to and no
+// `agent=` query could reach it.
+//
+// A CLIENT THAT CAN NAME NOTHING STILL RECORDS NOTHING, which is what keeps `agent` omitempty
+// honest: usage.AgentLabel answers pipeline.UnknownClientLabel ("unknown") for an event that
+// carried no User-Agent at all, and that is a RESERVED BUCKET rather than an agent name — see
+// EventClient.Label. Putting it in this slice would render untagged traffic as a program that
+// spent money, on exactly the field a client reads to attribute a session.
+//
+// THE LABEL IS CLIENT-ASSERTED AND SPOOFABLE, and it reaches this slice already bounded:
+// usage.AgentLabel is ringLabel(AgentName(c.Label())), which sanitises every control, bidi and
+// zero-width rune and caps at usage.MaxLabelLen (96) bytes on a rune boundary — the same
+// treatment the usage ring's byAgent keys and the ledger's rows get, which is what makes a
+// session's `agent` and its `group=agent` row the same string. Nothing new is invented here, and
+// nothing here may be read as a trusted identity; see EventClient's godoc.
 func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.EventClient) []sessionAgent {
-	if agentName == "" || sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) ||
-		agentLabelIn(agents, agentName) != "" {
+	if sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) {
 		return agents
 	}
-	return append(agents, sessionAgent{name: agentName, label: usage.AgentLabel(c)})
+	label := usage.AgentLabel(c)
+	known := agentName != ""
+	if !known {
+		// Keyed by the label, since there is no canonical name. "unknown" means the event
+		// carried no User-Agent — nothing to attribute, so nothing recorded.
+		agentName = label
+		if agentName == "" || agentName == pipeline.UnknownClientLabel {
+			return agents
+		}
+	}
+	if agentLabelIn(agents, agentName) != "" {
+		return agents
+	}
+	return append(agents, sessionAgent{name: agentName, label: label, known: known})
 }
 
 // agentLabelIn is the first label the agent named name sent, or "".
@@ -67,6 +99,22 @@ func agentLabelIn(agents []sessionAgent, name string) string {
 	for _, a := range agents {
 		if a.name == name {
 			return a.label
+		}
+	}
+	return ""
+}
+
+// firstAgentLabel is the first label in earlier then in agents whose entry's known matches, or
+// "". Two slices in one call because the history before this entry is searched first wherever a
+// session's agent is picked, and the recognised and unrecognised passes must each run over both
+// in that order — searching one slice at a time would prefer this entry's recognised agent to the
+// history's, which is the wrong way round for a first-wins field.
+func firstAgentLabel(earlier, agents []sessionAgent, known bool) string {
+	for _, as := range [2][]sessionAgent{earlier, agents} {
+		for _, a := range as {
+			if a.known == known {
+				return a.label
+			}
 		}
 	}
 	return ""
@@ -95,10 +143,10 @@ func inferenceHostOf(e *pipeline.SessionEvent) string {
 // untrimmed session's events reports what ListSessions does. TestSummaryFold_AgreesWithListSessions
 // holds that.
 //
-// ONE DIFFERENCE IS INHERENT: Agent is the first known agent's label, while the store prefers
-// the label of the agent that CLAIMED the session, which only the store knows. A resident
-// session's row therefore always comes from the store, which adds the archive's fold of the
-// history before its entry (PriorKeeper).
+// ONE DIFFERENCE IS INHERENT: Agent is the first recognised agent's label (else the first
+// unrecognised client's), while the store prefers the label of the agent that CLAIMED the
+// session, which only the store knows. A resident session's row therefore always comes from the
+// store, which adds the archive's fold of the history before its entry (PriorKeeper).
 //
 // The zero value is not ready — rankRename is 0, so a zero titleRank would claim the session
 // had been renamed. Use NewSummaryFold. Not safe for concurrent use.
@@ -179,8 +227,15 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		PromptContext: f.promptContext(),
 		InferenceHost: f.inferenceHost,
 	}
-	if sessionID != DefaultSessionID && !strings.HasPrefix(sessionID, PendingPrefix) && len(f.agents) > 0 {
-		sum.Agent = f.agents[0].label
+	if sessionID != DefaultSessionID && !strings.HasPrefix(sessionID, PendingPrefix) {
+		// Recognised first, then unrecognised, by agentOfLocked's rule and for its reasons — the
+		// store's own preference for the owner that CLAIMED the session is the one difference this
+		// type's godoc names, and it is not reachable from here.
+		if l := firstAgentLabel(nil, f.agents, true); l != "" {
+			sum.Agent = l
+		} else {
+			sum.Agent = firstAgentLabel(nil, f.agents, false)
+		}
 	}
 	return sum
 }
@@ -208,9 +263,17 @@ type foldJSON struct {
 	InferenceHost string `json:"inferenceHost,omitempty"`
 }
 
+// foldAgent is one sessionAgent in session.json.
+//
+// UNRECOGNISED IS THE ENCODED STATE, not recognised: a document written before #1214 holds only
+// recognised agents, and absent must decode to what those were. `unknown: true` therefore marks
+// the new case, so an old session.json resumes with its agents still preferred over any
+// unrecognised client the session sees next — which is what the live store would do for the same
+// history.
 type foldAgent struct {
-	Name  string `json:"name"`
-	Label string `json:"label"`
+	Name    string `json:"name"`
+	Label   string `json:"label"`
+	Unknown bool   `json:"unknown,omitempty"`
 }
 
 // MarshalJSON persists the fold's whole state, not just its Summary: resuming needs the title
@@ -230,7 +293,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		InferenceHost:    f.inferenceHost,
 	}
 	for _, a := range f.agents {
-		j.Agents = append(j.Agents, foldAgent{Name: a.name, Label: a.label})
+		j.Agents = append(j.Agents, foldAgent{Name: a.name, Label: a.label, Unknown: !a.known})
 	}
 	return json.Marshal(j)
 }
@@ -256,7 +319,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		f.titleRank = *j.TitleRank
 	}
 	for _, a := range j.Agents {
-		f.agents = append(f.agents, sessionAgent{name: a.Name, label: a.Label})
+		f.agents = append(f.agents, sessionAgent{name: a.Name, label: a.Label, known: !a.Unknown})
 	}
 	return nil
 }
