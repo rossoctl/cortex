@@ -905,7 +905,7 @@ agentop is for, and the other three are surfaces you visit and leave.
    default                      1h ago                 8           —           —           —        —
 
   ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-  [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] pipeline  [?] keys  [q] quit
+  [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit
   ```
 
   The two money columns are dropped entirely on a terminal too narrow to show a

@@ -1100,10 +1100,21 @@ func (m *model) helpView() string {
 		// from the line those two describe — so the drawer existed only for a reader who went
 		// looking for it. Placed after [u] so fitHintLine, which drops from the front, gives up
 		// the navigation keys before either of the two that reach cost.
-		// [P] pipeline sits at the TAIL, not where [tab] pipeline used to sit third
+		// [P] plugins sits at the TAIL, not where [tab] pipeline used to sit third
 		// from the left. The tab strip in the title bar survived every width; a footer
 		// hint does not, and fitHintLine drops from the front — so the key that
 		// replaced the strip is placed behind the hints it is willing to outlive.
+		//
+		// THE HINT SAYS "plugins" WHILE THE PANE TITLES ITSELF "pipeline", and the
+		// mismatch is deliberate (#1212). "pipeline" is the config noun — what the
+		// YAML declares and what [e] edits — but a reader meeting this footer has not
+		// seen that YAML, and the first thing the pane shows them is a table whose main
+		// column is PLUGIN. The footer is where a key gets DISCOVERED, so it is named
+		// for what the pane shows rather than for the concept behind it; the [?]
+		// overlay, which has room, carries the precise version ("the plugin chain this
+		// proxy runs"). Not to be confused with [C], the plugin CATALOG — every plugin
+		// the proxy offers, against the chain it actually runs. That pair is only ever
+		// adjacent in the overlay, since [C] appears in no footer.
 		//
 		// MEASURED, because the intuition here is off by more than it looks: the
 		// un-drilled line is 98 columns, and [P] survives down to 34 columns at the
@@ -1118,12 +1129,12 @@ func (m *model) helpView() string {
 		// the picker instead when this list was reached through it.
 		search := m.searchHints(m.pane)
 		if m.sessionsViaAgents {
-			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] agents  [p] pause  [P] pipeline  [?] keys  [q] quit"
+			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] agents  [p] pause  [P] plugins  [?] keys  [q] quit"
 		}
 		if m.parentCtx != nil {
-			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] pods  [p] pause  [P] pipeline  [?] keys  [q] quit"
+			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] pods  [p] pause  [P] plugins  [?] keys  [q] quit"
 		}
-		return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [p] pause  [P] pipeline  [?] keys  [q] quit"
+		return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [p] pause  [P] plugins  [?] keys  [q] quit"
 	case paneEvents:
 		skipHint := "[s] hide passthru/skip"
 		if m.hideInactive {

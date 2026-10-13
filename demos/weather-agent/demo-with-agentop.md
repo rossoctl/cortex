@@ -71,7 +71,7 @@ automatically and drops you into the **Sessions** pane:
 │  (no sessions yet)                                                             │
 │                                                                                │
 │  ● connected   0.0 events/sec                                                  │
-│  [↑↓] nav  [↵] drill  [/] search  [p] pause  [P] pipeline  [?] help  [q]      │
+│  [↑↓] nav  [↵] drill  [/] search  [p] pause  [P] plugins  [?] help  [q]       │
 ╰────────────────────────────────────────────────────────────────────────────────╯
 ```
 

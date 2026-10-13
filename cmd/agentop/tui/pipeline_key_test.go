@@ -239,7 +239,7 @@ func TestTopLevelTitles_CarryNoTabStrip(t *testing.T) {
 }
 
 // A surface reached by a key is only as good as the advertisement for that key.
-// fitHintLine drops hints from the FRONT, so `[P] pipeline` sits near the tail.
+// fitHintLine drops hints from the FRONT, so `[P] plugins` sits near the tail.
 //
 // THE ASSERTION IS AT 60 COLUMNS, NOT 80, and the difference matters: measured,
 // the key survives to 34 columns at the tail and to 79 third from the left, so an
@@ -251,8 +251,8 @@ func TestSessionsFooter_AdvertisesThePipelineKeyAtAWidthThatSurvives(t *testing.
 	m := &model{pane: paneSessions}
 
 	got := m.helpView()
-	if !strings.Contains(got, "[P] pipeline") {
-		t.Errorf("the sessions footer omits [P] pipeline:\n  %s", got)
+	if !strings.Contains(got, "[P] plugins") {
+		t.Errorf("the sessions footer omits [P] plugins:\n  %s", got)
 	}
 	for _, w := range []int{80, 60} {
 		if fit := fitHintLine(got, w); !strings.Contains(fit, "[P]") {
@@ -262,8 +262,8 @@ func TestSessionsFooter_AdvertisesThePipelineKeyAtAWidthThatSurvives(t *testing.
 
 	// The drilled-in spelling is a separate string with its own [esc] pods.
 	m.parentCtx = context.Background()
-	if got := m.helpView(); !strings.Contains(got, "[P] pipeline") {
-		t.Errorf("the drilled-in sessions footer omits [P] pipeline:\n  %s", got)
+	if got := m.helpView(); !strings.Contains(got, "[P] plugins") {
+		t.Errorf("the drilled-in sessions footer omits [P] plugins:\n  %s", got)
 	}
 }
 
