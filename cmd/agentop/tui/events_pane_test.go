@@ -1425,3 +1425,135 @@ func TestSort_VisibleRowsStayParallelToTheTable(t *testing.T) {
 		}
 	}
 }
+
+// phasesInOrder reads the rendered rows as a "<host>/<phase>" sequence, so a test
+// can assert that a pair stayed together AND which way round it sits.
+func phasesInOrder(m *model) []string {
+	out := make([]string, 0, len(m.visibleRows))
+	for _, r := range m.visibleRows {
+		out = append(out, r.event.Host+"/"+shortPhase(r.event.Phase))
+	}
+	return out
+}
+
+// Sorting by DURATION keeps each request beside its own response (#1251).
+//
+// THE REPORTED SYMPTOM, and it is worth stating precisely because the sort was not
+// buggy. A response row carries the figures the proxy only learns once the call
+// returned — DURATION among them — and the request row carries none of them. So
+// every response sorted on merit and every request sank into the zero group, which
+// put an 11-minute call's response eleven rows above the request that caused it.
+// The reporter's question was whether the sorting was wrong; it was faithfully
+// ranking two rows that are one exchange.
+//
+// The fixture is the reporter's shape: two slow exchanges and a fast one, each a
+// request/response PAIR rather than the bare response rows the other sort tests
+// use — which is exactly why those tests could not see this. RequestID is set
+// because that is computeEventPairs' exact path; the closest-preceding heuristic is
+// a fallback for older proxies and would make this fixture's pairing incidental.
+func TestSort_DurationKeepsAnExchangeTogether(t *testing.T) {
+	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	events := []pipeline.SessionEvent{
+		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionRequest, At: base},
+		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(time.Second), Duration: 11 * time.Minute},
+		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionRequest, At: base.Add(2 * time.Second)},
+		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionResponse, At: base.Add(3 * time.Second), Duration: 90 * time.Millisecond},
+		{Host: "mid", RequestID: "r3", Phase: pipeline.SessionRequest, At: base.Add(4 * time.Second)},
+		{Host: "mid", RequestID: "r3", Phase: pipeline.SessionResponse, At: base.Add(5 * time.Second), Duration: 9 * time.Minute},
+	}
+
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+
+	// Descending: slowest exchange first, and within each pair the REQUEST still
+	// leads. That second half is the one a descending sort gets wrong for free —
+	// folding the keys makes the pair tie, and flipping the comparison would then
+	// surface the response above its own request.
+	want := []string{
+		"slow/req", "slow/resp",
+		"mid/req", "mid/resp",
+		"fast/req", "fast/resp",
+	}
+	if got := phasesInOrder(m); !slices.Equal(got, want) {
+		t.Errorf("descending by duration =\n  %v\nwant\n  %v", got, want)
+	}
+
+	m.sortDesc = false
+	m.rebuildEventsTable()
+	wantAsc := []string{
+		"fast/req", "fast/resp",
+		"mid/req", "mid/resp",
+		"slow/req", "slow/resp",
+	}
+	if got := phasesInOrder(m); !slices.Equal(got, wantAsc) {
+		t.Errorf("ascending by duration =\n  %v\nwant\n  %v", got, wantAsc)
+	}
+}
+
+// An unpaired row still ranks on its own, so folding cannot strand one.
+//
+// Three shapes reach this: a fire-and-forget request that never gets a response
+// (MCP notifications/initialized is the real one), a response whose request has
+// been evicted from the window, and anything computeEventPairs could not match.
+// Each is its own exchange of one row, and the fold must leave it alone rather than
+// pulling it toward a neighbour.
+func TestSort_DurationLeavesUnpairedRowsAlone(t *testing.T) {
+	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	events := []pipeline.SessionEvent{
+		// A matched pair, slowest.
+		{Host: "pair", RequestID: "r1", Phase: pipeline.SessionRequest, At: base},
+		{Host: "pair", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(time.Second), Duration: time.Minute},
+		// A response with no request: ranks on its own duration.
+		{Host: "orphanresp", RequestID: "r2", Phase: pipeline.SessionResponse, At: base.Add(2 * time.Second), Duration: 30 * time.Second},
+		// A request with no response: no duration, so it sinks descending.
+		{Host: "orphanreq", RequestID: "r3", Phase: pipeline.SessionRequest, At: base.Add(3 * time.Second)},
+	}
+
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+
+	want := []string{"pair/req", "pair/resp", "orphanresp/resp", "orphanreq/req"}
+	if got := phasesInOrder(m); !slices.Equal(got, want) {
+		t.Errorf("descending with unpaired rows =\n  %v\nwant\n  %v", got, want)
+	}
+}
+
+// TOKENS must NOT fold, and this is the test that keeps it that way.
+//
+// The subtle half of #1251. A TOKENS cell is already exchange-level per ROW: the
+// request row reaches its paired response for the PROMPT count while the response
+// row reports the COMPLETION count, so both rows show a real and different figure.
+// Folding them to a shared max would make the sort disagree with the figure printed
+// beside it — the one thing eventColumn.sortKey's doc forbids — so a 25,093-token
+// prompt and its 217-token reply must stay ranked apart, in that order.
+//
+// Figures taken from the reporter's own capture in #1251.
+func TestSort_TokensDoesNotFoldAPair(t *testing.T) {
+	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	events := []pipeline.SessionEvent{
+		{Host: "big", RequestID: "r1", Phase: pipeline.SessionRequest, At: base},
+		{
+			Host: "big", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(time.Second),
+			Inference: &pipeline.InferenceExtension{PromptTokens: 25093, CompletionTokens: 217},
+		},
+	}
+
+	m := sortTestModel(events)
+	m.sortCol, m.sortDesc = colTokens, true
+	m.rebuildEventsTable()
+
+	// The request row (25,093 prompt tokens) outranks its own response (217), which
+	// a fold would have flattened into a tie.
+	want := []string{"big/req", "big/resp"}
+	if got := phasesInOrder(m); !slices.Equal(got, want) {
+		t.Errorf("descending by tokens = %v, want %v", got, want)
+	}
+	if got := strings.TrimSpace(cellAt(t, m, 0, colTokens)); got != "25,093" {
+		t.Errorf("first TOKENS cell = %q, want 25,093 — the sort must agree with the cell", got)
+	}
+	if got := strings.TrimSpace(cellAt(t, m, 1, colTokens)); got != "217" {
+		t.Errorf("second TOKENS cell = %q, want 217", got)
+	}
+}

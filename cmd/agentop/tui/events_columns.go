@@ -149,6 +149,28 @@ type eventColumn struct {
 	// Sharing the input means the key and the cell cannot disagree about which
 	// response a row belongs to.
 	sortKey func(cellContext) sortValue
+	// pairFold makes a request and its response sort as ONE exchange, both rows
+	// taking the larger of the two keys (#1251). Set only where the figure this
+	// column reports belongs to the exchange but lands on just ONE of its two rows.
+	//
+	// DURATION and STATUS are those: the proxy only knows them once the call
+	// returned, so they sit on the response and the request row is blank. Ranking
+	// the two rows independently then sank every request into the zero group while
+	// its response sorted on merit — so the slowest call's response appeared eleven
+	// rows above the request that caused it, which is what #1251 reported.
+	//
+	// NOT SET for TOKENS and COST, and that is the subtle half. Those columns are
+	// already exchange-level per row: a request row reaches its paired response for
+	// the PROMPT figure while the response row reports the COMPLETION figure, so
+	// both rows carry a real number that matches the cell beside it. Folding them to
+	// a shared max would make the sort disagree with the number on screen — the one
+	// thing the sortKey doc above forbids — because a 25k-token prompt row would
+	// rank by its own 25k while its 87-token response row claimed 25k too.
+	//
+	// NOT SET for TIME either: a sort by TIME is already chronological, which is the
+	// order a pair arrives in, so a fold would buy nothing and would flatten the
+	// microsecond gap that correctly puts a request before its response.
+	pairFold bool
 }
 
 // sortValue is one row's position along one column.
@@ -270,7 +292,7 @@ var eventColumns = []eventColumn{
 	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal, rightAlign: true,
 		desc:    "HTTP status of the response",
 		cell:    func(c cellContext) string { return statusCell(*c.row.event) },
-		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.StatusCode) }},
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.StatusCode) }, pairFold: true},
 	// The Duration itself. This is the column #865 is about ("the events with the
 	// longest duration"), and the one where sorting the rendered string is most
 	// obviously wrong: "340ms" > "1.20s" lexically.
@@ -280,7 +302,7 @@ var eventColumns = []eventColumn{
 	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
-		sortKey: durationSortKey},
+		sortKey: durationSortKey, pairFold: true},
 	// On by default since #1309. It was off because only an opaque tunnel's close row had
 	// a figure, so the column cost every terminal 17 columns of mostly blank — and an
 	// operator asking how big the request that overran a model's context window was found
