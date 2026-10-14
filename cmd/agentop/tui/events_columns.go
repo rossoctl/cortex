@@ -149,15 +149,12 @@ type eventColumn struct {
 	// Sharing the input means the key and the cell cannot disagree about which
 	// response a row belongs to.
 	sortKey func(cellContext) sortValue
-	// pairFold makes a request and its response sort as ONE exchange, both rows
-	// taking the larger of the two keys (#1251). Set only where the figure this
-	// column reports belongs to the exchange but lands on just ONE of its two rows.
+	// pairFold makes a request and its response sort as ONE exchange (#1251). Set
+	// only where the figure this column reports belongs to the exchange but lands on
+	// just ONE of its two rows; foldPairKeys carries the mechanism.
 	//
 	// DURATION and STATUS are those: the proxy only knows them once the call
-	// returned, so they sit on the response and the request row is blank. Ranking
-	// the two rows independently then sank every request into the zero group while
-	// its response sorted on merit — so the slowest call's response appeared eleven
-	// rows above the request that caused it, which is what #1251 reported.
+	// returned, so they sit on the response and the request row is blank.
 	//
 	// NOT SET for TOKENS and COST, and that is the subtle half. Those columns are
 	// already exchange-level per row: a request row reaches its paired response for
@@ -171,6 +168,19 @@ type eventColumn struct {
 	// order a pair arrives in, so a fold would buy nothing and would flatten the
 	// microsecond gap that correctly puts a request before its response.
 	pairFold bool
+}
+
+// rowKey is one rendered row's sort position: the column's value, plus which
+// exchange the row belongs to.
+//
+// exchange is an ARRIVAL index — a position in the session's full row list, before
+// hideInactive drops any — and the two rows of a folded pair share the request's
+// (see foldPairKeys). It is only ever compared, never used to index a slice, so it
+// stays meaningful next to a filtered `keys`. Tie-breaking on it is what keeps a
+// request beside its response when another exchange has the same key.
+type rowKey struct {
+	val      sortValue
+	exchange int
 }
 
 // sortValue is one row's position along one column.

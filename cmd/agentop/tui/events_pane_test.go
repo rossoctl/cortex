@@ -1557,3 +1557,101 @@ func TestSort_TokensDoesNotFoldAPair(t *testing.T) {
 		t.Errorf("second TOKENS cell = %q, want 217", got)
 	}
 }
+
+// activeInvocation makes a row survive hideInactive: the `s` toggle hides a row
+// whose plugins all skipped, and eventInactive counts no invocations as inactive too.
+func activeInvocation() *pipeline.Invocations {
+	return &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionObserve}}}
+}
+
+// With `s` on, a pair still sorts together — the regression a fixture of whole pairs
+// cannot see.
+//
+// The fold and the sort reason about PAIRS, and computeEventPairs numbers rows over
+// the session's full list, before hideInactive drops any. The rendered rows are only
+// what survived that filter. Folding by position in the rendered list therefore read
+// the wrong rows' keys the moment the counts diverged, and the descending pair check
+// looked at the wrong rows too.
+//
+// ONE hidden row is the fixture that catches it, and the count is the whole point: a
+// hidden COMPLETE pair shifts every later index by two, and the two indexes of a pair
+// still differ by one, so the merge lands on a different pair but reads a
+// structurally identical one and happens to give the right answer. An odd shift is
+// what desynchronizes a request from its own response. The hidden row here is a
+// skip-only request with no response, which is the ordinary shape of one: a
+// passthrough request no plugin acted on.
+//
+// Before the fix this produced [slow/resp fast/req fast/resp slow/req] — the slow
+// request last, separated from its own response, which is worse than the #1251
+// symptom it was meant to fix.
+func TestSort_HideInactiveKeepsAnExchangeTogether(t *testing.T) {
+	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	events := []pipeline.SessionEvent{
+		// Hidden: no invocations, and no partner to vouch for it. Shifts every
+		// index below it by exactly one.
+		{Host: "hidden", RequestID: "h1", Phase: pipeline.SessionRequest, At: base},
+		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionRequest, At: base.Add(time.Second), Invocations: activeInvocation()},
+		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(2 * time.Second), Duration: 11 * time.Minute, Invocations: activeInvocation()},
+		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionRequest, At: base.Add(3 * time.Second), Invocations: activeInvocation()},
+		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionResponse, At: base.Add(4 * time.Second), Duration: 90 * time.Millisecond, Invocations: activeInvocation()},
+	}
+
+	m := sortTestModel(events)
+	m.hideInactive = true
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+
+	if m.hiddenInactive != 1 {
+		t.Fatalf("hid %d rows, want exactly 1 — an even shift cannot catch this", m.hiddenInactive)
+	}
+	want := []string{"slow/req", "slow/resp", "fast/req", "fast/resp"}
+	if got := phasesInOrder(m); !slices.Equal(got, want) {
+		t.Errorf("descending by duration with hideInactive =\n  %v\nwant\n  %v", got, want)
+	}
+
+	m.sortDesc = false
+	m.rebuildEventsTable()
+	wantAsc := []string{"fast/req", "fast/resp", "slow/req", "slow/resp"}
+	if got := phasesInOrder(m); !slices.Equal(got, wantAsc) {
+		t.Errorf("ascending by duration with hideInactive =\n  %v\nwant\n  %v", got, wantAsc)
+	}
+}
+
+// Two exchanges that TIE on the sorted column still each keep their own rows
+// together.
+//
+// Folding the keys makes a pair tie with itself, which is what stops a sort from
+// splitting it — but only while nothing ELSE ties with it. Equal keys are the norm
+// rather than the exception here: on STATUS almost every row is 200. Two exchanges
+// that overlap in time then have four rows with one key, SliceStable keeps their
+// arrival order, and arrival order for overlapping exchanges is
+// req/req/resp/resp — interleaved, with each request two rows from its response.
+//
+// Fixed by tie-breaking on the exchange (the request's arrival index) rather than by
+// a special case for a pair compared against itself, so rows of one exchange sort as
+// a block whatever shares their key. Both directions are asserted: the tie-break
+// must NOT reverse, or descending would read resp-then-req.
+func TestSort_EqualKeysKeepOverlappingExchangesTogether(t *testing.T) {
+	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
+	// a and b overlap: both requests arrive before either response.
+	events := []pipeline.SessionEvent{
+		{Host: "a", RequestID: "ra", Phase: pipeline.SessionRequest, At: base},
+		{Host: "b", RequestID: "rb", Phase: pipeline.SessionRequest, At: base.Add(time.Second)},
+		{Host: "a", RequestID: "ra", Phase: pipeline.SessionResponse, At: base.Add(2 * time.Second), StatusCode: 200},
+		{Host: "b", RequestID: "rb", Phase: pipeline.SessionResponse, At: base.Add(3 * time.Second), StatusCode: 200},
+	}
+
+	// Both exchanges answer 200, so every row's folded key is identical and the
+	// column decides nothing: the exchange tie-break is the only thing ordering these.
+	for _, desc := range []bool{false, true} {
+		m := sortTestModel(events)
+		m.sortCol, m.sortDesc = colStatus, desc
+		m.rebuildEventsTable()
+		// Exchange a arrived first and stays first in BOTH directions: the key ties,
+		// so descending has nothing to reverse.
+		want := []string{"a/req", "a/resp", "b/req", "b/resp"}
+		if got := phasesInOrder(m); !slices.Equal(got, want) {
+			t.Errorf("desc=%v by status =\n  %v\nwant\n  %v", desc, got, want)
+		}
+	}
+}
