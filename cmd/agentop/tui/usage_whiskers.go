@@ -121,9 +121,15 @@ func renderWhiskers(buckets []usage.Bucket, width int) []string {
 
 	out = append(out, renderAxis(len(rows)))
 	out = append(out, renderTimeLabels(buckets))
-	out = append(out, renderLatencyValues(rows))
+	// NO VALUE ROW HERE either, unlike the bar renderers. Under a time axis a row of
+	// durations reads as a second time axis (#1401): "20s 21s 14s" sat under
+	// "14:00 :10 :20", one column left of it and twice as dense, and was taken for
+	// seconds past the minute rather than a mean. The mark already plots that mean
+	// against a labelled y-axis, and the idle-versus-small distinction the bar chart's
+	// "0" makes is made here by the column itself: whiskerCell's rowOf puts any
+	// measured mean on row 1 at least, so only an unmeasured bucket draws nothing.
 	out = append(out, "")
-	legend := fmt.Sprintf("  %c mean   %c +1σ   %c −1σ   (0 = no measured responses)",
+	legend := fmt.Sprintf("  %c mean   %c +1σ   %c −1σ   (blank = no measured responses)",
 		whiskerMean, whiskerCap, whiskerFoot)
 	// Drop the parenthetical before the glyph key: on a narrow terminal the key is
 	// what makes the chart legible, and a wrapped line breaks the layout outright.
@@ -180,27 +186,6 @@ func whiskerCell(r latencyRow, peak float64, row int) string {
 	// the bar column the other renderers fill.
 	lead := (barWidth - 1) / 2
 	return strings.Repeat(" ", lead) + string(g) + strings.Repeat(" ", barWidth-lead-1)
-}
-
-// renderLatencyValues prints each bucket's mean under its mark, or "0" where no
-// response was measured — the same idle-versus-small distinction the bar chart's
-// value row makes.
-func renderLatencyValues(rows []latencyRow) string {
-	row := make([]byte, axisLabel+len(rows)*barStride+8)
-	for i := range row {
-		row[i] = ' '
-	}
-	for i, r := range rows {
-		label := "0"
-		if r.measured > 0 && r.mean > 0 {
-			label = humanizeDurationMs(r.mean)
-		}
-		at := axisLabel - 1 + i*barStride
-		if at+len(label) <= len(row) {
-			copy(row[at:], label)
-		}
-	}
-	return strings.TrimRight(string(row), " ")
 }
 
 // maxDurationLabelLen is the width humanizeDurationMs promises, matching

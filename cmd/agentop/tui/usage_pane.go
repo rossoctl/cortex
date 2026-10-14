@@ -362,7 +362,7 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		// under a heading implying otherwise.
 		//
 		// HEIGHT IS DROPPED HERE, deliberately and not silently: renderWhiskers is a
-		// fixed plotRows+5 frame with no optional row to trade away, so there is nothing
+		// fixed plotRows+4 frame with no optional row to trade away, so there is nothing
 		// for a budget to decide. It predates the budget mechanism and ignored the
 		// terminal's height before this branch existed too, so a latency chart overflows
 		// a short pane exactly as much as it always did — pre-existing, tracked with the

@@ -1272,7 +1272,10 @@ agentop is for, and the other three are surfaces you visit and leave.
   ```
 
   Under `latency` the bars give way to mean-with-whiskers and the breakdown
-  hint disappears, since the aggregator holds no per-label latency:
+  hint disappears, since the aggregator holds no per-label latency. There is
+  no value row: a row of durations under the time labels read as a second
+  time axis, so each mean is read against the y-axis instead, and a bucket
+  with no measured response is left as a blank column:
 
   ```
     USAGE — all sessions — 10m0s @ 1m0s — latency — no breakdown for latency
@@ -1286,9 +1289,8 @@ agentop is for, and the other three are surfaces you visit and leave.
    600ms ┴     ┴           ┴
        0 ┼────┴────┴────┴────┴────
          14:23   :25   :27   :29
-        1.2s  1.8s     0  2.1s  1.4s
 
-    ┼ mean   ┬ +1σ   ┴ −1σ   (0 = no measured responses)
+    ┼ mean   ┬ +1σ   ┴ −1σ   (blank = no measured responses)
   ```
 
 - **Catalog**: registered-plugin browser, opened by `P` from any

@@ -39,18 +39,55 @@ func TestRenderWhiskers_DrawsMeanAndBothCaps(t *testing.T) {
 	}
 }
 
-// A bucket with no measured response must print "0", not a mark at the baseline.
-// Zero latency and no measurement are different facts, and only one of them
-// means the service was fast.
-func TestRenderWhiskers_UnmeasuredBucketIsStated(t *testing.T) {
+// A bucket with no measured response must draw nothing, not a mark at the baseline.
+// Zero latency and no measurement are different facts, and only one of them means
+// the service was fast. With no value row to print "0", the blank column is the
+// whole signal, so it holds only if a tiny measured mean still draws: 1ms against a
+// 60s peak is a thousandth of the frame and must land on row 1, not vanish.
+func TestRenderWhiskers_UnmeasuredBucketIsBlank(t *testing.T) {
 	lines := renderWhiskers(mkLatencyBuckets([][3]float64{
-		{2000, 100, 5},
+		{60_000, 0, 5},
+		{1, 0, 5},
 		{0, 0, 0}, // requests happened but none carried a duration
 	}), 80)
-	values := lines[plotRows+2] // the value row, after axis + time labels
 
-	if !strings.Contains(values, "0") {
-		t.Errorf("value row does not mark the unmeasured bucket:\n%q", values)
+	markedAt := func(bucket int) bool {
+		col := axisLabel + bucket*barStride + (barWidth-1)/2
+		for _, l := range lines[:plotRows] {
+			if r := []rune(l); col < len(r) && r[col] != ' ' {
+				return true
+			}
+		}
+		return false
+	}
+	if !markedAt(1) {
+		t.Errorf("a 1ms mean drew nothing, so a blank column no longer means unmeasured:\n%s",
+			strings.Join(lines, "\n"))
+	}
+	if markedAt(2) {
+		t.Errorf("the unmeasured bucket drew a mark:\n%s", strings.Join(lines, "\n"))
+	}
+	if legend := lines[len(lines)-1]; !strings.Contains(legend, "blank = no measured responses") {
+		t.Errorf("legend does not say what a blank column means: %q", legend)
+	}
+}
+
+// #1401: nothing sits under the time labels. A row of per-bucket means used to, and
+// "20s 21s 14s" under "14:00 :10 :20" read as a second time axis rather than as data.
+func TestRenderWhiskers_NoValueRowUnderTheTimeAxis(t *testing.T) {
+	lines := renderWhiskers(mkLatencyBuckets([][3]float64{
+		{20_000, 4000, 5}, {21_000, 3000, 5}, {14_000, 2000, 5},
+	}), 80)
+
+	// plot rows, axis, time labels, blank, legend.
+	if len(lines) != plotRows+4 {
+		t.Fatalf("chart is %d lines, want %d:\n%s", len(lines), plotRows+4, strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[plotRows+1], "23:24") {
+		t.Errorf("line %d is not the time labels: %q", plotRows+1, lines[plotRows+1])
+	}
+	if got := lines[plotRows+2]; got != "" {
+		t.Errorf("line under the time labels = %q, want blank", got)
 	}
 }
 
