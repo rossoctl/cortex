@@ -24,12 +24,16 @@ Usage:
 
 "agentop configure status" — with no agent name — answers the question the five
 per-agent "status" verbs answer one at a time: which harnesses on this machine are
-wired into Cortex. One row each, one word each, with the detail that word rests on.
-Three of those words, because a boolean would be a lie for several of these: a settings
-file can hold some of the keys and not others, and a shell's bob function cannot be
-seen from outside the shell at all. "uncertain" is the word for everything agentop
-could not establish, including an agent that is simply not installed. For the paragraph
-behind one row, run that agent's own "status".
+wired into Cortex. One row per agent, one verdict each, with the detail that verdict
+rests on. There are four verdicts rather than a yes and a no, because a boolean would
+be a lie for several of these: a settings file can hold some of the keys and not
+others ("partly enabled"), and a shell's bob function cannot be seen from outside the
+shell at all. "uncertain" is the word for everything agentop could not establish —
+a file it cannot read or parse, a key defined twice, or no way to reach the agent's
+configuration in the first place, which is what bob with no settings document and
+opencode with no binary report. An agent whose file is simply absent is "not enabled",
+since there is a place to look and nothing in it. For the paragraph behind one row,
+run that agent's own "status".
 
 Agents:
   claude-code    writes the proxy and CA variables into ~/.claude/settings.json, so

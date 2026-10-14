@@ -724,10 +724,16 @@ func codexStatus(envPath, cortexCfgPath string, stdout io.Writer) int {
 		}
 	}
 	// codexStateFrom is asked for the verdict rather than re-deriving it from the
-	// count, so the two readings cannot drift. The count is still printed from here:
-	// the table's one-line detail cannot carry it alongside the duplicate warning, so
-	// codexStateFrom answers configureUnknown for a duplicate and this paragraph —
-	// which has already printed the warning above — keeps the figure.
+	// count, so the two readings cannot drift. The count is still printed from here,
+	// because the table's one-line detail cannot carry it alongside the duplicate
+	// warning.
+	//
+	// THE DUPLICATE CHECK IS NOT IN codexStateFrom, and that is why this command's
+	// output is unchanged for a file with duplicates whose read values all match: it
+	// still closes with "enabled in …", exactly as it did before the extraction. Only
+	// codexState — the table's entry point — turns a duplicate into configureUnknown,
+	// spending its single word on the warning this command has already printed on a
+	// line of its own above. See codexState's comment for that split.
 	if codexStateFrom(envPath, f, want).State == configureOn {
 		fmt.Fprintf(stdout, "enabled in %s\n", envPath)
 	} else {

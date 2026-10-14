@@ -98,8 +98,10 @@ func TestClaudeCodeState_ThreeStates(t *testing.T) {
 		})
 	}
 
-	// An absent file is "not enabled" and not "uncertain", unlike the three agents
-	// whose absent-file case is an uncertainty. readSettings has always treated a
+	// An absent file is "not enabled" and not "uncertain", unlike bob and opencode —
+	// the two agents whose absent case IS an uncertainty, because for them there is no
+	// configuration to read at all (no settings document, no binary) rather than a
+	// place to look that is empty. readSettings has always treated a
 	// missing file as the empty document — that is a definite answer about Claude
 	// Code's configuration, because Claude Code reads the same absence the same way.
 	t.Run("absent file", func(t *testing.T) {
@@ -259,6 +261,33 @@ func TestBobState_FourStates(t *testing.T) {
 		}
 	})
 
+	// TWO MORE UNCERTAINTIES, both aligned with codex and claude-code in #1164's
+	// review. Each used to answer configureOff — a positive finding that Bob is not
+	// routed — for a file agentop could not actually read a verdict out of.
+	t.Run("duplicate key is uncertain, not a finding", func(t *testing.T) {
+		// Two values for one key: Bob's own precedence decides which wins, so the
+		// value agentop read may not be the one in effect. codexState answers the same
+		// situation the same way, in its own words, and the two disagreed until now.
+		settings, cfg := fixture(t, `{"http.proxy": "http://127.0.0.1:47600", "http.proxy": "http://127.0.0.1:47600"}`)
+		want, _ := bobWanted(cfg, t.TempDir())
+		got := bobState(settings, cfg, want)
+		if got.State != configureUnknown {
+			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
+		}
+	})
+
+	t.Run("unparseable settings file is uncertain", func(t *testing.T) {
+		// The file exists and agentop cannot read what it says, which is not the same
+		// as reading it and finding nothing — claudeCodeStateFrom's rule for the
+		// identical case.
+		settings, cfg := fixture(t, `{not json`)
+		want, _ := bobWanted(cfg, t.TempDir())
+		got := bobState(settings, cfg, want)
+		if got.State != configureUnknown {
+			t.Errorf("State = %s, want %s (detail: %s)", got.State, configureUnknown, got.Detail)
+		}
+	})
+
 	t.Run("loopback proxy with no Cortex config", func(t *testing.T) {
 		settings, _ := fixture(t, `{"http.proxy": "http://127.0.0.1:47600"}`)
 		absent := filepath.Join(t.TempDir(), "absent.yaml")
@@ -305,6 +334,11 @@ func TestBobShellState_NeverFullyEnabled(t *testing.T) {
 	t.Run("variable unset", func(t *testing.T) {
 		// Unset rather than empty: an empty-but-present variable is a different case
 		// from an absent one, and LookupEnv is what distinguishes them.
+		// t.Setenv first so the testing package records the original value and
+		// restores it on cleanup; Unsetenv alone would leave a developer who exports
+		// CORTEX_BOBSHELL without it for the rest of the run. Same pairing as
+		// cmd_bobshell_test.go's.
+		t.Setenv(bobShellEnvVar, "")
 		if err := os.Unsetenv(bobShellEnvVar); err != nil {
 			t.Fatal(err)
 		}
@@ -432,11 +466,24 @@ func TestWriteConfigureStatusTable_Shape(t *testing.T) {
 			t.Errorf("row %d = %q, want it to start with %q", i+1, lines[i+1], agent)
 		}
 	}
-	// Every verdict word must appear, since the fixture uses all four: a renderer
-	// that printed the numeric state or dropped a column would fail here.
-	for _, word := range []string{"enabled", "not enabled", "partly enabled", "uncertain"} {
-		if !strings.Contains(got, word) {
-			t.Errorf("output omits the verdict %q:\n%s", word, got)
+	// EACH ROW'S OWN VERDICT, read out of that row rather than searched for in the
+	// whole output. strings.Contains(got, "enabled") is satisfied by "not enabled" and
+	// by "partly enabled", so a renderer that dropped the claude-code row's verdict
+	// entirely still passed a Contains check — it is only ever false if no row has any
+	// verdict at all. Fields()[1] is the STATUS cell on a row whose agent name and
+	// verdict are both single words; the two-word verdicts are compared as a prefix of
+	// the rest of the line for the same reason.
+	wantVerdict := map[string]string{
+		"claude-code": "enabled",
+		"bob":         "not enabled",
+		"bobshell":    "partly enabled",
+		"opencode":    "uncertain",
+		"codex":       "partly enabled",
+	}
+	for i, agent := range []string{"claude-code", "bob", "bobshell", "opencode", "codex"} {
+		rest := strings.TrimSpace(strings.TrimPrefix(lines[i+1], agent))
+		if want := wantVerdict[agent]; !strings.HasPrefix(rest, want) {
+			t.Errorf("row %q verdict = %q, want it to start with %q\n%s", agent, rest, want, got)
 		}
 	}
 	// No trailing padding on any line. tabwriter pads every cell including the last,
@@ -470,6 +517,36 @@ func TestWriteConfigureStatusTable_SanitizesDetail(t *testing.T) {
 	}
 }
 
+// A MULTI-LINE DETAIL COLLAPSES TO ONE LINE, rather than carrying a U+FFFD per newline.
+//
+// Several details that reach this column are wrapped paragraphs written for a
+// paragraph-shaped surface — errBridgeDisabled and codexWanted's missing-ca_dir error.
+// sanitizeCell maps every rune under 0x20 to U+FFFD, so before the collapse a newline
+// rendered as a literal "�" mid-sentence, twice in the codex row under
+// `tls_bridge.mode: disabled` (caught in #1164's review).
+//
+// Both halves are asserted, because collapsing with a plain ReplaceAll would satisfy
+// the first and not the second: strings.Fields drops the two-space continuation
+// indents that follow those newlines too, so the sentence reads with single spaces
+// rather than with three.
+func TestWriteConfigureStatusTable_CollapsesAMultiLineDetail(t *testing.T) {
+	var out bytes.Buffer
+	writeConfigureStatusTable([]configureStatus{
+		{Agent: "codex", State: configureUnknown, Detail: "cannot compare with Cortex's config:\n  no enabled TLS bridge;\n  enable it first"},
+	}, &out)
+	got := out.String()
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Errorf("a newline became U+FFFD in the detail column:\n%s", got)
+	}
+	if want := "cannot compare with Cortex's config: no enabled TLS bridge; enable it first"; !strings.Contains(got, want) {
+		t.Errorf("the detail did not collapse to one line:\n got %q\nwant it to contain %q", got, want)
+	}
+	// Still one row and one header: the collapse must not introduce a line break.
+	if n := len(strings.Split(strings.TrimRight(got, "\n"), "\n")); n != 4 {
+		t.Errorf("output has %d lines, want 4 (header, row, blank, footer):\n%s", n, got)
+	}
+}
+
 // ONE AGENT'S MISSING CONFIG MUST NOT BREAK THE TABLE.
 //
 // This is the property the whole command rests on, and the common case rather than an
@@ -491,6 +568,9 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 	// CODEX_HOME would otherwise point codex at a real file on the machine running
 	// the test, which is the one path defaultCodexEnvPath honours over HOME.
 	t.Setenv(codexHomeEnv, filepath.Join(home, ".codex"))
+	// Paired with t.Setenv for the reason above: the cleanup restores whatever the
+	// developer running the test had exported.
+	t.Setenv(bobShellEnvVar, "")
 	if err := os.Unsetenv(bobShellEnvVar); err != nil {
 		t.Fatal(err)
 	}

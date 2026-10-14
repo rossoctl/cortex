@@ -14,7 +14,7 @@ import (
 // configureState is the one verdict every agent's status reduces to, for the table
 // `agentop configure status` prints.
 //
-// THREE values, not a bool, and the third is not a flavour of "no". Every one of the
+// FOUR values, not a bool, and configureUnknown is not a flavour of "no". Every one of the
 // five agents already distinguishes a case where agentop cannot answer from one where
 // it can answer "not routed", and collapsing those loses the only part that tells a
 // user what to do next:
@@ -49,7 +49,7 @@ const (
 	configureOn
 )
 
-// configureStateWord is the word the table prints. The vocabulary is the issue's:
+// String is the word the table prints. The vocabulary is the issue's:
 // "enabled", "uncertain". The other two are its obvious complements.
 //
 // A method on the type rather than a map, so a new state cannot be added without the
@@ -92,9 +92,12 @@ type configureStatus struct {
 // if it is unavailable, and five separate os.UserHomeDir() calls would be five places
 // for that failure to be handled differently.
 //
-// Each closure takes the whole set of resolved paths and returns a row. None of them
-// may return an error: see runConfigureStatus on why one agent's missing file must not
-// end the table.
+// Each closure takes the HOME DIRECTORY and resolves its own agent's paths from it,
+// which is what keeps the table reading the same defaults as each `configure <harness>
+// status` command — both sides go through settingsRel, bobSettingsPath,
+// defaultCodexEnvPath, findOpenCode and cortexCfgRel rather than through two copies of
+// the same join. None of them may return an error: see runConfigureStatus on why one
+// agent's missing file must not end the table.
 func configureStatusFuncs() []func(home string) configureStatus {
 	return []func(home string) configureStatus{
 		func(home string) configureStatus {
@@ -192,7 +195,19 @@ func writeConfigureStatusTable(rows []configureStatus, stdout io.Writer) {
 	tw := tabwriter.NewWriter(&table, 0, 0, 3, ' ', 0)
 	fmt.Fprint(tw, "HARNESS\tSTATUS\tDETAIL\n")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Agent, r.State, sanitizeCell(r.Detail))
+		// WHITESPACE COLLAPSED BEFORE SANITISING, and the order is the point. Several
+		// details that reach this column are multi-line — errBridgeDisabled and
+		// codexWanted's missing-ca_dir error are wrapped paragraphs written for a
+		// paragraph-shaped surface. sanitizeCell maps every rune under 0x20 to U+FFFD,
+		// so a newline arriving here rendered as a literal "�" mid-sentence rather
+		// than as a space, twice in the codex row under tls_bridge.mode: disabled.
+		//
+		// strings.Fields splits on every run of whitespace and drops the empties, so
+		// one Join collapses newlines AND the two-space continuation indents that
+		// follow them — which a plain ReplaceAll("\n", " ") would have left behind as
+		// three spaces. Sanitising still runs, on the rest: this makes the column keep
+		// its one-line promise, it does not make the string trusted.
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Agent, r.State, sanitizeCell(strings.Join(strings.Fields(r.Detail), " ")))
 	}
 	tw.Flush()
 	for line := range strings.Lines(table.String()) {
@@ -273,13 +288,43 @@ func bobState(settingsPath, cortexCfgPath, wantProxy string) configureStatus {
 	}
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
 		// Two values for one key and no way to say which IBM Bob uses without
-		// reimplementing its precedence. bobStatus answers "not" here for the same
-		// reason, and names the duplicate as the actionable part.
-		return row(configureOff, derr.Error())
+		// reimplementing its precedence — so agentop does not KNOW whether Bob is
+		// routed, which is configureUnknown and not a finding. codexState answers the
+		// same situation the same way, for the reason stated in its own comment: the
+		// value agentop read may not be the value the agent uses, so the read is not a
+		// verdict. These two were inconsistent until #1164's review caught it.
+		//
+		// bobStatus's own wording is untouched: it changes its verdict only on
+		// configureOn, so it still prints bobStatusNo here and names the duplicate as
+		// the actionable part.
+		return row(configureUnknown, derr.Error())
 	}
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		return row(configureOff, err.Error())
+		// The file exists and agentop cannot read what it says, which is not the same
+		// as reading it and finding nothing — claudeCodeStateFrom's words for the
+		// identical case, and the distinction this table exists to draw.
+		return row(configureUnknown, err.Error())
+	}
+	return bobStateFrom(settingsPath, doc, cortexCfgPath, wantProxy)
+}
+
+// bobStateFrom is bobState over a settings document already read.
+//
+// Split out for the reason claudeCodeStateFrom, codexStateFrom and openCodeStateFrom
+// are, and it was the last of the four to get it (#1164's review caught the gap):
+// bobStatus reads the settings file once and prints its per-key lines from that read,
+// but it took its VERDICT from bobState, which read the file again. A file edited
+// between the two reads produced a verdict contradicting the keys printed above it.
+// With this, bobStatus hands over the document it already has.
+//
+// The early returns in bobState stay there rather than moving here, because each is a
+// question about the FILE rather than about a document — whether it exists at all, and
+// whether it defines the key twice, which a decoded map can no longer answer. bobStatus
+// asks those two itself, before this, and answers them in its own words.
+func bobStateFrom(settingsPath string, doc map[string]any, cortexCfgPath, wantProxy string) configureStatus {
+	row := func(s configureState, detail string) configureStatus {
+		return configureStatus{Agent: "bob", State: s, Detail: detail}
 	}
 	existing, ok := doc[bobProxyKey].(string)
 	if !ok {

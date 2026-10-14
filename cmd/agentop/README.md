@@ -197,6 +197,39 @@ session still gets whatever title was found before the stop, which may be an old
 the background scan has nowhere to say so once the viewer owns the screen — so re-run the
 subcommand if a title looks wrong.
 
+## Which harnesses are wired into Cortex (`agentop configure status`)
+
+Each section below covers one harness. To see all of them at once — without running
+five `agentop configure <harness> status` commands and comparing five different output
+shapes — run it with no harness name:
+
+```console
+$ agentop configure status
+HARNESS       STATUS        DETAIL
+claude-code   enabled       ~/.claude/settings.json
+bob           uncertain     ~/Library/.../settings.json does not exist, so IBM Bob has not saved settings here
+bobshell      not enabled   CORTEX_BOBSHELL is unset in this shell
+opencode      uncertain     opencode not found on PATH or in ~/.opencode/bin
+codex         not enabled   no Cortex values in ~/.codex/.env
+
+For the detail on one of them: agentop configure <harness> status
+```
+
+Four verdicts, not two, because a boolean would be a lie for several of these:
+
+| STATUS | Means |
+|---|---|
+| `enabled` | Fully routed through Cortex, by that harness's own definition of fully. |
+| `not enabled` | agentop looked and the harness is not routed — a place to look, and nothing in it. |
+| `partly enabled` | Some of it is in place: N of M keys set, or a value pointing at a loopback proxy that is not this machine's Cortex. `enable` has something left to do. |
+| `uncertain` | agentop could not establish an answer — a file it cannot read or parse, a key defined twice, or no configuration to read at all (bob with no settings document, opencode with no binary). |
+
+The distinction that matters is `uncertain` against `not enabled`: the first is "I
+could not tell", the second is a finding. The table takes no flags — the per-harness
+overrides (`--settings`, `--env`, `--config`, `--opencode`) do not compose into one
+flag set, and anyone who needs a non-default path wants one harness's `status`, which
+already takes it. Exit status is 0 whatever the rows say.
+
 ## Running one command through Cortex (`agentop exec`)
 
 `agentop configure claude-code enable` works because Claude Code has a settings
