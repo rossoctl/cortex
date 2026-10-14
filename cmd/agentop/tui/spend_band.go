@@ -246,13 +246,19 @@ func renderSpendBand(s spendSummary, width int, scoped bool) []string {
 const allSessionsMarker = "ALL SESSIONS"
 
 // spendBandNeedsScopeMarker reports whether ONE session is on screen, so the band has
-// something a reader could mistake its figures for (#1116).
+// something a reader could mistake its figures for. See allSessionsMarker for why the
+// answer is a label rather than a per-session figure (#1116).
 //
-// The two drilled-in panes and no others. paneSessions lists every session, so the band
-// is already unambiguous there and the marker would be noise on the pane a user spends
-// most of their time on. The Usage pane is excluded for a different reason: it says its
-// own scope in its own header, and a user who scoped it to one session chose that
-// scope rather than arriving at it.
+// AN ALLOWLIST, NOT AN EXCLUSION LIST, and the difference matters because selectedSess
+// outlives the pane that set it: it is cleared only by a connection switch or a clear,
+// so "a session is selected" is true on Pipeline, Catalog and Agents too, none of which
+// shows that session. Excluding the list panes instead would mark the band on all of
+// them. The Usage pane would need excluding either way, for its own reason: it states
+// its scope in its own header, and a user who scoped it to one session chose that scope
+// rather than arriving at it.
+//
+// TestSpendBandNeedsScopeMarker_EveryPaneIsClassified enumerates the real pane range, so
+// a new pane has to be classified rather than inheriting `false` in silence.
 func (m *model) spendBandNeedsScopeMarker() bool {
 	switch m.pane {
 	case paneEvents, paneDetail:

@@ -794,36 +794,56 @@ func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 // bandCell above pins one cell; this pins the line, which is what app.go actually measures against
 // the terminal. A separator or an extra pad applied on only one of the two paths would be invisible
 // to the per-cell test and would overflow the reservation here.
+//
+// BOTH SCOPES, because the marker is a second thing the two paths have to agree about. The scoped
+// form prepends allSessionsMarker and a separator, and the styled one mutes the marker — so a mute
+// that cost a column, or a separator applied on one path only, would overflow a reservation
+// measured on the other. Looping the width sweep over `scoped` is cheap and it is the only thing
+// asserting the claim on the path this change adds.
 func TestRenderSpendBand_StylingCostsNoColumns(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
 
-	for w := 1; w <= 120; w++ {
-		plain := renderSpendBand(bandSummary(), w, false)
-		dressed, drew := renderSpendBandStyled(bandSummary(), w, false)
-		if len(plain) != spendBandLines || len(dressed) != spendBandLines {
-			t.Fatalf("width %d: %d plain rows and %d styled, want %d of each",
-				w, len(plain), len(dressed), spendBandLines)
+	for _, scoped := range []bool{false, true} {
+		for w := 1; w <= 120; w++ {
+			plain := renderSpendBand(bandSummary(), w, scoped)
+			dressed, drew := renderSpendBandStyled(bandSummary(), w, scoped)
+			if len(plain) != spendBandLines || len(dressed) != spendBandLines {
+				t.Fatalf("scoped=%v width %d: %d plain rows and %d styled, want %d of each",
+					scoped, w, len(plain), len(dressed), spendBandLines)
+			}
+			if got, want := lipgloss.Width(dressed[0]), lipgloss.Width(plain[0]); got != want {
+				t.Errorf("scoped=%v width %d: styled band is %d columns against the plain band's %d:\n%q",
+					scoped, w, got, want, dressed[0])
+			}
+			// AND `drew` AGREES WITH THE PLAIN LINE AT EVERY WIDTH. paneView gates the drawer on it, so
+			// a `drew` that disagreed would open the breakdown under an empty band — the state the
+			// styled string cannot be asked about, since an escape sequence is not whitespace.
+			//
+			// The marker must not move it either: a band whose figures all dropped is empty whether
+			// or not a marker would have fitted, and `drew` reports the figures.
+			if want := strings.TrimSpace(plain[0]) != ""; drew != want {
+				t.Errorf("scoped=%v width %d: drew = %v but the plain band is %q", scoped, w, drew, plain[0])
+			}
 		}
-		if got, want := lipgloss.Width(dressed[0]), lipgloss.Width(plain[0]); got != want {
-			t.Errorf("width %d: styled band is %d columns against the plain band's %d:\n%q",
-				w, got, want, dressed[0])
+
+		// Not vacuous: at a width that draws something, the styled form really does carry escapes.
+		dressed, drew := renderSpendBandStyled(bandSummary(), 200, scoped)
+		if !drew {
+			t.Errorf("scoped=%v: drew is false at width 200, so the agreement above was asserted on empty bands",
+				scoped)
 		}
-		// AND `drew` AGREES WITH THE PLAIN LINE AT EVERY WIDTH. paneView gates the drawer on it, so
-		// a `drew` that disagreed would open the breakdown under an empty band — the state the
-		// styled string cannot be asked about, since an escape sequence is not whitespace.
-		if want := strings.TrimSpace(plain[0]) != ""; drew != want {
-			t.Errorf("width %d: drew = %v but the plain band is %q", w, drew, plain[0])
+		if dressed[0] == renderSpendBand(bandSummary(), 200, scoped)[0] {
+			t.Errorf("scoped=%v: the styled band is byte-identical to the plain one, so nothing was styled", scoped)
 		}
 	}
-	// Not vacuous: at a width that draws something, the styled form really does carry escapes.
-	dressed, drew := renderSpendBandStyled(bandSummary(), 200, false)
-	if !drew {
-		t.Error("drew is false at width 200, so the agreement above was asserted on empty bands")
-	}
-	if dressed[0] == renderSpendBand(bandSummary(), 200, false)[0] {
-		t.Error("the styled band is byte-identical to the plain one, so nothing was styled")
+
+	// AND THE SCOPED SWEEP REALLY DID EXERCISE THE MARKER. Both loops above pass vacuously if
+	// `scoped` reaches no marker at this width — which is exactly how the gap being fixed here
+	// went unnoticed.
+	if !strings.Contains(renderSpendBand(bandSummary(), 200, true)[0], allSessionsMarker) {
+		t.Error("the scoped band carries no marker at width 200, so looping over scoped asserted nothing")
 	}
 }
 
@@ -1031,13 +1051,9 @@ func TestRenderSpendBand_WideningOnlyEverGainsValue(t *testing.T) {
 
 // Drilled into a session, the band says whose figures it is showing (#1116).
 //
-// THE REPORTED CONFUSION. A reader who enters a session and sees "LAST 1H $7.53 ·
-// TODAY $31.25" above twelve rows that cost nothing reads those as this session's —
-// the reporter did, on a Bob session whose own events carried no cost at all. The
-// figures are the whole proxy's and cannot be anything else: the cost ledger's row key
-// carries no session dimension, so there is no per-session total to put here. What the
-// issue asked for — $0 for this session — would be a number the ledger cannot support.
-// So the marker goes on and the figures stay.
+// allSessionsMarker's doc carries the reasoning — why a label rather than the per-session
+// figure the issue asked for. This pins the two halves of the behaviour: the marker is
+// absent unscoped, and leads the line scoped.
 func TestRenderSpendBand_NamesItsScopeWhenDrilledIn(t *testing.T) {
 	const wide = 200
 
@@ -1072,8 +1088,12 @@ func TestRenderSpendBand_ScopeMarkerNeverCostsAReading(t *testing.T) {
 		if !strings.HasSuffix(scoped, unscoped) {
 			t.Errorf("width %d: the marker displaced a reading:\n  scoped   %q\n  unscoped %q", w, scoped, unscoped)
 		}
-		// And it never overflows the reservation app.go measured.
-		if got := lipgloss.Width(scoped); got > w && lipgloss.Width(unscoped) <= w {
+		// And it never overflows the reservation app.go measured. Asserted outright rather
+		// than only where the unscoped band fits: TestRenderSpendBand_HeightIsConstantAndFiguresDropWhole
+		// already says no band of any width overruns its terminal, so excusing the scoped
+		// form wherever the unscoped one overflowed would only let this pass silently on a
+		// width where the other test is what fails.
+		if got := lipgloss.Width(scoped); got > w {
 			t.Errorf("width %d: the scoped band is %d columns, over budget", w, got)
 		}
 	}
@@ -1105,5 +1125,51 @@ func TestSpendBandNeedsScopeMarker_OnlyWhenOneSessionIsOnScreen(t *testing.T) {
 				t.Errorf("spendBandNeedsScopeMarker() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// EVERY pane is classified, so a new one cannot inherit a wrong answer in silence.
+//
+// spendBandNeedsScopeMarker names the panes that DO show one session, which is right for the
+// ten that exist but says nothing about the eleventh: a future single-session pane would get
+// no marker and carry exactly the ambiguity #1116 reported, with no test failing.
+//
+// Inverting the check — "not the sessions list and not Usage" — was considered and is worse.
+// selectedSess is set when entering a session and is not cleared on leaving the pane, only on
+// a connection switch or a clear, so it stays non-empty while the user is on Pipeline,
+// Catalog, Agents, PluginDetail, Namespaces or Pods. Inverting would mark the band on all six,
+// none of which shows a session for the figures to be mistaken for — trading a hypothetical
+// missing marker for six real spurious ones.
+//
+// So the allowlist stays and this test guards it the way TestPaneKeysCoverAllPanes guards
+// paneKeys: enumerate the real pane range, and require each pane to appear below. Adding a
+// paneID fails here until someone decides which half it belongs in.
+func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
+	// The panes that show ONE session's content, and so need the band's scope spelled out.
+	singleSession := map[paneID]bool{
+		paneEvents: true, // one session's timeline
+		paneDetail: true, // one event of it, manifest view included
+	}
+	// The panes that do not. Usage is listed here for its own reason: it states its scope in
+	// its own header, and a user who scoped it to one session chose that.
+	manySessions := map[paneID]bool{
+		paneSessions: true, panePipeline: true, panePluginDetail: true,
+		paneCatalog: true, paneUsage: true, paneAgents: true,
+		paneNamespaces: true, panePods: true,
+	}
+
+	for p := paneID(0); p <= lastPaneID; p++ {
+		if singleSession[p] == manySessions[p] {
+			t.Errorf("pane %v is in %d of the two lists, want exactly 1 — classify it, and "+
+				"if it shows one session add it to spendBandNeedsScopeMarker too",
+				p, map[bool]int{true: 2, false: 0}[singleSession[p]])
+			continue
+		}
+		// A session is selected throughout: that is the state the marker exists for, and the
+		// state every pane is reachable in.
+		m := &model{pane: p, selectedSess: "s1"}
+		if got := m.spendBandNeedsScopeMarker(); got != singleSession[p] {
+			t.Errorf("pane %v: spendBandNeedsScopeMarker() = %v, want %v", p, got, singleSession[p])
+		}
 	}
 }
