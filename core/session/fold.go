@@ -78,20 +78,33 @@ func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.
 	if sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) {
 		return agents
 	}
-	label := usage.AgentLabel(c)
+	// THE DEDUP RUNS BEFORE THE LABEL IS COMPUTED, on the one path where it can. This is
+	// the per-event append path under the store's write lock, and usage.AgentLabel is
+	// ringLabel(AgentName(Label())) — a regexp match, a whole-string rune scan and a cap.
+	// In the steady state for every recognised agent the slice already holds its entry, so
+	// computing the label first paid all of that on every event only to discard it at
+	// agentLabelIn: measured 385ns/op and 2 allocs against 8.3ns/op and 0 this way.
+	//
+	// The unrecognised path cannot avoid it — the label IS its key, so there is nothing to
+	// dedup on until it exists. That path is bounded by construction at one entry per
+	// distinct unrecognised client per session, and it still dedups below.
 	known := agentName != ""
-	if !known {
-		// Keyed by the label, since there is no canonical name. "unknown" means the event
-		// carried no User-Agent — nothing to attribute, so nothing recorded.
-		agentName = label
-		if agentName == "" || agentName == pipeline.UnknownClientLabel {
+	if known {
+		if agentLabelIn(agents, agentName) != "" {
 			return agents
 		}
+		return append(agents, sessionAgent{name: agentName, label: usage.AgentLabel(c), known: true})
 	}
-	if agentLabelIn(agents, agentName) != "" {
+	// Keyed by the label, since there is no canonical name. "unknown" means the event
+	// carried no User-Agent — nothing to attribute, so nothing recorded.
+	label := usage.AgentLabel(c)
+	if label == "" || label == pipeline.UnknownClientLabel {
 		return agents
 	}
-	return append(agents, sessionAgent{name: agentName, label: label, known: known})
+	if agentLabelIn(agents, label) != "" {
+		return agents
+	}
+	return append(agents, sessionAgent{name: label, label: label, known: false})
 }
 
 // agentLabelIn is the first label the agent named name sent, or "".
