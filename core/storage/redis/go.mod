@@ -3,7 +3,7 @@ module github.com/rossoctl/cortex/core/storage/redis
 go 1.26.5
 
 require (
-	github.com/alicebob/miniredis/v2 v2.39.0
+	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/rossoctl/cortex/core v0.0.0
 )
