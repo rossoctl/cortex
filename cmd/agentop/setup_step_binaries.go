@@ -12,7 +12,7 @@ import (
 )
 
 // installerOneLiner is the fix for "nothing is installed": the documented install.
-const installerOneLiner = "curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh"
+const installerOneLiner = "curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh"
 
 // setupBinaryNames are what the binaries step installs; cortex-session-dump only
 // when the installer staged it (its fetch is never fatal).

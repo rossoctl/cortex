@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — one-line installer for Cortex on a local machine.
 #
-#   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
+#   curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh
 #
 # Detects your OS/arch, downloads the prebuilt `agentop` and `cortex` binaries for
 # the newest stable release, verifies their SHA-256 checksums, and stages them in a
@@ -155,7 +155,7 @@ usage() {
 install.sh — install Cortex on a local machine (macOS/Linux, amd64/arm64).
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
+  curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
 Downloads agentop and cortex for the newest stable release, verifies their checksums
@@ -439,7 +439,8 @@ if [ -n "${_reexec}" ]; then
 		# Explicitly asked for the channel, by either name. `main` is the documented
 		# spelling; CHANNEL_TAG is what the Releases page shows, so someone who saw the
 		# title there will type that instead and must get the same thing. This copy
-		# already is main, so there is nothing to re-exec.
+		# already is main — piped from www.rossoctl.dev, main as of the site's last
+		# deploy — so there is nothing to re-exec.
 		SCRIPT_REF="main"
 		VERSION_REF="main"
 	else

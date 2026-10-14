@@ -7,74 +7,74 @@ g.st{opacity:0}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0.15}}
 @keyframes st0{0.0000%,22.4128%{opacity:1}22.4138%,100%{opacity:0}}
 g.st0{animation:st0 58s linear infinite}
-@keyframes tp0_0{0%,0.0000%{width:0}6.4448%,100%{width:764.4px}}
-#cl0_0 rect{animation:tp0_0 58s steps(91,end) infinite}
-@keyframes cx0_0{0%,0.0000%{x:16.0px}6.4448%,100%{x:780.4px}}
-@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,6.4448%{visibility:visible}7.0448%,100%{visibility:hidden}}
-.cur0_0{animation:cx0_0 58s steps(91,end) infinite,cv0_0 58s linear infinite,blink 1s steps(1,end) infinite}
-@keyframes rv0_1{0%,7.3059%{visibility:hidden}7.3069%,100%{visibility:visible}}
+@keyframes tp0_0{0%,0.0000%{width:0}4.2000%,100%{width:504.0px}}
+#cl0_0 rect{animation:tp0_0 58s steps(60,end) infinite}
+@keyframes cx0_0{0%,0.0000%{x:16.0px}4.2000%,100%{x:520.0px}}
+@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,4.2000%{visibility:visible}4.8000%,100%{visibility:hidden}}
+.cur0_0{animation:cx0_0 58s steps(60,end) infinite,cv0_0 58s linear infinite,blink 1s steps(1,end) infinite}
+@keyframes rv0_1{0%,5.0611%{visibility:hidden}5.0621%,100%{visibility:visible}}
 .rv0_1{animation:rv0_1 58s linear infinite}
-@keyframes tp0_2{0%,7.3069%{width:16.8px}10.7552%{width:352.8px}10.7562%,100%{width:621.6px}}
+@keyframes tp0_2{0%,5.0621%{width:16.8px}8.5103%{width:352.8px}8.5113%,100%{width:621.6px}}
 #cl0_2 rect{animation:tp0_2 58s steps(40,end) infinite}
-@keyframes rv0_3{0%,11.1852%{visibility:hidden}11.1862%,100%{visibility:visible}}
+@keyframes rv0_3{0%,8.9404%{visibility:hidden}8.9414%,100%{visibility:visible}}
 .rv0_3{animation:rv0_3 58s linear infinite}
-@keyframes rv0_4{0%,11.2369%{visibility:hidden}11.2379%,100%{visibility:visible}}
+@keyframes rv0_4{0%,8.9921%{visibility:hidden}8.9931%,100%{visibility:visible}}
 .rv0_4{animation:rv0_4 58s linear infinite}
-@keyframes rv0_5{0%,11.3059%{visibility:hidden}11.3069%,100%{visibility:visible}}
+@keyframes rv0_5{0%,9.0611%{visibility:hidden}9.0621%,100%{visibility:visible}}
 .rv0_5{animation:rv0_5 58s linear infinite}
-@keyframes rv0_6{0%,11.3749%{visibility:hidden}11.3759%,100%{visibility:visible}}
+@keyframes rv0_6{0%,9.1300%{visibility:hidden}9.1310%,100%{visibility:visible}}
 .rv0_6{animation:rv0_6 58s linear infinite}
-@keyframes rv0_7{0%,11.4438%{visibility:hidden}11.4448%,100%{visibility:visible}}
+@keyframes rv0_7{0%,9.1990%{visibility:hidden}9.2000%,100%{visibility:visible}}
 .rv0_7{animation:rv0_7 58s linear infinite}
-@keyframes rv0_8{0%,11.5128%{visibility:hidden}11.5138%,100%{visibility:visible}}
+@keyframes rv0_8{0%,9.2680%{visibility:hidden}9.2690%,100%{visibility:visible}}
 .rv0_8{animation:rv0_8 58s linear infinite}
-@keyframes rv0_9{0%,11.5645%{visibility:hidden}11.5655%,100%{visibility:visible}}
+@keyframes rv0_9{0%,9.3197%{visibility:hidden}9.3207%,100%{visibility:visible}}
 .rv0_9{animation:rv0_9 58s linear infinite}
-@keyframes rv0_10{0%,11.6162%{visibility:hidden}11.6172%,100%{visibility:visible}}
+@keyframes rv0_10{0%,9.3714%{visibility:hidden}9.3724%,100%{visibility:visible}}
 .rv0_10{animation:rv0_10 58s linear infinite}
-@keyframes rv0_11{0%,11.6680%{visibility:hidden}11.6690%,100%{visibility:visible}}
+@keyframes rv0_11{0%,9.4231%{visibility:hidden}9.4241%,100%{visibility:visible}}
 .rv0_11{animation:rv0_11 58s linear infinite}
-@keyframes rv0_12{0%,13.7369%{visibility:hidden}13.7379%,100%{visibility:visible}}
+@keyframes rv0_12{0%,11.4921%{visibility:hidden}11.4931%,100%{visibility:visible}}
 .rv0_12{animation:rv0_12 58s linear infinite}
-@keyframes rv0_13{0%,13.7887%{visibility:hidden}13.7897%,100%{visibility:visible}}
+@keyframes rv0_13{0%,11.5438%{visibility:hidden}11.5448%,100%{visibility:visible}}
 .rv0_13{animation:rv0_13 58s linear infinite}
-@keyframes rv0_14{0%,14.3059%{visibility:hidden}14.3069%,100%{visibility:visible}}
+@keyframes rv0_14{0%,12.0611%{visibility:hidden}12.0621%,100%{visibility:visible}}
 .rv0_14{animation:rv0_14 58s linear infinite}
-@keyframes rv0_15{0%,14.4783%{visibility:hidden}14.4793%,100%{visibility:visible}}
+@keyframes rv0_15{0%,12.2335%{visibility:hidden}12.2345%,100%{visibility:visible}}
 .rv0_15{animation:rv0_15 58s linear infinite}
-@keyframes rv0_16{0%,14.8231%{visibility:hidden}14.8241%,100%{visibility:visible}}
+@keyframes rv0_16{0%,12.5783%{visibility:hidden}12.5793%,100%{visibility:visible}}
 .rv0_16{animation:rv0_16 58s linear infinite}
-@keyframes rv0_17{0%,17.0645%{visibility:hidden}17.0655%,100%{visibility:visible}}
+@keyframes rv0_17{0%,14.8197%{visibility:hidden}14.8207%,100%{visibility:visible}}
 .rv0_17{animation:rv0_17 58s linear infinite}
-@keyframes rv0_18{0%,17.1162%{visibility:hidden}17.1172%,100%{visibility:visible}}
+@keyframes rv0_18{0%,14.8714%{visibility:hidden}14.8724%,100%{visibility:visible}}
 .rv0_18{animation:rv0_18 58s linear infinite}
-@keyframes rv0_19{0%,17.1680%{visibility:hidden}17.1690%,100%{visibility:visible}}
+@keyframes rv0_19{0%,14.9231%{visibility:hidden}14.9241%,100%{visibility:visible}}
 .rv0_19{animation:rv0_19 58s linear infinite}
-@keyframes rv0_20{0%,17.2197%{visibility:hidden}17.2207%,100%{visibility:visible}}
+@keyframes rv0_20{0%,14.9749%{visibility:hidden}14.9759%,100%{visibility:visible}}
 .rv0_20{animation:rv0_20 58s linear infinite}
-@keyframes rv0_21{0%,17.2714%{visibility:hidden}17.2724%,100%{visibility:visible}}
+@keyframes rv0_21{0%,15.0266%{visibility:hidden}15.0276%,100%{visibility:visible}}
 .rv0_21{animation:rv0_21 58s linear infinite}
-@keyframes rv0_22{0%,17.3231%{visibility:hidden}17.3241%,100%{visibility:visible}}
+@keyframes rv0_22{0%,15.0783%{visibility:hidden}15.0793%,100%{visibility:visible}}
 .rv0_22{animation:rv0_22 58s linear infinite}
-@keyframes rv0_23{0%,17.3749%{visibility:hidden}17.3759%,100%{visibility:visible}}
+@keyframes rv0_23{0%,15.1300%{visibility:hidden}15.1310%,100%{visibility:visible}}
 .rv0_23{animation:rv0_23 58s linear infinite}
-@keyframes rv0_24{0%,17.4266%{visibility:hidden}17.4276%,100%{visibility:visible}}
+@keyframes rv0_24{0%,15.1818%{visibility:hidden}15.1828%,100%{visibility:visible}}
 .rv0_24{animation:rv0_24 58s linear infinite}
-@keyframes rv0_25{0%,17.4783%{visibility:hidden}17.4793%,100%{visibility:visible}}
+@keyframes rv0_25{0%,15.2335%{visibility:hidden}15.2345%,100%{visibility:visible}}
 .rv0_25{animation:rv0_25 58s linear infinite}
-@keyframes rv0_26{0%,17.5300%{visibility:hidden}17.5310%,100%{visibility:visible}}
+@keyframes rv0_26{0%,15.2852%{visibility:hidden}15.2862%,100%{visibility:visible}}
 .rv0_26{animation:rv0_26 58s linear infinite}
-@keyframes rv0_27{0%,17.5818%{visibility:hidden}17.5828%,100%{visibility:visible}}
+@keyframes rv0_27{0%,15.3369%{visibility:hidden}15.3379%,100%{visibility:visible}}
 .rv0_27{animation:rv0_27 58s linear infinite}
-@keyframes rv0_28{0%,17.6335%{visibility:hidden}17.6345%,100%{visibility:visible}}
+@keyframes rv0_28{0%,15.3887%{visibility:hidden}15.3897%,100%{visibility:visible}}
 .rv0_28{animation:rv0_28 58s linear infinite}
-@keyframes rv0_29{0%,17.6852%{visibility:hidden}17.6862%,100%{visibility:visible}}
+@keyframes rv0_29{0%,15.4404%{visibility:hidden}15.4414%,100%{visibility:visible}}
 .rv0_29{animation:rv0_29 58s linear infinite}
-@keyframes rv0_30{0%,17.7369%{visibility:hidden}17.7379%,100%{visibility:visible}}
+@keyframes rv0_30{0%,15.4921%{visibility:hidden}15.4931%,100%{visibility:visible}}
 .rv0_30{animation:rv0_30 58s linear infinite}
-@keyframes rv0_31{0%,17.7887%{visibility:hidden}17.7897%,100%{visibility:visible}}
+@keyframes rv0_31{0%,15.5438%{visibility:hidden}15.5448%,100%{visibility:visible}}
 .rv0_31{animation:rv0_31 58s linear infinite}
-@keyframes rv0_32{0%,17.8404%{visibility:hidden}17.8414%,100%{visibility:visible}}
+@keyframes rv0_32{0%,15.5956%{visibility:hidden}15.5966%,100%{visibility:visible}}
 .rv0_32{animation:rv0_32 58s linear infinite}
 @keyframes st1{0%,22.4128%{opacity:0}22.4138%,34.4818%{opacity:1}34.4828%,100%{opacity:0}}
 g.st1{animation:st1 58s linear infinite}
@@ -261,7 +261,7 @@ clipPath rect{width:100000px}
 <text x="520" y="19.0" fill="#6e7681" font-size="12" text-anchor="middle">cortex</text>
 <g class="st st0 lbl-install">
 <clipPath id="cl0_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
-<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="747.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh</tspan></text>
+<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="487.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh</tspan></text>
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
 <text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="655.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  rosso cortex · installer                               v0.9.3 · darwin/arm64</tspan></text>
 <clipPath id="cl0_2"><rect x="16.0" y="81.0" width="0" height="18.0"/></clipPath>

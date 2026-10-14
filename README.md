@@ -23,10 +23,12 @@ One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
      Change both, or they drift — the --ref wording already did once. -->
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh
 ```
 
-Setup lists every change it will make, and asks once.
+Setup lists every change it will make, and asks once. If rossoctl.dev is unreachable
+from where you are, the same script is served straight from this repository, at
+`https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh`.
 
 Then connect your agent — once, in a new terminal. The table below has each command.
 

@@ -239,7 +239,7 @@ jobs:
           if [ -n "${prerelease}" ]; then
             add ''
             add 'This is a prerelease: the plain one-liner does not install it. To try it:'
-            add "    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=${TAG}"
+            add "    curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --ref=${TAG}"
           fi
           # The rolling release is not a release, and its notes should not read like
           # one — someone landing on it from a search result needs to know that
@@ -249,7 +249,7 @@ jobs:
             add 'Unreleased build from the tip of `main`, rebuilt on every merge. Not a release.'
             add ''
             add 'Install with:'
-            add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=main'
+            add '    curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --ref=main'
             add ''
             add 'Each binary reports its own build (`agentop --version` -> `main-<sha>`). For a'
             add 'supported install, use the plain one-liner, which installs the newest stable release.'

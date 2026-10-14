@@ -215,7 +215,7 @@ Testers install it by name — the release page prints the same command — and 
 one-liner takes them back to the newest stable release afterwards:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh \
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh \
   | sh -s -- --ref=v0.9.0-rc.1
 ```
 
