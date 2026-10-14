@@ -168,10 +168,17 @@ func TestCallLog(t *testing.T) {
 		// And the ordinary case still round-trips verbatim, prefix stripped — which is
 		// what every other assertion in this file compares against.
 		{"a normal call logs its arguments verbatim", []string{"--user", "daemon-reload"}, []string{"--user daemon-reload"}},
-		// A lone empty argument is NOT the same event as no arguments at all, and
-		// `echo` renders them identically once the prefix is gone. Pinned so nobody
-		// "simplifies" the two into one: they differ in the count, which is the thing
-		// the assertions key on, and not in the text.
+		// A lone empty argument is INDISTINGUISHABLE from no arguments at all, in the
+		// text AND in the entry count — both decode to exactly one "". `echo argv:`
+		// writes "argv:" and `echo argv: ""` writes "argv: ", and CutPrefix plus
+		// TrimPrefix(" ") collapse the two. Recorded as a known limit of the format,
+		// beside the space-joining one below, rather than as a distinction to look for.
+		//
+		// WHAT THE ENTRY COUNT DOES DISTINGUISH is called-at-all (one entry) from
+		// never-called (nil) — the zero-argument case above and the final subtest below
+		// are the two halves of that, and it is the distinction every assertion in this
+		// file keys on. Telling one-empty-arg from zero-args would need a per-argument
+		// format, which nothing here needs: no agentop call site passes either.
 		{"one empty argument is still one entry", []string{""}, []string{""}},
 		// Arguments are joined by the shell, so an argument containing a space is
 		// indistinguishable from two arguments in the log. Recorded as a known limit
