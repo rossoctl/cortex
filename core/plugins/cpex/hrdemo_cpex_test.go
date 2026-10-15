@@ -413,6 +413,12 @@ func TestHRDemoAssertions(t *testing.T) {
 	if !strings.HasPrefix(pctx.Headers.Get("Authorization"), "Bearer ") {
 		t.Errorf("Authorization = %q, want the client token kept", pctx.Headers.Get("Authorization"))
 	}
+
+	// The response is resolved as the same caller, though the request
+	// no longer carries X-User-Token.
+	pctx.ResponseBody = []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"status\": \"sent\"}"}]}}`)
+	pctx.SetCurrentPlugin("cpex", pipeline.InvocationPhaseResponse)
+	wantContinue(t, "bob send_email result", p.OnResponse(context.Background(), pctx))
 }
 
 // Protocol traffic the agent sends besides tool calls is not refused.
