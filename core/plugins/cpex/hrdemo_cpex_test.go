@@ -52,6 +52,7 @@ type hrIdP struct {
 	mu        sync.Mutex
 	exchanges []string // audience of each token exchange
 	subjects  []string // subject_token of each token exchange
+	issued    []string // access_token of each token exchange
 	ciba      []*cibaRequest
 	// assertions holds the client_assertion of each workload leg 1.
 	assertions []string
@@ -127,9 +128,13 @@ func newHRIdP(t *testing.T) *hrIdP {
 		if aud == "github-api" {
 			claims["permissions"] = []string{"repo:read:internal"}
 		}
+		tok := m.sign(t, claims)
+		m.mu.Lock()
+		m.issued = append(m.issued, tok)
+		m.mu.Unlock()
 		w.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token":      m.sign(t, claims),
+			"access_token":      tok,
 			"token_type":        "Bearer",
 			"expires_in":        300,
 			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
@@ -297,9 +302,21 @@ func hrPlugin(t *testing.T, idp *hrIdP) *CPEX {
 // provider's JWT-SVID source; nil is a sidecar with no spiffe: block.
 func hrPluginWorkload(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 	t.Helper()
+	return hrPluginWith(t, idp, svid, nil)
+}
+
+// hrPluginForwarding is hrPluginWorkload with delegated credentials
+// forwarded, as `make apply CPEX_DELEGATION=available` configures it.
+func hrPluginForwarding(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
+	t.Helper()
+	return hrPluginWith(t, idp, svid, map[string]any{"delegated_credentials": true})
+}
+
+func hrPluginWith(t *testing.T, idp *hrIdP, svid spiffe.JWTSource, extra map[string]any) *CPEX {
+	t.Helper()
 	p := NewCPEX()
 	p.testWorkloadJWT = svid
-	raw, _ := json.Marshal(map[string]any{
+	cfg := map[string]any{
 		"workload": map[string]any{"audience": idp.srv.URL + hrRealmPath},
 		"hooks": map[string]any{
 			"on_request":  []string{HookToolPreInvoke},
@@ -308,7 +325,11 @@ func hrPluginWorkload(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 		"config":               hrPolicy(t, idp),
 		"fail_open":            false,
 		"private_destinations": true,
-	})
+	}
+	for k, v := range extra {
+		cfg[k] = v
+	}
+	raw, _ := json.Marshal(cfg)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -381,6 +402,40 @@ func TestHRDemoBobCompensationFailsClosed(t *testing.T) {
 	wantReject(t, "bob get_compensation", p.OnRequest(context.Background(), pctx), "cpex.delegation_unavailable")
 	if got := idp.exchangeCount(); got != 1 {
 		t.Fatalf("token exchanges = %d, want 1", got)
+	}
+}
+
+// lastIssued returns the token the IdP issued on its latest exchange.
+func (m *hrIdP) lastIssued(t *testing.T) string {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.issued) == 0 {
+		t.Fatal("no token exchange")
+	}
+	return m.issued[len(m.issued)-1]
+}
+
+// Scenarios 01 and 03 with delegated credentials forwarded: the tool
+// receives the exchanged token in place of the agent's, and Eve's ssn
+// argument redacted.
+func TestHRDemoDelegatedCredentialForwarded(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPluginForwarding(t, idp, nil)
+
+	bob := hrCall{user: "bob", tool: "get_compensation", args: compensationArgs(true)}.pctx(t, idp)
+	wantContinue(t, "bob get_compensation", p.OnRequest(context.Background(), bob))
+	if got := bob.Headers.Get("Authorization"); got != "Bearer "+idp.lastIssued(t) {
+		t.Fatal("bob's call does not carry the exchanged token")
+	}
+
+	eve := hrCall{user: "eve", tool: "get_compensation", args: compensationArgs(false)}.pctx(t, idp)
+	wantContinue(t, "eve get_compensation", p.OnRequest(context.Background(), eve))
+	if got := eve.Headers.Get("Authorization"); got != "Bearer "+idp.lastIssued(t) {
+		t.Fatal("eve's call does not carry the exchanged token")
+	}
+	if strings.Contains(string(eve.Body), "would-be-removed") || !strings.Contains(string(eve.Body), "[REDACTED]") {
+		t.Fatalf("eve's forwarded body = %s, want ssn redacted", eve.Body)
 	}
 }
 
@@ -764,6 +819,20 @@ func TestHRDemoWorkloadDelegation(t *testing.T) {
 	}
 	if got := jwtSubject(subjects[0]); got != "hr-copilot-agent-sa" {
 		t.Fatalf("leg 2 subject_token sub = %q, want the leg-1 token's", got)
+	}
+}
+
+// Scenario 13 with delegated credentials forwarded: the tool receives the
+// token leg 2 bought.
+func TestHRDemoWorkloadDelegationForwarded(t *testing.T) {
+	idp := newHRIdP(t)
+	svid := idp.svid(t, hrAgentSPIFFEID, idp.srv.URL+hrRealmPath)
+	p := hrPluginForwarding(t, idp, &fakeJWT{tok: svid})
+
+	pctx := headcount(t, idp, nil)
+	wantContinue(t, "agent get_headcount", p.OnRequest(context.Background(), pctx))
+	if got := pctx.Headers.Get("Authorization"); got != "Bearer "+idp.lastIssued(t) {
+		t.Fatal("the agent's call does not carry the leg-2 token")
 	}
 }
 
