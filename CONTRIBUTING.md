@@ -173,10 +173,10 @@ publishes the rolling release.
 Two things to check deliberately before flipping it, because both become live at that
 moment and are inert until then:
 
-- **`release-binaries.yaml` holds `contents: write` on every `main` push**, not just on
-  tag pushes. It builds only first-party code with SHA-pinned actions, but that is a
-  wider blast radius than before. If you want it narrower, split build (`contents: read`)
-  from publish (`contents: write`) and pass `dist/` between them as an artifact.
+- **`release-binaries.yaml`'s publish job holds `contents: write` on every `main`
+  push**, not just on tag pushes. The builds run in separate `contents: read` jobs and
+  hand it finished tarballs, and every action is SHA-pinned, but that is still a wider
+  blast radius than before.
 - **The job moves the `main-latest` tag and prunes its assets** on each publish,
   deleting any asset that build did not produce, so a retired binary does not linger
   beside the current ones with no checksum to verify it. Those are the two destructive
