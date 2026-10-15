@@ -252,10 +252,10 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 // resolved into a half-open Anthropic block by a misrouted frame.
 //
 // responsesToolCalls holds the Responses API's tool calls instead — a
-// different shape with the same destination. foldResponsesFrame reads a
-// completed call whole off a single response.output_item.done event (see
-// responses.go), so there is nothing to assemble: no index map, no
-// in-progress fallback, just a plain append-as-they-complete list.
+// different shape with the same destination. A call opens on
+// response.output_item.added and is completed whole by its
+// response.output_item.done (see responses.go); one whose done never arrives
+// stays as the stream left it, as an Anthropic block cut mid-arguments does.
 type inferenceStreamState struct {
 	completion strings.Builder
 	usage      parsercommon.TokenUsage
@@ -268,7 +268,7 @@ type inferenceStreamState struct {
 	openAIToolCalls []*toolCallState
 	openAIByIndex   map[int]*toolCallState
 
-	responsesToolCalls []pipeline.InferenceToolCall
+	responsesToolCalls []*responsesCallState
 }
 
 // foldOpenAIToolCallFragment folds one delta.tool_calls fragment into the call it
@@ -318,7 +318,13 @@ func (s *inferenceStreamState) finalize(ext *pipeline.InferenceExtension) {
 			Arguments: tc.args.String(),
 		})
 	}
-	calls = append(calls, s.responsesToolCalls...)
+	for _, tc := range s.responsesToolCalls {
+		calls = append(calls, pipeline.InferenceToolCall{
+			ID:        tc.id,
+			Name:      tc.name,
+			Arguments: tc.args.String(),
+		})
+	}
 	if len(calls) == 0 {
 		return
 	}

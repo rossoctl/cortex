@@ -468,3 +468,85 @@ func TestInferenceParser_ResponsesRequest_ToolResults(t *testing.T) {
 		t.Errorf("Messages = %+v, want conversation text unchanged", ext.Messages)
 	}
 }
+
+// runResponsesFrames feeds frames through OnResponseFrame as a live listener would and
+// returns the extension once the stream has ended.
+func runResponsesFrames(t *testing.T, frames ...string) (*pipeline.Context, *pipeline.InferenceExtension) {
+	t.Helper()
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/responses"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "gpt-6-luna", Stream: true, IsAction: true}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, []byte(f), false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+	return pctx, pctx.Extensions.Inference
+}
+
+// A tool call announced on response.output_item.added whose output_item.done never
+// arrives — a turn cancelled in that window — is kept, as the Anthropic dialect keeps a
+// tool_use block cut mid-arguments. A call that does complete is still one call.
+func TestInferenceParser_ResponsesAPI_StreamToolCallShapes(t *testing.T) {
+	const added = `{"type":"response.output_item.added","output_index":0,"item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`
+	for _, tc := range []struct {
+		name     string
+		frames   []string
+		wantArgs string
+	}{
+		{"added then done, once", []string{
+			added,
+			`{"type":"response.output_item.done","output_index":0,"item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await","status":"incomplete"}}`,
+			`{"type":"response.incomplete","response":{"status":"incomplete"}}`,
+		}, "const r = await"},
+		{"added only, stream cut", []string{added}, ""},
+		{"no id or index on either event", []string{
+			`{"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`,
+			`{"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await"}}`,
+		}, "const r = await"},
+		{"id only on done", []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await"}}`,
+		}, "const r = await"},
+		{"added then input deltas, stream cut", []string{
+			added,
+			`{"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"const r = "}`,
+			`{"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"await"}`,
+		}, "const r = await"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx, ext := runResponsesFrames(t, tc.frames...)
+			if len(ext.ToolCalls) != 1 {
+				t.Fatalf("ToolCalls = %+v, want exactly 1", ext.ToolCalls)
+			}
+			got := ext.ToolCalls[0]
+			if got.ID != "call_1" || got.Name != "exec" || got.Arguments != tc.wantArgs {
+				t.Errorf("ToolCalls[0] = %+v, want call_1 exec %q", got, tc.wantArgs)
+			}
+			inv := pctx.Extensions.Invocations.Inbound
+			if rec := inv[len(inv)-1]; rec.Action != pipeline.ActionObserve {
+				t.Errorf("action = %s/%s, want observe: a captured tool call is a response body", rec.Action, rec.Reason)
+			}
+		})
+	}
+}
+
+// Parallel calls are told apart by item id, so one completing does not overwrite another
+// still open, and a done restates its own call rather than adding a second.
+func TestInferenceParser_ResponsesAPI_StreamParallelToolCalls(t *testing.T) {
+	_, ext := runResponsesFrames(t,
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"get_weather","arguments":""}}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_b","type":"function_call","call_id":"call_b","name":"get_time","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_b","output_index":1,"delta":"{\"tz\":"}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_a","output_index":0,"delta":"{\"city\":\"NYC\"}"}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"fc_a","type":"function_call","call_id":"call_a","name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}`,
+	)
+	if len(ext.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %+v, want 2", ext.ToolCalls)
+	}
+	if a := ext.ToolCalls[0]; a.ID != "call_a" || a.Arguments != `{"city":"NYC"}` {
+		t.Errorf("ToolCalls[0] = %+v, want call_a with its whole arguments, once", a)
+	}
+	if b := ext.ToolCalls[1]; b.ID != "call_b" || b.Arguments != `{"tz":` {
+		t.Errorf("ToolCalls[1] = %+v, want call_b as the stream left it", b)
+	}
+}

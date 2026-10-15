@@ -415,12 +415,13 @@ func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 // — the full sequence confirmed on live Codex traffic. A tool call adds two
 // more, confirmed on a live Codex turn that ran its `exec` tool:
 // response.custom_tool_call_input.delta (repeated, mirrors output_text.delta
-// for the tool's input text) and response.custom_tool_call_input.done — but
-// neither needs modeling here, because the SAME information arrives complete
-// on response.output_item.done's own item field once the call finishes; see
-// Item below. The event types this parser extracts something from are:
-// the repeated text delta, a completed tool-call item, and the terminal
-// event's full response snapshot (status + usage).
+// for the tool's input text) and response.custom_tool_call_input.done. The
+// done events need no modeling: the SAME information arrives complete on
+// response.output_item.done's own item field once the call finishes. The deltas
+// are folded only so a call cut before its done keeps the arguments it had; see
+// Item below. The event types this parser extracts something from are: the
+// repeated text delta, a tool-call item opening and completing, a tool call's
+// argument deltas, and the terminal event's full response snapshot (status + usage).
 type responsesStreamEvent struct {
 	Type     string  `json:"type"`
 	Delta    *string `json:"delta"` // response.output_text.delta's text fragment
@@ -428,7 +429,52 @@ type responsesStreamEvent struct {
 		Status string         `json:"status"`
 		Usage  responsesUsage `json:"usage"`
 	} `json:"response"` // the full snapshot on response.completed/incomplete/failed
-	Item *responsesOutputItem `json:"item"` // response.output_item.done's completed item
+	Item *responsesOutputItem `json:"item"` // the item on response.output_item.added and .done
+	// ItemID and OutputIndex say which item a delta belongs to; an item carries its own id.
+	ItemID      string `json:"item_id"`
+	OutputIndex *int   `json:"output_index"`
+}
+
+// responsesCallState is one tool call of a Responses API stream: opened by
+// response.output_item.added, grown by its argument deltas, and replaced whole by
+// response.output_item.done. A call whose done never arrives keeps what it had.
+type responsesCallState struct {
+	toolCallState
+	itemID string
+	index  *int
+	done   bool
+}
+
+// responsesCall finds the open call an event concerns, by the item id or the output
+// index it carries; a backend that sends only one of them, or differs between events,
+// still matches. An event carrying neither is matched to the oldest call that has no
+// done yet, which is right for calls that arrive one at a time.
+func (s *inferenceStreamState) responsesCall(ev *responsesStreamEvent) *responsesCallState {
+	id := ev.ItemID
+	if ev.Item != nil && ev.Item.ID != "" {
+		id = ev.Item.ID
+	}
+	for _, c := range s.responsesToolCalls {
+		switch {
+		case id != "" && c.itemID == id, ev.OutputIndex != nil && c.index != nil && *c.index == *ev.OutputIndex:
+			return c
+		case id == "" && ev.OutputIndex == nil && c.itemID == "" && c.index == nil && !c.done:
+			return c
+		}
+	}
+	return nil
+}
+
+// responsesToolItem reports whether item is one of the two types that carry a tool call,
+// and the arguments it carries so far.
+func responsesToolItem(item *responsesOutputItem) (args string, ok bool) {
+	switch item.Type {
+	case "custom_tool_call":
+		return item.Input, true
+	case "function_call":
+		return item.Arguments, true
+	}
+	return "", false
 }
 
 // responsesOutputItem is one item of a response's output — the completed
@@ -454,6 +500,7 @@ type responsesStreamEvent struct {
 // (parseResponsesJSON), which has no deltas to accumulate from and reads the
 // item whole.
 type responsesOutputItem struct {
+	ID        string `json:"id"`
 	Type      string `json:"type"`
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
@@ -466,11 +513,12 @@ type responsesOutputItem struct {
 
 // foldResponsesFrame folds one Responses API SSE event into the running
 // stream state. The completion accumulates from response.output_text.delta
-// events; a completed tool call arrives whole on response.output_item.done
-// (no incremental assembly needed — unlike Anthropic's tool_use blocks,
-// which split call id/name and arguments across separate events, this API's
-// output_item.done restates the full call_id, name, and input/arguments in
-// one event, confirmed on a live Codex turn that ran its `exec` tool); usage
+// events; a tool call opens on response.output_item.added and a completed one
+// arrives whole on response.output_item.done, which restates the full call_id,
+// name, and input/arguments in one event (confirmed on a live Codex turn that
+// ran its `exec` tool) and so replaces whatever the deltas built. A turn
+// cancelled before the done leaves the call as it stood, truncated arguments
+// included, as the Anthropic dialect does; usage
 // and a best-effort finish reason arrive together on whichever terminal
 // event ends the stream — response.completed on the one live sample this
 // file was built from, plus the two other terminal events the published
@@ -497,23 +545,36 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		if ev.Delta != nil {
 			state.completion.WriteString(*ev.Delta)
 		}
-	case "response.output_item.done":
+	case "response.output_item.added", "response.output_item.done":
 		if ev.Item == nil {
 			return
 		}
-		switch ev.Item.Type {
-		case "custom_tool_call":
-			state.responsesToolCalls = append(state.responsesToolCalls, pipeline.InferenceToolCall{
-				ID:        ev.Item.CallID,
-				Name:      ev.Item.Name,
-				Arguments: ev.Item.Input,
-			})
-		case "function_call":
-			state.responsesToolCalls = append(state.responsesToolCalls, pipeline.InferenceToolCall{
-				ID:        ev.Item.CallID,
-				Name:      ev.Item.Name,
-				Arguments: ev.Item.Arguments,
-			})
+		args, ok := responsesToolItem(ev.Item)
+		if !ok {
+			return
+		}
+		call := state.responsesCall(&ev)
+		if call == nil || ev.Type == "response.output_item.added" && call.itemID == "" && call.index == nil {
+			call = &responsesCallState{itemID: ev.Item.ID, index: ev.OutputIndex}
+			state.responsesToolCalls = append(state.responsesToolCalls, call)
+		}
+		call.done = ev.Type == "response.output_item.done"
+		if call.itemID == "" {
+			call.itemID = ev.Item.ID
+		}
+		if call.index == nil {
+			call.index = ev.OutputIndex
+		}
+		// A done item restates the whole call, so it replaces what the deltas built.
+		call.id, call.name = ev.Item.CallID, ev.Item.Name
+		call.args.Reset()
+		call.args.WriteString(args)
+	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
+		if ev.Delta == nil {
+			return
+		}
+		if call := state.responsesCall(&ev); call != nil {
+			call.args.WriteString(*ev.Delta)
 		}
 	case "response.completed", "response.incomplete", "response.failed":
 		if ev.Response == nil {
