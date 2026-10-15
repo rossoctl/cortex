@@ -4,7 +4,29 @@ A coding agent's sandbox already decides which commands run and which hosts
 they reach. It does not decide what may leave through an allowed host. This
 demo puts Cortex, built with the cpex plugin, behind the sandbox's network
 proxy and shows the difference: an allowed destination is not an authorized
-disclosure.
+disclosure. The sandbox correctly allows the connection; the policy
+correctly rejects the disclosure.
+
+## What a hardened setup already does
+
+| Control | Provides | What remains | This demo adds |
+|---|---|---|---|
+| Permission rules | which commands and tools run | an allowed `curl` sends whatever it is given | a decision on the request itself |
+| Sandbox with a domain allowlist | an OS boundary; egress by hostname | an allowed host receives any content, for any resource | the same boundary, routed to a policy on body, path and session history |
+| Masked credentials (`mask`, `injectHosts`) | commands never hold the secret | the real value is injected on every request to those hosts, whatever it carries | credential custody gated on the decision (requires a CPEX build with host delegated credentials; not in this demo yet) |
+| Secret scanners | secrets found in files and commits | nothing on the egress path; no notion of what the session has read | a content check at egress, and a session tainted once it reads a secret |
+| Hooks | a look at each tool call before it runs | they see the command string, not the bytes sent | decisions on the wire, and on the model's proposed tool calls |
+
+Blocking an unapproved host (scenario 01) is parity with the sandbox, not
+the point.
+
+## Lanes
+
+| Traffic | Route to cortex | Status |
+|---|---|---|
+| sandboxed commands and their children | the sandbox's proxy port | enforced: there is no other route |
+| the agent's own model calls (and WebFetch, for Claude Code) | `HTTPS_PROXY` | monitored: the process honours it |
+| file tools, local MCP servers, hooks | none | outside both |
 
 Everything runs on this machine. A scripted agent talks to a mock Anthropic
 API and runs the tools the mock asks for: `Read` in-process, `Bash` under
@@ -71,10 +93,19 @@ Prerequisites: macOS on arm64, `python3`, `openssl`, `curl`, `jq`, `srt`
 from the repo root, or `install.sh --cpex`).
 
 ```sh
-./run.sh up          # cortex and mocks on 4770x; generates keys under .state/ and config/identity/
-./run.sh scenarios   # all scenarios, with a summary
+./run.sh up                   # cortex and mocks on 4770x; keys under .state/ and config/identity/
+./run.sh scenarios            # all scenarios, with a summary
+./run.sh walkthrough          # the same, narrated; --fast for no pauses, --pace N to advance alone
 ./run.sh down
 ```
+
+`./run.sh check` checks that [`demo/steps.md`](demo/steps.md), the
+walkthrough and `scenarios/` list the same scenarios, and runs its test.
+`python3 demo/record_demo.py --record` records the walkthrough with
+asciinema.
+
+To run a real Claude Code session against the same cortex and policy, see
+[`claude-code/README.md`](claude-code/README.md).
 
 `up` refuses to start when a process it did not start holds a demo port. It
 runs its own `cortex --config config/cortex.yaml` with its own CA and state,
@@ -82,15 +113,21 @@ and never touches `~/.cortex` or an installed service on `:47600`.
 
 ## Limits
 
-- The scripted agent is a stand-in for Claude Code: the scenarios show policy
-  decisions under `srt`, not a model's behaviour.
+- The scripted agent is a stand-in for Claude Code, run under `srt`: the
+  scenarios show policy decisions, not a model's behaviour. The sandboxed
+  Claude Code run in [`claude-code/`](claude-code/README.md) is the
+  enforcement claim.
 - Content checks cover the patterns in the policy, in the first 8 KiB of a
-  body sent as is. Encoded or transformed secrets, and a single command that
-  reads and sends, are out of reach; a body past the excerpt is refused.
-- The secret read in 04 reaches the model and is on the timeline as part of
-  the model call, as Cortex records model traffic.
-- With cpex in the chain every model reply is buffered, SSE included, so a
-  streamed reply reaches the agent only once it is complete.
-- Taint lives in CPEX's in-process store and resets when Cortex restarts.
-- The support credential is not yet held by Cortex; the mock accepts reports
-  without one.
+  body sent as is; a body past that, or encoded, is refused. Secrets
+  transformed some other way, and a single command that reads and sends,
+  are out of reach.
+- With cpex in the chain every response is buffered, SSE included, under
+  the listener's 10MB cap: a streamed reply reaches the agent only once it
+  is complete, and a large download through a bridged host fails. Tunnelled
+  (passthrough) hosts avoid that, and are not inspected.
+- Cortex records model traffic, so a secret the agent reads is on the
+  session timeline as part of the model call that carried it.
+- Taint lives in CPEX's in-process store and resets when Cortex restarts or
+  reloads its config.
+- Credential custody is not in this demo: the mock accepts reports without
+  a credential.
