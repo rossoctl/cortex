@@ -13,6 +13,8 @@
   "ssoSessionIdleTimeout": 14400,
   "ssoSessionMaxLifespan": 57600,
   "defaultSignatureAlgorithm": "RS256",
+  "eventsEnabled": true,
+  "enabledEventTypes": ["TOKEN_EXCHANGE", "TOKEN_EXCHANGE_ERROR"],
 
   "roles": {
     "realm": [

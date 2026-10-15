@@ -4,8 +4,8 @@ An LLM **agent** runs as a container exposing **A2A** (`message/send`),
 with an **authbridge-cpex sidecar enforcing CPEX/APL on the agent's
 outbound tool calls** to an MCP backend, on a Rossoctl kind cluster. CPEX
 is a transparent **egress guardrail on the agent**: identity, Cedar PDP,
-RFC 8693 delegation, redaction, PII scanning, session taint, and audit
-all fire when the agent calls a tool — not at a gateway in front of it.
+RFC 8693 delegation, redaction, a PII check, and session taint all
+fire when the agent calls a tool — not at a gateway in front of it.
 
 > **Architecture note.** Earlier revisions of this demo ran CPEX as a
 > standalone gateway *in front of* `hr-mcp` (enforcing on the inbound
@@ -22,7 +22,7 @@ A decision engine like OPA or Cedar answers one question: given this
 input, is the action allowed? That verdict still has to be wired into
 something. Real authorization resolves identity first, often consults
 more than one engine, mints a token for the downstream call, strips
-sensitive fields from the payload, and writes an audit record, all in
+sensitive fields from the payload, and records the outcome, all in
 the right order with the right short-circuits. That orchestration is
 normally bespoke code in every gateway.
 
@@ -37,9 +37,9 @@ compose three things a plain PDP does not:
   cheap predicates first and the PDP only for requests that clear them.
 - **Explicit effects.** Authorization is more than allow or deny. APL
   expresses effects as first-class steps: `redact(...)` rewrites a
-  field on the wire, `run(pii-scan)` runs a content guardrail,
-  `run(audit-log)` records the outcome. The decision and what to do
-  about it live in the same place.
+  field on the wire, a `cel:` step denies a PII shape, and
+  `taint(...)` marks the session for later calls. The decision and
+  what to do about it live in the same place.
 - **Actions as decisions.** `delegate(...)` mints a downstream-scoped
   token (RFC 8693 token exchange) as a policy step, and a post-check
   can gate on its result, refusing to forward a token the IdP narrowed
@@ -54,7 +54,8 @@ compose three things a plain PDP does not:
    APL effect, not backend logic.
 2. **A full pattern in one policy.** A single route chains a coarse APL
    predicate, a Cedar PDP decision, an RFC 8693 token exchange, a
-   post-check on the minted token, a PII guardrail, and an audit record.
+   post-check on the minted token. Every decision is recorded on the
+   Cortex session timeline, which is the demo's audit trail.
 3. **Policy as data.** The gateway is a generic AuthBridge sidecar.
    Every rule lives in `cpex-policy.yaml`; operators ship changes by
    updating a ConfigMap, not by releasing code.
@@ -92,25 +93,47 @@ cleanly and leaves the rest of the cluster untouched.
 
 ```bash
 make deploy         # build images (agent + authbridge-cpex + hr-mcp), load into kind, apply, wait for Ready
-make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094
-make scenarios      # run the nine curl scenarios
+make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094, hr-mcp :9100
+make scenarios      # run the curl scenarios
 ```
+
+To use a kind cluster without switching your current kube context, pass
+`KIND_CLUSTER=<name> KUBE_CONTEXT=kind-<name>` to each target. If a local
+port is taken, port-forward yourself and point the scenarios at it with
+`PROXY`, `KEYCLOAK_HOST`, `SESSION_API` and `UPSTREAM`.
 
 `make scenarios` drives the tool through the agent's **forward-proxy**
 (the same egress path the agent's own tool calls take), exercising the
-personas across allow, deny, and redact paths:
+personas across allow, deny, and redact paths. Each scenario asserts its
+outcome against the reply, hr-mcp's request recorder (`/_requests`),
+Keycloak's token-exchange events and the session timeline, and exits
+non-zero when an expectation fails:
 
 ```text
-01-bob-allow.sh                      PASS   SSN visible
-02-alice-deny.sh                     DENY   APL require(role.hr)
-03-eve-redact.sh                     PASS   SSN redacted in response   <- the one to watch
-04-alice-internal-allow.sh           PASS   Cedar permit + token exchange
-05-alice-external-cedar-deny.sh      DENY   Cedar default-deny
-06-bob-apl-deny.sh                   DENY   APL team mismatch
-07-bob-pii-deny.sh                   DENY   PII validator (PII in the body)
-08-bob-taint-deny.sh                 DENY   taint propagation (session touched secrets)
-09-cross-principal-taint-isolation.sh PASS  taint is subject-bound (same id, different user)
+01-bob-allow.sh                      DELEGATE  exchange, then fail closed (see below)
+02-alice-deny.sh                     DENY      APL require(role.hr)
+03-eve-redact.sh                     DELEGATE  SSN redacted on request and response
+04-alice-internal-allow.sh           DELEGATE  Cedar permit + token exchange
+05-alice-external-cedar-deny.sh      DENY      Cedar default-deny
+06-bob-apl-deny.sh                   DENY      APL team mismatch
+07-bob-pii-deny.sh                   DENY      CEL PII check; recorded on the timeline
+08-bob-taint-deny.sh                 DENY      taint propagation (session touched secrets)
+09-cross-principal-taint-isolation.sh PASS     taint is subject-bound (same id, different user)
 ```
+
+**Delegation on CPEX 0.3.0.** CPEX 0.3.0 performs the token exchange but
+does not hand the minted token back to Cortex. Rather than forward the
+caller's own bearer where the policy asked for the delegated one, the
+sidecar denies with `cpex.delegation_unavailable`. So every call whose
+route delegates (scenarios 01, 03, 04, and S2 of 08 and 09) asserts that
+Keycloak performed the exchange, that the call failed closed and that
+nothing reached hr-mcp, and prints `forwarding: pending CPEX patch`. The
+taint is written before the delegation check, so 08 and 09 keep their
+outcomes. Redaction is verified on the engine by the cpex-tagged test
+in `core/plugins/cpex` (`TestHRDemo*`). With a CPEX that returns the
+token, `make scenarios CPEX_DELEGATION=available` asserts the full
+outcomes: 01 and 04 allowed with the minted token, 03 redacted at hr-mcp
+and in the reply.
 
 The scenarios are deterministic curl runs and skip the LLM entirely:
 each posts an MCP `tools/call` through the sidecar forward proxy
@@ -123,12 +146,12 @@ the agent would. The interactive chat (below) is the full A2A path.
 session (persisted in the session store, keyed by the `X-Session-Id`
 the caller threads in). The `send_email` policy then refuses external
 email from any session carrying that label
-(`session.labels contains "secret": deny`). The deny fires **even when
+(`security.labels contains "secret": deny`). The deny fires **even when
 the email body is clean** — it's the *session* that's tainted, not the
 content, which is what distinguishes it from scenario 07's content-based
 PII deny. Scenario 08 shows all three beats with fresh per-run session
-ids: a clean session sends fine (S1 → 200), reading compensation taints
-a second session (S2 → 200), and that session can no longer send email
+ids: a clean session sends fine (S1), reading compensation taints
+a second session (S2), and that session can no longer send email
 (S3 → denied with an MCP JSON-RPC error frame, `cpex.session_tainted_secret`).
 
 **Act 5 — cross-principal taint isolation (scenario 09).** Session taint
@@ -143,7 +166,8 @@ subject that scopes (and isolates) taint.
 
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same
 request, the same backend returns the same record, but Eve's response
-comes back without the SSN because the policy redacts it.
+comes back without the SSN because the policy redacts it (on CPEX 0.3.0,
+checked on the engine; see above).
 
 ## The personas
 
@@ -231,20 +255,20 @@ quit            exit
 Suggested conversation:
 
 ```text
-look up the compensation for EMP-001234, include the SSN
-  -> 200 OK, SSN included
+send an email to teammate@example.com saying the sync moved to Thursday
+  -> sent
 
-switch eve
 look up the compensation for EMP-001234, include the SSN
-  -> 200 OK, response has no SSN field. Same backend, same request,
-     policy redacted it.
+  -> denied (cpex.delegation_unavailable) on CPEX 0.3.0; with the token
+     returned, 200 OK with the SSN
 
 switch alice
 look up the compensation for EMP-001234
-  -> denied (cpex.denied). Alice is not HR.
+  -> denied. Alice is not HR.
 
 search the internal repos for web-app
-  -> 200 OK. Cedar permits: Alice is engineering, the repo is internal.
+  -> Cedar permits (Alice is engineering, the repo is internal); the
+     call then delegates, so on CPEX 0.3.0 it fails closed.
 
 search external repos
   -> denied (cpex.cedar_default_deny). Cedar refuses the cross-boundary call.
@@ -290,7 +314,7 @@ chat.py (host A2A client)
 |                      keys the session-taint bucket)              |
 |        2. APL policy require(...) -> cedar PDP ->               |
 |                      delegate(...) -> post-check                 |
-|        3. plugins    pii-scan (deny), audit-log (observe), taint |
+|        3. checks     CEL PII deny, session taint                 |
 |        4. body       redact(args.ssn) / redact(result.ssn)       |
 +------------------------------------------------------------------+
          |                                    |
@@ -332,7 +356,7 @@ authentication: [jwt-user, jwt-client]
 authorization.pre_invocation:
   require(role.hr)
   delegate(workday-oauth, target: workday-api, permissions: [read_compensation])
-  run(audit-log)
+  taint(secret, session)
 args.ssn   ->  str | redact(!perm.view_ssn)
 result.ssn ->  str | redact(!perm.view_ssn)
 ```
@@ -376,14 +400,14 @@ fresh pod that mounts the new policy.
 | `k8s/20-hr-mcp.yaml` | hr-mcp backend Service and Deployment |
 | `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: config, Service, Deployment |
 | `k8s/realm-export.json` | Keycloak realm: users, clients, mappers |
-| `k8s/cpex-policy.yaml` | CPEX policy: identity, PDP, delegator, validators, audit |
+| `k8s/cpex-policy.yaml` | CPEX policy: identity, PDPs, delegators, routes |
 | `hr-mcp-server/` | Vendored FastAPI MCP backend, built into `hr-mcp:dev` |
 | `agent/agent.py` | A2A server + litellm tool loop, built into `hr-cpex-agent:dev` |
 | `agent/chat.py` | Host-side A2A client (mints tokens, drives the demo) |
 | `agent/requirements.txt` | Agent (server) deps — installed into the image |
 | `agent/requirements-client.txt` | Client deps — installed on the host for `chat.py` |
 | `agent/Dockerfile` | Builds `hr-cpex-agent:dev` |
-| `scenarios/` | The nine curl scenarios run by `make scenarios` |
+| `scenarios/` | The curl scenarios run by `make scenarios` |
 | `mint-token.sh` | Mints a persona JWT via Keycloak. Used by scenarios |
 | `verify-token-exchange.sh` | Checks RFC 8693 token exchange against the realm |
 
@@ -431,6 +455,11 @@ make undeploy   # deletes the cpex-demo namespace
   `insecure_http: true`, because the JWKS and token-endpoint validators
   reject plaintext URLs by default. Put TLS in front of Keycloak and
   remove these flags for any real deployment.
+- **`cpex.auth_jwks_unavailable` while Keycloak is up.** Keycloak is a
+  cluster-private address, which CPEX refuses by default; the cpex
+  plugin in `k8s/30-agent.yaml` sets `private_destinations: true` for it.
+- **`cpex.delegation_unavailable` on get_compensation or search_repos.**
+  Expected on CPEX 0.3.0; see **Delegation on CPEX 0.3.0** above.
 
 ## Not covered yet
 

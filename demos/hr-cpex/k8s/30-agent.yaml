@@ -57,7 +57,7 @@ data:
           # JSON-RPC tool call; cpex reads from there for CMF dispatch.
           - name: mcp-parser
           # cpex handles identity, policy, delegation, redaction, PII, and
-          # session taint entirely via its own sub-plugins. Identity
+          # session taint through the CPEX policy. Identity
           # resolvers (jwt-user ← X-User-Token, jwt-client ← Authorization)
           # MUST run here so the resolved subject is present — the cpex
           # session store binds taint to that subject (Finding 2). The
@@ -72,6 +72,9 @@ data:
                   - cmf.tool_post_invoke
               config_file: /etc/cpex/cpex.yaml
               fail_open: false
+              # Keycloak is a cluster-private address, which CPEX's JWKS
+              # fetches and token exchange refuse by default.
+              private_destinations: true
               # Bypass hosts default covers keycloak/SPIRE/observability so
               # those egress calls don't pay the FFI cost.
 

@@ -13,16 +13,25 @@ Run locally:
     pip install -r requirements.txt
     uvicorn server:app --host 0.0.0.0 --port 9100
 
-Endpoint:
-    POST /mcp   — JSON-RPC 2.0 `tools/call` requests
+Endpoints:
+    POST /mcp        JSON-RPC 2.0 `tools/call` requests
+    GET  /_requests  what reached this server since the last reset
+    POST /_reset     drop the recorded requests
+
+`/_requests` lets the scenarios assert what the sidecar forwarded rather
+than print a claim next to a log line.
 
 Tools:
     get_compensation, send_email, display_compensation, get_directory
 """
 
+import base64
+import hashlib
 import json
 import logging
 import sys
+import time
+from collections import deque
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -36,6 +45,58 @@ logging.basicConfig(
 logger = logging.getLogger("hr-mcp-server")
 
 app = FastAPI(title="HR Demo MCP Server")
+
+# ---------------------------------------------------------------------------
+# Request recorder: every inbound /mcp request, bounded and in memory.
+# ---------------------------------------------------------------------------
+
+_RECORDED: deque[dict[str, Any]] = deque(maxlen=50)
+
+
+def _jwt_claims(token: str) -> dict[str, Any]:
+    """Decode a JWT payload WITHOUT verifying it, so a scenario can tell
+    which token arrived. Never use this to make a decision."""
+    raw = token[7:] if token.startswith("Bearer ") else token
+    parts = raw.split(".")
+    if len(parts) != 3:
+        return {}
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except Exception:
+        return {}
+    aud = claims.get("aud")
+    return {
+        "aud": [aud] if isinstance(aud, str) else (aud or []),
+        "azp": claims.get("azp"),
+        "sub": claims.get("sub"),
+        "digest": hashlib.sha256(raw.encode()).hexdigest()[:12],
+    }
+
+
+def _record_value(value: str) -> Any:
+    """Serve a token-valued header as its claims, never its bytes."""
+    body = value[7:] if value.startswith("Bearer ") else value
+    if body.startswith("eyJ") and body.count(".") == 2:
+        return {"jwt": _jwt_claims(value)}
+    return value
+
+
+def _record(request: Request, rpc: dict[str, Any]) -> None:
+    # Swallows everything: a recorder bug must never fail a tool call.
+    try:
+        params = rpc.get("params") or {}
+        _RECORDED.append(
+            {
+                "ts": time.time(),
+                "method": rpc.get("method"),
+                "tool": params.get("name"),
+                "arguments": params.get("arguments", {}),
+                "headers": {k.lower(): _record_value(v) for k, v in request.headers.items()},
+            }
+        )
+    except Exception:
+        logger.exception("failed to record the inbound request (ignored)")
+
 
 # ---------------------------------------------------------------------------
 # Mock data (copied from sibling-repos/apl-plugins/demo/hr_demo_server.py)
@@ -219,7 +280,9 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
     interesting_headers = [
         "authorization",
         "x-user-token",
-        "x-cpex-violation",
+        "x-auth-user-id",
+        "x-auth-username",
+        "x-auth-roles",
     ]
     for name in interesting_headers:
         v = request.headers.get(name)
@@ -241,6 +304,7 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    _record(request, rpc)
     method = rpc.get("method", "")
     rpc_id = rpc.get("id")
     if method != "tools/call":
@@ -288,6 +352,17 @@ async def mcp_endpoint(request: Request) -> JSONResponse:
             "id": rpc_id,
         },
     )
+
+
+@app.get("/_requests")
+async def recorded_requests() -> dict[str, Any]:
+    return {"count": len(_RECORDED), "requests": list(_RECORDED)}
+
+
+@app.post("/_reset")
+async def reset_recorded() -> dict[str, Any]:
+    _RECORDED.clear()
+    return {"count": 0}
 
 
 @app.get("/healthz")

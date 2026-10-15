@@ -3,13 +3,14 @@
 # End-to-end:
 #
 #   make deploy        # build images, load into kind, kubectl apply
-#   make port-forward  # Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094)
-#   make scenarios     # run all 9 demo curl scenarios (through the forward proxy)
+#   make port-forward  # Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100)
+#   make scenarios     # run the demo curl scenarios (through the forward proxy)
 #   make logs          # tail the authbridge-cpex sidecar logs
 #   make undeploy      # delete the cpex-demo namespace
 #
 # Prerequisites:
-#   - kind cluster (we target `rossoctl`; override KIND_CLUSTER)
+#   - kind cluster (we target `rossoctl`; override KIND_CLUSTER, and
+#     KUBE_CONTEXT to address it without switching the current context)
 #   - docker / podman
 #   - kubectl
 #   - (chat only) host Ollama on 0.0.0.0 + the right LLM_API_BASE — see the
@@ -19,6 +20,8 @@
 # (hr-mcp-server/, k8s/, agent/).
 
 KIND_CLUSTER ?= rossoctl
+KUBE_CONTEXT ?=
+KUBECTL      := kubectl $(if $(KUBE_CONTEXT),--context $(KUBE_CONTEXT))
 # Fixed, not overridable: the k8s/*.yaml manifests hardcode the
 # `cpex-demo` namespace (00-namespace.yaml plus metadata.namespace on
 # every object), so an override here would create the ConfigMaps in one
@@ -84,8 +87,6 @@ build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent docker images
 	@echo "[build] authbridge-cpex from $(AUTHBRIDGE_ROOT)"
 	cd $(AUTHBRIDGE_ROOT) && docker build \
 		-f cmd/cortex-cpex/Dockerfile \
-		--build-arg CPEX_FFI_VERSION=$$(cat cmd/cortex-cpex/CPEX_FFI_VERSION | tr -d '[:space:]') \
-		--build-arg CPEX_FFI_ABI=$$(cat cmd/cortex-cpex/CPEX_FFI_ABI | tr -d '[:space:]') \
 		--build-arg GO_BUILD_TAGS="$$(GOWORK=off go -C scripts/profile-tags run . cpex)" \
 		-t $(AUTHBRIDGE_IMAGE) .
 	@echo "[build] hr-mcp from $(HR_MCP_SRC)"
@@ -99,26 +100,26 @@ load-images: preflight  ## Load all three images into the kind cluster
 	kind load docker-image $(AGENT_IMAGE)      --name $(KIND_CLUSTER)
 
 apply:  ## kubectl apply the manifests (assumes images already loaded)
-	kubectl apply -f k8s/00-namespace.yaml
+	$(KUBECTL) apply -f k8s/00-namespace.yaml
 	# Recreate the realm ConfigMap from the JSON file each time so
 	# realm-export.json edits take effect on `make apply`.
-	kubectl create configmap keycloak-realm \
+	$(KUBECTL) create configmap keycloak-realm \
 		--namespace $(NAMESPACE) \
 		--from-file=cpex-demo-realm.json=k8s/realm-export.json \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 	# Same dynamic ConfigMap shape for cpex-policy.yaml so YAML
 	# edits propagate without rewriting a manifest.
-	kubectl create configmap cpex-policy \
+	$(KUBECTL) create configmap cpex-policy \
 		--namespace $(NAMESPACE) \
 		--from-file=cpex.yaml=k8s/cpex-policy.yaml \
-		--dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f k8s/10-keycloak.yaml
-	kubectl apply -f k8s/20-hr-mcp.yaml
-	kubectl apply -f k8s/30-agent.yaml
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f k8s/10-keycloak.yaml
+	$(KUBECTL) apply -f k8s/20-hr-mcp.yaml
+	$(KUBECTL) apply -f k8s/30-agent.yaml
 	# Inject the env-specific LLM wiring. Idempotent: when these match the
 	# manifest defaults (Docker Desktop case) kubectl reports no change and
 	# does not roll the pod; override LLM_API_BASE for Rancher Desktop.
-	kubectl -n $(NAMESPACE) set env deployment/hr-cpex-agent -c agent \
+	$(KUBECTL) -n $(NAMESPACE) set env deployment/hr-cpex-agent -c agent \
 		LLM_API_BASE='$(LLM_API_BASE)' MODEL='$(MODEL)'
 
 deploy: build-images load-images apply  ## Full bring-up: build, load, apply
@@ -129,7 +130,7 @@ deploy: build-images load-images apply  ## Full bring-up: build, load, apply
 	@# image, and restarting it regenerates the realm signing keys, which would
 	@# leave any already-running sidecar serving cpex.auth_unknown_kid.
 	@echo "Waiting for Keycloak to settle..."
-	kubectl -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
+	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
 	@echo
 	@# Force the locally-built :dev images to reload. `kind load` overwrites the
 	@# image in the node store, but a Deployment whose pod template is unchanged
@@ -138,43 +139,52 @@ deploy: build-images load-images apply  ## Full bring-up: build, load, apply
 	@# the two locally-built workloads (hr-mcp; hr-cpex-agent carries both the
 	@# agent and the authbridge-cpex sidecar) so a rebuild always lands.
 	@echo "Rolling the locally-built workloads onto the freshly-loaded images..."
-	kubectl -n $(NAMESPACE) rollout restart deployment/hr-mcp deployment/hr-cpex-agent
-	kubectl -n $(NAMESPACE) rollout status  deployment/hr-mcp        --timeout=120s
-	kubectl -n $(NAMESPACE) rollout status  deployment/hr-cpex-agent --timeout=120s
+	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/hr-mcp deployment/hr-cpex-agent
+	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/hr-mcp        --timeout=120s
+	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/hr-cpex-agent --timeout=120s
 	@echo
 	@printf "\033[1;32mDeploy complete.\033[0m Next:\n"
 	@printf "  make port-forward   # in another terminal\n"
 	@printf "  make scenarios      # deterministic curl matrix (no LLM needed)\n"
 	@printf "  make ollama-check   # only for the interactive chat — confirms a pod can reach Ollama\n"
 
-port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094)
+port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100)
 	@echo "Port-forwarding (Ctrl+C to stop)..."
 	@echo "  Keycloak admin:     http://localhost:8081  (admin/admin)"
 	@echo "  Agent (A2A):        http://localhost:8082   <- chat.py talks here"
 	@echo "  Sidecar fwd proxy:  http://localhost:8083   <- scenarios curl -x here"
-	@echo "  CPEX session API:   http://localhost:9094   <- inspect taint/sessions"
+	@echo "  CPEX session API:   http://localhost:9094   <- the decision timeline"
+	@echo "  hr-mcp recorder:    http://localhost:9100   <- what reached the tool"
 	@# Keycloak + agent go via Service; the forward proxy (8081) and session
 	@# API (9094) bind to localhost in the pod, so we port-forward those
 	@# against the deployment's pod directly (8083 on the host avoids the
 	@# Keycloak 8081 collision).
-	kubectl -n $(NAMESPACE) port-forward svc/keycloak 8081:8080 & \
-	kubectl -n $(NAMESPACE) port-forward svc/hr-cpex-agent 8082:8080 & \
-	kubectl -n $(NAMESPACE) port-forward deploy/hr-cpex-agent 8083:8081 9094:9094 & \
+	$(KUBECTL) -n $(NAMESPACE) port-forward svc/keycloak 8081:8080 & \
+	$(KUBECTL) -n $(NAMESPACE) port-forward svc/hr-cpex-agent 8082:8080 & \
+	$(KUBECTL) -n $(NAMESPACE) port-forward deploy/hr-cpex-agent 8083:8081 9094:9094 & \
+	$(KUBECTL) -n $(NAMESPACE) port-forward svc/hr-mcp 9100:9100 & \
 	wait
 
+# `pending` while CPEX cannot return a delegated token to Cortex; see
+# scenarios/_lib.sh.
+CPEX_DELEGATION ?= pending
+
 scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
-	@status=0; for s in $(CURDIR)/scenarios/0[1-9]-*.sh; do \
-	  PROXY=http://localhost:8083 \
-	  KEYCLOAK_HOST=http://localhost:8081 \
+	@status=0; for s in $(CURDIR)/scenarios/[0-9][0-9]-*.sh; do \
+	  PROXY=$${PROXY:-http://localhost:8083} \
+	  KEYCLOAK_HOST=$${KEYCLOAK_HOST:-http://localhost:8081} \
+	  SESSION_API=$${SESSION_API:-http://localhost:9094} \
+	  UPSTREAM=$${UPSTREAM:-http://localhost:9100} \
+	  CPEX_DELEGATION=$(CPEX_DELEGATION) \
 	  "$$s" || status=1; \
 	done; exit $$status
 
 logs:  ## Tail the authbridge-cpex sidecar logs
-	kubectl -n $(NAMESPACE) logs -f deploy/hr-cpex-agent -c authbridge-cpex
+	$(KUBECTL) -n $(NAMESPACE) logs -f deploy/hr-cpex-agent -c authbridge-cpex
 
 ollama-check:  ## Verify a cluster pod can reach the host Ollama at LLM_API_BASE
 	@echo "Checking pod -> $(LLM_API_BASE) (the agent's inference endpoint)..."
-	@kubectl -n $(NAMESPACE) exec deploy/hr-cpex-agent -c agent -- \
+	@$(KUBECTL) -n $(NAMESPACE) exec deploy/hr-cpex-agent -c agent -- \
 		python3 -c "import urllib.request,sys; \
 u='$(LLM_API_BASE)'.rstrip('/')+'/api/tags'; \
 print('OK', urllib.request.urlopen(u, timeout=5).status, u)" \
@@ -190,4 +200,4 @@ print('OK', urllib.request.urlopen(u, timeout=5).status, u)" \
 	  }
 
 undeploy:  ## Tear down the demo
-	-kubectl delete namespace $(NAMESPACE) --wait=false
+	-$(KUBECTL) delete namespace $(NAMESPACE) --wait=false
