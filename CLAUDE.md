@@ -353,16 +353,26 @@ shipped artifact.
 
 `v*` tag pushes trigger `.github/workflows/release-binaries.yaml`, which
 cross-compiles `cortex` and `agentop` for linux/darwin ×
-amd64/arm64 and attaches tarballs to the GitHub Release. `cortex`
-ships one tarball shape, `cortex_<ver>_<os>_<arch>.tar.gz`, built with the
-default plugin set (the `authbridge` image's). No other binary variant is
-published: the `lite` profile ships only as the `authbridge-lite` image, and
-opt-in plugins such as `sessionbudget` and `context-guru` are built from
-source. To publish a variant, append a `<suffix>:<build-tags>` entry to the
-`proxy_variants` array in the workflow — never enumerate combos.
-The cpex variant (needs cgo) ships only as the `authbridge-cpex` image; `make
-cortex-cpex` builds it locally with the `fullcpex` profile (`full` + `cpex`) to
-`bin/cortex-cpex/cortex`, and `cortex --version` then prints `cortex (cpex) <ver>`.
+amd64/arm64 and attaches tarballs to the GitHub Release. Its default
+`cortex` tarball, `cortex_<ver>_<os>_<arch>.tar.gz`, is built with the
+default plugin set (the `authbridge` image's). The `lite` profile ships only
+as the `authbridge-lite` image, and opt-in plugins such as `sessionbudget` and
+`context-guru` are built from source. To publish a pure-Go variant, append a
+`<suffix>:<build-tags>` entry to the `proxy_variants` array in the workflow —
+never enumerate combos.
+
+The one other variant is `cortex-cpex_<ver>_<os>_<arch>.tar.gz`: `cortex`
+built with cgo, the `cpex` tag and the `fullcpex` profile (`full` + `cpex`).
+It cannot cross-compile, so a separate `build-cpex` matrix job builds it
+natively for darwin/arm64 (`macos-14`, macOS 14.5 floor) and linux/amd64 and
+linux/arm64 (static musl, in `golang:alpine` via `docker run`); there is no
+darwin/amd64 FFI. The executable inside is still `cortex`, and `cortex
+--version` prints `cortex (cpex) <ver>`. The workflow's jobs are `version`,
+`build`, `build-cpex` (both `contents: read`) and `publish`, which alone
+writes, refuses to publish unless every expected tarball arrived, writes one
+`checksums.txt` over all of them, and attests the cpex tarballs' build
+provenance. `install.sh --cpex` installs it; `make cortex-cpex` builds the same
+thing locally to `bin/cortex-cpex/cortex`.
 
 **Go modules** (11 in total; `go.work` links 8 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in

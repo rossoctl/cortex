@@ -30,6 +30,10 @@ Setup lists every change it will make, and asks once. If rossoctl.dev is unreach
 from where you are, the same script is served straight from this repository, at
 `https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh`.
 
+To install `cortex` built with the [cpex policy plugin](docs/cpex-plugin.md) instead
+(macOS arm64, Linux amd64/arm64), add `| sh -s -- --cpex`. Re-running without the flag
+switches back; see [the cpex build](docs/laptop-service.md#the-cpex-build).
+
 Then connect your agent — once, in a new terminal. The table below has each command.
 
 ```sh
