@@ -245,7 +245,11 @@ def tool_adjust_compensation(args: dict[str, Any]) -> dict[str, Any]:
     # A change large enough to need a manager's approval only gets here
     # once the sidecar's policy has it; the tool just applies it.
     employee_id = args.get("employee_id", "")
-    amount = int(args.get("amount", 0))
+    amount = args.get("amount")
+    # The policy's threshold reads an integer, so accept nothing else:
+    # coercing "15000" here would apply what the threshold never saw.
+    if type(amount) is not int:
+        return {"error": "amount must be an integer"}
     employee = EMPLOYEES.get(employee_id)
     if not employee:
         return {"error": f"Employee {employee_id} not found"}

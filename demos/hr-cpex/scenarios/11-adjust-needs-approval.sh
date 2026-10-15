@@ -7,14 +7,14 @@
 #
 # The approval belongs to Bob, this route and this tool, is spent by the
 # call it lets through, and is re-checked against the amount
-# (scope: args.amount <= 25000).
+# (scope: at most $25,000 either way).
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 BOB=$(mint bob)
 CLIENT=$(mint hr-copilot)
-STEP_DENY=cpex.routes_tool_adjust_compensation_pre_invocation_1_
+STEP_DENY=cpex.routes_tool_adjust_compensation_pre_invocation_2_
 
 step "1 · Bob → adjust_compensation +\$15,000: suspended for Alice's approval"
 reset_upstream

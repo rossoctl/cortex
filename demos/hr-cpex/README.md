@@ -180,7 +180,9 @@ nothing between the sidecar and it can set them. The scenario uses
 `send_email`, whose route does not delegate.
 
 **Manager approval (scenarios 10, 11).** `adjust_compensation` needs
-`require(role.hr)`, and over $10,000 a `require_approval(...)` step asks
+`require(role.hr)` and a numeric `amount` (a string is refused before the
+threshold reads it), and for a change of more than $10,000 either way a
+`require_approval(...)` step asks
 the requester's manager (the `manager` claim, Alice for Bob) through
 Keycloak's CIBA backchannel. Keycloak delivers the request to the
 `auth-channel` service, the manager's "phone": open
@@ -190,8 +192,16 @@ whose `error.data.details.elicitation_id` the agent echoes in
 `X-Policy-Elicitation-Id` when it retries. Scenario 11 answers through
 the channel's API and checks that a $15k change applies after approval,
 that the spent approval does not authorize a $20k change, that a denial
-and an approval outside the route's `scope` (`args.amount <= 25000`)
+and an approval outside the route's `scope` (at most $25,000 either way)
 are both refused, and that hr-mcp never sees a refused or pending call.
+The approval is bound to the requester, route and tool, not to the
+arguments: within the scope, a retry may carry a different amount or
+employee than the one the manager was shown. CPEX 0.3.0 has no way to
+bind it tighter.
+
+**Unrouted tools.** A catch-all `tool: "*"` route denies any tool without
+a route of its own (`cpex.tool_unrouted`), including a differently cased
+name. Without it, such a tool would pass with no policy at all.
 The route does not delegate, so it runs fully on CPEX 0.3.0.
 
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same

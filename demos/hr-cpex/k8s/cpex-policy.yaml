@@ -260,15 +260,47 @@ routes:
   # ════════════════════════════════════════════════════════════════
   # COMPENSATION CHANGE · scenarios 10, 11
   # ════════════════════════════════════════════════════════════════
-  # Over $10,000 the requester's manager (the `manager` claim) must
-  # approve. The approval holds only for this requester, route and tool,
-  # is spent by the call it lets through, and `scope` re-checks the live
-  # amount, so a sign-off cannot be stretched to a larger change.
+  # A change of more than $10,000 either way needs the requester's
+  # manager (the `manager` claim) to approve. The approval holds only for
+  # this requester, route and tool, is spent by the call it lets through,
+  # and `scope` re-checks the live amount, so a sign-off cannot be
+  # stretched past $25,000. The amount must be a JSON number: a missing
+  # or string amount is refused before the threshold is read, so it
+  # cannot slip under it. (`float`, not `int`: a JSON number reaches the
+  # engine as a float, whole or not. hr-mcp refuses a fraction.)
   - tool: adjust_compensation
     authentication: [jwt-user, jwt-client]
+    args:
+      amount: "float"
     authorization:
       pre_invocation:
         - "require(role.hr)"
-        - when: "args.amount > 10000"
+        - "require(exists(args.amount))"
+        - when: "args.amount > 10000 | args.amount < -10000"
           do:
-            - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000\", purpose: \"Approve a compensation adjustment\", timeout: 5m)"
+            - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000 & args.amount >= -25000\", purpose: \"Approve a compensation adjustment\", timeout: 5m)"
+
+  # ════════════════════════════════════════════════════════════════
+  # READ-ONLY LOOKUPS
+  # ════════════════════════════════════════════════════════════════
+  # Neither returns a salary or an SSN, but both still need a verified
+  # caller.
+  - tool: display_compensation
+    authentication: [jwt-user, jwt-client]
+    authorization:
+      pre_invocation:
+        - "require(perm.tool_execute)"
+
+  - tool: get_directory
+    authentication: [jwt-user, jwt-client]
+    authorization:
+      pre_invocation:
+        - "require(perm.tool_execute)"
+
+  # Every other tool name, including a differently cased spelling of one
+  # above, is refused. A tool with no route would otherwise pass with no
+  # policy and no authentication.
+  - tool: "*"
+    authorization:
+      pre_invocation:
+        - "deny('no policy for this tool', 'tool_unrouted')"

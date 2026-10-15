@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # adjust_compensation needs a manager's approval only over $10,000. At
 # $5,000, Bob (HR) passes the role gate and the change applies at once;
-# Alice (engineering) is stopped by the role gate.
+# Alice (engineering) is stopped by the role gate. A string amount and a
+# tool name with no route are both refused.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
@@ -29,5 +30,23 @@ reset_upstream
 call_adjust_compensation "$ALICE" "$CLIENT" 5000
 
 expect_deny cpex.routes_tool_adjust_compensation_pre_invocation_0_
+expect_upstream_calls 0
+
+step "Bob → adjust_compensation \"15000\" (a string)"
+note "Refused before the threshold reads it, so it cannot skip the approval"
+reset_upstream
+seen=$(approvals_seen)
+call_adjust_compensation "$BOB" "$CLIENT" '"15000"'
+
+expect_deny cpex.routes_tool_adjust_compensation_args_amount
+expect_upstream_calls 0
+if [ "$(approvals_seen)" = "$seen" ]; then pass_ "no approval was requested"; else fail_ "an approval was requested"; fi
+
+step "Bob → Adjust_Compensation (a tool name with no route)"
+note "A tool without its own route is refused, not passed with no policy"
+reset_upstream
+call_tool "$BOB" "$CLIENT" Adjust_Compensation '{"employee_id":"EMP-001234","amount":50000}'
+
+expect_deny cpex.tool_unrouted
 expect_upstream_calls 0
 finish

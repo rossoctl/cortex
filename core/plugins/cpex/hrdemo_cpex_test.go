@@ -280,6 +280,12 @@ func (c hrCall) pctx(t *testing.T, idp *hrIdP) *pipeline.Context {
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": c.tool, "arguments": c.args},
 	})
+	// Params as the mcp-parser leaves them, decoded from the body, so a
+	// number is a float64 here exactly as it is in the sidecar.
+	var rpc struct {
+		Params map[string]any `json:"params"`
+	}
+	_ = json.Unmarshal(body, &rpc)
 	return &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Host:      "hr-mcp.cpex-demo:9100",
@@ -289,7 +295,7 @@ func (c hrCall) pctx(t *testing.T, idp *hrIdP) *pipeline.Context {
 		Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
 			Method: "tools/call",
 			RPCID:  float64(1),
-			Params: map[string]any{"name": c.tool, "arguments": c.args},
+			Params: rpc.Params,
 		}},
 	}
 }
@@ -510,12 +516,12 @@ func TestHRDemoToolsListAllowed(t *testing.T) {
 	wantContinue(t, "tools/list", p.OnRequest(context.Background(), pctx))
 }
 
-func adjustArgs(amount int) map[string]any {
+func adjustArgs(amount any) map[string]any {
 	return map[string]any{"employee_id": "EMP-001234", "amount": amount}
 }
 
 // adjust sends Bob's adjust_compensation call, resuming eid when set.
-func adjust(t *testing.T, p *CPEX, idp *hrIdP, amount int, eid string) (pipeline.Action, *pipeline.Context) {
+func adjust(t *testing.T, p *CPEX, idp *hrIdP, amount any, eid string) (pipeline.Action, *pipeline.Context) {
 	t.Helper()
 	call := hrCall{user: "bob", tool: "adjust_compensation", args: adjustArgs(amount)}
 	if eid != "" {
@@ -596,6 +602,47 @@ func TestHRDemoAdjustScopeAndRefusal(t *testing.T) {
 }
 
 // approvalStepDeny is the code of a deny from the route's approval step.
-const approvalStepDeny = "cpex.routes_tool_adjust_compensation_pre_invocation_1_"
+const approvalStepDeny = "cpex.routes_tool_adjust_compensation_pre_invocation_2_"
 
 func first(a pipeline.Action, _ *pipeline.Context) pipeline.Action { return a }
+
+// The threshold reads a numeric amount; anything else is refused before
+// it, so a string or missing amount cannot slip under it. A cut over
+// $10,000 needs approval like a raise.
+func TestHRDemoAdjustAmountChecked(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	const argDeny = "cpex.routes_tool_adjust_compensation_args_amount"
+	for _, amount := range []any{"15000", "5000", true, nil, []any{15000}} {
+		wantReject(t, fmt.Sprintf("amount %#v", amount), first(adjust(t, p, idp, amount, "")), argDeny)
+	}
+	missing := hrCall{user: "bob", tool: "adjust_compensation", args: map[string]any{"employee_id": "EMP-001234", "Amount": 50000}}
+	wantReject(t, "missing amount", p.OnRequest(context.Background(), missing.pctx(t, idp)),
+		"cpex.routes_tool_adjust_compensation_pre_invocation_1_")
+	if n := idp.cibaCount(); n != 0 {
+		t.Fatalf("CIBA requests = %d, want 0", n)
+	}
+	wantContinue(t, "bob -5000", first(adjust(t, p, idp, -5000, "")))
+	wantPending(t, "bob -50000", first(adjust(t, p, idp, -50000, "")))
+	wantPending(t, "bob +10000.5", first(adjust(t, p, idp, 10000.5, "")))
+}
+
+// A tool with no route of its own, a differently cased name included,
+// is refused rather than passed with no policy.
+func TestHRDemoUnroutedToolDenied(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	for _, tool := range []string{"Adjust_Compensation", "delete_employee"} {
+		pctx := hrCall{user: "bob", tool: tool, args: adjustArgs(50000)}.pctx(t, idp)
+		wantReject(t, tool, p.OnRequest(context.Background(), pctx), "cpex.tool_unrouted")
+	}
+	for _, tool := range []string{"display_compensation", "get_directory"} {
+		pctx := hrCall{user: "alice", tool: tool, args: map[string]any{"employee_id": "EMP-001234"}}.pctx(t, idp)
+		wantContinue(t, tool, p.OnRequest(context.Background(), pctx))
+		anon := hrCall{user: "alice", tool: tool}.pctx(t, idp)
+		anon.Headers.Del("X-User-Token")
+		if a := p.OnRequest(context.Background(), anon); a.Type != pipeline.Reject {
+			t.Fatalf("%s without a user token: %v, want a reject", tool, a.Type)
+		}
+	}
+}
