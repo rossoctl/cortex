@@ -4,8 +4,8 @@ An LLM **agent** runs as a container exposing **A2A** (`message/send`),
 with an **authbridge-cpex sidecar enforcing CPEX/APL on the agent's
 outbound tool calls** to an MCP backend, on a Rossoctl kind cluster. CPEX
 is a transparent **egress guardrail on the agent**: identity, Cedar PDP,
-RFC 8693 delegation, redaction, a PII check, and session taint all
-fire when the agent calls a tool — not at a gateway in front of it.
+RFC 8693 delegation, redaction, a PII check, session taint, and
+identity assertions all fire when the agent calls a tool — not at a gateway in front of it.
 
 > **Architecture note.** Earlier revisions of this demo ran CPEX as a
 > standalone gateway *in front of* `hr-mcp` (enforcing on the inbound
@@ -119,6 +119,7 @@ non-zero when an expectation fails:
 07-bob-pii-deny.sh                   DENY      CEL PII check; recorded on the timeline
 08-bob-taint-deny.sh                 DENY      taint propagation (session touched secrets)
 09-cross-principal-taint-isolation.sh PASS     taint is subject-bound (same id, different user)
+12-assertions.sh                     PASS      engine identity headers reach the tool; spoof overwritten
 ```
 
 **Delegation on CPEX 0.3.0.** CPEX 0.3.0 performs the token exchange but
@@ -163,6 +164,15 @@ but bob reusing that exact id still sends mail (S3 → 200), because
 `H(bob:id) ≠ H(eve:id)`. This is why identity must resolve on the
 outbound path: the agent re-attaches `X-User-Token` so cpex derives the
 subject that scopes (and isolates) taint.
+
+**Identity assertions (scenario 12).** `global.assertions.request` in
+the policy renders engine-derived identity into headers the tool reads
+(`x-auth-user-id`, `x-auth-username`, `x-auth-roles`) and strips the
+user's raw `X-User-Token`. Each entry removes its header before setting
+it, so a caller sending `x-auth-user-id: root` still reaches hr-mcp as
+its real subject. The headers are unsigned; hr-mcp trusts them because
+nothing between the sidecar and it can set them. The scenario uses
+`send_email`, whose route does not delegate.
 
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same
 request, the same backend returns the same record, but Eve's response
@@ -256,7 +266,7 @@ Suggested conversation:
 
 ```text
 send an email to teammate@example.com saying the sync moved to Thursday
-  -> sent
+  -> sent; hr-mcp sees Bob's asserted identity, not his token
 
 look up the compensation for EMP-001234, include the SSN
   -> denied (cpex.delegation_unavailable) on CPEX 0.3.0; with the token
@@ -400,7 +410,7 @@ fresh pod that mounts the new policy.
 | `k8s/20-hr-mcp.yaml` | hr-mcp backend Service and Deployment |
 | `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: config, Service, Deployment |
 | `k8s/realm-export.json` | Keycloak realm: users, clients, mappers |
-| `k8s/cpex-policy.yaml` | CPEX policy: identity, PDPs, delegators, routes |
+| `k8s/cpex-policy.yaml` | CPEX policy: identity, PDPs, delegators, assertions, routes |
 | `hr-mcp-server/` | Vendored FastAPI MCP backend, built into `hr-mcp:dev` |
 | `agent/agent.py` | A2A server + litellm tool loop, built into `hr-cpex-agent:dev` |
 | `agent/chat.py` | Host-side A2A client (mints tokens, drives the demo) |

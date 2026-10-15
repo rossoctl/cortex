@@ -16,7 +16,8 @@
 #
 #   plugins:   2 identities (jwt-user, jwt-client)
 #              2 delegators (workday-oauth, github-oauth)
-#   global:    the Cedar and CEL decision points
+#   global:    the Cedar and CEL decision points, and the identity headers
+#              the engine asserts to the tool
 #
 # A plugin runs only where a route reaches it (`authentication:`,
 # `delegate(...)`), and every plugin that makes HTTP calls declares
@@ -148,6 +149,24 @@ global:
 
         // Anything else is denied by Cedar's default.
 
+  # What the engine tells the tool. Each entry removes its header from
+  # the request before setting it, so a caller's own x-auth-user-id never
+  # reaches hr-mcp. The values are unsigned: the tool trusts them only
+  # because nothing between the sidecar and it can set them.
+  assertions:
+    request:
+      headers:
+        - name: x-auth-user-id
+          from: subject.id
+        - name: x-auth-username
+          from: claim.preferred_username
+        - name: x-auth-roles
+          from: subject.roles
+          encode: csv
+      # The user's raw JWT has done its job once identity is resolved.
+      strip:
+        - x-user-token
+
 routes:
   # ════════════════════════════════════════════════════════════════
   # WORKDAY · scenarios 01, 02, 03 (and the taint in 08, 09)
@@ -195,9 +214,10 @@ routes:
         - "!(delegation.granted.permissions contains 'repo:read:internal'): deny"
 
   # ════════════════════════════════════════════════════════════════
-  # EMAIL · scenarios 07, 08, 09
+  # EMAIL · scenarios 07, 08, 09, 12
   # ════════════════════════════════════════════════════════════════
-  # No delegation, so an allowed email is forwarded.
+  # No delegation: the call is forwarded with the asserted identity
+  # headers (scenario 12).
   - tool: send_email
     authentication: [jwt-user, jwt-client]
     authorization:

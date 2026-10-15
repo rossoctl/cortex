@@ -392,6 +392,29 @@ func TestHRDemoSessionTaint(t *testing.T) {
 	wantContinue(t, "S3 bob, same id", p.OnRequest(ctx, email("bob", "shared")))
 }
 
+// Scenario 12: the forwarded request carries the engine's identity
+// headers, not the caller's raw token or a spoofed identity.
+func TestHRDemoAssertions(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	pctx := hrCall{user: "bob", tool: "send_email", args: emailArgs(cleanEmail),
+		extra: http.Header{"X-Auth-User-Id": {"root"}}}.pctx(t, idp)
+	wantContinue(t, "bob send_email", p.OnRequest(context.Background(), pctx))
+
+	want := map[string]string{"X-Auth-User-Id": "bob-id", "X-Auth-Username": "bob", "X-Auth-Roles": "hr"}
+	for k, v := range want {
+		if got := pctx.Headers.Values(k); len(got) != 1 || got[0] != v {
+			t.Errorf("%s = %v, want [%s]", k, got, v)
+		}
+	}
+	if v, ok := pctx.Headers["X-User-Token"]; ok {
+		t.Errorf("X-User-Token still forwarded: %v", v)
+	}
+	if !strings.HasPrefix(pctx.Headers.Get("Authorization"), "Bearer ") {
+		t.Errorf("Authorization = %q, want the client token kept", pctx.Headers.Get("Authorization"))
+	}
+}
+
 // Protocol traffic the agent sends besides tool calls is not refused.
 func TestHRDemoToolsListAllowed(t *testing.T) {
 	idp := newHRIdP(t)
