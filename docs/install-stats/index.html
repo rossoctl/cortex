@@ -293,22 +293,6 @@ function renderDaily(snapshots) {
   </p>`;
 }
 
-// Per-release view: which versions are actually being fetched. Sorted by
-// version, highest first, so a release can be found without scanning the whole
-// table.
-//
-// It was sorted by install count before, and that read as scrambled: the sort
-// key was the checksums figure, which this table does not display, so rows
-// ordered by one number appeared shuffled against the two that are shown
-// (alpha.3 above alpha.7 on the strength of a figure the page never prints).
-// Version order costs nothing -- the tags are unique, so there are no ties to
-// break -- and answers "where is v0.7.0" directly.
-//
-// CI is filled for the CURRENT release only. A run carries head_branch=main and no
-// tag, so what is known is that it installed whichever release was newest at the
-// time -- which is this one, for every run since it was published. Attributing runs
-// to an older release would need the boundary with its successor and a run history
-// reaching that far back, so those rows stay blank rather than truncated.
 // Release tags compare by version, not as strings: v0.10.0 must sort above
 // v0.9.0 and alpha.10 above alpha.9, neither of which a lexical compare gives.
 // (The current-release selection below has the same complaint about tag and
@@ -318,18 +302,19 @@ function renderDaily(snapshots) {
 // Semver precedence: strip a leading "v", compare the dotted core numerically,
 // then a pre-release suffix (-alpha.3, -rc.2) BELOW the plain version, its
 // identifiers numeric where numeric and lexical otherwise -- so alpha < rc and
-// rc.10 > rc.9. A tag that does not parse falls back to a string compare, so
-// an unexpected name still orders deterministically instead of failing to.
+// rc.10 > rc.9. A tag that does not parse sorts below every versioned one --
+// among themselves unparsed tags compare as strings -- so an unexpected
+// name still orders deterministically instead of failing to.
 function compareRelease(a, b) {
   const parse = (tag) => {
     // The dash is required to introduce a pre-release, so a malformed tag
-    // (anything the pattern does not match) falls to the string compare below
+    // (anything the pattern does not match) falls below every versioned tag
     // rather than being half-parsed into an ordering it does not mean.
     const m = /^v?(\d+(?:\.\d+)*)(?:-(.+))?$/.exec(tag);
     return m ? { core: m[1].split(".").map(Number), pre: m[2] && m[2].split(".") } : null;
   };
   const pa = parse(a), pb = parse(b);
-  if (!pa || !pb) return a < b ? -1 : a > b ? 1 : 0;
+  if (!pa || !pb) return pa ? 1 : pb ? -1 : a < b ? -1 : a > b ? 1 : 0;
   for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
     const d = (pa.core[i] || 0) - (pb.core[i] || 0);
     if (d) return d;
@@ -351,6 +336,23 @@ function compareRelease(a, b) {
   return 0;
 }
 
+// Per-release view: which versions are actually being fetched. Sorted by
+// version, highest first, so a release can be found without scanning the whole
+// table.
+//
+// It was sorted by install count before, and that read as scrambled: the sort
+// key was the checksums figure, which this table does not display, so rows
+// ordered by one number appeared shuffled against the two that are shown
+// (alpha.3 above alpha.7 on the strength of a figure the page never prints).
+// Version order costs nothing -- the tags are unique, so there are no ties to
+// break -- and answers "where is v0.7.0" directly.
+//
+// CI is filled for the CURRENT release only. A run carries head_branch=main and no
+// tag, so what is known is that it installed whichever release was newest at the
+// time -- which is this one, for every run since it was published. Attributing runs
+// to an older release would need the boundary with its successor and a run history
+// reaching that far back, so those rows stay blank rather than truncated.
+
 function renderReleases(snapshots) {
   const el = document.getElementById("releases");
   const sub = document.getElementById("by-release-sub");
@@ -361,7 +363,7 @@ function renderReleases(snapshots) {
 
   const latest = snapshots[snapshots.length - 1];
   sub.textContent = `Lifetime installs per release, as of ${latest.date}. `
-    + "Sorted by version, newest first. "
+    + "Sorted by version, highest first. "
     + "CI is subtracted on the current release's row only; every other row is "
     + "marked unadjusted.";
 
