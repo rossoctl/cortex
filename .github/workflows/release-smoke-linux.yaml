@@ -2,7 +2,8 @@
 #
 # Installs a just-published release exactly as a real user would (curl | sh,
 # downloading from GitHub Releases — there is no "install from a local build"
-# mode), then exercises the systemd install/upgrade/uninstall path for real.
+# mode), then exercises the systemd install/upgrade/uninstall path for real,
+# including a switch to the cpex build (`install.sh --cpex`) and back.
 #
 # Triggers on Release binaries finishing, not on the tag/main push directly:
 # that guarantees the release assets this pulls from already exist, rather
@@ -68,7 +69,9 @@ jobs:
           - arch: arm64
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 15
+    # Three more installs than before: the cpex switch, its no-op re-run, and the
+    # switch back.
+    timeout-minutes: 25
     steps:
       # Pinned to the release's own commit, so the script asserts on output
       # the binaries under test actually produce. The concrete risk this

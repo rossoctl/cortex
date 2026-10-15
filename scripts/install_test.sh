@@ -1076,7 +1076,16 @@ printf 'drew [%s]\n' "${CORTEX_INSTALLER_DREW-<unset>}" >>"${T_LOG}"
 if [ -t 0 ]; then echo 'stdin tty' >>"${T_LOG}"; else printf 'stdin [%s]\n' "$(cat)" >>"${T_LOG}"; fi
 EOF
 printf '#!/bin/sh\necho "cortex v9.9.9"\n' >"${TMP}/fake-cortex"
-chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex"
+printf '#!/bin/sh\necho "cortex (cpex) v9.9.9"\n' >"${TMP}/fake-cortex-cpex"
+chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex" "${TMP}/fake-cortex-cpex"
+# uname, for the runs that set T_UNAME ("<kernel> <machine>", as uname -s and -m print
+# them), so a platform this machine is not can be tested.
+mkdir -p "${TMP}/unamebin"
+cat >"${TMP}/unamebin/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in -m) echo "${T_UNAME#* }" ;; *) echo "${T_UNAME% *}" ;; esac
+EOF
+chmod +x "${TMP}/unamebin/uname"
 
 # curl serves ${T_REL}/<the URL's last segment>, and fails as `curl -f` does on a 404
 # when there is no such file. Every URL it is asked for goes to T_URLS, a HEAD (-I) as
@@ -1104,10 +1113,11 @@ T_REAL_SLEEP=$(command -v sleep)
 mkdir -p "${TMP}/tbin"
 cat >"${TMP}/tbin/curl" <<'EOF'
 #!/bin/sh
-_u=""; _o=""; _p=""; _head=""
+_u=""; _o=""; _p=""; _head=""; _w=""
 for _a in "$@"; do
 	case "${_a}" in http*) _u="${_a}" ;; -*I*) _head=1 ;; esac
 	[ "${_p}" != -o ] || _o="${_a}"
+	[ "${_p}" != -w ] || _w="${_a}"
 	_p="${_a}"
 done
 _n="${_u##*/}"
@@ -1170,6 +1180,11 @@ case "${T_CURL:-}:${_n}" in
 		printf 'finished %s\n' "${_n}" >>"${T_MEET}/log"
 		;;
 esac
+# -w '%{http_code}', which the bootstrap passes with no -f, prints the status instead.
+if [ "${_w}" = '%{http_code}' ]; then
+	if [ -f "${_f}" ]; then cat "${_f}" >"${_o}"; printf 200; else printf 404; fi
+	exit 0
+fi
 if [ ! -f "${_f}" ]; then
 	printf 'curl: (22) The requested URL returned error: 404\n' >&2 # as -S has it say
 	exit 22
@@ -1211,25 +1226,38 @@ t_sha256() { # file
 #   one    the cortex line missing
 #   three  agentop listed twice, as ./name and as a bare name
 #   bad    agentop's line carries the wrong hash
+#   cpex   a cortex-cpex archive too, listed beside the cortex one, as a release has it
+#   nocpex the cortex-cpex archive, but no line for it
+# The platform is T_OS/T_ARCH, or MR_OS/MR_ARCH when set.
 make_release() {
 	T_REL="${TMP}/rel-$1"
 	rm -rf "${T_REL}"
-	mkdir -p "${T_REL}/src"
+	mkdir -p "${T_REL}/src" "${T_REL}/src-cpex"
 	cp "${TMP}/fake-agentop" "${T_REL}/src/agentop"
 	cp "${TMP}/fake-cortex" "${T_REL}/src/cortex"
-	_mr_a="agentop_$1_${T_OS}_${T_ARCH}.tar.gz"
-	_mr_c="cortex_$1_${T_OS}_${T_ARCH}.tar.gz"
+	cp "${TMP}/fake-cortex-cpex" "${T_REL}/src-cpex/cortex"
+	_mr_p="${MR_OS:-${T_OS}}_${MR_ARCH:-${T_ARCH}}"
+	_mr_a="agentop_$1_${_mr_p}.tar.gz"
+	_mr_c="cortex_$1_${_mr_p}.tar.gz"
+	_mr_x="cortex-cpex_$1_${_mr_p}.tar.gz"
 	# COPYFILE_DISABLE: macOS tar would otherwise add AppleDouble ._ entries.
 	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_a}" agentop
 	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_c}" cortex
 	_mr_ha=$(t_sha256 "${T_REL}/${_mr_a}")
 	_mr_hc=$(t_sha256 "${T_REL}/${_mr_c}")
+	case "${2:-two}" in
+		cpex | nocpex)
+			COPYFILE_DISABLE=1 tar -C "${T_REL}/src-cpex" -czf "${T_REL}/${_mr_x}" cortex
+			_mr_hx=$(t_sha256 "${T_REL}/${_mr_x}")
+			;;
+	esac
 	# Every hex digit moved by one, so the bad hash differs in every position.
 	[ "${2:-two}" != bad ] || _mr_ha=$(printf '%s' "${_mr_ha}" | tr '0-9a-f' '1-9a-f0')
 	{
 		printf '%s  ./%s\n' "${_mr_ha}" "${_mr_a}"
 		[ "${2:-two}" = one ] || printf '%s  ./%s\n' "${_mr_hc}" "${_mr_c}"
 		[ "${2:-two}" != three ] || printf '%s  %s\n' "${_mr_ha}" "${_mr_a}"
+		[ "${2:-two}" != cpex ] || printf '%s  ./%s\n' "${_mr_hx}" "${_mr_x}"
 	} >"${T_REL}/checksums.txt"
 	printf '#!/usr/bin/env python3\nprint("dump")\n' >"${T_REL}/cortex-session-dump.py"
 	T_BYTES=$(($(wc -c <"${T_REL}/${_mr_a}") + $(wc -c <"${T_REL}/${_mr_c}")))
@@ -1258,6 +1286,8 @@ make_release() {
 #            the bootstrap may re-exec, from the sandbox, so no file named sh passes for $0
 #   T_ENV    NAME=VALUE words for install.sh's environment. NO_COLOR and
 #            CORTEX_INSTALLER_DREW are otherwise unset, so this shell's cannot decide a run.
+#   T_UNAME  the platform uname reports, "<kernel> <machine>" (e.g. "Linux x86_64")
+#   T_INSTALLED  a cortex already in ~/.local/bin before a release run: cpex or plain
 T_N=0
 T_CURL=""
 T_HEAD=""
@@ -1266,6 +1296,8 @@ T_BG=""
 T_PTY=""
 T_PIPE=""
 T_ENV=""
+T_UNAME=""
+T_INSTALLED=""
 # t_pty SCRIPT runs `sh SCRIPT` on a pseudo-terminal, with util-linux's script (CI's)
 # or the BSD one (macOS's). With neither, the run fails, and so do its checks.
 # t_pty_bg is the same in the background, with script's own pid in T_SPID.
@@ -1296,6 +1328,15 @@ run_install() {
 	: >"${T_RUN}/sleeps"
 	_ri_path="${TMP}/tbin:${PATH}"
 	[ -z "${T_SLEEP}" ] || _ri_path="${TMP}/sleepbin:${_ri_path}"
+	[ -z "${T_UNAME}" ] || _ri_path="${TMP}/unamebin:${_ri_path}"
+	case "${T_INSTALLED}" in
+		cpex | plain)
+			mkdir -p "${T_RUN}/home/.local/bin"
+			_ri_c="${TMP}/fake-cortex"
+			[ "${T_INSTALLED}" != cpex ] || _ri_c="${TMP}/fake-cortex-cpex"
+			cp "${_ri_c}" "${T_RUN}/home/.local/bin/cortex"
+			;;
+	esac
 	_ri_skip=""
 	case "${_ri_where}" in
 		repair)
@@ -1314,7 +1355,7 @@ run_install() {
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
 		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_OUT="${T_RUN}/out" T_MEET="${T_RUN}/meet" \
-		T_REAL_SLEEP="${T_REAL_SLEEP}" \
+		T_REAL_SLEEP="${T_REAL_SLEEP}" T_UNAME="${T_UNAME}" \
 		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
 		${T_ENV} sh "$@"
 	T_ST=0
@@ -1371,6 +1412,8 @@ run_install() {
 	T_PTY=""
 	T_PIPE=""
 	T_ENV=""
+	T_UNAME=""
+	T_INSTALLED=""
 }
 # t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
 t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lR  '; then echo yes; fi; }
@@ -1939,6 +1982,78 @@ status=0 url=https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/inst
 	"$(with_stub ok pipe --no-service '--ref=a b')"
 check_fails "authbridge/install.sh: a failed download exits non-zero" \
 	"$(with_stub fail pipe | sed -n 's/^status=\([0-9]*\) .*/\1/p')"
+
+# --- --cpex: the cortex-cpex tarball, only where it is published ---
+# Run as if on darwin/amd64, which has no cpex build: refused before anything is
+# resolved, fetched or staged.
+make_release v9.9.9
+T_UNAME="Darwin x86_64"
+run_install ok release --ref=v9.9.9 --cpex
+check "--cpex on darwin/amd64: dies naming the supported platforms" "1 yes" \
+	"${T_ST} $(t_in 'error: --cpex is not available for darwin/amd64 (supported: darwin/arm64, linux/amd64, linux/arm64)' err)"
+check "  fetching nothing and staging nothing" " 0" \
+	"$(cat "${T_RUN}/urls") $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ')"
+check "  and never running agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+
+# linux/amd64, from a release that lists both cortex_ and cortex-cpex_ archives.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 cpex
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9 --cpex
+check "--cpex on linux/amd64: hands off" "0 1" "${T_ST} $(t_nlog argv)"
+check "  downloading cortex-cpex's archive, not cortex's" "1 0" \
+	"$(grep -c '/cortex-cpex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true) $(grep -c '/cortex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true)"
+check "  staging the cpex build as cortex" "cortex (cpex) v9.9.9" "$("$(t_stage)/cortex" --version)"
+check "  verifying exactly agentop's and cortex-cpex's entries" \
+	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex-cpex_v9.9.9_linux_amd64.tar.gz" \
+	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"
+check "  and telling setup nothing new: the flags are frozen" "${T_NOFLAGS}" "$(t_argv)"
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9
+check "without --cpex, the same release: cortex's entry, not cortex-cpex's" \
+	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex_v9.9.9_linux_amd64.tar.gz" \
+	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"
+check "  staging the default build" "cortex v9.9.9" "$("$(t_stage)/cortex" --version)"
+# The archive is there but checksums.txt does not list it. cortex_'s line must not
+# stand in for it: the match is the whole name, not a prefix.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 nocpex
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9 --cpex
+check "--cpex with no cortex-cpex entry in checksums.txt dies" "1 yes" \
+	"${T_ST} $(t_in 'checksums.txt has no usable entry for cortex-cpex_v9.9.9_linux_amd64.tar.gz' err)"
+check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+
+# Leaving the cpex build is announced; staying on either build is not.
+_switch='Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it).'
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 cpex
+T_UNAME="Linux x86_64"
+T_INSTALLED=cpex
+run_install ok release --ref=v9.9.9
+check "cpex installed, re-run without --cpex: says so, and installs the default" "0 yes cortex v9.9.9" \
+	"${T_ST} $(t_in "${_switch}" out) $("$(t_stage)/cortex" --version)"
+T_UNAME="Linux x86_64"
+T_INSTALLED=cpex
+run_install ok release --ref=v9.9.9 --cpex
+check "cpex installed, re-run with --cpex: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
+T_UNAME="Linux x86_64"
+T_INSTALLED=plain
+run_install ok release --ref=v9.9.9
+check "default installed, re-run without --cpex: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
+
+# Piped, the bootstrap re-execs the released copy of this script with every argument
+# but --ref, so --cpex reaches it. The stub serves this one as that copy.
+cat >"${T_REL}/install.sh" <<'EOF'
+printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
+EOF
+T_PIPE=1
+run_install ok release --ref=v9.9.9 --cpex --yes
+check "piped: the released copy gets --cpex, and not --ref" "child [--cpex] [--yes]" \
+	"$(grep '^child' "${T_RUN}/out")"
+
+run_install ok release --bogus
+check "an unknown option's message lists --cpex" "1 yes" \
+	"${T_ST} $(t_in 'unknown option: --bogus (try --claude-code, --cpex,' err)"
+run_install ok release --help
+check "--help lists --cpex" "1" "$(grep -c '^  --cpex ' "${T_RUN}/out" || true)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]
