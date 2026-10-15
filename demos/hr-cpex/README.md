@@ -158,6 +158,14 @@ Keycloak's events, then the same fail-closed outcome as the other
 delegating routes. Without SPIRE it reports itself skipped and exits 0;
 `REQUIRE_SPIRE=1` makes that a failure. `make spire-undeploy` removes it.
 
+**Presenting it.** `make walkthrough` runs the same scenarios in acts,
+with a few lines before each on what to watch for, and ends with a
+pass/fail summary; `WALKTHROUGH_ARGS=--fast` drops the pauses and
+`--pace N` advances every N seconds. `make record` captures that run with
+asciinema (and a GIF when `agg` is installed). The recorded order lives
+in `demo/steps.md`; `make demo-check` fails when it, the walkthrough and
+`scenarios/` disagree.
+
 The scenarios are deterministic curl runs and skip the LLM entirely:
 each posts an MCP `tools/call` through the sidecar forward proxy
 (`curl -x http://localhost:8083 http://hr-mcp.cpex-demo:9100/mcp`),
@@ -469,6 +477,8 @@ fresh pod that mounts the new policy.
 | `agent/requirements-client.txt` | Client deps — installed on the host for `chat.py` |
 | `agent/Dockerfile` | Builds `hr-cpex-agent:dev` |
 | `scenarios/` | The curl scenarios run by `make scenarios` |
+| `walkthrough.sh` | Narrated run of every scenario (`make walkthrough`) |
+| `demo/` | Recorded step list, the recorder and its drift check (`make record`, `make demo-check`) |
 | `mint-token.sh` | Mints a persona JWT via Keycloak. Used by scenarios |
 | `verify-token-exchange.sh` | Checks RFC 8693 token exchange against the realm |
 

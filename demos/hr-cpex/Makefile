@@ -70,7 +70,7 @@ WITH_SPIRE ?= $(if $(shell $(KUBECTL) get namespace spire -o name 2>/dev/null),1
 SPIRE_AGENT_ID := spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent
 SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server
 
-.PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy
+.PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy walkthrough record demo-check
 
 .DEFAULT_GOAL := help
 
@@ -208,6 +208,19 @@ scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
 	@status=0; for s in $(CURDIR)/scenarios/[0-9][0-9]-*.sh; do \
 	  $(SCENARIO_ENV) "$$s" || status=1; \
 	done; exit $$status
+
+# `make walkthrough WALKTHROUGH_ARGS=--fast` skips the pauses.
+WALKTHROUGH_ARGS ?=
+
+walkthrough:  ## Narrated run of every scenario (WALKTHROUGH_ARGS=--fast for no pauses)
+	@$(SCENARIO_ENV) $(CURDIR)/walkthrough.sh $(WALKTHROUGH_ARGS)
+
+record:  ## Record the walkthrough with asciinema (demo/hr-cpex-demo.cast, .gif with agg)
+	@$(SCENARIO_ENV) python3 $(CURDIR)/demo/record_demo.py --record
+
+demo-check:  ## Check demo/steps.md and walkthrough.sh against scenarios/, and test the check
+	python3 $(CURDIR)/demo/record_demo.py --check
+	cd $(CURDIR)/demo && python3 -m unittest -q test_record_demo
 
 spire:  ## Add SPIRE (scenario 13): server, agent, the agent's SPIFFE ID, then redeploy
 	$(KUBECTL) apply -f k8s/spire/spire.yaml
