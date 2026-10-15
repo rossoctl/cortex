@@ -52,7 +52,7 @@ if delegation_available; then
   expect_upstream_no_header x-auth-user-id
 else
   # The workload identity resolved (the route has no other) and both
-  # legs ran; the minted token cannot be forwarded yet.
+  # legs ran; the sidecar does not forward the minted token.
   expect_delegation_pending "$exchanges"
 fi
 finish

@@ -21,8 +21,8 @@
 #                    mints a delegated token but does not hand it to
 #                    Cortex, so a call whose route delegates fails closed
 #                    with cpex.delegation_unavailable. `available` asserts
-#                    the full outcomes instead, for a sidecar that
-#                    forwards it.
+#                    the full outcomes instead, for a sidecar applied with
+#                    the same setting (delegated_credentials on).
 PROXY="${PROXY:-http://localhost:8083}"
 MCP_TARGET="${MCP_TARGET:-http://hr-mcp.cpex-demo:9100/mcp}"
 UPSTREAM="${UPSTREAM:-http://localhost:9100}"

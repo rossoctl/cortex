@@ -51,6 +51,10 @@ pipeline:
           # Keycloak is a cluster-private address, which CPEX's JWKS
           # fetches and token exchange refuse by default.
           private_destinations: true
+          # Forward the token delegate() mints in place of the caller's.
+          # `make apply CPEX_DELEGATION=available` turns it on; it needs
+          # CPEX 0.3.1 or later.
+          delegated_credentials: false
           # Bypass hosts default covers keycloak/SPIRE/observability so
           # those egress calls don't pay the FFI cost.
           #

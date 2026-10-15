@@ -139,9 +139,11 @@ failed closed and that nothing reached hr-mcp, and prints `forwarding:
 delegated token withheld`. The taint is written before the delegation
 check, so 08 and 09 keep their outcomes. Redaction is verified on the
 engine by the cpex-tagged test in `core/plugins/cpex` (`TestHRDemo*`).
-With a sidecar that forwards the token, `make scenarios
-CPEX_DELEGATION=available` asserts the full outcomes: 01 and 04 allowed
-with the minted token, 03 redacted at hr-mcp and in the reply.
+To forward the token, deploy with `make deploy CPEX_DELEGATION=available`
+(or `make apply` with it), which turns on the cpex plugin's
+`delegated_credentials`, and `make scenarios CPEX_DELEGATION=available`
+asserts the full outcomes: 01 and 04 allowed with the minted token, 03
+redacted at hr-mcp and in the reply.
 
 **Workload identity (scenario 13).** `make spire` adds SPIRE to the
 cluster (`k8s/spire/`), registers the sidecar of the agent's pod as

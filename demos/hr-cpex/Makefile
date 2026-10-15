@@ -70,6 +70,11 @@ WITH_SPIRE ?= $(if $(shell $(KUBECTL) get namespace spire -o name 2>/dev/null),1
 SPIRE_AGENT_ID := spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent
 SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server
 
+# `pending` (default) leaves the cpex plugin's delegated_credentials off,
+# so a call whose route delegates fails closed; see scenarios/_lib.sh.
+# `available` makes `apply` turn it on, and the scenarios expect that.
+CPEX_DELEGATION ?= pending
+
 .PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy walkthrough record demo-check
 
 .DEFAULT_GOAL := help
@@ -124,6 +129,7 @@ apply:  ## kubectl apply the manifests (assumes images already loaded)
 	# edits propagate without rewriting a manifest.
 	# The sidecar's runtime config, plus the spiffe: block with SPIRE.
 	cat k8s/authbridge.yaml $(if $(filter 1,$(WITH_SPIRE)),k8s/spire/authbridge-spiffe.yaml) \
+		$(if $(filter available,$(CPEX_DELEGATION)),| sed 's/delegated_credentials: false/delegated_credentials: true/') \
 		| $(KUBECTL) create configmap authbridge-config \
 		--namespace $(NAMESPACE) --from-file=authbridge.yaml=/dev/stdin \
 		--dry-run=client -o yaml | $(KUBECTL) apply -f -
@@ -188,10 +194,6 @@ port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + se
 	$(KUBECTL) -n $(NAMESPACE) port-forward svc/auth-channel 5001:5001 & \
 	$(if $(filter 1,$(WITH_SPIRE)),$(KUBECTL) -n spire port-forward svc/spire-oidc 8443:8443 &) \
 	wait
-
-# `pending` while CPEX cannot return a delegated token to Cortex; see
-# scenarios/_lib.sh.
-CPEX_DELEGATION ?= pending
 
 # The endpoints `make port-forward` exposes; each can be overridden from
 # the environment.
