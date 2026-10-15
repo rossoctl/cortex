@@ -1,14 +1,15 @@
-# AuthBridge CPEX-enabled sidecar image — cortex (HTTP
-# forward + reverse proxies) plus the `cpex` plugin which routes
-# hooks through the CPEX framework (APL DSL + named CPEX policy
-# plugins). Built with -tags cpex; links libcpex_ffi.a from a
-# pinned CPEX release.
+# AuthBridge CPEX-enabled sidecar image — cortex (HTTP forward + reverse
+# proxies) built with cgo and the `cpex` tag, so the `cpex` plugin can route
+# hooks through the CPEX framework (APL DSL + named CPEX policy plugins). Links
+# libcpex_ffi.a from a pinned CPEX release.
 #
-# Build context: . (repository root; needs core/ and cmd/cortex-cpex/)
+# Build context: . (repository root; needs core/, cmd/cortex/ and the pins in
+# cmd/cortex-cpex/)
 #
-# Why not just cortex: that image is pure-Go, CGO_ENABLED=0.
-# CPEX requires cgo. Operators switch images (not build flags) to
-# enable CPEX.
+# Why not just the authbridge image: that one is pure-Go, CGO_ENABLED=0, and
+# CPEX requires cgo. Operators switch images (not build flags) to enable CPEX.
+# The binary is cmd/cortex, the same main as the authbridge image; it is
+# installed as cortex-cpex so the entrypoint and container args are unchanged.
 
 # ---------- Stage 1: fetch libcpex_ffi.a from the pinned release ----
 # scripts/fetch-cpex-ffi.sh does the download and every check: the tarball's
@@ -36,7 +37,7 @@ COPY cmd/cortex-cpex/CPEX_FFI_VERSION cmd/cortex-cpex/CPEX_FFI_ABI cmd/cortex-cp
 RUN CPEX_FFI_TARGET="${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}" CPEX_FFI_DEST=/ffi \
     bash scripts/fetch-cpex-ffi.sh
 
-# ---------- Stage 2: build cortex-cpex with cgo + -tags cpex ----
+# ---------- Stage 2: build cmd/cortex with cgo + -tags cpex ----
 # golang:alpine (musl) so we link the musl CPEX FFI asset and run on the
 # small Alpine base. CGO needs a C compiler + musl headers (gcc, musl-dev).
 #
@@ -52,7 +53,7 @@ RUN apk add --no-cache git ca-certificates gcc musl-dev
 WORKDIR /app
 
 COPY core/ core/
-COPY cmd/cortex-cpex/ cmd/cortex-cpex/
+COPY cmd/cortex/ cmd/cortex/
 
 COPY --from=ffi /ffi/libcpex_ffi.a /libs/libcpex_ffi.a
 
@@ -67,16 +68,15 @@ ENV CGO_ENABLED=1
 # stacker::maybe_grow, so the FFI grows its own stack regardless of the host.
 ENV CGO_LDFLAGS="-L/libs -lcpex_ffi -lm"
 # Let Go auto-download the toolchain version go.mod requires. The pinned
-# base image carries 1.25.1; cpex bindings need 1.25.4 (and transitively
-# bump our cmd/cortex-cpex/go.mod). GOTOOLCHAIN=auto means "download
+# base image may lag the version cmd/cortex/go.mod asks for. GOTOOLCHAIN=auto means "download
 # the version go.mod asks for" — keeps the base image pin stable across
 # toolchain bumps.
 ENV GOTOOLCHAIN=auto
 # Plugins are all opt-in, so the plugin set has to be named explicitly: build
 # with GO_BUILD_TAGS from the `cpex` profile (scripts/profile-tags).
-# The `cpex` tag itself is separate and always required — it gates this binary's
-# own main package — so it is appended rather than left to the caller. Building
-# with `cpex` alone would produce a binary that registers no plugins.
+# The `cpex` tag itself is separate and always required — it selects the
+# FFI-backed cpex manager instead of a stub that refuses every config — so it
+# is appended rather than left to the caller.
 ARG GO_BUILD_TAGS=""
 # Required, not optional: `cpex` alone registers no plugins, which is never a
 # valid artifact. Fail here rather than shipping an image that crash-loops on the
@@ -87,7 +87,7 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       exit 1; }
 # -trimpath drops absolute build paths for reproducibility; -s -w drop the
 # Go symbol table + DWARF (panic traces still resolve via pclntab).
-RUN cd cmd/cortex-cpex && \
+RUN cd cmd/cortex && \
     go build -tags "cpex${GO_BUILD_TAGS:+,${GO_BUILD_TAGS}}" -trimpath -ldflags="-s -w" -o /cortex-cpex .
 
 # ---------- Stage 3: runtime ----------------------------------------

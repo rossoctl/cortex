@@ -62,8 +62,9 @@ Full reference: [`context-guru-plugin.md`](context-guru-plugin.md).
 Bridges AuthBridge hooks to the [CPEX](https://github.com/contextforge-org/cpex)
 framework (a policy enforcement runtime for AI agents): an APL DSL plus named
 CPEX policy plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA).
-Requires the separate `cortex-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`,
-links `libcpex_ffi.a` from the pinned CPEX 0.3.1 release). The CPEX policy
+Requires a cpex build of `cortex` — the `authbridge-cpex` image or `make
+cortex-cpex` (`-tags cpex`, `CGO_ENABLED=1`, links `libcpex_ffi.a` from the
+pinned CPEX 0.3.1 release). The CPEX policy
 uses 0.3's schema; a 0.2.x policy fails at boot. Full details in [cpex-plugin.md](./cpex-plugin.md);
 see also the plugin's [README](../core/plugins/cpex/README.md).
 

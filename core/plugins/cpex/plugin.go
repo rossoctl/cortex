@@ -23,10 +23,9 @@
 //
 // # Build tag
 //
-// The real CPEX backend uses cgo and links libcpex_ffi.a. The
-// cortex-cpex binary is the only build target that compiles
-// this package with -tags cpex; other binaries (cortex,
-// cortex-envoy, authbridge-lite) do not import this package.
+// The real CPEX backend uses cgo and links libcpex_ffi.a. Only cortex
+// built with -tags cpex (the authbridge-cpex image and `make
+// cortex-cpex`) links it; other builds do not import this package.
 //
 // The package itself compiles tag-free for unit tests: the Manager
 // interface (manager.go) is satisfied by FakeManager in tests, and

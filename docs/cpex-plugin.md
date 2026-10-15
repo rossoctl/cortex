@@ -1,8 +1,10 @@
 # cpex plugin
 
-> **`cortex-cpex` is a build variant** of the AuthBridge proxy-sidecar
-> (`cortex`), deployed *in place of* `cortex` when
-> CPEX policy enforcement is needed — not an additional sidecar.
+> **The `authbridge-cpex` image is a build variant** of the AuthBridge
+> proxy-sidecar — `cortex` built with cgo and `-tags cpex` — deployed *in
+> place of* the `authbridge` image when CPEX policy enforcement is needed, not
+> as an additional sidecar. `make cortex-cpex` builds the same variant for a
+> laptop.
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
 runtime inside AuthBridge so operators can drive policy with CPEX's
@@ -18,7 +20,7 @@ sub-plugins those hooks dispatch to.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ cortex-cpex (binary built with -tags cpex, links libcpex_ffi)│
+│ cortex (built with -tags cpex, links libcpex_ffi)                │
 │                                                                  │
 │  pipeline:                                                       │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
@@ -73,11 +75,11 @@ It is **not** the right home for:
 
 ### Build constraint
 
-The cpex plugin links `libcpex_ffi.a` via cgo. The `cortex-cpex`
-binary (`cmd/cortex-cpex/`) is the only build target that compiles
-the plugin — built with `-tags cpex` and `CGO_ENABLED=1`. Other
-binaries (`cortex`, `cortex-envoy`, `authbridge-lite`)
-stay pure-Go and never import the plugin.
+The cpex plugin links `libcpex_ffi.a` via cgo. Only `cortex` built with
+`-tags cpex`, `CGO_ENABLED=1` and a profile that carries the plugin compiles
+it: `cpex` for the `authbridge-cpex` image, `fullcpex` for `make cortex-cpex`.
+Every other build (the `authbridge`, `authbridge-lite` and `authbridge-envoy`
+images, the release tarballs) stays pure-Go and never imports the plugin.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
 is tag-free; only the cgo adapter that talks to `cpex.PolicyEngine`
@@ -500,8 +502,8 @@ need to route background results separately from foreground logs.
 
 - [`core/plugins/cpex/README.md`](../core/plugins/cpex/README.md) — the
   plugin's own reference: CMF mapping, APL examples, building and testing.
-- [`cmd/README.md`](../cmd/README.md) — the `cortex-cpex` binary and the
-  `authbridge-cpex` image it ships in.
+- [`cmd/README.md`](../cmd/README.md) — the cpex builds of `cortex` and the
+  `authbridge-cpex` image.
 - `cmd/cortex-cpex/CPEX_FFI_VERSION` — the CPEX release tag the FFI is
   pinned to. `CPEX_FFI_ABI` beside it holds the FFI ABI integer, and
   `CPEX_FFI_SHA256` the digest of each target's tarball;
