@@ -267,3 +267,69 @@ expect_secret_absent() {
 cpex_invocations() {
   session_json "$1" | jq -c '[.events[]? | .invocations.outbound[]? | select(.plugin == "cpex")]'
 }
+
+# --- credential custody (run.sh up --custody) -------------------------------
+
+SUPPORT_TOKEN_FILE="$STATE_DIR/support-token"
+
+# require_custody: skip the scenario unless custody is on.
+require_custody() {
+  if [ ! -f "$CUSTODY_MARK" ]; then
+    note "skipped: credential custody is off (./run.sh up --custody)"
+    exit 0
+  fi
+}
+
+# vault_logins: how many jwt logins Vault's audit log has recorded. CPEX
+# logs in as the developer once per credential it fetches.
+vault_logins() {
+  VAULT_ROOT_TOKEN=unused docker compose -f "$DEMO_DIR/docker-compose.yml" logs --no-log-prefix vault 2>/dev/null \
+    | jq -R 'fromjson? | select(.type == "request" and .request.path == "auth/jwt/login")' 2>/dev/null \
+    | jq -s length
+}
+
+# expect_vault_logins <before> <n>: n logins since before.
+expect_vault_logins() {
+  local after
+  after="$(vault_logins)"
+  if [ $((after - $1)) -eq "$2" ]; then
+    if [ "$2" = 0 ]; then pass_ "Vault was not consulted"; outcome_fact "Vault not consulted"
+    else pass_ "Vault was consulted ($2 login(s))"; outcome_fact "credential fetched from Vault"; fi
+  else
+    fail_ "expected $2 Vault login(s), got $((after - $1))"
+  fi
+}
+
+# expect_support_credential: every report the support service received
+# carried the Vault-held credential, and nothing else in Authorization.
+expect_support_credential() {
+  local want n bad
+  want="Bearer $(cat "$SUPPORT_TOKEN_FILE")"
+  n="$(support_requests | jq '[.requests[] | select(.path | startswith("/projects/"))] | length')"
+  bad="$(support_requests | jq --arg w "$want" '[.requests[] | select(.path | startswith("/projects/")) | select(.headers.authorization != $w)] | length')"
+  if [ "${n:-0}" -gt 0 ] && [ "$bad" = 0 ]; then
+    pass_ "the support service received the Vault credential on every report ($n)"
+    outcome_fact "support received the Vault credential"
+  else
+    fail_ "expected the Vault credential on every report: $bad of ${n:-0} without it"
+  fi
+}
+
+# expect_credential_contained <session>: the support credential is not in
+# what the agent was given or produced, the session timeline, or anything
+# under .state/ (cortex's log and state, the agent's runs) but its own file.
+expect_credential_contained() {
+  local tok file where=()
+  tok="$(cat "$SUPPORT_TOKEN_FILE")"
+  env | grep -qF "$tok" && where+=("the agent's environment")
+  grep -qF "$tok" "$AGENT_OUT" && where+=("the agent's commands and their output")
+  session_json "$1" | grep -qF "$tok" && where+=("the session timeline")
+  file="$(grep -rlF "$tok" "$STATE_DIR" --exclude=support-token 2>/dev/null | head -1 || true)"
+  [ -n "$file" ] && where+=("$file")
+  if [ "${#where[@]}" -eq 0 ]; then
+    pass_ "the credential never reached the agent, the timeline, cortex's logs or state"
+    outcome_fact "the agent never held it"
+  else
+    fail_ "the credential appears in: ${where[*]}"
+  fi
+}

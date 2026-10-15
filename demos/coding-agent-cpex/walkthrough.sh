@@ -136,6 +136,18 @@ say "06: the same report from a new session goes through: the taint belongs"
 say "    to the session that read the secret."
 run 06-fresh-session-allow.sh
 
+# Credential custody runs only under ./run.sh up --custody.
+if [ -f "$CUSTODY_MARK" ]; then
+  section "Credential custody"
+  say "07: the support service now requires a credential the agent does not"
+  say "    hold. Cortex reads it from Vault after the allow and attaches it."
+  run 07-custody-allow.sh
+
+  say "08: a refused report never reaches Vault; with Vault not answering, an"
+  say "    allowed report is refused rather than sent without the credential."
+  run 08-custody-no-credential-on-deny.sh
+fi
+
 section "The model's reply"
 say "09: in a tainted session the model proposes a curl carrying the key."
 say "    cpex refuses the reply, so the agent never runs it."

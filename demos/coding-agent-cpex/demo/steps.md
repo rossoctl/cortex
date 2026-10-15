@@ -14,7 +14,12 @@ caption, so add a scenario to all three.
 | 5 | Disclosure | `04-tainted-session-deny.sh` | reading `.env` taints the session; clean reports refused | The agent reads a .env file. After that, Cortex refuses everything the session sends. |
 | 6 | Disclosure | `05-wrong-project-deny.sh` | clean report to a project the developer is not on: 403 | The agent files a clean report with a project the developer isn't on. Cortex refuses it. |
 | 7 | Disclosure | `06-fresh-session-allow.sh` | taint is per session: a new session's report goes through | A new session that hasn't read the secret files the same report. It goes through. |
-| 8 | Model reply | `09-intent-deny.sh` | model reply proposing exfiltration refused, JSON and SSE | The model suggests posting the key online. Cortex blocks the reply. |
+| 8 | Custody | `07-custody-allow.sh` | the support credential comes from Vault, attached after the allow (`--custody`) | The support service now needs a credential the agent never holds. Cortex fetches it from Vault for the allowed report. |
+| 9 | Custody | `08-custody-no-credential-on-deny.sh` | a refused report never reaches Vault; Vault not answering denies (`--custody`) | A refused report never reaches Vault. If Vault doesn't answer, Cortex refuses the report rather than send it bare. |
+| 10 | Model reply | `09-intent-deny.sh` | model reply proposing exfiltration refused, JSON and SSE | The model suggests posting the key online. Cortex blocks the reply. |
+
+The Custody steps run only under `./run.sh up --custody`; without it they
+skip, and the captions number the other eight.
 
 The recording opens and closes on these:
 

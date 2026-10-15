@@ -11,7 +11,7 @@ proxy, where a policy decides on what each request carries.
 |---|---|---|---|
 | Permission rules | which commands and tools run | an allowed `curl` sends whatever it is given | a decision on the request itself |
 | Sandbox with a domain allowlist | an OS boundary; egress by hostname | an allowed host receives any content, for any resource | the same boundary, routed to a policy on body, path and session history |
-| Masked credentials (`mask`, `injectHosts`) | commands never hold the secret | the real value is injected on every request to those hosts, whatever it carries | credential custody gated on the decision (requires a CPEX build with host delegated credentials; not in this demo yet) |
+| Masked credentials (`mask`, `injectHosts`) | commands never hold the secret | the real value is injected on every request to those hosts, whatever it carries | credential custody gated on the decision: the credential is fetched only for a request the policy allowed (`--custody`) |
 | Secret scanners | secrets found in files and commits | nothing on the egress path; no notion of what the session has read | a content check at egress, and a session tainted once it reads a secret |
 | Hooks | a look at each tool call before it runs | they see the command string, not the bytes sent | decisions on the wire, and on the model's proposed tool calls |
 
@@ -53,6 +53,8 @@ Cortex. A mock support service takes bug reports for projects A and B.
 | 04 | agent reads `.env`, then sends a clean report, also with a spoofed `X-Session-Id` | the model turn goes through and taints the session; reports 403 `cpex.session_tainted_secret` |
 | 05 | clean report, project B | 403 `cpex.project_not_authorized`: the developer is on A only |
 | 06 | the clean report from a new session | 201: the taint is the session's, not the developer's |
+| 07 | with `--custody`: a clean report to project A, then the same with a made-up `Authorization` | 201 both times; the support service received the Vault-held credential, never seen by the agent, the timeline or cortex's logs |
+| 08 | with `--custody`: reports to project B and with a secret; then a clean report while Vault does not answer | 403 and Vault not consulted; then 403 `cpex.delegation_vault_timeout` |
 | 09 | after reading `.env`, the model proposes a `curl` pasting the key, as JSON and as an SSE stream; an untainted session's clean report | the model turn 403 `cpex.secret_in_tool_call`, so the agent runs nothing; the clean report 201 |
 
 Each scenario checks the agent's tool output, the Cortex session timeline
@@ -96,6 +98,16 @@ from the repo root, or `install.sh --cpex`).
 ./run.sh walkthrough          # the same, narrated; --fast for no pauses, --pace N to advance alone
 ./run.sh down
 ```
+
+`./run.sh up --custody` adds credential custody: Vault in dev mode
+([`docker-compose.yml`](docker-compose.yml), loopback only, root token in
+`.state/`), seeded with jwt auth for the developer key and the support
+credential at `agents/dev-alice/support`. The support service then refuses
+reports without it, and the policy's last `http_egress` step
+(`delegate(support-vault, ...)`) has CPEX fetch it, as the developer, only
+for a report every earlier step allowed; Cortex attaches it
+(`delegated_credentials`). It needs Docker and a Cortex built against CPEX 0.3.1 or later, which
+`make cortex-cpex` links; without `--custody`, scenarios 07 and 08 skip.
 
 `./run.sh check` checks that [`demo/steps.md`](demo/steps.md), the
 walkthrough and `scenarios/` list the same scenarios, and runs its test.
@@ -141,5 +153,5 @@ and never touches `~/.cortex` or an installed service on `:47600`.
   session timeline as part of the model call that carried it.
 - Taint lives in CPEX's in-process store and resets when Cortex restarts or
   reloads its config.
-- Credential custody is not in this demo: the mock accepts reports without
-  a credential.
+- Without `--custody` the support service accepts reports without a
+  credential.

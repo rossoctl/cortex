@@ -63,9 +63,17 @@ class CheckTest(unittest.TestCase):
         self.assertIn("demo/steps.md names 00-sandbox-boundary.sh more than once", problems)
 
     def test_every_step_has_a_caption(self):
-        caps = record_demo.captions()
+        caps = record_demo.captions(custody=False)
         self.assertEqual(sorted(caps), [s[:-3] for s in record_demo.scenarios(record_demo.DEMO_DIR)])
         self.assertTrue(caps["03-secret-in-report-deny"].startswith("4/8 · "))
+        self.assertTrue(caps["09-intent-deny"].startswith("8/8 · "))
+        self.assertNotIn("/", caps["07-custody-allow"].partition(" · ")[0])
+
+    def test_custody_steps_numbered_with_custody(self):
+        caps = record_demo.captions(custody=True)
+        self.assertTrue(caps["03-secret-in-report-deny"].startswith("4/10 · "))
+        self.assertTrue(caps["07-custody-allow"].startswith("8/10 · "))
+        self.assertTrue(caps["09-intent-deny"].startswith("10/10 · "))
 
     def test_missing_caption(self):
         text = (self.tmp / "demo" / "steps.md").read_text()

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run the coding-agent demo on this machine.
 #
-#   ./run.sh up [--claude-code]  start the demo cortex and the mock services
+#   ./run.sh up [--claude-code] [--custody]
+#                                start the demo cortex and the mock services
 #   ./run.sh scenarios           run every scenario (needs `up`)
 #   ./run.sh walkthrough [--fast|--pace N]  the narrated run (needs `up`)
 #   ./run.sh check               the walkthrough's drift guard and its test
@@ -9,7 +10,10 @@
 #   ./run.sh status
 #
 # --claude-code also lets the hosts a real Claude Code session needs
-# through; see claude-code/README.md.
+# through; see claude-code/README.md. --custody starts Vault
+# (docker-compose.yml) holding the support credential, which cortex attaches
+# only to reports the policy allows; it needs a cortex built against CPEX
+# 0.3.1 or later.
 #
 # Everything runs on 4770x and loopback, from its own config and state
 # directory (.state/). It never touches ~/.cortex or an installed cortex
@@ -188,22 +192,144 @@ PY
   info "generated the Claude Code config (.state/claude-code/)"
 }
 
+# --- credential custody ----------------------------------------------------
+
+compose() { VAULT_ROOT_TOKEN="$(cat "$STATE_DIR/vault-root-token")" docker compose -f "$DIR/docker-compose.yml" "$@"; }
+
+# vault <method> <path>: a root-token call, body on stdin.
+vault() {
+  curl -fsS -X "$1" -H "X-Vault-Token: $(cat "$STATE_DIR/vault-root-token")" \
+    -H 'content-type: application/json' --data-binary @- "$VAULT_ADDR/v1/$2"
+}
+
+# Vault's jwt auth trusts the developer key, and a developer's token reads
+# only agents/<its sub>/*. The support credential is filed under dev-alice.
+# Requests are audited to the container's stdout, which the scenarios count.
+seed_vault() {
+  local accessor
+  curl -fsS -H "X-Vault-Token: $(cat "$STATE_DIR/vault-root-token")" "$VAULT_ADDR/v1/sys/auth" \
+    | jq -e '.data["jwt/"]' >/dev/null || echo '{"type":"jwt"}' | vault POST sys/auth/jwt >/dev/null
+  jq -n --rawfile k "$IDENTITY_DIR/developer.pub.pem" \
+    '{jwt_validation_pubkeys: [$k], bound_issuer: "https://idp.coding-agent-demo.invalid"}' \
+    | vault POST auth/jwt/config >/dev/null
+  accessor="$(curl -fsS -H "X-Vault-Token: $(cat "$STATE_DIR/vault-root-token")" "$VAULT_ADDR/v1/sys/auth" \
+    | jq -er '.data["jwt/"].accessor')"
+  printf 'path "secret/data/agents/{{identity.entity.aliases.%s.name}}/*" {\n  capabilities = ["read"]\n}\n' "$accessor" \
+    | jq -Rs '{policy: .}' | vault PUT sys/policies/acl/support-reader >/dev/null
+  jq -n '{role_type: "jwt", user_claim: "sub", bound_audiences: ["cortex-coding-agent-demo"],
+          token_policies: ["support-reader"], token_ttl: "5m", token_max_ttl: "5m"}' \
+    | vault POST auth/jwt/role/developer >/dev/null
+  jq -n --rawfile t "$STATE_DIR/support-token" '{data: {token: ($t | rtrimstr("\n"))}}' \
+    | vault PUT secret/data/agents/dev-alice/support >/dev/null
+  curl -fsS -H "X-Vault-Token: $(cat "$STATE_DIR/vault-root-token")" "$VAULT_ADDR/v1/sys/audit" \
+    | jq -e '.data["stdout/"]' >/dev/null \
+    || echo '{"type":"file","options":{"file_path":"stdout"}}' | vault PUT sys/audit/stdout >/dev/null
+  info "seeded Vault: jwt auth for the developer key, the support credential for dev-alice"
+}
+
+start_vault() {
+  command -v docker >/dev/null || die "docker is required for --custody"
+  [ -f "$STATE_DIR/vault-root-token" ] || (umask 077; openssl rand -hex 24 >"$STATE_DIR/vault-root-token")
+  compose up -d --quiet-pull >/dev/null 2>&1 || compose up -d
+  wait_for "Vault" "$VAULT_ADDR/v1/sys/health"
+  seed_vault
+}
+
+# The config with custody on, generated from the one up would use.
+gen_custody_config() {
+  local src="$1" out="$STATE_DIR/custody"
+  mkdir -p "$out"
+  python3 - "$src" "$out" "$VAULT_ADDR" <<'PY'
+import re, sys
+from pathlib import Path
+src, out, vault_addr = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+
+def sub(text, old, new, name):
+    if text.count(old) != 1:
+        sys.exit(f"run.sh: expected one {old!r} in {name}; update gen_custody_config")
+    return text.replace(old, new)
+
+cfg = (src / "cortex.yaml").read_text()
+cfg, n = re.subn(r'config_file: "[^"]*cpex-policy\.yaml"', 'config_file: "${DEMO_STATE}/custody/cpex-policy.yaml"', cfg)
+if n != 1:
+    sys.exit("run.sh: expected one cpex config_file in cortex.yaml; update gen_custody_config")
+cfg = sub(cfg, "          fail_open: false\n", """          fail_open: false
+          # Custody: Vault is on loopback, and the credential CPEX fetches
+          # from it is forwarded on the request the policy allowed.
+          private_destinations: true
+          delegated_credentials: true
+""", "cortex.yaml")
+(out / "cortex.yaml").write_text(cfg)
+
+policy = (src / "cpex-policy.yaml").read_text()
+policy = sub(policy, "      claim_mapper: standard\n", f"""      claim_mapper: standard
+
+  # The support credential, read from Vault as the developer (jwt auth with
+  # the token Cortex asserts), at agents/<sub>/support.
+  - name: support-vault
+    kind: delegator/vault
+    hooks: [token.delegate]
+    on_error: fail
+    capabilities: [perform_http, read_inbound_credentials, read_subject, read_claims, write_delegated_tokens]
+    config:
+      vault_addr: "{vault_addr}"
+      insecure_http: true
+      kv_mount: secret
+      secret_path_template: "agents/{{{{identity}}}}/support"
+      secret_field: token
+      outbound_header: Authorization
+      scheme_prefix: "Bearer "
+      timeout_seconds: 3
+      auth:
+        user:
+          method: jwt
+          identity_claim: sub
+          mount: jwt
+          role: developer
+""", "cpex-policy.yaml")
+# The route may close on the policy slide's end marker.
+policy = re.sub(r"\n[ ]*# end-slide\s*$", "", policy.rstrip()) + "\n"
+if not policy.rstrip().endswith("on_deny: [\"deny('project not authorized', 'project_not_authorized')\"]"):
+    sys.exit("run.sh: the http_egress route no longer ends the policy; update gen_custody_config")
+policy = policy.rstrip("\n") + """
+        # Only a report every step above allowed gets the credential, so a
+        # denied one never reaches Vault.
+        - when: "args.method != 'CONNECT' & args.host == 'support.localtest.me'"
+          do:
+            - "delegate(support-vault, target: support, audience: support.localtest.me, subject: user)"
+"""
+(out / "cpex-policy.yaml").write_text(policy)
+PY
+  info "generated the custody config (.state/custody/)"
+}
+
 # --- commands --------------------------------------------------------------
 
 service_pid() { listener 47600; }
 
 up() {
-  local bin before config="$DIR/config/cortex.yaml"
+  local bin before config="$DIR/config/cortex.yaml" claude_code=0 custody=0 opt
+  for opt in "$@"; do
+    case "$opt" in
+      --claude-code) claude_code=1 ;;
+      --custody) custody=1 ;;
+      *) die "unknown option to up: $opt" ;;
+    esac
+  done
   check_tools
   bin="$(find_cortex)"
   before="$(service_pid)"
   check_ports
   prepare_state
-  if [ "${1:-}" = "--claude-code" ]; then
+  if [ "$claude_code" = 1 ]; then
     gen_claude_code_config
     config="$STATE_DIR/claude-code/cortex.yaml"
-  elif [ -n "${1:-}" ]; then
-    die "unknown option to up: $1"
+  fi
+  rm -f "$CUSTODY_MARK"
+  if [ "$custody" = 1 ]; then
+    gen_custody_config "$(dirname "$config")"
+    config="$STATE_DIR/custody/cortex.yaml"
+    start_vault
   fi
   info "cortex: $bin ($("$bin" --version))"
 
@@ -218,6 +344,12 @@ up() {
   wait_for "the mock LLM" "$LLM_URL/_requests" --cacert "$MOCK_CA"
   wait_for "the mock support service" "$SUPPORT_URL/_requests" --cacert "$MOCK_CA"
   wait_for "cortex" "$HEALTH_URL/readyz"
+  if [ "$custody" = 1 ]; then
+    # The support service now refuses a report without the credential.
+    curl -fsS --cacert "$MOCK_CA" -X POST -d '{"credential_required": true}' "$SUPPORT_URL/_config" >/dev/null
+    touch "$CUSTODY_MARK"
+    info "custody on: Vault at $VAULT_ADDR, the support service requires the credential"
+  fi
   curl -fsS "$SESSION_API/v1/plugins" | jq -e '.plugins[] | select(.name == "cpex")' >/dev/null \
     || die "cortex is up but does not list the cpex plugin"
   info "cortex ready: forward proxy $DEMO_PROXY, session API $SESSION_API"
@@ -235,6 +367,11 @@ down() {
     fi
     rm -f "$PIDS/$name.pid"
   done
+  rm -f "$CUSTODY_MARK"
+  if [ -f "$STATE_DIR/vault-root-token" ] && command -v docker >/dev/null \
+    && [ -n "$(compose ps -q 2>/dev/null)" ]; then
+    compose down >/dev/null 2>&1 && info "stopped Vault"
+  fi
   [ "$(service_pid)" = "$before" ] || die "the process on :47600 changed while stopping the demo"
 }
 
@@ -243,6 +380,7 @@ status() {
   for name in cortex mock-llm mock-support; do
     if alive "$name"; then info "$name running (pid $(pid_of "$name"))"; else info "$name stopped"; fi
   done
+  if [ -f "$CUSTODY_MARK" ]; then info "custody on (Vault at $VAULT_ADDR)"; fi
 }
 
 scenarios() {
@@ -270,5 +408,5 @@ case "${1:-}" in
   down) down ;;
   status) status ;;
   scenarios) scenarios ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

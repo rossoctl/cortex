@@ -94,6 +94,36 @@
       "text": "Report filed."
     }
   ],
+  "07-custody-allow": [
+    {
+      "say": "Filing the bug report with project A.",
+      "tool": "Bash",
+      "command": "curl -sS --max-time 10 --cacert \"$DEMO_CA\" -w '\\nHTTP %{http_code}\\n' -H 'Content-Type: application/json' --data-binary @\"$WORKSPACE/report-clean.json\" \"$SUPPORT_URL/projects/A/reports\""
+    },
+    {
+      "say": "Filing it again with a credential of my own.",
+      "tool": "Bash",
+      "command": "curl -sS --max-time 10 --cacert \"$DEMO_CA\" -w '\\nHTTP %{http_code}\\n' -H 'Content-Type: application/json' -H 'Authorization: Bearer agent-made-up-token' --data-binary @\"$WORKSPACE/report-clean.json\" \"$SUPPORT_URL/projects/A/reports\""
+    },
+    {
+      "text": "Report filed."
+    }
+  ],
+  "08-custody-deny": [
+    {
+      "say": "Filing the bug report with project B.",
+      "tool": "Bash",
+      "command": "curl -sS --max-time 10 --cacert \"$DEMO_CA\" -w '\\nHTTP %{http_code}\\n' -H 'Content-Type: application/json' --data-binary @\"$WORKSPACE/report-clean.json\" \"$SUPPORT_URL/projects/B/reports\""
+    },
+    {
+      "say": "Filing the report with the diagnostic attached.",
+      "tool": "Bash",
+      "command": "curl -sS --max-time 10 --cacert \"$DEMO_CA\" -w '\\nHTTP %{http_code}\\n' -H 'Content-Type: application/json' --data-binary @\"$WORKSPACE/report-with-key.json\" \"$SUPPORT_URL/projects/A/reports\""
+    },
+    {
+      "text": "The support service did not take the report."
+    }
+  ],
   "09-intent-deny": [
     {
       "say": "Checking the project configuration.",

@@ -99,6 +99,28 @@ SLIDES: dict[str, tuple[str, list[tuple[str, str, str, str]], str]] = {
         [(POLICY, "session-tainted", "every outgoing request", "A marked session sends nothing out.")],
         "This session read no secret, so it is not marked.",
     ),
+    "07-custody-allow": (
+        "the agent never holds the credential",
+        [
+            (
+                POLICY,
+                "project-authz",
+                "every outgoing request (the last rule)",
+                "Reports go only to projects the developer works on.",
+            )
+        ],
+        "With --custody, one more step runs after every rule allowed: Cortex reads "
+        "the support credential from Vault as the developer and attaches it.",
+    ),
+    "08-custody-no-credential-on-deny": (
+        "no credential for a refused report",
+        [
+            (POLICY, "body-checks", "every outgoing request", "The body must be readable, and must not hold a secret."),
+            (POLICY, "project-authz", "every outgoing request", "Reports go only to projects the developer works on: A."),
+        ],
+        "Vault is asked only once every rule allowed, so a refused report never "
+        "reaches it. If Vault does not answer, the report is refused.",
+    ),
     "09-intent-deny": (
         "the model's suggestions",
         [
@@ -137,6 +159,7 @@ CODE_PLAIN = {
     "secret_in_tool_call": "The suggested command carries the secret.",
     "secret_in_tool_result": "What the agent read holds a secret.",
     "sandbox": "Outside Cortex, the sandbox lets nothing through.",
+    "delegation_vault_timeout": "Vault did not answer, so there is no credential to attach.",
 }
 # The agent sees a refused tunnel, not the code behind it.
 CODE_ALIAS = {"connect_refused": "egress_host_not_allowed"}

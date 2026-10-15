@@ -25,7 +25,9 @@ DEMO_DIR = Path(__file__).resolve().parent.parent
 
 SCENARIO = re.compile(r"\d\d-[A-Za-z0-9-]+\.sh")
 # A steps.md table row's scenario cell: | n | part | `NN-name.sh` | ... |
-STEP_ROW = re.compile(r"^\|\s*\d+\s*\|[^|]*\|\s*`(" + SCENARIO.pattern + r")`\s*\|")
+STEP_ROW = re.compile(r"^\|\s*\d+\s*\|([^|]*)\|\s*`(" + SCENARIO.pattern + r")`\s*\|")
+# The part whose steps run only under `./run.sh up --custody`.
+CUSTODY_PART = "Custody"
 # The same row's last two cells: | ... | shows | caption |
 CAPTION_CELL = re.compile(r"\|[^|]*\|([^|]*)\|\s*$")
 # The title and closing cards: `Title: ...`, `Closing: ...` on their own line.
@@ -43,19 +45,34 @@ def scenarios(demo_dir: Path) -> list[str]:
 
 def steps(demo_dir: Path) -> list[str]:
     text = (demo_dir / "demo" / "steps.md").read_text()
-    return [m.group(1) for line in text.splitlines() if (m := STEP_ROW.match(line))]
+    return [m.group(2) for line in text.splitlines() if (m := STEP_ROW.match(line))]
 
 
-def captions(demo_dir: Path = DEMO_DIR) -> dict[str, str]:
+def custody_on(demo_dir: Path = DEMO_DIR) -> bool:
+    """Whether `./run.sh up --custody` is in effect (env.sh's CUSTODY_MARK)."""
+    return Path(os.environ.get("CUSTODY_MARK", demo_dir / ".state" / "custody" / "enabled")).exists()
+
+
+def captions(demo_dir: Path = DEMO_DIR, custody: bool | None = None) -> dict[str, str]:
     """scenario name (no .sh) -> its caption, numbered `n/N · ` in step order.
-    A row without a caption maps to ""."""
+    A row without a caption maps to "". Custody steps are numbered only when
+    custody is on (default: whether it is now); otherwise they keep their
+    caption unnumbered, since the walkthrough does not run them."""
+    if custody is None:
+        custody = custody_on(demo_dir)
     text = (demo_dir / "demo" / "steps.md").read_text()
     rows = []
     for line in text.splitlines():
         if m := STEP_ROW.match(line):
             c = CAPTION_CELL.search(line[m.end() - 1 :])
-            rows.append((m.group(1)[:-3], c.group(1).strip() if c else ""))
-    return {name: (f"{i}/{len(rows)} · {cap}" if cap else "") for i, (name, cap) in enumerate(rows, 1)}
+            counted = custody or m.group(1).strip() != CUSTODY_PART
+            rows.append((m.group(2)[:-3], c.group(1).strip() if c else "", counted))
+    total = sum(counted for _, _, counted in rows)
+    out, i = {}, 0
+    for name, cap, counted in rows:
+        i += counted
+        out[name] = f"{i}/{total} · {cap}" if cap and counted else cap
+    return out
 
 
 def cards(demo_dir: Path = DEMO_DIR) -> dict[str, str]:
@@ -66,7 +83,8 @@ def cards(demo_dir: Path = DEMO_DIR) -> dict[str, str]:
 
 def check_captions(demo_dir: Path) -> list[str]:
     problems = []
-    for name, cap in captions(demo_dir).items():
+    # With custody on every step is numbered, so the captions are longest.
+    for name, cap in captions(demo_dir, custody=True).items():
         if not cap:
             problems.append(f"demo/steps.md has no caption for {name}.sh")
         elif len(cap) > CAPTION_MAX:
