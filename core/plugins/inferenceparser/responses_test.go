@@ -499,6 +499,18 @@ func TestInferenceParser_ResponsesAPI_StreamToolCallShapes(t *testing.T) {
 			`{"type":"response.incomplete","response":{"status":"incomplete"}}`,
 		}, "const r = await"},
 		{"added only, stream cut", []string{added}, ""},
+		{"done only, no added", []string{
+			`{"type":"response.output_item.done","output_index":0,"item":{"id":"ctc_1","type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await"}}`,
+		}, "const r = await"},
+		{"added repeated after deltas, stream cut", []string{
+			added,
+			`{"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"const r = await"}`,
+			added,
+		}, "const r = await"},
+		{"added twice, no ids, same call_id", []string{
+			`{"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`,
+			`{"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`,
+		}, ""},
 		{"no id or index on either event", []string{
 			`{"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":""}}`,
 			`{"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"const r = await"}}`,

@@ -450,13 +450,18 @@ type responsesCallState struct {
 // still matches. An event carrying neither is matched to the oldest call that has no
 // done yet, which is right for calls that arrive one at a time.
 func (s *inferenceStreamState) responsesCall(ev *responsesStreamEvent) *responsesCallState {
-	id := ev.ItemID
-	if ev.Item != nil && ev.Item.ID != "" {
-		id = ev.Item.ID
+	id, callID := ev.ItemID, ""
+	if ev.Item != nil {
+		callID = ev.Item.CallID
+		if ev.Item.ID != "" {
+			id = ev.Item.ID
+		}
 	}
 	for _, c := range s.responsesToolCalls {
 		switch {
 		case id != "" && c.itemID == id, ev.OutputIndex != nil && c.index != nil && *c.index == *ev.OutputIndex:
+			return c
+		case callID != "" && c.id == callID:
 			return c
 		case id == "" && ev.OutputIndex == nil && c.itemID == "" && c.index == nil && !c.done:
 			return c
@@ -554,7 +559,7 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 			return
 		}
 		call := state.responsesCall(&ev)
-		if call == nil || ev.Type == "response.output_item.added" && call.itemID == "" && call.index == nil {
+		if call == nil || ev.Type == "response.output_item.added" && call.itemID == "" && call.index == nil && ev.Item.CallID == "" {
 			call = &responsesCallState{itemID: ev.Item.ID, index: ev.OutputIndex}
 			state.responsesToolCalls = append(state.responsesToolCalls, call)
 		}
@@ -565,10 +570,14 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		if call.index == nil {
 			call.index = ev.OutputIndex
 		}
-		// A done item restates the whole call, so it replaces what the deltas built.
 		call.id, call.name = ev.Item.CallID, ev.Item.Name
-		call.args.Reset()
-		call.args.WriteString(args)
+		// Only a done restates the whole call, so only it replaces what the deltas built.
+		if call.done {
+			call.args.Reset()
+			call.args.WriteString(args)
+		} else if call.args.Len() == 0 {
+			call.args.WriteString(args)
+		}
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		if ev.Delta == nil {
 			return
