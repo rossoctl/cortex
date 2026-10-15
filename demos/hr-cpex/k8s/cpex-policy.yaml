@@ -14,7 +14,7 @@
 # spelling out its authentication and ordered authorization steps. Read
 # those first. Everything above them is the toolbox the routes pull from:
 #
-#   plugins:   2 identities (jwt-user, jwt-client)
+#   plugins:   3 identities (jwt-user, jwt-client, jwt-workload)
 #              2 delegators (workday-oauth, github-oauth)
 #              1 approval channel (manager-approver)
 #   global:    the Cedar and CEL decision points, and the identity headers
@@ -72,6 +72,31 @@ plugins:
             kind: jwks_url
             url: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/certs"
             insecure_http: true
+          leeway_seconds: 60
+      claim_mapper: standard
+
+  # Workload identity. The agent's own SPIFFE JWT-SVID, which the
+  # sidecar fetches from SPIRE and presents on X-Workload-Token (the cpex
+  # plugin's `workload:` setting). Only get_headcount names it. Without
+  # the SPIRE overlay the key fetch fails and only that route denies.
+  # SPIRE signs with ES256, and the SVID's audience is the realm issuer
+  # because Keycloak takes it as a client assertion.
+  - name: jwt-workload
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    on_error: fail
+    config:
+      role: caller_workload
+      header: X-Workload-Token
+      trusted_issuers:
+        - issuer: "http://spire-oidc.spire:8443"
+          audiences: ["http://keycloak.cpex-demo:8080/realms/cpex-demo"]
+          algorithms: ["ES256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://spire-oidc.spire:8443/keys"
+            insecure_http: true   # in-cluster SPIRE, no TLS
           leeway_seconds: 60
       claim_mapper: standard
 
@@ -279,6 +304,34 @@ routes:
         - when: "args.amount > 10000 | args.amount < -10000"
           do:
             - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000 & args.amount >= -25000\", purpose: \"Approve a compensation adjustment\", timeout: 5m)"
+
+  # ════════════════════════════════════════════════════════════════
+  # HEADCOUNT · scenario 13
+  # ════════════════════════════════════════════════════════════════
+  # The agent acts as itself, with no person behind the call. The route
+  # authenticates by the agent's SVID alone (replace_inherited drops the
+  # user and client resolvers). `subject: caller_workload` makes the
+  # delegator run two legs: the SVID as an RFC 7523 client assertion
+  # authenticates the agent's Keycloak client (hr-copilot-agent), and an
+  # RFC 8693 exchange scopes that token to workday-api. The agent holds
+  # no standing workday-api entitlement.
+  #
+  # The global assertions describe a person, so this route replaces them
+  # and strips the identity headers a caller could send instead.
+  - tool: get_headcount
+    authentication:
+      replace_inherited: true
+      steps: [jwt-workload]
+    assertions:
+      request:
+        replace_inherited: true
+        strip:
+          - x-user-token
+          - x-auth-*
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation], subject: caller_workload)"
+        - "!delegation.granted: deny"
 
   # ════════════════════════════════════════════════════════════════
   # READ-ONLY LOOKUPS

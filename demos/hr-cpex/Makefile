@@ -4,6 +4,7 @@
 #
 #   make deploy        # build images, load into kind, kubectl apply
 #   make port-forward  # Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100) + approvals (5001)
+#   make spire         # optional: SPIRE, for the workload scenario (13)
 #   make scenarios     # run the demo curl scenarios (through the forward proxy)
 #   make logs          # tail the authbridge-cpex sidecar logs
 #   make undeploy      # delete the cpex-demo namespace
@@ -62,7 +63,14 @@ LLM_API_BASE ?= http://host.docker.internal:11434
 # occasionally editorializes/redacts fields in its prose.
 MODEL        ?= ollama/llama3:latest
 
-.PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check
+# SPIRE (the workload scenario). Detected from the spire namespace, so a
+# plain `make apply` keeps a cluster `make spire` set up; WITH_SPIRE=0
+# overrides.
+WITH_SPIRE ?= $(if $(shell $(KUBECTL) get namespace spire -o name 2>/dev/null),1,0)
+SPIRE_AGENT_ID := spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent
+SPIRE_SERVER   := $(KUBECTL) -n spire exec spire-server-0 -c spire-server -- /opt/spire/bin/spire-server
+
+.PHONY: help build-images load-images apply deploy port-forward scenarios logs undeploy preflight ollama-check spire spire-undeploy
 
 .DEFAULT_GOAL := help
 
@@ -114,6 +122,11 @@ apply:  ## kubectl apply the manifests (assumes images already loaded)
 		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 	# Same dynamic ConfigMap shape for cpex-policy.yaml so YAML
 	# edits propagate without rewriting a manifest.
+	# The sidecar's runtime config, plus the spiffe: block with SPIRE.
+	cat k8s/authbridge.yaml $(if $(filter 1,$(WITH_SPIRE)),k8s/spire/authbridge-spiffe.yaml) \
+		| $(KUBECTL) create configmap authbridge-config \
+		--namespace $(NAMESPACE) --from-file=authbridge.yaml=/dev/stdin \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create configmap cpex-policy \
 		--namespace $(NAMESPACE) \
 		--from-file=cpex.yaml=k8s/cpex-policy.yaml \
@@ -121,6 +134,7 @@ apply:  ## kubectl apply the manifests (assumes images already loaded)
 	$(KUBECTL) apply -f k8s/10-keycloak.yaml
 	$(KUBECTL) apply -f k8s/20-hr-mcp.yaml
 	$(KUBECTL) apply -f k8s/30-agent.yaml
+	$(if $(filter 1,$(WITH_SPIRE)),$(KUBECTL) -n $(NAMESPACE) patch deployment hr-cpex-agent --patch-file k8s/spire/agent-patch.yaml)
 	$(KUBECTL) apply -f k8s/40-auth-channel.yaml
 	# Inject the env-specific LLM wiring. Idempotent: when these match the
 	# manifest defaults (Docker Desktop case) kubectl reports no change and
@@ -172,22 +186,56 @@ port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + se
 	$(KUBECTL) -n $(NAMESPACE) port-forward deploy/hr-cpex-agent 8083:8081 9094:9094 & \
 	$(KUBECTL) -n $(NAMESPACE) port-forward svc/hr-mcp 9100:9100 & \
 	$(KUBECTL) -n $(NAMESPACE) port-forward svc/auth-channel 5001:5001 & \
+	$(if $(filter 1,$(WITH_SPIRE)),$(KUBECTL) -n spire port-forward svc/spire-oidc 8443:8443 &) \
 	wait
 
 # `pending` while CPEX cannot return a delegated token to Cortex; see
 # scenarios/_lib.sh.
 CPEX_DELEGATION ?= pending
 
+# The endpoints `make port-forward` exposes; each can be overridden from
+# the environment.
+SCENARIO_ENV = \
+	PROXY=$${PROXY:-http://localhost:8083} \
+	KEYCLOAK_HOST=$${KEYCLOAK_HOST:-http://localhost:8081} \
+	SESSION_API=$${SESSION_API:-http://localhost:9094} \
+	UPSTREAM=$${UPSTREAM:-http://localhost:9100} \
+	AUTH_CHANNEL=$${AUTH_CHANNEL:-http://localhost:5001} \
+	SPIRE_OIDC=$${SPIRE_OIDC:-http://localhost:8443} \
+	CPEX_DELEGATION=$(CPEX_DELEGATION)
+
 scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
 	@status=0; for s in $(CURDIR)/scenarios/[0-9][0-9]-*.sh; do \
-	  PROXY=$${PROXY:-http://localhost:8083} \
-	  KEYCLOAK_HOST=$${KEYCLOAK_HOST:-http://localhost:8081} \
-	  SESSION_API=$${SESSION_API:-http://localhost:9094} \
-	  UPSTREAM=$${UPSTREAM:-http://localhost:9100} \
-	  AUTH_CHANNEL=$${AUTH_CHANNEL:-http://localhost:5001} \
-	  CPEX_DELEGATION=$(CPEX_DELEGATION) \
-	  "$$s" || status=1; \
+	  $(SCENARIO_ENV) "$$s" || status=1; \
 	done; exit $$status
+
+spire:  ## Add SPIRE (scenario 13): server, agent, the agent's SPIFFE ID, then redeploy
+	$(KUBECTL) apply -f k8s/spire/spire.yaml
+	$(KUBECTL) -n spire rollout status statefulset/spire-server --timeout=180s
+	$(KUBECTL) -n spire rollout status daemonset/spire-agent --timeout=180s
+	@# Every agent joins as a node of this cluster; the sidecar container of
+	@# a pod running as the hr-cpex-agent service account gets the ID.
+	$(SPIRE_SERVER) entry show -spiffeID spiffe://cpex.demo/k8s-node | grep -q 'Entry ID' || \
+		$(SPIRE_SERVER) entry create -node -spiffeID spiffe://cpex.demo/k8s-node \
+		-selector k8s_psat:cluster:cpex-demo
+	$(SPIRE_SERVER) entry show -spiffeID $(SPIRE_AGENT_ID) | grep -q 'Entry ID' || \
+		$(SPIRE_SERVER) entry create -parentID spiffe://cpex.demo/k8s-node \
+		-spiffeID $(SPIRE_AGENT_ID) -selector k8s:ns:$(NAMESPACE) \
+		-selector k8s:sa:hr-cpex-agent -selector k8s:container-name:authbridge-cpex
+	$(MAKE) apply WITH_SPIRE=1
+	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/keycloak --timeout=180s
+	@# Restarted after Keycloak, so the sidecar fetches its current keys.
+	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/hr-cpex-agent
+	$(KUBECTL) -n $(NAMESPACE) rollout status deployment/hr-cpex-agent --timeout=180s
+	@printf "\033[1;32mSPIRE ready.\033[0m Restart \`make port-forward\` (it now forwards spire-oidc on 8443).\n"
+
+spire-undeploy:  ## Remove SPIRE and redeploy the agent without it
+	-$(KUBECTL) delete namespace spire --wait=true
+	-$(KUBECTL) delete clusterrolebinding spire-server-cpex-demo spire-agent-cpex-demo
+	-$(KUBECTL) delete clusterrole spire-server-cpex-demo spire-agent-cpex-demo
+	-$(KUBECTL) -n $(NAMESPACE) patch deployment hr-cpex-agent --patch-file k8s/spire/agent-unpatch.yaml
+	$(MAKE) apply WITH_SPIRE=0
+	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/hr-cpex-agent
 
 logs:  ## Tail the authbridge-cpex sidecar logs
 	$(KUBECTL) -n $(NAMESPACE) logs -f deploy/hr-cpex-agent -c authbridge-cpex

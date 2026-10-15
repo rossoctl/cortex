@@ -14,6 +14,8 @@
 #   SESSION_API  the sidecar's session API (make port-forward: 9094)
 #   KEYCLOAK_HOST  Keycloak (make port-forward: 8081)
 #   AUTH_CHANNEL   the CIBA approval channel (make port-forward: 5001)
+#   SPIRE_OIDC     SPIRE's OIDC discovery provider (make port-forward: 8443),
+#                  present only after `make spire`
 #
 #   CPEX_DELEGATION  `pending` (default) or `available`. CPEX 0.3.0 mints
 #                    a delegated token but does not hand it to Cortex, so
@@ -26,6 +28,7 @@ UPSTREAM="${UPSTREAM:-http://localhost:9100}"
 SESSION_API="${SESSION_API:-http://localhost:9094}"
 KEYCLOAK_HOST="${KEYCLOAK_HOST:-http://localhost:8081}"
 AUTH_CHANNEL="${AUTH_CHANNEL:-http://localhost:5001}"
+SPIRE_OIDC="${SPIRE_OIDC:-http://localhost:8443}"
 CPEX_DELEGATION="${CPEX_DELEGATION:-pending}"
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KEYCLOAK_HOST
@@ -232,16 +235,19 @@ expect_upstream_audience() {
 # --- Keycloak token exchanges ---------------------------------------------
 # The realm records TOKEN_EXCHANGE events; reading them needs the admin API.
 
-kc_exchange_count() {
-  local admin
+# Usage: kc_event_count <type> [client]
+kc_event_count() {
+  local type="$1" client="${2:-}" admin
   admin=$(curl -fsS -X POST "$KEYCLOAK_HOST/realms/master/protocol/openid-connect/token" \
     -d grant_type=password -d client_id=admin-cli -d username=admin -d password=admin \
     2>/dev/null | jq -r '.access_token // empty')
   [ -n "$admin" ] || { echo "?"; return; }
   curl -fsS -H "Authorization: Bearer $admin" \
-    "$KEYCLOAK_HOST/admin/realms/cpex-demo/events?type=TOKEN_EXCHANGE&max=10000" 2>/dev/null \
+    "$KEYCLOAK_HOST/admin/realms/cpex-demo/events?type=$type${client:+&client=$client}&max=10000" 2>/dev/null \
     | jq -r 'length' 2>/dev/null || echo "?"
 }
+
+kc_exchange_count() { kc_event_count TOKEN_EXCHANGE; }
 
 # Usage: before=$(kc_exchange_count); <call>; expect_exchanges "$before" 1
 expect_exchanges() {

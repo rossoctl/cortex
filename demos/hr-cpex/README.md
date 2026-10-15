@@ -96,14 +96,15 @@ cleanly and leaves the rest of the cluster untouched.
 
 ```bash
 make deploy         # build images (agent + authbridge-cpex + hr-mcp + auth-channel), load into kind, apply, wait for Ready
-make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094, hr-mcp :9100, approvals :5001
+make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094, hr-mcp :9100, approvals :5001 (+ SPIRE :8443 after `make spire`)
 make scenarios      # run the curl scenarios
 ```
 
 To use a kind cluster without switching your current kube context, pass
 `KIND_CLUSTER=<name> KUBE_CONTEXT=kind-<name>` to each target. If a local
 port is taken, port-forward yourself and point the scenarios at it with
-`PROXY`, `KEYCLOAK_HOST`, `SESSION_API`, `UPSTREAM` and `AUTH_CHANNEL`.
+`PROXY`, `KEYCLOAK_HOST`, `SESSION_API`, `UPSTREAM`, `AUTH_CHANNEL` and
+`SPIRE_OIDC`.
 
 `make scenarios` drives the tool through the agent's **forward-proxy**
 (the same egress path the agent's own tool calls take), exercising the
@@ -125,6 +126,7 @@ non-zero when an expectation fails:
 10-adjust-under-threshold.sh         ALLOW     $5k change applies with no approval
 11-adjust-needs-approval.sh          APPROVE   $15k suspends until the manager approves
 12-assertions.sh                     PASS      engine identity headers reach the tool; spoof overwritten
+13-workload-delegation.sh            DELEGATE  the agent as itself, by its SPIFFE ID (needs `make spire`)
 ```
 
 **Delegation on CPEX 0.3.0.** CPEX 0.3.0 performs the token exchange but
@@ -140,6 +142,21 @@ in `core/plugins/cpex` (`TestHRDemo*`). With a CPEX that returns the
 token, `make scenarios CPEX_DELEGATION=available` asserts the full
 outcomes: 01 and 04 allowed with the minted token, 03 redacted at hr-mcp
 and in the reply.
+
+**Workload identity (scenario 13).** `make spire` adds SPIRE to the
+cluster (`k8s/spire/`), registers the sidecar of the agent's pod as
+`spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent`, and redeploys with a
+`spiffe:` block in the sidecar's runtime config. The sidecar then fetches
+its JWT-SVID in process and presents it to CPEX on `X-Workload-Token`
+(the cpex plugin's `workload:` setting); a caller's own copy of that
+header is dropped. `get_headcount` authenticates by the SVID alone, and
+`delegate(..., subject: caller_workload)` runs two legs at Keycloak: the
+SVID as an RFC 7523 client assertion for the `hr-copilot-agent` client
+(SPIFFE identity provider, `federated-jwt` authenticator), then an RFC
+8693 exchange for workday-api. The scenario checks both legs in
+Keycloak's events, then the same fail-closed outcome as the other
+delegating routes. Without SPIRE it reports itself skipped and exits 0;
+`REQUIRE_SPIRE=1` makes that a failure. `make spire-undeploy` removes it.
 
 The scenarios are deterministic curl runs and skip the LLM entirely:
 each posts an MCP `tools/call` through the sidecar forward proxy
@@ -438,7 +455,9 @@ fresh pod that mounts the new policy.
 | `k8s/00-namespace.yaml` | The `cpex-demo` namespace |
 | `k8s/10-keycloak.yaml` | Keycloak Service and Deployment |
 | `k8s/20-hr-mcp.yaml` | hr-mcp backend Service and Deployment |
-| `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: config, Service, Deployment |
+| `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: Service, Deployment |
+| `k8s/authbridge.yaml` | The sidecar's runtime config (the `authbridge-config` ConfigMap) |
+| `k8s/spire/` | Optional SPIRE server, agent and discovery provider, and the sidecar's SPIFFE wiring (`make spire`) |
 | `k8s/40-auth-channel.yaml` | CIBA approval channel Service and Deployment |
 | `k8s/realm-export.json` | Keycloak realm: users, clients, mappers |
 | `k8s/cpex-policy.yaml` | CPEX policy: identity, PDPs, delegators, assertions, routes |
@@ -499,7 +518,7 @@ make undeploy   # deletes the cpex-demo namespace
   remove these flags for any real deployment.
 - **`cpex.auth_jwks_unavailable` while Keycloak is up.** Keycloak is a
   cluster-private address, which CPEX refuses by default; the cpex
-  plugin in `k8s/30-agent.yaml` sets `private_destinations: true` for it.
+  plugin in `k8s/authbridge.yaml` sets `private_destinations: true` for it.
 - **`cpex.delegation_unavailable` on get_compensation or search_repos.**
   Expected on CPEX 0.3.0; see **Delegation on CPEX 0.3.0** above.
 
@@ -516,7 +535,7 @@ make undeploy   # deletes the cpex-demo namespace
 - **Internal endpoint hardening.** The sidecar's session API (`:9094`) and
   stats endpoint (`:9093`) have no authentication. This demo binds both to
   `127.0.0.1` in `authbridge-config` (see `session_api_addr` /
-  `stats_address` in `k8s/30-agent.yaml`), so they are reachable only from
+  `stats_address` in `k8s/authbridge.yaml`), so they are reachable only from
   inside the pod and via `kubectl port-forward`, not cluster-wide. Note the
   AuthBridge default for these addresses is all-interfaces (`:9094` /
   `:9093`); a deployment that does not override them to loopback would expose

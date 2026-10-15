@@ -14,7 +14,7 @@
   "ssoSessionMaxLifespan": 57600,
   "defaultSignatureAlgorithm": "RS256",
   "eventsEnabled": true,
-  "enabledEventTypes": ["TOKEN_EXCHANGE", "TOKEN_EXCHANGE_ERROR"],
+  "enabledEventTypes": ["TOKEN_EXCHANGE", "TOKEN_EXCHANGE_ERROR", "CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
 
   "roles": {
     "realm": [
@@ -385,6 +385,52 @@
       "serviceAccountsEnabled": false,
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "hr-copilot-agent",
+      "name": "HR Copilot (workload)",
+      "description": "The agent acting as itself. Authenticates with its SPIFFE JWT-SVID as an RFC 7523 client assertion, not a secret.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "federated-jwt",
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "attributes": {
+        "access.token.lifespan": "600",
+        "jwt.credential.issuer": "spiffe",
+        "jwt.credential.sub": "spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent"
+      },
+      "protocolMappers": [
+        {
+          "name": "cpex-gateway-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cpex-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+
+  "identityProviders": [
+    {
+      "alias": "spiffe",
+      "displayName": "SPIFFE (SPIRE)",
+      "providerId": "spiffe",
+      "enabled": true,
+      "storeToken": false,
+      "trustEmail": true,
+      "config": {
+        "trustDomain": "spiffe://cpex.demo",
+        "bundleEndpoint": "http://spire-oidc.spire:8443/keys"
+      }
     }
   ],
 

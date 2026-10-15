@@ -8,6 +8,8 @@ package cpex
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -26,6 +28,7 @@ import (
 
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -35,12 +38,23 @@ import (
 
 const hrRealmPath = "/realms/cpex-demo"
 
+// hrSpirePath stands in for SPIRE's OIDC discovery provider, and
+// hrAgentSPIFFEID is the agent's registered SPIFFE ID.
+const (
+	hrSpirePath     = "/spire"
+	hrAgentSPIFFEID = "spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent"
+)
+
 type hrIdP struct {
 	srv       *httptest.Server
 	key       *rsa.PrivateKey
+	spireKey  *ecdsa.PrivateKey // SPIRE's JWT-SVID signing key
 	mu        sync.Mutex
 	exchanges []string // audience of each token exchange
+	subjects  []string // subject_token of each token exchange
 	ciba      []*cibaRequest
+	// assertions holds the client_assertion of each workload leg 1.
+	assertions []string
 }
 
 // cibaRequest is one backchannel authentication request. The test
@@ -56,8 +70,22 @@ func newHRIdP(t *testing.T) *hrIdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &hrIdP{key: key}
+	spireKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &hrIdP{key: key, spireKey: spireKey}
 	mux := http.NewServeMux()
+	// SPIRE's OIDC discovery provider: the JWKS the workload resolver uses.
+	mux.HandleFunc(hrSpirePath+"/keys", func(w http.ResponseWriter, _ *http.Request) {
+		b64 := base64.RawURLEncoding.EncodeToString
+		pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+			"kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": "spire-test",
+			"x": b64(pad(spireKey.X.Bytes())), "y": b64(pad(spireKey.Y.Bytes())),
+		}}})
+	})
 	mux.HandleFunc(hrRealmPath+"/protocol/openid-connect/certs", func(w http.ResponseWriter, _ *http.Request) {
 		b64 := base64.RawURLEncoding.EncodeToString
 		w.Header().Set("content-type", "application/json")
@@ -85,9 +113,14 @@ func newHRIdP(t *testing.T) *hrIdP {
 			m.cibaPoll(t, w, r.PostForm.Get("auth_req_id"))
 			return
 		}
+		if r.PostForm.Get("client_assertion_type") == "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe" {
+			m.clientAssertion(t, w, r)
+			return
+		}
 		aud := r.PostForm.Get("audience")
 		m.mu.Lock()
 		m.exchanges = append(m.exchanges, aud)
+		m.subjects = append(m.subjects, r.PostForm.Get("subject_token"))
 		m.mu.Unlock()
 		// Keycloak keeps the subject token's subject, and CPEX checks it.
 		claims := map[string]any{"sub": jwtSubject(r.PostForm.Get("subject_token")), "aud": aud}
@@ -105,6 +138,24 @@ func newHRIdP(t *testing.T) *hrIdP {
 	m.srv = httptest.NewServer(mux)
 	t.Cleanup(m.srv.Close)
 	return m
+}
+
+// clientAssertion answers leg 1 of a workload delegation the way
+// Keycloak's SPIFFE client authentication does: a client_credentials
+// grant authenticated by the SVID, for the client bound to its subject.
+func (m *hrIdP) clientAssertion(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	svid := r.PostForm.Get("client_assertion")
+	m.mu.Lock()
+	m.assertions = append(m.assertions, svid)
+	m.mu.Unlock()
+	w.Header().Set("content-type", "application/json")
+	if r.PostForm.Get("grant_type") != "client_credentials" || jwtSubject(svid) != hrAgentSPIFFEID {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+		return
+	}
+	tok := m.sign(t, map[string]any{"sub": "hr-copilot-agent-sa", "azp": "hr-copilot-agent", "aud": "cpex-gateway"})
+	_ = json.NewEncoder(w).Encode(map[string]any{"access_token": tok, "token_type": "Bearer", "expires_in": 300})
 }
 
 // cibaPoll answers a CIBA token poll the way Keycloak does: pending
@@ -231,14 +282,25 @@ func hrPolicy(t *testing.T, idp *hrIdP) string {
 		t.Fatal(err)
 	}
 	policy := strings.ReplaceAll(string(raw), "http://keycloak.cpex-demo:8080", idp.srv.URL)
+	policy = strings.ReplaceAll(policy, "http://spire-oidc.spire:8443", idp.srv.URL+hrSpirePath)
 	return strings.ReplaceAll(policy, "/etc/cpex-secrets/client-secret", secret)
 }
 
-// hrPlugin configures the cpex plugin the way k8s/30-agent.yaml does.
+// hrPlugin configures the cpex plugin the way k8s/authbridge.yaml does,
+// without SPIRE.
 func hrPlugin(t *testing.T, idp *hrIdP) *CPEX {
 	t.Helper()
+	return hrPluginWorkload(t, idp, nil)
+}
+
+// hrPluginWorkload is hrPlugin with svid standing in for the SPIFFE
+// provider's JWT-SVID source; nil is a sidecar with no spiffe: block.
+func hrPluginWorkload(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
+	t.Helper()
 	p := NewCPEX()
+	p.testWorkloadJWT = svid
 	raw, _ := json.Marshal(map[string]any{
+		"workload": map[string]any{"audience": idp.srv.URL + hrRealmPath},
 		"hooks": map[string]any{
 			"on_request":  []string{HookToolPreInvoke},
 			"on_response": []string{HookToolPostInvoke},
@@ -644,5 +706,97 @@ func TestHRDemoUnroutedToolDenied(t *testing.T) {
 		if a := p.OnRequest(context.Background(), anon); a.Type != pipeline.Reject {
 			t.Fatalf("%s without a user token: %v, want a reject", tool, a.Type)
 		}
+	}
+}
+
+// svid mints a JWT-SVID as SPIRE would for the agent: ES256, issued by
+// the discovery provider, for the given audience.
+func (m *hrIdP) svid(t *testing.T, sub, aud string) string {
+	t.Helper()
+	now := time.Now().Unix()
+	b64 := base64.RawURLEncoding.EncodeToString
+	hdr, _ := json.Marshal(map[string]string{"alg": "ES256", "typ": "JWT", "kid": "spire-test"})
+	body, _ := json.Marshal(map[string]any{
+		"iss": m.srv.URL + hrSpirePath, "sub": sub, "aud": []string{aud},
+		"iat": now - 5, "exp": now + 300,
+	})
+	signing := b64(hdr) + "." + b64(body)
+	sum := sha256.Sum256([]byte(signing))
+	r, s, err := ecdsa.Sign(rand.Reader, m.spireKey, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+	return signing + "." + b64(sig)
+}
+
+func (m *hrIdP) legs() (assertions []string, exchanges, subjects []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.assertions...), append([]string(nil), m.exchanges...), append([]string(nil), m.subjects...)
+}
+
+// headcount is the agent's own get_headcount call: no user token, no
+// client token.
+func headcount(t *testing.T, idp *hrIdP, extra http.Header) *pipeline.Context {
+	pctx := hrCall{user: "bob", tool: "get_headcount", args: map[string]any{}, extra: extra}.pctx(t, idp)
+	pctx.Headers.Del("X-User-Token")
+	pctx.Headers.Del("Authorization")
+	return pctx
+}
+
+// Scenario 13: the route authenticates by the agent's SVID alone, and
+// the delegator presents it as a client assertion (leg 1) and exchanges
+// the token that buys for workday-api (leg 2). On CPEX 0.3.0 the minted
+// token cannot be forwarded, so the call then fails closed.
+func TestHRDemoWorkloadDelegation(t *testing.T) {
+	idp := newHRIdP(t)
+	svid := idp.svid(t, hrAgentSPIFFEID, idp.srv.URL+hrRealmPath)
+	p := hrPluginWorkload(t, idp, &fakeJWT{tok: svid})
+
+	wantReject(t, "agent get_headcount", p.OnRequest(context.Background(), headcount(t, idp, nil)), "cpex.delegation_unavailable")
+	assertions, exchanges, subjects := idp.legs()
+	if len(assertions) != 1 || assertions[0] != svid {
+		t.Fatalf("leg 1 assertions = %d, want the agent's SVID once", len(assertions))
+	}
+	if len(exchanges) != 1 || exchanges[0] != "workday-api" {
+		t.Fatalf("leg 2 exchanges = %v, want [workday-api]", exchanges)
+	}
+	if got := jwtSubject(subjects[0]); got != "hr-copilot-agent-sa" {
+		t.Fatalf("leg 2 subject_token sub = %q, want the leg-1 token's", got)
+	}
+}
+
+// Without an SVID from Cortex the route has no credential: a caller's
+// own X-Workload-Token is dropped, a user token does not stand in, and
+// an SVID for another audience is refused. No leg runs.
+func TestHRDemoWorkloadRequiresSVID(t *testing.T) {
+	idp := newHRIdP(t)
+	stolen := idp.svid(t, hrAgentSPIFFEID, idp.srv.URL+hrRealmPath)
+
+	noSPIRE := hrPluginWorkload(t, idp, nil)
+	for label, pctx := range map[string]*pipeline.Context{
+		"caller-supplied SVID": headcount(t, idp, http.Header{"X-Workload-Token": {stolen}}),
+		"user token only":      hrCall{user: "bob", tool: "get_headcount", args: map[string]any{}}.pctx(t, idp),
+	} {
+		if a := noSPIRE.OnRequest(context.Background(), pctx); a.Type != pipeline.Reject || a.Violation.Code == "cpex.delegation_unavailable" {
+			t.Fatalf("%s: %v %+v, want an authentication deny", label, a.Type, a.Violation)
+		}
+	}
+
+	// Nor does policy see the caller's copy.
+	_, ext := buildCMF(headcount(t, idp, http.Header{"X-Workload-Token": {stolen}}), false, noSPIRE.manager.(*cpexManager).opts)
+	for k := range ext.Http.RequestHeaders {
+		if strings.EqualFold(k, "x-workload-token") {
+			t.Fatalf("caller's X-Workload-Token reached the http extension")
+		}
+	}
+
+	wrongAud := hrPluginWorkload(t, idp, &fakeJWT{tok: idp.svid(t, hrAgentSPIFFEID, "some-other-service")})
+	if a := wrongAud.OnRequest(context.Background(), headcount(t, idp, nil)); a.Type != pipeline.Reject || a.Violation.Code == "cpex.delegation_unavailable" {
+		t.Fatalf("wrong audience: %v %+v, want an authentication deny", a.Type, a.Violation)
+	}
+	if a, e, _ := idp.legs(); len(a) != 0 || len(e) != 0 {
+		t.Fatalf("legs ran: %d assertions, %d exchanges", len(a), len(e))
 	}
 }

@@ -94,6 +94,13 @@ spec:
               value: "false"
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # spiffe:v1 adds the SPIFFE identity provider and the
+            # federated-jwt client authenticator, so the agent's client
+            # (hr-copilot-agent) can authenticate with its JWT-SVID. The
+            # realm declares both whether or not SPIRE runs; without it
+            # only the workload scenario is affected.
+            - name: KC_FEATURES
+              value: "spiffe:v1"
             # CIBA: the built-in HTTP authentication channel delivers each
             # approval request to the auth-channel service
             # (k8s/40-auth-channel.yaml). Both spellings of the option are

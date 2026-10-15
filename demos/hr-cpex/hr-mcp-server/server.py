@@ -23,7 +23,7 @@ than print a claim next to a log line.
 
 Tools:
     get_compensation, send_email, display_compensation, get_directory,
-    search_repos, adjust_compensation
+    search_repos, adjust_compensation, get_headcount
 """
 
 import base64
@@ -263,6 +263,15 @@ def tool_adjust_compensation(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def tool_get_headcount(args: dict[str, Any]) -> dict[str, Any]:
+    # Aggregate only, so an agent acting as itself (no person behind
+    # the call) can be allowed it.
+    by_department: dict[str, int] = {}
+    for emp in EMPLOYEES.values():
+        by_department[emp["department"]] = by_department.get(emp["department"], 0) + 1
+    return {"total": len(EMPLOYEES), "by_department": by_department}
+
+
 TOOLS = {
     "get_compensation": tool_get_compensation,
     "send_email": tool_send_email,
@@ -270,6 +279,7 @@ TOOLS = {
     "get_directory": tool_get_directory,
     "search_repos": tool_search_repos,
     "adjust_compensation": tool_adjust_compensation,
+    "get_headcount": tool_get_headcount,
 }
 
 # ---------------------------------------------------------------------------
