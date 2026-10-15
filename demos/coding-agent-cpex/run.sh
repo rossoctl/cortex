@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Run the coding-agent demo on this machine.
 #
-#   ./run.sh up          start the demo cortex and the mock services
-#   ./run.sh scenarios   run every scenario (needs `up`)
-#   ./run.sh down        stop what `up` started
+#   ./run.sh up [--claude-code]  start the demo cortex and the mock services
+#   ./run.sh scenarios           run every scenario (needs `up`)
+#   ./run.sh walkthrough [--fast|--pace N]  the narrated run (needs `up`)
+#   ./run.sh check               the walkthrough's drift guard and its test
+#   ./run.sh down                stop what `up` started
 #   ./run.sh status
+#
+# --claude-code also lets the hosts a real Claude Code session needs
+# through; see claude-code/README.md.
 #
 # Everything runs on 4770x and loopback, from its own config and state
 # directory (.state/). It never touches ~/.cortex or an installed cortex
@@ -152,17 +157,54 @@ prepare_state() {
   }' >"$SRT_SETTINGS"
 }
 
+# For a real Claude Code session: its model API joins the policy's
+# allowlist, and package registries and VCS hosts are allowed and tunnelled
+# unopened, so installs and clones work. Generated from config/, so the
+# scripted policy stays the one source.
+CLAUDE_CODE_LLM_HOSTS="${CLAUDE_CODE_LLM_HOSTS:-api.anthropic.com}"
+CLAUDE_CODE_PASSTHROUGH_HOSTS="${CLAUDE_CODE_PASSTHROUGH_HOSTS:-registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org github.com codeload.github.com objects.githubusercontent.com}"
+
+gen_claude_code_config() {
+  local out="$STATE_DIR/claude-code"
+  mkdir -p "$out"
+  python3 - "$DIR/config" "$out" "$CLAUDE_CODE_LLM_HOSTS" "$CLAUDE_CODE_PASSTHROUGH_HOSTS" <<'PY'
+import json, sys
+from pathlib import Path
+src, out, llm, passthrough = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].split(), sys.argv[4].split()
+
+def sub(text, old, new):
+    if text.count(old) != 1:
+        sys.exit(f"run.sh: expected one {old!r} in {src}; update gen_claude_code_config")
+    return text.replace(old, new)
+
+allowed = '["support.localtest.me", "llm.localtest.me"]'
+policy = sub((src / "cpex-policy.yaml").read_text(), f"allowed: {allowed}",
+             f"allowed: {json.dumps(json.loads(allowed) + llm + passthrough)}")
+(out / "cpex-policy.yaml").write_text(policy)
+cfg = sub((src / "cortex.yaml").read_text(), "passthrough_hosts: []", f"passthrough_hosts: {json.dumps(passthrough)}")
+cfg = sub(cfg, '"${DEMO_DIR}/config/cpex-policy.yaml"', '"${DEMO_STATE}/claude-code/cpex-policy.yaml"')
+(out / "cortex.yaml").write_text(cfg)
+PY
+  info "generated the Claude Code config (.state/claude-code/)"
+}
+
 # --- commands --------------------------------------------------------------
 
 service_pid() { listener 47600; }
 
 up() {
-  local bin before
+  local bin before config="$DIR/config/cortex.yaml"
   check_tools
   bin="$(find_cortex)"
   before="$(service_pid)"
   check_ports
   prepare_state
+  if [ "${1:-}" = "--claude-code" ]; then
+    gen_claude_code_config
+    config="$STATE_DIR/claude-code/cortex.yaml"
+  elif [ -n "${1:-}" ]; then
+    die "unknown option to up: $1"
+  fi
   info "cortex: $bin ($("$bin" --version))"
 
   start mock-llm python3 "$DIR/mocks/llm/server.py" --port "$LLM_PORT" \
@@ -171,7 +213,7 @@ up() {
     --port "$SUPPORT_PORT" --cert "$STATE_DIR/mock-ca/support.crt" --key "$STATE_DIR/mock-ca/support.key"
   # cortex runs from config/ so the policy's relative key path resolves,
   # and with HOME inside .state so nothing it writes lands in ~/.cortex.
-  (cd "$DIR/config" && HOME="$STATE_DIR/home" start cortex "$bin" --config "$DIR/config/cortex.yaml")
+  (cd "$DIR/config" && HOME="$STATE_DIR/home" start cortex "$bin" --config "$config")
 
   wait_for "the mock LLM" "$LLM_URL/_requests" --cacert "$MOCK_CA"
   wait_for "the mock support service" "$SUPPORT_URL/_requests" --cacert "$MOCK_CA"
@@ -216,10 +258,17 @@ scenarios() {
   [ "${#failed[@]}" -eq 0 ]
 }
 
+check() {
+  python3 "$DIR/demo/record_demo.py" --check
+  (cd "$DIR/demo" && python3 -m unittest -q test_record_demo)
+}
+
 case "${1:-}" in
-  up) up ;;
+  up) up "${@:2}" ;;
+  walkthrough) alive cortex || die "the demo is not up; run ./run.sh up"; "$DIR/walkthrough.sh" "${@:2}" ;;
+  check) check ;;
   down) down ;;
   status) status ;;
   scenarios) scenarios ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
