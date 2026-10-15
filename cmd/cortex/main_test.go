@@ -68,6 +68,12 @@ func TestSpiffeProviderNeeded(t *testing.T) {
 		{"spiffe identity (inbound)", inbound(config.PluginEntry{
 			Name: "some-plugin", Config: identityConfig("spiffe"),
 		}), true},
+		{"cpex workload audience", outbound(config.PluginEntry{
+			Name: "cpex", Config: json.RawMessage(`{"workload":{"audience":"https://idp.example"}}`),
+		}), true},
+		{"cpex without workload", outbound(config.PluginEntry{
+			Name: "cpex", Config: json.RawMessage(`{"config_file":"/etc/cpex/cpex.yaml"}`),
+		}), false},
 		{"plugin with no config", outbound(config.PluginEntry{Name: "jwt-validation"}), false},
 		{"malformed plugin config", outbound(config.PluginEntry{
 			Name: "bad-plugin", Config: json.RawMessage(`{not valid json`),
@@ -84,15 +90,16 @@ func TestSpiffeProviderNeeded(t *testing.T) {
 
 // TestProviderConsumersCoveredByPredicate enforces the invariant that ties
 // spiffeProviderNeeded to plugins.BuildWithSPIFFE: the predicate detects a
-// plugin's need via identity.type=spiffe, which covers token-exchange — the
-// only spiffe.ProviderConsumer today. If a new ProviderConsumer is registered,
-// this fails so the author confirms spiffeProviderNeeded detects its need;
+// plugin's need via identity.type=spiffe (token-exchange) or workload.audience
+// (cpex). If a new ProviderConsumer is registered, this fails so the author
+// confirms spiffeProviderNeeded detects its need;
 // otherwise that plugin would silently receive a nil Provider on a SPIRE-less
 // cluster. The main package blank-imports every plugin, so the registry here is
 // the full production set.
 func TestProviderConsumersCoveredByPredicate(t *testing.T) {
 	// Plugins whose SPIFFE need spiffeProviderNeeded is known to detect.
-	covered := map[string]bool{"token-exchange": true}
+	// cpex signals it with workload.audience; see the cases above.
+	covered := map[string]bool{"token-exchange": true, "cpex": true}
 	for _, name := range plugins.SPIFFEConsumerPlugins() {
 		// Tripwire: a new consumer must be consciously reviewed and listed.
 		if !covered[name] {
