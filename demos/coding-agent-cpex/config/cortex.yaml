@@ -42,6 +42,7 @@ pipeline:
         config:
           hooks:
             on_request: [cmf.tool_pre_invoke, cmf.llm_input]
+            on_response: [cmf.llm_output]
           config_file: "${DEMO_DIR}/config/cpex-policy.yaml"
           fail_open: false
           # Requests no parser claims (the agent's curl) are policy calls to

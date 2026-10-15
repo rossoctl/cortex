@@ -2,7 +2,8 @@
 #
 # Cortex presents the agent's traffic to CPEX in two shapes:
 #   - its model calls as `llm` requests (cmf.llm_input), with tool results
-#     in custom.tool_results;
+#     in custom.tool_results, and the model's replies as `llm` responses
+#     (cmf.llm_output), with the tool calls it proposes in custom.tool_calls;
 #   - everything else it sends, curl included, as a call to the tool
 #     http_egress (cmf.tool_pre_invoke), with args method, host, path, a
 #     bounded body excerpt, truncated and content_encoding. A CONNECT
@@ -52,6 +53,19 @@ routes:
             on_deny:
               - "taint(secret, session)"
               - "deny('secret in a tool result', 'secret_in_tool_result')"
+      # The model's reply, before the agent sees it. In a session that read
+      # a secret, a proposed tool call that carries one, or sends a secrets
+      # file over the network, refuses the whole turn: the agent never runs
+      # it. Other tool calls go on to the wire policy below.
+      post_invocation:
+        - cel:
+            expr: >-
+              !('secret' in security.labels) || custom.tool_call_count == 0 ||
+              !custom.tool_calls.exists(k, custom.tool_calls[k].arguments.matches(secret) ||
+                custom.tool_calls[k].arguments.matches(exfil))
+            secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
+            exfil: "\\b(curl|wget|nc|scp|rsync)\\b.*(\\.env|id_rsa|\\.pem)\\b"
+            on_deny: ["deny('tool call would send secret data', 'secret_in_tool_call')"]
 
   # Everything else the agent and its tools send.
   - tool: http_egress

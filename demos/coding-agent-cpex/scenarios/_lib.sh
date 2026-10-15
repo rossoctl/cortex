@@ -39,12 +39,12 @@ finish() {
 
 new_session() { echo "$1-$(date +%s)-$$-${RANDOM}"; }
 
-# run_agent <scenario> <session>: run the scripted agent; its record is
-# then in $AGENT_OUT.
+# run_agent <scenario> <session> [--stream]: run the scripted agent; its
+# record is then in $AGENT_OUT.
 run_agent() {
   AGENT_OUT="$STATE_DIR/runs/$1-$2.json"
   mkdir -p "$STATE_DIR/runs"
-  python3 "$DEMO_DIR/agent/agent.py" --scenario "$1" --session "$2" --out "$AGENT_OUT"
+  python3 "$DEMO_DIR/agent/agent.py" --scenario "$1" --session "$2" --out "$AGENT_OUT" "${@:3}"
 }
 
 # --- the agent's tool results --------------------------------------------
@@ -93,6 +93,21 @@ expect_model_calls_ok() {
   local bad
   bad="$(jq '[.model_calls[] | select(.status != 200)] | length' "$AGENT_OUT")"
   if [ "$bad" = "0" ]; then pass_ "every model call was forwarded ($(jq '.model_calls | length' "$AGENT_OUT"))"; else fail_ "$bad model call(s) failed"; fi
+}
+
+# expect_model_denied <n> <code>: the nth model call came back a 403 with
+# the code, so the agent never saw that turn.
+expect_model_denied() {
+  local got
+  got="$(jq -r --argjson i "$1" '"\(.model_calls[$i].status) \(.model_calls[$i].error)"' "$AGENT_OUT")"
+  if [ "$got" = "403 $2" ]; then pass_ "model call $1: denied with $2"; else fail_ "model call $1: expected a 403 $2, got '$got'"; fi
+}
+
+# expect_tools_run <n>: the agent ran exactly n tools.
+expect_tools_run() {
+  local got
+  got="$(jq '.tools | length' "$AGENT_OUT")"
+  if [ "$got" = "$1" ]; then pass_ "the agent ran $1 tool(s)"; else fail_ "expected the agent to run $1 tool(s), it ran $got"; fi
 }
 
 # --- the mock services' recorders -----------------------------------------

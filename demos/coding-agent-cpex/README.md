@@ -33,6 +33,7 @@ Cortex. A mock support service takes bug reports for projects A and B.
 | 04 | agent reads `.env`, then sends a clean report, also with a spoofed `X-Session-Id` | the model turn goes through and taints the session; reports 403 `cpex.session_tainted_secret` |
 | 05 | clean report, project B | 403 `cpex.project_not_authorized`: the developer is on A only |
 | 06 | the clean report from a new session | 201: the taint is the session's, not the developer's |
+| 09 | after reading `.env`, the model proposes a `curl` pasting the key, as JSON and as an SSE stream; an untainted session's clean report | the model turn 403 `cpex.secret_in_tool_call`, so the agent runs nothing; the clean report 201 |
 
 Each scenario checks the agent's tool output, the Cortex session timeline
 and the mock services' request logs, including that no deny body or timeline
@@ -55,6 +56,12 @@ carries the secret and that the developer token never reaches a mock.
   has no way to taint without denying, so the plugin lists that code in
   `observe_codes`: the deny is recorded as `observe` and the turn is
   forwarded.
+- **Intent before execution.** On `cmf.llm_output` the same route reads the
+  tool calls the model proposes (`custom.tool_calls`, assembled from the
+  stream when the reply is SSE). In a tainted session, one carrying a secret
+  or sending a secrets file over the network refuses the reply: the agent
+  gets a 403 instead of the tool call. Anything else goes on to the wire
+  policy.
 
 ## Run it
 
@@ -82,6 +89,8 @@ and never touches `~/.cortex` or an installed service on `:47600`.
   reads and sends, are out of reach; a body past the excerpt is refused.
 - The secret read in 04 reaches the model and is on the timeline as part of
   the model call, as Cortex records model traffic.
+- With cpex in the chain every model reply is buffered, SSE included, so a
+  streamed reply reaches the agent only once it is complete.
 - Taint lives in CPEX's in-process store and resets when Cortex restarts.
 - The support credential is not yet held by Cortex; the mock accepts reports
   without one.

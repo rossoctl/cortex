@@ -3,7 +3,9 @@
 The first user message names the scenario ("Scenario: <name>"); each
 assistant turn already in the conversation advances one step through that
 scenario's script in scripts.json. A step is a tool call (Bash or Read) or a
-closing text. Every request is recorded:
+closing text. A request with "stream": true gets the same message as an
+Anthropic SSE stream, the tool input split across input_json_delta events.
+Every request is recorded:
 
 GET  /_requests   requests received
 POST /_reset      forget them
@@ -55,6 +57,29 @@ def reply(req):
     return {**base, "content": [{"type": "text", "text": step["text"]}], "stop_reason": "end_turn"}
 
 
+def sse_events(msg):
+    """The Anthropic stream events that assemble msg."""
+    head = {k: v for k, v in msg.items() if k not in ("content", "stop_reason")}
+    yield "message_start", {"type": "message_start", "message": {**head, "content": []}}
+    for i, block in enumerate(msg["content"]):
+        if block["type"] == "text":
+            start = {"type": "text", "text": ""}
+            yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": start}
+            delta = {"type": "text_delta", "text": block["text"]}
+            yield "content_block_delta", {"type": "content_block_delta", "index": i, "delta": delta}
+        else:
+            start = {**block, "input": {}}
+            yield "content_block_start", {"type": "content_block_start", "index": i, "content_block": start}
+            raw = json.dumps(block["input"])
+            for frag in (raw[: len(raw) // 2], raw[len(raw) // 2 :]):
+                delta = {"type": "input_json_delta", "partial_json": frag}
+                yield "content_block_delta", {"type": "content_block_delta", "index": i, "delta": delta}
+        yield "content_block_stop", {"type": "content_block_stop", "index": i}
+    delta = {"type": "message_delta", "delta": {"stop_reason": msg["stop_reason"]}, "usage": {"output_tokens": 20}}
+    yield "message_delta", delta
+    yield "message_stop", {"type": "message_stop"}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "llm-mock"
 
@@ -92,7 +117,18 @@ class Handler(BaseHTTPRequestHandler):
             )
         if self.path.split("?")[0] != "/v1/messages":
             return self._send(404, {"type": "error", "error": {"type": "not_found_error"}})
-        self._send(200, reply(json.loads(raw or b"{}")))
+        req = json.loads(raw or b"{}")
+        msg = reply(req)
+        if not req.get("stream"):
+            return self._send(200, msg)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        for event, data in sse_events(msg):
+            self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+            self.wfile.flush()
+        self.close_connection = True
 
 
 def main():
