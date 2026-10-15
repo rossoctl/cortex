@@ -94,6 +94,14 @@ spec:
               value: "false"
             - name: KC_HEALTH_ENABLED
               value: "true"
+            # CIBA: the built-in HTTP authentication channel delivers each
+            # approval request to the auth-channel service
+            # (k8s/40-auth-channel.yaml). Both spellings of the option are
+            # set; Keycloak reads the one its version knows.
+            - name: KC_SPI_CIBA_AUTH_CHANNEL__CIBA_HTTP_AUTH_CHANNEL__HTTP_AUTHENTICATION_CHANNEL_URI
+              value: "http://auth-channel.cpex-demo:5001/ciba/auth"
+            - name: KC_SPI_CIBA_AUTH_CHANNEL_CIBA_HTTP_AUTH_CHANNEL_HTTP_AUTHENTICATION_CHANNEL_URI
+              value: "http://auth-channel.cpex-demo:5001/ciba/auth"
             # Standard Token Exchange (V2, RFC 8693) backs the demo's
             # cpex-gateway → workday-api / github-api delegate() flow. It
             # is GA + enabled by default from Keycloak 26.2 on (feature

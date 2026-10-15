@@ -3,7 +3,7 @@
 # End-to-end:
 #
 #   make deploy        # build images, load into kind, kubectl apply
-#   make port-forward  # Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100)
+#   make port-forward  # Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100) + approvals (5001)
 #   make scenarios     # run the demo curl scenarios (through the forward proxy)
 #   make logs          # tail the authbridge-cpex sidecar logs
 #   make undeploy      # delete the cpex-demo namespace
@@ -34,6 +34,7 @@ NAMESPACE    := cpex-demo
 AUTHBRIDGE_IMAGE ?= authbridge-cpex:dev
 HR_MCP_IMAGE     ?= hr-mcp:dev
 AGENT_IMAGE      ?= hr-cpex-agent:dev
+AUTH_CHANNEL_IMAGE ?= auth-channel:dev
 
 # Source paths for the images. authbridge-cpex builds from the
 # repo root (cmd/ + core/, two levels up from this demo
@@ -42,6 +43,7 @@ AGENT_IMAGE      ?= hr-cpex-agent:dev
 AUTHBRIDGE_ROOT := $(abspath $(CURDIR)/../..)
 HR_MCP_SRC      ?= $(CURDIR)/hr-mcp-server
 AGENT_SRC       ?= $(CURDIR)/agent
+AUTH_CHANNEL_SRC ?= $(CURDIR)/auth-channel
 
 # Agent LLM wiring (injected into the deployment on `apply`). The agent's
 # inference goes DIRECT to this base (never through the cpex sidecar).
@@ -83,7 +85,7 @@ preflight:  ## Check that prerequisites are in place
 	@test -d "$(AGENT_SRC)" || { echo "missing: $(AGENT_SRC) (should ship in the demo dir)"; exit 1; }
 	@echo "preflight OK"
 
-build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent docker images
+build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent + auth-channel docker images
 	@echo "[build] authbridge-cpex from $(AUTHBRIDGE_ROOT)"
 	cd $(AUTHBRIDGE_ROOT) && docker build \
 		-f cmd/cortex-cpex/Dockerfile \
@@ -93,11 +95,14 @@ build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent docker images
 	cd $(HR_MCP_SRC) && docker build -t $(HR_MCP_IMAGE) .
 	@echo "[build] hr-cpex-agent from $(AGENT_SRC)"
 	cd $(AGENT_SRC) && docker build -t $(AGENT_IMAGE) .
+	@echo "[build] auth-channel from $(AUTH_CHANNEL_SRC)"
+	cd $(AUTH_CHANNEL_SRC) && docker build -t $(AUTH_CHANNEL_IMAGE) .
 
-load-images: preflight  ## Load all three images into the kind cluster
+load-images: preflight  ## Load the images into the kind cluster
 	kind load docker-image $(AUTHBRIDGE_IMAGE) --name $(KIND_CLUSTER)
 	kind load docker-image $(HR_MCP_IMAGE)     --name $(KIND_CLUSTER)
 	kind load docker-image $(AGENT_IMAGE)      --name $(KIND_CLUSTER)
+	kind load docker-image $(AUTH_CHANNEL_IMAGE) --name $(KIND_CLUSTER)
 
 apply:  ## kubectl apply the manifests (assumes images already loaded)
 	$(KUBECTL) apply -f k8s/00-namespace.yaml
@@ -116,6 +121,7 @@ apply:  ## kubectl apply the manifests (assumes images already loaded)
 	$(KUBECTL) apply -f k8s/10-keycloak.yaml
 	$(KUBECTL) apply -f k8s/20-hr-mcp.yaml
 	$(KUBECTL) apply -f k8s/30-agent.yaml
+	$(KUBECTL) apply -f k8s/40-auth-channel.yaml
 	# Inject the env-specific LLM wiring. Idempotent: when these match the
 	# manifest defaults (Docker Desktop case) kubectl reports no change and
 	# does not roll the pod; override LLM_API_BASE for Rancher Desktop.
@@ -139,22 +145,24 @@ deploy: build-images load-images apply  ## Full bring-up: build, load, apply
 	@# the two locally-built workloads (hr-mcp; hr-cpex-agent carries both the
 	@# agent and the authbridge-cpex sidecar) so a rebuild always lands.
 	@echo "Rolling the locally-built workloads onto the freshly-loaded images..."
-	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/hr-mcp deployment/hr-cpex-agent
+	$(KUBECTL) -n $(NAMESPACE) rollout restart deployment/hr-mcp deployment/hr-cpex-agent deployment/auth-channel
 	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/hr-mcp        --timeout=120s
 	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/hr-cpex-agent --timeout=120s
+	$(KUBECTL) -n $(NAMESPACE) rollout status  deployment/auth-channel  --timeout=120s
 	@echo
 	@printf "\033[1;32mDeploy complete.\033[0m Next:\n"
 	@printf "  make port-forward   # in another terminal\n"
 	@printf "  make scenarios      # deterministic curl matrix (no LLM needed)\n"
 	@printf "  make ollama-check   # only for the interactive chat — confirms a pod can reach Ollama\n"
 
-port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100)
+port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + session API (9094) + hr-mcp (9100) + approvals (5001)
 	@echo "Port-forwarding (Ctrl+C to stop)..."
 	@echo "  Keycloak admin:     http://localhost:8081  (admin/admin)"
 	@echo "  Agent (A2A):        http://localhost:8082   <- chat.py talks here"
 	@echo "  Sidecar fwd proxy:  http://localhost:8083   <- scenarios curl -x here"
 	@echo "  CPEX session API:   http://localhost:9094   <- the decision timeline"
 	@echo "  hr-mcp recorder:    http://localhost:9100   <- what reached the tool"
+	@echo "  Approvals (CIBA):   http://localhost:5001   <- the manager approves here"
 	@# Keycloak + agent go via Service; the forward proxy (8081) and session
 	@# API (9094) bind to localhost in the pod, so we port-forward those
 	@# against the deployment's pod directly (8083 on the host avoids the
@@ -163,6 +171,7 @@ port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + se
 	$(KUBECTL) -n $(NAMESPACE) port-forward svc/hr-cpex-agent 8082:8080 & \
 	$(KUBECTL) -n $(NAMESPACE) port-forward deploy/hr-cpex-agent 8083:8081 9094:9094 & \
 	$(KUBECTL) -n $(NAMESPACE) port-forward svc/hr-mcp 9100:9100 & \
+	$(KUBECTL) -n $(NAMESPACE) port-forward svc/auth-channel 5001:5001 & \
 	wait
 
 # `pending` while CPEX cannot return a delegated token to Cortex; see
@@ -175,6 +184,7 @@ scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
 	  KEYCLOAK_HOST=$${KEYCLOAK_HOST:-http://localhost:8081} \
 	  SESSION_API=$${SESSION_API:-http://localhost:9094} \
 	  UPSTREAM=$${UPSTREAM:-http://localhost:9100} \
+	  AUTH_CHANNEL=$${AUTH_CHANNEL:-http://localhost:5001} \
 	  CPEX_DELEGATION=$(CPEX_DELEGATION) \
 	  "$$s" || status=1; \
 	done; exit $$status

@@ -13,6 +13,7 @@
 #   UPSTREAM     hr-mcp, for its request recorder (make port-forward: 9100)
 #   SESSION_API  the sidecar's session API (make port-forward: 9094)
 #   KEYCLOAK_HOST  Keycloak (make port-forward: 8081)
+#   AUTH_CHANNEL   the CIBA approval channel (make port-forward: 5001)
 #
 #   CPEX_DELEGATION  `pending` (default) or `available`. CPEX 0.3.0 mints
 #                    a delegated token but does not hand it to Cortex, so
@@ -24,6 +25,7 @@ MCP_TARGET="${MCP_TARGET:-http://hr-mcp.cpex-demo:9100/mcp}"
 UPSTREAM="${UPSTREAM:-http://localhost:9100}"
 SESSION_API="${SESSION_API:-http://localhost:9094}"
 KEYCLOAK_HOST="${KEYCLOAK_HOST:-http://localhost:8081}"
+AUTH_CHANNEL="${AUTH_CHANNEL:-http://localhost:5001}"
 CPEX_DELEGATION="${CPEX_DELEGATION:-pending}"
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KEYCLOAK_HOST
@@ -66,8 +68,10 @@ _post_tool() {
   # SESSION_ID threads X-Session-Id, which the cpex plugin uses as the
   # CPEX session id, so session taint persists across calls.
   # SPOOF_HEADER adds a header the caller should not be able to set.
+  # ELICITATION_ID resumes a call suspended for approval.
   local extra=()
   [ -n "${SESSION_ID:-}" ] && extra+=(-H "X-Session-Id: $SESSION_ID")
+  [ -n "${ELICITATION_ID:-}" ] && extra+=(-H "X-Policy-Elicitation-Id: $ELICITATION_ID")
   [ -n "${SPOOF_HEADER:-}" ] && extra+=(-H "$SPOOF_HEADER")
   # `${extra[@]+"${extra[@]}"}` keeps bash 3.2 (macOS) happy under set -u.
   curl -isS --max-time 10 -x "$PROXY" -X POST "$MCP_TARGET" \
@@ -107,6 +111,11 @@ call_search_repos() {
     args="{\"visibility\":\"$visibility\"}"
   fi
   call_tool "$1" "$2" search_repos "$args"
+}
+
+call_adjust_compensation() {
+  local amount="$3" employee_id="${4:-EMP-001234}"
+  call_tool "$1" "$2" adjust_compensation "{\"employee_id\":\"$employee_id\",\"amount\":$amount}"
 }
 
 step() {
@@ -281,4 +290,58 @@ expect_delegation_pending() {
   expect_deny cpex.delegation_unavailable
   expect_upstream_calls 0
   note "forwarding: pending CPEX patch"
+}
+
+# --- approvals (require_approval over CIBA) --------------------------------
+# A suspended call is a JSON-RPC error -32120 carrying the id to retry with.
+
+expect_pending() {
+  local code err
+  code="$(printf '%s' "${LAST_BODY:-}" | jq -r '.error.code // empty' 2>/dev/null)"
+  err="$(printf '%s' "${LAST_BODY:-}" | jq -r '.error.data.error // empty' 2>/dev/null)"
+  LAST_EID="$(printf '%s' "${LAST_BODY:-}" | jq -r '.error.data.details.elicitation_id // empty' 2>/dev/null)"
+  if [ "${LAST_STATUS:-}" = "200" ] && [ "$code" = "-32120" ] && [ "$err" = "cpex.elicitation_pending" ] && [ -n "$LAST_EID" ]; then
+    pass_ "suspended for approval (-32120, cpex.elicitation_pending)"
+  else
+    fail_ "expected a -32120 pending approval, got HTTP ${LAST_STATUS:-<none>} code '${code:-<none>}' '${err:-<none>}'"
+  fi
+}
+
+# Ids of the requests the channel already holds, so a scenario answers
+# only its own.
+approvals_seen() { curl -fsS "$AUTH_CHANNEL/requests" 2>/dev/null | jq -r '.[].id' 2>/dev/null; }
+
+# Usage: seen=$(approvals_seen); <call>; answer_approval approve|deny <approver> "$seen"
+answer_approval() {
+  local verb="$1" approver="$2" seen="$3" id="" i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    id=$(curl -fsS "$AUTH_CHANNEL/requests?login_hint=$approver&status=pending" 2>/dev/null \
+      | jq -r --arg seen "$seen" '($seen | split("\n")) as $s | [.[] | select(.id | IN($s[]) | not)] | last.id // empty' 2>/dev/null)
+    [ -n "$id" ] && break
+    sleep 1
+  done
+  if [ -z "$id" ]; then
+    fail_ "no new approval request for $approver at $AUTH_CHANNEL"
+    return
+  fi
+  if curl -fsS -X POST "$AUTH_CHANNEL/$verb/$id" >/dev/null 2>&1; then
+    pass_ "$approver answered: $verb"
+  else
+    fail_ "could not $verb request $id at $AUTH_CHANNEL"
+  fi
+}
+
+# Retry the call with the elicitation id until it is no longer pending.
+# Keycloak asks pollers to wait 5s between polls, so this waits 6s.
+# Usage: retry_until_answered <user> <client> <amount> <eid>
+retry_until_answered() {
+  local i raw body
+  body="$(_tool_body adjust_compensation "{\"employee_id\":\"EMP-001234\",\"amount\":$3}")"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 6
+    raw="$(ELICITATION_ID="$4" _post_tool "$1" "$2" "$body")"
+    printf '%s' "$raw" | grep -q '"code":-32120' || break
+    note "retry $i: still pending"
+  done
+  _print_response "$raw"
 }

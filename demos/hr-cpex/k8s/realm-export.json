@@ -60,7 +60,8 @@
         "permissions": ["tool_execute", "view_ssn", "pii_access", "email_send"],
         "teams": ["hr"],
         "groups": ["hr"],
-        "gh_permissions": []
+        "gh_permissions": [],
+        "manager": ["alice"]
       }
     },
     {
@@ -161,6 +162,20 @@
           "config": {
             "user.attribute": "username",
             "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "manager",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "manager",
+            "claim.name": "manager",
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -271,7 +286,8 @@
       "attributes": {
         "access.token.lifespan": "600",
         "standard.token.exchange.enabled": "true",
-        "standard.token.exchange.audiences": "workday-api,github-api"
+        "standard.token.exchange.audiences": "workday-api,github-api",
+        "oidc.ciba.grant.enabled": "true"
       },
       "optionalClientScopes": ["read_compensation", "repo:read:internal"],
       "protocolMappers": [
@@ -370,5 +386,12 @@
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false
     }
-  ]
+  ],
+
+  "attributes": {
+    "cibaBackchannelTokenDeliveryMode": "poll",
+    "cibaExpiresIn": "300",
+    "cibaInterval": "5",
+    "cibaAuthRequestedUserHint": "login_hint"
+  }
 }

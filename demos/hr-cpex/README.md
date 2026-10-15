@@ -56,7 +56,10 @@ compose three things a plain PDP does not:
    predicate, a Cedar PDP decision, an RFC 8693 token exchange, a
    post-check on the minted token. Every decision is recorded on the
    Cortex session timeline, which is the demo's audit trail.
-3. **Policy as data.** The gateway is a generic AuthBridge sidecar.
+3. **A human in the loop.** A compensation change over $10,000 waits for
+   the requester's manager to approve over OIDC CIBA. The call is
+   suspended, not denied, and the approval covers only that call.
+4. **Policy as data.** The gateway is a generic AuthBridge sidecar.
    Every rule lives in `cpex-policy.yaml`; operators ship changes by
    updating a ConfigMap, not by releasing code.
 
@@ -92,15 +95,15 @@ cleanly and leaves the rest of the cluster untouched.
 ## Quick start
 
 ```bash
-make deploy         # build images (agent + authbridge-cpex + hr-mcp), load into kind, apply, wait for Ready
-make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094, hr-mcp :9100
+make deploy         # build images (agent + authbridge-cpex + hr-mcp + auth-channel), load into kind, apply, wait for Ready
+make port-forward   # in another terminal: Keycloak :8081, agent :8082, sidecar forward proxy :8083, session API :9094, hr-mcp :9100, approvals :5001
 make scenarios      # run the curl scenarios
 ```
 
 To use a kind cluster without switching your current kube context, pass
 `KIND_CLUSTER=<name> KUBE_CONTEXT=kind-<name>` to each target. If a local
 port is taken, port-forward yourself and point the scenarios at it with
-`PROXY`, `KEYCLOAK_HOST`, `SESSION_API` and `UPSTREAM`.
+`PROXY`, `KEYCLOAK_HOST`, `SESSION_API`, `UPSTREAM` and `AUTH_CHANNEL`.
 
 `make scenarios` drives the tool through the agent's **forward-proxy**
 (the same egress path the agent's own tool calls take), exercising the
@@ -119,6 +122,8 @@ non-zero when an expectation fails:
 07-bob-pii-deny.sh                   DENY      CEL PII check; recorded on the timeline
 08-bob-taint-deny.sh                 DENY      taint propagation (session touched secrets)
 09-cross-principal-taint-isolation.sh PASS     taint is subject-bound (same id, different user)
+10-adjust-under-threshold.sh         ALLOW     $5k change applies with no approval
+11-adjust-needs-approval.sh          APPROVE   $15k suspends until the manager approves
 12-assertions.sh                     PASS      engine identity headers reach the tool; spoof overwritten
 ```
 
@@ -174,6 +179,21 @@ its real subject. The headers are unsigned; hr-mcp trusts them because
 nothing between the sidecar and it can set them. The scenario uses
 `send_email`, whose route does not delegate.
 
+**Manager approval (scenarios 10, 11).** `adjust_compensation` needs
+`require(role.hr)`, and over $10,000 a `require_approval(...)` step asks
+the requester's manager (the `manager` claim, Alice for Bob) through
+Keycloak's CIBA backchannel. Keycloak delivers the request to the
+`auth-channel` service, the manager's "phone": open
+`http://localhost:5001` to approve or deny by hand. Until the manager
+answers, the sidecar suspends the call with a JSON-RPC `-32120` error
+whose `error.data.details.elicitation_id` the agent echoes in
+`X-Policy-Elicitation-Id` when it retries. Scenario 11 answers through
+the channel's API and checks that a $15k change applies after approval,
+that the spent approval does not authorize a $20k change, that a denial
+and an approval outside the route's `scope` (`args.amount <= 25000`)
+are both refused, and that hr-mcp never sees a refused or pending call.
+The route does not delegate, so it runs fully on CPEX 0.3.0.
+
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same
 request, the same backend returns the same record, but Eve's response
 comes back without the SSN because the policy redacts it (on CPEX 0.3.0,
@@ -183,9 +203,9 @@ checked on the engine; see above).
 
 | Persona | Identity | Result |
 |---|---|---|
-| Bob | HR, `view_ssn` permission | Full compensation record, SSN included |
+| Bob | HR, `view_ssn` permission, manager Alice | Full compensation record, SSN included; changes over $10k need Alice's approval |
 | Eve | HR, no `view_ssn` | Same record, SSN redacted |
-| Alice | Engineering | Denied HR tools; allowed internal repos, denied external |
+| Alice | Engineering, Bob's manager | Denied HR tools; allowed internal repos, denied external; approves Bob's changes |
 
 ## Interactive chat
 
@@ -409,9 +429,11 @@ fresh pod that mounts the new policy.
 | `k8s/10-keycloak.yaml` | Keycloak Service and Deployment |
 | `k8s/20-hr-mcp.yaml` | hr-mcp backend Service and Deployment |
 | `k8s/30-agent.yaml` | Agent + authbridge-cpex sidecar: config, Service, Deployment |
+| `k8s/40-auth-channel.yaml` | CIBA approval channel Service and Deployment |
 | `k8s/realm-export.json` | Keycloak realm: users, clients, mappers |
 | `k8s/cpex-policy.yaml` | CPEX policy: identity, PDPs, delegators, assertions, routes |
 | `hr-mcp-server/` | Vendored FastAPI MCP backend, built into `hr-mcp:dev` |
+| `auth-channel/` | CIBA approval page and API, built into `auth-channel:dev` (unauthenticated; demo only) |
 | `agent/agent.py` | A2A server + litellm tool loop, built into `hr-cpex-agent:dev` |
 | `agent/chat.py` | Host-side A2A client (mints tokens, drives the demo) |
 | `agent/requirements.txt` | Agent (server) deps — installed into the image |

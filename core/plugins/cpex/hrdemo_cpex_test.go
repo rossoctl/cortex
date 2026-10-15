@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,14 @@ type hrIdP struct {
 	key       *rsa.PrivateKey
 	mu        sync.Mutex
 	exchanges []string // audience of each token exchange
+	ciba      []*cibaRequest
+}
+
+// cibaRequest is one backchannel authentication request. The test
+// answers it by setting state, as the approver's phone would.
+type cibaRequest struct {
+	id, loginHint, bindingMessage string
+	state                         string // pending, approved, denied, spent
 }
 
 func newHRIdP(t *testing.T) *hrIdP {
@@ -57,8 +66,25 @@ func newHRIdP(t *testing.T) *hrIdP {
 			"n": b64(key.N.Bytes()), "e": b64(big.NewInt(int64(key.E)).Bytes()),
 		}}})
 	})
+	mux.HandleFunc(hrRealmPath+"/protocol/openid-connect/ext/ciba/auth", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		m.mu.Lock()
+		req := &cibaRequest{
+			id:        fmt.Sprintf("ciba-%d", len(m.ciba)+1),
+			loginHint: r.PostForm.Get("login_hint"), bindingMessage: r.PostForm.Get("binding_message"),
+			state: "pending",
+		}
+		m.ciba = append(m.ciba, req)
+		m.mu.Unlock()
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"auth_req_id": req.id, "expires_in": 300, "interval": 1})
+	})
 	mux.HandleFunc(hrRealmPath+"/protocol/openid-connect/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		if r.PostForm.Get("grant_type") == "urn:openid:params:grant-type:ciba" {
+			m.cibaPoll(t, w, r.PostForm.Get("auth_req_id"))
+			return
+		}
 		aud := r.PostForm.Get("audience")
 		m.mu.Lock()
 		m.exchanges = append(m.exchanges, aud)
@@ -79,6 +105,60 @@ func newHRIdP(t *testing.T) *hrIdP {
 	m.srv = httptest.NewServer(mux)
 	t.Cleanup(m.srv.Close)
 	return m
+}
+
+// cibaPoll answers a CIBA token poll the way Keycloak does: pending
+// until answered, then the approver's tokens exactly once.
+func (m *hrIdP) cibaPoll(t *testing.T, w http.ResponseWriter, id string) {
+	m.mu.Lock()
+	var req *cibaRequest
+	for _, c := range m.ciba {
+		if c.id == id {
+			req = c
+		}
+	}
+	state := "invalid_grant"
+	if req != nil {
+		state = req.state
+		if state == "approved" {
+			req.state = "spent"
+		}
+	}
+	m.mu.Unlock()
+	w.Header().Set("content-type", "application/json")
+	switch state {
+	case "approved":
+		tok := m.sign(t, map[string]any{"sub": req.loginHint + "-id", "preferred_username": req.loginHint, "aud": "cpex-gateway"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": tok, "id_token": tok, "token_type": "Bearer", "expires_in": 300})
+	case "pending":
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending"})
+	case "denied":
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "access_denied"})
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+	}
+}
+
+// answer sets the state of the newest backchannel request and returns it.
+func (m *hrIdP) answer(t *testing.T, state string) cibaRequest {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.ciba) == 0 {
+		t.Fatal("no CIBA request was dispatched")
+	}
+	req := m.ciba[len(m.ciba)-1]
+	req.state = state
+	return *req
+}
+
+func (m *hrIdP) cibaCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.ciba)
 }
 
 func jwtSubject(token string) string {
@@ -122,7 +202,7 @@ func (m *hrIdP) sign(t *testing.T, claims map[string]any) string {
 // a user token.
 var hrPersonas = map[string]map[string]any{
 	"alice": {"roles": []string{"engineer"}, "teams": []string{"engineering"}, "permissions": []string{"tool_execute"}},
-	"bob":   {"roles": []string{"hr"}, "teams": []string{"hr"}, "permissions": []string{"tool_execute", "view_ssn", "pii_access", "email_send"}},
+	"bob":   {"roles": []string{"hr"}, "teams": []string{"hr"}, "permissions": []string{"tool_execute", "view_ssn", "pii_access", "email_send"}, "manager": "alice"},
 	"eve":   {"roles": []string{"hr"}, "teams": []string{"hr"}, "permissions": []string{"tool_execute"}},
 }
 
@@ -429,3 +509,93 @@ func TestHRDemoToolsListAllowed(t *testing.T) {
 	pctx.Headers.Set("X-User-Token", idp.userToken(t, "bob"))
 	wantContinue(t, "tools/list", p.OnRequest(context.Background(), pctx))
 }
+
+func adjustArgs(amount int) map[string]any {
+	return map[string]any{"employee_id": "EMP-001234", "amount": amount}
+}
+
+// adjust sends Bob's adjust_compensation call, resuming eid when set.
+func adjust(t *testing.T, p *CPEX, idp *hrIdP, amount int, eid string) (pipeline.Action, *pipeline.Context) {
+	t.Helper()
+	call := hrCall{user: "bob", tool: "adjust_compensation", args: adjustArgs(amount)}
+	if eid != "" {
+		call.extra = http.Header{"X-Policy-Elicitation-Id": {eid}}
+	}
+	pctx := call.pctx(t, idp)
+	return p.OnRequest(context.Background(), pctx), pctx
+}
+
+// wantPending checks the call was suspended and returns the id to resume
+// with. The approver is named when the approval is first requested.
+func wantPending(t *testing.T, label string, a pipeline.Action) string {
+	t.Helper()
+	wantReject(t, label, a, "cpex.elicitation_pending")
+	if a.Violation.RPCCode != rpcElicitationPending {
+		t.Fatalf("%s: RPCCode = %d, want %d", label, a.Violation.RPCCode, rpcElicitationPending)
+	}
+	eid, _ := a.Violation.Details["elicitation_id"].(string)
+	if eid == "" {
+		t.Fatalf("%s: details = %v, want an elicitation id", label, a.Violation.Details)
+	}
+	if ap, ok := a.Violation.Details["approver"]; ok && ap != "alice" {
+		t.Fatalf("%s: approver = %v, want alice", label, ap)
+	}
+	return eid
+}
+
+// Scenario 10: an adjustment at or under $10,000 needs no approval.
+func TestHRDemoAdjustUnderThreshold(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+	a, _ := adjust(t, p, idp, 5000, "")
+	wantContinue(t, "bob +5000", a)
+	if n := idp.cibaCount(); n != 0 {
+		t.Fatalf("CIBA requests = %d, want 0", n)
+	}
+}
+
+// Scenario 11: over $10,000 the call is suspended until Bob's manager
+// approves; the approval is spent by the call it lets through.
+func TestHRDemoAdjustNeedsApproval(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+
+	eid := wantPending(t, "bob +15000", first(adjust(t, p, idp, 15000, "")))
+	if req := idp.answer(t, "pending"); req.loginHint != "alice" {
+		t.Fatalf("approval asked of %q, want alice", req.loginHint)
+	}
+	if got := wantPending(t, "retry before approval", first(adjust(t, p, idp, 15000, eid))); got != eid {
+		t.Fatalf("retry opened a new approval %q, want %q", got, eid)
+	}
+
+	idp.answer(t, "approved")
+	wantContinue(t, "retry after approval", first(adjust(t, p, idp, 15000, eid)))
+
+	// Spent: the same id does not authorize a second change.
+	wantReject(t, "replayed approval", first(adjust(t, p, idp, 20000, eid)), "cpex.elicitation_unknown_id")
+
+	// A new $20,000 change asks again.
+	if got := wantPending(t, "bob +20000", first(adjust(t, p, idp, 20000, ""))); got == eid {
+		t.Fatal("a new change reused the spent approval")
+	}
+}
+
+// An approval does not stretch past the route's scope, and a refusal
+// is a deny.
+func TestHRDemoAdjustScopeAndRefusal(t *testing.T) {
+	idp := newHRIdP(t)
+	p := hrPlugin(t, idp)
+
+	eid := wantPending(t, "bob +30000", first(adjust(t, p, idp, 30000, "")))
+	idp.answer(t, "approved")
+	wantReject(t, "over scope", first(adjust(t, p, idp, 30000, eid)), approvalStepDeny)
+
+	eid = wantPending(t, "bob +12000", first(adjust(t, p, idp, 12000, "")))
+	idp.answer(t, "denied")
+	wantReject(t, "refused", first(adjust(t, p, idp, 12000, eid)), approvalStepDeny)
+}
+
+// approvalStepDeny is the code of a deny from the route's approval step.
+const approvalStepDeny = "cpex.routes_tool_adjust_compensation_pre_invocation_1_"
+
+func first(a pipeline.Action, _ *pipeline.Context) pipeline.Action { return a }

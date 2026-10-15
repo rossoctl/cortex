@@ -1,0 +1,69 @@
+# CIBA approval channel — the manager's "phone". Keycloak POSTs each
+# approval request here (see the CIBA env on k8s/10-keycloak.yaml), and
+# Approve/Deny posts the answer back to Keycloak.
+#
+# DEMO ONLY: its routes are unauthenticated.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-channel
+  namespace: cpex-demo
+spec:
+  selector:
+    app.kubernetes.io/name: auth-channel
+  ports:
+    - name: http
+      port: 5001
+      targetPort: 5001
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-channel
+  namespace: cpex-demo
+  labels:
+    app.kubernetes.io/name: auth-channel
+    app.kubernetes.io/part-of: cpex-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth-channel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: auth-channel
+        app.kubernetes.io/part-of: cpex-demo
+    spec:
+      containers:
+        - name: auth-channel
+          image: auth-channel:dev
+          imagePullPolicy: Never
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: KEYCLOAK_BASE
+              value: "http://keycloak.cpex-demo:8080"
+            - name: KEYCLOAK_REALM
+              value: "cpex-demo"
+          ports:
+            - name: http
+              containerPort: 5001
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5001
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "64Mi"
+            limits:
+              memory: "128Mi"

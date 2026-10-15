@@ -22,7 +22,8 @@ Endpoints:
 than print a claim next to a log line.
 
 Tools:
-    get_compensation, send_email, display_compensation, get_directory
+    get_compensation, send_email, display_compensation, get_directory,
+    search_repos, adjust_compensation
 """
 
 import base64
@@ -240,12 +241,31 @@ def tool_search_repos(args: dict[str, Any]) -> dict[str, Any]:
     return {"matches": matches, "query": {"repo_name": repo_name, "visibility": visibility}}
 
 
+def tool_adjust_compensation(args: dict[str, Any]) -> dict[str, Any]:
+    # A change large enough to need a manager's approval only gets here
+    # once the sidecar's policy has it; the tool just applies it.
+    employee_id = args.get("employee_id", "")
+    amount = int(args.get("amount", 0))
+    employee = EMPLOYEES.get(employee_id)
+    if not employee:
+        return {"error": f"Employee {employee_id} not found"}
+    employee["salary"] += amount
+    return {
+        "status": "applied",
+        "employee_id": employee["employee_id"],
+        "name": employee["name"],
+        "adjustment": amount,
+        "new_salary": employee["salary"],
+    }
+
+
 TOOLS = {
     "get_compensation": tool_get_compensation,
     "send_email": tool_send_email,
     "display_compensation": tool_display_compensation,
     "get_directory": tool_get_directory,
     "search_repos": tool_search_repos,
+    "adjust_compensation": tool_adjust_compensation,
 }
 
 # ---------------------------------------------------------------------------
