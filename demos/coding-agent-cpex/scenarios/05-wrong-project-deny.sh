@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A clean report to project B. The support credential reaches both
-# projects; the developer is on A only, so policy refuses it.
+# Block a report to project B: the developer belongs only to A, even though
+# the support credential permits access to both projects.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

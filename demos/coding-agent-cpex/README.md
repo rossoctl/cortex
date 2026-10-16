@@ -1,158 +1,217 @@
-# Coding agent behind Cortex and CPEX
+# Coding agent security with Cortex and CPEX
 
-A coding agent's sandbox already decides which commands run and which hosts
-they reach. It does not decide what may leave through an allowed host. This
-demo puts Cortex, built with the cpex plugin, behind the sandbox's network
-proxy, where a policy decides on what each request carries.
+This demo runs a scripted coding agent through Cortex with the
+[cpex bridge](../../core/plugins/cpex/README.md).
+The agent submits bug reports to a mock support service. Policy checks block
+reports containing secrets, reports for unauthorized projects, and later
+reports from sessions that have read a secret.
 
-## What a hardened setup already does
+Cortex also checks the model's proposed tool calls for secret leaks before
+returning them to the agent. The scenarios use scripted model responses, so
+you can repeat each test and check its outcome.
 
-| Control | Provides | What remains | This demo adds |
-|---|---|---|---|
-| Permission rules | which commands and tools run | an allowed `curl` sends whatever it is given | a decision on the request itself |
-| Sandbox with a domain allowlist | an OS boundary; egress by hostname | an allowed host receives any content, for any resource | the same boundary, routed to a policy on body, path and session history |
-| Masked credentials (`mask`, `injectHosts`) | commands never hold the secret | the real value is injected on every request to those hosts, whatever it carries | credential custody gated on the decision: the credential is fetched only for a request the policy allowed (`--custody`) |
-| Secret scanners | secrets found in files and commits | nothing on the egress path; no notion of what the session has read | a content check at egress, and a session tainted once it reads a secret |
-| Hooks | a look at each tool call before it runs | they see the command string, not the bytes sent | decisions on the wire, and on the model's proposed tool calls |
+[![asciicast](./demo/coding-agent-cpex.svg)](https://asciinema.org/a/ixFycJuuJlZqrEGR)
 
-Scenario 01, blocking an unapproved host, is what a sandbox allowlist does
-already; it is there for comparison.
+To use the same Cortex and policy with real Claude Code, follow the
+[Claude Code guide](claude-code/README.md).
 
-## What goes through cortex
+## Run the demo
 
-| Traffic | Route to cortex | Status |
+You need:
+
+- macOS on arm64.
+- `python3`, `openssl`, `curl`, `jq`, `lsof`, and `gzip`.
+- [`srt`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime),
+  installed with `npm install -g @anthropic-ai/sandbox-runtime`.
+- DNS resolution for `localtest.me`, which resolves to loopback.
+- A cpex build of Cortex: run `make cortex-cpex` from the repository root,
+  or install it with `install.sh --cpex`.
+
+From the repository root:
+
+```sh
+cd demos/coding-agent-cpex
+./run.sh up                   # Start Cortex and the mock services
+./run.sh scenarios            # Run all scenarios and print a summary
+./run.sh walkthrough          # Step through the same scenarios with narration
+./run.sh down                 # Stop the demo
+```
+
+The walkthrough pauses for Enter between scenarios. Use `--fast` to skip
+pauses or `--pace N` to advance automatically every N seconds.
+
+The demo starts a separate Cortex instance on loopback ports `4770x`, with
+its own CA and state under `.state/` and keys under `config/identity/`.
+It leaves `~/.cortex` and any installed Cortex service on `:47600` unchanged.
+Startup fails if another process is using a demo port.
+
+### Optional: keep the support credential in Vault
+
+Start with `./run.sh up --custody` to have Cortex retrieve and attach the
+support credential only after a report passes policy checks. The agent
+never receives the credential, and the support service requires it.
+
+This mode needs Docker and a Cortex build linked against CPEX 0.3.1 or
+later, as provided by `make cortex-cpex`. Without `--custody`, scenarios 07
+and 08 are skipped.
+
+## Scenarios
+
+| Scenario | Action | Expected result |
 |---|---|---|
-| sandboxed commands and their children | the sandbox's proxy port | enforced: there is no other route |
-| the agent's own model calls (and WebFetch, for Claude Code) | `HTTPS_PROXY` | monitored: the process honours it |
-| file tools, local MCP servers, hooks | none | outside both |
+| 00 | Bypass the proxy or read the developer token from a sandboxed command | Both attempts blocked by the sandbox |
+| 01 | Send a report to an unapproved host | Connection blocked (403) |
+| 02 | Send a report without secrets to project A | Accepted (201) |
+| 03 | Send a report containing an AWS key | Report blocked (403) |
+| 04 | Read `.env`, then send a report without secrets | Report blocked (403) |
+| 05 | Send a report to project B as a developer authorized only for A | Report blocked (403) |
+| 06 | Send a report without secrets from a new session | Accepted (201) |
+| 07 | Send valid reports with `--custody` enabled | Accepted (201), with the credential attached by Cortex |
+| 08 | With `--custody`, send disallowed reports, then a valid report while Vault is unavailable | All blocked (403); no reports delivered |
+| 09 | After reading `.env`, receive a model response proposing a command that leaks the key | Model response blocked (403); the proposed command never runs |
 
-Everything runs on this machine. A scripted agent talks to a mock Anthropic
-API and runs the tools the mock asks for: `Read` in-process, `Bash` under
+The scenarios also test several bypass attempts and failure cases:
+
+- **01:** Setting `Host: support.localtest.me` does not disguise a connection
+  to `paste.evil.example`: both attempts get `cpex.egress_host_not_allowed`.
+  Cortex also rejects requests whose `Host` differs from the tunnel's
+  destination (421).
+- **03:** The key triggers `cpex.secret_in_body`. Padding it beyond the
+  inspection limit or gzip-encoding the body triggers
+  `cpex.egress_body_uninspectable`.
+- **04:** Changing `X-Session-Id` does not bypass `cpex.session_tainted_secret`.
+- **07–08:** Cortex replaces a made-up `Authorization` header with the Vault
+  credential. Disallowed reports never trigger a Vault lookup. If Vault
+  does not respond, an otherwise valid report gets
+  `cpex.delegation_vault_timeout`.
+- **09:** The model response check runs for both JSON and streamed replies
+  (SSE), returning `cpex.secret_in_tool_call`. A report without secrets from
+  a separate session still succeeds.
+
+Checks inspect tool output, the Cortex session timeline, and the mock
+services' request logs. They verify that blocked reports never reach the
+support service, denial responses and CPEX decision records omit the test
+secret, and neither mock receives the developer token. Model traffic that
+contains a secret can still appear on the timeline; see [Limits](#limits).
+
+## What goes through Cortex
+
+| Traffic | Route to Cortex | Coverage |
+|---|---|---|
+| Sandboxed commands and their children | The sandbox's proxy port | Enforced: commands have no other network route |
+| The agent's model calls (and WebFetch in Claude Code) | The agent's proxy configuration; `HTTPS_PROXY` for Claude Code | Routed through Cortex while the process respects that configuration |
+| File tools, local MCP servers, and hooks | No direct interception | Execution is outside the sandbox and Cortex's traffic inspection |
+
+The agent and both mock services run locally. The mock Anthropic API tells
+the agent which tools to run: `Read` runs in the agent process; `Bash` runs in
 [`srt`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime), the
-sandbox runtime Claude Code uses, with its network pointed at the demo
-Cortex. A mock support service takes bug reports for projects A and B.
+sandbox runtime used by Claude Code. Sandboxed commands can reach the
+network only through Cortex. The mock support service accepts bug reports
+for projects A and B.
 
 ```text
  agent ──(its own model calls, X-Claude-Code-Session-Id)──┐
    └─ srt sandbox: curl ──(only route out)───────────────┤
                                                           ▼
-                     demo cortex :47700  inference-parser → mcp-parser → cpex
+                     demo Cortex :47700  inference-parser → mcp-parser → cpex
                           │                              │
                           ▼                              ▼
           mock LLM llm.localtest.me:47710   mock support support.localtest.me:47711
 ```
 
-## What it shows
-
-| Scenario | Request | Outcome |
-|---|---|---|
-| 00 | sandboxed `curl --noproxy '*'` to the support service; `cat` of the developer token | both fail: the sandbox is the boundary |
-| 01 | report to `paste.evil.example`; the same with `Host: support.localtest.me` | tunnel refused both times, `cpex.egress_host_not_allowed` (what a sandbox allowlist does too); policy judges the tunnel's host, and a request inside a tunnel whose `Host` names another host gets a 421 |
-| 02 | clean report, project A | 201 |
-| 03 | report carrying an AWS key; the same padded past the excerpt; gzip-encoded | 403 `cpex.secret_in_body`, `cpex.egress_body_uninspectable` |
-| 04 | agent reads `.env`, then sends a clean report, also with a spoofed `X-Session-Id` | the model turn goes through and taints the session; reports 403 `cpex.session_tainted_secret` |
-| 05 | clean report, project B | 403 `cpex.project_not_authorized`: the developer is on A only |
-| 06 | the clean report from a new session | 201: the taint is the session's, not the developer's |
-| 07 | with `--custody`: a clean report to project A, then the same with a made-up `Authorization` | 201 both times; the support service received the Vault-held credential, never seen by the agent, the timeline or cortex's logs |
-| 08 | with `--custody`: reports to project B and with a secret; then a clean report while Vault does not answer | 403 and Vault not consulted; then 403 `cpex.delegation_vault_timeout` |
-| 09 | after reading `.env`, the model proposes a `curl` pasting the key, as JSON and as an SSE stream; an untainted session's clean report | the model turn 403 `cpex.secret_in_tool_call`, so the agent runs nothing; the clean report 201 |
-
-Each scenario checks the agent's tool output, the Cortex session timeline
-and the mock services' request logs, including that no deny body or timeline
-carries the secret and that the developer token never reaches a mock.
-
 ## How it works
 
-- **Who is asking.** Cortex holds a developer JWT (`principal.token_file`)
-  and hands it to CPEX identity resolution in memory. It is never forwarded,
-  and the sandbox cannot read it.
-- **Which session.** `session_source: resolved` keys taint on the session the
-  agent named with `X-Claude-Code-Session-Id`. The agent's `curl` is a child
-  of the agent, so Cortex files it in that session by the process chain; a
-  header the child sets does not move it.
-- **Egress as a tool call.** With `synthetic_egress`, every request no parser
-  claims is a call to the tool `http_egress`; the policy decides on its host,
-  path and a bounded body excerpt ([`config/cpex-policy.yaml`](config/cpex-policy.yaml)).
-- **Taint without blocking the turn.** The `llm` route's CEL step denies when
-  a tool result holds a secret, and taints the session as it does. PPE 0.5.0
-  has no way to taint without denying, so the plugin lists that code in
-  `observe_codes`: the deny is recorded as `observe` and the turn is
-  forwarded.
-- **Intent before execution.** On `cmf.llm_output` the same route reads the
-  tool calls the model proposes (`custom.tool_calls`, assembled from the
-  stream when the reply is SSE). In a tainted session, one carrying a secret
-  or sending a secrets file over the network refuses the reply: the agent
-  gets a 403 instead of the tool call. Anything else goes on to the wire
-  policy.
+The policy is in [`config/cpex-policy.yaml`](config/cpex-policy.yaml), with
+bridge settings in [`config/cortex.yaml`](config/cortex.yaml).
 
-## Run it
-
-Prerequisites: macOS on arm64, `python3`, `openssl`, `curl`, `jq`, `srt`
-(`npm install -g @anthropic-ai/sandbox-runtime`), DNS for `localtest.me`
-(it resolves to loopback), and a cpex build of Cortex (`make cortex-cpex`
-from the repo root, or `install.sh --cpex`).
-
-```sh
-./run.sh up                   # cortex and mocks on 4770x; keys under .state/ and config/identity/
-./run.sh scenarios            # all scenarios, with a summary
-./run.sh walkthrough          # the same, narrated; --fast for no pauses, --pace N to advance alone
-./run.sh down
-```
-
-`./run.sh up --custody` adds credential custody: Vault in dev mode
-([`docker-compose.yml`](docker-compose.yml), loopback only, root token in
-`.state/`), seeded with jwt auth for the developer key and the support
-credential at `agents/dev-alice/support`. The support service then refuses
-reports without it, and the policy's last `http_egress` step
-(`delegate(support-vault, ...)`) has CPEX fetch it, as the developer, only
-for a report every earlier step allowed; Cortex attaches it
-(`delegated_credentials`), and only to `support.localtest.me`
-(`delegated_credential_hosts`). It needs Docker and a Cortex built against CPEX 0.3.1 or later, which
-`make cortex-cpex` links; without `--custody`, scenarios 07 and 08 skip.
-
-`./run.sh check` checks that [`demo/steps.md`](demo/steps.md), the
-walkthrough and `scenarios/` list the same scenarios, and runs its test.
-`python3 demo/record_demo.py --record` records the walkthrough with
-asciinema.
-
-`demo/record_tmux.sh` records it as a video: a caption for each step on top
-(from the last column of `demo/steps.md`), the walkthrough in presenter
-mode on the left, the CPEX policy rule for the step on the right (dimmed
-until the verdict, then highlighted with ALLOW or DENY; read from the
-`# slide:` markers in `config/`), and agentop on the current session below
-it. `--only NN` records one scenario. It needs tmux, asciinema 3, agg,
-ffmpeg and `make agentop`, clears the demo cortex's session list, and writes
-a `.cast`, `.gif` and `.mp4` under `.sketchpad/demo-video/`. It follows the
-walkthrough through `WALKTHROUGH_HOOK`; see `walkthrough.sh --help`.
-
-`./walkthrough.sh --presenter` (or `PRESENTER=1`) runs every check but
-prints one line per agent action and one outcome per step; a failing check
-still prints in full.
-
-To run a real Claude Code session against the same cortex and policy, see
-[`claude-code/README.md`](claude-code/README.md).
-
-`up` refuses to start when a process it did not start holds a demo port. It
-runs its own `cortex --config config/cortex.yaml` with its own CA and state,
-and never touches `~/.cortex` or an installed service on `:47600`.
+- **Identify the developer.** Cortex loads a developer JWT from
+  `principal.token_file` and passes it to CPEX in memory. The token is never
+  forwarded to either mock service, and the sandbox cannot read it.
+- **Associate requests with a session.** The agent names its session with
+  `X-Claude-Code-Session-Id`. Cortex uses process ancestry to associate
+  child commands such as `curl` with that session. With
+  `session_source: resolved`, a child's `X-Session-Id` header cannot change
+  that association.
+- **Check HTTP requests.** With `synthetic_egress`, requests not handled by
+  another parser become `http_egress` tool calls. Policy checks the host,
+  path, and request body. This demo inspects up to 8 KiB and blocks bodies
+  that exceed that limit or use an unsupported encoding.
+- **Track secret reads.** When a model request includes a tool result
+  matching a secret pattern, CPEX marks the session as having read a secret
+  ("tainted"). PPE 0.5.0 requires a denial to set this mark. The bridge's
+  `observe_codes` setting records `secret_in_tool_result` as `observe`,
+  allowing the model request to continue. Later support reports from the
+  session are blocked.
+- **Check proposed tool calls.** On `cmf.llm_output`, policy checks
+  `custom.tool_calls`, including calls assembled from an SSE stream. In a
+  tainted session, a call containing a recognized secret or matching a
+  command pattern for sending a secrets file causes Cortex to block the
+  model response (403). Requests from commands that do run are still
+  checked by the HTTP policy.
+- **Fetch credentials after approval.** With `--custody`, the final
+  `http_egress` policy step calls `delegate(support-vault, ...)` to retrieve
+  the support credential as the developer. Cortex attaches it through
+  `delegated_credentials`, restricted to `support.localtest.me` by
+  `delegated_credential_hosts`. Vault runs in dev mode on loopback, with JWT
+  authentication for the developer key, the credential at
+  `agents/dev-alice/support`, and its root token under `.state/`. See
+  [`docker-compose.yml`](docker-compose.yml).
 
 ## Limits
 
-- The scripted agent is a stand-in for Claude Code, run under `srt`: the
-  scenarios show policy decisions, not a model's behaviour. For the same
-  policy enforced on a real, sandboxed Claude Code, see
-  [`claude-code/`](claude-code/README.md).
-- Content checks cover the patterns in the policy, in the first 8 KiB of a
-  body sent as is; a body past that, or encoded, is refused. Secrets
-  transformed some other way, and a single command that reads and sends,
-  are out of reach.
-- With cpex in the chain every response is buffered, SSE included, under
-  the listener's 10MB cap: a streamed reply reaches the agent only once it
-  is complete, and a large download through a bridged host fails. Tunnelled
-  (passthrough) hosts avoid that, and are not inspected.
-- Cortex records model traffic, so a secret the agent reads is on the
-  session timeline as part of the model call that carried it.
-- Taint lives in CPEX's in-process store and resets when Cortex restarts or
-  reloads its config.
-- Without `--custody` the support service accepts reports without a
-  credential.
+- The mock model returns scripted responses. The demo tests specific policy
+  rules and bypass attempts; it does not measure a live model's behavior.
+- Secret detection uses the patterns in the policy. Transformed secrets
+  that do not match those patterns may go undetected. HTTP request bodies
+  larger than 8 KiB or using an encoding other than `identity` are blocked.
+- Session tracking starts when Cortex sees a secret in a tool result sent
+  to the model. A command that reads and sends a secret can run before
+  Cortex observes that read. HTTP request checks still apply to its traffic.
+- With cpex enabled, Cortex buffers responses, including SSE streams, up
+  to the listener's 10 MB cap. The agent receives a streamed reply only
+  after it is complete. Downloads exceeding the cap fail when Cortex
+  decrypts and inspects the connection. Hosts configured for passthrough
+  avoid this buffering and are not inspected.
+- Model traffic is recorded on the session timeline. A tool result sent to
+  the model can therefore expose the secret there. The developer JWT and,
+  with `--custody`, the Vault support credential are kept out of that traffic.
+- Session taint is stored in CPEX's process memory and resets when Cortex
+  restarts or reloads its configuration.
+- Without `--custody`, the mock support service accepts reports without a
+  support credential.
+
+## Recording and development
+
+Run `./run.sh check` to verify that [`demo/steps.md`](demo/steps.md), the
+walkthrough, and `scenarios/` list the same scenarios, and to run the
+recording script's tests.
+
+With the demo running, `python3 demo/record_demo.py --record` records the
+walkthrough using asciinema. For a video showing the walkthrough, policy
+rules, and agentop together, use `demo/record_tmux.sh`. It requires tmux,
+asciinema 3, agg, ffmpeg, and an agentop build (`make agentop` from the
+repository root).
+
+The video recorder clears the demo Cortex's session list and writes `.cast`,
+`.gif`, and `.mp4` files under the repository's `.sketchpad/demo-video/`.
+Use `--only NN` to record one scenario. See
+[`demo/record_tmux.sh`](demo/record_tmux.sh) or run it with `--help` for layout
+and timing details.
+
+For shorter terminal output, run `./walkthrough.sh --presenter` (or set
+`PRESENTER=1`). It prints one line per agent action and one outcome per step
+while keeping all checks enabled. Failed checks still print in full. See
+`./walkthrough.sh --help` for other options.
+
+## References
+
+- [PPE (Praxis Policy Engine)](https://github.com/praxis-proxy/policy) provides
+  the policy engine behind the demo's reference monitor, including identity
+  resolution, authorization, session tracking, and credential delegation.
+  In this demo, it validates the developer's identity, checks requests and
+  proposed tool calls, tracks sessions that have read secrets, and optionally
+  retrieves support credentials from Vault for approved requests.
+- [CPEX](https://github.com/contextforge-org/cpex) wraps PPE and provides Go
+  bindings through a C FFI. Cortex's cpex bridge uses those bindings to
+  submit requests and model responses for evaluation and enforce the
+  resulting decisions.

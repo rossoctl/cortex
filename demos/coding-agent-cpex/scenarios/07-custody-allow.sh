@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Credential custody: the support service now requires its credential,
-# and the agent has none. Cortex fetches it from Vault, as the developer,
-# only after the policy allowed the report, and attaches it. A credential
-# the agent makes up is replaced. Needs ./run.sh up --custody.
+# With ./run.sh up --custody, Cortex fetches the required support credential
+# from Vault as the developer, after policy approval. The agent never holds
+# it, and Cortex replaces any Authorization value the agent supplies.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 require_custody

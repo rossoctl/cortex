@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-"""Show the policy behind each walkthrough scenario, and the rule that decided.
+"""Display policy rules and decisions for each walkthrough scenario.
 
     python3 demo/policy_slide.py 03-secret-in-report-deny   # print one slide
     python3 demo/policy_slide.py 03-secret-in-report-deny \\
         --verdict 'deny cpex.secret_in_body report with AWS key'
-    python3 demo/policy_slide.py --watch <file>             # redraw whenever
-                                                            # <file> changes
+    python3 demo/policy_slide.py --watch <file>             # follow file changes
 
-A slide has two states. Before the request it shows the rules that apply,
-dimmed, each with one plain line on what it checks. Once a verdict lands it
-shows a DENY or ALLOW badge and highlights the rule that decided: the one
-whose deny() carries the code, or every rule on an allow.
+Before a request, rules are dimmed and labeled with what they check.
+After a decision, the slide shows DENY or ALLOW and highlights the matching
+deny() rule, or all rules for an allowed request.
 
-The watched file holds the scenario name on its first line and, once the
-agent's request has an outcome, `allow|deny|blocked <code> <label>` on its
-second (see demo/record_tmux.sh). `summary` names the closing slide.
+The watched file contains the scenario name on line 1 and
+`allow|deny|blocked <code> <label>` on line 2 after a decision.
+See demo/record_tmux.sh. `summary` selects the closing slide.
 
-The excerpts are read from the live config at render time, between
-`# slide: <name>` and `# end-slide` comments in config/cpex-policy.yaml and
-config/cortex.yaml, so they cannot drift from what cortex runs. Comment
-lines inside an excerpt are left out.
+Excerpts are read from config/cpex-policy.yaml and config/cortex.yaml at
+render time, between `# slide: <name>` and `# end-slide`. Comments inside
+excerpts are omitted.
 """
 
 from __future__ import annotations
@@ -150,7 +147,7 @@ FINDINGS = [
 
 INTRO = ("policy", [], f"The rules from {POLICY} that apply to each step appear here.")
 
-# What a verdict's code means, in one plain line.
+# Decision code descriptions.
 CODE_PLAIN = {
     "secret_in_body": "The body holds an AWS key.",
     "egress_body_uninspectable": "The body is padded or compressed past what policy can read.",
@@ -162,7 +159,7 @@ CODE_PLAIN = {
     "sandbox": "Outside Cortex, the sandbox lets nothing through.",
     "delegation_vault_timeout": "Vault did not answer, so there is no credential to attach.",
 }
-# The agent sees a refused tunnel, not the code behind it.
+# A blocked CONNECT returns a tunnel error without the policy code.
 CODE_ALIAS = {"connect_refused": "egress_host_not_allowed"}
 
 RESET, BOLD, DIM, REV = "\033[0m", "\033[1m", "\033[2m", "\033[7m"
@@ -175,8 +172,7 @@ BADGE = {
 
 
 def excerpt(rel: str, name: str, demo_dir: Path = DEMO_DIR) -> list[str]:
-    """The lines between `# slide: name` and the next `# end-slide`, comments
-    dropped and the common indent removed."""
+    """Read a named slide excerpt, removing comments and common indentation."""
     lines, inside = [], False
     for line in (demo_dir / rel).read_text().splitlines():
         s = line.strip()
@@ -193,8 +189,7 @@ def excerpt(rel: str, name: str, demo_dir: Path = DEMO_DIR) -> list[str]:
 
 
 def blocks(lines: list[str]) -> list[list[str]]:
-    """An excerpt split into its rules: each top-level `- ` item, or a whole
-    excerpt that is not a list."""
+    """Split a list excerpt into rules; keep non-list excerpts whole."""
     out: list[list[str]] = []
     for x in lines:
         if x.startswith("- ") or not out:
@@ -227,9 +222,10 @@ def wrap(text: str, width: int) -> list[str]:
 
 
 def fold(line: str, width: int) -> list[str]:
-    """A long YAML line folded at spaces to width, continuation lines
-    indented four past the line's own indent. A word longer than a line is
-    split where it must be."""
+    """Wrap YAML at spaces, indenting continuations by four extra columns.
+
+    Split words that exceed the available width.
+    """
     if len(line) <= width:
         return [line]
     indent = " " * (len(line) - len(line.lstrip()) + 4)
@@ -274,7 +270,7 @@ def decided(block: list[str], verdict: tuple[str, str, str] | None) -> bool:
 
 
 def badge(verdict: tuple[str, str, str] | None, width: int) -> list[str]:
-    """Three lines, always: the badge, what it means, what it was about."""
+    """Return three lines: decision badge, explanation, and affected action."""
     if verdict is None:
         return [f"{DIM}  waiting for the agent's request…{RESET}", "", ""]
     kind, code, label = verdict
@@ -307,8 +303,7 @@ def render(scenario: str, width: int, demo_dir: Path = DEMO_DIR, verdict: str | 
         for block in blocks(excerpt(rel, name, demo_dir)):
             hit = decided(block, v)
             bar = BADGE[v[0]][1] + "▌" + RESET if hit else " "
-            # Green strings only on an allow, so green never reads as passing
-            # on the rule that refused.
+            # Reserve green for allowed requests.
             strings = GREEN if v and v[0] == "allow" else YELLOW
             for line in block:
                 for x in fold(line, width - 2):
@@ -335,8 +330,7 @@ def watch(state: Path) -> None:
             if key != shown:
                 shown = key
                 body = render(scenario, size.columns - 1, verdict=verdict).split("\n")[: size.lines]
-                # One write, each line cleared to its end and the rest of the
-                # screen below: a redraw never shows a blank pane.
+                # Redraw in one write to avoid flicker; clear trailing content.
                 sys.stdout.write("\033[H" + "".join(f"{x}\033[K\r\n" for x in body[:-1]) + body[-1] + "\033[K\033[J")
                 sys.stdout.flush()
             time.sleep(0.1)

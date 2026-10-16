@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Point a real Claude Code session at the demo cortex, and check it arrived.
+# Configure Claude Code to use the demo Cortex and verify model traffic.
 #
 #   claude-code/setup.sh settings   write .state/claude-code/settings.json
 #                                   from settings.json.example
-#   claude-code/setup.sh wait       block until the demo session API
-#                                   holds a session with a model reply
-#                                   from a real Claude Code process
-#   claude-code/setup.sh check      the same, once; exit 1 if not yet
+#   claude-code/setup.sh wait       wait for a successful model call
+#                                   from Claude Code to appear in the
+#                                   demo session API
+#   claude-code/setup.sh check      check once; exit 1 if no call is found
 #
 # Assumes `./run.sh up --claude-code`. CLAUDE_INFERENCE_HOST names the
-# model API host when it is not api.anthropic.com (a gateway, say).
+# model API host if you use a gateway instead of api.anthropic.com.
 
 set -euo pipefail
 
@@ -47,9 +47,8 @@ settings() {
   echo "  then run: $0 wait"
 }
 
-# The session ids whose agent is Claude Code, whose model calls went to the
-# real API, and which got a 200 back. A curl naming itself claude-cli and
-# sending an unauthenticated request gets a 401, so it does not count.
+# Find Claude Code sessions with a successful model call to the configured API.
+# A curl request spoofing claude-cli but returning 401 does not qualify.
 claude_sessions() {
   local sid
   curl -fsS --max-time 5 "$SESSION_API/v1/sessions" \

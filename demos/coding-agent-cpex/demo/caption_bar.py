@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""The recording's caption bar: one plain sentence for the step on screen.
+"""Display the current recording step's caption.
 
     python3 demo/caption_bar.py 03-secret-in-report-deny   # print one caption
-    python3 demo/caption_bar.py --watch <file>             # redraw whenever
-                                                           # <file> names another step
+    python3 demo/caption_bar.py --watch <file>             # follow step changes
 
-The captions are the last column of demo/steps.md, numbered in step order;
-before the first step the bar shows its `Title:` line, and on `summary` its
-`Closing:` line. record_demo.py --check fails on a step without one. The bar
-draws centred bold text; demo/record_tmux.sh gives the pane its colour.
+Captions come from demo/steps.md and are numbered in walkthrough order.
+The bar shows `Title:` before the first step and `Closing:` on `summary`.
+record_demo.py --check requires a caption for every step. Text is centered
+and bold; demo/record_tmux.sh sets the pane color.
 """
 
 from __future__ import annotations

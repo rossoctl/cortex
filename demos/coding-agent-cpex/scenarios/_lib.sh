@@ -3,25 +3,22 @@
 #
 #   source "$(dirname "$0")/_lib.sh"
 #
-# A scenario runs the scripted agent against the demo cortex (run.sh up),
-# then checks three records: what the agent's tools got back, the cortex
-# session timeline, and what the mock services received.
+# Scenarios check tool results, the Cortex session timeline, and mock request
+# logs. Start the demo with run.sh up first.
 
 DEMO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../env.sh
 source "$DEMO_DIR/env.sh"
 
-# The synthetic secret in the fixtures, and the developer's token. Neither
-# may show up anywhere the scenarios look, except where noted.
+# Fixture secret and developer token used by the leak checks below.
 SECRET="AKIAIOSFODNN7EXAMPLE"
 DEV_JWT="$(cat "$IDENTITY_DIR/developer.jwt" 2>/dev/null)"
 
-# step <title>: print a scenario's header. The next run_agent names its
-# session with it.
+# step <title>: print the header and title the next run_agent's session.
 step() {
   SESSION_TITLE="$*"
   if presenter; then
-    # The recording's caption names the step; a blank line separates them.
+    # The caption already names the step; print only a separator.
     outcome_flush
     echo
     return
@@ -32,9 +29,8 @@ step() {
   echo "============================================================"
 }
 
-# PRESENTER=1 condenses the output for a recording: every check still runs,
-# but a step's passing checks fold into one outcome line, and a failing one
-# is printed in full. Without it the output is unchanged.
+# PRESENTER=1 summarizes passing checks and prints failures in full.
+# All checks still run.
 presenter() { [ "${PRESENTER:-0}" = 1 ]; }
 
 note() { presenter || echo "  ▸ $*"; }
@@ -48,9 +44,7 @@ OUTCOME_FACTS=()
 pass_() { CHECKS=$((CHECKS + 1)); presenter || printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
 fail_() { printf '  \033[1;31m✗\033[0m %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
 
-# What a step's passing checks established, for its outcome line: how a
-# request was refused (a cpex code, or who refused it), what was allowed (a
-# status), and a fact about what arrived.
+# Collect denial codes, allowed status codes, and delivery results for the summary.
 outcome_refused() {
   case "$1" in
     cpex.*) _outcome_add OUTCOME_CODES "${1#cpex.}" ;;
@@ -73,7 +67,7 @@ join() {
   printf '%s' "$out"
 }
 
-# outcome_flush: print the outcome line of the step so far, then start over.
+# outcome_flush: print and reset the current step's summary.
 outcome_flush() {
   presenter || return 0
   local parts=() line mark
@@ -109,14 +103,14 @@ finish() {
   presenter || printf '\n  \033[1;32mall expectations met\033[0m\n'
 }
 
-# walkthrough_hook <event> <args...>: run $WALKTHROUGH_HOOK, if set, with
-# the event. Its output and failures never reach the scenario.
+# walkthrough_hook <event> <args...>: call the optional recording hook.
+# Ignore its output and failures.
 walkthrough_hook() {
   [ -n "${WALKTHROUGH_HOOK:-}" ] || return 0
   "$WALKTHROUGH_HOOK" "$@" </dev/null >/dev/null 2>&1 || true
 }
 
-# new_session <label>: a fresh session id, s1 giving s1-<time>-<pid>-<n>.
+# new_session <label>: generate <label>-<time>-<pid>-<n>.
 new_session() {
   local id
   id="$1-$(date +%s)-$$-${RANDOM}"
@@ -124,8 +118,7 @@ new_session() {
   echo "$id"
 }
 
-# run_agent <scenario> <session> [--stream]: run the scripted agent; its
-# record is then in $AGENT_OUT.
+# run_agent <scenario> <session> [--stream]: save the agent's record to $AGENT_OUT.
 run_agent() {
   AGENT_OUT="$STATE_DIR/runs/$1-$2.json"
   mkdir -p "$STATE_DIR/runs"
@@ -137,14 +130,14 @@ run_agent() {
 
 tool_output() { jq -r --argjson i "$1" '.tools[$i].output // empty' "$AGENT_OUT"; }
 
-# expect_tool_status <n> <http status>: the nth tool call's curl got it.
+# expect_tool_status <n> <http status>: check the nth tool's HTTP status.
 expect_tool_status() {
   local got
   got="$(tool_output "$1" | sed -n 's/^HTTP \([0-9]*\)$/\1/p' | tail -1)"
   if [ "$got" = "$2" ]; then pass_ "tool call $1: HTTP $2"; outcome_allowed "$2"; else fail_ "tool call $1: expected HTTP $2, got '${got:-none}'"; fi
 }
 
-# expect_tool_denied <n> <code>: a 403 from cortex carrying the code.
+# expect_tool_denied <n> <code>: check for a Cortex 403 with this code.
 expect_tool_denied() {
   local out code
   out="$(tool_output "$1")"
@@ -165,8 +158,8 @@ expect_tool_connect_refused() {
   fi
 }
 
-# expect_tool_refused_disguised <n>: a request whose Host names another
-# host than its tunnel was refused, at the tunnel (403) or inside it (421).
+# expect_tool_refused_disguised <n>: check that a mismatched Host was blocked
+# at CONNECT (403) or inside the tunnel (421).
 expect_tool_refused_disguised() {
   local out
   out="$(tool_output "$1")"
@@ -195,8 +188,8 @@ expect_model_calls_ok() {
   if [ "$bad" = "0" ]; then pass_ "every model call was forwarded ($(jq '.model_calls | length' "$AGENT_OUT"))"; else fail_ "$bad model call(s) failed"; fi
 }
 
-# expect_model_denied <n> <code>: the nth model call came back a 403 with
-# the code, so the agent never saw that turn.
+# expect_model_denied <n> <code>: check that the nth model call returned 403
+# with this code, withholding the response from the agent.
 expect_model_denied() {
   local got
   got="$(jq -r --argjson i "$1" '"\(.model_calls[$i].status) \(.model_calls[$i].error)"' "$AGENT_OUT")"
@@ -234,7 +227,7 @@ expect_support_reports() {
   fi
 }
 
-# The developer token Cortex holds reaches neither mock, on any request.
+# Check that neither mock received the developer token.
 expect_no_principal_on_wire() {
   local all
   all="$(support_requests; llm_requests)"
@@ -251,8 +244,8 @@ expect_no_principal_on_wire() {
 
 session_json() { curl -fsS --max-time 5 "$SESSION_API/v1/sessions/$1?limit=2000"; }
 
-# expect_cpex <session> <action> <reason> [path]: a cpex invocation on the
-# timeline, on a request to path when given.
+# expect_cpex <session> <action> <reason> [path]: check a CPEX decision on the
+# timeline, optionally filtered by request path.
 expect_cpex() {
   local n
   n="$(session_json "$1" | jq --arg a "$2" --arg r "$3" --arg p "${4:-}" \
@@ -270,8 +263,8 @@ expect_session_host() {
   fi
 }
 
-# expect_no_tunnel_to <host> <session>: nothing in the session was sent to
-# host, whatever Host header a request carried.
+# expect_no_tunnel_to <host> <session>: check the destination independently
+# of the request's Host header.
 expect_no_tunnel_to() {
   if session_json "$2" | jq -e --arg h "$1" '[.events[]? | select(.host == $h or (.host | startswith($h + ":")))] | length == 0' >/dev/null; then
     pass_ "timeline: nothing in session $2 went to $1"
@@ -289,9 +282,9 @@ expect_tunnels_denied() {
   if [ "${n:-0}" = "$3" ]; then pass_ "timeline: $3 CONNECT(s) to $2 denied"; else fail_ "timeline: expected $3 denied CONNECT(s) to $2, got ${n:-none}"; fi
 }
 
-# The secret in what cortex returned and recorded. For a session whose
-# model calls carried the secret, those calls are recorded as sent, so the
-# check is narrowed to cpex's invocations.
+# Check for fixture-secret leaks in responses and recorded decisions.
+# Model requests may contain the secret, so those sessions check only
+# CPEX decision records, not the full timeline.
 expect_secret_absent() {
   local where="$1" text="$2"
   if printf '%s' "$text" | grep -qF "$SECRET"; then fail_ "the secret appears in $where"; else pass_ "no secret in $where"; fi
@@ -313,8 +306,8 @@ require_custody() {
   fi
 }
 
-# vault_logins: how many jwt logins Vault's audit log has recorded. CPEX
-# logs in as the developer once per credential it fetches.
+# vault_logins: count JWT logins in Vault's audit log.
+# CPEX logs in as the developer for each credential retrieval.
 vault_logins() {
   VAULT_ROOT_TOKEN=unused docker compose -f "$DEMO_DIR/docker-compose.yml" logs --no-log-prefix vault 2>/dev/null \
     | jq -R 'fromjson? | select(.type == "request" and .request.path == "auth/jwt/login")' 2>/dev/null \
@@ -333,8 +326,8 @@ expect_vault_logins() {
   fi
 }
 
-# expect_support_credential: every report the support service received
-# carried the Vault-held credential, and nothing else in Authorization.
+# expect_support_credential: verify that every received report's Authorization
+# contains only the support credential from Vault.
 expect_support_credential() {
   local want n bad
   want="Bearer $(cat "$SUPPORT_TOKEN_FILE")"
@@ -348,9 +341,8 @@ expect_support_credential() {
   fi
 }
 
-# expect_credential_contained <session>: the support credential is not in
-# what the agent was given or produced, the session timeline, or anything
-# under .state/ (cortex's log and state, the agent's runs) but its own file.
+# expect_credential_contained <session>: check for support credential leaks
+# in agent records, the timeline, and .state/, excluding its own token file.
 expect_credential_contained() {
   local tok file where=()
   tok="$(cat "$SUPPORT_TOKEN_FILE")"

@@ -1,7 +1,6 @@
-# Cortex runtime config for the coding-agent demo. run.sh starts the
-# demo's own cortex with it, from this directory and with DEMO_DIR and
-# DEMO_STATE set. Every listener is on 4770x and loopback, so it never
-# touches an installed cortex service on 4760x.
+# Demo Cortex config. run.sh starts Cortex from this directory with
+# DEMO_DIR and DEMO_STATE set. Listeners use loopback ports 4770x,
+# separate from an installed service on 4760x.
 mode: proxy-sidecar
 listener:
   roles: [forward]
@@ -16,16 +15,14 @@ tls_bridge:
   mode: enabled
   ca_dir: "${DEMO_STATE}/cortex-ca"
   generate_ca: true
-  # Bridge every host, so cpex sees each request inside a tunnel. The
-  # mocks listen on 47710 and 47711.
+  # Inspect every host. The mock services use ports 47710 and 47711.
   passthrough_hosts: []
   ports: [443, 8443, 47710, 47711]
   # The mocks' self-signed CA.
   upstream_ca_bundle: "${DEMO_STATE}/mock-ca/ca.crt"
 session:
-  # Only the agent's own header names a session; a generic X-Session-Id
-  # here would let the agent pick its session. Children of the agent land
-  # in its session through the process chain.
+  # Use the agent's session header and process ancestry to group requests.
+  # Accepting X-Session-Id here would let child commands change sessions.
   id_headers: [X-Claude-Code-Session-Id]
   client_affinity: false
   process_attribution: "on"
@@ -45,19 +42,15 @@ pipeline:
             on_response: [cmf.llm_output]
           config_file: "${DEMO_DIR}/config/cpex-policy.yaml"
           fail_open: false
-          # Requests no parser claims (the agent's curl) are policy calls to
-          # the tool http_egress.
+          # Present unparsed requests, including curl, as http_egress calls.
           synthetic_egress: true
-          # Taint follows the agent's session, never a header the agent
-          # or its children choose.
+          # Child commands inherit the parent agent's session and taint.
           session_source: resolved
-          # Cortex asserts the developer to CPEX; the agent never holds the
-          # token and it is never forwarded.
+          # Supply the developer token to CPEX without exposing or forwarding it.
           principal:
             token_file: "${DEMO_DIR}/config/identity/developer.jwt"
             header: x-developer-token
-          # The llm route taints on a secret in a tool result and must not
-          # block the turn. See the policy.
+          # Mark secret reads without blocking the model request.
           # slide: observe-codes
           observe_codes: [secret_in_tool_result]
           # end-slide

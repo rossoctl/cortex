@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Credential custody on a deny: a report the policy refuses never makes
-# cortex ask Vault, so no credential exists for it. With Vault not
-# answering, an allowed report is refused rather than sent without one.
-# Needs ./run.sh up --custody.
+# With ./run.sh up --custody, blocked reports never trigger a Vault lookup.
+# If Vault is unavailable, otherwise valid reports are also blocked.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 require_custody

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# The allowed host, the right project, an untainted session, and still no:
-# the report carries a secret. Padding the secret past what policy can see,
-# or compressing the body, is refused too.
+# Block a report containing a secret, even for an approved host and project.
+# Also block bodies padded beyond the inspection limit or gzip-encoded.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

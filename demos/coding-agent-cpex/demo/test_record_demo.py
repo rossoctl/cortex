@@ -1,4 +1,4 @@
-"""Tests for record_demo.py's drift guard. Run from demos/coding-agent-cpex:
+"""Test scenario list and caption checks. Run from demos/coding-agent-cpex:
 
 python3 -m unittest discover -s demo
 """

@@ -1,22 +1,18 @@
 """Scripted coding agent.
 
-It sends Anthropic Messages turns to the model through the demo cortex,
-named by X-Claude-Code-Session-Id as Claude Code names its own, and runs
-the tools the model asks for (with --stream, read from an SSE stream):
-Bash under srt (the sandbox Claude Code
-uses, its network pointed at the same cortex), Read in-process. It prints
-the transcript and writes every tool result to --out as JSON.
+Sends Anthropic Messages requests through the demo Cortex, using
+X-Claude-Code-Session-Id to identify the session. Runs Bash tools under srt
+and Read tools in the agent process. Supports JSON and SSE model responses.
+Prints the transcript and writes tool results to --out as JSON.
 
 Environment: DEMO_PROXY, DEMO_CA, LLM_URL, SRT_SETTINGS, WORKSPACE,
-SUPPORT_URL. AGENT_TURN_DELAY (seconds, default 0) waits before every model
-call after the first, so a recording can show the session filling in;
-AGENT_OPEN_DELAY makes the wait after the first call longer, while the
-recording opens the new session.
+SUPPORT_URL. AGENT_TURN_DELAY adds a delay in seconds before model calls
+after the first (default 0). AGENT_OPEN_DELAY can extend the first delay
+to let the recording open the session.
 
-PRESENTER=1 prints a short line per tool call and its outcome instead of the
-command and its output. When WALKTHROUGH_HOOK is set, the agent runs
-`$WALKTHROUGH_HOOK verdict allow|deny|blocked <code> <label>` once each tool
-call's outcome, or a refused model reply, is known.
+PRESENTER=1 prints tool summaries and outcomes. WALKTHROUGH_HOOK receives
+`verdict allow|deny|blocked <code> <label>` after a tool result or blocked
+model response.
 """
 
 import argparse
@@ -57,7 +53,7 @@ def say(line):
 
 
 def label(name, tool_input):
-    """A short line for a tool call: what it runs, where to, and what it carries."""
+    """Summarize a tool call's command, destination, and data."""
     if name == "Read":
         return f"read  {os.path.basename(tool_input.get('file_path', ''))}"
     cmd = tool_input.get("command", "")

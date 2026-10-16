@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# The taint belongs to the session that read the secret, not to the
-# developer: the same report from a new session goes through.
+# Allow the same developer's report from a new session that has no secret taint.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

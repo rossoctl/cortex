@@ -1,18 +1,15 @@
 # CPEX policy for the coding-agent demo (CPEX 0.3).
 #
-# Cortex presents the agent's traffic to CPEX in two shapes:
-#   - its model calls as `llm` requests (cmf.llm_input), with tool results
-#     in custom.tool_results, and the model's replies as `llm` responses
-#     (cmf.llm_output), with the tool calls it proposes in custom.tool_calls;
-#   - everything else it sends, curl included, as a call to the tool
-#     http_egress (cmf.tool_pre_invoke), with args method, host, path, a
-#     bounded body excerpt, truncated and content_encoding. A CONNECT
-#     carries only method and host.
+# Cortex sends model requests to cmf.llm_input with custom.tool_results,
+# and model responses to cmf.llm_output with custom.tool_calls.
+# Other HTTP requests, including curl, become http_egress tool calls
+# (cmf.tool_pre_invoke). Their args contain method, host, path, a body
+# excerpt, truncated, and content_encoding. CONNECT has only method and host.
 #
-# Every request is authenticated as the developer whose token Cortex holds
-# (principal.token_file); the agent never sees it.
+# Cortex supplies the developer token (principal.token_file) for authentication.
+# The agent never receives it.
 #
-# Relative paths resolve against the directory cortex runs in (config/).
+# Relative paths resolve from Cortex's working directory (config/).
 #
 # `# slide:` ... `# end-slide` mark the excerpts demo/policy_slide.py shows.
 
@@ -39,10 +36,9 @@ global:
     - kind: cel
 
 routes:
-  # The agent's model calls. A secret in a tool result (the agent read a
-  # file holding one) taints the session. PPE 0.5.0 cannot taint without
-  # denying, so the plugin lists secret_in_tool_result in observe_codes:
-  # the deny is recorded and the call goes on to the model.
+  # A secret in a tool result taints the session. PPE 0.5.0 requires a denial
+  # to set taint; the bridge's observe_codes records secret_in_tool_result
+  # without blocking the model request.
   - llm: "*"
     authentication: [developer]
     authorization:
@@ -57,10 +53,9 @@ routes:
               - "taint(secret, session)"
               - "deny('secret in a tool result', 'secret_in_tool_result')"
         # end-slide
-      # The model's reply, before the agent sees it. In a session that read
-      # a secret, a proposed tool call that carries one, or sends a secrets
-      # file over the network, refuses the whole turn: the agent never runs
-      # it. Other tool calls go on to the wire policy below.
+      # In a tainted session, block model responses containing tool calls
+      # that match a secret or file-upload pattern, before the agent runs them.
+      # HTTP requests from other commands still pass through the checks below.
       # slide: llm-output
       post_invocation:
         - cel:
@@ -73,27 +68,25 @@ routes:
             on_deny: ["deny('tool call would send secret data', 'secret_in_tool_call')"]
       # end-slide
 
-  # Everything else the agent and its tools send.
+  # HTTP requests not handled by another parser.
   - tool: http_egress
     authentication: [developer]
     authorization:
       pre_invocation:
-        # The host allowlist a sandbox would otherwise hold. A tunnel is
-        # decided on its host; the requests inside it are checked again.
+        # Check the tunnel destination, then each request inside it.
         # slide: egress-allowlist
         - cel:
             expr: "args.host in allowed"
             allowed: ["support.localtest.me", "llm.localtest.me"]
             on_deny: ["deny('host not allowed', 'egress_host_not_allowed')"]
         # end-slide
-        # A session that read a secret sends nothing more, however clean.
+        # Block HTTP requests from tainted sessions, even without a secret in the body.
         # slide: session-tainted
         - cel:
             expr: "args.method == 'CONNECT' || !('secret' in security.labels)"
             on_deny: ["deny('this session read secret data', 'session_tainted_secret')"]
         # end-slide
-        # Only what the excerpt shows can be judged: a body past it, or
-        # one encoded, is refused.
+        # Block bodies beyond the inspection limit or with unsupported encodings.
         # slide: body-checks
         - cel:
             expr: "args.method == 'CONNECT' || (!args.truncated && args.content_encoding in ['', 'identity'])"
@@ -103,8 +96,8 @@ routes:
             secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
             on_deny: ["deny('secret in request body', 'secret_in_body')"]
         # end-slide
-        # Reports go only to the developer's own projects (the teams
-        # claim). The support credential could reach either.
+        # Restrict reports to projects in the developer's teams claim.
+        # The support credential alone permits access to both projects.
         # slide: project-authz
         - cel:
             expr: >-

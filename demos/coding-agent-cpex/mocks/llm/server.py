@@ -1,14 +1,12 @@
-"""Mock Anthropic Messages API that plays a scripted agent turn by turn.
+"""Mock Anthropic Messages API with scripted responses.
 
-The first user message names the scenario ("Scenario: <name>"); each
-assistant turn already in the conversation advances one step through that
-scenario's script in scripts.json. A step is a tool call (Bash or Read) or a
-closing text. A request with "stream": true gets the same message as an
-Anthropic SSE stream, the tool input split across input_json_delta events.
-Every request is recorded:
+The first user message selects a scenario with "Scenario: <name>".
+The number of assistant turns selects its next step in scripts.json:
+a Bash or Read call, or a closing message. With "stream": true, the same
+response is sent as SSE, splitting tool input across input_json_delta events.
 
-GET  /_requests   requests received
-POST /_reset      forget them
+GET  /_requests   list recorded requests
+POST /_reset      clear recorded requests
 """
 
 import argparse
@@ -58,7 +56,7 @@ def reply(req):
 
 
 def sse_events(msg):
-    """The Anthropic stream events that assemble msg."""
+    """Yield Anthropic SSE events for msg."""
     head = {k: v for k, v in msg.items() if k not in ("content", "stop_reason")}
     yield "message_start", {"type": "message_start", "message": {**head, "content": []}}
     for i, block in enumerate(msg["content"]):

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# A clean report to the developer's own project goes through. The agent's
-# curl runs in the sandbox, as a child of the agent, and cortex files it
-# in the agent's session by the process chain.
+# Allow a report without secrets to the developer's project. Verify that
+# Cortex associates the sandboxed curl request with the parent agent's session.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

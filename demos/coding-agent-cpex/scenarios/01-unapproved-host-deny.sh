@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# A host outside the allowlist is refused at the tunnel. A sandbox domain
-# allowlist does the same; this is parity, not the point of the demo.
-#
-# The second attempt opens the tunnel to the same host but names the
-# support service in its Host header. Policy judges where the bytes go:
-# the CONNECT is refused as before, and had it been let through, cortex
-# would refuse the request inside it with a 421 rather than judge the
-# Host the client wrote.
+# Block connections to an unapproved host, including an attempt to disguise
+# the destination with Host: support.localtest.me. Both CONNECTs are denied.
+# Cortex also rejects a mismatched Host inside an accepted tunnel with 421.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

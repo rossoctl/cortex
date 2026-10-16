@@ -1,6 +1,6 @@
-# Vault for credential custody (run.sh up --custody): dev mode, in memory,
-# published on loopback only. run.sh generates the root token, seeds Vault
-# with it and keeps it in .state/; cortex never holds it.
+# Vault for run.sh up --custody: dev mode, in memory, loopback only.
+# run.sh generates and stores the root token in .state/ to seed Vault.
+# Cortex never receives the root token.
 name: coding-agent-cpex
 services:
   vault:

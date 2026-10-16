@@ -1,12 +1,12 @@
-"""Mock support service: projects A and B take bug reports over HTTPS.
+"""Mock HTTPS support service for projects A and B.
 
-POST /projects/<id>/reports  record the report, answer 201
-GET  /_requests              every request received, for the scenarios
-POST /_reset                 forget them
+POST /projects/<id>/reports  record the report and return 201
+GET  /_requests              list recorded requests
+POST /_reset                 clear recorded requests
 POST /_config                {"credential_required": bool}
 
-One shared credential (SUPPORT_TOKEN) can reach both projects. Requiring it
-is off by default, so the agent's reports succeed without one.
+SUPPORT_TOKEN grants access to both projects. Credential checks are disabled
+by default; /_config enables them for the custody scenarios.
 """
 
 import argparse

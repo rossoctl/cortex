@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Narrated run of every coding-agent scenario, with a sentence on what each
-# one shows. Each scenario checks its own outcome; the walkthrough ends with
-# a summary and exits non-zero if any failed.
+# Run all scenarios with narration and a final summary.
+# Each scenario checks its outcome. The walkthrough exits non-zero
+# if any scenario fails.
 #
 #   ./walkthrough.sh             # pause for Enter between scenarios (q quits)
 #   ./walkthrough.sh --fast      # no pauses
-#   ./walkthrough.sh --pace 3    # advance on its own every 3 seconds
+#   ./walkthrough.sh --pace 3    # advance automatically every 3 seconds
 #   ./walkthrough.sh --only 03   # only the scenarios whose names start 03
 #                                # (repeatable)
 #   ./walkthrough.sh --presenter # condensed output for a recording (also
@@ -44,9 +44,8 @@ source "$DIR/scenarios/_lib.sh"
 bold() { printf '\033[1m%s\033[0m' "$*"; }
 dim()  { printf '\033[2m%s\033[0m' "$*"; }
 
-# Section headers and narration are held until the next run, which prints
-# them only when it runs its scenario: --only drops the ones in between.
-# Presenter mode drops the narration; the recording's caption bar says it.
+# Buffer narration so --only prints it only for selected scenarios.
+# Presenter mode uses the recording's captions instead.
 PENDING=""
 section() { PENDING+=$'\n'"$(bold "$*")"$'\n'; }
 say() { presenter || PENDING+="  $*"$'\n'; }
@@ -87,7 +86,7 @@ run() {
 }
 
 section "Is the demo up?"
-# In presenter mode the preflight's passes are silent; it prints one line.
+# Presenter mode summarizes startup checks on one line.
 if presenter; then PENDING=""; else flush; fi
 ok=1
 if curl -fsS --max-time 3 "$SESSION_API/v1/plugins" 2>/dev/null | jq -e '.plugins[] | select(.name == "cpex")' >/dev/null; then

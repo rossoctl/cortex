@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# The agent reads .env. The secret reaches the model in the tool result, and
-# cpex taints the session as it goes by, without blocking the turn. From
-# then on the session sends nothing, a clean report included, and naming a
-# fresh session from the command does not get out of it.
+# Reading .env taints the session when the tool result reaches Cortex.
+# The model request continues, but later reports are blocked. A child
+# command cannot bypass the restriction by setting X-Session-Id.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

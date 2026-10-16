@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# The boundary is the sandbox, not the agent's cooperation: a command that
-# ignores the proxy and dials the support service directly cannot connect,
-# and the developer token cortex holds cannot be read from the sandbox.
+# Verify that sandboxed commands cannot bypass the proxy or read the
+# developer token held by Cortex.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

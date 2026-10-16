@@ -2,23 +2,23 @@
 # Run the coding-agent demo on this machine.
 #
 #   ./run.sh up [--claude-code] [--custody]
-#                                start the demo cortex and the mock services
+#                                start Cortex and the mock services
 #   ./run.sh scenarios           run every scenario (needs `up`)
 #   ./run.sh walkthrough [--fast|--pace N]  the narrated run (needs `up`)
-#   ./run.sh check               the walkthrough's drift guard and its test
+#   ./run.sh check               check scenario lists, captions, and their tests
 #   ./run.sh down                stop what `up` started
 #   ./run.sh status
 #
-# --claude-code also lets the hosts a real Claude Code session needs
-# through; see claude-code/README.md. --custody starts Vault
-# (docker-compose.yml) holding the support credential, which cortex attaches
-# only to reports the policy allows; it needs a cortex built against CPEX
+# --claude-code allows model API, package registry, and source control hosts.
+# See claude-code/README.md. --custody starts Vault (docker-compose.yml)
+# to hold the support credential. Cortex retrieves it only for approved
+# reports. Custody requires a Cortex build linked against CPEX
 # 0.3.1 or later.
 #
-# Everything runs on 4770x and loopback, from its own config and state
-# directory (.state/). It never touches ~/.cortex or an installed cortex
-# service. CORTEX_BIN picks the binary; otherwise a `cortex` on PATH that
-# reports `cortex (cpex)`, then bin/cortex-cpex/cortex from `make cortex-cpex`.
+# Listeners use loopback ports 4770x and separate state under .state/.
+# The demo leaves ~/.cortex and installed services unchanged. CORTEX_BIN
+# selects the binary; otherwise use a `cortex` on PATH reporting
+# `cortex (cpex)`, then bin/cortex-cpex/cortex from `make cortex-cpex`.
 
 set -euo pipefail
 
@@ -60,8 +60,7 @@ check_tools() {
 # --- processes -------------------------------------------------------------
 
 pid_of() { cat "$PIDS/$1.pid" 2>/dev/null || true; }
-# A pid file counts only while its process is still one this demo started:
-# every one runs with a path under this directory on its command line.
+# Match the command's demo path to avoid acting on a reused PID.
 alive() {
   local p; p="$(pid_of "$1")"
   [ -n "$p" ] && ps -o command= -p "$p" 2>/dev/null | grep -qF "$DIR/"
@@ -75,7 +74,7 @@ our_pids() {
 }
 listener() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true; }
 
-# Refuse to start when a process this demo did not start holds a demo port.
+# Refuse to start if another process holds a demo port.
 check_ports() {
   local p pid ours
   ours=" $(our_pids | tr '\n' ' ') "
@@ -125,8 +124,8 @@ gen_mock_certs() {
   info "generated the mock services' certificates"
 }
 
-# The developer's key pair and a token signed with it. Cortex holds the
-# token; the policy verifies it with the public key.
+# Generate the developer key pair and JWT. Cortex holds the token;
+# policy verifies it with the public key.
 gen_identity() {
   local d="$IDENTITY_DIR" now hdr payload sig
   [ -f "$d/developer.jwt" ] && return
@@ -149,11 +148,10 @@ prepare_state() {
   [ -f "$STATE_DIR/support-token" ] || (umask 077; openssl rand -hex 24 >"$STATE_DIR/support-token")
   gen_mock_certs
   gen_identity
-  # The agent's working tree: a project with a .env and two reports.
+  # Prepare the workspace with .env and two report fixtures.
   cp "$DIR/fixtures/env.fixture" "$WORKSPACE/.env"
   cp "$DIR/fixtures/report-clean.json" "$DIR/fixtures/report-with-key.json" "$WORKSPACE/"
-  # The sandbox the agent's commands run in: network only through the
-  # demo cortex, writes only in the workspace, no reading the identity.
+  # Restrict commands to the proxy and workspace; deny reads of identity files.
   jq -n --arg ws "$WORKSPACE" --arg id "$IDENTITY_DIR" --arg st "$STATE_DIR" '{
     network: {allowedDomains: [], deniedDomains: [], httpProxyPort: 47700, socksProxyPort: 47700},
     filesystem: {denyRead: ["~/.ssh", $id, ($st + "/mock-ca"), ($st + "/support-token")],
@@ -161,10 +159,8 @@ prepare_state() {
   }' >"$SRT_SETTINGS"
 }
 
-# For a real Claude Code session: its model API joins the policy's
-# allowlist, and package registries and VCS hosts are allowed and tunnelled
-# unopened, so installs and clones work. Generated from config/, so the
-# scripted policy stays the one source.
+# Derive Claude Code config from config/. Inspect model API traffic and
+# allow package registries and source control hosts without inspection.
 CLAUDE_CODE_LLM_HOSTS="${CLAUDE_CODE_LLM_HOSTS:-api.anthropic.com}"
 CLAUDE_CODE_PASSTHROUGH_HOSTS="${CLAUDE_CODE_PASSTHROUGH_HOSTS:-registry.npmjs.org pypi.org files.pythonhosted.org proxy.golang.org sum.golang.org github.com codeload.github.com objects.githubusercontent.com}"
 
@@ -202,9 +198,9 @@ vault() {
     -H 'content-type: application/json' --data-binary @- "$VAULT_ADDR/v1/$2"
 }
 
-# Vault's jwt auth trusts the developer key, and a developer's token reads
-# only agents/<its sub>/*. The support credential is filed under dev-alice.
-# Requests are audited to the container's stdout, which the scenarios count.
+# Vault JWT auth trusts the developer key and limits reads to agents/<sub>/*.
+# Store the support credential under dev-alice. Scenarios count audited
+# requests from the container's stdout.
 seed_vault() {
   local accessor
   curl -fsS -H "X-Vault-Token: $(cat "$STATE_DIR/vault-root-token")" "$VAULT_ADDR/v1/sys/auth" \
@@ -235,7 +231,7 @@ start_vault() {
   seed_vault
 }
 
-# The config with custody on, generated from the one up would use.
+# Add custody settings to the selected runtime config.
 gen_custody_config() {
   local src="$1" out="$STATE_DIR/custody"
   mkdir -p "$out"
@@ -254,11 +250,10 @@ cfg, n = re.subn(r'config_file: "[^"]*cpex-policy\.yaml"', 'config_file: "${DEMO
 if n != 1:
     sys.exit("run.sh: expected one cpex config_file in cortex.yaml; update gen_custody_config")
 cfg = sub(cfg, "          fail_open: false\n", """          fail_open: false
-          # Custody: Vault is on loopback, and the credential CPEX fetches
-          # from it is forwarded on the request the policy allowed.
+          # Retrieve credentials from loopback Vault after policy approval.
           private_destinations: true
           delegated_credentials: true
-          # The support credential is sent to the support service alone.
+          # Send support credentials only to the support service.
           delegated_credential_hosts:
             support: [support.localtest.me]
 """, "cortex.yaml")
@@ -267,8 +262,7 @@ cfg = sub(cfg, "          fail_open: false\n", """          fail_open: false
 policy = (src / "cpex-policy.yaml").read_text()
 policy = sub(policy, "      claim_mapper: standard\n", f"""      claim_mapper: standard
 
-  # The support credential, read from Vault as the developer (jwt auth with
-  # the token Cortex asserts), at agents/<sub>/support.
+  # Retrieve agents/<sub>/support using the developer JWT supplied by Cortex.
   - name: support-vault
     kind: delegator/vault
     hooks: [token.delegate]
@@ -295,8 +289,7 @@ policy = re.sub(r"\n[ ]*# end-slide\s*$", "", policy.rstrip()) + "\n"
 if not policy.rstrip().endswith("on_deny: [\"deny('project not authorized', 'project_not_authorized')\"]"):
     sys.exit("run.sh: the http_egress route no longer ends the policy; update gen_custody_config")
 policy = policy.rstrip("\n") + """
-        # Only a report every step above allowed gets the credential, so a
-        # denied one never reaches Vault.
+        # Delegate only after all earlier policy steps pass.
         - when: "args.method != 'CONNECT' & args.host == 'support.localtest.me'"
           do:
             - "delegate(support-vault, target: support, audience: support.localtest.me, subject: user)"
@@ -340,15 +333,14 @@ up() {
     --cert "$STATE_DIR/mock-ca/llm.crt" --key "$STATE_DIR/mock-ca/llm.key"
   SUPPORT_TOKEN="$(cat "$STATE_DIR/support-token")" start mock-support python3 "$DIR/mocks/support/server.py" \
     --port "$SUPPORT_PORT" --cert "$STATE_DIR/mock-ca/support.crt" --key "$STATE_DIR/mock-ca/support.key"
-  # cortex runs from config/ so the policy's relative key path resolves,
-  # and with HOME inside .state so nothing it writes lands in ~/.cortex.
+  # Resolve policy paths from config/ and keep Cortex's HOME under .state/.
   (cd "$DIR/config" && HOME="$STATE_DIR/home" start cortex "$bin" --config "$config")
 
   wait_for "the mock LLM" "$LLM_URL/_requests" --cacert "$MOCK_CA"
   wait_for "the mock support service" "$SUPPORT_URL/_requests" --cacert "$MOCK_CA"
   wait_for "cortex" "$HEALTH_URL/readyz"
   if [ "$custody" = 1 ]; then
-    # The support service now refuses a report without the credential.
+    # Require the support credential when custody is enabled.
     curl -fsS --cacert "$MOCK_CA" -X POST -d '{"credential_required": true}' "$SUPPORT_URL/_config" >/dev/null
     touch "$CUSTODY_MARK"
     info "custody on: Vault at $VAULT_ADDR, the support service requires the credential"

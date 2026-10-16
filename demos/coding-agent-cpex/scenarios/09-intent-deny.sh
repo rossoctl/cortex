@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# The model's reply is checked before the agent sees it. In a session that
-# read .env, the model proposes pasting the key it saw to an outside host:
-# cpex refuses the whole turn, so the agent runs nothing. The same kind of
-# call from an untainted session, with nothing secret in it, reaches the
-# agent and is left to the wire policy. Both as JSON and as an SSE stream.
+# Block a model response proposing a secret leak after the session reads .env.
+# A report without secrets from a separate session succeeds. Test both JSON
+# and SSE responses; blocked tool calls never run.
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 

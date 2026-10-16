@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Record the walkthrough as a tmux video: a caption bar across the top with
-# one plain sentence per step; below it the walkthrough in presenter mode on
-# the left, and on the right the policy rule in play (dimmed until the
-# verdict lands, then highlighted with a DENY/ALLOW badge) above agentop
-# following the current session.
+# Record the walkthrough, policy rules, and agentop in a tmux video.
+# Captions appear at the top, with the walkthrough below on the left.
+# Policy rules and agentop share the right column.
+# Rules start dimmed; each decision highlights the matching rule.
+# Agentop follows the current session.
 #
 #   demo/record_tmux.sh [--pace N] [--hold N] [--turn N] [--only NN]... [--out PATH]
 #
 #   --pace N   seconds the caption shows before the agent acts (default 2)
 #   --hold N   seconds a step's outcome stays up before the next (default 4)
-#   --turn N   seconds between the agent's turns, so each verdict can be
-#              read (default 3.5)
+#   --turn N   seconds between agent turns (default 3.5)
+#              gives viewers time to read each decision
 #   --only NN  record only the scenarios whose names start NN (repeatable)
 #   --out PATH default .sketchpad/demo-video/coding-agent-cpex-tmux
 #
 # Writes PATH.cast (asciinema), PATH.gif (agg) and PATH.mp4 (ffmpeg).
 # Needs `./run.sh up`, tmux, asciinema 3, agg, ffmpeg and bin/agentop
-# (`make agentop`). It clears the demo cortex's session list first, and
-# runs agentop with a HOME under .state/, so it reads nothing in ~/.cortex
-# or ~/.claude. tmux runs on its own socket.
+# (`make agentop`). Clears the demo Cortex's session list before recording.
+# Agentop uses a HOME under .state/, separate from ~/.cortex and ~/.claude.
+# tmux uses a separate socket.
 #
 # The walkthrough and the agent call this script as their WALKTHROUGH_HOOK:
 #   demo/record_tmux.sh scenario <name>        caption and policy switch
@@ -46,8 +46,8 @@ tm() { tmux -L "$SOCK" "$@"; }
 
 # --- the hook ----------------------------------------------------------------
 
-# The slide file: the step on line 1, its latest verdict on line 2. Written
-# whole and renamed, so a pane never reads half of it.
+# Write the step on line 1 and decision on line 2. Rename the completed file
+# so readers never see a partial update.
 case "${1:-}" in
   scenario) echo "$2" >"$REC/slide.tmp" && mv "$REC/slide.tmp" "$REC/slide"; exit 0 ;;
   verdict)
@@ -60,8 +60,7 @@ esac
 
 AGENTOP_PANE=""  # its pane id, once the panes exist
 
-# The first line agentop draws: its endpoint on the sessions list, the
-# session's title and id on its events view.
+# Agentop's header shows the endpoint in list view or the title and ID in events view.
 agentop_header() { tm capture-pane -p -t "$AGENTOP_PANE" 2>/dev/null | head -1; }
 
 session_listed() {
@@ -78,15 +77,14 @@ to_list() {
   done
 }
 
-# show <id>: once the session is listed, switch to it in one quick move. The
-# previous session stays on screen until then. The new one is the newest, so
-# it is the top row; search for it only if something newer got there first.
-# A session opens at its newest event and follows the tail from there.
+# show <id>: wait for the session, then open the newest row or search by ID.
+# Keep the previous session visible until the new one is listed.
+# Sessions open at the newest event and follow new events.
 show() {
   local id="$1" _
   for _ in $(seq 1 50); do session_listed "$id" && break; sleep 0.1; done
   to_list
-  # A search left over from a fallback below would pin the cursor; clear it.
+  # Clear any previous search so it cannot pin the selection.
   if tm capture-pane -p -t "$AGENTOP_PANE" | grep -qF '[/'; then
     tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.1
   fi
@@ -103,8 +101,8 @@ show() {
   return 0
 }
 
-# quiet: on the first events view, hide the exchanges no plugin acted on
-# (agentop's `s`). The toggle then holds for every session after.
+# quiet: press agentop's `s` once to hide exchanges with no plugin action.
+# The setting persists across sessions.
 quiet() {
   [ -f "$REC/quiet" ] && return 0
   tm send-keys -t "$AGENTOP_PANE" s
@@ -153,7 +151,7 @@ tm has-session -t "$NAME" 2>/dev/null && die "a recording is already running (tm
 
 mkdir -p "$REC/home" "$(dirname "$OUT")"
 rm -f "$REC/slide" "$REC/session" "$REC/go" "$REC/quiet"
-# The table the video needs, narrower than agentop's default.
+# Use a compact agentop table for the recording.
 cat >"$REC/agentop.yaml" <<'YAML'
 events:
   columns:
@@ -183,9 +181,8 @@ agentop="HOME=$(q "$REC/home") CLAUDE_CONFIG_DIR=$(q "$REC/home/.claude") $(q "$
 slide="python3 $(q "$HERE/policy_slide.py") --watch $(q "$REC/slide")"
 caption="python3 $(q "$HERE/caption_bar.py") --watch $(q "$REC/slide")"
 
-# Layout: the caption bar across the top; below it the walkthrough (left,
-# 84 columns) and a right column of the policy pane over agentop, the
-# smallest. 04's slide, the tallest, needs all 25 rows the policy pane has.
+# Layout: captions above an 84-column walkthrough and a right column with
+# policy rules above agentop. Scenario 04 needs the policy pane's full 25 rows.
 tm -f /dev/null new-session -d -s "$NAME" -x "$COLS" -y "$ROWS" "bash -c $(q "$walk")"
 tm set -g status off
 tm set -g pane-border-status top
@@ -209,8 +206,7 @@ trap 'kill "$FOLLOW" 2>/dev/null || true; tm kill-session -t "$NAME" 2>/dev/null
 
 asciinema rec --overwrite --headless --window-size "${COLS}x${ROWS}" --idle-time-limit 6 \
   -c "tmux -L $SOCK attach -t $NAME" "$OUT.cast"
-# Drop tmux's exit: the screen it clears and its "[exited]", so the video
-# ends on the closing card.
+# Remove tmux's exit screen so the video ends on the closing card.
 python3 - "$OUT.cast" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -225,8 +221,7 @@ with open(path, "w") as f:
 PY
 echo "cast: $OUT.cast"
 
-# A capped frame rate folds agentop's and the panes' redraws into whole
-# frames, which is most of what read as flicker.
+# Cap the frame rate to reduce flicker from pane redraws.
 agg -q --font-size 20 --fps-cap 12 --idle-time-limit 6 --last-frame-duration 6 "$OUT.cast" "$OUT.gif"
 echo "gif:  $OUT.gif"
 ffmpeg -y -loglevel error -i "$OUT.gif" -movflags faststart -pix_fmt yuv420p -r 12 \

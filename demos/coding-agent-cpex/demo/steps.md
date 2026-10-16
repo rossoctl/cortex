@@ -1,30 +1,29 @@
 # Coding-agent demo steps
 
-The scenarios, in the order `walkthrough.sh` runs them, with the caption the
-tmux recording shows while each one runs. `record_demo.py --check` fails when
-this list, the walkthrough and `scenarios/` disagree, or a step has no
-caption, so add a scenario to all three.
+Scenarios and recording captions in walkthrough order. When adding a
+scenario, update this table and `walkthrough.sh` along with `scenarios/`.
+`record_demo.py --check` checks their order and requires a caption for each step.
 
 | # | Part | Scenario | Shows | Caption |
 |---|-----|----------|-------|---------|
-| 1 | Sandbox | `00-sandbox-boundary.sh` | no route around the proxy; the developer token is unreadable | The agent's sandbox allows network access only through Cortex. |
-| 2 | Sandbox | `01-unapproved-host-deny.sh` | unapproved host refused at the tunnel (as a sandbox allowlist would), also when the request names the support service in its `Host` | The agent tries to upload to a host that isn't approved. Cortex refuses the connection. |
-| 3 | Disclosure | `02-clean-report-allow.sh` | clean report to the developer's project: 201 | The agent files a clean bug report with the developer's project. It goes through. |
-| 4 | Disclosure | `03-secret-in-report-deny.sh` | secret, padded or gzipped body to an allowed host: 403 | The agent sends a report with an AWS key in it to an approved host. Cortex refuses it. |
-| 5 | Disclosure | `04-tainted-session-deny.sh` | reading `.env` taints the session; clean reports refused | The agent reads a .env file. After that, Cortex refuses everything the session sends. |
-| 6 | Disclosure | `05-wrong-project-deny.sh` | clean report to a project the developer is not on: 403 | The agent files a clean report with a project the developer isn't on. Cortex refuses it. |
-| 7 | Disclosure | `06-fresh-session-allow.sh` | taint is per session: a new session's report goes through | A new session that hasn't read the secret files the same report. It goes through. |
-| 8 | Custody | `07-custody-allow.sh` | the support credential comes from Vault, attached after the allow (`--custody`) | The support service now needs a credential the agent never holds. Cortex fetches it from Vault for the allowed report. |
-| 9 | Custody | `08-custody-no-credential-on-deny.sh` | a refused report never reaches Vault; Vault not answering denies (`--custody`) | A refused report never reaches Vault. If Vault doesn't answer, Cortex refuses the report rather than send it bare. |
-| 10 | Model reply | `09-intent-deny.sh` | model reply proposing exfiltration refused, JSON and SSE | The model suggests posting the key online. Cortex blocks the reply. |
+| 1 | Sandbox | `00-sandbox-boundary.sh` | proxy bypass and developer-token read blocked | Sandboxed commands can reach the network only through Cortex. |
+| 2 | Sandbox | `01-unapproved-host-deny.sh` | unapproved host blocked, including a spoofed `Host` header | The agent sends a report to an unapproved host. Cortex blocks the connection. |
+| 3 | Disclosure | `02-clean-report-allow.sh` | report without secrets to project A accepted (201) | A report without secrets reaches project A. |
+| 4 | Disclosure | `03-secret-in-report-deny.sh` | secret, oversized, and gzip-encoded bodies blocked (403) | The report contains an AWS key. Cortex blocks it. |
+| 5 | Disclosure | `04-tainted-session-deny.sh` | reading `.env` blocks later reports from that session | The agent reads .env. Cortex blocks later reports from that session. |
+| 6 | Disclosure | `05-wrong-project-deny.sh` | report to an unauthorized project blocked (403) | The developer has access only to project A. Cortex blocks a report to project B. |
+| 7 | Disclosure | `06-fresh-session-allow.sh` | new session without secret taint accepted | A new session submits the same report successfully. |
+| 8 | Custody | `07-custody-allow.sh` | Vault credential attached after policy approval (`--custody`) | Cortex retrieves the support credential from Vault after the report passes policy. |
+| 9 | Custody | `08-custody-no-credential-on-deny.sh` | no Vault lookup on denial; report blocked if Vault is unavailable (`--custody`) | Blocked reports never trigger a Vault lookup. If Vault is unavailable, Cortex also blocks valid reports. |
+| 10 | Model reply | `09-intent-deny.sh` | proposed secret leak blocked in JSON and SSE responses | Cortex blocks a model response proposing a command that leaks the key. |
 
-The Custody steps run only under `./run.sh up --custody`; without it they
-skip, and the captions number the other eight.
+Custody steps require `./run.sh up --custody`. Otherwise, they are skipped
+and captions number only the eight active steps.
 
-The recording opens and closes on these:
+Recording title and closing captions:
 
-Title: A coding agent's network traffic, checked by Cortex and CPEX policy.
-Closing: All of the agent's traffic goes through Cortex, and Cortex decides what is allowed to leave.
+Title: Coding agent security with Cortex and CPEX.
+Closing: Cortex checks sandboxed requests and model traffic against policy before forwarding them.
 
 ## Recording
 
@@ -35,5 +34,5 @@ python3 demo/record_demo.py --check
 demo/record_tmux.sh --only 03          # the tmux recording, one scenario
 ```
 
-The recording runs `walkthrough.sh --pace 2`, so it needs no input. The
-`.cast` and `.gif` are not committed.
+The recorder runs `walkthrough.sh --pace 2` without prompting. Generated
+`.cast` and `.gif` files are not committed.
