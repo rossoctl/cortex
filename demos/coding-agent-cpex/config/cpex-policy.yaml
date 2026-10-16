@@ -1,4 +1,4 @@
-# CPEX policy for the coding-agent demo (CPEX 0.3.0).
+# CPEX policy for the coding-agent demo (CPEX 0.3).
 #
 # Cortex presents the agent's traffic to CPEX in two shapes:
 #   - its model calls as `llm` requests (cmf.llm_input), with tool results
