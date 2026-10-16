@@ -165,6 +165,20 @@ expect_tool_connect_refused() {
   fi
 }
 
+# expect_tool_refused_disguised <n>: a request whose Host names another
+# host than its tunnel was refused, at the tunnel (403) or inside it (421).
+expect_tool_refused_disguised() {
+  local out
+  out="$(tool_output "$1")"
+  if printf '%s' "$out" | grep -q 'CONNECT tunnel failed, response 403'; then
+    pass_ "tool call $1: tunnel refused with 403"; outcome_refused "connection refused by Cortex"
+  elif printf '%s' "$out" | grep -q '^HTTP 421$'; then
+    pass_ "tool call $1: 421, the Host is not the tunnel's"; outcome_refused "421 misdirected request"
+  else
+    fail_ "tool call $1: expected the disguised upload to be refused, got: $(printf '%s' "$out" | tail -1)"
+  fi
+}
+
 expect_tool_failed() {
   local code
   code="$(jq -r --argjson i "$1" '.tools[$i].exit' "$AGENT_OUT")"
@@ -254,6 +268,25 @@ expect_session_host() {
   else
     fail_ "timeline: no request to $2 in session $1"
   fi
+}
+
+# expect_no_tunnel_to <host> <session>: nothing in the session was sent to
+# host, whatever Host header a request carried.
+expect_no_tunnel_to() {
+  if session_json "$2" | jq -e --arg h "$1" '[.events[]? | select(.host == $h or (.host | startswith($h + ":")))] | length == 0' >/dev/null; then
+    pass_ "timeline: nothing in session $2 went to $1"
+  else
+    fail_ "timeline: a request in session $2 went to $1"
+  fi
+}
+
+# expect_tunnels_denied <session> <host> <n>: n CONNECTs to host denied on
+# the timeline.
+expect_tunnels_denied() {
+  local n
+  n="$(session_json "$1" | jq --arg h "$2" '[.events[]? | select(.phase == "denied" and .httpMethod == "CONNECT"
+    and (.host == $h or (.host | startswith($h + ":"))))] | length')"
+  if [ "${n:-0}" = "$3" ]; then pass_ "timeline: $3 CONNECT(s) to $2 denied"; else fail_ "timeline: expected $3 denied CONNECT(s) to $2, got ${n:-none}"; fi
 }
 
 # The secret in what cortex returned and recorded. For a session whose

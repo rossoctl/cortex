@@ -8,7 +8,7 @@ caption, so add a scenario to all three.
 | # | Part | Scenario | Shows | Caption |
 |---|-----|----------|-------|---------|
 | 1 | Sandbox | `00-sandbox-boundary.sh` | no route around the proxy; the developer token is unreadable | The agent's sandbox allows network access only through Cortex. |
-| 2 | Sandbox | `01-unapproved-host-deny.sh` | unapproved host refused at the tunnel (as a sandbox allowlist would) | The agent tries to upload to a host that isn't approved. Cortex refuses the connection. |
+| 2 | Sandbox | `01-unapproved-host-deny.sh` | unapproved host refused at the tunnel (as a sandbox allowlist would), also when the request names the support service in its `Host` | The agent tries to upload to a host that isn't approved. Cortex refuses the connection. |
 | 3 | Disclosure | `02-clean-report-allow.sh` | clean report to the developer's project: 201 | The agent files a clean bug report with the developer's project. It goes through. |
 | 4 | Disclosure | `03-secret-in-report-deny.sh` | secret, padded or gzipped body to an allowed host: 403 | The agent sends a report with an AWS key in it to an approved host. Cortex refuses it. |
 | 5 | Disclosure | `04-tainted-session-deny.sh` | reading `.env` taints the session; clean reports refused | The agent reads a .env file. After that, Cortex refuses everything the session sends. |

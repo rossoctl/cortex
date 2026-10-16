@@ -114,7 +114,8 @@ say "    cannot read the developer token."
 run 00-sandbox-boundary.sh
 
 say "01: a report to an unapproved host is refused at the tunnel, as a"
-say "    sandbox allowlist would refuse it."
+say "    sandbox allowlist would refuse it, and so is the same upload whose"
+say "    Host header names the support service."
 run 01-unapproved-host-deny.sh
 
 section "What leaves through an allowed host"

@@ -47,7 +47,8 @@ SLIDES: dict[str, tuple[str, list[tuple[str, str, str, str]], str]] = {
     "01-unapproved-host-deny": (
         "which hosts the agent may reach",
         [(POLICY, "egress-allowlist", "every outgoing connection", "Only approved hosts can be reached.")],
-        "",
+        "The host judged is the one the connection goes to. A Host header naming "
+        "an approved service does not change it.",
     ),
     "02-clean-report-allow": (
         "a report that passes",

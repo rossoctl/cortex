@@ -85,6 +85,9 @@ def label(name, tool_input):
         what = "gzipped " + what
     if "X-Session-Id" in cmd:
         what += ", under another session id"
+    host = re.search(r"-H '[Hh]ost: ([^']+)'", cmd)
+    if host:
+        what += f", Host: {host.group(1)}"
     via = "curl, around the proxy" if "--noproxy" in cmd else "curl"
     return f"{via} → {dest}  ({what})"
 
@@ -100,6 +103,8 @@ def outcome(name, code, out):
         return "allow", status, f"{GREEN}✓{RESET} {status} · delivered"
     if status == "403" and err:
         return "deny", err.group(1), f"{RED}✗{RESET} 403 · {err.group(1).removeprefix('cpex.')}"
+    if status == "421":
+        return "deny", "misdirected_request", f"{RED}✗{RESET} 421 · Host is not the tunnel's"
     if "CONNECT tunnel failed, response 403" in out:
         return "deny", "connect_refused", f"{RED}✗{RESET} connection refused by Cortex"
     if code != 0:
