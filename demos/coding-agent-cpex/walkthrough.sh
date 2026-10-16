@@ -6,20 +6,32 @@
 #   ./walkthrough.sh             # pause for Enter between scenarios (q quits)
 #   ./walkthrough.sh --fast      # no pauses
 #   ./walkthrough.sh --pace 3    # advance on its own every 3 seconds
+#   ./walkthrough.sh --only 03   # only the scenarios whose names start 03
+#                                # (repeatable)
+#   ./walkthrough.sh --presenter # condensed output for a recording (also
+#                                # PRESENTER=1); --hold N waits N seconds
+#                                # after each scenario (default 4)
 #
 # Assumes `./run.sh up`. When WALKTHROUGH_HOOK is set, it is run as
-# `$WALKTHROUGH_HOOK scenario <name>` before each scenario and as
-# `$WALKTHROUGH_HOOK session <label> <id>` when a scenario opens a session.
+# `$WALKTHROUGH_HOOK scenario <name>` before each scenario (and
+# `scenario summary` before the summary), as
+# `$WALKTHROUGH_HOOK session <label> <id>` when a scenario opens a session,
+# and by the agent as `$WALKTHROUGH_HOOK verdict ...` (see agent/agent.py).
 
 set -euo pipefail
 
 MODE="wait"
 PACE=0
+HOLD=4
+ONLY=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --fast) MODE=fast ;;
     --pace) MODE=pace; PACE="${2:?--pace needs seconds}"; shift ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --only) ONLY+=("${2:?--only needs a scenario prefix}"); shift ;;
+    --presenter) export PRESENTER=1 ;;
+    --hold) HOLD="${2:?--hold needs seconds}"; shift ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -32,8 +44,20 @@ source "$DIR/scenarios/_lib.sh"
 bold() { printf '\033[1m%s\033[0m' "$*"; }
 dim()  { printf '\033[2m%s\033[0m' "$*"; }
 
-section() { echo; bold "$*"; echo; }
-say() { echo "  $*"; }
+# Section headers and narration are held until the next run, which prints
+# them only when it runs its scenario: --only drops the ones in between.
+# Presenter mode drops the narration; the recording's caption bar says it.
+PENDING=""
+section() { PENDING+=$'\n'"$(bold "$*")"$'\n'; }
+say() { presenter || PENDING+="  $*"$'\n'; }
+flush() { printf '%s' "$PENDING"; PENDING=""; }
+
+selected() {
+  [ "${#ONLY[@]}" -eq 0 ] && return 0
+  local o
+  for o in "${ONLY[@]}"; do [[ "$1" == "$o"* ]] && return 0; done
+  return 1
+}
 
 pause() {
   case "$MODE" in
@@ -52,12 +76,19 @@ FAILED=()
 
 # run <scenario file>: run one scenario and record its result.
 run() {
+  if ! selected "$1"; then PENDING=""; return 0; fi
+  # Presenter mode starts each scenario on a clean pane.
+  if presenter; then printf '\033[H\033[2J'; fi
+  flush
   walkthrough_hook scenario "${1%.sh}"
   pause
   if bash "$DIR/scenarios/$1"; then PASSED+=("$1"); else FAILED+=("$1"); fi
+  if presenter && [ "$MODE" != fast ]; then sleep "$HOLD"; fi
 }
 
 section "Is the demo up?"
+# In presenter mode the preflight's passes are silent; it prints one line.
+if presenter; then PENDING=""; else flush; fi
 ok=1
 if curl -fsS --max-time 3 "$SESSION_API/v1/plugins" 2>/dev/null | jq -e '.plugins[] | select(.name == "cpex")' >/dev/null; then
   pass_ "demo cortex with cpex at $SESSION_API"
@@ -72,6 +103,8 @@ for url in "$LLM_URL" "$SUPPORT_URL"; do
   fi
 done
 [ "$ok" = 1 ] || { echo; echo "  Fix the above and re-run."; exit 1; }
+presenter && printf '  \033[2mdemo is running\033[0m\n'
+CHECKS=0
 say "The agent's model calls and its sandboxed commands both go through the"
 say "demo cortex, which holds the developer's identity."
 
@@ -108,7 +141,9 @@ say "09: in a tainted session the model proposes a curl carrying the key."
 say "    cpex refuses the reply, so the agent never runs it."
 run 09-intent-deny.sh
 
+walkthrough_hook scenario summary
 section "Summary"
+flush
 for s in ${PASSED[@]+"${PASSED[@]}"}; do pass_ "$s"; done
 for s in ${FAILED[@]+"${FAILED[@]}"}; do fail_ "$s"; done
 echo

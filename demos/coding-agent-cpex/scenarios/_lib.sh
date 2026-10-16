@@ -20,24 +20,93 @@ DEV_JWT="$(cat "$IDENTITY_DIR/developer.jwt" 2>/dev/null)"
 # session with it.
 step() {
   SESSION_TITLE="$*"
+  if presenter; then
+    # The recording's caption names the step; a blank line separates them.
+    outcome_flush
+    echo
+    return
+  fi
   echo
   echo "============================================================"
   echo "$@"
   echo "============================================================"
 }
 
-note() { echo "  ▸ $*"; }
+# PRESENTER=1 condenses the output for a recording: every check still runs,
+# but a step's passing checks fold into one outcome line, and a failing one
+# is printed in full. Without it the output is unchanged.
+presenter() { [ "${PRESENTER:-0}" = 1 ]; }
+
+note() { presenter || echo "  ▸ $*"; }
 
 FAILURES=0
-pass_() { printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
+CHECKS=0
+OUTCOME_REFUSED=()
+OUTCOME_CODES=()
+OUTCOME_ALLOWED=()
+OUTCOME_FACTS=()
+pass_() { CHECKS=$((CHECKS + 1)); presenter || printf '  \033[1;32m✓\033[0m %s\n' "$*"; }
 fail_() { printf '  \033[1;31m✗\033[0m %s\n' "$*"; FAILURES=$((FAILURES + 1)); }
 
+# What a step's passing checks established, for its outcome line: how a
+# request was refused (a cpex code, or who refused it), what was allowed (a
+# status), and a fact about what arrived.
+outcome_refused() {
+  case "$1" in
+    cpex.*) _outcome_add OUTCOME_CODES "${1#cpex.}" ;;
+    *) _outcome_add OUTCOME_REFUSED "$1" ;;
+  esac
+}
+outcome_allowed() { _outcome_add OUTCOME_ALLOWED "$1"; }
+outcome_fact() { _outcome_add OUTCOME_FACTS "$1"; }
+_outcome_add() {
+  local arr="$1[@]" x
+  for x in ${!arr+"${!arr}"}; do [ "$x" = "$2" ] && return 0; done
+  eval "$1+=(\"\$2\")"
+}
+
+# join <sep> <items...>: the items joined by sep.
+join() {
+  local sep="$1" out="" x
+  shift
+  for x in "$@"; do out+="${out:+$sep}$x"; done
+  printf '%s' "$out"
+}
+
+# outcome_flush: print the outcome line of the step so far, then start over.
+outcome_flush() {
+  presenter || return 0
+  local parts=() line mark
+  if [ "${#OUTCOME_CODES[@]}" -gt 0 ]; then
+    mark='\033[1;31m✗\033[0m'
+    line="refused by Cortex · $(join ', ' "${OUTCOME_CODES[@]}")"
+  elif [ "${#OUTCOME_REFUSED[@]}" -gt 0 ]; then
+    mark='\033[1;31m✗\033[0m'
+    line="$(join ', ' "${OUTCOME_REFUSED[@]}")"
+  elif [ "${#OUTCOME_ALLOWED[@]}" -gt 0 ]; then
+    mark='\033[1;32m✓\033[0m'
+    line="allowed · $(join ', ' "${OUTCOME_ALLOWED[@]}")"
+  elif [ "$CHECKS" -gt 0 ]; then
+    mark='\033[1;32m✓\033[0m'
+    line="as expected"
+  else
+    return 0
+  fi
+  # Two lines, to fit a narrow pane: the verdict, then what arrived.
+  local n="$CHECKS checks"; [ "$CHECKS" = 1 ] && n="1 check"
+  parts=(${OUTCOME_FACTS[@]+"${OUTCOME_FACTS[@]}"} "$n passed")
+  printf '\n  %b \033[1m%s\033[0m\n' "$mark" "$line"
+  printf '    \033[2m%s\033[0m\n' "$(join ' · ' "${parts[@]}")"
+  OUTCOME_REFUSED=(); OUTCOME_CODES=(); OUTCOME_ALLOWED=(); OUTCOME_FACTS=(); CHECKS=0
+}
+
 finish() {
+  outcome_flush
   if [ "$FAILURES" -ne 0 ]; then
     printf '\n  \033[1;31m%s expectation(s) failed\033[0m\n' "$FAILURES"
     exit 1
   fi
-  printf '\n  \033[1;32mall expectations met\033[0m\n'
+  presenter || printf '\n  \033[1;32mall expectations met\033[0m\n'
 }
 
 # walkthrough_hook <event> <args...>: run $WALKTHROUGH_HOOK, if set, with
@@ -72,7 +141,7 @@ tool_output() { jq -r --argjson i "$1" '.tools[$i].output // empty' "$AGENT_OUT"
 expect_tool_status() {
   local got
   got="$(tool_output "$1" | sed -n 's/^HTTP \([0-9]*\)$/\1/p' | tail -1)"
-  if [ "$got" = "$2" ]; then pass_ "tool call $1: HTTP $2"; else fail_ "tool call $1: expected HTTP $2, got '${got:-none}'"; fi
+  if [ "$got" = "$2" ]; then pass_ "tool call $1: HTTP $2"; outcome_allowed "$2"; else fail_ "tool call $1: expected HTTP $2, got '${got:-none}'"; fi
 }
 
 # expect_tool_denied <n> <code>: a 403 from cortex carrying the code.
@@ -81,7 +150,7 @@ expect_tool_denied() {
   out="$(tool_output "$1")"
   code="$(printf '%s\n' "$out" | sed '/^HTTP /d' | jq -r '.error // empty' 2>/dev/null | head -1)"
   if printf '%s' "$out" | grep -q '^HTTP 403$' && [ "$code" = "$2" ]; then
-    pass_ "tool call $1: denied with $2"
+    pass_ "tool call $1: denied with $2"; outcome_refused "$2"
   else
     fail_ "tool call $1: expected a 403 $2, got: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
   fi
@@ -90,7 +159,7 @@ expect_tool_denied() {
 # expect_tool_connect_refused <n>: the tunnel itself was refused.
 expect_tool_connect_refused() {
   if tool_output "$1" | grep -q 'CONNECT tunnel failed, response 403'; then
-    pass_ "tool call $1: tunnel refused with 403"
+    pass_ "tool call $1: tunnel refused with 403"; outcome_refused "connection refused by Cortex"
   else
     fail_ "tool call $1: expected the CONNECT to be refused, got: $(tool_output "$1" | tail -1)"
   fi
@@ -100,7 +169,7 @@ expect_tool_failed() {
   local code
   code="$(jq -r --argjson i "$1" '.tools[$i].exit' "$AGENT_OUT")"
   if [ "$code" != "0" ] && [ -n "$code" ]; then
-    pass_ "tool call $1 failed (exit $code): $(tool_output "$1" | tail -1)"
+    pass_ "tool call $1 failed (exit $code): $(tool_output "$1" | tail -1)"; outcome_refused "blocked by the sandbox"
   else
     fail_ "tool call $1: expected a failure, got exit ${code:-none}"
   fi
@@ -117,7 +186,7 @@ expect_model_calls_ok() {
 expect_model_denied() {
   local got
   got="$(jq -r --argjson i "$1" '"\(.model_calls[$i].status) \(.model_calls[$i].error)"' "$AGENT_OUT")"
-  if [ "$got" = "403 $2" ]; then pass_ "model call $1: denied with $2"; else fail_ "model call $1: expected a 403 $2, got '$got'"; fi
+  if [ "$got" = "403 $2" ]; then pass_ "model call $1: denied with $2"; outcome_refused "$2"; else fail_ "model call $1: expected a 403 $2, got '$got'"; fi
 }
 
 # expect_tools_run <n>: the agent ran exactly n tools.
@@ -144,7 +213,8 @@ expect_support_reports() {
   local got
   got="$(support_requests | jq '[.requests[] | select(.path | startswith("/projects/"))] | length')"
   if [ "$got" = "$1" ]; then
-    if [ "$1" = 0 ]; then pass_ "the support service received nothing"; else pass_ "the support service received $1 report(s)"; fi
+    if [ "$1" = 0 ]; then pass_ "the support service received nothing"; outcome_fact "support received nothing"
+    else pass_ "the support service received $1 report(s)"; if [ "$1" = 1 ]; then outcome_fact "support received the report"; else outcome_fact "support received $1 reports"; fi; fi
   else
     fail_ "expected $1 report(s) at the support service, got ${got:-<unreachable>}"
   fi

@@ -12,11 +12,17 @@ SUPPORT_URL. AGENT_TURN_DELAY (seconds, default 0) waits before every model
 call after the first, so a recording can show the session filling in;
 AGENT_OPEN_DELAY makes the wait after the first call longer, while the
 recording opens the new session.
+
+PRESENTER=1 prints a short line per tool call and its outcome instead of the
+command and its output. When WALKTHROUGH_HOOK is set, the agent runs
+`$WALKTHROUGH_HOOK verdict allow|deny|blocked <code> <label>` once each tool
+call's outcome, or a refused model reply, is known.
 """
 
 import argparse
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -39,8 +45,77 @@ TOOLS = [
 CHILD_ENV = ("PATH", "HOME", "TMPDIR", "LANG", "DEMO_CA", "WORKSPACE", "SUPPORT_URL")
 
 
+PRESENTER = os.environ.get("PRESENTER") == "1"
+BOLD, DIM, RED, GREEN, CYAN, RESET = "\033[1m", "\033[2m", "\033[1;31m", "\033[1;32m", "\033[1;36m", "\033[0m"
+
+
 def say(line):
-    print(f"  agent> {line}", flush=True)
+    if PRESENTER:
+        print(f"  {CYAN}agent{RESET}  {line}", flush=True)
+    else:
+        print(f"  agent> {line}", flush=True)
+
+
+def label(name, tool_input):
+    """A short line for a tool call: what it runs, where to, and what it carries."""
+    if name == "Read":
+        return f"read  {os.path.basename(tool_input.get('file_path', ''))}"
+    cmd = tool_input.get("command", "")
+    if "curl" not in cmd:
+        words = cmd.split()
+        return " ".join([words[0]] + [os.path.basename(w) for w in words[1:]]) if words else cmd
+    m = re.search(r'"?\$SUPPORT_URL(/[^"\s]*)"?', cmd)
+    if m:
+        dest = "support" + m.group(1)
+    else:
+        m = re.search(r"https?://([^\s\"']+)", cmd)
+        dest = m.group(1) if m else "?"
+    dest = re.sub(r"/reports$", "", dest)
+    if "report-with-key" in cmd:
+        what = "report with AWS key"
+    elif "report-clean" in cmd:
+        what = "clean report"
+    elif re.search(r"AKIA[0-9A-Z]{16}", cmd):
+        what = "the AWS key"
+    else:
+        what = "data"
+    if "head -c" in cmd:
+        what = "padded " + what
+    if "gzip" in cmd:
+        what = "gzipped " + what
+    if "X-Session-Id" in cmd:
+        what += ", under another session id"
+    via = "curl, around the proxy" if "--noproxy" in cmd else "curl"
+    return f"{via} → {dest}  ({what})"
+
+
+def outcome(name, code, out):
+    """(verdict, code, line) for a tool result: allow/deny/blocked."""
+    if name == "Read":
+        return None
+    m = re.search(r"^HTTP (\d+)$", out, re.M)
+    status = m.group(1) if m else ""
+    err = re.search(r'"error"\s*:\s*"([^"]+)"', out)
+    if status.startswith("2"):
+        return "allow", status, f"{GREEN}✓{RESET} {status} · delivered"
+    if status == "403" and err:
+        return "deny", err.group(1), f"{RED}✗{RESET} 403 · {err.group(1).removeprefix('cpex.')}"
+    if "CONNECT tunnel failed, response 403" in out:
+        return "deny", "connect_refused", f"{RED}✗{RESET} connection refused by Cortex"
+    if code != 0:
+        last = out.splitlines()[-1].rsplit(": ", 1)[-1] if out else f"exit {code}"
+        return "blocked", "sandbox", f"{RED}✗{RESET} blocked by the sandbox: {last[:60]}"
+    return None
+
+
+def hook(*args):
+    h = os.environ.get("WALKTHROUGH_HOOK")
+    if not h:
+        return
+    try:
+        subprocess.run([h, *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def read_stream(r):
@@ -144,7 +219,16 @@ def main():
         status, resp = call_model(opener, a.session, messages, a.stream)
         record["model_calls"].append({"status": status, "error": resp.get("error") if status != 200 else None})
         if status != 200:
-            say(f"model call failed: HTTP {status} {json.dumps(resp)}")
+            err = resp.get("error")
+            if PRESENTER:
+                code = str(err.get("type", err) if isinstance(err, dict) else err).removeprefix("cpex.")
+                print(f"  {CYAN}model{RESET}  {RED}✗{RESET} reply refused before the agent saw it · {code}", flush=True)
+            else:
+                say(f"model call failed: HTTP {status} {json.dumps(resp)}")
+            if isinstance(err, str):
+                hook("verdict", "deny", err, "the model's reply")
+            if delay:
+                time.sleep(delay)  # so a recording can show the refusal
             break
         messages.append({"role": "assistant", "content": resp["content"]})
         results = []
@@ -153,10 +237,18 @@ def main():
                 say(block["text"])
             elif block["type"] == "tool_use":
                 arg = block["input"].get("command") or block["input"].get("file_path")
-                say(f"{block['name']}: {arg}")
+                short = label(block["name"], block["input"])
+                say(short if PRESENTER else f"{block['name']}: {arg}")
                 code, out = run_tool(block["name"], block["input"])
-                for line in out.splitlines()[-4:] if block["name"] == "Bash" else ["(read %d bytes)" % len(out)]:
+                result = outcome(block["name"], code, out)
+                if PRESENTER:
+                    line = result[2] if result else f"{DIM}(read {len(out)} bytes){RESET}"
                     print(f"         {line}", flush=True)
+                else:
+                    for line in out.splitlines()[-4:] if block["name"] == "Bash" else ["(read %d bytes)" % len(out)]:
+                        print(f"         {line}", flush=True)
+                if result:
+                    hook("verdict", result[0], result[1], short)
                 record["tools"].append({"name": block["name"], "input": block["input"], "exit": code, "output": out})
                 results.append(
                     {"type": "tool_result", "tool_use_id": block["id"], "content": out, "is_error": code != 0}

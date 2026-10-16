@@ -2,7 +2,8 @@
 """Record the coding-agent walkthrough, and guard its step list against drift.
 
     python3 demo/record_demo.py --check     # steps.md, walkthrough.sh and
-                                            # scenarios/ name the same scenarios
+                                            # scenarios/ name the same scenarios,
+                                            # and every step has a caption
     python3 demo/record_demo.py --record    # check, then asciinema the
                                             # walkthrough; a GIF too with agg
 
@@ -25,6 +26,13 @@ DEMO_DIR = Path(__file__).resolve().parent.parent
 SCENARIO = re.compile(r"\d\d-[A-Za-z0-9-]+\.sh")
 # A steps.md table row's scenario cell: | n | part | `NN-name.sh` | ... |
 STEP_ROW = re.compile(r"^\|\s*\d+\s*\|[^|]*\|\s*`(" + SCENARIO.pattern + r")`\s*\|")
+# The same row's last two cells: | ... | shows | caption |
+CAPTION_CELL = re.compile(r"\|[^|]*\|([^|]*)\|\s*$")
+# The title and closing cards: `Title: ...`, `Closing: ...` on their own line.
+CARD_LINE = re.compile(r"^(Title|Closing):\s*(.+?)\s*$")
+# The caption bar is the recording's full width (160 columns) less a margin,
+# and carries an `n/N · ` prefix. A longer one wraps to a second line.
+CAPTION_MAX = 150
 # A walkthrough line that runs a scenario: run NN-name.sh
 RUN_LINE = re.compile(r"^\s*run\s+(" + SCENARIO.pattern + r")\s*$")
 
@@ -36,6 +44,40 @@ def scenarios(demo_dir: Path) -> list[str]:
 def steps(demo_dir: Path) -> list[str]:
     text = (demo_dir / "demo" / "steps.md").read_text()
     return [m.group(1) for line in text.splitlines() if (m := STEP_ROW.match(line))]
+
+
+def captions(demo_dir: Path = DEMO_DIR) -> dict[str, str]:
+    """scenario name (no .sh) -> its caption, numbered `n/N · ` in step order.
+    A row without a caption maps to ""."""
+    text = (demo_dir / "demo" / "steps.md").read_text()
+    rows = []
+    for line in text.splitlines():
+        if m := STEP_ROW.match(line):
+            c = CAPTION_CELL.search(line[m.end() - 1 :])
+            rows.append((m.group(1)[:-3], c.group(1).strip() if c else ""))
+    return {name: (f"{i}/{len(rows)} · {cap}" if cap else "") for i, (name, cap) in enumerate(rows, 1)}
+
+
+def cards(demo_dir: Path = DEMO_DIR) -> dict[str, str]:
+    """The `Title:` and `Closing:` lines of steps.md, keyed title/closing."""
+    text = (demo_dir / "demo" / "steps.md").read_text()
+    return {m.group(1).lower(): m.group(2) for line in text.splitlines() if (m := CARD_LINE.match(line))}
+
+
+def check_captions(demo_dir: Path) -> list[str]:
+    problems = []
+    for name, cap in captions(demo_dir).items():
+        if not cap:
+            problems.append(f"demo/steps.md has no caption for {name}.sh")
+        elif len(cap) > CAPTION_MAX:
+            problems.append(f"demo/steps.md: the caption for {name}.sh is {len(cap)} characters, over {CAPTION_MAX}")
+    found = cards(demo_dir)
+    for card in ("title", "closing"):
+        if card not in found:
+            problems.append(f"demo/steps.md has no {card.capitalize()}: line")
+        elif len(found[card]) > CAPTION_MAX:
+            problems.append(f"demo/steps.md: the {card} is {len(found[card])} characters, over {CAPTION_MAX}")
+    return problems
 
 
 def walkthrough_runs(demo_dir: Path) -> list[str]:
@@ -62,8 +104,10 @@ def check(demo_dir: Path = DEMO_DIR) -> list[str]:
     want = scenarios(demo_dir)
     if not want:
         return [f"no scenarios under {demo_dir / 'scenarios'}"]
-    return _compare("demo/steps.md", steps(demo_dir), want) + _compare(
-        "walkthrough.sh", walkthrough_runs(demo_dir), want
+    return (
+        _compare("demo/steps.md", steps(demo_dir), want)
+        + _compare("walkthrough.sh", walkthrough_runs(demo_dir), want)
+        + check_captions(demo_dir)
     )
 
 

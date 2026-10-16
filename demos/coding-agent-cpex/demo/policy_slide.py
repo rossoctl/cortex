@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Show the policy excerpt behind each walkthrough scenario.
+"""Show the policy behind each walkthrough scenario, and the rule that decided.
 
     python3 demo/policy_slide.py 03-secret-in-report-deny   # print one slide
+    python3 demo/policy_slide.py 03-secret-in-report-deny \\
+        --verdict 'deny cpex.secret_in_body report with AWS key'
     python3 demo/policy_slide.py --watch <file>             # redraw whenever
-                                                            # <file> names a new one
+                                                            # <file> changes
+
+A slide has two states. Before the request it shows the rules that apply,
+dimmed, each with one plain line on what it checks. Once a verdict lands it
+shows a DENY or ALLOW badge and highlights the rule that decided: the one
+whose deny() carries the code, or every rule on an allow.
+
+The watched file holds the scenario name on its first line and, once the
+agent's request has an outcome, `allow|deny|blocked <code> <label>` on its
+second (see demo/record_tmux.sh). `summary` names the closing slide.
 
 The excerpts are read from the live config at render time, between
 `# slide: <name>` and `# end-slide` comments in config/cpex-policy.yaml and
 config/cortex.yaml, so they cannot drift from what cortex runs. Comment
-lines inside an excerpt are left out. With `bat` on PATH it highlights the
-YAML; otherwise plain ANSI colours do.
+lines inside an excerpt are left out.
 """
 
 from __future__ import annotations
@@ -17,7 +27,6 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -26,69 +35,119 @@ DEMO_DIR = Path(__file__).resolve().parent.parent
 POLICY = "config/cpex-policy.yaml"
 CORTEX = "config/cortex.yaml"
 
-# scenario -> (title, [(file, slide, caption)], note)
-SLIDES: dict[str, tuple[str, list[tuple[str, str, str]], str]] = {
+# scenario -> (title, [(file, slide, where it applies, what it checks)], note)
+SLIDES: dict[str, tuple[str, list[tuple[str, str, str, str]], str]] = {
     "00-sandbox-boundary": (
-        "00 · sandbox boundary",
+        "the sandbox",
         [],
-        "No policy here: the OS sandbox is the boundary. A command that skips "
-        "the proxy has no route out, and the developer token is outside the sandbox.",
+        "No policy rule here: the OS sandbox is the boundary. A command that "
+        "skips the proxy has no route out, and the developer's token is outside "
+        "the sandbox.",
     ),
     "01-unapproved-host-deny": (
-        "01 · host allowlist",
-        [(POLICY, "egress-allowlist", "tool: http_egress · pre_invocation")],
-        "A tunnel is decided on its host: paste.evil.example is not in the list.",
+        "which hosts the agent may reach",
+        [(POLICY, "egress-allowlist", "every outgoing connection", "Only approved hosts can be reached.")],
+        "",
     ),
     "02-clean-report-allow": (
-        "02 · a report that passes",
-        [(POLICY, "project-authz", "tool: http_egress · pre_invocation (last rule)")],
-        "Every http_egress rule passes: allowed host, untainted session, a body "
-        "that can be inspected, no secret, and project A is in the developer's teams.",
+        "a report that passes",
+        [
+            (
+                POLICY,
+                "project-authz",
+                "every outgoing request (the last rule)",
+                "Reports go only to projects the developer works on.",
+            )
+        ],
+        "Every rule before this one passes too: an approved host, a session "
+        "that read no secret, a readable body with no secret in it.",
     ),
     "03-secret-in-report-deny": (
-        "03 · secret or uninspectable body",
-        [(POLICY, "body-checks", "tool: http_egress · pre_invocation")],
-        "The AWS key in the excerpt is secret_in_body. Padded past the excerpt, "
-        "or gzipped, the body is egress_body_uninspectable.",
+        "what the report carries",
+        [
+            (
+                POLICY,
+                "body-checks",
+                "every outgoing request",
+                "The body must be readable, and must not hold a secret.",
+            )
+        ],
+        "",
     ),
     "04-tainted-session-deny": (
-        "04 · reading .env taints the session",
+        "reading a secret marks the session",
         [
-            (POLICY, "llm-taint", "llm: model calls · pre_invocation"),
-            (CORTEX, "observe-codes", "cortex.yaml · cpex plugin"),
-            (POLICY, "session-tainted", "tool: http_egress · pre_invocation"),
+            (POLICY, "llm-taint", "every model call", "A secret in what the agent read marks the session; the turn goes on."),
+            (POLICY, "session-tainted", "every outgoing request", "A marked session sends nothing out."),
         ],
-        "The deny is observed, so the turn goes on; the taint stays.",
+        "",
     ),
     "05-wrong-project-deny": (
-        "05 · project authorization",
-        [(POLICY, "project-authz", "tool: http_egress · pre_invocation")],
-        "The developer's teams claim is [A], so /projects/B/ is refused.",
+        "which projects the developer works on",
+        [
+            (
+                POLICY,
+                "project-authz",
+                "every outgoing request",
+                "Reports go only to projects the developer works on: A.",
+            )
+        ],
+        "",
     ),
     "06-fresh-session-allow": (
-        "06 · taint is per session",
-        [(POLICY, "session-tainted", "tool: http_egress · pre_invocation")],
-        "A new session carries no secret label, so its clean report passes.",
+        "the mark belongs to one session",
+        [(POLICY, "session-tainted", "every outgoing request", "A marked session sends nothing out.")],
+        "This session read no secret, so it is not marked.",
     ),
     "09-intent-deny": (
-        "09 · the model's proposed tool call",
-        [(POLICY, "llm-output", "llm: model replies · post_invocation")],
-        "Checked on the reply, before the agent runs anything. An untainted "
-        "session's tool call goes on to the http_egress rules.",
+        "the model's suggestions",
+        [
+            (
+                POLICY,
+                "llm-output",
+                "every model reply, before the agent sees it",
+                "In a marked session, a suggested command must not carry the secret.",
+            )
+        ],
+        "",
     ),
 }
 
-INTRO = (
-    "policy",
+SUMMARY = (
+    "what the demo showed",
     [],
-    f"Excerpts from {POLICY} appear here as each scenario runs.",
+    "",
 )
+FINDINGS = [
+    "The agent's commands can reach the network only through Cortex. Requests to hosts that aren't approved are refused.",
+    "Requests to an approved host are still checked. Cortex refuses a report that contains a secret, that it can't inspect, or that goes to a project the developer isn't on.",
+    "Once the agent reads a secret, that session can't send anything else out. Other sessions are unaffected.",
+    "Cortex also checks the commands the model suggests, and blocks one that would leak the secret before the agent runs it.",
+]
 
-# Lines worth the eye: what the rule does when it fires.
-KEY_LINE = re.compile(r"on_deny|taint\(|deny\(|observe_codes")
+INTRO = ("policy", [], f"The rules from {POLICY} that apply to each step appear here.")
+
+# What a verdict's code means, in one plain line.
+CODE_PLAIN = {
+    "secret_in_body": "The body holds an AWS key.",
+    "egress_body_uninspectable": "The body is padded or compressed past what policy can read.",
+    "egress_host_not_allowed": "The host is not on the approved list.",
+    "session_tainted_secret": "This session read a secret earlier.",
+    "project_not_authorized": "The developer is not on that project.",
+    "secret_in_tool_call": "The suggested command carries the secret.",
+    "secret_in_tool_result": "What the agent read holds a secret.",
+    "sandbox": "Outside Cortex, the sandbox lets nothing through.",
+}
+# The agent sees a refused tunnel, not the code behind it.
+CODE_ALIAS = {"connect_refused": "egress_host_not_allowed"}
 
 RESET, BOLD, DIM, REV = "\033[0m", "\033[1m", "\033[2m", "\033[7m"
 CYAN, GREEN, YELLOW, MAGENTA = "\033[36m", "\033[32m", "\033[33m", "\033[35m"
+BADGE = {
+    "deny": ("\033[1;97;41m", "\033[1;31m", "DENY"),
+    "blocked": ("\033[1;97;41m", "\033[1;31m", "BLOCKED"),
+    "allow": ("\033[1;30;42m", "\033[1;32m", "ALLOW"),
+}
 
 
 def excerpt(rel: str, name: str, demo_dir: Path = DEMO_DIR) -> list[str]:
@@ -109,12 +168,23 @@ def excerpt(rel: str, name: str, demo_dir: Path = DEMO_DIR) -> list[str]:
     return [x[indent:] for x in lines]
 
 
-def colour(line: str) -> str:
+def blocks(lines: list[str]) -> list[list[str]]:
+    """An excerpt split into its rules: each top-level `- ` item, or a whole
+    excerpt that is not a list."""
+    out: list[list[str]] = []
+    for x in lines:
+        if x.startswith("- ") or not out:
+            out.append([])
+        out[-1].append(x)
+    return out
+
+
+def colour(line: str, strings: str = GREEN) -> str:
     """Minimal YAML colouring: keys, quoted strings, list dashes."""
     m = re.match(r"^(\s*)(- )?([A-Za-z_][\w.]*:)?(.*)$", line)
     lead, dash, key, rest = m.group(1), m.group(2) or "", m.group(3) or "", m.group(4)
-    rest = re.sub(r'("[^"]*")', GREEN + r"\1" + RESET, rest)
-    return f"{lead}{MAGENTA}{dash}{RESET}{CYAN}{key}{RESET}{rest}"
+    rest = re.sub(r'("[^"]*")', strings + r"\1" + RESET + BOLD, rest)
+    return f"{lead}{MAGENTA}{dash}{RESET}{BOLD}{CYAN}{key}{RESET}{BOLD}{rest}"
 
 
 def clip(text: str, width: int) -> str:
@@ -132,55 +202,120 @@ def wrap(text: str, width: int) -> list[str]:
     return out + ([line] if line else [])
 
 
-def body_bat(lines: list[str], width: int) -> list[str]:
-    cmd = ["bat", "-l", "yaml", "--style=plain", "--color=always", "--paging=never", f"--terminal-width={width}"]
-    for i, x in enumerate(lines, 1):
-        if KEY_LINE.search(x):
-            cmd.append(f"--highlight-line={i}")
-    p = subprocess.run(cmd, input="\n".join(lines) + "\n", capture_output=True, text=True)
-    return p.stdout.splitlines() if p.returncode == 0 else body_plain(lines, width)
-
-
-def body_plain(lines: list[str], width: int) -> list[str]:
-    out = []
-    for x in lines:
-        x = clip(x, width - 2)
-        if KEY_LINE.search(x):
-            out.append(f"{YELLOW}{BOLD}▌{RESET}{BOLD}{colour(x)}{RESET}")
+def fold(line: str, width: int) -> list[str]:
+    """A long YAML line folded at spaces to width, continuation lines
+    indented four past the line's own indent. A word longer than a line is
+    split where it must be."""
+    if len(line) <= width:
+        return [line]
+    indent = " " * (len(line) - len(line.lstrip()) + 4)
+    out, cur = [], line[: len(line) - len(line.lstrip())]
+    for word in line.split(" "):
+        if not word:
+            continue
+        trial = f"{cur} {word}" if cur.strip() else cur + word
+        if len(trial) <= width:
+            cur = trial
+            continue
+        if len(indent) + len(word) > width:
+            # Too long for any line: start it here and split it.
+            cur = trial
         else:
-            out.append(" " + colour(x))
+            if cur.strip():
+                out.append(cur)
+            cur = indent + word
+        while len(cur) > width:
+            out.append(cur[:width])
+            cur = indent + cur[width:]
+    out.append(cur)
     return out
 
 
-def render(scenario: str, width: int, demo_dir: Path = DEMO_DIR) -> str:
+def parse_verdict(text: str | None) -> tuple[str, str, str] | None:
+    """`allow|deny|blocked <code> <label...>` -> (kind, code, label)."""
+    parts = (text or "").split(None, 2)
+    if len(parts) < 2 or parts[0] not in BADGE:
+        return None
+    code = parts[1].removeprefix("cpex.")
+    return parts[0], CODE_ALIAS.get(code, code), parts[2] if len(parts) > 2 else ""
+
+
+def decided(block: list[str], verdict: tuple[str, str, str] | None) -> bool:
+    if verdict is None:
+        return False
+    kind, code, _ = verdict
+    if kind == "allow":
+        return True
+    return f"'{code}'" in "\n".join(block)
+
+
+def badge(verdict: tuple[str, str, str] | None, width: int) -> list[str]:
+    """Three lines, always: the badge, what it means, what it was about."""
+    if verdict is None:
+        return [f"{DIM}  waiting for the agent's request…{RESET}", "", ""]
+    kind, code, label = verdict
+    ground, fg, word = BADGE[kind]
+    head = f"  {ground} {word} {RESET}"
+    if kind != "allow":
+        head += f"  {fg}{code}{RESET}"
+    meaning = "Every rule passed." if kind == "allow" else CODE_PLAIN.get(code, "")
+    return [head, f"  {BOLD}{clip(meaning, width - 2)}{RESET}", f"{DIM}  {clip('request: ' + label, width - 2)}{RESET}" if label else ""]
+
+
+def render(scenario: str, width: int, demo_dir: Path = DEMO_DIR, verdict: str | None = None) -> str:
+    if scenario == "summary":
+        out = [f"{REV}{BOLD}{clip(' ' + SUMMARY[0], width).ljust(width)}{RESET}", ""]
+        for i, f in enumerate(FINDINGS, 1):
+            lines = wrap(f, width - 5)
+            out.append(f" {BOLD}{YELLOW}{i}.{RESET}  {BOLD}{lines[0]}{RESET}")
+            out.extend(f"     {BOLD}{x}{RESET}" for x in lines[1:])
+            out.append("")
+        return "\n".join(out)
     title, parts, note = SLIDES.get(scenario, INTRO)
-    use_bat = shutil.which("bat") is not None
-    out = [f"{REV}{BOLD}{clip(' ' + title, width).ljust(width)}{RESET}"]
-    for rel, name, caption in parts:
+    v = parse_verdict(verdict)
+    out = [f"{REV}{BOLD}{clip(' ' + title, width).ljust(width)}{RESET}", ""]
+    if scenario in SLIDES:
+        out.extend(badge(v, width))
+    for rel, name, where, checks in parts:
         out.append("")
-        out.append(f"{DIM}{clip(caption, width)}{RESET}")
-        lines = excerpt(rel, name, demo_dir)
-        out.extend(body_bat(lines, width) if use_bat else body_plain(lines, width))
-    out.append("")
-    out.extend(f"{DIM}{x}{RESET}" for x in wrap(note, width))
+        out.append(f"{BOLD}{clip(checks, width)}{RESET}")
+        out.append(f"{DIM}{clip('applies to ' + where, width)}{RESET}")
+        for block in blocks(excerpt(rel, name, demo_dir)):
+            hit = decided(block, v)
+            bar = BADGE[v[0]][1] + "▌" + RESET if hit else " "
+            # Green strings only on an allow, so green never reads as passing
+            # on the rule that refused.
+            strings = GREEN if v and v[0] == "allow" else YELLOW
+            for line in block:
+                for x in fold(line, width - 2):
+                    out.append(f"{bar} {colour(x, strings)}{RESET}" if hit else f"{DIM}  {x}{RESET}")
+    if note:
+        out.append("")
+        out.extend(f"{DIM}{x}{RESET}" for x in wrap(note, width))
     return "\n".join(out)
 
 
 def watch(state: Path) -> None:
-    shown, size = None, None
+    shown = None
     sys.stdout.write("\033[?25l")  # hide the cursor
     try:
         while True:
             try:
-                current = state.read_text().strip()
+                lines = state.read_text().splitlines()
             except OSError:
-                current = ""
-            cols = shutil.get_terminal_size().columns
-            if (current, cols) != (shown, size):
-                shown, size = current, cols
-                sys.stdout.write("\033[H\033[2J" + render(current, cols - 1) + "\n")
+                lines = []
+            scenario = lines[0].strip() if lines else ""
+            verdict = lines[1].strip() if len(lines) > 1 else None
+            size = shutil.get_terminal_size()
+            key = (scenario, verdict, size)
+            if key != shown:
+                shown = key
+                body = render(scenario, size.columns - 1, verdict=verdict).split("\n")[: size.lines]
+                # One write, each line cleared to its end and the rest of the
+                # screen below: a redraw never shows a blank pane.
+                sys.stdout.write("\033[H" + "".join(f"{x}\033[K\r\n" for x in body[:-1]) + body[-1] + "\033[K\033[J")
                 sys.stdout.flush()
-            time.sleep(0.2)
+            time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
@@ -190,14 +325,15 @@ def watch(state: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("scenario", nargs="?", help="scenario name, e.g. 03-secret-in-report-deny")
-    ap.add_argument("--watch", type=Path, metavar="FILE", help="redraw whenever FILE names another scenario")
+    ap.add_argument("--verdict", help="show the verdict state: 'allow|deny|blocked <code> <label>'")
+    ap.add_argument("--watch", type=Path, metavar="FILE", help="redraw whenever FILE changes")
     args = ap.parse_args(argv)
     if args.watch:
         watch(args.watch)
         return 0
     if not args.scenario:
         ap.error("name a scenario or pass --watch")
-    print(render(args.scenario, shutil.get_terminal_size().columns - 1))
+    print(render(args.scenario, shutil.get_terminal_size().columns - 1, verdict=args.verdict))
     return 0
 
 

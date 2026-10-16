@@ -62,6 +62,21 @@ class CheckTest(unittest.TestCase):
         self.assertIn("demo/steps.md is missing 01-unapproved-host-deny.sh", problems)
         self.assertIn("demo/steps.md names 00-sandbox-boundary.sh more than once", problems)
 
+    def test_every_step_has_a_caption(self):
+        caps = record_demo.captions()
+        self.assertEqual(sorted(caps), [s[:-3] for s in record_demo.scenarios(record_demo.DEMO_DIR)])
+        self.assertTrue(caps["03-secret-in-report-deny"].startswith("4/8 · "))
+
+    def test_missing_caption(self):
+        text = (self.tmp / "demo" / "steps.md").read_text()
+        line = next(x for x in text.splitlines() if "03-secret-in-report-deny.sh" in x)
+        (self.tmp / "demo" / "steps.md").write_text(text.replace(line, line.rsplit("|", 2)[0] + "| |"))
+        self.assertIn("demo/steps.md has no caption for 03-secret-in-report-deny.sh", record_demo.check(self.tmp))
+
+    def test_missing_closing_card(self):
+        self.edit("demo/steps.md", "Closing:", "Ending:")
+        self.assertIn("demo/steps.md has no Closing: line", record_demo.check(self.tmp))
+
     def test_main_check_exit_code(self):
         self.assertEqual(record_demo.main(["--check"]), 0)
 
