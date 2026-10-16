@@ -143,7 +143,11 @@ To forward the token, deploy with `make deploy CPEX_DELEGATION=available`
 (or `make apply` with it), which turns on the cpex plugin's
 `delegated_credentials`, and `make scenarios CPEX_DELEGATION=available`
 asserts the full outcomes: 01 and 04 allowed with the minted token, 03
-redacted at hr-mcp and in the reply.
+redacted at hr-mcp and in the reply. The token goes only to the hosts
+`delegated_credential_hosts` binds its target to (hr-mcp, for workday-api
+and github-api alike); the same call to another host is denied with
+`cpex.delegation_destination_mismatch`
+(`TestHRDemoDelegatedCredentialBoundToHRMCP`).
 
 **Workload identity (scenario 13).** `make spire` adds SPIRE to the
 cluster (`k8s/spire/`), registers the sidecar of the agent's pod as

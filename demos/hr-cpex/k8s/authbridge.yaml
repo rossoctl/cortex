@@ -55,6 +55,14 @@ pipeline:
           # `make apply CPEX_DELEGATION=available` turns it on; it needs
           # CPEX 0.3.1 or later.
           delegated_credentials: false
+          # The hosts each delegation target's token may be sent to. Every
+          # delegating tool is on hr-mcp: get_compensation and
+          # get_headcount (the agent's own SVID) delegate to workday-api,
+          # search_repos to github-api. A delegating call to any other
+          # host is denied (cpex.delegation_destination_mismatch).
+          delegated_credential_hosts:
+            workday-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
+            github-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
           # Bypass hosts default covers keycloak/SPIRE/observability so
           # those egress calls don't pay the FFI cost.
           #

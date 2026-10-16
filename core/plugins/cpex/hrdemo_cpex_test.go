@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/vmihailenco/msgpack/v5"
+	"gopkg.in/yaml.v3"
 )
 
 // The hr-cpex demo's policy, loaded on the real engine with Keycloak
@@ -306,10 +308,46 @@ func hrPluginWorkload(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 }
 
 // hrPluginForwarding is hrPluginWorkload with delegated credentials
-// forwarded, as `make apply CPEX_DELEGATION=available` configures it.
+// forwarded, as `make apply CPEX_DELEGATION=available` configures it, to
+// the hosts k8s/authbridge.yaml binds.
 func hrPluginForwarding(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 	t.Helper()
-	return hrPluginWith(t, idp, svid, map[string]any{"delegated_credentials": true})
+	return hrPluginWith(t, idp, svid, map[string]any{
+		"delegated_credentials":      true,
+		"delegated_credential_hosts": hrCredentialHosts(t),
+	})
+}
+
+// hrCredentialHosts returns the cpex plugin's delegated_credential_hosts
+// from k8s/authbridge.yaml.
+func hrCredentialHosts(t *testing.T) map[string][]string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "authbridge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Pipeline struct {
+			Outbound struct {
+				Plugins []struct {
+					Name   string `yaml:"name"`
+					Config struct {
+						Hosts map[string][]string `yaml:"delegated_credential_hosts"`
+					} `yaml:"config"`
+				} `yaml:"plugins"`
+			} `yaml:"outbound"`
+		} `yaml:"pipeline"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range cfg.Pipeline.Outbound.Plugins {
+		if p.Name == "cpex" && len(p.Config.Hosts) > 0 {
+			return p.Config.Hosts
+		}
+	}
+	t.Fatal("k8s/authbridge.yaml binds no delegated_credential_hosts")
+	return nil
 }
 
 func hrPluginWith(t *testing.T, idp *hrIdP, svid spiffe.JWTSource, extra map[string]any) *CPEX {
@@ -436,6 +474,47 @@ func TestHRDemoDelegatedCredentialForwarded(t *testing.T) {
 	}
 	if strings.Contains(string(eve.Body), "would-be-removed") || !strings.Contains(string(eve.Body), "[REDACTED]") {
 		t.Fatalf("eve's forwarded body = %s, want ssn redacted", eve.Body)
+	}
+}
+
+// Every delegating route's target is bound to hr-mcp, and only there: the
+// same calls to another host are denied after the exchange, and nothing
+// is written to them.
+func TestHRDemoDelegatedCredentialBoundToHRMCP(t *testing.T) {
+	idp := newHRIdP(t)
+	svid := idp.svid(t, hrAgentSPIFFEID, idp.srv.URL+hrRealmPath)
+	p := hrPluginForwarding(t, idp, &fakeJWT{tok: svid})
+	calls := map[string]func(host string) *pipeline.Context{
+		"get_compensation": func(host string) *pipeline.Context {
+			c := hrCall{user: "bob", tool: "get_compensation", args: compensationArgs(true)}.pctx(t, idp)
+			c.Host = host
+			return c
+		},
+		"search_repos": func(host string) *pipeline.Context {
+			c := hrCall{user: "alice", tool: "search_repos", args: map[string]any{"repo_name": "web-app", "visibility": "internal"}}.pctx(t, idp)
+			c.Host = host
+			return c
+		},
+		"get_headcount": func(host string) *pipeline.Context {
+			c := headcount(t, idp, nil)
+			c.Host = host
+			return c
+		},
+	}
+	for tool, call := range calls {
+		for _, host := range []string{"hr-mcp:9100", "hr-mcp.cpex-demo.svc.cluster.local:9100"} {
+			pctx := call(host)
+			wantContinue(t, tool+" to "+host, p.OnRequest(context.Background(), pctx))
+			if got := pctx.Headers.Get("Authorization"); got != "Bearer "+idp.lastIssued(t) {
+				t.Fatalf("%s to %s does not carry the exchanged token", tool, host)
+			}
+		}
+		pctx := call("attacker.example:9100")
+		before := pctx.Headers.Clone()
+		wantReject(t, tool+" to attacker.example", p.OnRequest(context.Background(), pctx), "cpex.delegation_destination_mismatch")
+		if !reflect.DeepEqual(pctx.Headers, before) {
+			t.Fatalf("%s to attacker.example: headers changed", tool)
+		}
 	}
 }
 
