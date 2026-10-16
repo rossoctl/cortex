@@ -54,6 +54,19 @@ session_listed() {
     | jq -e --arg id "$1" 'any(.sessions[]; .id == $id)' >/dev/null
 }
 
+# Keystrokes go at roughly a person's speed, so the drill-down is readable.
+KEY_DELAY=0.06    # between typed characters
+LOOK_DELAY=0.9    # on the sessions list, and on the filtered row
+
+# type_slowly <text>: send one character at a time.
+type_slowly() {
+  local s="$1" i
+  for ((i = 0; i < ${#s}; i++)); do
+    tm send-keys -t "$AGENTOP_PANE" -l "${s:i:1}"
+    sleep "$KEY_DELAY"
+  done
+}
+
 # show <id>: back out to the sessions list, search for the id, open it. A
 # session opens at its newest event and follows the tail from there.
 show() {
@@ -62,12 +75,14 @@ show() {
   for _ in 1 2 3; do
     for _ in 1 2 3; do
       agentop_header | grep -qF "$SESSION_API" && break
-      tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.15
+      tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.3
     done
-    tm send-keys -t "$AGENTOP_PANE" / && sleep 0.05
-    tm send-keys -t "$AGENTOP_PANE" -l "$id" && sleep 0.05
-    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.1
-    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.3
+    sleep "$LOOK_DELAY"
+    tm send-keys -t "$AGENTOP_PANE" / && sleep 0.3
+    type_slowly "$id"
+    sleep 0.3
+    tm send-keys -t "$AGENTOP_PANE" Enter && sleep "$LOOK_DELAY"
+    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.4
     agentop_header | grep -qF "$id" && return 0
   done
   return 0
@@ -126,7 +141,7 @@ curl -fsS -X DELETE --max-time 15 "$SESSION_API/v1/sessions" >/dev/null || die "
 
 q() { printf '%q' "$1"; }
 walk="cd $(q "$DEMO_DIR") && while [ ! -f $(q "$REC/go") ]; do sleep 0.2; done; clear; \
-AGENT_TURN_DELAY=1.5 WALKTHROUGH_HOOK=$(q "$HERE/record_tmux.sh") ./walkthrough.sh --pace $(q "$PACE"); \
+AGENT_TURN_DELAY=1.5 AGENT_OPEN_DELAY=5 WALKTHROUGH_HOOK=$(q "$HERE/record_tmux.sh") ./walkthrough.sh --pace $(q "$PACE"); \
 sleep $(q "$PACE"); tmux -L $SOCK kill-session -t $NAME"
 agentop="HOME=$(q "$REC/home") CLAUDE_CONFIG_DIR=$(q "$REC/home/.claude") $(q "$AGENTOP") observe \
 --skip-claude-metadata --endpoint $(q "$SESSION_API") --prefs $(q "$REC/agentop.yaml")"

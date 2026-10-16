@@ -9,7 +9,9 @@ the transcript and writes every tool result to --out as JSON.
 
 Environment: DEMO_PROXY, DEMO_CA, LLM_URL, SRT_SETTINGS, WORKSPACE,
 SUPPORT_URL. AGENT_TURN_DELAY (seconds, default 0) waits before every model
-call after the first, so a recording can show the session filling in.
+call after the first, so a recording can show the session filling in;
+AGENT_OPEN_DELAY makes the wait after the first call longer, while the
+recording opens the new session.
 """
 
 import argparse
@@ -135,9 +137,10 @@ def main():
     messages = [{"role": "user", "content": content}]
     record = {"session": a.session, "stream": a.stream, "model_calls": [], "tools": []}
     delay = float(os.environ.get("AGENT_TURN_DELAY") or 0)
+    open_delay = max(delay, float(os.environ.get("AGENT_OPEN_DELAY") or 0))
     for turn in range(10):
         if turn and delay:
-            time.sleep(delay)
+            time.sleep(open_delay if turn == 1 else delay)
         status, resp = call_model(opener, a.session, messages, a.stream)
         record["model_calls"].append({"status": status, "error": resp.get("error") if status != 200 else None})
         if status != 200:
