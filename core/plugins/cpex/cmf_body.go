@@ -64,9 +64,9 @@ func cpexSessionID(pctx *pipeline.Context, source string) (id string, replaces b
 // The session a parent agent named (ChainSession) wins over one the sender
 // named itself, so a child process cannot name a fresh session to leave
 // its parent's taint. ChainSession is set only where the listener has
-// process attribution (the laptop cortex binary bound to loopback); in the
-// cortex-cpex sidecar it is always empty, so a dedicated header, which the
-// sender sets, is trusted as named.
+// process attribution (cortex bound to loopback, as the laptop install is);
+// in the authbridge-cpex sidecar it is always empty, so a dedicated header,
+// which the sender sets, is trusted as named.
 func trustedSessionID(pctx *pipeline.Context) string {
 	if id := pctx.ChainSession; id != "" && id != session.DefaultSessionID && !strings.HasPrefix(id, session.PendingPrefix) {
 		return id

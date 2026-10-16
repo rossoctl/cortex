@@ -108,11 +108,12 @@ type cpexConfig struct {
 	//                      a session, that session wins over the sender's
 	//                      own, so a child of an agent stays in its taint.
 	//                      That holds only where Cortex has process
-	//                      attribution (the laptop cortex binary bound to
-	//                      loopback). The cortex-cpex sidecar has none, so
-	//                      there resolved trusts the dedicated session
-	//                      header, which the sender sets: it does not stop
-	//                      a process from leaving its session's taint.
+	//                      attribution (cortex bound to loopback, as the
+	//                      laptop install is). The authbridge-cpex sidecar
+	//                      has none, so there resolved trusts the dedicated
+	//                      session header, which the sender sets: it does
+	//                      not stop a process from leaving its session's
+	//                      taint.
 	SessionSource string `json:"session_source" default:"header" description:"Session id for CPEX session state: header (X-Session-Id / A2A context id) or resolved (the listener's session, when a dedicated agent header or the process chain named it)."`
 
 	// PrivateDestinations lets every CPEX builtin of this instance (JWKS
