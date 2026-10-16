@@ -54,35 +54,35 @@ session_listed() {
     | jq -e --arg id "$1" 'any(.sessions[]; .id == $id)' >/dev/null
 }
 
-# Keystrokes go at roughly a person's speed, so the drill-down is readable.
-KEY_DELAY=0.06    # between typed characters
-LOOK_DELAY=0.9    # on the sessions list, and on the filtered row
-
-# type_slowly <text>: send one character at a time.
-type_slowly() {
-  local s="$1" i
-  for ((i = 0; i < ${#s}; i++)); do
-    tm send-keys -t "$AGENTOP_PANE" -l "${s:i:1}"
-    sleep "$KEY_DELAY"
+# to_list: back out to the sessions list.
+to_list() {
+  local _
+  for _ in 1 2 3; do
+    agentop_header | grep -qF "$SESSION_API" && return 0
+    tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.3
   done
 }
 
-# show <id>: back out to the sessions list, search for the id, open it. A
-# session opens at its newest event and follows the tail from there.
+# show <id>: once the session is listed, switch to it in one quick move. The
+# previous session stays on screen until then. The new one is the newest, so
+# it is the top row; search for it only if something newer got there first.
+# A session opens at its newest event and follows the tail from there.
 show() {
   local id="$1" _
   for _ in $(seq 1 50); do session_listed "$id" && break; sleep 0.1; done
-  for _ in 1 2 3; do
-    for _ in 1 2 3; do
-      agentop_header | grep -qF "$SESSION_API" && break
-      tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.3
-    done
-    sleep "$LOOK_DELAY"
-    tm send-keys -t "$AGENTOP_PANE" / && sleep 0.3
-    type_slowly "$id"
-    sleep 0.3
-    tm send-keys -t "$AGENTOP_PANE" Enter && sleep "$LOOK_DELAY"
-    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.4
+  to_list
+  # A search left over from a fallback below would pin the cursor; clear it.
+  if tm capture-pane -p -t "$AGENTOP_PANE" | grep -qF '[/'; then
+    tm send-keys -t "$AGENTOP_PANE" Escape; sleep 0.1
+  fi
+  tm send-keys -t "$AGENTOP_PANE" g Enter; sleep 0.4
+  agentop_header | grep -qF "$id" && return 0
+  for _ in 1 2; do
+    to_list
+    tm send-keys -t "$AGENTOP_PANE" / && sleep 0.05
+    tm send-keys -t "$AGENTOP_PANE" -l "$id" && sleep 0.05
+    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.1
+    tm send-keys -t "$AGENTOP_PANE" Enter && sleep 0.3
     agentop_header | grep -qF "$id" && return 0
   done
   return 0
@@ -141,7 +141,7 @@ curl -fsS -X DELETE --max-time 15 "$SESSION_API/v1/sessions" >/dev/null || die "
 
 q() { printf '%q' "$1"; }
 walk="cd $(q "$DEMO_DIR") && while [ ! -f $(q "$REC/go") ]; do sleep 0.2; done; clear; \
-AGENT_TURN_DELAY=1.5 AGENT_OPEN_DELAY=5 WALKTHROUGH_HOOK=$(q "$HERE/record_tmux.sh") ./walkthrough.sh --pace $(q "$PACE"); \
+AGENT_TURN_DELAY=1.5 AGENT_OPEN_DELAY=2 WALKTHROUGH_HOOK=$(q "$HERE/record_tmux.sh") ./walkthrough.sh --pace $(q "$PACE"); \
 sleep $(q "$PACE"); tmux -L $SOCK kill-session -t $NAME"
 agentop="HOME=$(q "$REC/home") CLAUDE_CONFIG_DIR=$(q "$REC/home/.claude") $(q "$AGENTOP") observe \
 --skip-claude-metadata --endpoint $(q "$SESSION_API") --prefs $(q "$REC/agentop.yaml")"
