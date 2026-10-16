@@ -258,6 +258,9 @@ cfg = sub(cfg, "          fail_open: false\n", """          fail_open: false
           # from it is forwarded on the request the policy allowed.
           private_destinations: true
           delegated_credentials: true
+          # The support credential is sent to the support service alone.
+          delegated_credential_hosts:
+            support: [support.localtest.me]
 """, "cortex.yaml")
 (out / "cortex.yaml").write_text(cfg)
 

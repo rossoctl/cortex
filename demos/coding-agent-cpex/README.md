@@ -106,7 +106,8 @@ credential at `agents/dev-alice/support`. The support service then refuses
 reports without it, and the policy's last `http_egress` step
 (`delegate(support-vault, ...)`) has CPEX fetch it, as the developer, only
 for a report every earlier step allowed; Cortex attaches it
-(`delegated_credentials`). It needs Docker and a Cortex built against CPEX 0.3.1 or later, which
+(`delegated_credentials`), and only to `support.localtest.me`
+(`delegated_credential_hosts`). It needs Docker and a Cortex built against CPEX 0.3.1 or later, which
 `make cortex-cpex` links; without `--custody`, scenarios 07 and 08 skip.
 
 `./run.sh check` checks that [`demo/steps.md`](demo/steps.md), the
