@@ -94,7 +94,7 @@ beat "Delegation mode: $CPEX_DELEGATION"
 act "Act 1 · Workday: a role gate, a token exchange, redaction"
 beat "01 Bob (HR) reads compensation. require(role.hr) passes and"
 beat "   delegate() exchanges his token for a workday-api token at Keycloak."
-delegation_available || beat "   CPEX 0.3.0 keeps the minted token, so the sidecar fails closed."
+delegation_available || beat "   by default CPEX keeps the minted token, so the sidecar fails closed."
 run 01-bob-allow.sh
 
 beat "02 Alice (engineering) asks the same. The role gate denies first:"

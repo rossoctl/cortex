@@ -1,4 +1,4 @@
-# CPEX runtime config for the HR demo (CPEX 0.3.0 schema).
+# CPEX runtime config for the HR demo (CPEX 0.3 schema).
 #
 # DEMO ONLY — points at an in-cluster Keycloak over plaintext http. Do NOT
 # use in production without TLS to the IdP. Keycloak resolves to a private
@@ -103,7 +103,7 @@ plugins:
   # ── DELEGATORS (RFC 8693 token exchange) ─────────────────────────
   # One per downstream audience; a route's delegate(...) step names one.
   #
-  # CPEX 0.3.0 mints the token but does not hand its value back to Cortex,
+  # By default CPEX mints the token but does not hand its value back to Cortex,
   # so Cortex refuses to forward a call whose route delegated
   # (cpex.delegation_unavailable) rather than send the caller's own bearer.
 

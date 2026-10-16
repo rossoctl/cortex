@@ -3,7 +3,7 @@
 # the APL team gate, Cedar (engineer x internal), the exchange to
 # github-api, and the check that the IdP granted repo:read:internal.
 #
-# The route delegates, so on CPEX 0.3.0 the call fails closed after the
+# The route delegates, so by default the call fails closed after the
 # exchange. With CPEX_DELEGATION=available it asserts the allow.
 
 set -euo pipefail

@@ -129,19 +129,19 @@ non-zero when an expectation fails:
 13-workload-delegation.sh            DELEGATE  the agent as itself, by its SPIFFE ID (needs `make spire`)
 ```
 
-**Delegation on CPEX 0.3.0.** CPEX 0.3.0 performs the token exchange but
-does not hand the minted token back to Cortex. Rather than forward the
-caller's own bearer where the policy asked for the delegated one, the
-sidecar denies with `cpex.delegation_unavailable`. So every call whose
-route delegates (scenarios 01, 03, 04, and S2 of 08 and 09) asserts that
-Keycloak performed the exchange, that the call failed closed and that
-nothing reached hr-mcp, and prints `forwarding: pending CPEX patch`. The
-taint is written before the delegation check, so 08 and 09 keep their
-outcomes. Redaction is verified on the engine by the cpex-tagged test
-in `core/plugins/cpex` (`TestHRDemo*`). With a CPEX that returns the
-token, `make scenarios CPEX_DELEGATION=available` asserts the full
-outcomes: 01 and 04 allowed with the minted token, 03 redacted at hr-mcp
-and in the reply.
+**Delegation by default.** CPEX performs the token exchange but, unless
+the sidecar asks for it, does not hand the minted token back to Cortex.
+Rather than forward the caller's own bearer where the policy asked for
+the delegated one, the sidecar denies with `cpex.delegation_unavailable`.
+So every call whose route delegates (scenarios 01, 03, 04, and S2 of 08
+and 09) asserts that Keycloak performed the exchange, that the call
+failed closed and that nothing reached hr-mcp, and prints `forwarding:
+delegated token withheld`. The taint is written before the delegation
+check, so 08 and 09 keep their outcomes. Redaction is verified on the
+engine by the cpex-tagged test in `core/plugins/cpex` (`TestHRDemo*`).
+With a sidecar that forwards the token, `make scenarios
+CPEX_DELEGATION=available` asserts the full outcomes: 01 and 04 allowed
+with the minted token, 03 redacted at hr-mcp and in the reply.
 
 **Workload identity (scenario 13).** `make spire` adds SPIRE to the
 cluster (`k8s/spire/`), registers the sidecar of the agent's pod as
@@ -221,17 +221,17 @@ and an approval outside the route's `scope` (at most $25,000 either way)
 are both refused, and that hr-mcp never sees a refused or pending call.
 The approval is bound to the requester, route and tool, not to the
 arguments: within the scope, a retry may carry a different amount or
-employee than the one the manager was shown. CPEX 0.3.0 has no way to
+employee than the one the manager was shown. CPEX 0.3 has no way to
 bind it tighter.
 
 **Unrouted tools.** A catch-all `tool: "*"` route denies any tool without
 a route of its own (`cpex.tool_unrouted`), including a differently cased
 name. Without it, such a tool would pass with no policy at all.
-The route does not delegate, so it runs fully on CPEX 0.3.0.
+The route does not delegate, so it runs fully by default.
 
 Scenario 03 is the headline. Bob and Eve send the byte-for-byte same
 request, the same backend returns the same record, but Eve's response
-comes back without the SSN because the policy redacts it (on CPEX 0.3.0,
+comes back without the SSN because the policy redacts it (by default,
 checked on the engine; see above).
 
 ## The personas
@@ -324,7 +324,7 @@ send an email to teammate@example.com saying the sync moved to Thursday
   -> sent; hr-mcp sees Bob's asserted identity, not his token
 
 look up the compensation for EMP-001234, include the SSN
-  -> denied (cpex.delegation_unavailable) on CPEX 0.3.0; with the token
+  -> denied (cpex.delegation_unavailable) by default; with the token
      returned, 200 OK with the SSN
 
 switch alice
@@ -333,7 +333,7 @@ look up the compensation for EMP-001234
 
 search the internal repos for web-app
   -> Cedar permits (Alice is engineering, the repo is internal); the
-     call then delegates, so on CPEX 0.3.0 it fails closed.
+     call then delegates, so by default it fails closed.
 
 search external repos
   -> denied (cpex.cedar_default_deny). Cedar refuses the cross-boundary call.
@@ -530,7 +530,7 @@ make undeploy   # deletes the cpex-demo namespace
   cluster-private address, which CPEX refuses by default; the cpex
   plugin in `k8s/authbridge.yaml` sets `private_destinations: true` for it.
 - **`cpex.delegation_unavailable` on get_compensation or search_repos.**
-  Expected on CPEX 0.3.0; see **Delegation on CPEX 0.3.0** above.
+  Expected by default; see **Delegation by default** above.
 
 ## Not covered yet
 

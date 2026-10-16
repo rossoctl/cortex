@@ -9,11 +9,11 @@ the agent; CPEX enforces on the **agent's outbound** tool calls. The
 user-visible behavior below is identical to the old standalone gateway —
 only the enforcement point moved (gateway-inbound → agent-egress).
 
-On CPEX 0.3.0 the tool calls whose route delegates (`get_compensation`,
+By default the tool calls whose route delegates (`get_compensation`,
 `search_repos` past Cedar) fail closed with `cpex.delegation_unavailable`
-after the token exchange, because CPEX does not yet return the minted
-token to the sidecar. The prompts below describe the outcome once it
-does; see "Delegation on CPEX 0.3.0" in the demo README.
+after the token exchange, because the sidecar does not take the minted
+token from CPEX. The prompts below describe the outcome once it
+does; see "Delegation by default" in the demo README.
 
 ## Setup (once)
 

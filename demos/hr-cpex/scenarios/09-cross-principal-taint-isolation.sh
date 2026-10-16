@@ -9,7 +9,7 @@
 #                                                  inherit eve's taint
 #
 # Contrast scenario 08, where Bob reusing his own tainted session is
-# denied. On CPEX 0.3.0, S2 fails closed on its delegation after writing
+# denied. By default, S2 fails closed on its delegation after writing
 # the taint.
 
 set -euo pipefail

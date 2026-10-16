@@ -17,11 +17,12 @@
 #   SPIRE_OIDC     SPIRE's OIDC discovery provider (make port-forward: 8443),
 #                  present only after `make spire`
 #
-#   CPEX_DELEGATION  `pending` (default) or `available`. CPEX 0.3.0 mints
-#                    a delegated token but does not hand it to Cortex, so
-#                    a call whose route delegates fails closed with
-#                    cpex.delegation_unavailable. `available` asserts the
-#                    full outcomes instead, for a CPEX that returns it.
+#   CPEX_DELEGATION  `pending` (default) or `available`. By default CPEX
+#                    mints a delegated token but does not hand it to
+#                    Cortex, so a call whose route delegates fails closed
+#                    with cpex.delegation_unavailable. `available` asserts
+#                    the full outcomes instead, for a sidecar that
+#                    forwards it.
 PROXY="${PROXY:-http://localhost:8083}"
 MCP_TARGET="${MCP_TARGET:-http://hr-mcp.cpex-demo:9100/mcp}"
 UPSTREAM="${UPSTREAM:-http://localhost:9100}"
@@ -295,7 +296,7 @@ expect_delegation_pending() {
   expect_exchanges "$before" 1
   expect_deny cpex.delegation_unavailable
   expect_upstream_calls 0
-  note "forwarding: pending CPEX patch"
+  note "forwarding: delegated token withheld"
 }
 
 # --- approvals (require_approval over CIBA) --------------------------------

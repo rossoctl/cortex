@@ -3,7 +3,7 @@
 # args.ssn on the request and result.ssn on the response for a caller
 # without perm.view_ssn.
 #
-# The route delegates, so on CPEX 0.3.0 the call fails closed like
+# The route delegates, so by default the call fails closed like
 # scenario 01 and the redaction is checked by the engine test
 # (core/plugins/cpex, TestHRDemoEveRedaction). With
 # CPEX_DELEGATION=available it is asserted on hr-mcp and in the reply.

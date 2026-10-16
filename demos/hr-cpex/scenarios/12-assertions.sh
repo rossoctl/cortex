@@ -8,7 +8,7 @@
 #   2. Bob sends one spoofing x-auth-user-id: root. Each assertion removes
 #      its header before setting it, so hr-mcp still sees Bob's subject.
 #
-# send_email is used because its route does not delegate: on CPEX 0.3.0
+# send_email is used because its route does not delegate: by default
 # a delegating route fails closed before anything is forwarded.
 #
 # The headers are unsigned. hr-mcp trusts them only because nothing

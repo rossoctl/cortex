@@ -3,7 +3,7 @@
 # require(role.hr) and delegate(...) exchanges Bob's token for a
 # workday-api token at Keycloak.
 #
-# CPEX 0.3.0 does not hand the minted token to Cortex, so the sidecar
+# By default CPEX does not hand the minted token to Cortex, so the sidecar
 # refuses to forward the call (cpex.delegation_unavailable) rather than
 # send Bob's own bearer to the tool. With CPEX_DELEGATION=available the
 # scenario asserts the full outcome: 200, hr-mcp holds the minted token,

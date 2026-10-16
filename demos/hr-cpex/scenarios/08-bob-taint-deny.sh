@@ -8,7 +8,7 @@
 #   S2  new session, get_compensation    -> taints the session
 #   S3  same session as S2, send_email   -> cpex.session_tainted_secret
 #
-# On CPEX 0.3.0, S2 fails closed on its delegation, but the taint is
+# By default, S2 fails closed on its delegation, but the taint is
 # written before that, so S3 is still denied.
 
 set -euo pipefail

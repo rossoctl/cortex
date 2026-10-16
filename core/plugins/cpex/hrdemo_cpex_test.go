@@ -747,8 +747,8 @@ func headcount(t *testing.T, idp *hrIdP, extra http.Header) *pipeline.Context {
 
 // Scenario 13: the route authenticates by the agent's SVID alone, and
 // the delegator presents it as a client assertion (leg 1) and exchanges
-// the token that buys for workday-api (leg 2). On CPEX 0.3.0 the minted
-// token cannot be forwarded, so the call then fails closed.
+// the token that buys for workday-api (leg 2). The plugin does not take the
+// minted token from CPEX, so it cannot be forwarded, so the call then fails closed.
 func TestHRDemoWorkloadDelegation(t *testing.T) {
 	idp := newHRIdP(t)
 	svid := idp.svid(t, hrAgentSPIFFEID, idp.srv.URL+hrRealmPath)
