@@ -58,4 +58,6 @@ pipeline:
             header: x-developer-token
           # The llm route taints on a secret in a tool result and must not
           # block the turn. See the policy.
+          # slide: observe-codes
           observe_codes: [secret_in_tool_result]
+          # end-slide

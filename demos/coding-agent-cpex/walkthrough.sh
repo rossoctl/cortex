@@ -7,7 +7,9 @@
 #   ./walkthrough.sh --fast      # no pauses
 #   ./walkthrough.sh --pace 3    # advance on its own every 3 seconds
 #
-# Assumes `./run.sh up`.
+# Assumes `./run.sh up`. When WALKTHROUGH_HOOK is set, it is run as
+# `$WALKTHROUGH_HOOK scenario <name>` before each scenario and as
+# `$WALKTHROUGH_HOOK session <label> <id>` when a scenario opens a session.
 
 set -euo pipefail
 
@@ -17,7 +19,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --fast) MODE=fast ;;
     --pace) MODE=pace; PACE="${2:?--pace needs seconds}"; shift ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -50,6 +52,7 @@ FAILED=()
 
 # run <scenario file>: run one scenario and record its result.
 run() {
+  walkthrough_hook scenario "${1%.sh}"
   pause
   if bash "$DIR/scenarios/$1"; then PASSED+=("$1"); else FAILED+=("$1"); fi
 }

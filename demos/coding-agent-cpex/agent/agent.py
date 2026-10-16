@@ -8,7 +8,8 @@ uses, its network pointed at the same cortex), Read in-process. It prints
 the transcript and writes every tool result to --out as JSON.
 
 Environment: DEMO_PROXY, DEMO_CA, LLM_URL, SRT_SETTINGS, WORKSPACE,
-SUPPORT_URL.
+SUPPORT_URL. AGENT_TURN_DELAY (seconds, default 0) waits before every model
+call after the first, so a recording can show the session filling in.
 """
 
 import argparse
@@ -17,6 +18,7 @@ import os
 import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -132,7 +134,10 @@ def main():
         content = [{"type": "text", "text": rename}, {"type": "text", "text": ask}]
     messages = [{"role": "user", "content": content}]
     record = {"session": a.session, "stream": a.stream, "model_calls": [], "tools": []}
-    for _ in range(10):
+    delay = float(os.environ.get("AGENT_TURN_DELAY") or 0)
+    for turn in range(10):
+        if turn and delay:
+            time.sleep(delay)
         status, resp = call_model(opener, a.session, messages, a.stream)
         record["model_calls"].append({"status": status, "error": resp.get("error") if status != 200 else None})
         if status != 200:

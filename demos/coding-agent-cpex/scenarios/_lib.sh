@@ -40,7 +40,20 @@ finish() {
   printf '\n  \033[1;32mall expectations met\033[0m\n'
 }
 
-new_session() { echo "$1-$(date +%s)-$$-${RANDOM}"; }
+# walkthrough_hook <event> <args...>: run $WALKTHROUGH_HOOK, if set, with
+# the event. Its output and failures never reach the scenario.
+walkthrough_hook() {
+  [ -n "${WALKTHROUGH_HOOK:-}" ] || return 0
+  "$WALKTHROUGH_HOOK" "$@" </dev/null >/dev/null 2>&1 || true
+}
+
+# new_session <label>: a fresh session id, s1 giving s1-<time>-<pid>-<n>.
+new_session() {
+  local id
+  id="$1-$(date +%s)-$$-${RANDOM}"
+  walkthrough_hook session "$(echo "${1%%-*}" | tr '[:lower:]' '[:upper:]')" "$id"
+  echo "$id"
+}
 
 # run_agent <scenario> <session> [--stream]: run the scripted agent; its
 # record is then in $AGENT_OUT.

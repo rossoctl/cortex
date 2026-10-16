@@ -102,6 +102,14 @@ walkthrough and `scenarios/` list the same scenarios, and runs its test.
 `python3 demo/record_demo.py --record` records the walkthrough with
 asciinema.
 
+`demo/record_tmux.sh` records it in three tmux panes: the walkthrough,
+agentop on the session each scenario opens, and the policy excerpt for the
+scenario (`demo/policy_slide.py`, which reads the `# slide:` markers in
+`config/`). It needs tmux, asciinema 3, agg, ffmpeg and `make agentop`,
+clears the demo cortex's session list, and writes a `.cast`, `.gif` and
+`.mp4` under `.sketchpad/demo-video/`. It follows the walkthrough through
+`WALKTHROUGH_HOOK`; see `walkthrough.sh --help`.
+
 To run a real Claude Code session against the same cortex and policy, see
 [`claude-code/README.md`](claude-code/README.md).
 

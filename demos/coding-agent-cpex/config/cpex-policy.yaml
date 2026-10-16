@@ -13,6 +13,8 @@
 # (principal.token_file); the agent never sees it.
 #
 # Relative paths resolve against the directory cortex runs in (config/).
+#
+# `# slide:` ... `# end-slide` mark the excerpts demo/policy_slide.py shows.
 
 plugins:
   - name: developer
@@ -45,6 +47,7 @@ routes:
     authentication: [developer]
     authorization:
       pre_invocation:
+        # slide: llm-taint
         - cel:
             expr: >-
               custom.tool_result_count == 0 ||
@@ -53,10 +56,12 @@ routes:
             on_deny:
               - "taint(secret, session)"
               - "deny('secret in a tool result', 'secret_in_tool_result')"
+        # end-slide
       # The model's reply, before the agent sees it. In a session that read
       # a secret, a proposed tool call that carries one, or sends a secrets
       # file over the network, refuses the whole turn: the agent never runs
       # it. Other tool calls go on to the wire policy below.
+      # slide: llm-output
       post_invocation:
         - cel:
             expr: >-
@@ -66,6 +71,7 @@ routes:
             secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
             exfil: "\\b(curl|wget|nc|scp|rsync)\\b.*(\\.env|id_rsa|\\.pem)\\b"
             on_deny: ["deny('tool call would send secret data', 'secret_in_tool_call')"]
+      # end-slide
 
   # Everything else the agent and its tools send.
   - tool: http_egress
@@ -74,16 +80,21 @@ routes:
       pre_invocation:
         # The host allowlist a sandbox would otherwise hold. A tunnel is
         # decided on its host; the requests inside it are checked again.
+        # slide: egress-allowlist
         - cel:
             expr: "args.host in allowed"
             allowed: ["support.localtest.me", "llm.localtest.me"]
             on_deny: ["deny('host not allowed', 'egress_host_not_allowed')"]
+        # end-slide
         # A session that read a secret sends nothing more, however clean.
+        # slide: session-tainted
         - cel:
             expr: "args.method == 'CONNECT' || !('secret' in security.labels)"
             on_deny: ["deny('this session read secret data', 'session_tainted_secret')"]
+        # end-slide
         # Only what the excerpt shows can be judged: a body past it, or
         # one encoded, is refused.
+        # slide: body-checks
         - cel:
             expr: "args.method == 'CONNECT' || (!args.truncated && args.content_encoding in ['', 'identity'])"
             on_deny: ["deny('body cannot be inspected', 'egress_body_uninspectable')"]
@@ -91,10 +102,13 @@ routes:
             expr: "args.method == 'CONNECT' || !args.body.matches(secret)"
             secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
             on_deny: ["deny('secret in request body', 'secret_in_body')"]
+        # end-slide
         # Reports go only to the developer's own projects (the teams
         # claim). The support credential could reach either.
+        # slide: project-authz
         - cel:
             expr: >-
               args.method == 'CONNECT' || args.host != 'support.localtest.me' ||
               subject.teams.exists(t, args.path.startsWith('/projects/' + t + '/'))
             on_deny: ["deny('project not authorized', 'project_not_authorized')"]
+        # end-slide

@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import policy_slide  # noqa: E402
 import record_demo  # noqa: E402
 
 
@@ -63,6 +64,21 @@ class CheckTest(unittest.TestCase):
 
     def test_main_check_exit_code(self):
         self.assertEqual(record_demo.main(["--check"]), 0)
+
+
+class PolicySlideTest(unittest.TestCase):
+    def test_every_scenario_has_a_slide(self):
+        self.assertEqual(sorted(policy_slide.SLIDES), [s[:-3] for s in record_demo.scenarios(record_demo.DEMO_DIR)])
+
+    def test_every_slide_marker_exists(self):
+        for name in policy_slide.SLIDES:
+            with self.subTest(name):
+                self.assertIn(policy_slide.SLIDES[name][0], policy_slide.render(name, 80))
+
+    def test_excerpt_drops_comments(self):
+        lines = policy_slide.excerpt(policy_slide.POLICY, "egress-allowlist")
+        self.assertTrue(lines[0].startswith("- cel:"))
+        self.assertFalse(any(x.lstrip().startswith("#") for x in lines))
 
 
 if __name__ == "__main__":
