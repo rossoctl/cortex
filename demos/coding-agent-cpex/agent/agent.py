@@ -117,6 +117,7 @@ def main():
     ap.add_argument("--session", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--stream", action="store_true", help="ask the model for SSE responses")
+    ap.add_argument("--title", help="name the session, as Claude Code's /rename does")
     a = ap.parse_args()
 
     ctx = ssl.create_default_context(cafile=os.environ["DEMO_CA"])
@@ -124,7 +125,12 @@ def main():
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({"http": proxy, "https": proxy}), urllib.request.HTTPSHandler(context=ctx)
     )
-    messages = [{"role": "user", "content": f"Scenario: {a.scenario}. File the bug report for this build failure."}]
+    ask = f"Scenario: {a.scenario}. File the bug report for this build failure."
+    content = ask
+    if a.title:
+        rename = f"<command-name>/rename</command-name><command-args>{a.title}</command-args>"
+        content = [{"type": "text", "text": rename}, {"type": "text", "text": ask}]
+    messages = [{"role": "user", "content": content}]
     record = {"session": a.session, "stream": a.stream, "model_calls": [], "tools": []}
     for _ in range(10):
         status, resp = call_model(opener, a.session, messages, a.stream)

@@ -16,7 +16,10 @@ source "$DEMO_DIR/env.sh"
 SECRET="AKIAIOSFODNN7EXAMPLE"
 DEV_JWT="$(cat "$IDENTITY_DIR/developer.jwt" 2>/dev/null)"
 
+# step <title>: print a scenario's header. The next run_agent names its
+# session with it.
 step() {
+  SESSION_TITLE="$*"
   echo
   echo "============================================================"
   echo "$@"
@@ -44,7 +47,8 @@ new_session() { echo "$1-$(date +%s)-$$-${RANDOM}"; }
 run_agent() {
   AGENT_OUT="$STATE_DIR/runs/$1-$2.json"
   mkdir -p "$STATE_DIR/runs"
-  python3 "$DEMO_DIR/agent/agent.py" --scenario "$1" --session "$2" --out "$AGENT_OUT" "${@:3}"
+  python3 "$DEMO_DIR/agent/agent.py" --scenario "$1" --session "$2" --out "$AGENT_OUT" \
+    ${SESSION_TITLE:+--title "$SESSION_TITLE"} "${@:3}"
 }
 
 # --- the agent's tool results --------------------------------------------
