@@ -1,11 +1,11 @@
-# Bring your own Claude Code
+# Running real Claude Code
 
 The scripted scenarios run a stand-in agent under `srt`. This guide points a
-real, sandboxed Claude Code session at the same demo cortex and policy. That
-run is the enforcement claim: Claude Code's own sandbox sends every command's
-traffic to cortex, and nothing the model does changes that.
+real, sandboxed Claude Code session at the same demo cortex and policy.
+Claude Code's own sandbox sends every command's traffic to cortex, and
+nothing the model does changes that.
 
-## Lanes
+## What goes through cortex
 
 | Traffic | Route | Status |
 |---|---|---|
@@ -13,16 +13,16 @@ traffic to cortex, and nothing the model does changes that.
 | Claude Code's own process: model API, WebFetch | `HTTPS_PROXY` → `:47700` | **monitored**: honoured by the process, not enforced |
 | Read, Edit, Write, local MCP servers, hooks | none | outside both |
 
-The monitored lane still matters here. The session's model calls carry the
-tool results, which is how reading `.env` taints the session; they must reach
-the demo cortex, not an installed service on `:47600`, or the taint and the
+The second row matters even though it is not enforced. The model calls carry
+the tool results, which is how reading `.env` taints the session; they must
+reach the demo cortex, not an installed service on `:47600`, or the taint and the
 sandboxed `curl` land in different places.
 
 ## Run it
 
 ```sh
 ./run.sh up --claude-code               # adds the model API and registry/VCS hosts
-claude-code/preflight.sh settings       # writes .state/claude-code/settings.json
+claude-code/setup.sh settings           # writes .state/claude-code/settings.json
 cd .state/workspace && claude --settings ../claude-code/settings.json
 ```
 
@@ -30,7 +30,7 @@ Say anything to Claude Code so it makes a model call, then, in another
 terminal:
 
 ```sh
-claude-code/preflight.sh wait
+claude-code/setup.sh wait
 ```
 
 It refuses to continue until the demo session API holds a session that

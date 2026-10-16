@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s0)"
-step "S0 · a sandboxed command dials the support service around the proxy"
+step "S0: a sandboxed command tries to reach the support service directly"
 reset_mocks
 run_agent 00-sandbox-boundary "$SID"
 expect_tool_failed 0

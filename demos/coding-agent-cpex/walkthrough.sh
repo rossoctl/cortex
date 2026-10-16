@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Narrated run of every coding-agent scenario, in acts, with what to watch
-# for before each one. Each scenario asserts its own outcome; the
-# walkthrough ends with a summary and exits non-zero if any failed.
+# Narrated run of every coding-agent scenario, with a sentence on what each
+# one shows. Each scenario checks its own outcome; the walkthrough ends with
+# a summary and exits non-zero if any failed.
 #
-#   ./walkthrough.sh             # pause for Enter between beats (q quits)
+#   ./walkthrough.sh             # pause for Enter between scenarios (q quits)
 #   ./walkthrough.sh --fast      # no pauses
 #   ./walkthrough.sh --pace 3    # advance on its own every 3 seconds
 #
-# Assumes `./run.sh up`. For an audience, a second terminal on what the
-# support service received helps:
-#   tail -f .state/logs/mock-support.log
+# Assumes `./run.sh up`.
 
 set -euo pipefail
 
@@ -19,7 +17,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --fast) MODE=fast ;;
     --pace) MODE=pace; PACE="${2:?--pace needs seconds}"; shift ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -29,17 +27,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scenarios/_lib.sh
 source "$DIR/scenarios/_lib.sh"
 
-cyan() { printf '\033[36m%s\033[0m' "$*"; }
+bold() { printf '\033[1m%s\033[0m' "$*"; }
 dim()  { printf '\033[2m%s\033[0m' "$*"; }
 
-act() {
-  echo
-  cyan ════════════════════════════════════════════════════════════; echo
-  cyan "  $*"; echo
-  cyan ════════════════════════════════════════════════════════════; echo
-}
-
-beat() { note "$@"; }
+section() { echo; bold "$*"; echo; }
+say() { echo "  $*"; }
 
 pause() {
   case "$MODE" in
@@ -62,9 +54,7 @@ run() {
   if bash "$DIR/scenarios/$1"; then PASSED+=("$1"); else FAILED+=("$1"); fi
 }
 
-# ── Pre-flight ──────────────────────────────────────────────────────
-
-act "Pre-flight"
+section "Is the demo up?"
 ok=1
 if curl -fsS --max-time 3 "$SESSION_API/v1/plugins" 2>/dev/null | jq -e '.plugins[] | select(.name == "cpex")' >/dev/null; then
   pass_ "demo cortex with cpex at $SESSION_API"
@@ -79,59 +69,45 @@ for url in "$LLM_URL" "$SUPPORT_URL"; do
   fi
 done
 [ "$ok" = 1 ] || { echo; echo "  Fix the above and re-run."; exit 1; }
-beat "The agent's model calls go to the demo cortex over HTTPS_PROXY."
-beat "Its shell commands run under srt, whose only route out is the same"
-beat "cortex. The developer's identity is held by cortex, not the agent."
+say "The agent's model calls and its sandboxed commands both go through the"
+say "demo cortex, which holds the developer's identity."
 
-# ── Act 1 ───────────────────────────────────────────────────────────
-
-act "Act 1 · The sandbox is the boundary"
-beat "00 A command that ignores the proxy cannot connect, and the token"
-beat "   cortex holds cannot be read from inside the sandbox."
+section "The sandbox"
+say "00: a command that bypasses the proxy cannot connect, and the sandbox"
+say "    cannot read the developer token."
 run 00-sandbox-boundary.sh
 
-beat "01 A report to paste.evil.example is refused at the tunnel. A"
-beat "   sandbox allowlist does this too: parity, not the point."
+say "01: a report to an unapproved host is refused at the tunnel, as a"
+say "    sandbox allowlist would refuse it."
 run 01-unapproved-host-deny.sh
 
-# ── Act 2 ───────────────────────────────────────────────────────────
-
-act "Act 2 · Allowed destination, unauthorized disclosure"
-beat "02 A clean report to project A on the support service: 201."
+section "What leaves through an allowed host"
+say "02: a clean report to project A goes through."
 run 02-clean-report-allow.sh
 
-beat "03 Same host, same project, and a report carrying an AWS key. The"
-beat "   sandbox allows the connection; the policy refuses the disclosure."
-beat "   Padding the key past the excerpt, or gzipping it, is refused too."
+say "03: a report carrying an AWS key is refused, and so is one padded past"
+say "    the inspected excerpt or gzipped."
 run 03-secret-in-report-deny.sh
 
-beat "04 The agent reads .env. The model turn carrying it goes through and"
-beat "   taints the session; after that even a clean report is refused,"
-beat "   and a header naming a fresh session does not get out of it."
+say "04: the agent reads .env. That model call goes through and taints the"
+say "    session; every report after it is refused."
 run 04-tainted-session-deny.sh
 
-beat "05 A clean report to project B. The support service would take it;"
-beat "   the developer is on A only, so the policy does not."
+say "05: a clean report to project B is refused: the developer is on A only."
 run 05-wrong-project-deny.sh
 
-beat "06 The same clean report from a new session goes through: the taint"
-beat "   belongs to the session that read the secret, not the developer."
+say "06: the same report from a new session goes through: the taint belongs"
+say "    to the session that read the secret."
 run 06-fresh-session-allow.sh
 
-# ── Act 3 ───────────────────────────────────────────────────────────
-
-act "Act 3 · Before the agent acts"
-beat "09 In a tainted session the model proposes a curl pasting the key."
-beat "   cpex refuses the reply, so the agent never runs it. JSON and SSE."
+section "The model's reply"
+say "09: in a tainted session the model proposes a curl carrying the key."
+say "    cpex refuses the reply, so the agent never runs it."
 run 09-intent-deny.sh
 
-# ── Summary ─────────────────────────────────────────────────────────
-
-act "Summary"
+section "Summary"
 for s in ${PASSED[@]+"${PASSED[@]}"}; do pass_ "$s"; done
 for s in ${FAILED[@]+"${FAILED[@]}"}; do fail_ "$s"; done
 echo
 echo "  ${#PASSED[@]} passed, ${#FAILED[@]} failed"
-beat "The sandbox correctly allowed the connection; the policy correctly"
-beat "rejected the disclosure."
 [ "${#FAILED[@]}" -eq 0 ]

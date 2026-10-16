@@ -1,11 +1,9 @@
-# Coding agent under a Cortex + CPEX reference monitor
+# Coding agent behind Cortex and CPEX
 
 A coding agent's sandbox already decides which commands run and which hosts
 they reach. It does not decide what may leave through an allowed host. This
 demo puts Cortex, built with the cpex plugin, behind the sandbox's network
-proxy and shows the difference: an allowed destination is not an authorized
-disclosure. The sandbox correctly allows the connection; the policy
-correctly rejects the disclosure.
+proxy, where a policy decides on what each request carries.
 
 ## What a hardened setup already does
 
@@ -17,10 +15,10 @@ correctly rejects the disclosure.
 | Secret scanners | secrets found in files and commits | nothing on the egress path; no notion of what the session has read | a content check at egress, and a session tainted once it reads a secret |
 | Hooks | a look at each tool call before it runs | they see the command string, not the bytes sent | decisions on the wire, and on the model's proposed tool calls |
 
-Blocking an unapproved host (scenario 01) is parity with the sandbox, not
-the point.
+Scenario 01, blocking an unapproved host, is what a sandbox allowlist does
+already; it is there for comparison.
 
-## Lanes
+## What goes through cortex
 
 | Traffic | Route to cortex | Status |
 |---|---|---|
@@ -114,9 +112,9 @@ and never touches `~/.cortex` or an installed service on `:47600`.
 ## Limits
 
 - The scripted agent is a stand-in for Claude Code, run under `srt`: the
-  scenarios show policy decisions, not a model's behaviour. The sandboxed
-  Claude Code run in [`claude-code/`](claude-code/README.md) is the
-  enforcement claim.
+  scenarios show policy decisions, not a model's behaviour. For the same
+  policy enforced on a real, sandboxed Claude Code, see
+  [`claude-code/`](claude-code/README.md).
 - Content checks cover the patterns in the policy, in the first 8 KiB of a
   body sent as is; a body past that, or encoded, is refused. Secrets
   transformed some other way, and a single command that reads and sends,

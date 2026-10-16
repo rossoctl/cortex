@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s1)"
-step "S1 · the agent uploads a build log to paste.evil.example"
+step "S1: the agent uploads a build log to paste.evil.example"
 reset_mocks
 run_agent 01-unapproved-host "$SID"
 expect_tool_connect_refused 0

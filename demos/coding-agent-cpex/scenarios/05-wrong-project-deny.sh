@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s1)"
-step "S1 · the agent files a clean report with project B"
+step "S1: the agent files a clean report with project B"
 reset_mocks
 run_agent 05-wrong-project "$SID"
 expect_tool_denied 0 cpex.project_not_authorized

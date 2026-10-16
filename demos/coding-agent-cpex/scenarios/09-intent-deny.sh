@@ -12,11 +12,10 @@ for mode in json sse; do
   [ "$mode" = sse ] && flag=(--stream)
 
   SID="$(new_session s4-$mode)"
-  step "S4 · ($mode) a tainted session's model proposes pasting the key"
+  step "S4 ($mode): a tainted session's model proposes pasting the key"
   reset_mocks
   run_agent 09-intent-deny "$SID" ${flag[@]+"${flag[@]}"}
   expect_model_denied 1 cpex.secret_in_tool_call
-  note "the Read of .env ran; the curl the model proposed never did"
   expect_tools_run 1
   expect_cpex "$SID" observe cpex.secret_in_tool_result /v1/messages
   expect_cpex "$SID" deny cpex.secret_in_tool_call /v1/messages
@@ -24,7 +23,7 @@ for mode in json sse; do
   expect_support_reports 0
 
   SID="$(new_session s5-$mode)"
-  step "S5 · ($mode) an untainted session files a clean report"
+  step "S5 ($mode): an untainted session files a clean report"
   reset_mocks
   run_agent 09-intent-allow "$SID" ${flag[@]+"${flag[@]}"}
   expect_model_calls_ok

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Point a real Claude Code session at the demo cortex, and check it arrived.
 #
-#   claude-code/preflight.sh settings   write .state/claude-code/settings.json
-#                                       from settings.json.example
-#   claude-code/preflight.sh wait       block until the demo session API
-#                                       holds a session with a model reply
-#                                       from a real Claude Code process
-#   claude-code/preflight.sh check      the same, once; exit 1 if not yet
+#   claude-code/setup.sh settings   write .state/claude-code/settings.json
+#                                   from settings.json.example
+#   claude-code/setup.sh wait       block until the demo session API
+#                                   holds a session with a model reply
+#                                   from a real Claude Code process
+#   claude-code/setup.sh check      the same, once; exit 1 if not yet
 #
 # Assumes `./run.sh up --claude-code`. CLAUDE_INFERENCE_HOST names the
 # model API host when it is not api.anthropic.com (a gateway, say).
@@ -21,7 +21,7 @@ source "$DEMO_DIR/env.sh"
 INFERENCE_HOST="${CLAUDE_INFERENCE_HOST:-api.anthropic.com}"
 SETTINGS="$STATE_DIR/claude-code/settings.json"
 
-die() { echo "preflight: $*" >&2; exit 1; }
+die() { echo "setup.sh: $*" >&2; exit 1; }
 info() { echo "  ▸ $*"; }
 
 demo_up() {

@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s3)"
-step "S3 · a new session files the same clean report"
+step "S3: a new session files the same clean report"
 [ -f "$STATE_DIR/tainted-session" ] && note "tainted session: $(cat "$STATE_DIR/tainted-session")"
 reset_mocks
 run_agent 06-fresh-session "$SID"

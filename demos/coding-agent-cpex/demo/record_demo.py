@@ -23,7 +23,7 @@ from pathlib import Path
 DEMO_DIR = Path(__file__).resolve().parent.parent
 
 SCENARIO = re.compile(r"\d\d-[A-Za-z0-9-]+\.sh")
-# A steps.md table row's scenario cell: | n | act | `NN-name.sh` | ... |
+# A steps.md table row's scenario cell: | n | part | `NN-name.sh` | ... |
 STEP_ROW = re.compile(r"^\|\s*\d+\s*\|[^|]*\|\s*`(" + SCENARIO.pattern + r")`\s*\|")
 # A walkthrough line that runs a scenario: run NN-name.sh
 RUN_LINE = re.compile(r"^\s*run\s+(" + SCENARIO.pattern + r")\s*$")
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="fail on drift between steps, walkthrough and scenarios")
     mode.add_argument("--record", action="store_true", help="check, then record the walkthrough")
-    ap.add_argument("--pace", default="2", help="seconds per beat while recording (default 2)")
+    ap.add_argument("--pace", default="2", help="seconds between scenarios while recording (default 2)")
     ap.add_argument("--out", type=Path, default=DEMO_DIR / "demo" / "coding-agent-demo", help="output path, no extension")
     args = ap.parse_args(argv)
 

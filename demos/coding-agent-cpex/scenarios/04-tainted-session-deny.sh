@@ -8,7 +8,7 @@ source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s2)"
 echo "$SID" >"$STATE_DIR/tainted-session"
-step "S2 · the agent reads .env, then files a clean report"
+step "S2: the agent reads .env, then files a clean report"
 reset_mocks
 run_agent 04-tainted-session "$SID"
 expect_model_calls_ok

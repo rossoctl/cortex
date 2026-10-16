@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s1)"
-step "S1 · the agent files a clean report with project A"
+step "S1: the agent files a clean report with project A"
 reset_mocks
 run_agent 02-clean-report "$SID"
 expect_tool_status 0 201

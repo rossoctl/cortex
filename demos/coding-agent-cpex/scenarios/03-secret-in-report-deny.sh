@@ -6,7 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 SID="$(new_session s1)"
-step "S1 · the agent attaches a diagnostic holding an AWS key"
+step "S1: the agent attaches a diagnostic holding an AWS key"
 reset_mocks
 run_agent 03-secret-in-report "$SID"
 expect_tool_denied 0 cpex.secret_in_body
