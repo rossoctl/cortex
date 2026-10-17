@@ -1,0 +1,36 @@
+{
+  "env": {
+    "HTTPS_PROXY": "http://127.0.0.1:47700",
+    "HTTP_PROXY": "http://127.0.0.1:47700",
+    "NODE_EXTRA_CA_CERTS": "__DEMO_DIR__/.state/cortex-ca/ca.crt",
+    "SSL_CERT_FILE": "__DEMO_DIR__/.state/cortex-ca/bundle.crt",
+    "CURL_CA_BUNDLE": "__DEMO_DIR__/.state/cortex-ca/bundle.crt",
+    "GIT_SSL_CAINFO": "__DEMO_DIR__/.state/cortex-ca/bundle.crt",
+    "REQUESTS_CA_BUNDLE": "__DEMO_DIR__/.state/cortex-ca/bundle.crt",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "httpProxyPort": 47700,
+      "socksProxyPort": 47700
+    },
+    "filesystem": {
+      "denyRead": [
+        "__DEMO_DIR__/config/identity",
+        "__DEMO_DIR__/.state/mock-ca"
+      ]
+    },
+    "credentials": {
+      "files": [
+        { "path": "__DEMO_DIR__/.state/support-token", "mode": "deny" },
+        { "path": "__DEMO_DIR__/.state/cortex-ca/tls.key", "mode": "deny" }
+      ],
+      "envVars": [
+        { "name": "SUPPORT_TOKEN", "mode": "deny" }
+      ]
+    }
+  }
+}

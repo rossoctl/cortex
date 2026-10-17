@@ -223,7 +223,7 @@ func bridgedGet(t *testing.T, proxy *httptest.Server, bridgeCA []byte, authority
 		t.Fatalf("agent-side TLS handshake through the bridge: %v", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+authority+path, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -386,10 +386,10 @@ func TestConnectBridge_RedirectSendsTheDecryptedRequestToTheTarget(t *testing.T)
 			continue
 		}
 		found = true
-		// The decrypted request's own Host header carries no port, so that is the
-		// host the client named.
-		if ev.Host != b.authority() || ev.RequestedHost != hostOnly(a.authority()) {
-			t.Errorf("request row: host %q requested %q, want %q and %q", ev.Host, ev.RequestedHost, b.authority(), hostOnly(a.authority()))
+		// The decrypted request's own Host header names the tunnel's authority, so
+		// that is the host the client named.
+		if ev.Host != b.authority() || ev.RequestedHost != a.authority() {
+			t.Errorf("request row: host %q requested %q, want %q and %q", ev.Host, ev.RequestedHost, b.authority(), a.authority())
 		}
 	}
 	if !found {

@@ -1,0 +1,56 @@
+# Demo Cortex config. run.sh starts Cortex from this directory with
+# DEMO_DIR and DEMO_STATE set. Listeners use loopback ports 4770x,
+# separate from an installed service on 4760x.
+mode: proxy-sidecar
+listener:
+  roles: [forward]
+  bind_loopback_only: true
+  forward_proxy_addr: 127.0.0.1:47700
+  session_api_addr: 127.0.0.1:47701
+  health_addr: 127.0.0.1:47703
+  transparent_proxy_addr: 127.0.0.1:47704
+stats:
+  address: 127.0.0.1:47702
+tls_bridge:
+  mode: enabled
+  ca_dir: "${DEMO_STATE}/cortex-ca"
+  generate_ca: true
+  # Inspect every host. The mock services use ports 47710 and 47711.
+  passthrough_hosts: []
+  ports: [443, 8443, 47710, 47711]
+  # The mocks' self-signed CA.
+  upstream_ca_bundle: "${DEMO_STATE}/mock-ca/ca.crt"
+session:
+  # Use the agent's session header and process ancestry to group requests.
+  # Accepting X-Session-Id here would let child commands change sessions.
+  id_headers: [X-Claude-Code-Session-Id]
+  client_affinity: false
+  process_attribution: "on"
+  archive:
+    enabled: false
+cost_ledger:
+  enabled: false
+pipeline:
+  outbound:
+    plugins:
+      - inference-parser
+      - mcp-parser
+      - name: cpex
+        config:
+          hooks:
+            on_request: [cmf.tool_pre_invoke, cmf.llm_input]
+            on_response: [cmf.llm_output]
+          config_file: "${DEMO_DIR}/config/cpex-policy.yaml"
+          fail_open: false
+          # Present unparsed requests, including curl, as http_egress calls.
+          synthetic_egress: true
+          # Child commands inherit the parent agent's session and taint.
+          session_source: resolved
+          # Supply the developer token to CPEX without exposing or forwarding it.
+          principal:
+            token_file: "${DEMO_DIR}/config/identity/developer.jwt"
+            header: x-developer-token
+          # Mark secret reads without blocking the model request.
+          # slide: observe-codes
+          observe_codes: [secret_in_tool_result]
+          # end-slide

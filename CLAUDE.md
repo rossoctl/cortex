@@ -185,10 +185,12 @@ cortex/
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
-│   ├── main.go
+├── cmd/cortex-cpex/                  # The authbridge-cpex image: no Go code. Builds cmd/cortex
+│   │                                 #   with cgo + -tags cpex (`cpex` profile)
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
-│   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX release tag (e.g. v0.3.1)
+│   ├── CPEX_FFI_ABI                  #   FFI ABI integer that release must report
+│   ├── CPEX_FFI_SHA256               #   pinned digest of each target's FFI tarball
 │   └── entrypoint.sh
 │
 ├── cmd/cortex-praxis/                # proxy-sidecar rendered into a Praxis proxy config.
@@ -218,6 +220,7 @@ cortex/
 │   ├── install.sh                    # Laptop installer: downloads, verifies and stages a
 │   │                                 #   release, then execs `agentop setup --from <stage>`
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
+│   ├── fetch-cpex-ffi.sh             # Download + verify the pinned libcpex_ffi.a
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
 │   │   ├── verify-spire-keycloak.sh  #   Platform preflight for a local dev cluster
@@ -246,7 +249,7 @@ cortex/
 │   └── context-guru/                 #   Opt-in context-guru plugin
 │
 ├── tests/                            # Python tests (keycloak_sync)
-├── go.work                           # Workspace linking 9 of the 12 Go modules
+├── go.work                           # Workspace linking 8 of the 11 Go modules
 ├── .github/
 │   ├── workflows/                    # CI/CD (ci.yaml, build.yaml, release-binaries.yaml,
 │   │                                 # security-scans, scorecard, spellcheck)
@@ -259,10 +262,10 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` and `authbridge-cpex` **images** are build variants of the proxy binary (not separate binaries) — see below.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
-**Language:** Go 1.26.5 (`go.work` and the nine workspace modules; the
+**Language:** Go 1.26.5 (`go.work` and the eight workspace modules; the
 three self-contained `demos/*` modules are still on 1.24)
 **Deployment shapes:** [`cmd/README.md`](cmd/README.md) — which binary pins which shape
 **Framework internals:** [`docs/framework-architecture.md`](docs/framework-architecture.md), [`docs/plugin-reference.md`](docs/plugin-reference.md), [`docs/architecture.md`](docs/architecture.md)
@@ -321,13 +324,13 @@ credentials are fetched in-process by `core/spiffe`'s Provider.
 
 ## AuthBridge Binaries
 
-Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build variant of the proxy binary (proxy Dockerfile + the `lite` profile's tags):
+Sidecar binaries, one Dockerfile each; the `authbridge-lite` and `authbridge-cpex` images are build variants of the proxy binary (`lite`: proxy Dockerfile + the `lite` profile's tags; `cpex`: `cmd/cortex-cpex/Dockerfile`, cgo + `-tags cpex` + the `cpex` profile):
 
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
 | `cmd/cortex/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
 | `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
-| `cmd/cortex-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
+| `authbridge-cpex` _(image: proxy + cgo + `cpex` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar plugins + `cpex` (cgo) |
 | `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
 
@@ -340,8 +343,8 @@ operator-facing TUI over the session API, and the component the root README lead
 with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybindings.
 
 **Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
-gated by `//go:build include_plugin_<name>` (16 such files in
-`cmd/cortex/`); `main.go` imports no plugin package directly, so a build
+gated by `//go:build include_plugin_<name>` (17 such files in
+`cmd/cortex/`; `plugins_cpex.go` also needs the `cpex` tag); `main.go` imports no plugin package directly, so a build
 with no `-tags` registers no plugins at all and rejects every config it is handed.
 Tag sets come from [`scripts/profile-tags`](scripts/profile-tags/), one profile per
 shipped artifact.
@@ -350,20 +353,32 @@ shipped artifact.
 
 `v*` tag pushes trigger `.github/workflows/release-binaries.yaml`, which
 cross-compiles `cortex` and `agentop` for linux/darwin ×
-amd64/arm64 and attaches tarballs to the GitHub Release. `cortex`
-ships one tarball shape, `cortex_<ver>_<os>_<arch>.tar.gz`, built with the
-default plugin set (the `authbridge` image's). No other binary variant is
-published: the `lite` profile ships only as the `authbridge-lite` image, and
-opt-in plugins such as `sessionbudget` and `context-guru` are built from
-source. To publish a variant, append a `<suffix>:<build-tags>` entry to the
-`proxy_variants` array in the workflow — never enumerate combos.
-`cortex-cpex` stays image-only (needs cgo).
+amd64/arm64 and attaches tarballs to the GitHub Release. Its default
+`cortex` tarball, `cortex_<ver>_<os>_<arch>.tar.gz`, is built with the
+default plugin set (the `authbridge` image's). The `lite` profile ships only
+as the `authbridge-lite` image, and opt-in plugins such as `sessionbudget` and
+`context-guru` are built from source. To publish a pure-Go variant, append a
+`<suffix>:<build-tags>` entry to the `proxy_variants` array in the workflow —
+never enumerate combos.
 
-**Go modules** (12 in total; `go.work` links 9 of them — the three
+The one other variant is `cortex-cpex_<ver>_<os>_<arch>.tar.gz`: `cortex`
+built with cgo, the `cpex` tag and the `fullcpex` profile (`full` + `cpex`).
+It cannot cross-compile, so a separate `build-cpex` matrix job builds it
+natively for darwin/arm64 (`macos-14`, macOS 14.5 floor) and linux/amd64 and
+linux/arm64 (static musl, in `golang:alpine` via `docker run`); there is no
+darwin/amd64 FFI. The executable inside is still `cortex`, and `cortex
+--version` prints `cortex (cpex) <ver>`. The workflow's jobs are `version`,
+`build`, `build-cpex` (both `contents: read`) and `publish`, which alone
+writes, refuses to publish unless every expected tarball arrived, writes one
+`checksums.txt` over all of them, and attests the cpex tarballs' build
+provenance. `install.sh --cpex` installs it; `make cortex-cpex` builds the same
+thing locally to `bin/cortex-cpex/cortex`.
+
+**Go modules** (11 in total; `go.work` links 8 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
-`ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
+`ci.yaml` does cover all 11: it discovers them with `find`, not from `go.work`):
 - `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
-- `cmd/cortex{,-envoy,-cpex,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `cortex` built with the `lite` profile.)
+- `cmd/cortex{,-envoy,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` and `authbridge-cpex` images are `cortex` built with the `lite` and `cpex` profiles; `cmd/cortex-cpex/` holds only the latter's Dockerfile and FFI pins.)
 - `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
@@ -566,7 +581,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   string can carry an API key. Before that was recorded the row did not exist at all,
   so a failed request was indistinguishable from one still in flight and raised no
   error rate (#1045). **`error.kind: "proxy_error"` is the one that is ours:** a
-  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). Where the
+  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). **A 421
+  with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
+  another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
+  before the pipeline runs and forwards nothing, and both rows name the CONNECT target
+  as `host`, because policy keyed on the client's `Host` would judge a destination the
+  bytes never reach. Where the
   upstream did answer, `error.code` keeps the status it sent, while `statusCode` stays
   what the client got, because every consumer keys on it. **A 499 with `error.kind:
   "client_canceled"` is the client hanging up first** — and since neither proxy times
@@ -758,7 +778,7 @@ retired as superseded. Nothing in-tree exercises the Envoy filter chains. Re-ver
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core (plus `core/peerproc`'s tests on a macOS runner), both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core (plus `core/peerproc`'s tests on a macOS runner), both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 11 modules; the cgo `cpex` builds of `cmd/cortex` (`go-ci-cpex`); Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
@@ -798,7 +818,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
 | `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build of `cmd/cortex` with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it selects the FFI-backed cpex manager and gates `cmd/cortex/plugins_cpex.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
@@ -827,18 +847,19 @@ Hooks:
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
 
-- `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
+- `go vet ./...` **is** a gate, on 7 of the 11 modules: `core`, both
   `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
-  matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
-  needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
-  build), `core/storage/redis`, and the three `demos/*` modules.
+  matrix (`cmd/cortex`'s cpex builds and `core/plugins/cpex` are vetted with
+  `-tags cpex` separately, in `go-ci-cpex`, which links the pinned
+  `libcpex_ffi.a`). Not vetted anywhere:
+  `core/storage/redis` and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
   checkout and exits 0, so formatting drift cannot fail a build.
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `core`, where `go fmt` demonstrably runs on
 every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
-touched one of the five unvetted modules.
+touched one of the four unvetted modules.
 
 ## Languages and Tech Stack
 
@@ -1026,7 +1047,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   nothing and exits 0.
 - **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
   is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
-  the 12 modules — see the Pre-commit Hooks section for which five are uncovered.
+  the 11 modules — see the Pre-commit Hooks section for which four are uncovered.
   See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `core` one
   does, so each module resolves its own `replace` directives instead of pulling in
@@ -1076,7 +1097,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 ## Gotchas and Known Issues
 
-1. **Multiple Go modules:** The repo has 12 Go modules — `core/` and each `cmd/*/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first nine; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
+1. **Multiple Go modules:** The repo has 11 Go modules — `core/` and each `cmd/*/` but `cmd/cortex-cpex/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first eight; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
 2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file` / `jwt_svid_path`) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
 

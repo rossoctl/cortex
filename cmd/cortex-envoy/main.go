@@ -65,9 +65,8 @@ import (
 //     manufacture exactly the arrangement the proxy's own comment argues against.
 //
 //   - Refusing it at load would be wrong too. config.Validate is shared by every
-//     binary, and the gap is per-BINARY rather than per-mode — cortex-cpex runs
-//     proxy-sidecar mode and has no ledger either — so a mode-keyed refusal would
-//     both miss cpex and turn a stray inherited key into a crash-loop over an
+//     binary, and the gap is per-BINARY rather than per-mode, so a mode-keyed
+//     refusal would turn a stray inherited key into a crash-loop over an
 //     observability nicety. main.go already makes that trade the other way for a
 //     ledger it cannot open.
 //

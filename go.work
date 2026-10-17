@@ -3,7 +3,6 @@ go 1.26.5
 use (
 	./core
 	./cmd/agentop
-	./cmd/cortex-cpex
 	./cmd/cortex-envoy
 	./cmd/cortex-praxis
 	./cmd/cortex

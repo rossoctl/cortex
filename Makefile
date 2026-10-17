@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop cortex dev-install help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop cortex cortex-cpex dev-install help
 
 BIN_DIR := $(CURDIR)/bin
 
@@ -82,6 +82,30 @@ cortex: ## Build cortex to ./bin/cortex (PROFILE=full|lite|local, default full)
 		echo "→ building cortex (profile $(or $(PROFILE),full)): $$TAGS" && \
 		cd cmd/cortex && \
 		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/cortex .
+
+# cortex with the cpex plugin: the `fullcpex` profile (full plus cpex) and the
+# `cpex` tag, linked against the pinned libcpex_ffi.a that scripts/fetch-cpex-ffi.sh
+# downloads and verifies for this host (linux amd64/arm64, darwin arm64). Needs cgo:
+# a C toolchain (Xcode Command Line Tools on macOS) and cosign for the signature
+# check. The binary is still called `cortex`; it goes to its own directory so it
+# does not replace the default build that dev-install installs.
+# CPEX_FFI_DIR=<dir> links that directory's libcpex_ffi.a instead, for a local
+# CPEX build; nothing is downloaded or verified then.
+CORTEX_CPEX_DIR := $(BIN_DIR)/cortex-cpex
+CPEX_FFI_DIR ?=
+
+cortex-cpex: ## Build cortex with the cpex plugin (cgo) to ./bin/cortex-cpex/cortex
+	@mkdir -p $(CORTEX_CPEX_DIR)
+	@# On macOS, link for the SDK the Go objects are built against, or ld warns
+	@# that every object targets a newer macOS than the binary.
+	@FFI=$(if $(CPEX_FFI_DIR),$(abspath $(CPEX_FFI_DIR)),$$(bash scripts/fetch-cpex-ffi.sh)) && \
+		TAGS="cpex,$$(go -C scripts/profile-tags run . fullcpex)" && \
+		if [ "$$(uname -s)" = Darwin ]; then \
+			export MACOSX_DEPLOYMENT_TARGET=$${MACOSX_DEPLOYMENT_TARGET:-$$(xcrun --show-sdk-version)}; \
+		fi && \
+		echo "→ building cortex (profile fullcpex, cpex FFI $$FFI): $$TAGS" && \
+		cd cmd/cortex && \
+		CGO_ENABLED=1 CGO_LDFLAGS="-L$$FFI" GOWORK=off go build -tags "$$TAGS" -o $(CORTEX_CPEX_DIR)/cortex .
 
 ##@ Local Dev
 

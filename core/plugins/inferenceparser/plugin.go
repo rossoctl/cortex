@@ -230,6 +230,35 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
+// ParseResponse reads a buffered response body as OnResponse would, into a
+// fresh extension, and settles nothing. It is for a plugin that runs before
+// this one on the response pass and needs the normalized completion and tool
+// calls. The bytes decide the shape: a body framed as SSE is read as a
+// stream (and marks StreamedResponse), anything else as JSON. It returns nil
+// when path is not an inference endpoint.
+func ParseResponse(path string, body []byte) *pipeline.InferenceExtension {
+	path, _, _ = strings.Cut(path, "?")
+	stream := carriesSSEFraming(body)
+	ext := &pipeline.InferenceExtension{Stream: stream}
+	switch d := dialectFor(path); {
+	case d == dialectNone:
+		return nil
+	case stream && d == dialectAnthropic:
+		parseAnthropicSSE(body, ext)
+	case stream && d == dialectResponses:
+		parseResponsesSSE(body, ext)
+	case stream:
+		parseInferenceSSE(body, ext)
+	case d == dialectAnthropic:
+		parseAnthropicJSON(body, ext)
+	case d == dialectResponses:
+		parseResponsesJSON(body, ext)
+	default:
+		parseInferenceJSON(body, ext)
+	}
+	return ext
+}
+
 // inferenceStreamState is the scratch state kept on pctx.Extensions.Custom
 // for the duration of a streaming response. Provider-specific fold
 // functions normalize their wire format into the neutral usage field;

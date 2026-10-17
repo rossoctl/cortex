@@ -1,0 +1,1 @@
+{"title": "Build fails on arm64", "body": "make test fails in core/listener. Diagnostic: env dump follows. AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE AWS_REGION=us-east-1"}

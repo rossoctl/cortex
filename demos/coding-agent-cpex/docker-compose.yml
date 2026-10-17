@@ -1,0 +1,13 @@
+# Vault for run.sh up --custody: dev mode, in memory, loopback only.
+# run.sh generates and stores the root token in .state/ to seed Vault.
+# Cortex never receives the root token.
+name: coding-agent-cpex
+services:
+  vault:
+    image: hashicorp/vault:1.19@sha256:c4298db7f9b2ea8cab452cbff5877749087913aa035fcae62026cf16132929f5
+    cap_add: [IPC_LOCK]
+    command: [server, -dev, -dev-listen-address=0.0.0.0:8200]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:?set by run.sh}
+    ports:
+      - 127.0.0.1:47712:8200

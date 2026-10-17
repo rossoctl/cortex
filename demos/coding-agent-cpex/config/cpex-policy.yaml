@@ -1,0 +1,107 @@
+# CPEX policy for the coding-agent demo (CPEX 0.3).
+#
+# Cortex sends model requests to cmf.llm_input with custom.tool_results,
+# and model responses to cmf.llm_output with custom.tool_calls.
+# Other HTTP requests, including curl, become http_egress tool calls
+# (cmf.tool_pre_invoke). Their args contain method, host, path, a body
+# excerpt, truncated, and content_encoding. CONNECT has only method and host.
+#
+# Cortex supplies the developer token (principal.token_file) for authentication.
+# The agent never receives it.
+#
+# Relative paths resolve from Cortex's working directory (config/).
+#
+# `# slide:` ... `# end-slide` mark the excerpts demo/policy_slide.py shows.
+
+plugins:
+  - name: developer
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    on_error: fail
+    config:
+      role: user
+      header: x-developer-token
+      trusted_issuers:
+        - issuer: "https://idp.coding-agent-demo.invalid"
+          audiences: ["cortex-coding-agent-demo"]
+          algorithms: ["RS256"]
+          decoding_key:
+            kind: pem_file
+            path: identity/developer.pub.pem
+          leeway_seconds: 60
+      claim_mapper: standard
+
+global:
+  pdp:
+    - kind: cel
+
+routes:
+  # A secret in a tool result taints the session. PPE 0.5.0 requires a denial
+  # to set taint; the bridge's observe_codes records secret_in_tool_result
+  # without blocking the model request.
+  - llm: "*"
+    authentication: [developer]
+    authorization:
+      pre_invocation:
+        # slide: llm-taint
+        - cel:
+            expr: >-
+              custom.tool_result_count == 0 ||
+              !custom.tool_results.exists(k, custom.tool_results[k].content.matches(secret))
+            secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
+            on_deny:
+              - "taint(secret, session)"
+              - "deny('secret in a tool result', 'secret_in_tool_result')"
+        # end-slide
+      # In a tainted session, block model responses containing tool calls
+      # that match a secret or file-upload pattern, before the agent runs them.
+      # HTTP requests from other commands still pass through the checks below.
+      # slide: llm-output
+      post_invocation:
+        - cel:
+            expr: >-
+              !('secret' in security.labels) || custom.tool_call_count == 0 ||
+              !custom.tool_calls.exists(k, custom.tool_calls[k].arguments.matches(secret) ||
+                custom.tool_calls[k].arguments.matches(exfil))
+            secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
+            exfil: "\\b(curl|wget|nc|scp|rsync)\\b.*(\\.env|id_rsa|\\.pem)\\b"
+            on_deny: ["deny('tool call would send secret data', 'secret_in_tool_call')"]
+      # end-slide
+
+  # HTTP requests not handled by another parser.
+  - tool: http_egress
+    authentication: [developer]
+    authorization:
+      pre_invocation:
+        # Check the tunnel destination, then each request inside it.
+        # slide: egress-allowlist
+        - cel:
+            expr: "args.host in allowed"
+            allowed: ["support.localtest.me", "llm.localtest.me"]
+            on_deny: ["deny('host not allowed', 'egress_host_not_allowed')"]
+        # end-slide
+        # Block HTTP requests from tainted sessions, even without a secret in the body.
+        # slide: session-tainted
+        - cel:
+            expr: "args.method == 'CONNECT' || !('secret' in security.labels)"
+            on_deny: ["deny('this session read secret data', 'session_tainted_secret')"]
+        # end-slide
+        # Block bodies beyond the inspection limit or with unsupported encodings.
+        # slide: body-checks
+        - cel:
+            expr: "args.method == 'CONNECT' || (!args.truncated && args.content_encoding in ['', 'identity'])"
+            on_deny: ["deny('body cannot be inspected', 'egress_body_uninspectable')"]
+        - cel:
+            expr: "args.method == 'CONNECT' || !args.body.matches(secret)"
+            secret: "AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}"
+            on_deny: ["deny('secret in request body', 'secret_in_body')"]
+        # end-slide
+        # Restrict reports to projects in the developer's teams claim.
+        # The support credential alone permits access to both projects.
+        # slide: project-authz
+        - cel:
+            expr: >-
+              args.method == 'CONNECT' || args.host != 'support.localtest.me' ||
+              subject.teams.exists(t, args.path.startsWith('/projects/' + t + '/'))
+            on_deny: ["deny('project not authorized', 'project_not_authorized')"]
+        # end-slide
