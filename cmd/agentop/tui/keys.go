@@ -82,10 +82,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	// S's picker is modal too, and for the same pane-scoping reason as the column picker: a
 	// message can move the pane under it, and then it is inert rather than eating keys.
-	if m.serverPicker != nil && m.pane == paneAgents {
+	if m.serverPicker != nil && (m.pane == paneAgents || m.pane == paneSessions) {
 		return m.serverPickerKey(msg)
 	}
-	if m.serverNotice != "" && m.pane == paneAgents {
+	if m.serverNotice != "" && (m.pane == paneAgents || m.pane == paneSessions) {
 		return m.serverNoticeKey(msg)
 	}
 
@@ -845,11 +845,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	case "S":
-		// Choose where the highlighted agent's new sessions go. Capital, for the reason `A` and
-		// `P` are: lowercase `s` hides skip rows on every pane. On the AGENTS pane only, the one
-		// surface whose rows are agents.
-		if m.pane == paneAgents {
+		// Choose where the highlighted agent's new sessions go, or move the highlighted session.
+		// Capital, for the reason `A` and `P` are: lowercase `s` hides skip rows on every pane.
+		// AGENTS rows are agents; SESSIONS rows are sessions, and a session move is the user's
+		// explicit instruction — the one thing that moves a running conversation.
+		switch m.pane {
+		case paneAgents:
 			return m.openServerPicker()
+		case paneSessions:
+			return m.openSessionServerPicker()
 		}
 		return nil
 

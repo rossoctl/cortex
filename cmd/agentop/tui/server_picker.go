@@ -14,11 +14,19 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // serverPicker is S's picker, modal while the model holds one: where agent's new sessions go.
 type serverPicker struct {
 	agent string
+	// session is the id of the session this picker moves, "" when it picks the
+	// agent's new sessions instead. A session move is S on a sessions-pane row.
+	session string
+	// sessionTokens is the session's prompt context, 0 when nothing can be said:
+	// what the confirmation line below the entries shows, since the first turn at
+	// the new server pays it uncached.
+	sessionTokens int
 	// entries[0] is the agent's own choice (not routed); the rest are the servers by name.
 	entries []serverChoice
 	// cursor is the highlighted entry. It opens on the one in force, and nothing here remembers
@@ -32,9 +40,10 @@ type serverChoice struct {
 	name, host, mapping string
 }
 
-// serverSwitch is a write S started, until its result lands.
+// serverSwitch is a write S started, until its result lands. session is the id of
+// the session being moved, "" when the write routes the agent's new sessions.
 type serverSwitch struct {
-	agent, server string
+	agent, server, session string
 }
 
 // serverSwitchedMsg is the result of the write S started. statsURL is where it polled the
@@ -47,10 +56,15 @@ type serverSwitch struct {
 // counted, and its router read, as this machine's.
 type serverSwitchedMsg struct {
 	agent, server, statsURL string
-	staying                 int
-	inForce                 bool
-	res                     edit.WriteResult
-	err                     error
+	// session is the id of the session that was moved, "" when the write routed
+	// the agent's new sessions; note is the move's cost line, "" when the write
+	// was not a move or nothing could be said about it.
+	session string
+	note    string
+	staying int
+	inForce bool
+	res     edit.WriteResult
+	err     error
 }
 
 // serverKeyRefusal is why S on the row labelled label opens nothing, or "" when it may open.
@@ -79,7 +93,30 @@ func (m *model) serverKeyRefusal(label string) string {
 		return why
 	}
 	if m.serverSwitch != nil {
+		if m.serverSwitch.session != "" {
+			return "a move of session " + sanitizeLabel(m.serverSwitch.session) + " is still in progress"
+		}
 		return "a server switch for " + m.serverSwitch.agent + " is still in progress"
+	}
+	return ""
+}
+
+// sessionKeyRefusal is why S on the session id's row opens nothing, or "" when it
+// may open. The router's own rule first — a synthetic id cannot be moved, and S
+// never writes an entry the proxy would refuse to reload — then the same
+// conditions the agent picker refuses on.
+func (m *model) sessionKeyRefusal(id string) string {
+	if err := routerconfig.CheckSessionID(id); err != nil {
+		return err.Error()
+	}
+	if _, _, ok := m.localCortexTarget(); !ok {
+		return "S changes this machine's Cortex, and agentop is not attached to it — or its stats server did not answer at startup"
+	}
+	if _, why := m.routerStatus(); why != "" {
+		return why
+	}
+	if m.serverSwitch != nil {
+		return "a server switch is still in progress"
 	}
 	return ""
 }
@@ -156,10 +193,87 @@ func (m *model) serverPickerKey(msg tea.KeyMsg) tea.Cmd {
 //
 // context.Background(), not m.ctx: the write is bounded by edit.LocalPollDeadline, and cutting
 // it off when the reader leaves the connection would report a timeout for a write that landed.
+// openSessionServerPicker is S on the SESSIONS pane: the same picker over the
+// highlighted session's row, its cursor on the sessions: entry the config holds
+// for it — or, in its place, the panel saying why there is none. The entries are
+// the same servers; only what ↵ writes differs.
+func (m *model) openSessionServerPicker() tea.Cmd {
+	id := m.selectedSessionID()
+	if id == "" {
+		return nil
+	}
+	if why := m.sessionKeyRefusal(id); why != "" {
+		m.serverNotice = why
+		return nil
+	}
+	var summary *session.SessionSummary
+	for i := range m.sessions {
+		if m.sessions[i].ID == id {
+			summary = &m.sessions[i]
+			break
+		}
+	}
+	agent := "unknown"
+	if summary != nil && summary.Agent != "" {
+		agent = summary.Agent
+	}
+	router, _ := m.activeRouter()
+	p := &serverPicker{agent: pipeline.AgentName(agent), session: id, entries: []serverChoice{{}}}
+	if summary != nil && summary.PromptContext != nil {
+		p.sessionTokens = summary.PromptContext.Tokens
+	}
+	// What is in force: the override's server when one names the session, else the
+	// server the session's inference actually went to — so Enter on the opening is
+	// a no-op, never an accidental unroute of a running session.
+	inForce := router.Sessions[id]
+	if inForce == "" && summary != nil {
+		inForce, _ = servers.ForHost(router, summary.InferenceHost)
+	}
+	for _, name := range slices.Sorted(maps.Keys(router.Servers)) {
+		s := router.Servers[name]
+		p.entries = append(p.entries, serverChoice{name: name, host: servers.Host(s), mapping: servers.Mapping(s)})
+		if name == inForce {
+			p.cursor = len(p.entries) - 1
+		}
+	}
+	m.serverPicker = p
+	return nil
+}
+
 func (m *model) applyServerChoice() tea.Cmd {
 	p := m.serverPicker
 	m.serverPicker = nil
 	choice := p.entries[p.cursor]
+	if p.session != "" {
+		// A session move: the user's explicit instruction, so it is not measured
+		// against any route — only that the router and this machine's Cortex are
+		// still there to take it.
+		if why := m.sessionKeyRefusal(p.session); why != "" {
+			m.serverNotice = why
+			return nil
+		}
+		path, statsURL, _ := m.localCortexTarget()
+		sid, server := p.session, choice.name
+		note := ""
+		if p.sessionTokens > 0 {
+			to := server
+			if to == "" {
+				to = "its own provider"
+			}
+			note = fmt.Sprintf("%d tokens of its context go to %s uncached on its first turn there.", p.sessionTokens, to)
+		}
+		m.serverSwitch = &serverSwitch{agent: p.agent, server: server, session: sid}
+		return func() tea.Msg {
+			res, err := edit.WritePluginConfig(context.Background(), edit.ConfigWrite{
+				Path:     path,
+				StatsURL: statsURL,
+				Changes:  servers.SessionChanges(sid, server),
+				Verify:   servers.Verify,
+			})
+			return serverSwitchedMsg{agent: p.agent, server: server, statsURL: statsURL, session: sid, note: note,
+				res: res, err: err}
+		}
+	}
 	// ASKED AGAIN, NOT CARRIED OVER FROM THE OPENING: the pane's rows refetch the pipeline while
 	// the picker is up, so the router may have stopped routing since — and then no write would be
 	// true. First, so nothing shown claims a route.
@@ -250,6 +364,9 @@ func switchFailed(msg serverSwitchedMsg) bool {
 // AGENTS pane, the proxy's error. The lead-ins are kept short so that, at 80 columns, what
 // survives of them still says what happened.
 func serverSwitchedText(msg serverSwitchedMsg, staying int) string {
+	if msg.session != "" {
+		return sessionSwitchedText(msg)
+	}
 	written := msg.res.Outcome == edit.WriteReloadFailed || msg.res.Outcome == edit.WriteStatusUnreachable
 	switch {
 	case msg.err != nil && written:
@@ -293,6 +410,44 @@ func serverSwitchedText(msg serverSwitchedMsg, staying int) string {
 		// WriteNotRunning: no stats URL to poll. S writes only with one, so this is the
 		// command's wording kept for a caller that does not.
 		return "wrote the change to " + msg.agent + "; no Cortex answered at its stats address, so it applies when the proxy next starts"
+	}
+}
+
+// sessionSwitchedText is serverSwitchedText for a session move: the same
+// outcomes, said of the session that was moved rather than the agent's next ones.
+func sessionSwitchedText(msg serverSwitchedMsg) string {
+	id, to := sanitizeLabel(msg.session), msg.server
+	if to == "" {
+		to = "its own provider"
+	} else {
+		to = sanitizeLabel(to)
+	}
+	written := msg.res.Outcome == edit.WriteReloadFailed || msg.res.Outcome == edit.WriteStatusUnreachable
+	switch {
+	case msg.err != nil && written:
+		return id + ": " + sanitizeLabel(msg.err.Error())
+	case msg.err != nil:
+		return "session " + id + " is unchanged: " + sanitizeLabel(msg.err.Error())
+	}
+	switch msg.res.Outcome {
+	case edit.WriteReloaded:
+		if msg.note != "" {
+			return "Session " + id + " → " + to + ". " + msg.note
+		}
+		return "Session " + id + " → " + to + "."
+	case edit.WriteUnchanged:
+		return "Session " + id + " already goes to " + to + "."
+	case edit.WriteReloadFailed:
+		return "refused: session " + id + " stays where it was, and the config file was put back: " +
+			sanitizeLabel(msg.res.ReloadError)
+	case edit.WriteStatusUnreachable:
+		return "the move of " + id + " was not confirmed: the proxy stopped answering before it reported the reload, " +
+			"so the config file was put back; check the proxy is running and try again"
+	case edit.WriteReloadTimedOut:
+		return fmt.Sprintf("wrote the move of %s, but the proxy reported no reload within %s; check %s/reload/status",
+			id, edit.LocalPollDeadline, msg.statsURL)
+	default:
+		return "wrote the move of " + id + "; no Cortex answered at its stats address, so it applies when the proxy next starts"
 	}
 }
 
@@ -431,7 +586,11 @@ func renderServerPicker(p *serverPicker, width int) string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("New "+p.agent+" sessions use") + "\n\n")
+	title := "New " + p.agent + " sessions use"
+	if p.session != "" {
+		title = "Session " + sanitizeLabel(p.session) + " uses"
+	}
+	b.WriteString(styleTitle.Render(title) + "\n\n")
 	for i, e := range shown {
 		marker := "  "
 		if i == p.cursor {
@@ -443,6 +602,9 @@ func renderServerPicker(p *serverPicker, width int) string {
 				"   " + e.mapping
 		}
 		b.WriteString(marker + line + "\n")
+	}
+	if p.session != "" && p.sessionTokens > 0 {
+		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")
 	}
 	b.WriteString("\n" + styleHint.Render("[↵] choose  [esc] cancel"))
 	box := styleBorder.Padding(0, 1)

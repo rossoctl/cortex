@@ -849,3 +849,212 @@ func TestServerUse_LeavesSiblingAgentsByteIdentical(t *testing.T) {
 		t.Errorf("the retired spelling survived:\n%s", got)
 	}
 }
+
+// move writes a sessions: entry for the named session: the move `agentop server
+// move` and the TUI's S on a session row make.
+func TestServerMove_MovesTheSession(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if !strings.Contains(readConfig(t, path), "          sessions:\n            s0: ete\n") {
+		t.Errorf("config:\n%s", readConfig(t, path))
+	}
+	if !strings.Contains(out, "Session s0 → ete.") {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+// own stops routing the session: the entry STAYS, as "", because removing it
+// would let the session's pin route it right back. The entry is inert once the
+// pin matches it, and it keeps the user's instruction where they can see it.
+func TestServerMove_OwnKeepsTheEntry(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            s0: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "own", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if !strings.Contains(readConfig(t, path), "s0: \"\"\n") {
+		t.Errorf("config:\n%s", readConfig(t, path))
+	}
+	if !strings.Contains(out, "Session s0 → its own provider.") {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+func TestServerMove_RefusesAServerThatIsNotConfigured(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	code, _, errOut := runServerCmd(t, "", "move", "s0", "east", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "no server named east") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerMove_WantsASessionAndAServer(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	for _, args := range [][]string{{"move"}, {"move", "s0"}, {"move", "s0", "ete", "extra"}} {
+		if code, _, _ := runServerCmd(t, "", append(args, "--config", path)...); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
+	}
+}
+
+func TestServerMove_RefusesASyntheticSession(t *testing.T) {
+	path := serverEnvWithSessions(t, closedAddr(t), closedAddr(t), routerBlock)
+	for _, id := range []string{"default", "pending:claude-code", ""} {
+		if code, _, _ := runServerCmd(t, "", "move", id, "ete", "--config", path); code != 2 {
+			t.Errorf("move %q: exit %d, want 2", id, code)
+		}
+	}
+}
+
+// A move prunes the overrides of sessions neither live nor archived: inert config
+// a move left behind. With no session API reachable, nothing is pruned — a live
+// session must never lose its override to a blind prune.
+func TestServerMove_PrunesDeadOverrides(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            s0: glm\n            dead: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "s0: ete") || strings.Contains(cfg, "dead:") {
+		t.Errorf("config:\n%s", cfg)
+	}
+
+	blind := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), closedAddr(t), routerBlock+
+		"          sessions:\n            s0: glm\n            dead: glm\n")
+	code, out, errOut = runServerCmd(t, "", "move", "s0", "ete", "--config", blind)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if cfg := readConfig(t, blind); !strings.Contains(cfg, "dead: glm") {
+		t.Errorf("a blind prune removed a session's override:\n%s", cfg)
+	}
+}
+
+// The cost line: the session's prompt context is re-sent uncached on the first
+// turn at the new server.
+func TestServerMove_StatesTheUncachedContext(t *testing.T) {
+	store := session.New(0, 0, 0)
+	store.Append("s0", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionResponse,
+		Host: "glm.example.com:8443",
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5-5", AgentRole: pipeline.AgentRoleMain,
+			PromptTokens: 81234, Tools: []pipeline.InferenceTool{{Name: "lookup"}}}})
+	sessions := serveSessions(t, store)
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "81234 tokens of s0's context go to ete uncached on its first turn there."; !strings.Contains(flat(out), flat(want)) {
+		t.Errorf("stdout:\n%s", out)
+	}
+}
+
+// Removing a server a sessions: entry names would leave a config that cannot
+// reload — and, with the proxy stopped, one it cannot start from. Refused, naming
+// the step that clears the entry.
+func TestServerRemove_RefusesWhileASessionOverrideNamesIt(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock+
+		"          sessions:\n            s0: ete\n")
+	code, _, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != 1 {
+		t.Fatalf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if want := "1 session moved to ete; stop routing s0 with: agentop server move s0 own"; !strings.Contains(flat(errOut), want) {
+		t.Errorf("stderr:\n%s", errOut)
+	}
+}
+
+// The prune keeps an override whose session only the archive holds — a resumed
+// session's pin survived the restart, so its override must too. The stub answers
+// only the archived listing, so a prune that read the live one instead would be
+// blind and keep the dead entry too.
+func TestServerMove_PruneKeepsAnArchivedSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/reload/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"last_success": time.Now(), "reloads_ok": 1, "reloads_failed": 0})
+		case r.URL.Path == "/v1/sessions" && r.URL.Query().Get("archived") == "true":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []map[string]any{{"id": "s0"}, {"id": "archived"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	path := serverEnvWithSessions(t, addr, addr, routerBlock+
+		"          sessions:\n            s0: glm\n            archived: glm\n            dead: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "s0", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "archived: glm") {
+		t.Errorf("the prune removed an archived session's override:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "dead: glm") {
+		t.Errorf("the prune kept a dead session's override:\n%s", cfg)
+	}
+}
+
+// A session that already holds an entry but that the listing does not show —
+// the archive off, or the session not seen since a restart — keeps the entry this
+// move writes: the prune must not remove it after the move sets it.
+func TestServerMove_PruneSparesTheMovedSession(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443") // lists s0, not moved
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            moved: glm\n            dead: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "moved", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "moved: ete") {
+		t.Errorf("the prune removed the moved session's entry:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "dead:") {
+		t.Errorf("the prune kept a dead session's override:\n%s", cfg)
+	}
+}
+
+// A server named own could not be reached by `server move <id> own`, so add refuses
+// the name.
+func TestServerAdd_RefusesTheNameOwn(t *testing.T) {
+	asked := stubKeyPrompt(t, "sk")
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	code, _, errOut := runServerCmd(t, "", "add", "own", "https://own.example.com", "--main", "opus", "--helper", "haiku", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "reserved") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if *asked != "" {
+		t.Error("asked for a key for a server named own")
+	}
+}
+
+// A listing that holds no session at all — the archive off after a restart, or
+// just cleared — sees nothing dead: the move prunes no other session's entry,
+// whose move may not have taken effect yet.
+func TestServerMove_AnEmptyListingPrunesNothing(t *testing.T) {
+	sessions := serveSessions(t, session.New(0, 0, 0))
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+
+		"          sessions:\n            pending: glm\n")
+	code, out, errOut := runServerCmd(t, "", "move", "moved", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.Contains(cfg, "pending: glm") {
+		t.Errorf("an empty listing pruned another session's override:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "moved: ete") {
+		t.Errorf("config:\n%s", cfg)
+	}
+}

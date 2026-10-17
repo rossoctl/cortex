@@ -18,6 +18,7 @@ at startup, and in-cluster use has not been examined.
   - `main` (string, required) — a word naming this server's model for an agent's main work, a request that carries tools, sent in place of a model the server refuses (see **Models**). It resolves to the newest model on the server's list whose name, without its provider prefix, contains the word, case ignored: `opus` against `aws/claude-opus-5-5` and `claude-opus-4-8` is the first. No `/` and no whitespace. The fields `opus`, `sonnet` and `haiku` it replaced are refused by name.
   - `helper` (string, required) — the same for a request without tools, such as a title.
 - `agents` (map) — agent name, as agentop shows it (`claude-code`, `opencode`), to a server name. Each value must name a listed server. `unknown`, the name for requests with no User-Agent, cannot be routed.
+- `sessions` (map) — session id to a server name, moving one running session to that server. Each value must name a listed server, or be `""` to stop routing that session. An entry beats the session's pin and every rule below, and the pin follows it, so removing the entry does not move the session back; `agentop server move` and the TUI's `S` on a session row write these; a `server move` from the shell also prunes an entry whose session is neither live nor archived. A synthetic id (`default`, `pending:<agent>`) is refused: it holds many conversations, not one to move.
 
 ```yaml
       - name: inference-router
@@ -36,6 +37,8 @@ at startup, and in-cluster use has not been examined.
           agents:
             claude-code: glm     # only agents listed here are routed
             opencode: glm
+          sessions:
+            8e298f11-8bf1-…: ete  # one running session, moved ("" to stop routing it)
 ```
 
 **What it does to a request.** Only a request the forward proxy re-sends — a plain
@@ -89,6 +92,15 @@ decides:
 
   The router reads the `inference` record `inference-parser` puts on each request,
   so a chain without `inference-parser` before the router is refused.
+- **Moving a running session.** A `sessions:` entry is the user's explicit move, and
+  it is the one thing that moves a running conversation: the request goes to the
+  entry's server (or, for `""`, where the client sent it), and the session's pin is
+  settled to it, so removing the entry later leaves the session where the move put
+  it. An entry applies to the session id whatever agent's request carries it; the
+  pin it settles keeps its agent binding. What makes the moved history acceptable
+  is the strip below; what it costs is the cache — the session's whole context is
+  re-sent uncached on its first turn at the new server, which `agentop server move`
+  and the TUI's confirmation say before the write.
 - A pin is its agent's. A request from another agent filed under the same session
   id — by process attribution, which files a command an agent runs under that
   agent's session and is on by default on a laptop; by the active-session fallback
@@ -117,7 +129,8 @@ decides:
   same. Each therefore carries the framework's `modify/redirected` record — with
   `from` equal to `to` when the agent's base URL (`ANTHROPIC_BASE_URL`, for Claude
   Code) already names the server — followed by the router's `modify/routed` with
-  `server` and `pin` (`new`, `existing` or `none`).
+  `server` and `pin` (`new`, `existing`, `moved` or `none`; `moved` is a `sessions:`
+  entry moving a session that already held a pin).
 - **Models.** A routed request goes with the model the agent asked for: the router
   does not read the server's list to judge it, because a LiteLLM server serves
   aliases it does not list. When the server refuses the model — LiteLLM's 403
@@ -163,6 +176,24 @@ decides:
   one for which a limit is learned but fitting changes nothing is recorded as
   `skip/limit_not_fitted`. The agent is not told: its own display keeps the whole
   conversation.
+- **Reasoning.** A request the router sends to a server other than the one that
+  produced its reasoning has that reasoning dropped — the artifacts only their
+  producer can validate: `thinking` and `redacted_thinking` blocks in Anthropic
+  messages (a message the drop empties goes whole; an empty content array is
+  refused at Anthropic, and a thinking-only turn carries no tool use), and
+  `reasoning` items in a responses-format `input`. Chat-completions bodies are
+  never touched: their reasoning fields are plain text every server measured
+  accepts. What is decided per session, in the plugin store with the pin's TTL
+  (`inference-router/origin/<session>`): the server that produced the session's
+  reasoning, recorded on its first routed request. Once a request's target differs
+  from that record the origin is `(foreign)` for good — the client re-sends its own
+  history, so blocks from the old server stay in it however many turns pass on the
+  new one — and every routed request strips, the target's own reasoning included:
+  harmless where measured (Anthropic thinking text is empty, encrypted; a server
+  that can read its own blocks simply regenerates them), and required where a
+  server refuses blocks it cannot verify (Bedrock) or a producer left no signature
+  at all (Ollama). Each strip is recorded as `modify/reasoning_stripped` with the
+  number of artifacts dropped.
 - A redirect the listener refuses: `deny/redirect_failed`, a 503.
 - Under `on_error: observe` nothing moves, the client's key stays and no model is
   chosen or re-sent. The timeline shows two rows: the framework's shadow

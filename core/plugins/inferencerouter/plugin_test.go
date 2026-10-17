@@ -1032,3 +1032,166 @@ func TestRouter_HistoryTellsTwoLocalServersApart(t *testing.T) {
 	run(t, p, pctx)
 	assertRouted(t, pctx, "localhost:8000", "vllm-key")
 }
+
+// sessionsConfig is routerConfig plus a sessions block.
+func sessionsConfig(agents, sessions string) string {
+	return `{
+		"servers": {
+			"ete": {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "https://glm.example.com:8443", "key": "glm-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {` + agents + `},
+		"sessions": {` + sessions + `}
+	}`
+}
+
+// An override moves a session already pinned to another server, and the pin
+// follows, so removing the override does not move it back.
+func TestRouter_ASessionsOverrideMovesAPinnedSession(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Fatalf("pin = %q, want glm", pin)
+	}
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": "ete"`))
+	moved := request(store, eteHost, claudeUA, "running")
+	run(t, after, moved)
+	assertRouted(t, moved, eteHost, "ete-key")
+	assertRecord(t, moved, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "pin": pinMoved})
+	if pin, _ := pinOf(t, store, "running"); pin != "ete" {
+		t.Errorf("pin = %q, want ete", pin)
+	}
+
+	// The override gone, the session stays where the override put it.
+	gone := build(t, routerConfig(`"claude-code": "glm"`))
+	stays := request(store, eteHost, claudeUA, "running")
+	run(t, gone, stays)
+	assertRouted(t, stays, eteHost, "ete-key")
+	assertRecord(t, stays, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "pin": pinExisting})
+}
+
+// An override routes a session whose agent is not routed at all, and settles
+// the pin on the override's server.
+func TestRouter_ASessionsOverrideRoutesAnUnroutedAgentsSession(t *testing.T) {
+	store := newStore(t)
+	p := build(t, sessionsConfig(``, `"s1": "glm"`))
+	pctx := request(store, eteHost, claudeUA, "s1")
+	run(t, p, pctx)
+	assertRouted(t, pctx, glmHost, "glm-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "glm", "pin": pinNew})
+	if pin, _ := pinOf(t, store, "s1"); pin != "glm" {
+		t.Errorf("pin = %q, want glm", pin)
+	}
+}
+
+// "" stops routing the session: the request goes where the client sent it, and
+// the pin settles not-routed.
+func TestRouter_AnEmptyOverrideStopsRoutingASession(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": ""`))
+	pctx := request(store, eteHost, claudeUA, "running")
+	run(t, after, pctx)
+	assertUntouched(t, pctx, eteHost)
+	assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", map[string]string{"pin": pinMoved})
+	if pin, _ := pinOf(t, store, "running"); pin != "" {
+		t.Errorf("pin = %q, want not routed", pin)
+	}
+}
+
+// An override naming a server the config does not list is refused at Configure —
+// at write time, as the design prefers — so it can never reach a request. A server
+// removed while the entry stays is the pin's path, covered by the pin test.
+func TestRouter_AnOverrideToAnUnlistedServerNeverReachesARequest(t *testing.T) {
+	r := New()
+	err := r.Configure(json.RawMessage(sessionsConfig(``, `"s1": "gone"`)))
+	if err == nil || !strings.Contains(err.Error(), `sessions.s1: "gone" is not a server listed under servers`) {
+		t.Fatalf("Configure error = %v, want it to refuse the unlisted server", err)
+	}
+}
+
+// The override is the user's instruction: it beats another agent's pin too, and
+// the pin is rewritten to the requesting agent.
+func TestRouter_AnOverrideBeatsAnotherAgentsPin(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "shared"))
+
+	after := build(t, sessionsConfig(``, `"shared": "ete"`))
+	pctx := request(store, eteHost, opencodeUA, "shared")
+	run(t, after, pctx)
+	assertRouted(t, pctx, eteHost, "ete-key")
+	if pin, _ := pinOf(t, store, "shared"); pin != "ete" {
+		t.Errorf("pin = %q, want ete", pin)
+	}
+}
+
+// A sessions: override reaches a request whose agent is not routed and whose
+// session holds no pin: the move is the user's instruction, and capture must not
+// strand it because no agents: entry names the agent.
+func TestRouter_AnOverrideReachesAnUnroutedAgentsCapturedRequest(t *testing.T) {
+	store := newStore(t)
+	p := build(t, sessionsConfig(``, `"s1": "glm"`))
+	pctx := request(store, "api.anthropic.com", claudeUA, "s1") // no server's host: captured
+	run(t, p, pctx)
+	assertRouted(t, pctx, glmHost, "glm-key")
+	d := detailsOf(t, pctx, "routed")
+	if d["captured"] != "/v1/messages" {
+		t.Errorf("captured = %q, want /v1/messages", d["captured"])
+	}
+	if pin, _ := pinOf(t, store, "s1"); pin != "glm" {
+		t.Errorf("pin = %q, want glm", pin)
+	}
+}
+
+// Under observe an override moves no pin: nothing moves under observe, and a pin
+// the override would have moved must survive it intact.
+func TestRouter_UnderObserveAnOverrideMovesNoPin(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": "ete"`),
+		pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	pctx := request(store, eteHost, claudeUA, "running")
+	run(t, after, pctx)
+	assertUntouched(t, pctx, eteHost)
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Errorf("pin = %q, want glm: observe must not move it", pin)
+	}
+}
+
+// detailsOf is the Details of the router's invocation with reason, scanned from
+// all of them: the routed record is appended after the strip's, so the last one
+// alone cannot be read.
+func detailsOf(t *testing.T, pctx *pipeline.Context, reason string) map[string]string {
+	t.Helper()
+	for _, inv := range pctx.Extensions.Invocations.Outbound {
+		if inv.Plugin == Name && inv.Reason == reason {
+			return inv.Details
+		}
+	}
+	t.Fatalf("no %s invocation", reason)
+	return nil
+}
+
+// Under observe an own ("") override moves no pin either: the not-routed branch
+// returns before any redirect, so it must read the policy itself.
+func TestRouter_UnderObserveAnOwnOverrideMovesNoPin(t *testing.T) {
+	store := newStore(t)
+	before := build(t, routerConfig(`"claude-code": "glm"`))
+	run(t, before, request(store, eteHost, claudeUA, "running"))
+
+	after := build(t, sessionsConfig(`"claude-code": "glm"`, `"running": ""`),
+		pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	pctx := request(store, eteHost, claudeUA, "running")
+	run(t, after, pctx)
+	assertUntouched(t, pctx, eteHost)
+	if pin, _ := pinOf(t, store, "running"); pin != "glm" {
+		t.Errorf("pin = %q, want glm: observe must not move it", pin)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -129,5 +130,35 @@ func TestRouter_AStoredValueThatIsNoPinIsIgnored(t *testing.T) {
 	assertRouted(t, pctx, glmHost, "glm-key")
 	if rec, ok := storedPin(t, st, "s1"); !ok || rec.Server != "glm" {
 		t.Errorf("stored pin = %+v (found %v), want glm", rec, ok)
+	}
+}
+
+// The origin is renewed wherever the pin is, so it never expires under a pin its
+// session keeps alive: a foreign origin lost that way would reseed with the target
+// and let the old server's reasoning through. An override naming the pin renews it
+// too, as every request does.
+func TestRouter_TheOriginIsRenewedWithThePin(t *testing.T) {
+	for _, tc := range []struct{ name, config string }{
+		{"its pin", routerConfig(`"claude-code": "glm"`)},
+		{"an override naming its pin", sessionsConfig(`"claude-code": "glm"`, `"s1": "glm"`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeStore{}
+			now := time.Date(2026, 10, 8, 17, 0, 0, 0, time.UTC)
+			clock := func() time.Time { return now }
+			run(t, buildWithStore(t, routerConfig(`"claude-code": "glm"`), st, clock),
+				claudeCode(request(newStore(t), eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 26, 0))
+			first, _ := storedPin(t, st, "s1")
+
+			now = now.Add(25 * time.Hour)
+			run(t, buildWithStore(t, tc.config, st, clock),
+				claudeCode(request(newStore(t), eteHost, claudeUA, "s1"), pipeline.AgentRoleMain, 26, 0))
+			if rec, _ := storedPin(t, st, "s1"); rec.Renewed == first.Renewed {
+				t.Errorf("the pin was not renewed past a day")
+			}
+			if !slices.Contains(st.expired, originPrefix+"s1") || st.ttls[originPrefix+"s1"] != pinTTL {
+				t.Errorf("origin not renewed with the pin: expired %v, ttl %v", st.expired, st.ttls[originPrefix+"s1"])
+			}
+		})
 	}
 }

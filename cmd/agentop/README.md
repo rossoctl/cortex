@@ -596,6 +596,7 @@ its own beyond going through Cortex.
 agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
 agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
 agentop server use glm --agent opencode                   # new opencode sessions → glm
+agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
 agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it
@@ -603,6 +604,11 @@ agentop server remove glm                                 # refused while an age
 
 In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
+On the sessions pane, `S` moves the highlighted session to a server (or to its own
+provider), confirming what the move costs first: the session's context is re-sent
+uncached on its first turn at the new server. A `server move` from the shell also
+prunes the config's `sessions:` entries for sessions that are neither live nor
+archived; the TUI's move does not.
 
 The listing after `use` reads:
 

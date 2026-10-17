@@ -92,6 +92,40 @@ func AgentChanges(agent, server string) []edit.ConfigChange {
 	return changes
 }
 
+// SessionChanges is the config write that moves one session to server, "" to
+// stop routing it: the changes `agentop server move` and the TUI's S picker on a
+// session row make. Unlike AgentChanges there are no retired spellings to fold:
+// a session id is opaque. Per-key, for the same reason AgentChanges is.
+//
+// "" IS A VALUE, NOT A REMOVAL: the entry must stay, because the session's pin
+// would otherwise route it right back — the pin the move (or the routing the user
+// is undoing) settled. The entry is inert once the pin matches it.
+func SessionChanges(session, server string) []edit.ConfigChange {
+	return []edit.ConfigChange{{
+		Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", session},
+		Value: edit.ScalarValue(server),
+	}}
+}
+
+// PruneSessions is the removals for every sessions: override whose session is
+// neither live nor archived — inert config a move left behind. The caller decides
+// liveness; a nil or empty set means nothing can be seen dead, and nothing is
+// pruned: a live session must never lose its override to a blind prune.
+func PruneSessions(cfg routerconfig.Config, live map[string]bool) []edit.ConfigChange {
+	if len(live) == 0 {
+		return nil
+	}
+	var changes []edit.ConfigChange
+	for _, id := range slices.Sorted(maps.Keys(cfg.Sessions)) {
+		if !live[id] {
+			changes = append(changes, edit.ConfigChange{
+				Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", id},
+			})
+		}
+	}
+	return changes
+}
+
 // Host is how a server's URL is shown: its host, or the whole URL for plain http, so a server
 // whose traffic crosses the network unencrypted says so.
 //

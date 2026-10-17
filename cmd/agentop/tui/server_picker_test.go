@@ -724,3 +724,124 @@ func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
 		}
 	}
 }
+
+// sessionsServerModelOver is serverModel's wiring on the SESSIONS pane, so S is
+// pressed on a session row, with serverSessions() as its rows.
+func sessionsServerModelOver(t *testing.T, f *fakeProxy) *model {
+	t.Helper()
+	m := serverModel(t, f)
+	m.pane = paneSessions
+	m.sessions = serverSessions()
+	m.rebuildSessionsTable()
+	return m
+}
+
+// onSessionRow puts the sessions cursor on id's row.
+func onSessionRow(t *testing.T, m *model, id string) {
+	t.Helper()
+	for i, rid := range m.sessionRowIDs {
+		if rid == id {
+			m.sessionsTbl.SetCursor(i)
+			return
+		}
+	}
+	t.Fatalf("no sessions row %q in %v", id, m.sessionRowIDs)
+}
+
+// S on a session row, ↵ on a server: a sessions: entry is written for that
+// session — not an agents: choice — and the flash says the session moved.
+func TestServerPicker_EnterOnAServerMovesTheSession(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	onSessionRow(t, m, "on-glm")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; flash %q", m.flash)
+	}
+	// The picker opens on glm, the server on-glm's inference went to (not own
+	// choice: Enter there must be a no-op), so ete is one up.
+	m.handleKey(keyUp)
+	cmd := m.handleKey(keyEnter)
+	if cmd == nil {
+		t.Fatalf("↵ started no write; flash %q", m.flash)
+	}
+	// The flash lands with the write's result, before the refetch that follows it:
+	// the fake proxy serves no session snapshots, and the refetch's failure would
+	// overwrite it.
+	_, refetch := m.Update(cmd())
+	flash := m.flash
+	if refetch != nil {
+		m.Update(refetch())
+	}
+	if !strings.Contains(f.config(t), "on-glm: ete") {
+		t.Errorf("config:\\n%s", f.config(t))
+	}
+	if !strings.Contains(f.config(t), "claude-code: ete") || strings.Contains(f.config(t), "opencode: glm") {
+		t.Errorf("the move must not touch agents:\\n%s", f.config(t))
+	}
+	if flash != "Session on-glm → ete." {
+		t.Errorf("flash %q", flash)
+	}
+}
+
+// S on the agents pane still writes an agents: choice — the regression guard.
+func TestServerPicker_SOnTheAgentsPaneStillRoutesTheAgent(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := serverModel(t, f)
+	switchTo(t, m, "opencode/1.0.3", "glm")
+	if !strings.Contains(f.config(t), "opencode: glm") {
+		t.Errorf("config:\\n%s", f.config(t))
+	}
+}
+
+// The confirmation states the cache cost from the session's promptContext.
+func TestServerPicker_AMoveStatesTheUncachedContext(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	m.sessions[0].PromptContext = &pipeline.PromptContext{Tokens: 81234}
+	onSessionRow(t, m, "on-glm")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; notice %q, flash %q", m.serverNotice, m.flash)
+	}
+	if !strings.Contains(m.View(), "81234 tokens of its context go uncached") {
+		t.Errorf("the picker states no cache cost:\\n%s", m.View())
+	}
+}
+
+// A refusal landing on the sessions pane is drawn there: an invisible modal that
+// eats keys would look like a frozen pane.
+func TestServerPicker_ARefusalShowsOnTheSessionsPane(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	m.sessions = append(m.sessions, session.SessionSummary{ID: session.DefaultSessionID, Agent: "claude-code"})
+	m.rebuildSessionsTable()
+	onSessionRow(t, m, session.DefaultSessionID)
+	m.handleKey(keyRune('S'))
+	if m.serverPicker != nil {
+		t.Fatalf("the default bucket opened a picker")
+	}
+	if m.serverNotice == "" {
+		t.Fatalf("no notice; flash %q", m.flash)
+	}
+	if !strings.Contains(m.View(), "synthetic session") {
+		t.Errorf("the notice is not drawn on the sessions pane:\n%s", m.View())
+	}
+}
+
+// The picker opens on the server the session actually uses — its inference host —
+// not on own choice, when no override names it. Enter on the opening must be a
+// no-op, not an accidental unroute.
+func TestServerPicker_OpensOnTheSessionInForceServer(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := sessionsServerModelOver(t, f)
+	onSessionRow(t, m, "on-glm") // inference went to glm.example.com:8443
+	m.handleKey(keyRune('S'))
+	p := m.serverPicker
+	if p == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	if got := p.entries[p.cursor].name; got != "glm" {
+		t.Errorf("cursor on %q, want glm: the server the session uses", got)
+	}
+}

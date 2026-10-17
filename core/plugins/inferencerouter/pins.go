@@ -19,7 +19,8 @@ type pins interface {
 	// save pins key to pn for pinTTL.
 	save(key string, pn pin)
 	// keep renews key's pin, pn, for another pinTTL: its session is still in use.
-	keep(key string, pn pin)
+	// It reports whether it renewed it.
+	keep(key string, pn pin) bool
 }
 
 // pinsFor is where pctx's pins are kept, nil when there is nowhere.
@@ -46,8 +47,8 @@ func (m memPins) load(key string) (pin, bool) {
 	return pn, ok && isPin
 }
 
-func (m memPins) save(key string, pn pin) { m.st.Put(key, pn, pinTTL) }
-func (m memPins) keep(key string, pn pin) { m.st.Put(key, pn, pinTTL) }
+func (m memPins) save(key string, pn pin)      { m.st.Put(key, pn, pinTTL) }
+func (m memPins) keep(key string, pn pin) bool { m.st.Put(key, pn, pinTTL); return true }
 
 // pinRecord is a pin as the durable store holds it.
 type pinRecord struct {
@@ -101,9 +102,10 @@ func (d storedPins) save(key string, pn pin) {
 	}
 }
 
-func (d storedPins) keep(key string, pn pin) {
+func (d storedPins) keep(key string, pn pin) bool {
 	if rec, ok := d.record(key); ok && d.now().Sub(time.Unix(rec.Renewed, 0)) < renewAfter {
-		return
+		return false
 	}
 	d.save(key, pn)
+	return true
 }

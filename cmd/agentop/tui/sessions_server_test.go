@@ -108,10 +108,21 @@ func TestSessionsTable_ServerColumnHidesForARouterThatRoutesNothing(t *testing.T
 }
 
 // Read-only: S on the sessions table opens nothing and writes nothing.
-func TestSessionsTable_NoKeyChangesASessionsServer(t *testing.T) {
-	m := sessionsServerModel(routerRaw)
-	if cmd := m.handleKey(keyRune('S')); cmd != nil || m.serverPicker != nil {
-		t.Errorf("S on the sessions table: cmd %v, picker %+v", cmd, m.serverPicker)
+// S on a session row opens the picker titled for that session, not an agent.
+// The read-only rule this test replaced: the move is the deliberate exception, an
+// explicit instruction the router does not second-guess.
+func TestSessionsTable_SOpensTheSessionPicker(t *testing.T) {
+	m := sessionsServerModelOver(t, newFakeProxy(t, false))
+	m.sessionsTbl.SetCursor(0) // on-glm
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("S on a session row opened no picker; flash %q", m.flash)
+	}
+	if m.serverPicker.session != "on-glm" || m.serverPicker.agent != "claude-code" {
+		t.Errorf("picker = %+v, want the on-glm session of claude-code", m.serverPicker)
+	}
+	if !strings.Contains(m.View(), "Session on-glm uses") {
+		t.Errorf("the picker is not titled for the session:\n%s", m.View())
 	}
 }
 

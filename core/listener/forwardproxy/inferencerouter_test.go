@@ -219,3 +219,160 @@ func TestForwardProxy_ASessionRunningBeforeRoutingWasConfiguredStaysOnItsServer(
 		t.Errorf("glm saw %q, want only the new session's %q", got, want)
 	}
 }
+
+// bodyOrigin is keyOrigin that also records each request's body, so a test can
+// assert on what the destination received.
+type moveOriginSrv struct {
+	srv    *httptest.Server
+	mu     sync.Mutex
+	bodies []string
+}
+
+func moveOrigin(t *testing.T, name string) *moveOriginSrv {
+	t.Helper()
+	o := &moveOriginSrv{}
+	o.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		o.mu.Lock()
+		o.bodies = append(o.bodies, string(b))
+		o.mu.Unlock()
+		_, _ = w.Write([]byte(name))
+	}))
+	t.Cleanup(o.srv.Close)
+	return o
+}
+
+func (o *moveOriginSrv) lastBody() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.bodies) == 0 {
+		return ""
+	}
+	return o.bodies[len(o.bodies)-1]
+}
+
+// A session moved by a sessions: override lands on the new server with the new
+// server's key, its thinking blocks stripped, and stays there once the override is
+// gone — the pin the move settled.
+func TestForwardProxy_ASessionsOverrideMovesARunningSession(t *testing.T) {
+	ete := moveOrigin(t, "FROM-ETE")
+	glm := moveOrigin(t, "FROM-GLM")
+	eteURL := ete.srv.URL
+	glmURL := strings.Replace(glm.srv.URL, "127.0.0.1", "localhost", 1)
+
+	router := inferencerouter.New()
+	parserOnly, err := pipeline.New([]pipeline.Plugin{inferenceparser.NewInferenceParser()})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	holder := pipeline.NewHolder(parserOnly)
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	shared := memstore.New()
+	defer shared.Close()
+	srv := &Server{
+		OutboundPipeline: holder,
+		Sessions:         store,
+		Shared:           shared,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
+		Client:           http.DefaultClient,
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	thinking := `{"model":"claude-opus-5-5","max_tokens":8,"messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"text","text":"hello"}]},
+		{"role":"user","content":"again"}]}`
+	turn := func(sessionID string) string {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, eteURL+"/v1/messages", strings.NewReader(thinking))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", "claude-cli/2.1.286 (external, cli)")
+		req.Header.Set("Authorization", "Bearer client-key")
+		req.Header.Set(session.ClaudeCodeSessionHeader, sessionID)
+		resp, err := proxyClient(proxy, nil).Do(req)
+		if err != nil {
+			t.Fatalf("request through the proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+
+	// The session starts on ete, claude-code routed there, its assistant turn
+	// carrying a signed thinking block.
+	if err := router.Configure(json.RawMessage(`{
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"}},
+		"agents": {"claude-code": "ete"}
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	routed, err := pipeline.New([]pipeline.Plugin{inferenceparser.NewInferenceParser(), router})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	holder.Store(routed)
+	if got := turn("running"); got != "FROM-ETE" {
+		t.Fatalf("first turn reached %q, want ete", got)
+	}
+	// The first turn is stripped: it is this session's first routed request, it
+	// holds no pin and no origin, and its body carries a signed thinking block the
+	// router never saw produced.
+	if body := ete.lastBody(); strings.Contains(body, `"thinking"`) {
+		t.Errorf("ete's first turn carried thinking blocks the router never saw produced: %s", body)
+	}
+
+	// agentop server move: one reload, the agents choice unchanged, a sessions:
+	// entry moving the session to glm.
+	if err := router.Configure(json.RawMessage(`{
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
+		"agents": {"claude-code": "ete"},
+		"sessions": {"running": "glm"}
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if got := turn("running"); got != "FROM-GLM" {
+		t.Fatalf("moved turn reached %q, want glm", got)
+	}
+	body := glm.lastBody()
+	if strings.Contains(body, `"thinking"`) || strings.Contains(body, `"signature"`) {
+		t.Errorf("glm received thinking blocks: %s", body)
+	}
+	if !strings.Contains(body, `"hello"`) {
+		t.Errorf("glm lost the assistant text: %s", body)
+	}
+
+	// The override gone, the session stays where the move put it.
+	if err := router.Configure(json.RawMessage(`{
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
+		"agents": {"claude-code": "ete"}
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if got := turn("running"); got != "FROM-GLM" {
+		t.Fatalf("post-override turn reached %q, want glm: the pin must follow the move", got)
+	}
+
+	// own: the entry STAYS as "" — removing it would let the pin route the session
+	// right back — and the next request goes where the client sent it, unstripped.
+	if err := router.Configure(json.RawMessage(`{
+		"servers": {"ete": {"url": "` + eteURL + `", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm": {"url": "` + glmURL + `", "key": "glm-key", "main": "glm", "helper": "nemotron"}},
+		"agents": {"claude-code": "ete"},
+		"sessions": {"running": ""}
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if got := turn("running"); got != "FROM-ETE" {
+		t.Fatalf("own turn reached %q, want ete: the empty entry must stop the routing", got)
+	}
+	if body := ete.lastBody(); !strings.Contains(body, `"thinking"`) {
+		t.Errorf("ete's own turn lost its thinking blocks: %s", body)
+	}
+}

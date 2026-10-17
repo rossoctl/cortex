@@ -334,3 +334,42 @@ func TestDecode_LocalServersAreTheirPorts(t *testing.T) {
 		t.Errorf("err = %v, want the two servers on localhost:11434 refused", err)
 	}
 }
+
+func TestDecode_Sessions(t *testing.T) {
+	base := `{"servers":{"ete":{"url":"https://ete.example.com","key":"k","main":"m","helper":"h"}}`
+	for _, tc := range []struct {
+		name    string
+		extra   string
+		wantErr string
+	}{
+		{"a session to a server", `,"sessions":{"8e298f11-8bf1-4f40-a27f-ffef5876a5b9":"ete"}`, ""},
+		{"a session to empty is allowed", `,"sessions":{"8e298f11-8bf1-4f40-a27f-ffef5876a5b9":""}`, ""},
+		{"no sessions is an empty map", ``, ""},
+		{"a session to an unknown server is refused", `,"sessions":{"s1":"nope"}`,
+			`sessions.s1: "nope" is not a server listed under servers`},
+		{"the default bucket is refused", `,"sessions":{"default":"ete"}`,
+			`is a synthetic session`},
+		{"a pending id is refused", `,"sessions":{"pending:claude-code":"ete"}`,
+			`is a synthetic session`},
+		{"an empty id is refused", `,"sessions":{"":"ete"}`,
+			`the session id is empty`},
+		{"an id with whitespace is refused", `,"sessions":{"a b":"ete"}`,
+			`the session id has whitespace or a control character`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Decode(json.RawMessage(base + tc.extra + `}`))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Decode: %v", err)
+				}
+				if tc.name == "no sessions is an empty map" && c.Sessions == nil {
+					t.Error("Sessions is nil; an absent sessions block moves nothing, as an empty one does")
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Decode error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}

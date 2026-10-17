@@ -170,6 +170,7 @@ const (
 	pinNew      = "new"      // this request pinned the session
 	pinExisting = "existing" // the session was already pinned
 	pinNone     = "none"     // nothing was pinned: no session, a synthetic one, no store, a failed redirect, another agent's pin, a side request, or an unparsed request
+	pinMoved    = "moved"    // a sessions: override moved the session with this request
 )
 
 // The turn detail on a not-routed record, where the request's own turn decided an
@@ -199,6 +200,9 @@ type Router struct {
 	servers map[string]route  // by server name
 	byHost  map[string]string // every server's Endpoint.Key, to its name
 	agents  map[string]string // agent name to server name
+	// sessions is the config's sessions: map, a session id to the server the user
+	// moved it to ("" to stop routing it). It beats the pin and every unpinned rule.
+	sessions map[string]string
 
 	// store is the process's durable store (storage.StoreConsumer), where pins are
 	// kept when there is one; nil keeps them in pctx.Shared.
@@ -281,7 +285,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
 	// is the one implementation of that fold, shared with agentop's own reads and
 	// writes of the same agents: map so the two cannot disagree.
-	p.servers, p.byHost, p.agents = servers, byHost, pipeline.FoldAgentNames(c.Agents)
+	p.servers, p.byHost, p.agents, p.sessions = servers, byHost, pipeline.FoldAgentNames(c.Agents), c.Sessions
 	return nil
 }
 
@@ -304,7 +308,10 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	addressed := p.byHost[routerconfig.Key(pctx.Host)] // the server the request named, "" for none
 	if _, ok := p.byHost[routerconfig.Key(pctx.Host)]; !ok {
 		path, ok := capture(pctx)
-		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx)) {
+		// A sessions: override admits the capture too: the move is the user's
+		// instruction, and it must reach a session whose agent is not routed and
+		// holds no pin, which no other rule would route.
+		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
 			pctx.Skip("not_an_inference_server")
 			return cont
 		}
@@ -314,7 +321,19 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	name, pin := p.serverFor(pctx, captured != "")
 	if name == "" {
 		// Not routed: the request, its key included, stays exactly as the client sent it.
-		pin.settle("")
+		// An own ("") override that cannot take effect — the router is observing, so
+		// nothing it does applies — moves no pin: the pin the move would replace
+		// stands until enforce is back. This branch returns before any redirect, so
+		// it reads the policy itself.
+		switch {
+		case pin.state == pinMoved && pctx.Observing():
+			pin.forgo()
+		case pin.state == pinMoved:
+			p.leaveServer(pctx)
+			pin.settle("")
+		default:
+			pin.settle("")
+		}
 		details := map[string]string{"pin": pin.state}
 		if pin.turn != "" {
 			details["turn"] = pin.turn
@@ -351,8 +370,14 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// redirect: a pipeline admits one WritesDestination plugin.
 	if !pctx.Redirected() {
 		// The request stayed put, so that is what a first request pins: a session that
-		// started under observe stays put once enforce is on.
-		pin.settle("")
+		// started under observe stays put once enforce is on. A session an override
+		// would have moved keeps its pin instead: nothing moved — this is observe —
+		// and the pin is the state the move, once enforce is on, will replace.
+		if pin.state == pinMoved {
+			pin.forgo()
+		} else {
+			pin.settle("")
+		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
 	}
@@ -368,6 +393,8 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// The model is chosen only once the request has moved, so an observed router
 	// changes nothing.
 	p.chooseModel(pctx, name)
+	// Before applyLimits, so limits are fitted to the stripped body.
+	p.stripForeign(pctx, name, pin)
 	p.applyLimits(pctx, name, true)
 	pin.settle(name)
 	if addressed != name {
@@ -413,13 +440,20 @@ type pinning struct {
 	// turn is turnContinuation or turnAside when the request's own turn left an
 	// unpinned session unrouted, "" otherwise.
 	turn string
+	// history is whether the session's recorded history holds an earlier inference
+	// request of its agent's — the evidence wentTo read for this request, carried
+	// so the origin decision (stripForeign) needs no second archive walk. read says
+	// the walk happened: false on the override path, which decides before the
+	// unpinned rules run and walks there instead.
+	history bool
+	read    bool
 }
 
 // settle pins a session on its first request to where that request went: server
 // when it was redirected there, "" when it stayed where the client sent it. A
 // session already pinned keeps its pin, which serverFor renewed.
 func (pn *pinning) settle(server string) {
-	if pn.state == pinNew {
+	if pn.state == pinNew || pn.state == pinMoved {
 		pn.store.save(pn.key, pin{agent: pn.agent, server: server})
 	}
 }
@@ -427,7 +461,7 @@ func (pn *pinning) settle(server string) {
 // forgo leaves a session unpinned after a first request that went nowhere, so its
 // next request decides again. A session already pinned keeps its pin.
 func (pn *pinning) forgo() {
-	if pn.state == pinNew {
+	if pn.state == pinNew || pn.state == pinMoved {
 		pn.state = pinNone
 	}
 }
@@ -463,19 +497,63 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		return choice, pinning{state: pinNone}
 	}
 	key := pinPrefix + pctx.Session.ID
+	// A sessions: override is the user's explicit move: it beats the pin and every
+	// unpinned rule, and the pin follows it, so removing the entry later does not
+	// move the session back. pinMoved tells the record this request moved a session
+	// that already held a pin; pinNew is a session that held none.
+	if over, ok := p.overrideFor(pctx); ok {
+		state := pinNew
+		if pn, had := store.load(key); had && pn.belongsTo(agent) {
+			switch {
+			case pn.server == over:
+				state = pinExisting
+				p.keepPin(pctx, store, key, pn)
+			case pn.server != over:
+				state = pinMoved
+			}
+		}
+		return over, pinning{state: state, store: store, key: key, agent: agent}
+	}
 	if pn, ok := store.load(key); ok {
 		if !pn.belongsTo(agent) {
-			server, _, _ := p.unpinned(pctx, agent, choice, captured)
-			return server, pinning{state: pinNone}
+			server, _, _, _ := p.unpinned(pctx, agent, choice, captured)
+			return server, pinning{state: pinNone, read: true}
 		}
-		store.keep(key, pn)
+		p.keepPin(pctx, store, key, pn)
 		return pn.server, pinning{state: pinExisting}
 	}
-	server, turn, decides := p.unpinned(pctx, agent, choice, captured)
+	server, turn, decides, history := p.unpinned(pctx, agent, choice, captured)
 	if !decides {
-		return server, pinning{state: pinNone, turn: turn}
+		return server, pinning{state: pinNone, turn: turn, history: history, read: true}
 	}
-	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn}
+	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn, history: history, read: true}
+}
+
+// keepPin renews the session's pin and, with it, its reasoning origin, which must
+// not expire under a pin its session keeps alive.
+func (p *Router) keepPin(pctx *pipeline.Context, store pins, key string, pn pin) {
+	if store.keep(key, pn) {
+		p.renewOrigin(pctx)
+	}
+}
+
+// overrideFor is the sessions: entry for pctx's session, when one names it. A
+// synthetic session is never overridden, whatever a hand-fed config says: its id
+// holds many conversations, not one to move.
+func (p *Router) overrideFor(pctx *pipeline.Context) (string, bool) {
+	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+		return "", false
+	}
+	over, ok := p.sessions[pctx.Session.ID]
+	return over, ok
+}
+
+// overrideRoutes reports whether a sessions: entry moves pctx's session to a
+// server. An entry to "" stops routing the session, which no capture needs: the
+// request is already going where the client sent it.
+func (p *Router) overrideRoutes(pctx *pipeline.Context) bool {
+	over, ok := p.overrideFor(pctx)
+	return ok && over != ""
 }
 
 // pinnedToServer reports whether pctx's session holds its agent's pin to a server.
@@ -505,19 +583,19 @@ func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
 //     routed when it is a subagent's to a server's host. turn names the last two,
 //     for the record.
 //  5. The agent's current choice.
-func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides bool) {
+func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides, history bool) {
 	if choice == "" {
-		return "", "", true
+		return "", "", true, false
 	}
 	if server, ok := p.wentTo(pctx.Session, agent); ok {
-		return server, "", true
+		return server, "", true, true
 	}
 	if pctx.Extensions.Inference == nil {
-		return choice, "", false
+		return choice, "", false, false
 	}
 	switch turnOf(pctx.Extensions.Inference) {
 	case turnContinuation:
-		return "", turnContinuation, true
+		return "", turnContinuation, true, false
 	case turnAside:
 		// A one-shot is sent beside the main conversation and is no part of it, so the
 		// agent's server answering it moves nothing. A subagent's request is a
@@ -525,11 +603,11 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured
 		// Claude Code sent it unless captured: then leaving it would send the user's
 		// credential to the provider the agent was routed away from.
 		if captured || pctx.Extensions.Inference.AgentRole == pipeline.AgentRoleMain {
-			return choice, turnAside, false
+			return choice, turnAside, false, false
 		}
-		return "", turnAside, false
+		return "", turnAside, false, false
 	}
-	return choice, "", true
+	return choice, "", true, false
 }
 
 // turnOf is a Claude Code request's place in its session's conversation, read from

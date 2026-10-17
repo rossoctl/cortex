@@ -36,6 +36,7 @@ Usage:
   agentop server remove <name> [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
+  agentop server move <session-id> <name|own> [--config PATH]
 
 With no action, lists the servers, the model each one's main and helper word
 names now, and the agents routed to each.
@@ -90,6 +91,8 @@ func runServer(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return serverUse(args, stdout, stderr)
 	case "reset":
 		return serverReset(args, stdout, stderr)
+	case "move":
+		return serverMove(args, stdout, stderr)
 	}
 	fmt.Fprintf(stderr, "agentop server: unknown action %q\n\n", action)
 	fmt.Fprint(stderr, serverUsage)

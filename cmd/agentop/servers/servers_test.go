@@ -1,10 +1,13 @@
 package servers
 
 import (
+	"encoding/json"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
@@ -161,5 +164,53 @@ func TestForHost_LocalServersByPort(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("ForHost(%q) = %q, %v; want %q", host, got, ok, want)
 		}
+	}
+}
+
+func TestSessionChanges(t *testing.T) {
+	got := SessionChanges("s1", "glm")
+	want := []edit.ConfigChange{{
+		Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", "s1"},
+		Value: edit.ScalarValue("glm"),
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SessionChanges = %+v, want %+v", got, want)
+	}
+	// "" is a value, not a removal: the entry must stay, or the session's pin
+	// would route it right back.
+	got = SessionChanges("s1", "")
+	want = []edit.ConfigChange{{
+		Chain: "outbound", Plugin: PluginName, Path: []string{"sessions", "s1"},
+		Value: edit.ScalarValue(""),
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SessionChanges(\"\") = %+v, want %+v", got, want)
+	}
+}
+
+func TestPruneSessions(t *testing.T) {
+	cfg := routerconfig.Config{Sessions: map[string]string{
+		"live": "glm", "dead": "glm", "archived": "ete",
+	}}
+	changes := PruneSessions(cfg, map[string]bool{"live": true, "archived": true})
+	if len(changes) != 1 || changes[0].Path[1] != "dead" || changes[0].Value != nil {
+		t.Errorf("PruneSessions = %+v, want one removal for dead", changes)
+	}
+	if changes := PruneSessions(cfg, nil); len(changes) != 0 {
+		t.Errorf("PruneSessions with no live set = %+v, want nothing: prune only what you can see is dead", changes)
+	}
+}
+
+// Verify refuses a sessions entry naming no server, through the same Decode the
+// proxy runs — the write path and the proxy cannot disagree.
+func TestVerify_RefusesASessionsEntryNamingNoServer(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Pipeline.Outbound.Plugins = []config.PluginEntry{{
+		Name:   PluginName,
+		Config: json.RawMessage(`{"servers":{"ete":{"url":"https://ete.example.com","key":"k","main":"opus","helper":"haiku"}},"sessions":{"s1":"nope"}}`),
+	}}
+	err := Verify(cfg)
+	if err == nil || !strings.Contains(err.Error(), `sessions.s1: "nope" is not a server listed under servers`) {
+		t.Fatalf("Verify error = %v, want it to refuse the unlisted server", err)
 	}
 }

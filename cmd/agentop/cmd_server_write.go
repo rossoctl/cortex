@@ -95,6 +95,10 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
+	if name == ownProvider {
+		fmt.Fprintf(stderr, "agentop server add: %q is reserved: agentop server move <session-id> %s sends a session to its own provider\n", name, ownProvider)
+		return 2
+	}
 	// ParseURL's error, never rawURL: a refused URL may carry a key anywhere in it,
 	// and ParseURL's errors quote no part of the URL.
 	ep, err := routerconfig.ParseURL(rawURL)
@@ -263,6 +267,17 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
 		return 1
 	}
+	if moved := sessionsOn(c, name); len(moved) > 0 {
+		// Not rewritten to "": a remove the user asked for should not edit the
+		// moves they made, and a config that names no listed server cannot reload —
+		// or, with the proxy stopped, start.
+		fmt.Fprintf(stderr, "agentop server remove: %d %s moved to %s; stop routing %s with:\n",
+			len(moved), sessionWord(len(moved)), name, moved[0])
+		for _, id := range moved {
+			fmt.Fprintf(stderr, "  agentop server move %s own\n", id)
+		}
+		return 1
+	}
 	if len(agents) > 0 {
 		var other string
 		for _, s := range slices.Sorted(maps.Keys(c.Servers)) {
@@ -330,6 +345,26 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 		}
 	}
 	return n
+}
+
+// sessionsOn is the session ids whose sessions: entry names server, sorted.
+func sessionsOn(c routerconfig.Config, server string) []string {
+	var out []string
+	for id, s := range c.Sessions {
+		if s == server {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// sessionWord is "session" or "sessions", for a count.
+func sessionWord(n int) string {
+	if n == 1 {
+		return "session"
+	}
+	return "sessions"
 }
 
 // runningSessions is "1 running session" or "n running sessions".
@@ -503,4 +538,122 @@ func configuredServers(c routerconfig.Config) string {
 		return ""
 	}
 	return "; configured: " + strings.Join(slices.Sorted(maps.Keys(c.Servers)), ", ")
+}
+
+// ownProvider is the word serverMove takes for a session's own provider, so no
+// server may be added under it.
+const ownProvider = "own"
+
+// serverMove moves one running session to a server, or stops routing it with
+// "own". Unlike use and reset, this moves the session the user named, not the
+// agent's next one.
+func serverMove(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("server move", flag.ContinueOnError)
+	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
+	pos, code, ok := serverFlags(flags, args, stdout, stderr)
+	if !ok {
+		return code
+	}
+	if len(pos) != 2 {
+		fmt.Fprintln(stderr, "agentop server move: want a session and a server: agentop server move <session-id> <name|own>")
+		return 2
+	}
+	sid, server := pos[0], pos[1]
+	if err := routerconfig.CheckSessionID(sid); err != nil {
+		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
+		return 2
+	}
+	if server == ownProvider {
+		server = ""
+	} else if err := routerconfig.CheckName(server); err != nil {
+		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
+		return 2
+	}
+	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
+		return 1
+	}
+	if server != "" {
+		if _, ok := c.Servers[server]; !ok {
+			fmt.Fprintf(stderr, "agentop server move: no server named %s%s. Add it first:\n  agentop server add %s <url>\n",
+				server, configuredServers(c), server)
+			return 1
+		}
+	}
+	sessionsURL := ""
+	if cfg.Listener.SessionAPIAddr != "" {
+		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
+	}
+	changes := servers.SessionChanges(sid, server)
+	changes = append(changes, pruneFrom(sessionsURL, c, sid)...)
+	name := server
+	if name == "" {
+		name = "its own provider"
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, changes, writeReport{
+		done:      fmt.Sprintf("Session %s → %s.", sid, name),
+		live:      moveNote(sessionsURL, sid, server),
+		unchanged: fmt.Sprintf("Session %s already goes to %s.", sid, name),
+	})
+}
+
+// moveNote is what a move costs the session it moves, from the session API's own
+// figure: its conversation is re-sent uncached on the first turn at the new
+// server. "" when neither the proxy nor the session can be read — the move does
+// not depend on it.
+func moveNote(sessionsURL, sid, server string) string {
+	if sessionsURL == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	list, err := apiclient.New(sessionsURL).ListSessions(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, s := range list {
+		if s.ID != sid || s.PromptContext == nil {
+			continue
+		}
+		name := server
+		if name == "" {
+			name = "its own provider"
+		}
+		return fmt.Sprintf("%d tokens of %s's context go to %s uncached on its first turn there.",
+			s.PromptContext.Tokens, sid, name)
+	}
+	return ""
+}
+
+// pruneFrom is the removals for every sessions: override whose session the
+// session API no longer lists — inert config a move left behind. Nothing when the
+// API cannot be read: a live session must never lose its override to a blind
+// prune.
+func pruneFrom(sessionsURL string, c routerconfig.Config, moved string) []edit.ConfigChange {
+	if sessionsURL == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// THE ARCHIVED LIST, not the live one: a session the archive holds — evicted
+	// from memory, or resumed after a restart — still has its pin, kept in the
+	// plugin store, so its override must survive the prune too.
+	list, err := apiclient.New(sessionsURL).ListSessionsArchived(ctx)
+	if err != nil {
+		return nil
+	}
+	if len(list.Sessions) == 0 {
+		return nil
+	}
+	live := map[string]bool{moved: true}
+	for _, s := range list.Sessions {
+		live[s.ID] = true
+	}
+	return servers.PruneSessions(c, live)
 }

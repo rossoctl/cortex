@@ -96,7 +96,8 @@ LiteLLM gateway or a local model server such as Ollama, with its own URL and key
 and keeps every session on the
 server it started on, wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
-beyond going through the proxy. Routing is opt-in per agent: an agent not listed
+beyond going through the proxy. A `sessions:` entry moves one running session to
+another server, dropping the reasoning only its old server can verify. Routing is opt-in per agent: an agent not listed
 under `agents` is not routed, and its requests, keys included, pass untouched. Manage it
 with [`agentop server`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server);
 the config stays hand-editable. Built for the laptop: it needs a listener that

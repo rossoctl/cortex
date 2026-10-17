@@ -34,6 +34,10 @@ const NoAgent = "unknown"
 type Config struct {
 	Servers map[string]Server `json:"servers" required:"true" description:"Inference servers, by name."`
 	Agents  map[string]string `json:"agents" description:"Agents to route, by agent name, to a server name. Unlisted agents are not routed."`
+	// Sessions moves one running session to a server, by the session's id, beating
+	// the pin that session already holds. "" stops routing that session. agentop
+	// writes these; see CheckSessionID for what an id may look like.
+	Sessions map[string]string `json:"sessions" description:"Sessions to move to a server, by session id, beating their pin. An empty value stops routing the session."`
 }
 
 // Server is one inference server.
@@ -110,6 +114,9 @@ func (c *Config) applyDefaults() {
 	if c.Agents == nil {
 		c.Agents = map[string]string{}
 	}
+	if c.Sessions == nil {
+		c.Sessions = map[string]string{}
+	}
 }
 
 // Validate checks every rule the plugin routes by. Servers and agents are checked
@@ -154,7 +161,43 @@ func (c Config) Validate() error {
 			return fmt.Errorf("agents.%s: %q is not a server listed under servers", agent, server)
 		}
 	}
+	for _, id := range slices.Sorted(maps.Keys(c.Sessions)) {
+		if err := CheckSessionID(id); err != nil {
+			return fmt.Errorf("sessions.%s: %w", id, err)
+		}
+		if server := c.Sessions[id]; server != "" {
+			if _, ok := c.Servers[server]; !ok {
+				return fmt.Errorf("sessions.%s: %q is not a server listed under servers", id, server)
+			}
+		}
+	}
 	return nil
+}
+
+// CheckSessionID reports whether id can name a session in the sessions map. The
+// ids the session API serves are UUIDs, but an id need only be printable, non-empty
+// and free of whitespace to be one worth routing: refusing anything stricter would
+// block a future agent's id shape. Synthetic ids are refused here, not later.
+func CheckSessionID(id string) error {
+	switch {
+	case id == "":
+		return errors.New("the session id is empty")
+	case SyntheticSessionID(id):
+		return fmt.Errorf("%q is a synthetic session, which holds many conversations, not one to move", id)
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] <= ' ' || id[i] > '~' {
+			return errors.New("the session id has whitespace or a control character")
+		}
+	}
+	return nil
+}
+
+// SyntheticSessionID reports whether id is one of the session store's synthetic
+// buckets — "default" and "pending:<agent>" — which hold many conversations, not
+// one a move could target.
+func SyntheticSessionID(id string) bool {
+	return id == "default" || strings.HasPrefix(id, "pending:")
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9._-]+$`)

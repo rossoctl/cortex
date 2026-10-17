@@ -663,6 +663,15 @@ func (c *Context) Observe(reason string) {
 	c.Record(Invocation{Action: ActionObserve, Reason: reason})
 }
 
+// Observing reports whether the plugin being dispatched runs under
+// ErrorPolicyObserve: nothing it does this pass takes effect, so a plugin that
+// would write state a later enforce pass applies — a pin recorded, an origin
+// kept — must not. Redirect consults the same policy; this is for the paths that
+// return before any redirect is attempted.
+func (c *Context) Observing() bool {
+	return c.currentPolicy == ErrorPolicyObserve
+}
+
 // Modify records an Invocation with Action=modify. Convenience for
 // plugins that mutated the message (token-exchange replacing the
 // Authorization header, a header-rewriter).

@@ -322,6 +322,8 @@ type fakeStore struct {
 	mu   sync.Mutex
 	vals map[string]string
 	ttls map[string]time.Duration
+	// expired is every key Expire renewed, in order.
+	expired []string
 }
 
 func (f *fakeStore) Get(_ context.Context, k string) (string, error) {
@@ -344,8 +346,16 @@ func (f *fakeStore) HashGet(context.Context, string) (map[string]string, error) 
 func (f *fakeStore) HashSetNX(context.Context, string, string, string) (bool, error) {
 	return false, nil
 }
-func (f *fakeStore) Expire(context.Context, string, time.Duration) error { return nil }
-func (f *fakeStore) Close() error                                        { return nil }
+func (f *fakeStore) Expire(_ context.Context, k string, ttl time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.vals[k]; ok {
+		f.ttls[k] = ttl
+		f.expired = append(f.expired, k)
+	}
+	return nil
+}
+func (f *fakeStore) Close() error { return nil }
 
 // A refusal is believed for an hour and no longer, and kept where pins are, so a
 // restart keeps it; a session's substitutes are kept as long as its pin.
