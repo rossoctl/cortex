@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -146,6 +147,10 @@ type Server struct {
 
 	// selfTrafficSeen holds the (executable, service) pairs selfTraffic has announced.
 	selfTrafficSeen sync.Map
+
+	// chainOverrideLogged holds the session header names hydrateSession has
+	// reported naming a session other than the process chain's.
+	chainOverrideLogged sync.Map
 
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
@@ -333,6 +338,21 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// — and silent on the day one does, which is why it is pinned rather than watched.
 	pctx.ResolveClient()
 
+	// A bridged request is dialed to the tunnel's authority, so policy must judge that
+	// host. The client chose both the CONNECT target and the Host header, and a Host
+	// naming anywhere else would have every host-keyed plugin, skip_hosts included,
+	// judge a destination the bytes never reach. Refuse it before anything runs.
+	if isBridge {
+		if r.Host == "" {
+			r.Host = r.URL.Host
+			pctx.Host = r.Host
+		}
+		if !tunnelAuthorityMatches(r.Host, r.URL.Host) {
+			s.refuseMisdirected(w, r, pctx, tl)
+			return
+		}
+	}
+
 	// Every request that reaches here is re-originated from pctx below, plain or
 	// TLS-bridged, so a plugin may redirect it. The CONNECT and transparent-connection
 	// contexts are never marked: both dial the address the client chose, so a redirect
@@ -412,9 +432,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// assigned from this local after the pipeline has run.
 	var sessionID string
 	if !skipped && s.Sessions != nil {
-		if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
-			pctx.Session = s.sessionViewFor(sessionID)
-		}
+		sessionID = s.hydrateSession(pctx, r.Header, chain)
 	}
 
 	if !skipped {
@@ -654,7 +672,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 		respAction := s.OutboundPipeline.RunResponse(phaseCtx, pctx)
 		if respAction.Type == pipeline.Reject {
-			httpx.WriteRejection(w, respAction)
+			s.rejectResponse(w, pctx, respAction)
 			return
 		}
 
@@ -669,7 +687,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			defer cancelFinal()
 			respFrameAction := s.OutboundPipeline.RunResponseFrame(finalCtx, pctx, pctx.ResponseBody, true)
 			if respFrameAction.Type == pipeline.Reject {
-				httpx.WriteRejection(w, respFrameAction)
+				s.rejectResponse(w, pctx, respFrameAction)
 				return
 			}
 		}
@@ -935,6 +953,80 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// handler still running returns.
 	tl.finish()
 	return true
+}
+
+// misdirectedBody is the 421's body. Static: the Host it refuses is the client's own
+// input, and echoing it back would make the proxy a reflector.
+const misdirectedBody = "misdirected request: the Host header does not name this tunnel's destination\n"
+
+// refuseMisdirected answers a bridged request whose Host names another authority than
+// the tunnel's with 421 Misdirected Request (RFC 9110 §15.5.20), without running the
+// pipeline or contacting any upstream. The rows it records name the tunnel's authority
+// as the host, since that is where the request would have gone; the Host the client
+// sent goes in the error message only, and carries no path or query.
+func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog) {
+	claimed := r.Host
+	if len(claimed) > 255 {
+		claimed = claimed[:255]
+	}
+	slog.Warn("forward-proxy: refused a bridged request whose Host is not the tunnel's",
+		"tunnel", r.URL.Host, "host", claimed, "method", r.Method)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusMisdirectedRequest)
+	_, _ = io.WriteString(w, misdirectedBody)
+
+	if s.Sessions == nil {
+		return
+	}
+	pctx.Host = r.URL.Host
+	chain := s.clientChain(r)
+	sid := s.recordingSessionID("", r.Header, chain)
+	pctx.OutboundSessionID = sid
+	if chain != nil {
+		defer s.Sessions.TouchProcess(sid, chain)
+	}
+	s.recordOutboundRequestEvent(tl, pctx, sid)
+	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
+		Kind:    "misdirected_request",
+		Message: fmt.Sprintf("Host %q does not name the tunnel's destination %s", claimed, r.URL.Host),
+	})
+}
+
+// tunnelAuthorityMatches reports whether host, a bridged request's Host, names the same
+// authority as tunnel, the CONNECT target or transparent destination it was decrypted
+// from. Hosts compare case-insensitively without a trailing dot, IP literals by value,
+// and a missing port is 443, the tunnel being TLS.
+func tunnelAuthorityMatches(host, tunnel string) bool {
+	h, hp, ok := splitAuthority(host)
+	if !ok {
+		return false
+	}
+	t, tp, ok := splitAuthority(tunnel)
+	return ok && h == t && hp == tp
+}
+
+func splitAuthority(a string) (host string, port int, ok bool) {
+	host, p, err := net.SplitHostPort(a)
+	if err != nil {
+		// No port: a name, an IPv4 literal, or a bracketed IPv6 literal.
+		host, p = a, ""
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+	}
+	port = 443
+	if p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", 0, false
+		}
+		port = n
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.Unmap().String()
+	}
+	return host, port, host != ""
 }
 
 // bridgedHandler serves one bridged tunnel's decrypted requests through the pipeline.
@@ -1256,10 +1348,45 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // session.Store.SessionForProcess first; client affinity and ActiveSession() answer only
 // what it leaves open.
 func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []session.Proc) string {
+	sid, _ := s.resolvePluginSession(clientHeaders, chain)
+	return sid
+}
+
+// pluginSession is the session handed to plugins and how it was resolved.
+type pluginSession struct {
+	source pipeline.SessionSource
+	header string
+}
+
+// hydrateSession resolves the plugin session for a request and, when there is one,
+// sets pctx.Session and how it was resolved. It returns the id for the caller's
+// local, which recording reads instead of pctx.
+func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Header, chain []session.Proc) string {
+	sid, how := s.resolvePluginSession(clientHeaders, chain)
+	if sid != "" {
+		pctx.Session = s.sessionViewFor(sid)
+		pctx.SessionSource = how.source
+		pctx.SessionHeader = how.header
+	}
+	if chain != nil && s.processesOn() {
+		pctx.ChainSession = s.Sessions.ChainSession(chain)
+		if pctx.ChainSession != "" && sid != pctx.ChainSession && how.source == pipeline.SessionSourceHeader {
+			if _, seen := s.chainOverrideLogged.LoadOrStore(how.header, struct{}{}); !seen {
+				slog.Info("forwardproxy: a process named a session other than its parent agent's; "+
+					"policy keyed on the process chain uses the parent's", "header", how.header)
+			}
+		}
+	}
+	return sid
+}
+
+// resolvePluginSession is resolvePluginSessionID that also says how the id was
+// resolved.
+func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session.Proc) (string, pluginSession) {
 	affinity := s.affinityOn()
 	procs := chain != nil && s.processesOn()
 	agent := affinityClient(clientHeaders)
-	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
+	if sid, header := session.IDHeaderFrom(clientHeaders, s.SessionIDHeaders); sid != "" {
 		// The process's claim first: it adopts the process's own pending bucket, which is
 		// certainly its calls, before the agent-wide guess can take the session.
 		if procs {
@@ -1268,37 +1395,41 @@ func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []sessi
 		if affinity {
 			s.Sessions.Claim(sid, agent)
 		}
-		return sid
+		return sid, pluginSession{source: pipeline.SessionSourceHeader, header: header}
 	}
 	if procs {
 		// The default bucket is SessionForProcess's answer for a process of no agent while
 		// an agent is active, and plugins hear it as "", as they do affinity's below.
-		switch sid := s.Sessions.SessionForProcess(chain, agent); sid {
-		case "":
-		case session.DefaultSessionID:
-			return ""
+		switch sid := s.Sessions.SessionForProcess(chain, agent); {
+		case sid == "":
+		case sid == session.DefaultSessionID:
+			return "", pluginSession{}
+		case strings.HasPrefix(sid, session.PendingPrefix):
+			return sid, pluginSession{source: pipeline.SessionSourcePending}
 		default:
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceProcess}
 		}
 	}
 	if affinity {
 		// See session.Store.SessionForClient for the order. The default bucket is its
 		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
 		// function exists to give them — while recording files it under default.
-		switch sid := s.Sessions.SessionForClient(agent); sid {
-		case "":
-		case session.DefaultSessionID:
-			return ""
+		switch sid := s.Sessions.SessionForClient(agent); {
+		case sid == "":
+		case sid == session.DefaultSessionID:
+			return "", pluginSession{}
+		case strings.HasPrefix(sid, session.PendingPrefix):
+			return sid, pluginSession{source: pipeline.SessionSourcePending}
 		default:
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceAffinity}
 		}
 	}
 	if s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
-			return sid
+			return sid, pluginSession{source: pipeline.SessionSourceActive}
 		}
 	}
-	return ""
+	return "", pluginSession{}
 }
 
 // affinityOn reports whether header-less requests are filed by coding agent. It needs
@@ -1342,6 +1473,31 @@ func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
 	return &pipeline.SessionView{ID: sid}
 }
 
+// rejectResponse answers the client with a response-phase rejection and
+// records it, before any of the upstream's response is written. The request
+// row is already on the timeline; without this row the deny that replaced
+// the response left no trace of its own.
+func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, action pipeline.Action) {
+	httpx.WriteRejection(w, action)
+	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
+		return
+	}
+	s.Sessions.Append(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound))
+}
+
+// responseSessionID is the bucket a response row files under: the session
+// pinned when the request row was recorded, else the active one, else the
+// default.
+func (s *Server) responseSessionID(pctx *pipeline.Context) string {
+	if sid := pctx.OutboundSessionID; sid != "" {
+		return sid
+	}
+	if sid := s.Sessions.ActiveSession(); sid != "" {
+		return sid
+	}
+	return session.DefaultSessionID
+}
+
 // recordOutboundResponseEvent emits the SessionResponse event for a
 // completed outbound response. Extracted from handleRequest so the
 // streaming path can call it once at end-of-stream and the buffered
@@ -1360,13 +1516,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// response lands in the same bucket. Fall back to ActiveSession() only
 	// when nothing was pinned (defensive — a response-only path), then to
 	// the default bucket. See Context.OutboundSessionID.
-	sid := pctx.OutboundSessionID
-	if sid == "" {
-		sid = s.Sessions.ActiveSession()
-	}
-	if sid == "" {
-		sid = session.DefaultSessionID
-	}
+	sid := s.responseSessionID(pctx)
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
 		At:            time.Now(),
@@ -1622,7 +1772,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 	// anything is written. streamFallbackBuffered runs its own RunResponse, so
 	// this is done only on the flushing path to avoid double-dispatch.
 	if respAction := s.OutboundPipeline.RunResponse(r.Context(), pctx); respAction.Type == pipeline.Reject {
-		httpx.WriteRejection(w, respAction)
+		s.rejectResponse(w, pctx, respAction)
 		return
 	}
 
@@ -1688,7 +1838,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 	defer cancelPhase()
 	respAction := s.OutboundPipeline.RunResponse(phaseCtx, pctx)
 	if respAction.Type == pipeline.Reject {
-		httpx.WriteRejection(w, respAction)
+		s.rejectResponse(w, pctx, respAction)
 		return
 	}
 	if s.OutboundPipeline.HasStreamingResponders() {
@@ -1726,7 +1876,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 			}
 			frameAction := s.OutboundPipeline.RunResponseFrame(foldCtx, pctx, frame, false)
 			if frameAction.Type == pipeline.Reject {
-				httpx.WriteRejection(w, frameAction)
+				s.rejectResponse(w, pctx, frameAction)
 				return
 			}
 		}
@@ -1737,7 +1887,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 		defer cancelFinal()
 		finalAction := s.OutboundPipeline.RunResponseFrame(finalCtx, pctx, nil, true)
 		if finalAction.Type == pipeline.Reject {
-			httpx.WriteRejection(w, finalAction)
+			s.rejectResponse(w, pctx, finalAction)
 			return
 		}
 	}
@@ -1848,9 +1998,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// fall through to ActiveSession() exactly as before.
 		chain = s.clientChain(r)
 		if s.Sessions != nil {
-			if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
-				pctx.Session = s.sessionViewFor(sessionID)
-			}
+			sessionID = s.hydrateSession(pctx, r.Header, chain)
 		}
 
 		// Run the outbound pipeline. Plugins that policy on host/identity

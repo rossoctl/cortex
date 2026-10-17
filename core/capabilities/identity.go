@@ -37,7 +37,7 @@ type ClaimsCarrier interface {
 	// into policy context and observability surfaces. Producers pick the
 	// keys (conventionally "issuer", "audience", "exp"); they MUST NOT
 	// dump the full raw claim map, which may contain secrets or PII.
-	// Values are strings so the set maps cleanly onto CPEX's
-	// SubjectExtension.Claims (map[string]string) without lossy coercion.
+	// Values are strings, so they reach policy engines (CPEX's
+	// SubjectExtension.Claims, OPA input) without lossy coercion.
 	Claims() map[string]string
 }

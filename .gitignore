@@ -131,3 +131,6 @@ cortex-ca/
 
 # Output dir for `make agentop` / `make cortex`.
 /bin/
+
+# CPEX FFI libraries unpacked by scripts/fetch-cpex-ffi.sh.
+.cpex-ffi/

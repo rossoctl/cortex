@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // cpexConfig is the operator-facing schema for the cpex plugin. The
@@ -78,7 +80,116 @@ type cpexConfig struct {
 	// own. Uses rossoctl's shared bypass package so semantics match
 	// jwt-validation, ibac, etc.
 	BypassPaths []string `json:"bypass_paths" description:"URL path globs whose requests skip CPEX. Defaults to /healthz, /readyz, /livez, /.well-known/*."`
+
+	// FallbackIdentification decides how a request that names no tool,
+	// prompt, resource or model is identified to CPEX: A2A, MCP protocol
+	// methods (tools/list, initialize) and unparsed traffic.
+	//
+	//   global (default) — CPEX's global entity (http/*), so `http:`
+	//                      routes and the global policy govern it.
+	//   none             — no identification; CPEX denies the request as
+	//                      unidentified_request when the config declares
+	//                      any policy.
+	FallbackIdentification string `json:"fallback_identification" default:"global" description:"Identification for requests with no named entity: global (CPEX's http/* entity) or none (CPEX denies them as unidentified)."`
+
+	// SessionSource picks the session id CPEX keys session state (taint
+	// labels) on.
+	//
+	//   header (default) — the caller's X-Session-Id header, or the A2A
+	//                      context id.
+	//   resolved         — the session the listener resolved, but only
+	//                      when a dedicated agent session header or the
+	//                      process chain named it. A guess (most recent
+	//                      session, User-Agent affinity, a pending or
+	//                      default bucket) and the generic X-Session-Id and
+	//                      Session-Id headers give no session id, and the
+	//                      caller's X-Session-Id and A2A context id are
+	//                      ignored. When a process above the sender named
+	//                      a session, that session wins over the sender's
+	//                      own, so a child of an agent stays in its taint.
+	//                      That holds only where Cortex has process
+	//                      attribution (the laptop cortex binary bound to
+	//                      loopback). The cortex-cpex sidecar has none, so
+	//                      there resolved trusts the dedicated session
+	//                      header, which the sender sets: it does not stop
+	//                      a process from leaving its session's taint.
+	SessionSource string `json:"session_source" default:"header" description:"Session id for CPEX session state: header (X-Session-Id / A2A context id) or resolved (the listener's session, when a dedicated agent header or the process chain named it)."`
+
+	// PrivateDestinations lets every CPEX builtin of this instance (JWKS
+	// fetches, token exchange, CIBA, Vault) reach loopback, private,
+	// link-local and CGNAT addresses, cloud metadata endpoints included.
+	// Off by default; turn it on only for trusted policies on a trusted
+	// network, such as a local IdP in development.
+	PrivateDestinations bool `json:"private_destinations" default:"false" description:"Allow CPEX builtins to call loopback, private and link-local addresses (cloud metadata included). Default false."`
+
+	// SyntheticEgress presents an outbound request that names no tool,
+	// prompt, resource or model as a call to the tool http_egress, so
+	// `tool: http_egress` routes govern egress. It also turns off outbound
+	// path bypass and the default bypass hosts. Its arguments are method,
+	// host, path, a bounded body excerpt, truncated and content_encoding; a
+	// CONNECT tunnel carries its host and method only. Off by default: such requests take the fallback
+	// identification instead.
+	SyntheticEgress bool `json:"synthetic_egress" default:"false" description:"Present outbound requests that name no tool, prompt, resource or model as calls to the tool http_egress. Default false."`
+
+	// Principal makes Cortex assert the caller: the token in token_file is
+	// handed to CPEX identity resolution under header for outbound requests
+	// presented as tool calls (MCP tools and http_egress) or inference
+	// requests. It is never written to the forwarded request, and a caller's
+	// own copy of header never reaches identity resolution.
+	Principal principalConfig `json:"principal" description:"Cortex-held caller token for CPEX identity resolution on outbound tool calls and inference requests; never forwarded."`
+
+	// Workload makes Cortex assert the calling workload: a JWT-SVID for
+	// audience, fetched from the SPIFFE provider, is handed to CPEX
+	// identity resolution under header on the same requests as the
+	// principal. It needs the runtime config's spiffe: block, is never
+	// written to the forwarded request, and a caller's own copy of header
+	// never reaches identity resolution.
+	Workload workloadConfig `json:"workload" description:"The pod's SPIFFE JWT-SVID for CPEX identity resolution (role: caller_workload) on outbound tool calls and inference requests; never forwarded."`
+
+	// ObserveCodes lists policy violation codes the plugin records as
+	// observe instead of enforcing. CPEX keeps the labels the denying
+	// step set, so a step can taint a session on content without blocking
+	// the request: PPE 0.5.0 has no other conditional taint, since a CEL
+	// step that is false always denies. Steps after the denying one do
+	// not run, so Configure checks the policy: each code must be named by
+	// one deny() alone, as the last entry of a route's phase list (see
+	// checkObservedCodes). Codes the plugin itself emits cannot be listed.
+	ObserveCodes []string `json:"observe_codes" description:"Policy violation codes recorded as observe instead of enforced; the labels the denying step set still apply."`
+
+	// DelegatedCredentials forwards the credentials CPEX delegate() steps
+	// mint: each one is written to the request as its header, replacing
+	// the caller's value. Off by default, and then a request whose policy
+	// delegated is denied with cpex.delegation_unavailable instead, because
+	// the engine keeps the minted token. Needs a CPEX library that returns
+	// delegated credentials to the host.
+	DelegatedCredentials bool `json:"delegated_credentials" default:"false" description:"Forward the credentials CPEX delegate() steps mint, as request headers. Default false: a request whose policy delegated is denied."`
+
+	// DelegatedCredentialHeaders lists the headers a delegated credential
+	// may be written to. A credential for any other header denies the
+	// request with cpex.delegation_unavailable.
+	DelegatedCredentialHeaders []string `json:"delegated_credential_headers" description:"Headers a delegated credential may be written to. Default [Authorization]."`
+
+	// DelegatedCredentialHosts binds each delegation target (the target a
+	// delegate() step names, else its audience) to the hosts its
+	// credentials may be sent to, as `.`-delimited globs matched against
+	// the request's host without its port. Required with
+	// delegated_credentials: the caller picks the tool and the destination,
+	// so a credential whose target is not bound to the request's host
+	// denies it with cpex.delegation_destination_mismatch and nothing is
+	// written.
+	DelegatedCredentialHosts map[string][]string `json:"delegated_credential_hosts" description:"Delegation target → host globs its credentials may be sent to. Required with delegated_credentials."`
 }
+
+// principalConfig configures principal injection. An empty TokenFile turns
+// it off.
+type principalConfig struct {
+	TokenFile string `json:"token_file,omitempty" description:"File holding the caller token (a JWT). Empty turns principal injection off."`
+	Header    string `json:"header,omitempty" default:"x-user-token" description:"Identity header the token is presented under; the CPEX identity plugin reads it."`
+}
+
+// defaultPrincipalHeader is the identity header principal injection uses
+// when none is configured.
+const defaultPrincipalHeader = "x-user-token"
 
 // hooksConfig declares which CPEX hooks the AuthBridge plugin
 // invokes on each phase. Lists are evaluated in order; the plugin
@@ -117,8 +228,26 @@ var defaultBypassHosts = []string{
 // operator who genuinely wants empty bypass lists must opt out
 // with `bypass_hosts: []` / `bypass_paths: []`.
 func (c *cpexConfig) applyDefaults() {
-	if c.BypassHosts == nil {
+	if c.FallbackIdentification == "" {
+		c.FallbackIdentification = fallbackGlobal
+	}
+	if c.SessionSource == "" {
+		c.SessionSource = sessionSourceHeader
+	}
+	// The default bypass hosts are wildcards a caller can match with a
+	// host of its own (keycloak.attacker.example), so synthetic egress,
+	// which gates the caller's destinations, does not take them.
+	if c.BypassHosts == nil && !c.SyntheticEgress {
 		c.BypassHosts = append([]string(nil), defaultBypassHosts...)
+	}
+	if c.Principal.TokenFile != "" && c.Principal.Header == "" {
+		c.Principal.Header = defaultPrincipalHeader
+	}
+	if c.Workload.Audience != "" && c.Workload.Header == "" {
+		c.Workload.Header = defaultWorkloadHeader
+	}
+	if c.DelegatedCredentials && c.DelegatedCredentialHeaders == nil {
+		c.DelegatedCredentialHeaders = []string{"Authorization"}
 	}
 	// c.BypassPaths is filled lazily from bypass.DefaultPatterns
 	// in plugin.go's Configure (avoids importing bypass here).
@@ -136,6 +265,53 @@ func (c *cpexConfig) validate() error {
 	if c.Config != "" && c.ConfigFile != "" {
 		return errors.New("`config` and `config_file` are mutually exclusive; set at most one")
 	}
+	switch c.FallbackIdentification {
+	case fallbackGlobal, fallbackNone:
+	default:
+		return fmt.Errorf("fallback_identification must be %q or %q, got %q",
+			fallbackGlobal, fallbackNone, c.FallbackIdentification)
+	}
+	switch c.SessionSource {
+	case sessionSourceHeader, sessionSourceResolved:
+	default:
+		return fmt.Errorf("session_source must be %q or %q, got %q",
+			sessionSourceHeader, sessionSourceResolved, c.SessionSource)
+	}
+	if c.Principal.TokenFile != "" {
+		switch h := strings.ToLower(strings.TrimSpace(c.Principal.Header)); {
+		case h == "", strings.ContainsAny(h, " \t:"):
+			return fmt.Errorf("principal.header %q is not a header name", c.Principal.Header)
+		case h == "authorization" || isProtected(h):
+			return fmt.Errorf("principal.header must not be %q", c.Principal.Header)
+		}
+	}
+	if c.Workload.Audience != "" {
+		switch h := strings.ToLower(strings.TrimSpace(c.Workload.Header)); {
+		case h == "", strings.ContainsAny(h, " \t:"):
+			return fmt.Errorf("workload.header %q is not a header name", c.Workload.Header)
+		case h == "authorization" || isProtected(h):
+			return fmt.Errorf("workload.header must not be %q", c.Workload.Header)
+		case c.Principal.TokenFile != "" && h == strings.ToLower(strings.TrimSpace(c.Principal.Header)):
+			return fmt.Errorf("workload.header must differ from principal.header")
+		}
+	}
+	if c.DelegatedCredentials && len(c.DelegatedCredentialHosts) == 0 {
+		return errors.New("delegated_credentials needs delegated_credential_hosts, the hosts each target's credentials may be sent to")
+	}
+	if len(c.DelegatedCredentialHeaders) > 0 && !c.DelegatedCredentials {
+		return errors.New("delegated_credential_headers needs delegated_credentials: true")
+	}
+	for _, h := range c.DelegatedCredentialHeaders {
+		lower := strings.ToLower(strings.TrimSpace(h))
+		switch {
+		case lower == "" || !httpguts.ValidHeaderFieldName(lower):
+			return fmt.Errorf("delegated_credential_headers: %q is not a header name", h)
+		case isFramingOrInternal(lower),
+			c.Principal.TokenFile != "" && lower == strings.ToLower(strings.TrimSpace(c.Principal.Header)),
+			c.Workload.Audience != "" && lower == strings.ToLower(strings.TrimSpace(c.Workload.Header)):
+			return fmt.Errorf("delegated_credential_headers must not name %q", h)
+		}
+	}
 	if c.WorkerThreads < 0 {
 		return fmt.Errorf("worker_threads must be >= 0, got %d", c.WorkerThreads)
 	}
@@ -147,6 +323,15 @@ func (c *cpexConfig) validate() error {
 	for _, h := range c.Hooks.OnResponse {
 		if strings.TrimSpace(h) == "" {
 			return fmt.Errorf("hooks.on_response: empty hook name")
+		}
+	}
+	for _, code := range c.ObserveCodes {
+		n := observeCode(code)
+		switch {
+		case n == "cpex.unspecified" || strings.ContainsAny(code, "*?"):
+			return fmt.Errorf("observe_codes: %q is not a violation code", code)
+		case pluginCodes[n]:
+			return fmt.Errorf("observe_codes: %q is emitted by the plugin, not by policy", code)
 		}
 	}
 	for _, p := range c.BypassHosts {
@@ -168,6 +353,22 @@ func (c *cpexConfig) validate() error {
 		}
 	}
 	return nil
+}
+
+// observeCode normalizes an observe_codes entry to the namespaced code
+// a deny carries, with or without its "cpex." prefix.
+func observeCode(code string) string {
+	return "cpex." + sanitizeReason(strings.TrimPrefix(strings.TrimSpace(code), "cpex."))
+}
+
+// pluginCodes are deny codes the plugin emits itself; they guard against
+// forwarding a request CPEX cannot vouch for, so they are never observed.
+var pluginCodes = map[string]bool{
+	"cpex." + codePrincipalUnavailable:          true,
+	"cpex." + codeDelegationUnavailable:         true,
+	"cpex." + codeDelegationDestinationMismatch: true,
+	"cpex." + codeAmbiguousRequest:              true,
+	"cpex." + codeUnnamedEntity:                 true,
 }
 
 // resolveYAML returns the CPEX YAML string the operator supplied —

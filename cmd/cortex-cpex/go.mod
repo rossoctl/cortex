@@ -6,7 +6,7 @@ require github.com/rossoctl/cortex/core v0.0.0-00010101000000-000000000000
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/contextforge-org/cpex/go/cpex v0.2.3 // indirect
+	github.com/contextforge-org/cpex/go/cpex v0.3.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect

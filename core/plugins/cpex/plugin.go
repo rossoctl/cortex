@@ -1,11 +1,11 @@
 // Package cpex bridges AuthBridge requests through the CPEX (Context
 // Plugin Execution) framework so operators can drive policy with
-// CPEX's APL (Attribute Policy Language) DSL — or any of the
-// pre-built CPEX plugins (Cedar PDP, PII scanner, audit logger,
-// JWT identity, OAuth delegation) — without writing Go code.
+// CPEX's APL (Attribute Policy Language) DSL — or any of CPEX's
+// built-in plugins (JWT identity, OAuth delegation, the Cedar, CEL
+// and OPA decision points) — without writing Go code.
 //
 // One AuthBridge plugin instance ("cpex") wraps an entire CPEX
-// PluginManager. Operators declare which CPEX hook names fire on
+// PolicyEngine. Operators declare which CPEX hook names fire on
 // each AuthBridge phase via the cpex config's `hooks` block:
 //
 //	plugins:
@@ -59,11 +59,12 @@ import (
 	"github.com/rossoctl/cortex/core/bypass"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/spiffe"
 )
 
-// CPEX is the AuthBridge plugin chassis around a CPEX PluginManager.
+// CPEX is the AuthBridge plugin chassis around a CPEX PolicyEngine.
 // Per-instance state: parsed config, the Manager adapter (Fake in
-// tests, real cpex.PluginManager in the cpex binary), and a ready
+// tests, real cpex.PolicyEngine in the cpex binary), and a ready
 // flag set after Init.
 type CPEX struct {
 	cfg     cpexConfig
@@ -81,12 +82,42 @@ type CPEX struct {
 	// request; the goroutine-safe scan happens via matchesAnyHost.
 	bypassHosts []string
 
+	// observeCodes holds the namespaced deny codes recorded as observe
+	// rather than enforced (observe_codes).
+	observeCodes map[string]bool
+
 	// newManager is the Manager constructor used by Configure. When
 	// nil — the production default — Configure calls the
 	// package-level NewManager (real cpex adapter when -tags cpex,
 	// errNoCpexBuild otherwise). Tests inject a closure here to
 	// return a FakeManager and exercise Configure's full path.
 	newManager func(ManagerOptions) (Manager, error)
+
+	// spiffe is the process SPIFFE provider, set by the pipeline builder
+	// when the runtime config has a spiffe: block. testWorkloadJWT
+	// replaces it in tests.
+	provider        *spiffe.Provider
+	testWorkloadJWT spiffe.JWTSource
+}
+
+// SetSPIFFEProvider implements spiffe.ProviderConsumer.
+func (p *CPEX) SetSPIFFEProvider(prov *spiffe.Provider) { p.provider = prov }
+
+// workloadJWT returns the JWT-SVID source for audience, or nil when no
+// provider is wired in.
+func (p *CPEX) workloadJWT(audience string) spiffe.JWTSource {
+	if p.testWorkloadJWT != nil {
+		return p.testWorkloadJWT
+	}
+	if p.provider == nil || audience == "" {
+		return nil
+	}
+	src, err := p.provider.JWTSource(audience)
+	if err != nil {
+		slog.Warn("cpex: SPIFFE JWT source unavailable", "audience", audience, "error", err)
+		return nil
+	}
+	return src
 }
 
 // NewCPEX returns an unconfigured plugin. The registry calls this on
@@ -168,6 +199,13 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	}
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
+	p.observeCodes = nil
+	for _, code := range c.ObserveCodes {
+		if p.observeCodes == nil {
+			p.observeCodes = map[string]bool{}
+		}
+		p.observeCodes[observeCode(code)] = true
+	}
 
 	// bypass_hosts is honored on the outbound phase only and ignored on the
 	// inbound reverse-proxy phase, where the Host header is attacker-
@@ -181,11 +219,46 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 			"header is attacker-controlled", "bypass_hosts", c.BypassHosts)
 	}
 
+	// A missing token file does not fail the boot: requests that need
+	// the principal are denied until it can be read.
+	principal, err := newPrincipalSource(c.Principal)
+	if err != nil {
+		slog.Warn("cpex: principal token unavailable; tool calls and inference requests that resolve identity will be denied",
+			"token_file", c.Principal.TokenFile, "error", err)
+	}
+
+	cfgYAML, err := c.resolveYAML()
+	if err != nil {
+		return fmt.Errorf("cpex config: %w", err)
+	}
+	if len(c.ObserveCodes) > 0 && cfgYAML != "" {
+		if err := checkObservedCodes(cfgYAML, c.ObserveCodes); err != nil {
+			return fmt.Errorf("cpex config: %w", err)
+		}
+	}
+
+	credentialHosts, err := newCredentialHosts(c.DelegatedCredentialHosts)
+	if err != nil {
+		return fmt.Errorf("cpex config: %w", err)
+	}
+
 	factory := p.newManager
 	if factory == nil {
 		factory = NewManager
 	}
-	mgr, err := factory(ManagerOptions{WorkerThreads: c.WorkerThreads})
+	mgr, err := factory(ManagerOptions{
+		WorkerThreads:          c.WorkerThreads,
+		FallbackIdentification: c.FallbackIdentification,
+		SessionSource:          c.SessionSource,
+		PrivateDestinations:    c.PrivateDestinations,
+		SyntheticEgress:        c.SyntheticEgress,
+		Principal:              principal,
+		Workload:               newWorkloadSource(c.Workload, p.workloadJWT(c.Workload.Audience)),
+
+		DelegatedCredentials:       c.DelegatedCredentials,
+		DelegatedCredentialHeaders: c.DelegatedCredentialHeaders,
+		DelegatedCredentialHosts:   credentialHosts,
+	})
 	if err != nil {
 		// Without -tags cpex, manager_stub.go's NewManager surfaces
 		// here with a clear "wrong binary" message. Pipeline.Build
@@ -193,10 +266,6 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("cpex: %w", err)
 	}
 
-	cfgYAML, err := c.resolveYAML()
-	if err != nil {
-		return fmt.Errorf("cpex config: %w", err)
-	}
 	if cfgYAML != "" {
 		if err := mgr.LoadConfig(cfgYAML); err != nil {
 			return fmt.Errorf("cpex: load config: %w", err)
@@ -298,7 +367,10 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	// liveness probes) shouldn't pay the FFI round-trip. Check paths
 	// first since most bypass traffic is health/discovery rather
 	// than hostname-based.
-	if p.bypassPaths != nil && p.bypassPaths.Match(pctx.Path) {
+	// With synthetic egress the outbound path is the caller's choice for
+	// any host, so path bypass applies inbound only.
+	pathBypass := pctx.Direction != pipeline.Outbound || !p.cfg.SyntheticEgress
+	if pathBypass && p.bypassPaths != nil && p.bypassPaths.Match(pctx.Path) {
 		pctx.Skip("path_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -310,6 +382,13 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	if pctx.Direction == pipeline.Outbound && matchesAnyHost(p.bypassHosts, pctx.Host) {
 		pctx.Skip("host_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
+	}
+
+	if pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
+		if code := unpresentableRequest(pctx); code != "" {
+			code = "cpex." + code
+			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
+		}
 	}
 
 	for _, hook := range hooks {
@@ -334,7 +413,7 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 	if p.cfg.FailOpen {
 		slog.Warn("cpex: invoke errored; allowing per fail_open=true",
 			"hook", hook, "error", err)
-		pctx.Observe(fmt.Sprintf("cpex error (fail_open): %v", err))
+		pctx.Observe("cpex error (fail_open)")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	// A CPEX-internal failure (FFI error, runtime panic) is an upstream
@@ -348,6 +427,7 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 		fmt.Sprintf("cpex error on %s", hook),
 		"cpex.error",
 		"cpex invocation failed",
+		nil,
 	)
 }
 
@@ -404,6 +484,11 @@ func sanitizeReason(s string) string {
 // mutations are already applied by manager_cpex.go before we see the
 // Result.
 //
+// A deny records and returns only the namespaced violation code and a
+// static message. CPEX's reason is policy-authored free text that can
+// quote the request (a matched secret, say); it goes to the debug log, not
+// to the client or the session API.
+//
 // DecisionError and any unrecognized decision fail CLOSED unless
 // fail_open is set: a Result the plugin can't interpret must not
 // silently allow traffic the policy may have meant to block. The
@@ -412,9 +497,12 @@ func sanitizeReason(s string) string {
 func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipeline.Action, stop bool) {
 	switch res.Decision {
 	case DecisionAllow:
-		pctx.Allow(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionAllow, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionDeny:
+		if res.Elicitation != nil {
+			return suspend(pctx, res.Elicitation, res.Details), true
+		}
 		// Namespace CPEX-emitted codes under cpex.* so operator
 		// dashboards group them distinctly from AuthBridge-native
 		// plugins. sanitizeReason normalizes whatever CPEX put in
@@ -423,12 +511,17 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 		if res.Code != "" {
 			code = "cpex." + sanitizeReason(res.Code)
 		}
-		return denyWithStatus(pctx, http.StatusForbidden, res.Reason, code, res.Reason), true
+		slog.Debug("cpex: policy denied", "code", code, "reason", res.Reason)
+		if p.observeCodes[code] {
+			pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: code, Details: res.Details})
+			return pipeline.Action{Type: pipeline.Continue}, false
+		}
+		return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, res.Details), true
 	case DecisionModify:
-		pctx.Modify(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionObserve:
-		pctx.Observe(res.Reason)
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: res.Reason, Details: res.Details})
 		return pipeline.Action{Type: pipeline.Continue}, false
 	case DecisionError:
 		reason := res.Reason
@@ -452,18 +545,23 @@ func (p *CPEX) applyDecision(pctx *pipeline.Context, res Result) (action pipelin
 func (p *CPEX) handleDecisionError(pctx *pipeline.Context, err error) pipeline.Action {
 	if p.cfg.FailOpen {
 		slog.Warn("cpex: error decision; allowing per fail_open=true", "error", err)
-		pctx.Observe(fmt.Sprintf("cpex error (fail_open): %v", err))
+		pctx.Observe("cpex error (fail_open)")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-	// Log the detailed error for operators; return a generic client message
-	// so internal CPEX/runtime details don't leak in the deny response.
+	// Log the detailed error for operators; record and return generic text
+	// so internal CPEX/runtime details don't leak in the deny response or
+	// the session API.
 	slog.Error("cpex: decision handling failed", "error", err)
 	return denyWithStatus(pctx, http.StatusBadGateway,
-		fmt.Sprintf("cpex error: %v", err),
+		"cpex.error",
 		"cpex.error",
 		"cpex decision handling failed",
+		nil,
 	)
 }
+
+// deniedMessage is the client-facing message of every policy deny.
+const deniedMessage = "request denied by policy"
 
 // denyWithStatus records a deny Invocation and returns a Reject carrying an
 // explicit HTTP status. It exists because CPEX violation codes are
@@ -474,7 +572,7 @@ func (p *CPEX) handleDecisionError(pctx *pipeline.Context, err error) pipeline.A
 // deny (an authorization decision) and 502 for a CPEX-internal error (an
 // upstream fault). recordReason is the machine-stable Invocation reason;
 // message becomes the Violation's human-readable reason.
-func denyWithStatus(pctx *pipeline.Context, status int, recordReason, code, message string) pipeline.Action {
-	pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: recordReason})
+func denyWithStatus(pctx *pipeline.Context, status int, recordReason, code, message string, details map[string]string) pipeline.Action {
+	pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: recordReason, Details: details})
 	return pipeline.DenyStatus(status, code, message)
 }

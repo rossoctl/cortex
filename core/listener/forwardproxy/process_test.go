@@ -460,7 +460,7 @@ func TestProcessAttribution_ABridgedTunnelsRequestsUseItsProcess(t *testing.T) {
 	raw, br, _ := connectAs(t, procs, proxyURL, u.Host, 300)
 	tc := bridgedTLS(t, raw, br, u.Host, engine.CAPEM)
 	for _, path := range []string{"/a", "/b"} {
-		req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(u.Host)+path, nil)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+u.Host+path, nil)
 		req.Header.Set("User-Agent", "curl/8.7.1")
 		bridgedRoundTrip(t, tc, req)
 	}
@@ -699,7 +699,7 @@ func TestSelfTraffic_ABridgedRequestIsRecorded(t *testing.T) {
 
 	raw, br, _ := connectAs(t, procs, proxyURL, u.Host, 510)
 	tc := bridgedTLS(t, raw, br, u.Host, engine.CAPEM)
-	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(u.Host)+"/api/info", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+u.Host+"/api/info", nil)
 	bridgedRoundTrip(t, tc, req)
 	_ = tc.Close()
 
@@ -817,7 +817,7 @@ func TestSelfTraffic_AServiceThatNamesItsSessionInsideATunnelIsAnAgents(t *testi
 
 	raw, br, _ := connectAs(t, procs, proxyURL, u.Host, 500)
 	tc := bridgedTLS(t, raw, br, u.Host, engine.CAPEM)
-	req, _ := http.NewRequest(http.MethodPost, "https://"+hostOnly(u.Host)+"/zen/v1/chat/completions", nil)
+	req, _ := http.NewRequest(http.MethodPost, "https://"+u.Host+"/zen/v1/chat/completions", nil)
 	req.Header.Set("X-Opencode-Session-Id", "ses_1")
 	bridgedRoundTrip(t, tc, req)
 	_ = tc.Close()

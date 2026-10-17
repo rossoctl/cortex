@@ -601,6 +601,26 @@ type EventError struct {
 	Message string `json:"message,omitempty"` // human-readable reason; safe to surface in logs/metrics
 }
 
+// SessionSource is how a listener resolved Context.Session.
+type SessionSource string
+
+const (
+	// SessionSourceHeader: a configured session id header on the request
+	// named the session (Context.SessionHeader says which).
+	SessionSourceHeader SessionSource = "header"
+	// SessionSourceProcess: the session of the process that sent the request,
+	// or of an ancestor, named by its own session header earlier.
+	SessionSourceProcess SessionSource = "process"
+	// SessionSourcePending: a coding agent's pending bucket, held until its
+	// first session header names a session.
+	SessionSourcePending SessionSource = "pending"
+	// SessionSourceAffinity: the newest session of the coding agent the
+	// User-Agent names.
+	SessionSourceAffinity SessionSource = "affinity"
+	// SessionSourceActive: the most recently active session.
+	SessionSourceActive SessionSource = "active"
+)
+
 // SessionView is a read-only snapshot of a session, safe to pass to plugins.
 // It contains a copy of events — plugins cannot mutate the store.
 //

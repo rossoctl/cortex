@@ -737,6 +737,17 @@ CA. `hosts` is the host memory behind `skip-cached`: the hosts passed through fo
 whose program cannot be named. On macOS, `osTrustsCA` is whether macOS trusted Cortex's CA
 when it last checked.
 
+### A request gets `421 Misdirected Request`
+
+Inside a bridged tunnel, every decrypted request must name the tunnel's own destination
+in its `Host` header — same host, compared without case or a trailing dot, and the same
+port, `443` when none is given. One that names another host or port is refused with a
+421 before any plugin runs and is never sent anywhere, because the proxy would dial the
+CONNECT target while every host-based policy judged the `Host` header. The timeline shows
+it as a 421 with `error.kind: "misdirected_request"` under the CONNECT target's host. A
+plaintext proxied request has no such gap: its destination is the request line's, and
+the `Host` header is ignored.
+
 ### Developer tooling is not intercepted at all
 
 `gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The

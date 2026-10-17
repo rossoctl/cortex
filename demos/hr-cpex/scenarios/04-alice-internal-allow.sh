@@ -1,45 +1,29 @@
 #!/usr/bin/env bash
-# Alice (engineering, gh_permissions=[repo:read:internal]) calls
-# search_repos for an INTERNAL repo. Expected:
+# Alice (engineering) searches an INTERNAL repo. All four layers pass:
+# the APL team gate, Cedar (engineer x internal), the exchange to
+# github-api, and the check that the IdP granted repo:read:internal.
 #
-#   Layer 1 — APL gate `require(group.engineering OR group.security)`
-#             → passes (Alice is engineering)
-#   Layer 2 — Cedar policy `engineering-internal-repos`
-#             → permits (engineer + visibility=internal)
-#   Layer 3 — Token exchange to github-api
-#             → Keycloak mints token with permissions=[repo:read:internal]
-#             (Alice's gh_permissions user attribute → claim mapper)
-#   Layer 4 — `delegation.granted.permissions contains 'repo:read:internal'`
-#             → passes
-#
-# Result: 200, hr-mcp logs show Authorization=<minted github token>
-#         and the parsed args reach the tool intact.
+# The route delegates, so by default the call fails closed after the
+# exchange. With CPEX_DELEGATION=available it asserts the allow.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Alice (engineering) → search_repos(repo_name='web-app', visibility='internal')"
-note "Expected: 200 OK"
-note "Expected upstream: Authorization = minted github-api token"
-note "                  permissions claim includes repo:read:internal"
 
 ALICE=$(mint alice)
 CLIENT=$(mint hr-copilot)
 
-# Capture then render so a transport/proxy failure surfaces (under `set -e`)
-# instead of being swallowed by a trailing `|| true`. Pretty-print when the
-# body is JSON; fall back to raw otherwise.
-resp=$(curl -s -x "$PROXY" -X POST "$MCP_TARGET" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $CLIENT" \
-  -H "X-User-Token: $ALICE" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "search_repos",
-      "arguments": { "repo_name": "web-app", "visibility": "internal" }
-    }
-  }')
-printf '%s\n' "$resp" | jq . 2>/dev/null || printf '%s\n' "$resp"
+reset_upstream
+before=$(kc_exchange_count)
+call_search_repos "$ALICE" "$CLIENT" internal web-app
+
+if delegation_available; then
+  expect_status 200
+  expect_rpc_ok
+  expect_upstream_calls 1
+  expect_upstream_audience github-api
+else
+  expect_delegation_pending "$before"
+fi
+finish

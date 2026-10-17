@@ -196,7 +196,7 @@ func TestHandleConnect_BridgedOpenJoinsItsRequestsSession(t *testing.T) {
 
 	raw, br, _ := sendConnect(t, proxyAddr, target)
 	tc := bridgedTLS(t, raw, br, target, ca)
-	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(target)+"/x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+target+"/x", nil)
 	req.Header.Set(session.ClaudeCodeSessionHeader, "sess-1")
 	if resp := bridgedRoundTrip(t, tc, req); resp.StatusCode != http.StatusOK {
 		t.Fatalf("bridged request status %d, want 200", resp.StatusCode)
@@ -243,7 +243,7 @@ func TestHandleConnect_BridgedOpenJoinsARejectedRequest(t *testing.T) {
 
 	raw, br, _ := sendConnect(t, proxyAddr, target)
 	tc := bridgedTLS(t, raw, br, target, ca)
-	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(target)+"/x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+target+"/x", nil)
 	req.Header.Set(session.ClaudeCodeSessionHeader, "sess-1")
 	if resp := bridgedRoundTrip(t, tc, req); resp.StatusCode < 400 {
 		t.Fatalf("denied request got status %d", resp.StatusCode)
@@ -341,7 +341,7 @@ func outliveTheConnect(t *testing.T, store *session.Store, probe *outlivesServeC
 	if err != nil {
 		t.Fatalf("h2 client conn: %v", err)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(target)+"/x", nil)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+target+"/x", nil)
 	req.Header.Set(session.ClaudeCodeSessionHeader, "sess-1")
 	go func() {
 		if resp, err := cc.RoundTrip(req); err == nil {

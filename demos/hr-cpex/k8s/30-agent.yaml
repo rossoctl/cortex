@@ -18,62 +18,14 @@
 # the agent uses an explicit per-client proxy for the MCP call only and we
 # deliberately do NOT set HTTP_PROXY on the agent container.
 
+# The sidecar's runtime config (the authbridge-config ConfigMap) is built
+# by `make apply` from k8s/authbridge.yaml.
+
 apiVersion: v1
-kind: ConfigMap
+kind: ServiceAccount
 metadata:
-  name: authbridge-config
+  name: hr-cpex-agent
   namespace: cpex-demo
-data:
-  authbridge.yaml: |
-    mode: proxy-sidecar
-    listener:
-      # Reverse proxy fronts the agent (inbound passthrough — see pipeline).
-      reverse_proxy_addr: ":8000"
-      reverse_proxy_backend: "http://localhost:8001"
-      # Forward proxy is where the agent's MCP tool calls egress; cpex runs
-      # on this outbound path.
-      forward_proxy_addr: ":8081"
-      # Session API and stats bind to localhost only — both expose raw
-      # user content / internal state and have no auth. Reach them via
-      # `kubectl port-forward` (works against the pod regardless of
-      # Service ports), never cluster-wide.
-      session_api_addr: "127.0.0.1:9094"
-    stats:
-      stats_address: "127.0.0.1:9093"
-    session:
-      # The taint scenarios (08/09) depend on the session store; keep it on.
-      enabled: true
-      ttl: 30m
-    pipeline:
-      # Inbound is pure passthrough: the reverse proxy must forward the A2A
-      # client's X-User-Token + Authorization + X-Session-Id headers to the
-      # agent unmodified, so the agent can re-attach them on egress. cpex
-      # does NOT run here — enforcement moved to the outbound path.
-      inbound:
-        plugins: []
-      outbound:
-        plugins:
-          # mcp-parser populates pctx.Extensions.MCP from the agent's
-          # JSON-RPC tool call; cpex reads from there for CMF dispatch.
-          - name: mcp-parser
-          # cpex handles identity, policy, delegation, redaction, PII, and
-          # session taint entirely via its own sub-plugins. Identity
-          # resolvers (jwt-user ← X-User-Token, jwt-client ← Authorization)
-          # MUST run here so the resolved subject is present — the cpex
-          # session store binds taint to that subject (Finding 2). The
-          # CPEX-side YAML lives in the cpex-policy ConfigMap, mounted at
-          # /etc/cpex/cpex.yaml.
-          - name: cpex
-            config:
-              hooks:
-                on_request:
-                  - cmf.tool_pre_invoke
-                on_response:
-                  - cmf.tool_post_invoke
-              config_file: /etc/cpex/cpex.yaml
-              fail_open: false
-              # Bypass hosts default covers keycloak/SPIRE/observability so
-              # those egress calls don't pay the FFI cost.
 
 ---
 # Gateway OAuth client secret, mounted into the sidecar as a file so the CPEX
@@ -134,6 +86,8 @@ spec:
         app.kubernetes.io/name: hr-cpex-agent
         app.kubernetes.io/part-of: cpex-demo
     spec:
+      # SPIRE registers the agent's SPIFFE ID by this service account.
+      serviceAccountName: hr-cpex-agent
       containers:
         # --- The agent (A2A server + litellm tool loop) ---
         - name: agent

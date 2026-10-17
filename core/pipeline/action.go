@@ -52,6 +52,11 @@ type Violation struct {
 	BodyType string      // Content-Type for Body; defaults to application/json
 	Headers  http.Header // merged into response headers
 
+	// RPCCode is the JSON-RPC error code when the rejection is rendered
+	// as an MCP error frame; 0 means the generic -32000. Set it only for
+	// a code a client acts on, such as a retry signal.
+	RPCCode int
+
 	// PluginName is populated by the pipeline framework from Plugin.Name()
 	// when the Reject is returned. Plugins should leave this empty.
 	PluginName string

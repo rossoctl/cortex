@@ -55,9 +55,9 @@ func recordingOrigin(t *testing.T, name string) (*origin, *seen) {
 // bridged TLS must not get that server's key sent to the host it CONNECTed to. The
 // router decides on the Host header, which on a bridged request is the client's word,
 // while the forward proxy dials the CONNECT authority unless a redirect says
-// otherwise. So the router always redirects a routed request to its server, and the
-// listener dials RedirectTarget — the server — whatever the Host header or the
-// CONNECT named.
+// otherwise. The listener now refuses such a request with a 421 before any plugin
+// runs, so the key goes nowhere; the router's own redirect is the second line, which
+// TestConnectBridge_RedirectSendsTheDecryptedRequestToTheTarget still covers.
 func TestConnectBridge_TheRoutersKeyGoesOnlyToItsServer(t *testing.T) {
 	const key = "ete-secret-key"
 	ete, eteSeen := recordingOrigin(t, "FROM-ETE")
@@ -108,17 +108,13 @@ func TestConnectBridge_TheRoutersKeyGoesOnlyToItsServer(t *testing.T) {
 	if hosts, _ := attacker.gets(); len(hosts) != 0 {
 		t.Errorf("the CONNECT authority served the request (hosts %v): the router's key went where the client CONNECTed", hosts)
 	}
-	if status != http.StatusOK || body != "FROM-ETE" {
-		t.Errorf("response = %d %q, want 200 FROM-ETE: the routed request must reach its server", status, body)
+	if status != http.StatusMisdirectedRequest {
+		t.Errorf("response = %d %q, want 421: the Host names another server than the tunnel's", status, body)
 	}
-	var routed bool
 	for _, call := range eteSeen.all() {
-		if call == http.MethodGet+" Bearer "+key {
-			routed = true
+		if call != http.MethodHead+" " {
+			t.Errorf("ete saw %q; a misdirected request must reach no server", call)
 		}
-	}
-	if !routed {
-		t.Errorf("ete saw %v, want a GET carrying Bearer %s", eteSeen.all(), key)
 	}
 }
 

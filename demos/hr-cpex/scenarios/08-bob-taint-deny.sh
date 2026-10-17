@@ -1,50 +1,45 @@
 #!/usr/bin/env bash
-# Copyright 2026
-# SPDX-License-Identifier: Apache-2.0
+# Session taint across two tool calls. get_compensation runs
+# taint(secret, session); send_email refuses any session carrying the
+# label, even with a clean body. Sessions are named by X-Session-Id, with
+# fresh ids per run.
 #
-# Taint propagation across two tool calls. Reading compensation taints
-# the CPEX session with the label "secret" (get_compensation policy:
-# `taint(secret, session)`). The send_email policy then refuses to send
-# external email from any session carrying that label
-# (`session.labels contains "secret": deny`). The deny fires even when
-# the email body is perfectly clean — it's the SESSION that's tainted,
-# not the content. This is distinct from scenario 07, where the PII
-# scanner denies based on the body's contents.
+#   S1  clean session, send_email        -> sent
+#   S2  new session, get_compensation    -> taints the session
+#   S3  same session as S2, send_email   -> cpex.session_tainted_secret
 #
-# Sessions are correlated by an explicit X-Session-Id header (threaded
-# into CPEX's Agent.SessionID). Each run uses fresh, unique ids so the
-# scenario is isolated and reproducible.
-#
-# Three steps:
-#   S1  clean session, clean body          → 200  (baseline: email works)
-#   S2  new session, get_compensation      → 200  (taints session "secret")
-#   S3  SAME session as S2, clean body     → 200 + JSON-RPC error frame, cpex.session_tainted_secret
-#
-# Watch the gateway with:  kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex
+# By default, S2 fails closed on its delegation, but the taint is
+# written before that, so S3 is still denied.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 BOB=$(mint bob)
 CLIENT=$(mint hr-copilot)
-
 CLEAN_BODY="Quarterly planning sync moved to Thursday."
 SID_CLEAN="taint-demo-clean-$$-${RANDOM}"
 SID_TAINT="taint-demo-tainted-$$-${RANDOM}"
 
 step "S1 · Bob → send_email (untainted session, clean body)"
-note "Session: $SID_CLEAN (never touched secret data)"
-note "Expected: 200 OK — email allowed (require(perm.email_send) ✓, pii-scan ✓, session clean)"
+reset_upstream
 SESSION_ID="$SID_CLEAN" call_send_email "$BOB" "$CLIENT" "$CLEAN_BODY"
+expect_rpc_ok
+expect_upstream_calls 1
 
-step "S2 · Bob → get_compensation (taints the session)"
-note "Session: $SID_TAINT"
-note "Expected: 200 OK — and the policy's taint(secret, session) marks this session"
+step "S2 · Bob → get_compensation (taints session $SID_TAINT)"
+reset_upstream
+before=$(kc_exchange_count)
 SESSION_ID="$SID_TAINT" call_get_compensation "$BOB" "$CLIENT" true
+if delegation_available; then
+  expect_rpc_ok
+else
+  expect_delegation_pending "$before"
+fi
 
-step "S3 · Bob → send_email (SAME session as S2, clean body)"
-note "Session: $SID_TAINT (now carries label \"secret\" from S2)"
-note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.session_tainted_secret"
-note "Denied by the session taint — NOT by pii-scan (the body has no PII)"
-note "This is the cross-tool data-flow control: looked at secrets → can't email out"
+step "S3 · Bob → send_email (same session as S2, clean body)"
+note "Denied by the session taint, not the content"
+reset_upstream
 SESSION_ID="$SID_TAINT" call_send_email "$BOB" "$CLIENT" "$CLEAN_BODY"
+expect_deny cpex.session_tainted_secret
+expect_upstream_calls 0
+finish

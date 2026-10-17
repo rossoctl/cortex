@@ -16,7 +16,7 @@ the `lite` profile's tags), not a separate binary.
 | [`cortex/`](cortex/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full, incl. parsers (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge` |
 | [`cortex-envoy/`](cortex-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/cortex/authbridge-envoy` |
 | `authbridge-lite` _(build variant of `cortex`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `cortex` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
-| [`cortex-cpex/`](cortex-cpex/) | `proxy-sidecar` | HTTP forward + reverse proxies | full + `cpex` (needs cgo; links `libcpex_ffi.a`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
+| [`cortex-cpex/`](cortex-cpex/) | `proxy-sidecar` | HTTP forward + reverse proxies | full + `cpex` (needs cgo; links `libcpex_ffi.a` from the CPEX release pinned in `CPEX_FFI_VERSION`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
 | [`cortex-praxis/`](cortex-praxis/) | `proxy-sidecar` _(output shape; pins no input mode)_ | HTTP, from a rendered Praxis config | **none** — defines no `plugins_*.go`. **Paused, not abandoned:** kept and kept compiling (it is in the `ci.yaml` matrix for that reason). Do not delete. | not published |
 | [`agentop/`](agentop/) | n/a | n/a | n/a | not published as an image; released as a standalone binary by `release-binaries.yaml` |
 

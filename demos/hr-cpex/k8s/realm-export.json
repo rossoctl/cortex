@@ -13,6 +13,8 @@
   "ssoSessionIdleTimeout": 14400,
   "ssoSessionMaxLifespan": 57600,
   "defaultSignatureAlgorithm": "RS256",
+  "eventsEnabled": true,
+  "enabledEventTypes": ["TOKEN_EXCHANGE", "TOKEN_EXCHANGE_ERROR", "CLIENT_LOGIN", "CLIENT_LOGIN_ERROR"],
 
   "roles": {
     "realm": [
@@ -58,7 +60,8 @@
         "permissions": ["tool_execute", "view_ssn", "pii_access", "email_send"],
         "teams": ["hr"],
         "groups": ["hr"],
-        "gh_permissions": []
+        "gh_permissions": [],
+        "manager": ["alice"]
       }
     },
     {
@@ -159,6 +162,20 @@
           "config": {
             "user.attribute": "username",
             "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "manager",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "manager",
+            "claim.name": "manager",
             "jsonType.label": "String",
             "id.token.claim": "true",
             "access.token.claim": "true",
@@ -269,7 +286,8 @@
       "attributes": {
         "access.token.lifespan": "600",
         "standard.token.exchange.enabled": "true",
-        "standard.token.exchange.audiences": "workday-api,github-api"
+        "standard.token.exchange.audiences": "workday-api,github-api",
+        "oidc.ciba.grant.enabled": "true"
       },
       "optionalClientScopes": ["read_compensation", "repo:read:internal"],
       "protocolMappers": [
@@ -367,6 +385,59 @@
       "serviceAccountsEnabled": false,
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "hr-copilot-agent",
+      "name": "HR Copilot (workload)",
+      "description": "The agent acting as itself. Authenticates with its SPIFFE JWT-SVID as an RFC 7523 client assertion, not a secret.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "federated-jwt",
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "attributes": {
+        "access.token.lifespan": "600",
+        "jwt.credential.issuer": "spiffe",
+        "jwt.credential.sub": "spiffe://cpex.demo/ns/cpex-demo/sa/hr-cpex-agent"
+      },
+      "protocolMappers": [
+        {
+          "name": "cpex-gateway-as-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "cpex-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
-  ]
+  ],
+
+  "identityProviders": [
+    {
+      "alias": "spiffe",
+      "displayName": "SPIFFE (SPIRE)",
+      "providerId": "spiffe",
+      "enabled": true,
+      "storeToken": false,
+      "trustEmail": true,
+      "config": {
+        "trustDomain": "spiffe://cpex.demo",
+        "bundleEndpoint": "http://spire-oidc.spire:8443/keys"
+      }
+    }
+  ],
+
+  "attributes": {
+    "cibaBackchannelTokenDeliveryMode": "poll",
+    "cibaExpiresIn": "300",
+    "cibaInterval": "5",
+    "cibaAuthRequestedUserHint": "login_hint"
+  }
 }
