@@ -234,6 +234,32 @@ func (s *Store) SessionForProcess(chain []Proc, agent string) string {
 	return ""
 }
 
+// ChainSession is the live session the topmost process above chain[0] named, "" when no
+// process above it holds one. chain[0]'s agent root and the processes of that agent below
+// it are chain[0]'s own and are not consulted. Unlike SessionForProcess it ignores what
+// chain[0] named itself, so a process cannot leave the session of the agent that started
+// it by naming one of its own: a policy that keys security state on the session asks this.
+func (s *Store) ChainSession(chain []Proc) string {
+	if len(chain) < 2 {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent := ""
+	if self := s.procs[chain[0].key()]; self != nil {
+		agent = self.agent
+	}
+	now := s.clock()
+	for i := len(chain) - 1; i > s.agentRootIndexLocked(chain, agent); i-- {
+		if st := s.procs[chain[i].key()]; st != nil {
+			if sid := s.newestClaimLocked(st, now); sid != "" {
+				return sid
+			}
+		}
+	}
+	return ""
+}
+
 // ProcessHints are the PIDs of processes that have named a session, most recently seen
 // first and at most limit of them: where a lookup for a new connection looks first.
 func (s *Store) ProcessHints(limit int) []int32 {

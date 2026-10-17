@@ -13,14 +13,17 @@ import (
 	rcpex "github.com/contextforge-org/cpex/go/cpex"
 	"github.com/rossoctl/cortex/core/capabilities"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/vmihailenco/msgpack/v5"
+	"golang.org/x/net/http/httpguts"
 )
 
 // cpexManager is the CPEX-backed Manager implementation. Wraps
-// rcpex.PluginManager and translates pctx ↔ CMF on every Invoke.
+// rcpex.PolicyEngine and translates pctx ↔ CMF on every Invoke.
 // Lives behind //go:build cpex; the matching stub in manager_stub.go
 // handles the !cpex case.
 type cpexManager struct {
-	mgr *rcpex.PluginManager
+	mgr  *rcpex.PolicyEngine
+	opts ManagerOptions
 }
 
 // NewManager constructs a CPEX-backed Manager. Tokio worker pool size
@@ -36,15 +39,22 @@ func NewManager(opts ManagerOptions) (Manager, error) {
 			return nil, fmt.Errorf("cpex configure runtime: %w", err)
 		}
 	}
-	mgr, err := rcpex.NewPluginManagerDefault()
+	mgr, err := rcpex.NewPolicyEngineDefault()
 	if err != nil {
 		return nil, fmt.Errorf("cpex new manager: %w", err)
 	}
-	if err := mgr.EnableAPL(); err != nil {
+	var aplOpts []rcpex.APLOption
+	if opts.PrivateDestinations {
+		aplOpts = append(aplOpts, rcpex.WithPrivateDestinations())
+	}
+	if opts.DelegatedCredentials {
+		aplOpts = append(aplOpts, rcpex.WithDelegatedCredentials())
+	}
+	if err := mgr.EnableAPL(aplOpts...); err != nil {
 		mgr.Shutdown()
 		return nil, fmt.Errorf("cpex enable APL: %w", err)
 	}
-	return &cpexManager{mgr: mgr}, nil
+	return &cpexManager{mgr: mgr, opts: opts}, nil
 }
 
 func (c *cpexManager) LoadConfig(yaml string) error {
@@ -53,7 +63,7 @@ func (c *cpexManager) LoadConfig(yaml string) error {
 
 // Initialize honors ctx's deadline. The rcpex binding's Initialize is
 // blocking and NOT context-aware (no ctx param; see
-// PluginManager.Initialize), so we run it in a goroutine and select on
+// PolicyEngine.Initialize), so we run it in a goroutine and select on
 // ctx.Done vs completion. On ctx cancellation we return ctx.Err() so
 // the caller's init budget (main.go's 60s initCtx) is actually
 // enforced.
@@ -105,7 +115,7 @@ func (c *cpexManager) HasHook(name string) bool {
 //   - BackgroundTasks (audit-logger and other async sub-plugins) are
 //     awaited in a fire-and-forget goroutine; errors land on the
 //     default slog handler with the request ID for correlation.
-func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.Context) (Result, error) {
+func (c *cpexManager) Invoke(ctx context.Context, hookName string, pctx *pipeline.Context) (Result, error) {
 	// Phase is taken from the framework-set current phase, NOT inferred
 	// from body length: an empty-bodied response (HTTP 204, empty tool
 	// result) must still be treated as the response phase so response
@@ -113,7 +123,10 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 	// — Invoke always runs inside OnRequest/OnResponse), which falls
 	// through to the request phase.
 	isResponse := pctx.CurrentPhase() == pipeline.InvocationPhaseResponse
-	payload, ext := buildCMF(pctx, isResponse)
+	payload, ext := buildCMF(pctx, isResponse, c.opts)
+	details := messageEgressDetails(&payload.Message)
+	written := writtenCredentialHeaders(pctx)
+	hideHeaders(ext, written)
 
 	// Streaming-response guard: when we're on the response phase, the
 	// body is non-empty, a protocol parser claimed this traffic, yet the
@@ -144,7 +157,16 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		err  error
 	)
 	if hookName != rcpex.HookIdentityResolve && c.mgr.HasHooksFor(rcpex.HookIdentityResolve) {
-		idp := rcpex.NewIdentityPayload(rcpex.TokenSourceBearer, lowerHeaders(pctx.Headers))
+		headers, herr := c.requestIdentityHeaders(ctx, pctx, ext, isResponse)
+		if herr != nil {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codePrincipalUnavailable,
+				Reason:   "principal token unavailable",
+				Details:  details,
+			}, nil
+		}
+		idp := rcpex.NewIdentityPayload(rcpex.TokenSourceBearer, headers)
 		pres, ct, bg, err = c.mgr.InvokeResolved(idp, hookName, rcpex.PayloadCMFMessage, payload, ext, nil)
 	} else {
 		pres, ct, bg, err = c.mgr.InvokeByName(hookName, rcpex.PayloadCMFMessage, payload, ext, nil)
@@ -166,11 +188,42 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 			fmt.Errorf("cpex invoke %q: %w", hookName, err)
 	}
 
+	var minted []rcpex.DelegatedCredential
+	if pres.ContinueProcessing {
+		tokens, derr := delegatedTokenCount(pres)
+		if derr != nil {
+			return Result{Decision: DecisionError, Reason: derr.Error()},
+				fmt.Errorf("cpex invoke %q: %w", hookName, derr)
+		}
+		if tokens > 0 {
+			minted = c.forwardable(pres.DelegatedCredentials, tokens)
+		}
+		if tokens > 0 && minted == nil {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codeDelegationUnavailable,
+				Reason:   "delegated credential not available to the host",
+				Details:  details,
+			}, nil
+		}
+		if !c.boundToDestination(minted, pctx.Host) {
+			return Result{
+				Decision: DecisionDeny,
+				Code:     codeDelegationDestinationMismatch,
+				Reason:   "delegated credential not bound to the destination host",
+				Details:  details,
+			}, nil
+		}
+	}
+
 	// Apply modifications only when the policy will allow the request
 	// through. On deny, the modifications are moot — nothing of the
 	// modified request is forwarded — so skip the work.
+	changed := false
 	if pres.ContinueProcessing {
-		if applyErr := applyModificationsToPctx(pctx, pres, isResponse); applyErr != nil {
+		var applyErr error
+		protect := append([]string{c.opts.Principal.headerName(), c.opts.Workload.headerName()}, written...)
+		if changed, applyErr = applyModificationsToPctx(pctx, pres, isResponse, presentsAsEgress(pctx, isResponse, c.opts.SyntheticEgress), sentHeaders(ext), protect...); applyErr != nil {
 			// A modification CPEX requested could not be applied — a
 			// decode failure (CPEX/pctx contract mismatch) or a body
 			// rewrite we have no re-serializer for. Either way the
@@ -186,31 +239,170 @@ func (c *cpexManager) Invoke(_ context.Context, hookName string, pctx *pipeline.
 		}
 	}
 
-	return mapResult(pres), nil
+	if len(minted) > 0 {
+		writeCredentials(pctx, minted)
+		changed = true
+	}
+
+	res := mapResult(pres, changed)
+	res.Details = details
+	return res, nil
 }
 
-// lowerHeaders flattens http.Header into the lowercase-keyed single-value
-// map the identity resolvers expect (they look their configured header up
-// case-folded). Unlike flattenHeaders this keeps Authorization /
-// X-User-Token — the jwt resolvers need the raw tokens — and does not
-// strip the audit-sensitive set, because the IdentityPayload header map
-// is consumed only by the in-process resolvers, never logged.
-func lowerHeaders(h http.Header) map[string]string {
-	if len(h) == 0 {
+// identityStateKey keys the request's identity headers on pctx.
+const identityStateKey = "cpex.identity"
+
+type requestIdentity struct{ headers map[string]string }
+
+// requestIdentityHeaders returns the headers identity resolution reads.
+// The request phase computes them and keeps them on pctx; the response
+// phase reuses them, because by then a policy's assertions may have
+// stripped the caller's token from pctx.Headers, and the response is
+// resolved as the same caller either way.
+func (c *cpexManager) requestIdentityHeaders(ctx context.Context, pctx *pipeline.Context, ext *rcpex.Extensions, isResponse bool) (map[string]string, error) {
+	// So does a later request-phase hook once a delegated credential has
+	// replaced the caller's Authorization.
+	if isResponse || writtenCredentialHeaders(pctx) != nil {
+		if st := pipeline.GetState[requestIdentity](pctx, identityStateKey); st != nil {
+			return st.headers, nil
+		}
+	}
+	inject := ext.Meta != nil && injectsPrincipal(pctx, ext.Meta.EntityType)
+	headers, err := identityHeaders(pctx.Headers, inject, c.opts.Principal)
+	if err != nil {
+		return nil, err
+	}
+	headers = c.opts.Workload.apply(ctx, headers, inject)
+	if !isResponse {
+		pipeline.SetState(pctx, identityStateKey, &requestIdentity{headers: headers})
+	}
+	return headers, nil
+}
+
+// messageEgressDetails returns egressDetails for an http_egress tool call
+// in msg, or nil.
+func messageEgressDetails(msg *rcpex.Message) map[string]string {
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil {
+			return egressDetails(p.ToolCallContent.Name, p.ToolCallContent.Arguments)
+		}
+	}
+	return nil
+}
+
+// delegatedTokenCount returns how many tokens delegate() steps granted on
+// this invocation, from the metadata in raw_credentials.delegated_tokens.
+// That metadata never carries the token value; only an engine enabled
+// WithDelegatedCredentials returns it, in PipelineResult.DelegatedCredentials.
+func delegatedTokenCount(pres *rcpex.PipelineResult) (int, error) {
+	if len(pres.ModifiedExtensions) == 0 {
+		return 0, nil
+	}
+	var ext struct {
+		RawCredentials *struct {
+			DelegatedTokens []msgpack.RawMessage `msgpack:"delegated_tokens"`
+		} `msgpack:"raw_credentials"`
+	}
+	if err := msgpack.Unmarshal(pres.ModifiedExtensions, &ext); err != nil {
+		return 0, fmt.Errorf("decode modified extensions: %w", err)
+	}
+	if ext.RawCredentials == nil {
+		return 0, nil
+	}
+	return len(ext.RawCredentials.DelegatedTokens), nil
+}
+
+// forwardable returns creds when the plugin may forward them in place of
+// the tokens delegate() steps granted, or nil, which denies the request:
+// forwarding is off, a granted token came back without its credential, or
+// a credential names a header outside delegated_credential_headers or has
+// a value that is not valid on the wire. Forwarding then would send the
+// caller's own bearer where the policy asked for the delegated one.
+func (c *cpexManager) forwardable(creds []rcpex.DelegatedCredential, tokens int) []rcpex.DelegatedCredential {
+	if !c.opts.DelegatedCredentials || len(creds) < tokens {
 		return nil
 	}
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) == 0 {
-			continue
-		}
-		if len(vs) == 1 {
-			out[strings.ToLower(k)] = vs[0]
-		} else {
-			out[strings.ToLower(k)] = strings.Join(vs, ", ")
+	for _, cr := range creds {
+		v := cr.Value.Reveal()
+		if !c.credentialHeaderAllowed(cr.Header) || strings.TrimSpace(v) == "" || !httpguts.ValidHeaderFieldValue(v) {
+			slog.Warn("cpex: delegated credential not forwardable", "header", cr.Header, "target", cr.Target)
+			return nil
 		}
 	}
-	return out
+	return creds
+}
+
+// boundToDestination reports whether every credential's target is bound
+// to host in delegated_credential_hosts. The agent picks both the tool
+// and the destination, so a credential minted for one service must not
+// follow a request to another. Only the target and host are logged.
+func (c *cpexManager) boundToDestination(creds []rcpex.DelegatedCredential, host string) bool {
+	for _, cr := range creds {
+		target := credentialTarget(cr.Target, cr.Audience)
+		if !c.opts.DelegatedCredentialHosts.allows(target, host) {
+			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", host)
+			return false
+		}
+	}
+	return true
+}
+
+func (c *cpexManager) credentialHeaderAllowed(name string) bool {
+	for _, h := range c.opts.DelegatedCredentialHeaders {
+		if strings.EqualFold(strings.TrimSpace(h), name) {
+			return true
+		}
+	}
+	return false
+}
+
+// delegatedStateKey keys the names of the headers a delegated credential
+// was written to on pctx.
+const delegatedStateKey = "cpex.delegated"
+
+type writtenHeaders struct{ names []string }
+
+// writeCredentials sets each credential's header on the request, replacing
+// whatever the caller sent, and remembers the names so later invocations
+// on this request neither send the value to CPEX nor let write-back change
+// it. The value goes only to pctx.Headers, which session events do not
+// record.
+func writeCredentials(pctx *pipeline.Context, creds []rcpex.DelegatedCredential) {
+	if pctx.Headers == nil {
+		pctx.Headers = http.Header{}
+	}
+	st := pipeline.GetState[writtenHeaders](pctx, delegatedStateKey)
+	if st == nil {
+		st = &writtenHeaders{}
+		pipeline.SetState(pctx, delegatedStateKey, st)
+	}
+	for _, cr := range creds {
+		pctx.Headers.Set(cr.Header, cr.Value.Reveal())
+		st.names = append(st.names, http.CanonicalHeaderKey(cr.Header))
+	}
+}
+
+// writtenCredentialHeaders returns the headers writeCredentials set on
+// this request, or nil.
+func writtenCredentialHeaders(pctx *pipeline.Context) []string {
+	if st := pipeline.GetState[writtenHeaders](pctx, delegatedStateKey); st != nil {
+		return st.names
+	}
+	return nil
+}
+
+// hideHeaders removes names from the request headers sent to CPEX.
+func hideHeaders(ext *rcpex.Extensions, names []string) {
+	if ext == nil || ext.Http == nil {
+		return
+	}
+	for k := range ext.Http.RequestHeaders {
+		for _, n := range names {
+			if strings.EqualFold(k, n) {
+				delete(ext.Http.RequestHeaders, k)
+			}
+		}
+	}
 }
 
 // backgroundWaitTimeout is a backstop on how long awaitBackground's outer
@@ -302,39 +494,51 @@ func awaitBackground(hook, reqID string, bg *rcpex.BackgroundTasks) {
 //
 // Extension changes applied:
 //
-//   - HttpExtension.RequestHeaders → pctx.Headers
-//     Set the headers CPEX listed; preserve any pctx headers CPEX
-//     didn't model (multi-value, e.g. Set-Cookie).
+//   - HttpExtension.RequestHeaders → pctx.Headers, diffed against the
+//     headers sent (see applyHeaderWriteBack).
 //   - SecurityExtension.Labels → pctx.Extensions.Security.Labels
 //     Merge-add (no duplicates). Existing labels stay; new ones
 //     append. Operators reading session events see the union.
-func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse bool) error {
+//
+// changed reports whether the forwarded message changed: a header written
+// or a body rewritten. Labels do not count, and neither does a returned
+// header map or payload equal to what was sent, which CPEX 0.3 hands
+// back on every allowed call.
+func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult, isResponse, egress bool, sent map[string]string, protect ...string) (changed bool, err error) {
 	if len(pres.ModifiedExtensions) > 0 {
 		ext, err := pres.DeserializeExtensions()
 		if err != nil {
-			return fmt.Errorf("decode modified extensions: %w", err)
+			return false, fmt.Errorf("decode modified extensions: %w", err)
 		}
 		if ext != nil {
-			applyExtensionChanges(pctx, ext)
+			if changed, err = applyExtensionChanges(pctx, ext, sent, protect...); err != nil {
+				return false, err
+			}
 		}
 	}
 
 	if pres.PayloadModified {
 		if len(pres.ModifiedPayload) == 0 {
-			return fmt.Errorf("CPEX marked payload modified but returned no payload")
+			return changed, fmt.Errorf("CPEX marked payload modified but returned no payload")
 		}
 		payload, err := rcpex.DeserializePayload[rcpex.MessagePayload](pres)
 		if err != nil {
-			return fmt.Errorf("decode modified payload: %w", err)
+			return changed, fmt.Errorf("decode modified payload: %w", err)
 		}
-		if payload != nil {
-			if err := applyBodyModFromCMF(pctx, &payload.Message, isResponse); err != nil {
-				return fmt.Errorf("apply body mod: %w", err)
+		if payload != nil && egress {
+			if err := checkEgressUnmodified(pctx, &payload.Message); err != nil {
+				return changed, err
 			}
+		} else if payload != nil {
+			mutated, err := applyBodyModFromCMF(pctx, &payload.Message, isResponse)
+			if err != nil {
+				return changed, fmt.Errorf("apply body mod: %w", err)
+			}
+			changed = changed || mutated
 		}
 	}
 
-	return nil
+	return changed, nil
 }
 
 // applyBodyModFromCMF dispatches the body-rewriting logic per format
@@ -352,31 +556,27 @@ func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult
 // as a DecisionError that fail_open governs, so an unappliable redaction
 // blocks (fail_open=false) instead of leaking the unredacted body
 // downstream. A re-serializer reporting mutated=false with no error is a
-// legitimate no-op (nothing matched the redaction target) and proceeds.
-func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) error {
+// legitimate no-op (nothing matched the redaction target, or the payload
+// came back as it was sent) and proceeds.
+func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) (mutated bool, err error) {
 	switch {
 	case pctx.Extensions.MCP != nil:
 		return applyMCPBodyModFromCMF(pctx, msg, isResponse)
 
 	case pctx.Extensions.Inference != nil:
-		texts := textParts(msg)
 		if isResponse {
-			// Single completion: rewrite choices[].message.content from the
-			// first (and normally only) redacted text part.
-			_, err := applyInferenceResponseBodyMod(pctx, firstText(texts))
-			return err
+			// A single completion's text is rewritable; any other change
+			// is refused.
+			return applyInferenceResponseMod(pctx, responseCMFParts(msg))
 		}
-		_, err := applyInferenceRequestBodyMod(pctx, texts)
-		return err
+		return applyInferenceRequestMod(pctx, textParts(msg), toolResultContents(msg))
 
 	case pctx.Extensions.A2A != nil:
 		texts := textParts(msg)
 		if isResponse {
-			_, err := applyA2AResponseBodyMod(pctx, firstText(texts))
-			return err
+			return applyA2AResponseBodyMod(pctx, firstText(texts))
 		}
-		_, err := applyA2ARequestBodyMod(pctx, texts)
-		return err
+		return applyA2ARequestBodyMod(pctx, texts)
 
 	default:
 		// No protocol parser claimed this traffic, so we have no
@@ -385,8 +585,54 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 		// dropped silently.
 		slog.Warn("cpex: body modification requested but no protocol extension present — failing closed",
 			"path", pctx.Path)
-		return fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
+		return false, fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
 	}
+}
+
+// checkEgressUnmodified accepts a payload returned for a request presented
+// as http_egress only when its arguments are the ones sent: there is no
+// re-serializer from them to the body, whichever parser claimed it.
+func checkEgressUnmodified(pctx *pipeline.Context, msg *rcpex.Message) error {
+	sent := egressPart(pctx).Arguments
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil &&
+			jsonEqual(p.ToolCallContent.Arguments, sent) {
+			return nil
+		}
+	}
+	return fmt.Errorf("body modification requested on %s, which has no re-serializer", egressToolName)
+}
+
+// responseCMFParts converts a returned message's text and tool-call parts
+// back into cmfParts for applyInferenceResponseMod.
+func responseCMFParts(msg *rcpex.Message) []cmfPart {
+	var out []cmfPart
+	for _, p := range msg.Content {
+		switch {
+		case p.ContentType == rcpex.ContentTypeText:
+			out = append(out, cmfPart{Kind: cmfPartText, Text: p.Text})
+		case p.ContentType == rcpex.ContentTypeToolCall && p.ToolCallContent != nil:
+			out = append(out, cmfPart{
+				Kind:          cmfPartToolCall,
+				Name:          p.ToolCallContent.Name,
+				Arguments:     p.ToolCallContent.Arguments,
+				CorrelationID: p.ToolCallContent.ToolCallID,
+			})
+		}
+	}
+	return out
+}
+
+// toolResultContents collects the Content of every tool-result part in a
+// CMF Message, in document order.
+func toolResultContents(msg *rcpex.Message) []any {
+	var out []any
+	for _, p := range msg.Content {
+		if p.ContentType == rcpex.ContentTypeToolResult && p.ToolResultContent != nil {
+			out = append(out, p.ToolResultContent.Content)
+		}
+	}
+	return out
 }
 
 // textParts collects the Text of every text-kind content part in a CMF
@@ -429,7 +675,7 @@ func firstText(texts []string) string {
 // path), NOT pctx.Direction (a reverse-proxy pctx stays Direction=Inbound
 // for both phases), and NOT mcp.Result (mcp-parser runs AFTER cpex on the
 // response, so Result isn't populated yet when we apply).
-func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) error {
+func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse bool) (bool, error) {
 	method := pctx.Extensions.MCP.Method
 	if !isResponse {
 		mod := MCPRequestBodyMod{}
@@ -458,41 +704,45 @@ func applyMCPBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isRespon
 			}
 			break
 		}
-		if _, err := applyMCPRequestBodyMod(pctx, method, mod); err != nil {
-			return err
-		}
-		return nil
+		return applyMCPRequestBodyMod(pctx, method, mod)
 	}
 	// Response side.
 	for _, part := range msg.Content {
 		if part.ContentType == "tool_result" && part.ToolResultContent != nil {
-			if _, err := applyMCPResponseBodyMod(pctx, method, part.ToolResultContent.Content); err != nil {
-				return err
-			}
-			break
+			return applyMCPResponseBodyMod(pctx, method, part.ToolResultContent.Content)
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // applyExtensionChanges mutates pctx based on a CPEX-modified
 // Extensions struct. Field-by-field, with deliberate ownership notes:
 //
-//   - Headers: replace each modified key in pctx.Headers. Keys CPEX
-//     didn't include stay untouched — this is merge-replace, not
-//     wholesale-replace, because CPEX doesn't see (and can't reason
-//     about) headers the operator explicitly hid via flattenHeaders
-//     (Authorization, Cookie). A wholesale replace would strip those.
+//   - Headers: CPEX 0.3 returns the full request header map on every
+//     invocation, so the write-back is a diff against the map sent: a
+//     header CPEX removed (an assertion strip) is deleted and one it set
+//     (an asserted identity header) is replaced. Headers never sent
+//     (Cookie, API keys) and protected framing/internal headers are left
+//     alone; see applyHeaderWriteBack.
 //
 //   - Labels: merge-add. CPEX labels join the pctx label set; we
 //     don't remove labels other plugins set.
-func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
+//
+// It reports whether a header was written. Headers named in protect are
+// never written; an invalid header write-back is an error and writes
+// nothing.
+func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions, sent map[string]string, protect ...string) (headersChanged bool, err error) {
 	if ext.Http != nil && len(ext.Http.RequestHeaders) > 0 {
 		if pctx.Headers == nil {
 			pctx.Headers = http.Header{}
 		}
-		for k, v := range ext.Http.RequestHeaders {
-			pctx.Headers.Set(k, v)
+		var dropped []string
+		headersChanged, dropped, err = applyHeaderWriteBack(pctx.Headers, sent, ext.Http.RequestHeaders, protect...)
+		if err != nil {
+			return false, err
+		}
+		if len(dropped) > 0 {
+			slog.Warn("cpex: dropped header write-back to protected headers", "headers", dropped)
 		}
 	}
 
@@ -511,6 +761,7 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 			}
 		}
 	}
+	return headersChanged, nil
 }
 
 // buildCMF builds a CMF MessagePayload + Extensions from a
@@ -526,8 +777,8 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 //	entity        → MetaExtension.{EntityType,EntityName} for route dispatch
 //	identity      → SecurityExtension.Subject{ID, Roles} + AuthMethod +
 //	                curated Claims (issuer/audience/exp) via ClaimsCarrier
-//	agent         → SecurityExtension.Agent (workload client_id / SPIFFE id /
-//	                trust domain) — the agent's OWN identity, distinct from
+//	agent         → SecurityExtension.ThisWorkload (SPIFFE id / trust
+//	                domain / client_id) — the agent's OWN identity, distinct from
 //	                the caller in Subject
 //	inference     → LLMExtension (model/provider), CompletionExtension
 //	                (stop reason + token usage) on response, and the request
@@ -549,7 +800,7 @@ func applyExtensionChanges(pctx *pipeline.Context, ext *rcpex.Extensions) {
 // AgentExtension models the agent's own execution/session context. This is
 // the spec-correct split (matches OPA + the CMF spec) and means policies
 // must read caller identity from security.subject, not agent.agent_id.
-func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *rcpex.Extensions) {
+func buildCMF(pctx *pipeline.Context, isResponse bool, opts ManagerOptions) (rcpex.MessagePayload, *rcpex.Extensions) {
 	// Phase drives the CMF role. Per-message roles (for multi-turn
 	// inference) are carried separately in AgentExtension.Conversation.
 	role := "user"
@@ -557,7 +808,7 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 		role = "assistant"
 	}
 
-	cmfParts, entityType, entityName := pctxToCMFParts(pctx, isResponse)
+	cmfParts, entityType, entityName := pctxToCMFParts(pctx, isResponse, opts.SyntheticEgress)
 	var parts []rcpex.ContentPart
 	for _, cp := range cmfParts {
 		parts = append(parts, cmfPartToContentParts(cp)...)
@@ -566,13 +817,12 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 
 	ext := &rcpex.Extensions{}
 
-	// Stamp the entity coordinates so cpex-core's route resolver
-	// (filter_entries_by_route) dispatches the per-entity APL policy
-	// handlers — require/Cedar/delegate/field-redaction. Without meta,
-	// only always-on global plugins fire and the route's deny gates are
-	// silently skipped. Entity is per-tool for MCP, per-model for
-	// inference, per-method for A2A (see pctxToCMFParts).
-	if entityType != "" && entityName != "" {
+	// Stamp the entity coordinates CPEX selects a route by. The same
+	// Extensions reach identity.resolve inside InvokeResolved, so the
+	// route's authentication list applies too. Traffic that names no
+	// entity takes the fallback identification (see identification).
+	entityType, entityName = identification(entityType, entityName, opts.FallbackIdentification)
+	if entityType != "" {
 		ext.Meta = &rcpex.MetaExtension{EntityType: entityType, EntityName: entityName}
 	}
 
@@ -589,22 +839,25 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 		if cc, ok := id.(capabilities.ClaimsCarrier); ok {
 			ext.Security.AuthMethod = cc.AuthMethod()
 			if claims := cc.Claims(); len(claims) > 0 {
-				ext.Security.Subject.Claims = claims
+				ext.Security.Subject.Claims = make(map[string]any, len(claims))
+				for k, v := range claims {
+					ext.Security.Subject.Claims[k] = v
+				}
 			}
 		}
 	}
 
-	// Agent workload identity → SecurityExtension.Agent. This is the
-	// agent's OWN identity (its Keycloak client / SPIFFE id), not the
+	// Agent workload identity → SecurityExtension.ThisWorkload. This is
+	// the agent's OWN identity (its Keycloak client / SPIFFE id), not the
 	// caller's — kept distinct from Subject above.
 	if a := pctx.Agent; a != nil && (a.ClientID != "" || a.WorkloadID != "" || a.TrustDomain != "") {
 		if ext.Security == nil {
 			ext.Security = &rcpex.SecurityExtension{}
 		}
-		ext.Security.Agent = &rcpex.AgentIdentity{
-			ClientID:    a.ClientID,
-			WorkloadID:  a.WorkloadID,
+		ext.Security.ThisWorkload = &rcpex.WorkloadIdentity{
+			SpiffeID:    a.WorkloadID,
 			TrustDomain: a.TrustDomain,
+			ClientID:    a.ClientID,
 		}
 	}
 
@@ -646,14 +899,11 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 		}
 	}
 
-	// Session id for cross-request CPEX state (taint/label persistence).
-	// A2A carries it natively (above); other protocols (MCP, inference)
-	// can supply it via X-Session-Id, which CPEX's session resolver reads
-	// off Agent.SessionID (tier-0). A2A keeps precedence — only fill from
-	// the header when no session id is set yet.
-	if sid := sessionIDFromHeaders(pctx.Headers); sid != "" {
+	// Session id for cross-request CPEX state (taint/label persistence);
+	// see cpexSessionID for which source session_source selects.
+	if sid, replaces := cpexSessionID(pctx, opts.SessionSource); sid != "" || (replaces && ext.Agent != nil) {
 		ext.Agent = ensureAgentExt(ext.Agent)
-		if ext.Agent.SessionID == "" {
+		if replaces || ext.Agent.SessionID == "" {
 			ext.Agent.SessionID = sid
 		}
 	}
@@ -670,7 +920,10 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 
 	if len(pctx.Headers) > 0 {
 		ext.Http = &rcpex.HttpExtension{
-			RequestHeaders: flattenHeaders(pctx.Headers),
+			// The caller's copies of the principal and workload headers
+			// are not policy input; only the identity payload carries them.
+			RequestHeaders: withoutHeader(withoutHeader(flattenHeaders(pctx.Headers),
+				opts.Principal.headerName()), opts.Workload.headerName()),
 		}
 	}
 
@@ -695,7 +948,41 @@ func buildCMF(pctx *pipeline.Context, isResponse bool) (rcpex.MessagePayload, *r
 		}
 	}
 
+	// Request tool results, for policies on llm routes: tool-result content
+	// parts are not visible to APL or CEL there. Set after the passthrough
+	// so no other plugin can supply them.
+	// Response tool calls likewise: APL reads only the first tool call's
+	// arguments.
+	if inf := pctx.Extensions.Inference; inf != nil && ext.Meta != nil && ext.Meta.EntityType == entityTypeLLM {
+		if ext.Custom == nil {
+			ext.Custom = map[string]any{}
+		}
+		countKey, listKey := customToolResultCount, customToolResults
+		var count int
+		var list map[string]any
+		if isResponse {
+			countKey, listKey = customToolCallCount, customToolCalls
+			count, list = inferenceToolCallsCustom(readInferenceResponse(pctx).calls)
+		} else {
+			count, list = inferenceToolResultsCustom(inf)
+		}
+		ext.Custom[countKey] = count
+		if list != nil {
+			ext.Custom[listKey] = list
+		} else {
+			delete(ext.Custom, listKey)
+		}
+	}
+
 	return payload, ext
+}
+
+// sentHeaders returns the request headers buildCMF sent to CPEX.
+func sentHeaders(ext *rcpex.Extensions) map[string]string {
+	if ext == nil || ext.Http == nil {
+		return nil
+	}
+	return ext.Http.RequestHeaders
 }
 
 // ensureAgentExt returns a usable *AgentExtension — the existing one or a
@@ -832,10 +1119,11 @@ func cmfPartToContentParts(part cmfPart) []rcpex.ContentPart {
 // CGO_ENABLED=0 build.)
 
 // mapResult collapses a CPEX PipelineResult into our aggregate
-// Decision/Result. Order matters: deny first, then modify, then allow
-// — a single result can carry a violation AND modifications, and the
-// violation wins.
-func mapResult(p *rcpex.PipelineResult) Result {
+// Decision/Result. A violation is a deny. An allowed result is a modify
+// only when changed says the forwarded message changed (applyModificationsToPctx);
+// a result that only added labels, ran a delegate step or returned the
+// headers and payload as sent is an allow.
+func mapResult(p *rcpex.PipelineResult, changed bool) Result {
 	res := Result{}
 
 	for _, e := range p.Errors {
@@ -854,6 +1142,7 @@ func mapResult(p *rcpex.PipelineResult) Result {
 		if p.Violation != nil {
 			res.Code = p.Violation.Code
 			res.Reason = p.Violation.Reason
+			res.Elicitation = elicitationFromViolation(p.Violation.Code, p.Violation.Details)
 			if p.Violation.PluginName != "" {
 				res.PluginsRun = appendUnique(res.PluginsRun, p.Violation.PluginName)
 			}
@@ -863,20 +1152,9 @@ func mapResult(p *rcpex.PipelineResult) Result {
 		return res
 	}
 
-	if p.PayloadModified || len(p.ModifiedExtensions) > 0 {
-		// Extension changes (headers, labels) and MCP body changes have
-		// already been applied to pctx by applyModificationsToPctx
-		// before mapResult runs. Report modify so the Invocation
-		// reflects that policy touched the message.
+	if changed {
 		res.Decision = DecisionModify
-		switch {
-		case p.PayloadModified && len(p.ModifiedExtensions) > 0:
-			res.Reason = "policy modified headers/labels and body"
-		case p.PayloadModified:
-			res.Reason = "policy modified body"
-		default:
-			res.Reason = "policy modified headers/labels"
-		}
+		res.Reason = "policy modified the message"
 		return res
 	}
 

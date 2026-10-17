@@ -1,8 +1,12 @@
 package cpex
 
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // secretHeaderPrefixes lists header-name prefixes that are NEVER
@@ -123,4 +127,115 @@ func isSensitive(name string) bool {
 		}
 	}
 	return false
+}
+
+// protectedHeaderExact and protectedHeaderPrefixes name headers CPEX
+// write-back may never set or delete: framing and hop-by-hop headers the
+// listener owns, and Cortex's own internal headers.
+var protectedHeaderExact = map[string]struct{}{
+	"host":              {},
+	"content-length":    {},
+	"transfer-encoding": {},
+	"connection":        {},
+	"keep-alive":        {},
+	"te":                {},
+	"trailer":           {},
+	"upgrade":           {},
+}
+
+var protectedHeaderPrefixes = []string{"proxy-", "x-authbridge-"}
+
+// isFramingOrInternal reports whether the lower-case header name is a
+// framing, hop-by-hop or Cortex-internal header.
+func isFramingOrInternal(lower string) bool {
+	if _, ok := protectedHeaderExact[lower]; ok {
+		return true
+	}
+	for _, prefix := range protectedHeaderPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isProtected reports whether write-back must leave name alone. Headers
+// flattenHeaders never sends are protected too: CPEX never saw them, so
+// it cannot have meant to change them. extra names more protected headers.
+func isProtected(name string, extra ...string) bool {
+	lower := strings.ToLower(name)
+	if isFramingOrInternal(lower) {
+		return true
+	}
+	for _, e := range extra {
+		if lower == strings.ToLower(e) {
+			return true
+		}
+	}
+	return isSensitive(name)
+}
+
+// applyHeaderWriteBack makes h match the request headers CPEX returned,
+// diffing against the headers sent to it: a header CPEX dropped is
+// deleted, one it added or changed is set, and one it returned unchanged
+// keeps its original (possibly multi-value) form. A nil or empty returned
+// map, or one equal to sent, changes nothing. changed reports whether h was
+// written. Protected headers, and those named in extra, are never written;
+// their names come back in dropped so the caller can log them.
+//
+// A returned name or value that is not valid on the wire, or two names
+// that differ only in case with different values, is an error and nothing
+// is written.
+func applyHeaderWriteBack(h http.Header, sent, returned map[string]string, extra ...string) (changed bool, dropped []string, err error) {
+	if len(returned) == 0 {
+		return false, nil, nil
+	}
+	before := canonicalMap(sent)
+	after := make(map[string]string, len(returned))
+	for k, v := range returned {
+		if !httpguts.ValidHeaderFieldName(k) {
+			return false, nil, fmt.Errorf("invalid header name %q in write-back", k)
+		}
+		if !httpguts.ValidHeaderFieldValue(v) {
+			return false, nil, fmt.Errorf("invalid value for header %q in write-back", k)
+		}
+		name := http.CanonicalHeaderKey(k)
+		if prev, dup := after[name]; dup && prev != v {
+			return false, nil, fmt.Errorf("header %q returned twice with different values", name)
+		}
+		after[name] = v
+	}
+	for name := range before {
+		if _, kept := after[name]; kept {
+			continue
+		}
+		if isProtected(name, extra...) {
+			dropped = append(dropped, name)
+			continue
+		}
+		h.Del(name)
+		changed = true
+	}
+	for name, v := range after {
+		if old, ok := before[name]; ok && old == v {
+			continue
+		}
+		if isProtected(name, extra...) {
+			dropped = append(dropped, name)
+			continue
+		}
+		h.Set(name, v)
+		changed = true
+	}
+	sort.Strings(dropped)
+	return changed, dropped, nil
+}
+
+// canonicalMap re-keys m by canonical header name.
+func canonicalMap(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
 }

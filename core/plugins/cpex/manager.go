@@ -11,7 +11,7 @@ import (
 // requiring CGO_ENABLED or the libcpex_ffi.a static library.
 //
 // The real implementation lives in manager_cpex.go (//go:build cpex)
-// and wraps the cpex.PluginManager from the
+// and wraps the cpex.PolicyEngine from the
 // github.com/contextforge-org/cpex/go/cpex package. The
 // stub in manager_stub.go (//go:build !cpex) makes NewManager error
 // out with a clear "build the cpex binary" message if anyone tries to
@@ -62,12 +62,36 @@ type ManagerOptions struct {
 	// WorkerThreads sets CPEX's tokio worker pool size. 0 = auto
 	// (CPEX picks based on CPU count).
 	WorkerThreads int
+
+	// FallbackIdentification, SessionSource, PrivateDestinations and
+	// SyntheticEgress are the validated config values of the same names;
+	// see cpexConfig.
+	FallbackIdentification string
+	SessionSource          string
+	PrivateDestinations    bool
+	SyntheticEgress        bool
+
+	// Principal is the Cortex-held caller token for identity resolution on
+	// outbound tool calls and inference requests, or nil when principal injection is off.
+	Principal *principalSource
+
+	// Workload is the pod's SPIFFE JWT-SVID for identity resolution on the
+	// same requests, or nil when workload injection is off.
+	Workload *workloadSource
+
+	// DelegatedCredentials and DelegatedCredentialHeaders are the validated
+	// config values of the same names; see cpexConfig.
+	DelegatedCredentials       bool
+	DelegatedCredentialHeaders []string
+
+	// DelegatedCredentialHosts is the compiled delegated_credential_hosts.
+	DelegatedCredentialHosts credentialHosts
 }
 
 // NewManager is defined in one of two build-tag-gated files:
 //
 //   - manager_cpex.go (//go:build cpex)  — returns a manager wrapping
-//     cpex.PluginManager; pulls in libcpex_ffi via cgo.
+//     cpex.PolicyEngine; pulls in libcpex_ffi via cgo.
 //   - manager_stub.go (//go:build !cpex) — returns an error so a
 //     misconfigured binary fails loud at Configure time instead of
 //     silently registering a no-op plugin.
@@ -143,10 +167,11 @@ type Result struct {
 	// Decision is the top-line outcome category.
 	Decision Decision
 
-	// Reason is a short human-readable summary suitable for the
-	// Invocation.Reason field. For Deny, this is the deciding
-	// sub-plugin's violation message; for Modify, a one-line summary
-	// of what changed; for Error, the error string.
+	// Reason is a short human-readable summary. For Deny, this is the
+	// deciding sub-plugin's violation message, which may quote request
+	// content: the plugin logs it at debug level and records only Code.
+	// For Modify, a one-line summary of what changed; for Error, the error
+	// string.
 	Reason string
 
 	// PluginsRun lists CPEX sub-plugin names that executed for this
@@ -163,6 +188,14 @@ type Result struct {
 	// outcome — e.g. "cedar.denied", "pii.redacted". Surfaces in
 	// Invocation.Code when present.
 	Code string
+
+	// Details is recorded as the Invocation's details. It must hold only
+	// values safe for the unauthenticated session API.
+	Details map[string]string
+
+	// Elicitation is set on a deny that is a suspension awaiting a
+	// human's approval rather than a refusal.
+	Elicitation *Elicitation
 }
 
 // SubPluginError is one CPEX sub-plugin's error report, lifted from

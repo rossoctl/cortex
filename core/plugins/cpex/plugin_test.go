@@ -3,9 +3,11 @@ package cpex
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -165,6 +167,161 @@ func TestConfigure_PassesWorkerThreadsToFactory(t *testing.T) {
 	}
 }
 
+func TestConfigure_FallbackIdentification(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{}`:                                   fallbackGlobal,
+		`{"fallback_identification":"none"}`:   fallbackNone,
+		`{"fallback_identification":"global"}`: fallbackGlobal,
+	} {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", raw, err)
+		}
+		if seen.FallbackIdentification != want {
+			t.Errorf("Configure(%s): FallbackIdentification = %q, want %q", raw, seen.FallbackIdentification, want)
+		}
+	}
+	if err := setupFake(&FakeManager{}).Configure([]byte(`{"fallback_identification":"tool"}`)); err == nil {
+		t.Fatal("Configure: expected error for unknown fallback_identification")
+	}
+}
+
+func TestConfigure_SessionSourceAndPrivateDestinations(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantSource  string
+		wantPrivate bool
+	}{
+		{`{}`, sessionSourceHeader, false},
+		{`{"session_source":"resolved","private_destinations":true}`, sessionSourceResolved, true},
+	}
+	for _, tc := range cases {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(tc.raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", tc.raw, err)
+		}
+		if seen.SessionSource != tc.wantSource || seen.PrivateDestinations != tc.wantPrivate {
+			t.Errorf("Configure(%s): options = %+v", tc.raw, seen)
+		}
+	}
+	if err := setupFake(&FakeManager{}).Configure([]byte(`{"session_source":"active"}`)); err == nil {
+		t.Fatal("Configure: expected error for unknown session_source")
+	}
+}
+
+func TestConfigure_DelegatedCredentials(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantForward bool
+		wantHeaders []string
+	}{
+		{`{}`, false, nil},
+		{`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example"]}}`, true, []string{"Authorization"}},
+		{`{"delegated_credentials":true,"delegated_credential_headers":["X-Api-Key"],"delegated_credential_hosts":{"api":["api.example"]}}`, true, []string{"X-Api-Key"}},
+	}
+	for _, tc := range cases {
+		var seen ManagerOptions
+		p := NewCPEX()
+		p.newManager = func(opts ManagerOptions) (Manager, error) {
+			seen = opts
+			return &FakeManager{}, nil
+		}
+		if err := p.Configure([]byte(tc.raw)); err != nil {
+			t.Fatalf("Configure(%s): %v", tc.raw, err)
+		}
+		if seen.DelegatedCredentials != tc.wantForward || fmt.Sprint(seen.DelegatedCredentialHeaders) != fmt.Sprint(tc.wantHeaders) {
+			t.Errorf("Configure(%s): options = %+v", tc.raw, seen)
+		}
+	}
+	for _, raw := range []string{
+		`{"delegated_credential_headers":["Authorization"]}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["Host"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-authbridge-direction"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["bad header"],"delegated_credential_hosts":{"api":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_headers":["x-user-token"],"principal":{"token_file":"/t"},"delegated_credential_hosts":{"api":["api.example"]}}`,
+	} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("Configure(%s): want error", raw)
+		}
+	}
+}
+
+// Forwarding delegated credentials needs a destination binding for every
+// target, and each binding names hosts, not everything.
+func TestConfigure_DelegatedCredentialHosts(t *testing.T) {
+	var seen ManagerOptions
+	p := NewCPEX()
+	p.newManager = func(opts ManagerOptions) (Manager, error) {
+		seen = opts
+		return &FakeManager{}, nil
+	}
+	if err := p.Configure([]byte(`{"delegated_credentials":true,"delegated_credential_hosts":{"workday-api":["hr-mcp","hr-mcp.*.svc.cluster.local"]}}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if !seen.DelegatedCredentialHosts.allows("workday-api", "hr-mcp:9100") {
+		t.Fatal("binding not passed to the manager")
+	}
+	for _, raw := range []string{
+		`{"delegated_credentials":true}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":[]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"":["api.example"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":[""]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["*"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["**"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example:443"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["[bad"]}}`,
+	} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("Configure(%s): want error", raw)
+		}
+	}
+}
+
+func TestCredentialHostsAllows(t *testing.T) {
+	h, err := newCredentialHosts(map[string][]string{
+		"workday-api": {"hr-mcp", "hr-mcp.cpex-demo", "*.hr.svc.cluster.local"},
+		"support":     {"Support.Localtest.Me"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		target, host string
+		want         bool
+	}{
+		{"workday-api", "hr-mcp", true},
+		{"workday-api", "hr-mcp:9100", true},
+		{"workday-api", "HR-MCP.cpex-demo:9100", true},
+		{"workday-api", "a.hr.svc.cluster.local", true},
+		{"workday-api", "a.b.hr.svc.cluster.local", false},
+		{"workday-api", "hr-mcp.attacker.example", false},
+		{"workday-api", "support.localtest.me", false},
+		{"support", "support.localtest.me:47711", true},
+		{"support", "support.localtest.me.", true},
+		{"github-api", "hr-mcp", false},
+		{"", "hr-mcp", false},
+		{"workday-api", "", false},
+	} {
+		if got := h.allows(tc.target, tc.host); got != tc.want {
+			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
+		}
+	}
+	if credentialTarget("workday-api", "aud") != "workday-api" || credentialTarget("", "aud") != "aud" {
+		t.Fatal("credentialTarget: want Target, else Audience")
+	}
+}
+
 func TestConfigure_RejectsWildcardBypassHost(t *testing.T) {
 	p := setupFake(&FakeManager{})
 	err := p.Configure([]byte(`{"bypass_hosts":["*"]}`))
@@ -286,6 +443,9 @@ func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 		"hooks", "config", "config_file",
 		"fail_open", "worker_threads",
 		"bypass_hosts", "bypass_paths",
+		"fallback_identification", "session_source", "private_destinations",
+		"synthetic_egress", "principal",
+		"delegated_credentials", "delegated_credential_headers", "delegated_credential_hosts",
 	} {
 		if !have[name] {
 			t.Errorf("ConfigSchema missing field %q", name)
@@ -360,12 +520,17 @@ func TestDispatch_DenyDecisionRejectsAndShortCircuits(t *testing.T) {
 	}
 	cfg := `{"hooks":{"on_request":["cmf.tool_pre_invoke","cmf.tool_post_invoke"]}}`
 	p := setupAndInit(t, fake, cfg)
-	a := p.OnRequest(context.Background(), &pipeline.Context{})
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	a := p.OnRequest(context.Background(), pctx)
 	if a.Type != pipeline.Reject {
 		t.Fatalf("Type = %d, want Reject", a.Type)
 	}
-	if a.Violation == nil || a.Violation.Code != "cpex.cedar_denied" || a.Violation.Reason != "policy says no" {
-		t.Fatalf("Violation = %#v, want code=cpex.cedar_denied reason=\"policy says no\"", a.Violation)
+	// CPEX's free-text reason reaches neither the client nor the record.
+	if a.Violation == nil || a.Violation.Code != "cpex.cedar_denied" || a.Violation.Reason != deniedMessage {
+		t.Fatalf("Violation = %#v, want code=cpex.cedar_denied reason=%q", a.Violation, deniedMessage)
+	}
+	if inv := pctx.Extensions.Invocations.Outbound; len(inv) != 1 || inv[0].Reason != "cpex.cedar_denied" {
+		t.Fatalf("invocations = %+v, want one with reason cpex.cedar_denied", inv)
 	}
 	// A policy deny is an authorization decision → 403, not the 500 a
 	// namespaced cpex.* code would otherwise default to via StatusFromCode.
@@ -710,4 +875,86 @@ func setupAndInit(t *testing.T, fake *FakeManager, raw string) *CPEX {
 		t.Fatalf("Init: %v", err)
 	}
 	return p
+}
+
+// Result details reach the Invocation; a deny's free-text reason does not.
+func TestDispatch_DenyRecordsDetailsNotReason(t *testing.T) {
+	details := map[string]string{"egress_excerpt_bytes": "12", "egress_truncated": "false"}
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "secret_in_body", Reason: "found AKIA1234", Details: details},
+		},
+	}
+	p := setupAndInit(t, fake, cfgOneRequestHook)
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	a := p.OnRequest(context.Background(), pctx)
+	if a.Type != pipeline.Reject || a.Violation.Code != "cpex.secret_in_body" || a.Violation.Reason != deniedMessage {
+		t.Fatalf("action = %+v", a.Violation)
+	}
+	inv := pctx.Extensions.Invocations.Outbound
+	if len(inv) != 1 || inv[0].Reason != "cpex.secret_in_body" || !reflect.DeepEqual(inv[0].Details, details) {
+		t.Fatalf("invocations = %+v", inv)
+	}
+}
+
+// A deny whose code is in observe_codes is recorded as observe and the
+// chain continues; the session labels the denying step set stay with CPEX.
+func TestDispatch_ObserveCodeContinues(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookLLMInput, HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookLLMInput:      {Decision: DecisionDeny, Code: "secret_in_tool_result", Reason: "found AKIA1234"},
+			HookToolPreInvoke: {Decision: DecisionAllow},
+		},
+	}
+	cfg := `{"hooks":{"on_request":["cmf.llm_input","cmf.tool_pre_invoke"]},"observe_codes":["secret_in_tool_result"]}`
+	p := setupAndInit(t, fake, cfg)
+	pctx := &pipeline.Context{Direction: pipeline.Outbound}
+	if a := p.OnRequest(context.Background(), pctx); a.Type != pipeline.Continue {
+		t.Fatalf("Type = %d, want Continue", a.Type)
+	}
+	if len(fake.Invokes) != 2 {
+		t.Fatalf("Invokes = %d, want 2 (an observed code does not stop the chain)", len(fake.Invokes))
+	}
+	inv := pctx.Extensions.Invocations.Outbound
+	if len(inv) != 2 || inv[0].Action != pipeline.ActionObserve || inv[0].Reason != "cpex.secret_in_tool_result" {
+		t.Fatalf("invocations = %+v, want observe cpex.secret_in_tool_result first", inv)
+	}
+}
+
+func TestDispatch_ObserveCodesLeaveOtherDenies(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "egress_host"},
+		},
+	}
+	p := setupAndInit(t, fake, `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"observe_codes":["cpex.secret_in_tool_result"]}`)
+	if a := p.OnRequest(context.Background(), &pipeline.Context{}); a.Type != pipeline.Reject || a.Violation.Code != "cpex.egress_host" {
+		t.Fatalf("want Reject cpex.egress_host, got %#v", a)
+	}
+}
+
+// An approval wait is not a deny to observe.
+func TestDispatch_ObserveCodesKeepSuspension(t *testing.T) {
+	fake := &FakeManager{
+		KnownHooks: []string{HookToolPreInvoke},
+		Hooks: map[string]Result{
+			HookToolPreInvoke: {Decision: DecisionDeny, Code: "elicitation_pending", Elicitation: &Elicitation{ID: "e1"}},
+		},
+	}
+	p := setupAndInit(t, fake, `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"observe_codes":["elicitation_pending"]}`)
+	if a := p.OnRequest(context.Background(), &pipeline.Context{}); a.Type != pipeline.Reject {
+		t.Fatalf("want the suspension to reject, got %#v", a)
+	}
+}
+
+func TestConfigure_RejectsBadObserveCodes(t *testing.T) {
+	for _, codes := range []string{`[""]`, `["delegation_unavailable"]`, `["cpex.principal_unavailable"]`, `["*"]`} {
+		p := setupFake(&FakeManager{})
+		if err := p.Configure([]byte(`{"observe_codes":` + codes + `}`)); err == nil {
+			t.Errorf("observe_codes %s: want error", codes)
+		}
+	}
 }

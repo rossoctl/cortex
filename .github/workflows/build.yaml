@@ -59,9 +59,10 @@ jobs:
           # AuthBridge proxy-sidecar CPEX image — cortex built
           # with -tags cpex (links libcpex_ffi.a from a pinned CPEX
           # release) so the `cpex` plugin routes hooks through the CPEX
-          # framework (APL DSL + named CPEX policy plugins). Needs the
-          # CPEX_FFI_VERSION build-arg, read from the CPEX_FFI_VERSION
-          # file in the build step below.
+          # framework (APL DSL + named CPEX policy plugins). The FFI pin
+          # files in cmd/cortex-cpex/ (CPEX_FFI_VERSION, CPEX_FFI_ABI,
+          # CPEX_FFI_SHA256) are its only source: the Dockerfile reads them
+          # and takes no FFI build-arg.
           - name: authbridge-cpex
             context: .
             dockerfile: cmd/cortex-cpex/Dockerfile
@@ -128,9 +129,8 @@ jobs:
             type=raw,value=latest,enable=${{ (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
 
       # 6b. Resolve per-image build-args.
-      #   authbridge-cpex: CPEX_FFI_VERSION (release tag) and CPEX_FFI_ABI
-      #     (integer the linked lib must report), read from the files
-      #     next to its Dockerfile and asserted at build time.
+      #   authbridge-cpex takes no CPEX FFI build-arg: its Dockerfile reads
+      #     the pin files in cmd/cortex-cpex/, the only source of the version.
       #   Every Go image passes GO_BUILD_TAGS naming a profile from
       #     scripts/profile-tags. Plugins are all opt-in, so an
       #     image built without tags registers NO plugins and rejects every
@@ -143,12 +143,8 @@ jobs:
           profile_tags() { go -C scripts/profile-tags run . "$1"; }
           case "${{ matrix.image_config.name }}" in
             authbridge-cpex)
-              VERSION="$(tr -d '[:space:]' < cmd/cortex-cpex/CPEX_FFI_VERSION)"
-              ABI="$(tr -d '[:space:]' < cmd/cortex-cpex/CPEX_FFI_ABI)"
               {
                 echo "args<<EOF"
-                echo "CPEX_FFI_VERSION=${VERSION}"
-                echo "CPEX_FFI_ABI=${ABI}"
                 echo "GO_BUILD_TAGS=$(profile_tags cpex)"
                 echo "EOF"
               } >> "$GITHUB_OUTPUT"
@@ -185,9 +181,9 @@ jobs:
         with:
           context: ${{ matrix.image_config.context }}
           file: ${{ matrix.image_config.context }}/${{ matrix.image_config.dockerfile }}
-          # Dynamically-resolved args from step 6b: authbridge-cpex
-          # (CPEX_FFI_*) and authbridge-lite (GO_BUILD_TAGS from
-          # scripts/profile-tags). Images with no Go plugin surface resolve to empty.
+          # Dynamically-resolved args from step 6b: GO_BUILD_TAGS from
+          # scripts/profile-tags for every Go image. Images with no Go
+          # plugin surface resolve to empty.
           build-args: |
             ${{ steps.buildargs.outputs.args }}
           push: true

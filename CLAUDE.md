@@ -188,7 +188,9 @@ cortex/
 ├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
-│   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
+│   ├── CPEX_FFI_VERSION              #   pinned CPEX release tag (e.g. v0.3.1)
+│   ├── CPEX_FFI_ABI                  #   FFI ABI integer that release must report
+│   ├── CPEX_FFI_SHA256               #   pinned digest of each target's FFI tarball
 │   └── entrypoint.sh
 │
 ├── cmd/cortex-praxis/                # proxy-sidecar rendered into a Praxis proxy config.
@@ -218,6 +220,7 @@ cortex/
 │   ├── install.sh                    # Laptop installer: downloads, verifies and stages a
 │   │                                 #   release, then execs `agentop setup --from <stage>`
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
+│   ├── fetch-cpex-ffi.sh             # Download + verify the pinned libcpex_ffi.a
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
 │   │   ├── verify-spire-keycloak.sh  #   Platform preflight for a local dev cluster
@@ -566,7 +569,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   string can carry an API key. Before that was recorded the row did not exist at all,
   so a failed request was indistinguishable from one still in flight and raised no
   error rate (#1045). **`error.kind: "proxy_error"` is the one that is ours:** a
-  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). Where the
+  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). **A 421
+  with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
+  another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
+  before the pipeline runs and forwards nothing, and both rows name the CONNECT target
+  as `host`, because policy keyed on the client's `Host` would judge a destination the
+  bytes never reach. Where the
   upstream did answer, `error.code` keeps the status it sent, while `statusCode` stays
   what the client got, because every consumer keys on it. **A 499 with `error.kind:
   "client_canceled"` is the client hanging up first** — and since neither proxy times
@@ -798,7 +806,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
 | `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
@@ -827,18 +835,19 @@ Hooks:
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
 
-- `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
-  matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
-  needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
-  build), `core/storage/redis`, and the three `demos/*` modules.
+- `go vet ./...` **is** a gate, on 8 of the 12 modules: `core`, both
+  `scripts/*`, the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
+  matrix, and `cmd/cortex-cpex`. That last one needs CGO and a pinned
+  `libcpex_ffi.a`, so it is not in the matrix: the `go-ci-cpex` job fetches the
+  library and vets it, and `core/plugins/cpex`, with `-tags cpex`. Not vetted
+  anywhere: `core/storage/redis` and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
   checkout and exits 0, so formatting drift cannot fail a build.
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `core`, where `go fmt` demonstrably runs on
 every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
-touched one of the five unvetted modules.
+touched one of the four unvetted modules.
 
 ## Languages and Tech Stack
 
@@ -1025,8 +1034,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   touched. **Always give `gofmt` a path** — a bare `gofmt -l` reads stdin, scans
   nothing and exits 0.
 - **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
-  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
-  the 12 modules — see the Pre-commit Hooks section for which five are uncovered.
+  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 8 of
+  the 12 modules — see the Pre-commit Hooks section for which four are uncovered.
   See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `core` one
   does, so each module resolves its own `replace` directives instead of pulling in

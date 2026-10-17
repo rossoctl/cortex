@@ -24,7 +24,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 |------|-------------|--------------------|-----------|------------------|
 | [`a2a-parser`](#a2a-parser) | Parses A2A messages into `pctx.Extensions.A2A` for downstream plugins. | Beta | Inbound | No |
 | [`context-guru`](#context-guru) | Compacts the outbound LLM request context before forwarding. | Opt-in | Outbound | No |
-| [`cpex`](#cpex) | APL DSL + named [CPEX](https://github.com/contextforge-org/cpex) plugins (Cedar, PII, audit, …) over a single chain step. | Opt-in | Outbound | No |
+| [`cpex`](#cpex) | APL DSL + named [CPEX](https://github.com/contextforge-org/cpex) 0.3 plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA) over a single chain step. | Opt-in | Outbound | No |
 | [`ibac`](#ibac) | LLM-judge intent-based access control for outbound tool calls. | Alpha | Outbound | No |
 | [`inference-parser`](#inference-parser) | Parses LLM completions into `pctx.Extensions.Inference`. | Alpha | Outbound | No |
 | [`inference-router`](#inference-router) | Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on. | Alpha | Outbound | No |
@@ -61,9 +61,10 @@ Full reference: [`context-guru-plugin.md`](context-guru-plugin.md).
 
 Bridges AuthBridge hooks to the [CPEX](https://github.com/contextforge-org/cpex)
 framework (a policy enforcement runtime for AI agents): an APL DSL plus named
-CPEX policy plugins (Cedar, PII, audit, …). Requires the separate
-`cortex-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`, links a pinned
-`libcpex_ffi.a`). Full details in [cpex-plugin.md](./cpex-plugin.md);
+CPEX policy plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA).
+Requires the separate `cortex-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`,
+links `libcpex_ffi.a` from the pinned CPEX 0.3.1 release). The CPEX policy
+uses 0.3's schema; a 0.2.x policy fails at boot. Full details in [cpex-plugin.md](./cpex-plugin.md);
 see also the plugin's [README](../core/plugins/cpex/README.md).
 
 ## `ibac`

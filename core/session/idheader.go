@@ -143,6 +143,13 @@ const CodexSessionHeader = "Session-Id"
 // boundary rather than a convenience. Compare DefaultSessionID, which carries the
 // mirror-image caveat for the shared bucket.
 func IDFromHeaders(h http.Header, names []string) string {
+	id, _ := IDHeaderFrom(h, names)
+	return id
+}
+
+// IDHeaderFrom is IDFromHeaders that also returns the name of the header the
+// id came from, "" when none did.
+func IDHeaderFrom(h http.Header, names []string) (id, header string) {
 	for _, name := range names {
 		id := h.Get(name)
 		if id == "" {
@@ -164,9 +171,9 @@ func IDFromHeaders(h http.Header, names []string) string {
 			// TestIDFromHeaders_InvalidWinnerFallsThroughToNextHeader.
 			continue
 		}
-		return id
+		return id, name
 	}
-	return ""
+	return "", ""
 }
 
 // validHeaderSessionID reports whether a client-supplied id is safe to use as

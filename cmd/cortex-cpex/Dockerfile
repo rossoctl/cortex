@@ -11,39 +11,16 @@
 # enable CPEX.
 
 # ---------- Stage 1: fetch libcpex_ffi.a from the pinned release ----
-# The CPEX_FFI_VERSION file at the root of this directory pins the
-# release tag; CPEX_FFI_ABI pins the FFI ABI integer the linked lib must
-# report. Both are asserted at build time below: the extracted tarball's
-# VERSION must equal CPEX_FFI_VERSION and its FFI_ABI must equal
-# CPEX_FFI_ABI, so a renamed/mismatched asset fails the build rather than
-# linking a lib whose ABI the Go bindings don't expect. The bindings
-# additionally assert the ABI at runtime (go/cpex/abi.go panics at init()
-# if the linked lib's cpex_ffi_abi_version() != its expected value), so a
-# drift is caught both at build and at boot.
-#
-# Asset naming on the cpex release page:
-#   cpex-ffi-${VERSION}-${OS}-${ARCH}-${LIBC}.tar.gz   (tarball)
-#   cpex-ffi-${VERSION}-${OS}-${ARCH}-${LIBC}.tar.gz.sha256
-#   cpex-ffi-${VERSION}-${OS}-${ARCH}-${LIBC}.tar.gz.sig   (cosign)
-#   cpex-ffi-${VERSION}-${OS}-${ARCH}-${LIBC}.tar.gz.crt   (cosign)
-#
-# Tarball contents:
-#   ./libcpex_ffi.a
-#   ./VERSION
-#   ./FFI_ABI
-#   ./LICENSE
-#
-# This stage fetches the tarball + its .sha256 + cosign signature,
-# verifies the checksum AND the cosign signature, then extracts the .a.
+# scripts/fetch-cpex-ffi.sh does the download and every check: the tarball's
+# digest must match cmd/cortex-cpex/CPEX_FFI_SHA256, its cosign signature
+# must come from CPEX's release workflow at the pinned tag, and its VERSION
+# and FFI_ABI must equal CPEX_FFI_VERSION and CPEX_FFI_ABI. A mismatch fails
+# the build rather than linking a lib whose ABI the Go bindings don't expect.
+# The bindings also assert the ABI at init, so drift is caught at boot too.
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d AS ffi
 
-RUN apk add --no-cache curl ca-certificates tar cosign
+RUN apk add --no-cache bash curl ca-certificates tar cosign
 
-ARG CPEX_FFI_VERSION
-# CPEX_FFI_ABI pins the FFI ABI integer the linked lib must report. The
-# Makefile sources it from the CPEX_FFI_ABI file (same dir as
-# CPEX_FFI_VERSION); the extract step below asserts the tarball matches.
-ARG CPEX_FFI_ABI
 ARG TARGETARCH
 ARG TARGETOS=linux
 # LIBC selects which CPEX FFI asset variant to link. We default to `musl`
@@ -52,56 +29,12 @@ ARG TARGETOS=linux
 # size. Override to `gnu` only for a glibc runtime (then also flip the
 # builder/runtime bases below back to bookworm/debian).
 ARG CPEX_LIBC=musl
-ARG FFI_ASSET=cpex-ffi-${CPEX_FFI_VERSION}-${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}.tar.gz
 
-ARG CPEX_COSIGN_IDENTITY=https://github.com/contextforge-org/cpex/.github/workflows/release-ffi.yaml@refs/tags/${CPEX_FFI_VERSION}
-ARG CPEX_COSIGN_ISSUER=https://token.actions.githubusercontent.com
-
-WORKDIR /ffi
-RUN set -eu; \
-    BASE="https://github.com/contextforge-org/cpex/releases/download/${CPEX_FFI_VERSION}"; \
-    echo "[ffi] downloading ${BASE}/${FFI_ASSET}"; \
-    curl -fsSLo asset.tar.gz "${BASE}/${FFI_ASSET}"; \
-    curl -fsSLo asset.tar.gz.sha256 "${BASE}/${FFI_ASSET}.sha256"; \
-    curl -fsSLo asset.tar.gz.sig "${BASE}/${FFI_ASSET}.sig"; \
-    curl -fsSLo asset.tar.gz.crt "${BASE}/${FFI_ASSET}.crt"; \
-    # SHA-256 integrity check. \
-    expected_hash=$(awk '{print $1}' asset.tar.gz.sha256); \
-    actual_hash=$(sha256sum asset.tar.gz | awk '{print $1}'); \
-    if [ "$expected_hash" != "$actual_hash" ]; then \
-        echo "[ffi] sha256 mismatch: expected $expected_hash, got $actual_hash" >&2; \
-        exit 1; \
-    fi; \
-    echo "[ffi] sha256 verified"; \
-    # Cosign signature verification — proves the asset was produced by \
-    # the cpex release workflow and hasn't been tampered with. \
-    cosign verify-blob \
-        --signature asset.tar.gz.sig \
-        --certificate asset.tar.gz.crt \
-        --certificate-identity "${CPEX_COSIGN_IDENTITY}" \
-        --certificate-oidc-issuer "${CPEX_COSIGN_ISSUER}" \
-        asset.tar.gz \
-    && echo "[ffi] cosign signature verified" \
-    || { echo "[ffi] cosign verification FAILED" >&2; exit 1; }; \
-    tar -xzf asset.tar.gz; \
-    test -f libcpex_ffi.a || { echo "[ffi] libcpex_ffi.a missing from tarball" >&2; exit 1; }; \
-    # Assert the tarball's pinned identity matches what we expect. A \
-    # mismatched VERSION means the asset was renamed/swapped; a mismatched \
-    # FFI_ABI means the lib's C surface differs from what the Go bindings \
-    # were generated against (a CGO mis-marshal waiting to happen). \
-    # VERSION is a multi-line key=value manifest (version=, git_sha=, \
-    # tuple=, …); pull the version= line. FFI_ABI is a bare integer. \
-    got_version=$(grep -E '^version=' VERSION | head -1 | cut -d= -f2- | tr -d '[:space:]'); \
-    if [ "$got_version" != "$CPEX_FFI_VERSION" ]; then \
-        echo "[ffi] VERSION mismatch: tarball says '$got_version', expected '$CPEX_FFI_VERSION'" >&2; \
-        exit 1; \
-    fi; \
-    got_abi=$(tr -d '[:space:]' < FFI_ABI); \
-    if [ -n "$CPEX_FFI_ABI" ] && [ "$got_abi" != "$CPEX_FFI_ABI" ]; then \
-        echo "[ffi] FFI_ABI mismatch: tarball says '$got_abi', expected '$CPEX_FFI_ABI' (bump CPEX_FFI_ABI + the Go binding)" >&2; \
-        exit 1; \
-    fi; \
-    echo "[ffi] extracted libcpex_ffi.a + VERSION=$got_version + FFI_ABI=$got_abi (asserted)"
+WORKDIR /src
+COPY scripts/fetch-cpex-ffi.sh scripts/
+COPY cmd/cortex-cpex/CPEX_FFI_VERSION cmd/cortex-cpex/CPEX_FFI_ABI cmd/cortex-cpex/CPEX_FFI_SHA256 cmd/cortex-cpex/
+RUN CPEX_FFI_TARGET="${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}" CPEX_FFI_DEST=/ffi \
+    bash scripts/fetch-cpex-ffi.sh
 
 # ---------- Stage 2: build cortex-cpex with cgo + -tags cpex ----
 # golang:alpine (musl) so we link the musl CPEX FFI asset and run on the

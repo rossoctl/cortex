@@ -99,6 +99,78 @@ jobs:
       - name: Test (tlsbridge trust check)
         run: go test -v -race -run 'TestOSTrustCheck|TestClientTrust|TestGoExecutables' ./tlsbridge/...
 
+  # The cpex plugin's FFI-backed code sits behind the `cpex` build tag and needs
+  # cgo plus the pinned libcpex_ffi.a, so no other job compiles or tests it. It
+  # runs in Alpine to link the same musl asset the authbridge-cpex image does,
+  # and only when a PR touches the code or pins it depends on.
+  go-ci-cpex:
+    name: Go CI (cpex plugin, cgo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+      GOTOOLCHAIN: auto
+      CGO_ENABLED: "1"
+    steps:
+      # bash and git first: checkout needs git for the history the change
+      # check reads, and every run step uses bash.
+      - name: Install build tools
+        shell: sh
+        run: apk add --no-cache bash git gcc musl-dev curl cosign
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for cpex changes
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(core/|cmd/cortex/|cmd/cortex-cpex/|scripts/profile-tags/|scripts/fetch-cpex-ffi\.sh$|\.github/workflows/ci\.yaml$)'
+          if git diff --name-only "$BASE_SHA" HEAD | grep -qE "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No cpex-related changes; skipping."
+          fi
+
+      - name: Fetch the pinned CPEX FFI
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          dir=$(CPEX_FFI_TARGET=linux-amd64-musl CPEX_FFI_DEST="$RUNNER_TEMP/cpex-ffi" bash scripts/fetch-cpex-ffi.sh)
+          echo "CGO_LDFLAGS=-L${dir} -lcpex_ffi -lm" >> "$GITHUB_ENV"
+
+      - name: Vet and test core/plugins/cpex
+        if: steps.changes.outputs.run == 'true'
+        working-directory: core
+        run: |
+          go vet -tags cpex ./plugins/cpex/...
+          go test -v -count=1 -tags cpex ./plugins/cpex/...
+
+      - name: Vet and build cmd/cortex-cpex
+        if: steps.changes.outputs.run == 'true'
+        working-directory: cmd/cortex-cpex
+        run: |
+          set -euo pipefail
+          TAGS="cpex,$(go -C ../../scripts/profile-tags run . cpex)"
+          go vet -tags "$TAGS" ./...
+          go build -tags "$TAGS" -o /dev/null .
+
   # The plugin-profile guards live in their own module, so no other job runs
   # them. They have to run on every PR: plugins are all opt-in, and a plugin
   # missing from every profile produces no build error — it just silently
