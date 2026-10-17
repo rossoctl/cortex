@@ -13,6 +13,7 @@
 .superpowers
 bin
 dist
+.cpex-ffi
 
 # Caches and virtualenvs, which show up at any depth (tests/__pycache__ does).
 **/venv

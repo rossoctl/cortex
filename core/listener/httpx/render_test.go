@@ -245,3 +245,21 @@ func TestMarshalMCPRejectionBody_BadIDFallsBackToNullID(t *testing.T) {
 		t.Errorf("error.message = %v, want IBAC reason (preserved across fallback)", errObj["message"])
 	}
 }
+
+// A violation that names a JSON-RPC code (a retry signal, say) gets that
+// code on the frame instead of the generic one.
+func TestMarshalMCPRejectionBody_RPCCode(t *testing.T) {
+	action := pipeline.DenyStatus(403, "cpex.elicitation_pending", "awaiting approval")
+	action.Violation.RPCCode = -32120
+	var body struct {
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(MarshalMCPRejectionBody(action, float64(1)), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != -32120 {
+		t.Fatalf("error.code = %d, want -32120", body.Error.Code)
+	}
+}

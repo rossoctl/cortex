@@ -24,6 +24,8 @@ type identityProbePlugin struct {
 	sawNil    []bool
 	sawID     []string
 	sawEvents []int
+	sawSource []pipeline.SessionSource
+	sawHeader []string
 }
 
 func (p *identityProbePlugin) Name() string { return "identity-probe" }
@@ -38,6 +40,8 @@ func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Contex
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	p.sawNil = append(p.sawNil, false)
+	p.sawSource = append(p.sawSource, pctx.SessionSource)
+	p.sawHeader = append(p.sawHeader, pctx.SessionHeader)
 	p.sawID = append(p.sawID, pctx.Session.ID)
 	p.sawEvents = append(p.sawEvents, len(pctx.Session.Events))
 	return pipeline.Action{Type: pipeline.Continue}

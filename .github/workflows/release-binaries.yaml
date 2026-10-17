@@ -6,6 +6,17 @@ name: Release binaries
 # `replace => ../../core`, so builds run per-module with GOWORK=off — no
 # workspace needed. workflow_dispatch runs a dry build that only uploads
 # workflow artifacts (no Release), for testing.
+#
+# `cortex-cpex` is the same `cortex` built with the cpex plugin. That needs cgo
+# and a native libcpex_ffi.a, so it cannot cross-compile with the rest: each
+# platform builds on its own runner. Linux builds are static musl binaries, so
+# one tarball runs on glibc and musl hosts alike.
+#
+# Four jobs: `version` derives the tag and the stamp once, `build` and
+# `build-cpex` hold only contents: read, and `publish` alone can write. It
+# publishes nothing unless every expected tarball arrived, so a failed cpex
+# build blocks the release rather than shipping without the variant (and the
+# main-latest prune below never deletes the variant's assets).
 
 on:
   push:
@@ -38,7 +49,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-binaries:
+  version:
     runs-on: ubuntu-latest
     # The developer channel is off until a release containing the newest_release()
     # v-tag filter exists. Set MAIN_CHANNEL_ENABLED=true in repo variables after
@@ -61,36 +72,13 @@ jobs:
       || github.event_name == 'workflow_dispatch'
       || vars.MAIN_CHANNEL_ENABLED == 'true'
     permissions:
-      # create/update the Release, upload assets, and move the rolling tag.
-      #
-      # This is reachable on every `main` push now, not only on tag pushes, so the blast
-      # radius of a compromised step in this job is larger than it was. Nothing here is
-      # known-wrong — the job builds only first-party code and every action is SHA-pinned
-      # — but the scope change deserves a look at the moment it starts mattering, which
-      # is when MAIN_CHANNEL_ENABLED flips rather than when this merges. It is listed as
-      # a pre-enable check in CONTRIBUTING for that reason.
-      #
-      # If that look wants a smaller surface, the shape is splitting build (contents:
-      # read) from publish (contents: write) and passing dist/ between them as an
-      # artifact. Not done here: it is a restructuring, not a fix, and the gate keeps
-      # this inert until someone decides.
-      contents: write
+      contents: read
+    outputs:
+      tag: ${{ steps.derive.outputs.tag }}
+      version: ${{ steps.derive.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          # Every commit and tag, so release_notes.sh can find the previous release
-          # by ancestry. blob:none keeps that to commits and trees; the build fetches
-          # the blobs of this one commit only.
-          fetch-depth: 0
-          filter: blob:none
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: cmd/cortex/go.mod
-
-      - name: Build binaries (linux/darwin, amd64/arm64)
+      - name: Derive the release tag and the version stamp
+        id: derive
         env:
           # Untrusted input passed via env (never interpolated into the script).
           INPUT_TAG: ${{ github.event.inputs.tag }}
@@ -120,13 +108,36 @@ jobs:
             VERSION="${INPUT_TAG:-dev}"
           fi
           echo "Building ${VERSION} for release ${TAG}"
-          # Hand both to later steps rather than re-deriving them there. The publish
-          # step used GITHUB_REF_NAME, which is "main" on a main push — it would have
-          # published to the wrong tag the moment the two stopped being equal.
+          # Every later job reads both from here rather than re-deriving them. The
+          # publish step once used GITHUB_REF_NAME, which is "main" on a main push — it
+          # would have published to the wrong tag the moment the two stopped being equal.
           {
-            echo "TAG=${TAG}"
-            echo "VERSION=${VERSION}"
-          } >> "${GITHUB_ENV}"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+
+      - name: Build binaries (linux/darwin, amd64/arm64)
+        run: |
+          set -euo pipefail
           mkdir -p dist
 
           # cortex variants: "<suffix>:<build-tags>". Empty suffix is
@@ -174,8 +185,184 @@ jobs:
               build_proxy "${entry%%:*}" "${entry#*:}" "${os}" "${arch}"
             done
           done
+          ls -l dist
+
+      - name: Upload the tarballs for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist-go
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  build-cpex:
+    name: build-cpex (${{ matrix.os }}/${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      # One missing platform blocks the release anyway, so stop the others early.
+      fail-fast: true
+      matrix:
+        include:
+          - {os: darwin, arch: arm64, runner: macos-14, ffi: darwin-arm64}
+          - {os: linux, arch: amd64, runner: ubuntu-latest, ffi: linux-amd64-musl}
+          - {os: linux, arch: arm64, runner: ubuntu-24.04-arm, ffi: linux-arm64-musl}
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET_OS: ${{ matrix.os }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      CPEX_FFI_TARGET: ${{ matrix.ffi }}
+      # The image ci.yaml's cpex job and the authbridge-cpex image build in. Run with
+      # `docker run` rather than as a job container: GitHub's runner cannot run
+      # JavaScript actions (checkout, upload-artifact) inside an Alpine container on
+      # arm64.
+      ALPINE_GO: golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+      # The build, run natively on macOS and inside ALPINE_GO on Linux. The FFI is
+      # fetched and verified (pinned digest, cosign, VERSION and FFI_ABI) by the same
+      # script the image and `make cortex-cpex` use. On Linux, -extldflags -static
+      # links musl, libgcc and the FFI into one binary with no loader to find.
+      BUILD: |
+        set -eu
+        export GOWORK=off CGO_ENABLED=1
+        ffi=$(CPEX_FFI_DEST="${FFI_DIR}" bash scripts/fetch-cpex-ffi.sh)
+        tags="cpex,$(go -C scripts/profile-tags run . fullcpex)"
+        ldflags="-s -w -X main.version=${VERSION}"
+        cgo_ldflags="-L${ffi} -lcpex_ffi -lm"
+        if [ "$(go env GOOS)" = linux ]; then
+          ldflags="${ldflags} -linkmode external -extldflags -static"
+        else
+          # MACOSX_DEPLOYMENT_TARGET reaches the C compiler but not Go's link step,
+          # which links for an older macOS unless told.
+          cgo_ldflags="${cgo_ldflags} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
+        fi
+        cd cmd/cortex
+        CGO_LDFLAGS="${cgo_ldflags}" go build -trimpath -tags "${tags}" \
+          -ldflags "${ldflags}" -o ../../dist/cortex .
+        got=$(../../dist/cortex --version)
+        [ "${got}" = "cortex (cpex) ${VERSION}" ] || {
+          echo "cortex --version printed '${got}', want 'cortex (cpex) ${VERSION}'" >&2
+          exit 1
+        }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        if: matrix.os == 'darwin'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+
+      - name: Install cosign
+        if: matrix.os == 'darwin'
+        run: brew install cosign
+
+      - name: Build cortex-cpex
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [ "${TARGET_OS}" = linux ]; then
+            # Root inside the container writes dist/cortex; the runner user can still
+            # read it and delete it from its own dist/.
+            docker run --rm -v "${GITHUB_WORKSPACE}:/src" -w /src \
+              -e BUILD -e VERSION -e CPEX_FFI_TARGET -e FFI_DIR=/tmp/cpex-ffi -e GOTOOLCHAIN=auto \
+              "${ALPINE_GO}" sh -c '
+                set -eu
+                apk add --no-cache bash git gcc musl-dev curl cosign >/dev/null
+                git config --global --add safe.directory /src
+                sh -c "${BUILD}"'
+            # A static binary also runs on this glibc host, with no musl loader on it.
+            dist/cortex --version
+          else
+            # The newest macOS any object in the pinned FFI is built for (its aws-lc
+            # objects say 14.5). Linking for less makes ld warn about every one of
+            # them, and the binary would claim to run where they may not.
+            MACOSX_DEPLOYMENT_TARGET=14.5 FFI_DIR="${RUNNER_TEMP}/cpex-ffi" sh -c "${BUILD}"
+          fi
+          # The executable stays `cortex`: the variant is the tarball, not a new name.
+          tar -C dist -czf "dist/cortex-cpex_${TAG}_${TARGET_OS}_${TARGET_ARCH}.tar.gz" cortex
+          rm -f dist/cortex
+          ls -l dist
+
+      - name: Upload the tarball for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist-cpex-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [version, build, build-cpex]
+    runs-on: ubuntu-latest
+    permissions:
+      # create/update the Release, upload assets, and move the rolling tag.
+      #
+      # This is reachable on every `main` push now, not only on tag pushes, so it
+      # deserves a look at the moment it starts mattering, which is when
+      # MAIN_CHANNEL_ENABLED flips rather than when this merges. It is listed as a
+      # pre-enable check in CONTRIBUTING for that reason. Nothing in this job
+      # compiles: it receives finished tarballs from jobs that cannot write.
+      contents: write
+      # Build provenance for the cortex-cpex tarballs (actions/attest-build-provenance).
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Every commit and tag, so release_notes.sh can find the previous release
+          # by ancestry. blob:none keeps that to commits and trees.
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Download the tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check every tarball is present, and write checksums.txt
+        run: |
+          set -euo pipefail
+          # Fail closed: a release missing any of these must not publish. On
+          # main-latest the prune below deletes whatever dist/ lacks, so a silent gap
+          # here would also remove the previous build's asset from the release.
+          missing=""
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            for name in agentop cortex; do
+              f="dist/${name}_${TAG}_${os}_${arch}.tar.gz"
+              [ -s "${f}" ] || missing="${missing} ${f}"
+            done
+          done
+          for target in darwin/arm64 linux/amd64 linux/arm64; do
+            f="dist/cortex-cpex_${TAG}_${target%/*}_${target#*/}.tar.gz"
+            [ -s "${f}" ] || missing="${missing} ${f}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing release tarballs:${missing}"
+            exit 1
+          fi
           ( cd dist && sha256sum ./*.tar.gz > checksums.txt )
           ls -l dist
+          cat dist/checksums.txt
+
+      - name: Attest build provenance for cortex-cpex
+        # Same condition as the publish step: a dry run attests nothing.
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: dist/cortex-cpex_*.tar.gz
 
       - name: Publish to GitHub Release
         # A main push publishes too, which is the whole point of the channel; the
@@ -191,8 +378,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # TAG comes from the build step via GITHUB_ENV — one derivation, not two.
-          [ -n "${TAG:-}" ] || { echo "TAG not set by the build step" >&2; exit 1; }
+          # TAG comes from the version job — one derivation, not two.
+          [ -n "${TAG:-}" ] || { echo "TAG not set by the version job" >&2; exit 1; }
           # This decides who gets the release. A prerelease never takes GitHub's
           # "Latest" badge, and Latest is what the plain one-liner installs, so a
           # flagged release reaches only someone who names it with --ref. `main` belongs
@@ -223,6 +410,9 @@ jobs:
             fi
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
+          add '`cortex-cpex_*` is `cortex` built with the cpex policy plugin, for macOS arm64 and'
+          add 'linux amd64/arm64 (static). Install it with `install.sh --cpex`; its provenance'
+          add 'verifies with `gh attestation verify <tarball> --repo rossoctl/cortex`.'
           add ''
           # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
           # user will look. Drop this once no supported release predates it.

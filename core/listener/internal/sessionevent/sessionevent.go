@@ -74,6 +74,14 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 	}
 }
 
+// DenyResponse is Deny for a rejection on the response pass, carrying that
+// pass's invocations.
+func DenyResponse(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction) pipeline.SessionEvent {
+	ev := Deny(pctx, action, dir)
+	ev.Invocations = pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse)
+	return ev
+}
+
 // TLS summarizes the connection the request arrived on, and is nil whenever
 // there is nothing true to say: a plaintext caller, or a listener that never
 // sees the client's connection at all. In envoy-sidecar mode Envoy terminates

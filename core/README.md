@@ -100,7 +100,7 @@ Packages that used to live at `core/validation`, `core/exchange`, `core/cache` m
 
 ## Usage
 
-Plugins own their own configuration and construct any `auth.Auth` they need internally from their per-plugin config (see [docs/plugin-reference.md](../docs/plugin-reference.md)). Host processes (`cmd/cortex`, `cmd/cortex-envoy`, `cmd/cortex-cpex`, `cmd/cortex-praxis`) just load the YAML, call `plugins.Build`, run the pipelines, and let each plugin handle its own dependencies.
+Plugins own their own configuration and construct any `auth.Auth` they need internally from their per-plugin config (see [docs/plugin-reference.md](../docs/plugin-reference.md)). Host processes (`cmd/cortex`, `cmd/cortex-envoy`, `cmd/cortex-praxis`) just load the YAML, call `plugins.Build`, run the pipelines, and let each plugin handle its own dependencies.
 
 ```go
 import (

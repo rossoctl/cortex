@@ -71,6 +71,34 @@ connections it is about to cut. Setup does not pass that line on.
 
 To restart deliberately: `agentop service restart`.
 
+## The cpex build
+
+Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
+as `cortex-cpex_<version>_<os>_<arch>.tar.gz`, for macOS arm64 (14.5 or later) and Linux
+amd64/arm64. The Linux builds are static, so they run on glibc and musl alike. To install
+it, pass `--cpex`:
+
+```sh
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --cpex
+```
+
+It installs as `cortex`, in the same place, under the same service; only the binary
+differs. Elsewhere, `--cpex` stops before downloading anything and names the platforms it
+supports. To check which build is running:
+
+```sh
+cortex --version                                         # cortex (cpex) v0.9.3
+curl -s http://127.0.0.1:47601/v1/plugins | grep -c '"name":"cpex"'   # 1
+```
+
+The tarballs carry build provenance as well as their `checksums.txt` entry:
+`gh attestation verify cortex-cpex_<version>_<os>_<arch>.tar.gz --repo rossoctl/cortex`.
+
+The choice is not remembered. Re-running the installer without `--cpex` installs the
+default build again, and says so first; keep passing `--cpex` to stay on it. A `--ref`
+that names a release from before `--cpex` existed fails: that release's installer rejects
+the flag, and the release has no cpex tarball.
+
 ## How traffic is grouped into sessions
 
 Each Claude Code session gets its own bucket, named with that session's id — the same
@@ -736,6 +764,17 @@ and `lastHost`. `pid` appears on an entry kept for one process that started befo
 CA. `hosts` is the host memory behind `skip-cached`: the hosts passed through for clients
 whose program cannot be named. On macOS, `osTrustsCA` is whether macOS trusted Cortex's CA
 when it last checked.
+
+### A request gets `421 Misdirected Request`
+
+Inside a bridged tunnel, every decrypted request must name the tunnel's own destination
+in its `Host` header — same host, compared without case or a trailing dot, and the same
+port, `443` when none is given. One that names another host or port is refused with a
+421 before any plugin runs and is never sent anywhere, because the proxy would dial the
+CONNECT target while every host-based policy judged the `Host` header. The timeline shows
+it as a 421 with `error.kind: "misdirected_request"` under the CONNECT target's host. A
+plaintext proxied request has no such gap: its destination is the request line's, and
+the `Host` header is ignored.
 
 ### Developer tooling is not intercepted at all
 

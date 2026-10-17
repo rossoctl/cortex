@@ -458,3 +458,54 @@ func TestSessionForProcess_AToolWritingToALaunchersOldSessionDoesNotMoveItsWorke
 		t.Errorf("the worker: %q, want task-2", got)
 	}
 }
+
+// ChainSession is the session a process above the sender named, so a child that names
+// a session of its own still answers with the one its parent agent is in. The topmost
+// claim wins: a nested agent's own session does not stand between a tool and the outer one.
+func TestChainSession_AnAncestorsClaimWins(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	claude := pchain(100, 50)
+	s.ClaimProcess("s1", "claude-code", claude)
+	recordIn(s, clk, "s1")
+
+	if got := s.ChainSession(claude); got != "" {
+		t.Errorf("the agent itself: %q, want none above it", got)
+	}
+	child := pchain(300, 200, 100, 50) // child ← bash ← claude ← login shell
+	s.ClaimProcess("fresh", "claude-code", child)
+	recordIn(s, clk, "fresh")
+	if got := s.ChainSession(child); got != "s1" {
+		t.Errorf("a child that named its own session: %q, want s1", got)
+	}
+	if got := s.ChainSession(pchain(301, 200, 100, 50)); got != "s1" {
+		t.Errorf("a tool that named nothing: %q, want s1", got)
+	}
+
+	nested := pchain(400, 200, 100, 50)
+	s.ClaimProcess("inner", "claude-code", nested)
+	recordIn(s, clk, "inner")
+	if got := s.ChainSession(pchain(500, 450, 400, 200, 100, 50)); got != "s1" {
+		t.Errorf("a tool of a nested agent: %q, want the outer session s1", got)
+	}
+	if got := s.ChainSession(pchain(600, 60)); got != "" {
+		t.Errorf("an unrelated process: %q, want none", got)
+	}
+}
+
+// A worker below its launcher is the same agent, not a child of it: the launcher holds
+// the worker's own claim, which must not count as an ancestor's.
+func TestChainSession_AnAgentsOwnLauncherIsNotAnAncestor(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	launcher := pchain(100, 50)
+	s.SessionForProcess(launcher, "claude-code")
+	worker := pchain(110, 100, 50)
+	s.ClaimProcess("s1", "claude-code", worker)
+	recordIn(s, clk, "s1")
+	s.ClaimProcess("s2", "claude-code", worker)
+	recordIn(s, clk, "s2")
+	if got := s.ChainSession(worker); got != "" {
+		t.Errorf("worker: %q, want none above the agent", got)
+	}
+}

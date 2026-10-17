@@ -15,8 +15,8 @@ import (
 // are safe.
 //
 // The fake lives outside _test.go so future integration suites in
-// cmd/cortex-cpex/ or downstream tools can reuse it. The cost is
-// that it ships in the cortex-cpex binary; no caller path
+// cmd/cortex or downstream tools can reuse it. The cost is
+// that it ships in every cpex build; no caller path
 // instantiates it from production code, so the risk is just dead
 // bytes. If binary size becomes a concern this moves to
 // fake_manager_test.go and stays in-package.

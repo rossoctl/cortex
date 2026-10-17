@@ -186,7 +186,7 @@ func TestTransparentBridge(t *testing.T) {
 	// client/server concurrency split in tlsbridge's known-good
 	// TestServeConn_HTTP11KeepAlive (server serves in a goroutine; the
 	// client drives req.Write + http.ReadResponse manually).
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+originHostPort+"/secret", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestTransparentBridge_CustomPort(t *testing.T) {
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent handshake through bridge on custom port failed: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+originHostPort+"/secret", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestConnectBridge(t *testing.T) {
 	//    http.ReadResponse split as TestTransparentBridge: the server makes a
 	//    blocking upstream round-trip between reading the request and writing
 	//    the response, so a single-goroutine RoundTrip can wedge.
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+originHostPort+"/secret", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestBridge_UnverifiableUpstream_FallsOpenToTunnel(t *testing.T) {
 		t.Fatalf("agent-side TLS handshake (expected to tunnel to origin) failed: %v", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+originHostPort+"/secret", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -793,7 +793,7 @@ func TestBridge_PinnedClient_AutoSkipsThenTunnels(t *testing.T) {
 		t.Fatalf("attempt 2: tunneled handshake to origin failed (auto-skip retry should tunnel cleanly): %v", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, "https://"+host+"/secret", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://"+originHostPort+"/secret", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

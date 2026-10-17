@@ -1,37 +1,94 @@
 package cpex
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // isStreamingResponseGap reports whether a response-phase invocation has a
-// non-empty body that yielded zero structured content parts — i.e. a
-// streaming (SSE) body the policy engine can't inspect. Callers use this
-// to fail closed rather than silently allowing unredacted content through.
+// non-empty body the policy engine can't inspect: an MCP or A2A response
+// that yielded zero content parts (a stream), or an inference response that
+// could not be read as its dialect. An inference response read cleanly may
+// carry no parts (an empty completion, an error body). Callers fail closed.
 func isStreamingResponseGap(pctx *pipeline.Context, isResponse bool, cmfPartCount int) bool {
-	if !isResponse || cmfPartCount > 0 || len(pctx.ResponseBody) == 0 {
+	if !isResponse || len(pctx.ResponseBody) == 0 {
 		return false
 	}
-	return pctx.Extensions.MCP != nil || pctx.Extensions.Inference != nil || pctx.Extensions.A2A != nil
+	if pctx.Extensions.MCP == nil && pctx.Extensions.Inference != nil {
+		return !readInferenceResponse(pctx).decoded
+	}
+	if cmfPartCount > 0 {
+		return false
+	}
+	return pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil
 }
 
-// sessionIDFromHeaders returns the X-Session-Id request header, the
-// session-correlation key AuthBridge threads into CPEX's session resolver
-// (tier-0 Agent.SessionID) for non-A2A traffic. MCP and inference requests
-// carry no native session id, so an upstream supplies one here to let
-// session-scoped CPEX state — e.g. taint labels — persist across the
-// separate request/response cycles of one logical session. Returns "" when
-// absent. Tag-free so it's unit-tested without cgo (buildCMF, which uses
-// it, is cgo-gated).
-func sessionIDFromHeaders(h http.Header) string {
-	return h.Get("X-Session-Id")
+// Values of the session_source config key.
+const (
+	sessionSourceHeader   = "header"
+	sessionSourceResolved = "resolved"
+)
+
+// cpexSessionID returns the session id CPEX keys session state (taint
+// labels) on, read by CPEX's session resolver from Agent.SessionID, and
+// whether it replaces the A2A context id. Tag-free so it is unit-tested
+// without cgo.
+//
+// Under "header" it is the X-Session-Id request header, which an upstream
+// sets so session-scoped state persists across the separate requests of
+// one logical session; the A2A context id takes precedence. Under
+// "resolved" it is trustedSessionID, which replaces any A2A context id:
+// both that and X-Session-Id are chosen by the caller.
+func cpexSessionID(pctx *pipeline.Context, source string) (id string, replaces bool) {
+	if source == sessionSourceResolved {
+		return trustedSessionID(pctx), true
+	}
+	return pctx.Headers.Get(session.SessionIDHeader), false
+}
+
+// trustedSessionID returns the listener's session id when a dedicated
+// agent session header or the process chain named it, else "". A guess
+// (the most recent session, User-Agent affinity, a pending or the default
+// bucket) is not an identity a caller can be held to, and the generic
+// X-Session-Id and Session-Id headers let any caller name a fresh session.
+// The session a parent agent named (ChainSession) wins over one the sender
+// named itself, so a child process cannot name a fresh session to leave
+// its parent's taint. ChainSession is set only where the listener has
+// process attribution (cortex bound to loopback, as the laptop install is);
+// in the authbridge-cpex sidecar it is always empty, so a dedicated header,
+// which the sender sets, is trusted as named.
+func trustedSessionID(pctx *pipeline.Context) string {
+	if id := pctx.ChainSession; id != "" && id != session.DefaultSessionID && !strings.HasPrefix(id, session.PendingPrefix) {
+		return id
+	}
+	if pctx.Session == nil {
+		return ""
+	}
+	id := pctx.Session.ID
+	if id == "" || id == session.DefaultSessionID || strings.HasPrefix(id, session.PendingPrefix) {
+		return ""
+	}
+	switch pctx.SessionSource {
+	case pipeline.SessionSourceProcess:
+		return id
+	case pipeline.SessionSourceHeader:
+		switch http.CanonicalHeaderKey(pctx.SessionHeader) {
+		case "", session.SessionIDHeader, http.CanonicalHeaderKey(session.CodexSessionHeader):
+			return ""
+		}
+		return id
+	}
+	return ""
 }
 
 // cmfPartKind enumerates the structured CMF content part buildCMF emits
@@ -149,12 +206,8 @@ func mcpToCMFPart(mcp *pipeline.MCPExtension, isResponse bool, requestBody, resp
 }
 
 // cmfEntity maps a cmfPart to the (entity_type, entity_name) pair CPEX's
-// route resolver keys on. cpex-core only dispatches a route's APL policy
-// handlers (require / cedar / delegate / field-redaction) when
-// Extensions.meta carries BOTH entity_type and entity_name (see
-// crates/cpex-core/src/manager.rs filter_entries_by_route); without them
-// the per-tool gates never fire and only always-on global plugins run.
-// caller leaves meta unset so non-action traffic isn't force-routed.
+// route resolver keys on. Parts that name no entity (protocol mechanics,
+// opaque text) return ("", "") and are identified by identification.
 func cmfEntity(part cmfPart) (entityType, entityName string) {
 	switch part.Kind {
 	case cmfPartToolCall, cmfPartToolResult:
@@ -168,19 +221,283 @@ func cmfEntity(part cmfPart) (entityType, entityName string) {
 	}
 }
 
+// Entity coordinates for requests that name no tool, prompt, resource or
+// model. PPE reserves http/* for an entity-less request: it matches `http:`
+// routes by path when the config declares them and otherwise falls back to
+// the global policy. Without any meta, CPEX 0.3 denies the request as
+// unidentified_request whenever the config declares a policy.
+const (
+	entityTypeLLM    = "llm"
+	globalEntityType = "http"
+	globalEntityName = "*"
+)
+
+// Values of the fallback_identification config key.
+const (
+	fallbackGlobal = "global"
+	fallbackNone   = "none"
+)
+
+// identification returns the meta coordinates for a request: the parsed
+// entity when there is one, otherwise the global identification unless the
+// fallback is "none", in which case it returns ("", "") and the request
+// carries no meta.
+func identification(entityType, entityName, fallback string) (string, string) {
+	if entityType != "" && entityName != "" {
+		return entityType, entityName
+	}
+	if fallback == fallbackNone {
+		return "", ""
+	}
+	return globalEntityType, globalEntityName
+}
+
+// Violation codes for requests the plugin refuses to present to CPEX.
+const (
+	// codeUnnamedEntity: an MCP tool call, prompt or resource read that
+	// names no tool, prompt or URI, so no route can be chosen for it.
+	codeUnnamedEntity = "unnamed_entity"
+	// codeAmbiguousRequest: a parsed JSON body with keys that collide under
+	// case folding or repeat. The parsers match keys case-insensitively and
+	// keep the last duplicate; a server may not, so policy could judge a
+	// different request from the one the server runs.
+	codeAmbiguousRequest = "ambiguous_request"
+)
+
+// unpresentableRequest returns the violation code for a request that must
+// be denied before CPEX sees it, or "". Call it on the request phase only.
+func unpresentableRequest(pctx *pipeline.Context) string {
+	if m := pctx.Extensions.MCP; m != nil {
+		switch m.Method {
+		case "tools/call", "prompts/get":
+			if mcpParamName(m.Params) == "" {
+				return codeUnnamedEntity
+			}
+		case "resources/read":
+			if mcpParamURI(m.Params) == "" {
+				return codeUnnamedEntity
+			}
+		}
+	}
+	parsed := pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil || pctx.Extensions.Inference != nil
+	if parsed && len(pctx.Body) > 0 && ambiguousJSON(pctx.Body) {
+		return codeAmbiguousRequest
+	}
+	return ""
+}
+
+// ambiguousJSON reports whether body is not valid JSON, or has an object
+// with a repeated key, or two keys equal under Unicode case folding in an
+// object the parsers decode into Go structs (see shapeOf). Everywhere else
+// (tool schemas and arguments, A2A data parts, metadata, response formats)
+// keys are data, which every side decodes as a map, so only exact repeats
+// count there.
+func ambiguousJSON(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	type frame struct {
+		keys      map[string]struct{} // nil for an array
+		expectKey bool
+		lastKey   string
+		// shape is the object's own shape, or for an array the shape of
+		// the objects it holds.
+		shape jsonShape
+	}
+	var stack []*frame
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return len(stack) != 0
+		}
+		if err != nil {
+			return true
+		}
+		var top *frame
+		if n := len(stack); n > 0 {
+			top = stack[n-1]
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{', '[':
+				f := &frame{expectKey: d == '{', shape: shapeEnvelope}
+				if d == '{' {
+					f.keys = map[string]struct{}{}
+				}
+				switch {
+				case top == nil:
+				case top.keys != nil:
+					f.shape = shapeOf(top.shape, top.lastKey, d == '[')
+					top.expectKey = false
+				case d == '{':
+					f.shape = top.shape
+				default:
+					f.shape = shapeData // an array in an array
+				}
+				stack = append(stack, f)
+			default:
+				stack = stack[:len(stack)-1]
+				if n := len(stack); n > 0 && stack[n-1].keys != nil {
+					stack[n-1].expectKey = true
+				}
+			}
+			continue
+		}
+		if top == nil || top.keys == nil {
+			continue
+		}
+		if !top.expectKey {
+			top.expectKey = true
+			continue
+		}
+		key, _ := tok.(string)
+		k := key
+		if top.shape != shapeData {
+			k = foldKey(key)
+		}
+		if _, dup := top.keys[k]; dup {
+			return true
+		}
+		top.keys[k] = struct{}{}
+		top.lastKey = key
+		top.expectKey = false
+	}
+}
+
+// jsonShape names an object the parsers decode into a Go struct, whose
+// fields encoding/json matches case-insensitively. shapeData is any other
+// object.
+type jsonShape int
+
+const (
+	shapeData          jsonShape = iota
+	shapeEnvelope                // the body: JSON-RPC or an inference request
+	shapeParams                  // JSON-RPC params (MCP, A2A)
+	shapeA2AMessage              // A2A params.message
+	shapeA2APart                 // A2A message part
+	shapeMessage                 // inference messages[] item
+	shapeBlock                   // inference content block, Responses content part
+	shapeItem                    // Responses input[] item
+	shapeToolNamespace           // Responses input[].tools[] namespace
+	shapeTool                    // inference tools[] item, Responses tool def
+	shapeFunction                // OpenAI tools[].function
+)
+
+// member is the shape of the value under one key of a struct-decoded
+// object: an object of that shape, or (list) an array of such objects.
+type member struct {
+	shape jsonShape
+	list  bool
+}
+
+// shapeTransitions maps a struct-decoded object's shape and the folded key
+// of one of its members to the shape of the value under that key. Members
+// not listed, and values of the other kind (an object where an array is
+// decoded, or the reverse, which the parsers do not decode as structs), are
+// data.
+var shapeTransitions = func() map[jsonShape]map[string]member {
+	obj := func(s jsonShape) member { return member{shape: s} }
+	list := func(s jsonShape) member { return member{shape: s, list: true} }
+	t := map[jsonShape]map[string]member{
+		shapeEnvelope: {
+			"params":   obj(shapeParams),
+			"messages": list(shapeMessage),
+			"input":    list(shapeItem),
+			"tools":    list(shapeTool),
+			"system":   list(shapeBlock),
+		},
+		shapeParams:        {"message": obj(shapeA2AMessage)},
+		shapeA2AMessage:    {"parts": list(shapeA2APart)},
+		shapeMessage:       {"content": list(shapeBlock)},
+		shapeBlock:         {"content": list(shapeBlock)},
+		shapeItem:          {"content": list(shapeBlock), "output": list(shapeBlock), "tools": list(shapeToolNamespace)},
+		shapeToolNamespace: {"tools": list(shapeTool)},
+		shapeTool:          {"function": obj(shapeFunction)},
+	}
+	folded := make(map[jsonShape]map[string]member, len(t))
+	for shape, members := range t {
+		folded[shape] = make(map[string]member, len(members))
+		for k, v := range members {
+			folded[shape][foldKey(k)] = v
+		}
+	}
+	return folded
+}()
+
+// shapeOf is the shape of the object, or with list of the objects in the
+// array, under key in an object of shape parent.
+func shapeOf(parent jsonShape, key string, list bool) jsonShape {
+	m, ok := shapeTransitions[parent][foldKey(key)]
+	if !ok || m.list != list {
+		return shapeData
+	}
+	return m.shape
+}
+
+// foldKey maps s to a key equal for exactly the strings strings.EqualFold
+// treats as equal: each rune becomes the smallest rune of its case-folding
+// orbit.
+func foldKey(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < m {
+				m = f
+			}
+		}
+		b.WriteRune(m)
+	}
+	return b.String()
+}
+
+// requestEntity is the entity a request names on the request phase: an MCP
+// tool, prompt or resource, or an inference model. ("", "") when it names
+// none.
+func requestEntity(pctx *pipeline.Context) (entityType, entityName string) {
+	switch {
+	case pctx.Extensions.MCP != nil:
+		return cmfEntity(mcpToCMFPart(pctx.Extensions.MCP, false, nil, nil))
+	case pctx.Extensions.Inference != nil:
+		return entityTypeLLM, pctx.Extensions.Inference.Model
+	}
+	return "", ""
+}
+
+// presentsAsEgress reports whether a request is presented as a call to
+// http_egress: with synthetic egress on, an outbound request on the
+// request phase that names no entity, whichever parser claimed it. A body
+// shaped as an MCP protocol method or an A2A message is egress like any
+// other, so it cannot route around the egress policy.
+func presentsAsEgress(pctx *pipeline.Context, isResponse, egress bool) bool {
+	if !egress || isResponse || pctx.Direction != pipeline.Outbound {
+		return false
+	}
+	et, en := requestEntity(pctx)
+	return et == "" || en == ""
+}
+
 // pctxToCMFParts is the top-level protocol selector: it turns whichever
 // protocol extension is populated into ordered CMF content parts plus the
 // (entity_type, entity_name) routing coordinates. Precedence MCP →
 // inference → A2A mirrors the priority order parsers populate in, and any
 // unpopulated case falls back to a single opaque-text part carrying the
-// raw body — preserving pre-structured-mapping behavior for traffic no
-// parser claimed (control-plane RPCs, unknown formats).
+// raw body.
+//
+// Only MCP tool/prompt/resource calls and inference name an entity; A2A,
+// MCP protocol mechanics and unparsed traffic return ("", "") and take the
+// fallback identification (see identification). With egress set, an
+// outbound request that names no entity is presented as a call to the tool
+// http_egress instead (see presentsAsEgress, egressPart); its response
+// keeps the protocol mapping.
 //
 // Splitting this from the cgo adapter keeps the MCP/inference/A2A → CMF
 // decision unit-testable under CGO_ENABLED=0; manager_cpex.go converts the
 // returned cmfParts into rcpex ContentParts and stamps the entity coords
 // onto Extensions.Meta.
-func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, entityType, entityName string) {
+func pctxToCMFParts(pctx *pipeline.Context, isResponse, egress bool) (parts []cmfPart, entityType, entityName string) {
+	if presentsAsEgress(pctx, isResponse, egress) {
+		part := egressPart(pctx)
+		return []cmfPart{part}, "tool", part.Name
+	}
 	switch {
 	case pctx.Extensions.MCP != nil:
 		part := mcpToCMFPart(pctx.Extensions.MCP, isResponse, pctx.Body, pctx.ResponseBody)
@@ -188,18 +505,16 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, e
 		return []cmfPart{part}, et, en
 
 	case pctx.Extensions.Inference != nil:
-		// Inference is always an action; route by model so operators can
-		// scope per-route APL gates with `- model: <name>`. Only structured
+		// Inference routes by model (`- llm: <model>`). Only structured
 		// text/tool parts cross — no opaque body part. Model persists from
 		// the request phase, so entity routing works on responses too.
-		return inferenceToCMFParts(pctx.Extensions.Inference, isResponse, pctx.ResponseBody),
-			"model", pctx.Extensions.Inference.Model
+		if isResponse {
+			return readInferenceResponse(pctx).parts, entityTypeLLM, pctx.Extensions.Inference.Model
+		}
+		return inferenceToCMFParts(pctx.Extensions.Inference), entityTypeLLM, pctx.Extensions.Inference.Model
 
 	case pctx.Extensions.A2A != nil:
-		// Route A2A by its JSON-RPC method (message/send, message/stream),
-		// which persists from the request phase.
-		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody),
-			"a2a_method", pctx.Extensions.A2A.Method
+		return a2aToCMFParts(pctx.Extensions.A2A, isResponse, pctx.ResponseBody), "", ""
 
 	default:
 		body := pctx.Body
@@ -210,38 +525,50 @@ func pctxToCMFParts(pctx *pipeline.Context, isResponse bool) (parts []cmfPart, e
 	}
 }
 
-// inferenceToCMFParts maps an InferenceExtension onto ordered CMF content
-// parts for the given phase.
+// inferenceToCMFParts maps an inference request's InferenceExtension onto
+// ordered CMF content parts: one text part per request message with
+// non-empty string content, in message order (inference-parser populated
+// the extension before cpex on the forward request pass). Flattening the
+// whole prompt to text parts makes every message redactable via
+// cmf.llm_input, and the strict "non-empty string content, in order" rule
+// is the contract applyInferenceRequestBodyMod relies on to map redacted
+// text back onto the right body message positionally. Tool output becomes
+// tool-result parts instead: an OpenAI chat message with role "tool", and
+// each Anthropic tool_result block or Responses-API function_call_output
+// item the parser kept in inf.ToolResults. A result with no text (an image
+// block only) yields no part.
 //
-// Request phase: one text part per request message with non-empty string
-// content, in message order (read from the extension, which inference-parser
-// populated before cpex on the forward request pass). Flattening the whole
-// prompt to text parts makes every message redactable via cmf.llm_input,
-// and the strict "non-empty string content, in order" rule is the contract
-// applyInferenceRequestBodyMod relies on to map redacted text back onto the
-// right body message positionally.
-//
-// Response phase: parsed from responseBody, NOT from inf.Completion.
-// Response hooks run in reverse pipeline order, so cpex executes BEFORE
-// inference-parser's OnResponse and inf.Completion isn't populated yet —
-// exactly the situation mcpToCMFPart handles for tool results. See
-// inferenceResponseParts.
-func inferenceToCMFParts(inf *pipeline.InferenceExtension, isResponse bool, responseBody []byte) []cmfPart {
+// The response is read from the body instead (readInferenceResponse).
+func inferenceToCMFParts(inf *pipeline.InferenceExtension) []cmfPart {
 	if inf == nil {
 		return nil
 	}
-	if isResponse {
-		return inferenceResponseParts(responseBody)
-	}
 	var parts []cmfPart
 	for _, m := range inf.Messages {
-		if m.Content == "" {
+		switch {
+		case m.Content == "":
+		case m.Role == roleTool:
+			parts = append(parts, cmfPart{Kind: cmfPartToolResult, Content: m.Content})
+		default:
+			parts = append(parts, cmfPart{Kind: cmfPartText, Text: m.Content})
+		}
+	}
+	for _, r := range inf.ToolResults {
+		if r.Content == "" {
 			continue
 		}
-		parts = append(parts, cmfPart{Kind: cmfPartText, Text: m.Content})
+		parts = append(parts, cmfPart{
+			Kind:          cmfPartToolResult,
+			CorrelationID: r.ToolUseID,
+			Content:       r.Content,
+			IsError:       r.IsError,
+		})
 	}
 	return parts
 }
+
+// roleTool is the OpenAI chat role of a message carrying tool output.
+const roleTool = "tool"
 
 // a2aToCMFParts maps an A2AExtension onto ordered CMF content parts.
 //
@@ -480,7 +807,8 @@ type MCPRequestBodyMod struct {
 // changed and SetBody was called; returns mutated=false (with no
 // error) when the original body didn't match the expected shape
 // (e.g., parsed JSON has no `params` object, method is unsupported,
-// or the mod struct's relevant field is empty for the method).
+// or the mod struct's relevant field is empty for the method), or the new
+// value equals the one already there.
 func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPRequestBodyMod) (mutated bool, err error) {
 	if len(pctx.Body) == 0 {
 		return false, nil
@@ -500,12 +828,12 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 		// stripped all arguments returns an empty map and still means to
 		// rewrite. Inferring no-op from emptiness would forward the
 		// original (un-redacted) arguments.
-		if !mod.ArgsSet {
+		if !mod.ArgsSet || jsonEqual(params["arguments"], mod.NewArguments) {
 			return false, nil
 		}
 		params["arguments"] = mod.NewArguments
 	case "resources/read":
-		if !mod.URISet {
+		if !mod.URISet || params["uri"] == mod.NewURI {
 			return false, nil
 		}
 		params["uri"] = mod.NewURI
@@ -543,7 +871,8 @@ func applyMCPRequestBodyMod(pctx *pipeline.Context, method string, mod MCPReques
 //
 // Returns mutated=true when SetResponseBody was called; mutated=false
 // when the body wasn't a tools/call response, had no result.content,
-// or the response had no replaceable text block.
+// the response had no replaceable text block, or newContent equals the
+// result the policy was shown.
 func applyMCPResponseBodyMod(pctx *pipeline.Context, method string, newContent any) (mutated bool, err error) {
 	if method != "tools/call" {
 		return false, nil
@@ -556,7 +885,7 @@ func applyMCPResponseBodyMod(pctx *pipeline.Context, method string, newContent a
 		return false, fmt.Errorf("decode response body as JSON: %w", err)
 	}
 	result, ok := envelope["result"].(map[string]any)
-	if !ok {
+	if !ok || jsonEqual(extractToolResultContent(result), newContent) {
 		return false, nil
 	}
 

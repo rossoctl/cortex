@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // --- applyMCPRequestBodyMod ---
@@ -516,6 +517,42 @@ func TestCMFEntity(t *testing.T) {
 	}
 }
 
+func TestIdentification(t *testing.T) {
+	cases := []struct {
+		name               string
+		pctx               *pipeline.Context
+		fallback           string
+		wantType, wantName string
+	}{
+		{"tool call", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/call", Params: map[string]any{"name": "get_compensation"}}}},
+			"", "tool", "get_compensation"},
+		{"tools/list", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/list"}}}, "", "http", "*"},
+		{"initialize", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "initialize"}}}, fallbackGlobal, "http", "*"},
+		{"inference", &pipeline.Context{Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{
+			Model: "claude-sonnet-4"}}}, "", "llm", "claude-sonnet-4"},
+		{"inference without model", &pipeline.Context{Extensions: pipeline.Extensions{
+			Inference: &pipeline.InferenceExtension{}}}, "", "http", "*"},
+		{"a2a", &pipeline.Context{Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{
+			Method: "message/send"}}}, "", "http", "*"},
+		{"unparsed", &pipeline.Context{Body: []byte("x")}, "", "http", "*"},
+		{"unparsed, fallback none", &pipeline.Context{Body: []byte("x")}, fallbackNone, "", ""},
+		{"tool call, fallback none", &pipeline.Context{Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{
+			Method: "tools/call", Params: map[string]any{"name": "t"}}}}, fallbackNone, "tool", "t"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, et, en := pctxToCMFParts(tc.pctx, false, false)
+			et, en = identification(et, en, tc.fallback)
+			if et != tc.wantType || en != tc.wantName {
+				t.Errorf("identification = (%q,%q), want (%q,%q)", et, en, tc.wantType, tc.wantName)
+			}
+		})
+	}
+}
+
 // --- stringifyRPCID ---
 
 func TestStringifyRPCID(t *testing.T) {
@@ -546,7 +583,7 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Params: map[string]any{"name": "get_compensation", "arguments": map[string]any{"id": "E1"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Kind != cmfPartToolCall {
 			t.Fatalf("mcp parts: %+v", parts)
 		}
@@ -562,11 +599,11 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Messages: []pipeline.InferenceMessage{{Role: "user", Content: "hi"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Text != "hi" {
 			t.Fatalf("inference parts: %+v", parts)
 		}
-		if et != "model" || en != "gpt-4o" {
+		if et != "llm" || en != "gpt-4o" {
 			t.Fatalf("inference entity = (%q,%q)", et, en)
 		}
 	})
@@ -578,18 +615,18 @@ func TestPctxToCMFParts_SelectsByPopulatedExtension(t *testing.T) {
 				Parts:  []pipeline.A2APart{{Kind: "text", Content: "yo"}},
 			}},
 		}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Text != "yo" {
 			t.Fatalf("a2a parts: %+v", parts)
 		}
-		if et != "a2a_method" || en != "message/send" {
-			t.Fatalf("a2a entity = (%q,%q)", et, en)
+		if et != "" || en != "" {
+			t.Fatalf("a2a should name no entity, got (%q,%q)", et, en)
 		}
 	})
 
 	t.Run("none falls back to opaque text", func(t *testing.T) {
 		pctx := &pipeline.Context{Body: []byte("raw body")}
-		parts, et, en := pctxToCMFParts(pctx, false)
+		parts, et, en := pctxToCMFParts(pctx, false, false)
 		if len(parts) != 1 || parts[0].Kind != cmfPartText || parts[0].Text != "raw body" {
 			t.Fatalf("fallback parts: %+v", parts)
 		}
@@ -617,14 +654,70 @@ func TestInferenceHistory_RoleTagged(t *testing.T) {
 	}
 }
 
-func TestSessionIDFromHeaders(t *testing.T) {
-	h := http.Header{}
-	if got := sessionIDFromHeaders(h); got != "" {
-		t.Fatalf("absent header should yield empty, got %q", got)
+func TestCPEXSessionID(t *testing.T) {
+	resolved := func(id string, src pipeline.SessionSource, header string) *pipeline.Context {
+		return &pipeline.Context{
+			Headers:       http.Header{"X-Session-Id": {"caller-chosen"}},
+			Session:       &pipeline.SessionView{ID: id},
+			SessionSource: src,
+			SessionHeader: header,
+		}
 	}
-	h.Set("X-Session-Id", "taint-demo-42")
-	if got := sessionIDFromHeaders(h); got != "taint-demo-42" {
-		t.Fatalf("got %q, want taint-demo-42", got)
+	withChain := func(pctx *pipeline.Context, chain string) *pipeline.Context {
+		pctx.ChainSession = chain
+		return pctx
+	}
+	cases := []struct {
+		name         string
+		pctx         *pipeline.Context
+		source       string
+		wantID       string
+		wantReplaces bool
+	}{
+		{"header, absent", &pipeline.Context{Headers: http.Header{}}, sessionSourceHeader, "", false},
+		{"header, present", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"taint-demo-42"}}},
+			sessionSourceHeader, "taint-demo-42", false},
+		{"header ignores the resolved session",
+			&pipeline.Context{Headers: http.Header{}, Session: &pipeline.SessionView{ID: "s1"}, SessionSource: pipeline.SessionSourceProcess},
+			sessionSourceHeader, "", false},
+		{"resolved from the Claude Code header",
+			resolved("s1", pipeline.SessionSourceHeader, session.ClaudeCodeSessionHeader), sessionSourceResolved, "s1", true},
+		{"resolved from the process chain",
+			resolved("s1", pipeline.SessionSourceProcess, ""), sessionSourceResolved, "s1", true},
+		{"resolved from X-Session-Id",
+			resolved("s1", pipeline.SessionSourceHeader, "x-session-id"), sessionSourceResolved, "", true},
+		{"resolved from Session-Id",
+			resolved("s1", pipeline.SessionSourceHeader, session.CodexSessionHeader), sessionSourceResolved, "", true},
+		{"resolved from the active session",
+			resolved("s1", pipeline.SessionSourceActive, ""), sessionSourceResolved, "", true},
+		{"resolved from affinity",
+			resolved("s1", pipeline.SessionSourceAffinity, ""), sessionSourceResolved, "", true},
+		{"resolved from a pending bucket",
+			resolved(session.PendingSessionID("claude-code"), pipeline.SessionSourcePending, ""), sessionSourceResolved, "", true},
+		{"resolved, source not recorded",
+			resolved("s1", "", ""), sessionSourceResolved, "", true},
+		{"resolved, no session", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"x"}}},
+			sessionSourceResolved, "", true},
+		{"resolved, a child's own header yields to its parent's session",
+			withChain(resolved("fresh", pipeline.SessionSourceHeader, session.ClaudeCodeSessionHeader), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"resolved, a child's own claim yields to its parent's session",
+			withChain(resolved("fresh", pipeline.SessionSourceProcess, ""), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"resolved, a pending child takes its parent's session",
+			withChain(resolved(session.PendingSessionID("claude-code"), pipeline.SessionSourcePending, ""), "claude-1"),
+			sessionSourceResolved, "claude-1", true},
+		{"header ignores the process chain",
+			withChain(&pipeline.Context{Headers: http.Header{"X-Session-Id": {"taint-demo-42"}}}, "claude-1"),
+			sessionSourceHeader, "taint-demo-42", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, replaces := cpexSessionID(tc.pctx, tc.source)
+			if id != tc.wantID || replaces != tc.wantReplaces {
+				t.Errorf("cpexSessionID = (%q, %v), want (%q, %v)", id, replaces, tc.wantID, tc.wantReplaces)
+			}
+		})
 	}
 }
 
@@ -642,15 +735,22 @@ func TestIsStreamingResponseGap_SSEBodyWithProtocolExtension(t *testing.T) {
 	}
 }
 
+// An inference stream of a known dialect is read; on a path no dialect
+// matches it cannot be, and fails closed.
 func TestIsStreamingResponseGap_InferenceSSE(t *testing.T) {
 	pctx := &pipeline.Context{
+		Path:         "/v1/chat/completions",
 		ResponseBody: []byte("data: {\"choices\":[{\"delta\":{}}]}\n\n"),
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{Model: "gpt-4"},
 		},
 	}
+	if isStreamingResponseGap(pctx, true, 0) {
+		t.Fatal("readable inference SSE reported as a gap")
+	}
+	pctx.Path = "/v1/other"
 	if !isStreamingResponseGap(pctx, true, 0) {
-		t.Fatal("expected streaming gap for inference SSE")
+		t.Fatal("expected streaming gap for inference SSE on an unknown path")
 	}
 }
 
@@ -696,5 +796,22 @@ func TestIsStreamingResponseGap_NoProtocolExtension(t *testing.T) {
 	}
 	if isStreamingResponseGap(pctx, true, 0) {
 		t.Fatal("no protocol extension → no gap (unrecognised traffic)")
+	}
+}
+
+// A payload returned as it was sent is not a rewrite.
+func TestMCPBodyMod_UnchangedValuesNoOp(t *testing.T) {
+	pctx := &pipeline.Context{Body: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"n":1,"s":"x"}}}`)}
+	mutated, err := applyMCPRequestBodyMod(pctx, "tools/call", MCPRequestBodyMod{
+		NewArguments: map[string]any{"n": int64(1), "s": "x"}, ArgsSet: true,
+	})
+	if err != nil || mutated || pctx.BodyMutated() {
+		t.Fatalf("request: mutated=%v err=%v", mutated, err)
+	}
+
+	pctx = &pipeline.Context{ResponseBody: []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}`)}
+	mutated, err = applyMCPResponseBodyMod(pctx, "tools/call", map[string]any{"ok": true})
+	if err != nil || mutated {
+		t.Fatalf("response: mutated=%v err=%v", mutated, err)
 	}
 }

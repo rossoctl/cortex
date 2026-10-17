@@ -46,6 +46,11 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 			"a2aparser", "cpex", "ibac", "inferenceparser", "jwtvalidation",
 			"mcpparser", "sparc", "tokenbroker", "tokenexchange",
 		}},
+		{"fullcpex", []string{
+			"a2aparser", "cpex", "ibac", "inferenceparser", "inferencerouter", "jwtvalidation",
+			"lineage", "litellm_budgettrack", "mcpparser", "opa", "sparc", "staticinject",
+			"tokenbroker", "tokenexchange", "toolprune",
+		}},
 		// lite reproduces the retired lite-tags generator's keep set exactly, so
 		// the published -lite artifact does not change in this refactor. It is a
 		// sidecar minimum and shares no plugin with `local`.
@@ -68,6 +73,25 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 					tc.profile, strings.Join(got, ","), strings.Join(wantTags, ","))
 			}
 		})
+	}
+}
+
+// TestTags_FullCpexIsFullPlusCpex keeps the cgo laptop build at parity with the
+// default one: a plugin added to full must reach fullcpex too.
+func TestTags_FullCpexIsFullPlusCpex(t *testing.T) {
+	full, err := Tags(ProfileFull)
+	if err != nil {
+		t.Fatalf("Tags(full): %v", err)
+	}
+	got, err := Tags(ProfileFullCpex)
+	if err != nil {
+		t.Fatalf("Tags(fullcpex): %v", err)
+	}
+	want := append(append([]string{}, full...), "include_plugin_cpex")
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("fullcpex is not full plus cpex\n got: %s\nwant: %s",
+			strings.Join(got, ","), strings.Join(want, ","))
 	}
 }
 

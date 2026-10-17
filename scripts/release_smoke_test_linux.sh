@@ -4,8 +4,8 @@
 # Exercises install.sh (and the agentop setup it hands off to) + agentop service
 # exactly as a real user would, against
 # a real published release: fresh install, upgrade over an existing install
-# (config preserved, and the NEW binary actually serving), a no-op re-run, and
-# a clean uninstall. Run against a real tag/release, not a local build — there
+# (config preserved, and the NEW binary actually serving), a no-op re-run, a
+# switch to the cpex build and back, and a clean uninstall. Run against a real tag/release, not a local build — there
 # is no supported "install from this on-disk tarball" mode in install.sh, so
 # this always downloads for real.
 #
@@ -56,10 +56,13 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 # run with the failure message trapped in a file nobody prints. `return`
 # propagates the failure to the caller instead, which every call site (both
 # the bare ones under `set -e` and the one under `if !`) handles correctly.
+# Arguments after the tag are passed to install.sh as they are (--cpex).
 install_cortex() {
+	ref="$1"
+	shift
 	tmp="$(mktemp "${TMP_DIR}/install.XXXXXX")"
 	installer_url="https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh"
-	if [ "$1" = "main-latest" ]; then
+	if [ "${ref}" = "main-latest" ]; then
 		# Pin the installer to the exact commit that triggered this run,
 		# instead of "whatever main currently looks like": raw.githubusercontent.com
 		# caches responses for a few minutes, and a commit that changes
@@ -79,7 +82,7 @@ install_cortex() {
 		echo "FAIL: downloaded install.sh is empty" >&2
 		return 1
 	fi
-	sh -s -- --ref="$1" --yes <"${tmp}"
+	sh -s -- --ref="${ref}" --yes "$@" <"${tmp}"
 }
 
 log() { printf '\n== %s ==\n' "$1"; }
@@ -156,12 +159,32 @@ assert_running_binary_is_current() {
 # is the one this run installed — which also ties a main-latest run to the
 # exact commit that triggered it (see TRIGGER_SHA below), since a later merge
 # can re-point main-latest and clobber its assets while this job still runs.
+#
+# The cpex build prints "cortex (cpex) <version>"; pass "(cpex) <version>" for it.
 assert_running_version_is() {
 	got="$("${PROXY_BIN}" --version)"
 	if [ "${got}" != "cortex $1" ]; then
 		echo "FAIL: ${PROXY_BIN} --version printed '${got}', want 'cortex $1'" >&2
 		exit 1
 	fi
+}
+
+# The session API's plugin catalog (the built-in config's :47601) lists every plugin
+# the running binary registered, configured or not, so it tells the cpex build from
+# the default one by what the service is running rather than by the file on disk.
+# Retried briefly: the proxy can be up a moment before its session API answers.
+plugins_list_cpex() {
+	cat_out="$(mktemp "${TMP_DIR}/plugins.XXXXXX")"
+	i=0
+	until curl -fsS -o "${cat_out}" http://127.0.0.1:47601/v1/plugins; do
+		i=$((i + 1))
+		if [ "${i}" -ge 10 ]; then
+			echo "FAIL: GET /v1/plugins on :47601 did not answer" >&2
+			exit 1
+		fi
+		sleep 1
+	done
+	grep -q '"name": *"cpex"' "${cat_out}"
 }
 
 # release-binaries.yaml stamps a v* build with the tag itself, and a
@@ -338,6 +361,49 @@ cat "${reinstall_out}"
 # no-op, and naming the version also ties it to the build under test.
 assert_contains "${reinstall_out}" "cortex ${expected_version} is installed and healthy\." \
 	"re-running install was not a no-op"
+
+# The cpex build is TAG's own variant, so there is no older one to upgrade from.
+log "Switch to the cpex build: ${TAG} --cpex"
+install_cortex "${TAG}" --cpex
+if [ -n "${OLDER_TAG}" ]; then
+	assert_contains "${CFG}" "${marker}" "config did not survive the switch to the cpex build"
+fi
+assert_healthy
+assert_running_binary_is_current
+assert_running_version_is "(cpex) ${expected_version}"
+if ! plugins_list_cpex; then
+	echo "FAIL: /v1/plugins does not list cpex after installing the cpex build" >&2
+	exit 1
+fi
+
+log "No-op re-run: ${TAG} --cpex"
+cpex_reinstall_out="$(mktemp "${TMP_DIR}/reinstall-cpex.XXXXXX")"
+if ! install_cortex "${TAG}" --cpex >"${cpex_reinstall_out}" 2>&1; then
+	echo "FAIL: re-running install --cpex failed" >&2
+	cat "${cpex_reinstall_out}" >&2
+	exit 1
+fi
+cat "${cpex_reinstall_out}"
+assert_contains "${cpex_reinstall_out}" "cortex ${expected_version} is installed and healthy\." \
+	"re-running install --cpex was not a no-op"
+
+log "Switch back to the default build: ${TAG}"
+switch_out="$(mktemp "${TMP_DIR}/switch-back.XXXXXX")"
+if ! install_cortex "${TAG}" >"${switch_out}" 2>&1; then
+	echo "FAIL: switching back to the default build failed" >&2
+	cat "${switch_out}" >&2
+	exit 1
+fi
+cat "${switch_out}"
+assert_contains "${switch_out}" "Replacing the installed cpex build of cortex with the default one" \
+	"switching back printed no notice"
+assert_healthy
+assert_running_binary_is_current
+assert_running_version_is "${expected_version}"
+if plugins_list_cpex; then
+	echo "FAIL: /v1/plugins still lists cpex after switching back" >&2
+	exit 1
+fi
 
 log "Uninstall"
 # Existence alone survives truncation or a rewrite — the promise being tested

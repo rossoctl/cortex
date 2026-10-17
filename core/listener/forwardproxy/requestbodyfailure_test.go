@@ -93,7 +93,7 @@ func TestForwardProxy_BridgedOversizeRequest_RecordsProxyError(t *testing.T) {
 	raw, br, _ := sendConnect(t, proxyAddr, target)
 	tc := bridgedTLS(t, raw, br, target, ca)
 	body := bytes.Repeat([]byte("x"), maxRequestBodySize+1)
-	req, _ := http.NewRequest(http.MethodPost, "https://"+hostOnly(target)+"/v1/messages", bytes.NewReader(body))
+	req, _ := http.NewRequest(http.MethodPost, "https://"+target+"/v1/messages", bytes.NewReader(body))
 	req.Header.Set(session.ClaudeCodeSessionHeader, "sess-1")
 	if resp := bridgedRoundTrip(t, tc, req); resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("bridged request status %d, want 413", resp.StatusCode)

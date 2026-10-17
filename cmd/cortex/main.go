@@ -68,6 +68,16 @@ import (
 // via -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
+// versionLine is what --version prints: "cortex <version>", or
+// "cortex (cpex) <version>" for a cpex build. agentop and install.sh read the
+// last word as the version, so the variant goes before it.
+func versionLine() string {
+	if variant == "" {
+		return "cortex " + version
+	}
+	return "cortex " + variant + " " + version
+}
+
 // localInstall is set when this process was started from a local install's config
 // (startedFromLocalInstall). It suppresses listeners that only make sense with
 // iptables enforce-redirect: a laptop uses cooperative HTTPS_PROXY, so nothing
@@ -89,8 +99,8 @@ var localStatePath string
 
 // spiffeProviderNeeded reports whether any configured feature actually consumes
 // the SPIFFE Provider: top-level mTLS (needs the X509Source on both listeners)
-// or a plugin whose identity is spiffe-based (needs the JWT-SVID source — today
-// only token-exchange, gated on identity.type=spiffe). When nothing consumes
+// or a plugin that needs the JWT-SVID source (token-exchange with
+// identity.type=spiffe, cpex with a workload.audience). When nothing consumes
 // it, the provider — and its blocking SPIRE Workload API dial in NewProvider —
 // is skipped, so the binary boots even on clusters without SPIRE.
 func spiffeProviderNeeded(c *config.Config) bool {
@@ -117,10 +127,10 @@ func spiffeProviderNeeded(c *config.Config) bool {
 // excludable via plugins_<name>.go.
 const spiffeIdentityType = "spiffe"
 
-// pluginUsesSPIFFEIdentity reports whether a plugin's config selects the spiffe
-// identity scheme (identity.type=spiffe) — the only plugin-level consumer of
-// the Provider today (token-exchange). The `identity` block is a shared
-// convention; a new SPIFFE-consuming plugin must either follow it or extend
+// pluginUsesSPIFFEIdentity reports whether a plugin's config consumes the
+// Provider: identity.type=spiffe (token-exchange) or a workload.audience (cpex,
+// which presents the pod's JWT-SVID as the calling workload). A new
+// SPIFFE-consuming plugin must either follow one of these conventions or extend
 // this predicate.
 func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
 	if len(p.Config) == 0 {
@@ -130,13 +140,16 @@ func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
 		Identity struct {
 			Type string `json:"type"`
 		} `json:"identity"`
+		Workload struct {
+			Audience string `json:"audience"`
+		} `json:"workload"`
 	}
 	if err := json.Unmarshal(p.Config, &probe); err != nil {
 		// Unparseable here just means the plugin's own typed decode will fail
 		// later with a precise error; don't force the provider on for it.
 		return false
 	}
-	return probe.Identity.Type == spiffeIdentityType
+	return probe.Identity.Type == spiffeIdentityType || probe.Workload.Audience != ""
 }
 
 // warnCostLedgerNeedsSessions says out loud that the cost ledger will not run
@@ -331,7 +344,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println("cortex", version)
+		fmt.Println(versionLine())
 		return
 	}
 

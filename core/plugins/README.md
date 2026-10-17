@@ -31,7 +31,7 @@ has a dedicated reference doc there (`docs/<name>-plugin.md`).
 | `sparc` | Pre-tool reflection against a SPARC reflection service |
 | `session-budget` | Per-session token / call / duration budgets via Redis |
 | `context-guru` | Compact the outbound LLM request context |
-| `cpex` | Bridge hooks to the CPEX policy framework (separate `cortex-cpex` binary) |
+| `cpex` | Bridge hooks to the CPEX policy framework (cgo builds of `cortex` with the `cpex` tag) |
 
 ## Reusable building blocks for plugin authors
 

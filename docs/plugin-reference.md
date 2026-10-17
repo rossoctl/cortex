@@ -923,8 +923,8 @@ package supplies:
 
 | Listener | Honors a redirect |
 |---|---|
-| forward proxy — the outbound chain in `cortex` and `cortex-cpex` | yes, unless `mtls:` is configured |
-| reverse proxy — the inbound chain in `cortex` and `cortex-cpex` | no |
+| forward proxy — the outbound chain in `cortex` | yes, unless `mtls:` is configured |
+| reverse proxy — the inbound chain in `cortex` | no |
 | ext_proc — both chains in `cortex-envoy` | no |
 
 A capability some listener cannot honor is added the same way: a field on
