@@ -493,6 +493,18 @@ function renderReleases(snapshots) {
   // A pre-release is a boundary like any other. /releases/latest skips them, but the
   // smoke test installs the newest stable tag and these rows are what the tag's OWN
   // push-run upgraded onto, which is the CI install that lands in its count.
+  //
+  // A RUN OLDER THAN THE OLDEST ROW FALLS INTO NO WINDOW, and is dropped from every
+  // tally rather than folded into the earliest one. That is intended, not an
+  // off-by-one: `rels` is already filtered to releases with downloads, so the oldest
+  // row is not necessarily the oldest release, and such a run installed something
+  // older still that this table does not list. Charging it to the earliest row would
+  // attribute CI to a release that was not current when it ran.
+  //
+  // The consequence is worth stating because it is easy to over-read: the CI column
+  // sums to the whole merged total (110 today) only while the oldest row predates
+  // every run. When it does not, the column sums to the runs the table can place,
+  // which is the most it can claim.
   const byPublication = rels
     .filter((r) => r.published_at)
     .slice()
@@ -517,11 +529,25 @@ function renderReleases(snapshots) {
   // Bucketing against it would tally 0 for every release and print a bold, confident
   // Linux figure with "0" beside it -- the silent zero this page avoids everywhere
   // else. Leaving the map empty renders every row as unadjusted with "—" instead.
+  //
+  // A ZERO-WIDTH WINDOW GETS NO ENTRY EITHER. Two releases sharing a published_at
+  // give the earlier-sorting one the window [t, t), which no run can fall in, so it
+  // would tally 0 and print that bare "0" -- measured-looking, on a release the page
+  // in fact knows nothing about. It was never the newest release for any interval a
+  // run could land in, so "—" is the honest answer and the figure beside it stays
+  // unadjusted. Degenerate input (two releases published at the same instant), but
+  // cheap to be right about, and the totals are unaffected either way: the window is
+  // empty, so no run moves.
+  //
+  // Note this is NOT the same test as the one above it. A window can be zero-width
+  // and also closed before the run list begins; both send it to "—", for different
+  // reasons, and neither subsumes the other.
   const earliestRun = runs.length ? runs[0].at : null;
   const ciByTag = new Map();
   if (earliestRun !== null) {
     byPublication.forEach((r, i) => {
       const next = byPublication[i + 1];
+      if (next && next.published_at <= r.published_at) return;
       if (next && next.published_at <= earliestRun) return;
       ciByTag.set(r.tag, tally(runs.filter((run) =>
         run.at >= r.published_at && (!next || run.at < next.published_at))));
