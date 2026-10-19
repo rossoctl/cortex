@@ -13,7 +13,7 @@ require (
 	github.com/open-policy-agent/opa v1.21.1
 	github.com/rossoctl/context-guru v0.4.2
 	github.com/spiffe/go-spiffe/v2 v2.9.0
-	github.com/tidwall/gjson v1.19.0
+	github.com/tidwall/gjson v1.20.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.opentelemetry.io/otel v1.47.0
