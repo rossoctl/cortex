@@ -206,6 +206,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   is absent. Note a secret in a path *segment* (a bot token, a webhook path)
   does survive on this unauthenticated surface — worth knowing before
   exporting events off-box.
+- `subagent` — present only on a Claude Code subagent's requests and responses:
+  the `X-Claude-Code-Agent-Id` the request carried, the same id that names the
+  subagent's files under `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.*`.
+  Absent on the main conversation's rows and on every other client's, and
+  absent too when the value was not usable (a control character, over 128
+  bytes), which is refused rather than cleaned up. The row is still filed in
+  its parent conversation's session. `inference.agentRole` says whether a
+  request was a subagent's; this says which one.
 
 ## Invocation action vocabulary
 

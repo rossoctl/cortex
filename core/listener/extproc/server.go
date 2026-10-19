@@ -367,6 +367,7 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 		HTTPMethod:  pctx.Method,
 		HTTPPath:    pctx.Path,
 		Client:      pctx.ClientInfo(),
+		Subagent:    pctx.Subagent(),
 	}
 	s.Sessions.Append(sid, ev)
 }
@@ -455,6 +456,7 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		HTTPPath:    pctx.Path,
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 		Client:      pctx.ClientInfo(),
+		Subagent:    pctx.Subagent(),
 	}
 	s.Sessions.Append(sid, ev)
 }
@@ -489,6 +491,7 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 		HTTPPath:    pctx.Path,
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 		Client:      pctx.ClientInfo(),
+		Subagent:    pctx.Subagent(),
 	}
 	// Auth / Plugins alone qualify for recording; matches the widened
 	// gate in recordInboundSession so outbound denials and plugin-public
@@ -538,6 +541,7 @@ func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 		HTTPMethod:  pctx.Method,
 		HTTPPath:    pctx.Path,
 		Client:      pctx.ClientInfo(),
+		Subagent:    pctx.Subagent(),
 	}
 	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
 		s.Sessions.Append(sid, ev)

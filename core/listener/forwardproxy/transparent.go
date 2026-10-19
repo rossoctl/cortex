@@ -266,6 +266,7 @@ func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelR
 		// here from host shape.
 		TunnelReason: reason,
 		Client:       pctx.ClientInfo(),
+		Subagent:     pctx.Subagent(),
 	}
 }
 
@@ -308,6 +309,7 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 		BytesUp:      up,
 		BytesDown:    down,
 		Client:       pctx.ClientInfo(),
+		Subagent:     pctx.Subagent(),
 	})
 }
 

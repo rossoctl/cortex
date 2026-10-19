@@ -178,6 +178,13 @@ type Context struct {
 	client       *EventClient
 	clientParsed bool
 
+	// subagent and subagentParsed memoize Subagent's answer, on the same terms as
+	// client and clientParsed above: a flag because "" is a valid answer, unexported so
+	// the one resolution has one owner, and filled by ResolveClient before any plugin
+	// runs.
+	subagent       string
+	subagentParsed bool
+
 	Agent    *AgentIdentity
 	Identity Identity // nil before an auth plugin runs
 
@@ -505,8 +512,15 @@ func (c *Context) ClientInfo() *EventClient {
 // operator reading a per-agent breakdown cannot tell from absence. Read "unknown" on
 // inbound traffic as unattributed rather than as absent until then.
 //
+// It pins Subagent's answer too, for the same two reasons: an X-Claude-Code-Agent-Id a
+// plugin rewrote must not re-file a row under another subagent, and recorders reading the
+// memo must not be the ones filling it.
+//
 // Idempotent: the second call is the memo's own no-op.
-func (c *Context) ResolveClient() { _ = c.ClientInfo() }
+func (c *Context) ResolveClient() {
+	_ = c.ClientInfo()
+	_ = c.Subagent()
+}
 
 // PeerCertificate returns the verified peer leaf certificate from
 // the TLS connection state, or nil when the connection was plaintext

@@ -312,6 +312,21 @@ type SessionEvent struct {
 	// ("what program is calling" versus "who is calling"), and treating this one as
 	// the other means building authorization on a request header.
 	Client *EventClient
+
+	// Subagent is the Claude Code subagent that made the request, read from the request's
+	// X-Claude-Code-Agent-Id header by Context.Subagent. Empty on the main conversation's
+	// requests, on every client that is not Claude Code, and on a value Context.Subagent
+	// refused — see there for what each case means and why a refused value is not cleaned
+	// up instead.
+	//
+	// It names WHICH subagent, which Inference.AgentRole cannot: that says only that some
+	// subagent made the request, so two subagents running at once file the same. The same
+	// id names the subagent's files under ~/.claude/projects/<dir>/<session>/subagents/,
+	// so a consumer can join a row to its agent-<id>.meta.json for the subagent's type
+	// and description.
+	//
+	// Client-asserted, with the same caveat as Client above.
+	Subagent string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -514,6 +529,9 @@ type sessionEventWire struct {
 	// request that sent no User-Agent emits no key at all. A value type here would
 	// make "no client" and "a client that named nothing" the same wire bytes.
 	Client *EventClient `json:"client,omitempty"`
+	// omitempty: absent on every row but a subagent's, and the same skew reason as
+	// TunnelReason above.
+	Subagent string `json:"subagent,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -544,6 +562,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		HTTPPath:        e.HTTPPath,
 		UpgradeStripped: e.UpgradeStripped,
 		Client:          e.Client,
+		Subagent:        e.Subagent,
 	})
 }
 
@@ -582,6 +601,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		HTTPPath:        w.HTTPPath,
 		UpgradeStripped: w.UpgradeStripped,
 		Client:          w.Client,
+		Subagent:        w.Subagent,
 	}
 	return nil
 }

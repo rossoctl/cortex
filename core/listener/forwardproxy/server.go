@@ -1248,6 +1248,7 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 		HTTPPath:        pctx.Path,
 		UpgradeStripped: pctx.UpgradeStripped,
 		Client:          pctx.ClientInfo(),
+		Subagent:        pctx.Subagent(),
 	}
 	s.appendOutbound(tl, sid, ev)
 }
@@ -1537,6 +1538,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Error:         pipeline.EventErrorOr(pctx, fail),
 		Duration:      pipeline.DurationSince(pctx.StartedAt),
 		Client:        pctx.ClientInfo(),
+		Subagent:      pctx.Subagent(),
 	}
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode

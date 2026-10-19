@@ -1,0 +1,134 @@
+package pipeline
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// The header as Claude Code sends it, and the value it carries.
+func TestSubagent_ReadsTheHeader(t *testing.T) {
+	c := &Context{Headers: http.Header{}}
+	c.Headers.Set(ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent() = %q, want a1a2e36cb5946f31c", got)
+	}
+}
+
+// Claude Code sends the name lowercased — "x-claude-code-agent-id" — and every listener
+// stores it canonicalized: net/http's parser on the proxies, http.Header.Set in
+// ext_proc's headerMapToHTTP. This pins that the read side agrees with both.
+func TestSubagent_HeaderNameIsCaseInsensitive(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-claude-code-agent-id", "a1a2e36cb5946f31c")
+	c := &Context{Headers: h}
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent() = %q, want a1a2e36cb5946f31c", got)
+	}
+}
+
+// The main conversation, every other client, and a context with no headers at all.
+// Pinned because the field is omitempty: a non-empty answer here would put a key on
+// nearly every row.
+func TestSubagent_AbsentHeaderIsEmpty(t *testing.T) {
+	for name, h := range map[string]http.Header{
+		"nil headers": nil,
+		"no header":   {},
+		"empty value": {ClaudeCodeAgentIDHeader: []string{""}},
+		"only spaces": {ClaudeCodeAgentIDHeader: []string{"   "}},
+	} {
+		c := &Context{Headers: h}
+		if got := c.Subagent(); got != "" {
+			t.Errorf("%s: Subagent() = %q, want empty", name, got)
+		}
+	}
+}
+
+// Surrounding whitespace is not part of the id; net/http trims it from a value on the
+// forward proxy, but ext_proc hands bytes over as sent.
+func TestSubagent_TrimsSurroundingSpace(t *testing.T) {
+	c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{" a1a2e36cb5946f31c "}}}
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent() = %q, want the id without its padding", got)
+	}
+}
+
+// A value that cannot be recorded is REFUSED, not cleaned up: the id is a join key
+// against agent-<id>.meta.json, and a sanitised one would match nothing while looking
+// like an answer. Each case is one of hasControlRunes' clauses or the length bound.
+func TestSubagent_RefusesUnusableValues(t *testing.T) {
+	for name, v := range map[string]string{
+		"C0 escape":       "a1a2\x1b[2Je36cb",
+		"newline":         "a1a2\ne36cb",
+		"DEL":             "a1a2\x7fe36cb",
+		"C1 CSI":          "a1a2\u009b2Je36cb",
+		"bidi override":   "a1a2\u202ee36cb",
+		"zero-width join": "a1a2\u200de36cb",
+		"invalid UTF-8":   "a1a2\xffe36cb",
+		"over the cap":    strings.Repeat("a", maxClientLen+1),
+	} {
+		c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{v}}}
+		if got := c.Subagent(); got != "" {
+			t.Errorf("%s: Subagent() = %q, want empty", name, got)
+		}
+	}
+}
+
+// The cap is inclusive: an id of exactly maxClientLen bytes is kept whole.
+func TestSubagent_KeepsAnIDAtTheCap(t *testing.T) {
+	v := strings.Repeat("a", maxClientLen)
+	c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{v}}}
+	if got := c.Subagent(); got != v {
+		t.Errorf("Subagent() = %d bytes, want the %d-byte id kept", len(got), len(v))
+	}
+}
+
+// ResolveClient pins the answer to the header AS THE CLIENT SENT IT, so a plugin that
+// rewrites Headers afterwards cannot re-file the row under another subagent. This is
+// the same guarantee ClientInfo makes, and the reason ResolveClient resolves both.
+func TestSubagent_ResolveClientPinsTheAnswer(t *testing.T) {
+	c := &Context{Headers: http.Header{}}
+	c.Headers.Set(ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	c.ResolveClient()
+
+	c.Headers.Set(ClaudeCodeAgentIDHeader, "a-plugin-wrote-this")
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("after a plugin rewrote the header, Subagent() = %q, want the pinned a1a2e36cb5946f31c", got)
+	}
+
+	c.Headers.Del(ClaudeCodeAgentIDHeader)
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("after a plugin deleted the header, Subagent() = %q, want the pinned a1a2e36cb5946f31c", got)
+	}
+}
+
+// An absent header pins too: "" is a real answer, so a header a plugin adds later must
+// not turn a main-conversation row into a subagent's.
+func TestSubagent_ResolveClientPinsAnEmptyAnswer(t *testing.T) {
+	c := &Context{Headers: http.Header{}}
+	c.ResolveClient()
+
+	c.Headers.Set(ClaudeCodeAgentIDHeader, "a-plugin-wrote-this")
+	if got := c.Subagent(); got != "" {
+		t.Errorf("Subagent() = %q, want the pinned empty answer", got)
+	}
+}
+
+// The round trip a consumer depends on: the id reaches the wire under its own key and
+// decodes back, and an event that names none carries no key.
+func TestSessionEvent_SubagentRoundTrips(t *testing.T) {
+	raw, err := (SessionEvent{Phase: SessionRequest, Subagent: "a1a2e36cb5946f31c"}).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"subagent":"a1a2e36cb5946f31c"`) {
+		t.Errorf("wire form = %s, want a subagent key", raw)
+	}
+	var out SessionEvent
+	if err := out.UnmarshalJSON(raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Subagent != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent = %q after the round trip, want a1a2e36cb5946f31c", out.Subagent)
+	}
+}
