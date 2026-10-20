@@ -290,13 +290,26 @@ type Saving struct {
 	Provenance string `json:"provenance,omitempty"`
 	// Tier names which prompt tier the saving came out of: cache-write, cache-read or
 	// input. It matters because they differ by 12.5x, and a saving quoted without it
-	// cannot be checked.
+	// cannot be checked. A context-guru saving can span two tiers (content removed for the
+	// first time, and content removed again); Tier then names the larger part, and USD
+	// prices both.
 	Tier string `json:"tier,omitempty"`
 	// Projected marks a saving that was measured but NOT APPLIED — tool-prune's
 	// observe mode leaves every byte on the wire. A consumer must present this as
 	// "would have saved", never as money already not spent, and must not add it to
 	// any total that includes applied savings.
 	Projected bool `json:"projected,omitempty"`
+	// PenaltyUSD is cost the same component CAUSED on this request, which offsets USD: a
+	// compaction that rewrote a message inside the provider's cached prefix made the provider
+	// write, at the cache-write rate, tokens it would otherwise have read. Zero for a component
+	// that cannot cause one (tool-prune). Non-negative, like USD, so every money bound still
+	// holds; the net is taken in TotalAvoidedUSD.
+	//
+	// The net is FLOORED AT ZERO per saving there, so a turn whose penalty exceeds its saving
+	// adds nothing to the totals rather than a negative figure. That under-states how much such
+	// a turn cost — the figure is on the record here, not in the totals — and it is the only
+	// way a penalty can reach totals that are unsigned throughout.
+	PenaltyUSD float64 `json:"penaltyUsd,omitempty"`
 	// Estimated marks TokensAvoided as derived from a bytes-to-tokens ratio rather
 	// than counted by a tokenizer. It is calibrated per request and therefore wrong
 	// when the removed span had a different token density from what remained — so a
@@ -304,7 +317,8 @@ type Saving struct {
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// TotalAvoidedUSD sums the APPLIED savings, skipping projected ones.
+// TotalAvoidedUSD sums the APPLIED savings, skipping projected ones, each net of its own
+// PenaltyUSD and floored at zero (see Saving.PenaltyUSD).
 //
 // Provided so consumers do not each write the loop and disagree about whether
 // observe-mode figures count. They do not: a projected saving is money that WAS spent.
@@ -312,7 +326,7 @@ func (e Event) TotalAvoidedUSD() float64 {
 	var t float64
 	for _, s := range e.Avoided {
 		if !s.Projected {
-			t += s.USD
+			t += max(0, s.USD-s.PenaltyUSD)
 		}
 	}
 	return t

@@ -9,6 +9,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/spend"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/storage"
@@ -308,5 +309,53 @@ func TestBuildWithDeps_InjectsTheHistoryBeforeConfigure(t *testing.T) {
 	}
 	if !p.hadAtConfigure {
 		t.Error("the history was not injected before Configure ran")
+	}
+}
+
+// costedPlugin records the cost recorder it was handed and whether it had it at Configure.
+type costedPlugin struct {
+	pricedPlugin
+	costs          spend.CostRecorder
+	hadAtConfigure bool
+}
+
+func (p *costedPlugin) SetCostRecorder(r spend.CostRecorder) { p.costs = r }
+func (p *costedPlugin) Configure(json.RawMessage) error {
+	p.hadAtConfigure = p.costs != nil
+	return nil
+}
+
+func registerCosted(t *testing.T, name string) *costedPlugin {
+	t.Helper()
+	p := &costedPlugin{pricedPlugin: pricedPlugin{name: name}}
+	RegisterPlugin(name, func() pipeline.Plugin { return p })
+	t.Cleanup(func() { UnregisterPlugin(name) })
+	return p
+}
+
+type nopCosts struct{}
+
+func (nopCosts) RecordCost(spend.Charge) {}
+
+func TestBuildWithDeps_InjectsTheCostRecorderBeforeConfigure(t *testing.T) {
+	p := registerCosted(t, "test-costed-order")
+	if _, err := BuildWithDeps(entriesFor("test-costed-order"), Deps{Costs: nopCosts{}}); err != nil {
+		t.Fatalf("BuildWithDeps: %v", err)
+	}
+	if p.costs == nil {
+		t.Error("the cost recorder was not injected")
+	}
+	if !p.hadAtConfigure {
+		t.Error("the cost recorder was not injected before Configure ran")
+	}
+}
+
+func TestBuildWithDeps_NoCostRecorderLeavesConsumerUncalled(t *testing.T) {
+	p := registerCosted(t, "test-costed-none")
+	if _, err := BuildWithDeps(entriesFor("test-costed-none"), Deps{}); err != nil {
+		t.Fatalf("BuildWithDeps: %v", err)
+	}
+	if p.costs != nil {
+		t.Errorf("costs = %v, want nil when no Deps.Costs was supplied", p.costs)
 	}
 }

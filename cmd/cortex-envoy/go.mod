@@ -7,6 +7,9 @@ replace (
 	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )
 
+// DEV ONLY — Plan 2 Task 9 replaces this with a tagged context-guru release.
+replace github.com/rossoctl/context-guru => /Users/davidboaz/Documents/GitHub/context-guru/.worktrees/keeper-export
+
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0
 	github.com/rossoctl/cortex/core v0.0.0

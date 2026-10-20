@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,13 +66,20 @@ func inferencePctx(path string, body []byte) *pipeline.Context {
 	}
 }
 
-func TestConfigure_DefaultsBuildBalanced(t *testing.T) {
+func TestConfigure_DefaultsBuildXHigh(t *testing.T) {
 	p := configured(t, `{}`)
 	if p.pipe == nil || p.store == nil {
-		t.Fatal("empty config should default to the balanced preset and build a pipeline + store")
+		t.Fatal("empty config should default to the xhigh preset and build a pipeline + store")
 	}
 	if len(p.cfg.Paths) == 0 {
 		t.Fatal("paths should default to the inference paths")
+	}
+	want := configured(t, `{"engine":{"preset":"xhigh"}}`).pipe.Names()
+	if got := p.pipe.Names(); !slices.Equal(got, want) {
+		t.Errorf("default pipeline = %v, want the xhigh preset's %v", got, want)
+	}
+	if balanced := configured(t, `{"engine":{"preset":"balanced"}}`).pipe.Names(); slices.Equal(p.pipe.Names(), balanced) {
+		t.Errorf("default pipeline is balanced's %v, want xhigh", balanced)
 	}
 }
 
@@ -80,12 +89,63 @@ func TestConfigure_RejectsBadEngine(t *testing.T) {
 	}
 }
 
-func TestProviderFor(t *testing.T) {
-	if providerFor("/v1/messages") != bschemas.Anthropic {
-		t.Fatal("/v1/messages should map to anthropic")
+// Cortex cannot answer the engine's expand tool (no streamed-frame replacement, spec §4), so a
+// compacted body must never carry a reversible marker or the injected expand tool — whatever the
+// preset defaults to.
+func TestConfigure_NoReversibleMarkersEvenUnderAFullPreset(t *testing.T) {
+	p := configured(t, `{"engine": {"preset": "general"}}`)
+	pctx := inferencePctx("/v1/chat/completions", chatBody(bigToolOutput()))
+	invokeReq(p, pctx)
+	if bytes.Contains(pctx.Body, []byte("<<cg:")) {
+		t.Fatal("compacted body carries a reversible <<cg:…>> marker")
 	}
-	if providerFor("/v1/chat/completions") != bschemas.OpenAI {
-		t.Fatal("/v1/chat/completions should map to openai")
+	if bytes.Contains(pctx.Body, []byte("context_guru_expand")) {
+		t.Fatal("compacted body carries the expand tool")
+	}
+}
+
+func TestDialectFor(t *testing.T) {
+	cases := []struct {
+		path     string
+		provider bschemas.ModelProvider
+		api      string
+	}{
+		{"/v1/messages", bschemas.Anthropic, ""},
+		{"/anthropic/v1/messages", bschemas.Anthropic, ""},
+		{"/v1/responses", bschemas.OpenAI, "responses"},
+		{"/openai/v1/responses", bschemas.OpenAI, "responses"},
+		{"/v1/chat/completions", bschemas.OpenAI, ""},
+	}
+	for _, c := range cases {
+		p, api := dialectFor(c.path)
+		if p != c.provider || api != c.api {
+			t.Errorf("dialectFor(%q) = (%s, %q), want (%s, %q)", c.path, p, api, c.provider, c.api)
+		}
+	}
+}
+
+func TestConfigure_DefaultPathsIncludeResponses(t *testing.T) {
+	p := configured(t, `{}`)
+	for _, want := range []string{"/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"} {
+		if !p.gated(want) {
+			t.Errorf("default paths do not gate %s", want)
+		}
+	}
+}
+
+func TestOnRequest_CompactsAResponsesBody(t *testing.T) {
+	p := configured(t, collapseEngine)
+	body := []byte(`{"model":"gpt-5.6","input":[` +
+		`{"type":"message","role":"user","content":"run it"},` +
+		`{"type":"function_call","call_id":"c1","name":"sh","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"c1","output":` + strconv.Quote(bigToolOutput()) + `}]}`)
+	pctx := inferencePctx("/v1/responses", body)
+	invokeReq(p, pctx)
+	if len(pctx.Body) >= len(body) {
+		t.Fatalf("Responses body not compacted: %d >= %d bytes", len(pctx.Body), len(body))
+	}
+	if !json.Valid(pctx.Body) {
+		t.Fatal("compacted Responses body is not valid JSON")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/spend"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/spiffe"
@@ -35,6 +36,10 @@ type Deps struct {
 	// state that outlives it. Long-lived like Pricing: every build gets the same one,
 	// so state a plugin saves survives a reload as well as a restart.
 	Store storage.Store
+
+	// Costs is injected into plugins implementing spend.RecorderConsumer: where a plugin
+	// records money it spent outside the pipeline (a keep-alive ping, a compaction model call).
+	Costs spend.CostRecorder
 
 	// History is injected into plugins implementing session.HistoryConsumer: the
 	// session archive's events, for a process that keeps one.
@@ -105,6 +110,9 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 		}
 		if c, ok := p.(session.HistoryConsumer); ok && deps.History != nil {
 			c.SetHistory(deps.History)
+		}
+		if c, ok := p.(spend.RecorderConsumer); ok && deps.Costs != nil {
+			c.SetCostRecorder(deps.Costs)
 		}
 
 		if c, ok := p.(pipeline.Configurable); ok {

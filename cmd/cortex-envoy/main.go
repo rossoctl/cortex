@@ -36,6 +36,7 @@ import (
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/spend"
 	"github.com/rossoctl/cortex/core/memstore"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -188,7 +189,7 @@ func main() {
 		// ext_proc answers Envoy with header and body mutations only, so it honors no
 		// redirect on either chain; a WritesDestination plugin fails the build here
 		// instead of recording redirects that never happen.
-		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Listener: extproc.Support()}
+		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Costs: spend.LogRecorder{}, Listener: extproc.Support()}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)

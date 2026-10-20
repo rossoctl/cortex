@@ -1324,8 +1324,8 @@ func pairedResponse(rows []eventRow, partner map[int]int, i int, ev *pipeline.Se
 // tokensCell renders the TOKENS column, split so the two rows of an exchange sum
 // to the billed total rather than one repeating the other:
 //
-//   - a REQUEST row shows the prompt tokens it sent, with what tool-prune kept
-//     off them in parentheses — which is where the plugin's `modify` invocation
+//   - a REQUEST row shows the prompt tokens it sent, with what tool-prune and
+//     context-guru kept off them in parentheses (rowSavingFor) — which is where the plugin's `modify` invocation
 //     already sits;
 //   - a RESPONSE row shows the tokens generated.
 //
@@ -1343,7 +1343,7 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 		}
 		var saved float64
 		var projected, estimated bool
-		if s, ok := pruneSavingFor(resp); ok {
+		if s, ok := rowSavingFor(resp); ok {
 			saved, projected, estimated = float64(s.TokensAvoided), s.Projected, s.Estimated
 		}
 		return formatTokensWithSaving(pipeline.PromptTokensOf(resp.Inference), saved, projected, estimated)
@@ -1402,7 +1402,7 @@ func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeli
 		}
 		var savedUSD float64
 		var projected bool
-		if s, ok := pruneSavingFor(resp); ok {
+		if s, ok := rowSavingFor(resp); ok {
 			savedUSD, projected = s.USD, s.Projected
 		}
 		return money.Relabel(formatUSDWithSaving(total, savedUSD, projected), recordUnit(resp), 0)

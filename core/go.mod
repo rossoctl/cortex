@@ -130,3 +130,6 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	oras.land/oras-go/v2 v2.6.2 // indirect
 )
+
+// DEV ONLY — Plan 2 Task 9 replaces this with a tagged context-guru release.
+replace github.com/rossoctl/context-guru => /Users/davidboaz/Documents/GitHub/context-guru/.worktrees/keeper-export

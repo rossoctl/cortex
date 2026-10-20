@@ -383,3 +383,38 @@ func TestCallStructured_TransportErrorIsNotUncertain(t *testing.T) {
 		t.Errorf("HTTP-error must not wrap ErrUncertain (would route to 403); err=%v", err)
 	}
 }
+
+// CallRaw returns the response's usage, so a caller that pays for the call can record what it
+// cost. A server that omits usage leaves it nil, which is "not reported", not zero tokens.
+func TestCallRaw_ReturnsUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+			`"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":1000}}}`)
+	}))
+	defer srv.Close()
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	resp, err := c.CallRaw(context.Background(), &llmclient.ChatRequest{
+		Messages: []llmclient.ChatMessage{{Role: "user", Content: "x"}}})
+	if err != nil {
+		t.Fatalf("CallRaw: %v", err)
+	}
+	u := resp.Usage
+	if u == nil {
+		t.Fatal("Usage is nil; want the response's usage")
+	}
+	if u.PromptTokens != 1200 || u.CompletionTokens != 80 || u.CachedTokens() != 1000 {
+		t.Errorf("usage = %+v (cached %d), want prompt 1200, completion 80, cached 1000", *u, u.CachedTokens())
+	}
+
+	srv2 := newServer(t, "ok")
+	defer srv2.Close()
+	c2 := llmclient.New(llmclient.Options{Endpoint: srv2.URL, Model: "m", Timeout: time.Second})
+	resp2, err := c2.CallRaw(context.Background(), &llmclient.ChatRequest{
+		Messages: []llmclient.ChatMessage{{Role: "user", Content: "x"}}})
+	if err != nil {
+		t.Fatalf("CallRaw: %v", err)
+	}
+	if resp2.Usage != nil {
+		t.Errorf("Usage = %+v, want nil when the server reported none", *resp2.Usage)
+	}
+}

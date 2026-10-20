@@ -341,7 +341,7 @@ var eventColumns = []eventColumn{
 	// "1,048,576" — so a fixed width left eight or more blank columns on every row,
 	// between DURATION and the figure.
 	{id: colTokens, width: 18, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc: "tokens used, and what tool-prune saved",
+		desc: "tokens used, and what tool-prune and context-guru saved",
 		cell: func(c cellContext) string {
 			return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event)
 		},
@@ -352,7 +352,7 @@ var eventColumns = []eventColumn{
 	//
 	// A cap, like TOKENS': without a saving the ordinary cell is "$0.2546", at 7.
 	{id: colCost, width: 19, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc: "estimated cost, and what tool-prune saved",
+		desc: "estimated cost, and what tool-prune and context-guru saved",
 		cell: func(c cellContext) string {
 			return c.m.costCell(c.rows, c.partner, c.i, c.row.event)
 		},

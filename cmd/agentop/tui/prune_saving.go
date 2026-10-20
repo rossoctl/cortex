@@ -39,9 +39,52 @@ func savingFor(resp *pipeline.SessionEvent, component string) (event.Saving, boo
 	return event.Saving{}, false
 }
 
-// pruneSavingFor is the tool-prune saving specifically, which is the only one rendered today.
+// pruneSavingFor is the tool-prune saving specifically.
 func pruneSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
 	return savingFor(resp, "tool-prune")
+}
+
+// rowSavingComponents are the savings the events table renders. An explicit list, like the
+// proxy's own: a plugin agentop has never heard of does not get a figure into the table by
+// publishing one.
+var rowSavingComponents = []string{"tool-prune", "context-guru"}
+
+// rowSavingFor is every rendered component's saving on one response, combined into one figure
+// for the TOKENS and COST cells.
+//
+// Each dollar figure is net of its own PenaltyUSD and floored at zero — what
+// event.Event.TotalAvoidedUSD counts, so a row and the session total agree. Tokens are not netted:
+// a compaction that rewrote the cached prefix still removed those tokens.
+//
+// Applied and projected savings are never added: one is money not spent, the other money that
+// was spent. With any applied saving the row shows the applied ones; with only projected ones it
+// shows those, marked Projected.
+func rowSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
+	var applied, projected event.Saving
+	var anyApplied, anyProjected bool
+	for _, c := range rowSavingComponents {
+		s, ok := savingFor(resp, c)
+		if !ok {
+			continue
+		}
+		dst := &applied
+		if s.Projected {
+			dst, anyProjected = &projected, true
+		} else {
+			anyApplied = true
+		}
+		dst.TokensAvoided += s.TokensAvoided
+		dst.USD += max(0, s.USD-s.PenaltyUSD)
+		dst.Estimated = dst.Estimated || s.Estimated
+	}
+	switch {
+	case anyApplied:
+		return applied, true
+	case anyProjected:
+		projected.Projected = true
+		return projected, true
+	}
+	return event.Saving{}, false
 }
 
 // formatCompact renders a token count tersely enough for a table cell: 10577
