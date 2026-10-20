@@ -78,8 +78,8 @@ github.com/dlclark/regexp2 v1.11.5 h1:Q/sSnsKerHeCkc/jSTNq1oCm7KiVgUMZRDUoRu0JQZ
 github.com/dlclark/regexp2 v1.11.5/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
-github.com/envoyproxy/go-control-plane/envoy v1.39.0 h1:1uwRDYPYG8BIBU9Mj1sUAebNmlM6beu/ZKKweSLDxk8=
-github.com/envoyproxy/go-control-plane/envoy v1.39.0/go.mod h1:5e4ylfTZO723MEEFsCpSW4ZEBWR8mwkEyXfwJBTCZ9c=
+github.com/envoyproxy/go-control-plane/envoy v1.40.0 h1:G4dcl8KE/HVPnZ25BBdvGZWi8JjyeBfQSvm95U5P1Qc=
+github.com/envoyproxy/go-control-plane/envoy v1.40.0/go.mod h1:UZVGjwWu2QV8PkGSlXmqWiSgqCGZe16TgIu4jDl3T5w=
 github.com/envoyproxy/protoc-gen-validate v1.3.3 h1:MVQghNeW+LZcmXe7SY1V36Z+WFMDjpqGAGacLe2T0ds=
 github.com/envoyproxy/protoc-gen-validate v1.3.3/go.mod h1:TsndJ/ngyIdQRhMcVVGDDHINPLWB7C82oDArY51KfB0=
 github.com/felixge/httpsnoop v1.1.0 h1:3YtUj32ZZkqZtt3sZZsClsymw/QDuVfpNhoA31zeORc=

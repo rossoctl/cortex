@@ -8,7 +8,7 @@ replace (
 )
 
 require (
-	github.com/envoyproxy/go-control-plane/envoy v1.39.0
+	github.com/envoyproxy/go-control-plane/envoy v1.40.0
 	github.com/rossoctl/cortex/core v0.0.0
 	github.com/rossoctl/cortex/core/storage/redis v0.0.0
 	google.golang.org/grpc v1.84.0
