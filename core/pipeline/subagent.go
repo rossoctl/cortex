@@ -2,11 +2,14 @@ package pipeline
 
 import "strings"
 
-// ClaudeCodeAgentIDHeader is the request header Claude Code sets on a subagent's
-// requests, naming that subagent. Verified on claude-cli/2.1.302: the CLI sets it
-// whenever the request runs in a subagent's context (and an agent-team teammate's),
-// and the main conversation's requests do not carry it. The value is the same id the
-// CLI names the subagent's transcript after —
+// ClaudeCodeAgentIDHeader is the request header Claude Code sets on the requests of an
+// agent other than the main conversation, naming that agent. Verified on
+// claude-cli/2.1.302: the CLI sets it from any non-main agent context that holds an id —
+// a subagent's, and an agent-team teammate's — and the main conversation's requests do
+// not carry it. A teammate is NOT a subagent to the rest of this package: the CLI writes
+// the cc_is_subagent marker only for agentType "subagent", so a teammate's rows have this
+// header and Inference.AgentRole "main". For a subagent the value is the same id the
+// CLI names its transcript after —
 // ~/.claude/projects/<dir>/<session>/subagents/agent-<id>.jsonl, beside an
 // agent-<id>.meta.json carrying its agentType and description — so an event keyed on
 // it lines up with what the user's own client wrote.

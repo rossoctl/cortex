@@ -206,19 +206,21 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   is absent. Note a secret in a path *segment* (a bot token, a webhook path)
   does survive on this unauthenticated surface — worth knowing before
   exporting events off-box.
-- `subagent` — present only on a Claude Code subagent's requests and responses:
-  the `X-Claude-Code-Agent-Id` the request carried, the same id that names the
-  subagent's files under `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.*`.
-  Absent on the main conversation's rows and on every other client's, and
-  absent too when the value was not usable (a control character, over 128
-  bytes), which is refused rather than cleaned up. The row is still filed in
-  its parent conversation's session. `inference.agentRole` says whether a
-  request was a subagent's; this says which one.
-- `parentSubagent` — the agent that started `subagent`, from
+- `subagent` — present on rows from a Claude Code subagent or agent-team
+  teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
+  is the same id that names its files under
+  `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.*`. Absent on the
+  main conversation's rows and on every other client's, and absent too when
+  the value was not usable (a control character, over 128 bytes), which is
+  refused rather than cleaned up. The row is still filed in its parent
+  conversation's session. **This key names an agent; it does not say the row
+  is a subagent's.** `inference.agentRole` says that, and on a teammate's row
+  it is `main` while `subagent` is set.
+- `parentSubagent` — the agent that started the one `subagent` names, from
   `X-Claude-Code-Parent-Agent-Id`, under the same rules. Claude Code sends it
-  only when the spawner was itself an agent, so on a subagent's row an absent
-  `parentSubagent` means the conversation started it. The two keys together
-  give a row's place in the session's tree of agents.
+  only when the spawner was itself an agent, so on a row that names a
+  `subagent` an absent `parentSubagent` means the conversation started it. The
+  two keys together give a row's place in the session's tree of agents.
 
 ## Invocation action vocabulary
 
