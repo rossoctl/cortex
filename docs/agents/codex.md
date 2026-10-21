@@ -202,39 +202,51 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
-**HTTPS, not WebSocket.** Codex prefers a WebSocket to the same `/responses` path, and
-Cortex cannot carry one: `Upgrade` is a hop-by-hop header a proxy must not forward, and
-the parser reads HTTP requests, not frames. So the forward proxy answers that handshake
-itself with **426 Upgrade Required**, which Codex reads as "this endpoint wants HTTP" and
-switches to HTTPS straight away, for the rest of its session. The attempt shows on the
-timeline as a `GET` on the Responses path answered 426 with `error.kind:
-"upgrade_declined"`, and Codex prints one line for it:
+**WebSocket, carried and parsed.** Codex prefers a WebSocket to the same `/responses`
+path — one socket for its whole session, with later turns sending only new input rather
+than the whole conversation. Cortex carries it and reads every turn on it: the forward
+proxy completes the handshake with chatgpt.com, relays the frames unchanged, and runs each
+`response.create` and the events answering it through the pipeline as if it were the HTTPS
+request and its SSE stream. So a turn over the socket is parsed, priced and recorded
+exactly as it is over HTTPS — model, messages, tools, completion, tokens, cost.
 
-```
-ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket:
-      HTTP error: 426 Upgrade Required, url: wss://chatgpt.com/backend-api/codex/responses
-```
+On the timeline a socket is a `GET` on the Responses path with `tunnelReason:
+"websocket"`, open and close sharing a request id, the close carrying the socket's
+duration and bytes. Its turns sit between the two as ordinary `POST` request and response
+rows. Plugins act on each turn: one that rejects it keeps it from reaching chatgpt.com
+and Codex is answered with the error event it reads for a server refusal; one that
+rewrites the request body (`tool-prune`) changes what is sent.
 
-That line is expected and harmless; the turn continues over HTTPS. Before the 426, the
-proxy forwarded the stripped `GET` and chatgpt.com answered **405**, which Codex treats
-as a transient failure: it retried five times on a doubling backoff, printing
-`Reconnecting… n/5`, before falling back. Measured on Codex 0.163.0, a one-word
-`codex exec` turn took a median **11.0s** that way and **3.0s** with the 426. There is no
-supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
-hardcodes `supports_websockets = true` and Codex refuses a config that overrides a
+Where Cortex cannot carry the socket it answers the handshake with **426 Upgrade
+Required** instead, which Codex reads as "this endpoint wants HTTP" and switches to HTTPS
+at once, for the rest of its session. That happens for a connection the bridge did not
+decrypt, an HTTP/2 connection, or a pipeline with a plugin that rewrites response bodies,
+since a live socket's frames are on their way to Codex before a whole response exists. The
+timeline then shows a 426 with `error.kind: "upgrade_declined"`, and Codex prints one
+harmless `failed to connect to websocket: HTTP error: 426 Upgrade Required` line before
+carrying on over HTTPS.
+
+Before either, the proxy forwarded the handshake with `Upgrade` stripped — it is a
+hop-by-hop header — and chatgpt.com answered the bare `GET` with **405**. Codex treats a
+405 as transient: it retried five times on a doubling backoff, printing `Reconnecting…
+n/5`, before falling back. Measured on Codex 0.163.0, a one-word `codex exec` turn took a
+median **11.0s** that way, against **~3s** with the socket carried or declined. There is
+no supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
+hardcodes `supports_websockets = true`, and Codex refuses a config that overrides a
 built-in provider.
 
-The 426 is Cortex's setting, not Codex's, and it is on by default, so there is nothing to
-configure. To turn it off — which brings back the 405 and its retries — add the key to the
-`listener:` block that is already in `~/.cortex/config.yaml`:
+The behaviour is Cortex's setting, not Codex's, and the default is `parse`, so there is
+nothing to configure. To change it, add the key to the `listener:` block that is already
+in `~/.cortex/config.yaml`:
 
 ```yaml
 listener:
   # ...the lines already here...
-  decline_responses_websockets: false
+  responses_websockets: decline   # parse (default) | decline | forward
 ```
 
-and restart the proxy with `agentop service restart`. Unlike most of that file, a
+`decline` keeps Codex on HTTPS with no delay; `forward` brings back the 405 and its
+retries. Then restart the proxy with `agentop service restart`. Unlike most of that file, a
 `listener:` edit is not picked up live, and the restart briefly disconnects every agent
 routed through Cortex.
 
@@ -324,11 +336,12 @@ with Cortex built from the change that added this page. This was exercised:
   Codex's source — and including the telemetry exporter staying unrecognised;
 - the `codex` series in `GET /v1/usage?group=agent`, and the model showing as priceable
   but unpriced;
-- **on Codex 0.163.0**, the WebSocket decline: eight `codex exec` turns each made one
-  handshake attempt, answered 426, then completed over HTTPS with the model, tokens and a
-  cost from the downloaded price list — against seven 405'd attempts and a fallback
-  warning per turn without it. A TUI turn, driven over a pty, did the same: one 426, then
-  its inference parsed over HTTPS under `codex-tui`.
+- **on Codex 0.163.0**, the WebSocket transport: three `codex exec` turns each opened one
+  socket through the bridge, with no handshake error and no fallback, and each turn on it
+  was recorded with its model, a 13,188-token total and a cost — in about 3s, against a
+  median 11.0s through the old 405 retries. The `decline` mode was measured the same way
+  over eight turns (one 426, then HTTPS), and a TUI turn driven over a pty declined and
+  parsed over HTTPS under `codex-tui`.
 
 Not tested:
 
@@ -342,6 +355,11 @@ Not tested:
   dialect is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
+- **The TUI over a carried WebSocket.** It shares `codex exec`'s transport code, and its
+  decline path was watched, but a TUI turn over a carried socket was not.
+- **A multi-turn session over one socket against the real backend.** The relay's own
+  tests drive several turns, a prewarm, a rejected turn and a rewritten one over one
+  socket; the live runs were one turn each.
 - **Tool pruning**, which is unsupported above rather than merely untested.
 
 ## Known issues

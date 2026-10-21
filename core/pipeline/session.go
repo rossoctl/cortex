@@ -250,7 +250,7 @@ type SessionEvent struct {
 	// the sequence worth being able to read off the timeline rather than out of an
 	// agent's stderr. A 426 with error.kind "upgrade_declined" is the proxy answering
 	// a Responses API WebSocket itself, before any origin is contacted
-	// (listener.decline_responses_websockets).
+	// (listener.responses_websockets).
 	UpgradeStripped string
 
 	// HTTPMethod and HTTPPath are the request's HTTP verb and its
@@ -404,6 +404,11 @@ const (
 	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
 	// the exact opposite of what happened, and invisible in a timeline.
 	TunnelPassthroughUnknown TunnelReason = "passthrough-unknown"
+	// TunnelWebSocket — not opaque at all: a Responses API WebSocket the forward
+	// proxy carries and reads. The open row is its handshake and the close row its
+	// end, with the bytes and duration of the whole socket; every turn on it records
+	// its own request and response rows between the two, parsed like an HTTPS turn.
+	TunnelWebSocket TunnelReason = "websocket"
 )
 
 // EventTLS describes the TLS state of a connection that produced a

@@ -138,9 +138,10 @@ type Context struct {
 	// looking at `405 Method Not Allowed` in their agent's output with every
 	// reason to think Cortex broke, and an event saying only `backend_error/405`
 	// with nothing connecting the two. (Codex no longer reaches that 405 by default:
-	// the forward proxy answers a Responses API WebSocket with 426 itself, which it
-	// reads as "use HTTPS" at once — see listener.decline_responses_websockets. The
-	// marker is still set there, since the Upgrade is still not forwarded.)
+	// the forward proxy carries a Responses API WebSocket, or answers it 426 itself,
+	// which Codex reads as "use HTTPS" at once — see listener.responses_websockets.
+	// The marker is still set on the handshake row, since the client's Upgrade header
+	// is never forwarded as it was sent.)
 	//
 	// Recorded on the REQUEST row, where the fact is true, and paired with the
 	// response row's status by RequestID — the same split Tunnel/TunnelReason use.

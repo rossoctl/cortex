@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
 	"github.com/rossoctl/cortex/core/session"
@@ -17,8 +18,8 @@ import (
 // A WebSocket upgrade on a Responses API path is answered 426 by the proxy, because
 // the origin's own answer to the stripped request is a 405 that Codex retries for
 // about six seconds before falling back to HTTPS. See declineResponsesWebSocket. With
-// listener.decline_responses_websockets: false the request is forwarded as before;
-// upgradestripped_test.go covers that side.
+// listener.responses_websockets: forward the request is forwarded as before;
+// upgradestripped_test.go covers that side, and websocket_test.go covers parse.
 
 // declineHarness is a forward proxy in front of an origin that counts what reaches it.
 type declineHarness struct {
@@ -28,12 +29,12 @@ type declineHarness struct {
 	reached atomic.Int32
 }
 
-// newDeclineHarness builds the proxy with the decline on, as config defaults it.
+// newDeclineHarness builds the proxy in decline mode.
 func newDeclineHarness(t *testing.T, plugins ...pipeline.Plugin) *declineHarness {
-	return newDeclineHarnessWith(t, true, plugins...)
+	return newDeclineHarnessWith(t, config.ResponsesWebSocketsDecline, plugins...)
 }
 
-func newDeclineHarnessWith(t *testing.T, decline bool, plugins ...pipeline.Plugin) *declineHarness {
+func newDeclineHarnessWith(t *testing.T, mode string, plugins ...pipeline.Plugin) *declineHarness {
 	t.Helper()
 	h := &declineHarness{store: session.New(5*time.Minute, 100, 0)}
 	t.Cleanup(h.store.Close)
@@ -50,10 +51,10 @@ func newDeclineHarnessWith(t *testing.T, decline bool, plugins ...pipeline.Plugi
 		t.Fatal(err)
 	}
 	srv := &Server{
-		OutboundPipeline:           pipeline.NewHolder(p),
-		Sessions:                   h.store,
-		Client:                     http.DefaultClient,
-		DeclineResponsesWebSockets: decline,
+		OutboundPipeline:    pipeline.NewHolder(p),
+		Sessions:            h.store,
+		Client:              http.DefaultClient,
+		ResponsesWebSockets: mode,
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	t.Cleanup(proxy.Close)
@@ -128,10 +129,10 @@ func TestForwardProxy_ResponsesWebSocketIsDeclinedWith426(t *testing.T) {
 	}
 }
 
-// The off switch restores the forwarding exactly: the origin is reached and its own
-// 405 is what the client gets — the behaviour before the decline existed.
-func TestForwardProxy_DeclineOff_ForwardsTheUpgradeAsBefore(t *testing.T) {
-	h := newDeclineHarnessWith(t, false)
+// Forward mode restores the forwarding exactly: the origin is reached and its own 405
+// is what the client gets — the behaviour before the decline existed.
+func TestForwardProxy_ForwardMode_ForwardsTheUpgradeAsBefore(t *testing.T) {
+	h := newDeclineHarnessWith(t, config.ResponsesWebSocketsForward)
 	resp, body := h.do(t, http.MethodGet, "/backend-api/codex/responses", websocketHeaders())
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
@@ -149,7 +150,7 @@ func TestForwardProxy_DeclineOff_ForwardsTheUpgradeAsBefore(t *testing.T) {
 	}
 	for _, ev := range v.Events {
 		if ev.Error != nil && ev.Error.Kind == "upgrade_declined" {
-			t.Errorf("a row says upgrade_declined with the decline off: %+v", ev)
+			t.Errorf("a row says upgrade_declined in forward mode: %+v", ev)
 		}
 	}
 }
