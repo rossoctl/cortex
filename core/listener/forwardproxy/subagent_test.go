@@ -10,9 +10,9 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// postAs issues a proxied request carrying the given X-Claude-Code-Agent-Id, or none when
-// id is empty.
-func postAs(t *testing.T, client *http.Client, backendURL, id string) {
+// postAs issues a proxied request carrying the given X-Claude-Code-Agent-Id and
+// X-Claude-Code-Parent-Agent-Id, sending neither header whose value is empty.
+func postAs(t *testing.T, client *http.Client, backendURL, id, parent string) {
 	t.Helper()
 	req, err := http.NewRequest("POST", backendURL+"/v1/messages", strings.NewReader(`{}`))
 	if err != nil {
@@ -22,6 +22,9 @@ func postAs(t *testing.T, client *http.Client, backendURL, id string) {
 		// Lowercase, as Claude Code sends it: the name reaching pctx.Headers canonicalized
 		// is part of what this asserts.
 		req.Header.Set("x-claude-code-agent-id", id)
+	}
+	if parent != "" {
+		req.Header.Set("x-claude-code-parent-agent-id", parent)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -44,8 +47,9 @@ func TestForwardProxy_BothPhasesCarryTheSubagent(t *testing.T) {
 	defer store.Close()
 	_, client, backendURL := newProbedProxy(t, store)
 
-	postAs(t, client, backendURL, "a1a2e36cb5946f31c")
-	postAs(t, client, backendURL, "")
+	// A nested subagent, so the parent header is exercised on both live sites too.
+	postAs(t, client, backendURL, "a1a2e36cb5946f31c", "a0974b0b8591dc76b")
+	postAs(t, client, backendURL, "", "")
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) < 4 {
@@ -57,8 +61,15 @@ func TestForwardProxy_BothPhasesCarryTheSubagent(t *testing.T) {
 		switch ev.Subagent {
 		case "":
 			absent++
+			if ev.ParentSubagent != "" {
+				t.Errorf("phase %s: ParentSubagent = %q on a main-conversation row, want empty", ev.Phase, ev.ParentSubagent)
+			}
 		case "a1a2e36cb5946f31c":
 			named[ev.Phase]++
+			if ev.ParentSubagent != "a0974b0b8591dc76b" {
+				t.Errorf("phase %s: ParentSubagent = %q, want a0974b0b8591dc76b; the recorder does not copy pctx.ParentSubagent()",
+					ev.Phase, ev.ParentSubagent)
+			}
 		default:
 			t.Errorf("phase %s: Subagent = %q, want a1a2e36cb5946f31c or empty", ev.Phase, ev.Subagent)
 		}
@@ -86,6 +97,7 @@ func TestRecordTunnel_CarriesTheSubagent(t *testing.T) {
 
 	h := http.Header{}
 	h.Set(pipeline.ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	h.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    "CONNECT",
@@ -100,8 +112,9 @@ func TestRecordTunnel_CarriesTheSubagent(t *testing.T) {
 		t.Fatalf("expected a tunnel open and close, got %+v", v)
 	}
 	for _, ev := range v.Events {
-		if ev.Subagent != "a1a2e36cb5946f31c" {
-			t.Errorf("phase %s: Subagent = %q, want a1a2e36cb5946f31c", ev.Phase, ev.Subagent)
+		if ev.Subagent != "a1a2e36cb5946f31c" || ev.ParentSubagent != "a0974b0b8591dc76b" {
+			t.Errorf("phase %s: Subagent/ParentSubagent = %q/%q, want a1a2e36cb5946f31c/a0974b0b8591dc76b",
+				ev.Phase, ev.Subagent, ev.ParentSubagent)
 		}
 	}
 }

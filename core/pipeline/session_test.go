@@ -85,6 +85,9 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 		HTTPMethod: "GET",
 		HTTPPath:   "/v1/models",
 		Subagent:   "a1a2e36cb5946f31c",
+		// A different id from Subagent's, so the round trip catches Marshal and
+		// Unmarshal disagreeing about which field is which.
+		ParentSubagent: "a0974b0b8591dc76b",
 	}
 
 	first, err := json.Marshal(orig)
@@ -119,7 +122,7 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 		// recorded none of these must not emit the keys at all, so a client
 		// predating them sees the same bytes it always did.
 		"tunnel", "tunnelReason", "httpMethod", "httpPath", "requestedHost",
-		"subagent",
+		"subagent", "parentSubagent",
 	} {
 		if strings.Contains(s, `"`+field+`":`) {
 			t.Errorf("expected %q omitted when zero: %s", field, s)
@@ -296,6 +299,7 @@ func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
 		RequestID: "r", Host: "h:443", RequestedHost: "a:443", StatusCode: 200, Duration: time.Second,
 		Tunnel: true, TunnelReason: TunnelClientRejectedCA,
 		HTTPMethod: "GET", HTTPPath: "/v1/models", Subagent: "a1a2e36cb5946f31c",
+		ParentSubagent: "a0974b0b8591dc76b",
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
@@ -308,7 +312,7 @@ func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
 	for _, key := range []string{
 		"sessionId", "at", "direction", "phase", "requestId",
 		"host", "requestedHost", "statusCode", "durationMs", "tunnel", "tunnelReason",
-		"httpMethod", "httpPath", "subagent",
+		"httpMethod", "httpPath", "subagent", "parentSubagent",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("populated event produced no %q key; got %s", key, b)

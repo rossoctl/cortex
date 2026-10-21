@@ -132,3 +132,87 @@ func TestSessionEvent_SubagentRoundTrips(t *testing.T) {
 		t.Errorf("Subagent = %q after the round trip, want a1a2e36cb5946f31c", out.Subagent)
 	}
 }
+
+// A nested subagent sends both headers: its own id and the agent that started it. Each
+// lands in its own field — a swap would invert every edge of the tree.
+func TestParentSubagent_ReadsTheHeader(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-claude-code-agent-id", "a21728bb34d27cb12")
+	h.Set("x-claude-code-parent-agent-id", "a0974b0b8591dc76b")
+	c := &Context{Headers: h}
+	if got := c.Subagent(); got != "a21728bb34d27cb12" {
+		t.Errorf("Subagent() = %q, want a21728bb34d27cb12", got)
+	}
+	if got := c.ParentSubagent(); got != "a0974b0b8591dc76b" {
+		t.Errorf("ParentSubagent() = %q, want a0974b0b8591dc76b", got)
+	}
+}
+
+// A subagent the main conversation started — the common case — sends no parent header,
+// and that absence is the answer: its parent is the conversation.
+func TestParentSubagent_TopLevelSubagentHasNoParent(t *testing.T) {
+	c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{"a1a2e36cb5946f31c"}}}
+	if got := c.ParentSubagent(); got != "" {
+		t.Errorf("ParentSubagent() = %q, want empty for a subagent the conversation started", got)
+	}
+	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent() = %q, want a1a2e36cb5946f31c", got)
+	}
+}
+
+// The parent goes through the same refusal the child does, and a refused parent does
+// not take the child with it: the two values are checked independently.
+func TestParentSubagent_RefusesUnusableValues(t *testing.T) {
+	for name, v := range map[string]string{
+		"C0 escape":     "a0974\x1b[2Jb0b8",
+		"C1 CSI":        "a0974\u009b2Jb0b8",
+		"bidi override": "a0974\u202eb0b8",
+		"invalid UTF-8": "a0974\xffb0b8",
+		"over the cap":  strings.Repeat("a", maxClientLen+1),
+	} {
+		c := &Context{Headers: http.Header{
+			ClaudeCodeAgentIDHeader:       []string{"a21728bb34d27cb12"},
+			ClaudeCodeParentAgentIDHeader: []string{v},
+		}}
+		if got := c.ParentSubagent(); got != "" {
+			t.Errorf("%s: ParentSubagent() = %q, want empty", name, got)
+		}
+		if got := c.Subagent(); got != "a21728bb34d27cb12" {
+			t.Errorf("%s: Subagent() = %q, want the valid child kept beside a refused parent", name, got)
+		}
+	}
+}
+
+// ResolveClient pins the parent with the child, so a plugin cannot re-parent a row.
+// Asked through ParentSubagent FIRST on purpose: one memo serves both, and this is what
+// fails if ResolveClient ever pins only the child's.
+func TestParentSubagent_ResolveClientPinsTheAnswer(t *testing.T) {
+	h := http.Header{}
+	h.Set(ClaudeCodeAgentIDHeader, "a21728bb34d27cb12")
+	h.Set(ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
+	c := &Context{Headers: h}
+	c.ResolveClient()
+
+	c.Headers.Set(ClaudeCodeParentAgentIDHeader, "a-plugin-wrote-this")
+	if got := c.ParentSubagent(); got != "a0974b0b8591dc76b" {
+		t.Errorf("after a plugin rewrote the header, ParentSubagent() = %q, want the pinned a0974b0b8591dc76b", got)
+	}
+}
+
+func TestSessionEvent_ParentSubagentRoundTrips(t *testing.T) {
+	raw, err := (SessionEvent{Phase: SessionRequest, Subagent: "a21728bb34d27cb12", ParentSubagent: "a0974b0b8591dc76b"}).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"parentSubagent":"a0974b0b8591dc76b"`) {
+		t.Errorf("wire form = %s, want a parentSubagent key", raw)
+	}
+	var out SessionEvent
+	if err := out.UnmarshalJSON(raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ParentSubagent != "a0974b0b8591dc76b" || out.Subagent != "a21728bb34d27cb12" {
+		t.Errorf("after the round trip Subagent/ParentSubagent = %q/%q, want a21728bb34d27cb12/a0974b0b8591dc76b",
+			out.Subagent, out.ParentSubagent)
+	}
+}

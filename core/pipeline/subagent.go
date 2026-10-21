@@ -20,10 +20,22 @@ import "strings"
 // parent's session and counted in its cost; bucketing on this header instead would give
 // every subagent a session row of its own and take its spend away from the
 // conversation that started it.
-//
-// The CLI also sends X-Claude-Code-Parent-Agent-Id on a subagent a subagent started.
-// It is not read: this records which agent made a request, not the tree they form.
 const ClaudeCodeAgentIDHeader = "X-Claude-Code-Agent-Id"
+
+// ClaudeCodeParentAgentIDHeader is the request header Claude Code sets on a subagent's
+// requests when another AGENT started it, naming that agent. Verified on
+// claude-cli/2.1.302: a subagent's context takes its parent's agentId at spawn, and the
+// main conversation has none, so the header appears only from the second level down —
+// a subagent a subagent started, or one an agent-team teammate started. A subagent the
+// main conversation started sends ClaudeCodeAgentIDHeader alone.
+//
+// That is why there is no value naming the main conversation: its parent IS the
+// session, so a reader building the tree takes an absent parent to mean "the session
+// this row is filed in". The same id is the parentAgentId field of the child's
+// agent-<id>.meta.json, written under the same rule.
+//
+// Not a session id header either, for the reason ClaudeCodeAgentIDHeader gives.
+const ClaudeCodeParentAgentIDHeader = "X-Claude-Code-Parent-Agent-Id"
 
 // Subagent returns the Claude Code subagent this request came from: the value of
 // X-Claude-Code-Agent-Id as the client sent it, or "" when there is none to record.
@@ -42,19 +54,54 @@ const ClaudeCodeAgentIDHeader = "X-Claude-Code-Agent-Id"
 // this is a display and grouping key, never a principal. session.IDFromHeaders' TRUST
 // section applies unchanged.
 func (c *Context) Subagent() string {
-	if c.subagentParsed {
-		return c.subagent
-	}
-	c.subagentParsed = true
-	if c.Headers != nil {
-		if id := strings.TrimSpace(c.Headers.Get(ClaudeCodeAgentIDHeader)); validSubagentID(id) {
-			c.subagent = id
-		}
-	}
+	c.resolveSubagents()
 	return c.subagent
 }
 
-// validSubagentID reports whether a client-supplied subagent id is safe to record.
+// ParentSubagent returns the agent that started this request's subagent: the value of
+// X-Claude-Code-Parent-Agent-Id as the client sent it, or "" when there is none to
+// record. Read with Subagent and pinned with it, under the same rules.
+//
+// "" is the common answer and says the parent is the CONVERSATION, not that it is
+// unknown: Claude Code sends the header only when the spawner was itself an agent, so
+// on a subagent the main conversation started — every subagent there is, in a session
+// that nests none — it is absent by design. The other three empty cases are Subagent's:
+// a non-subagent request, a row with no headers, and a value validSubagentID refused.
+//
+// Recorded independently of Subagent rather than dropped when Subagent is empty. A
+// parent with no child is not a shape the CLI produces, so if one ever appears it is
+// evidence of a client this code was not written against, and keeping it is what lets
+// someone see that.
+func (c *Context) ParentSubagent() string {
+	c.resolveSubagents()
+	return c.parentSubagent
+}
+
+// resolveSubagents fills Subagent's and ParentSubagent's memo from one read of Headers,
+// so the two answers always describe the same set of headers.
+func (c *Context) resolveSubagents() {
+	if c.subagentParsed {
+		return
+	}
+	c.subagentParsed = true
+	if c.Headers == nil {
+		return
+	}
+	c.subagent = subagentHeader(c.Headers.Get(ClaudeCodeAgentIDHeader))
+	c.parentSubagent = subagentHeader(c.Headers.Get(ClaudeCodeParentAgentIDHeader))
+}
+
+// subagentHeader is a header value trimmed and checked by validSubagentID, or "" when
+// it fails the check.
+func subagentHeader(v string) string {
+	if id := strings.TrimSpace(v); validSubagentID(id) {
+		return id
+	}
+	return ""
+}
+
+// validSubagentID reports whether a client-supplied subagent id — either header's — is
+// safe to record.
 //
 // REFUSED, NOT SANITISED — the opposite choice from RecordStrippedUpgrade, and for a
 // reason that is about what the value is for. An Upgrade token is read by a person, so

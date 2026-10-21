@@ -21,6 +21,7 @@ func (agentIDMutatingPlugin) Capabilities() pipeline.PluginCapabilities {
 }
 func (agentIDMutatingPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	pctx.Headers.Set(pipeline.ClaudeCodeAgentIDHeader, "a-plugin-wrote-this")
+	pctx.Headers.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a-plugin-wrote-this")
 	pctx.Allow("ok")
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -44,6 +45,7 @@ func TestReverseProxy_SubagentIsResolvedBeforeThePipelineRuns(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("x-claude-code-agent-id", "a1a2e36cb5946f31c")
+	req.Header.Set("x-claude-code-parent-agent-id", "a0974b0b8591dc76b")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request through the proxy: %v", err)
@@ -53,6 +55,9 @@ func TestReverseProxy_SubagentIsResolvedBeforeThePipelineRuns(t *testing.T) {
 	for _, ev := range inboundEvents(t, sub, 2) {
 		if ev.Subagent != "a1a2e36cb5946f31c" {
 			t.Errorf("phase %s: Subagent = %q, want the a1a2e36cb5946f31c the CALLER sent", ev.Phase, ev.Subagent)
+		}
+		if ev.ParentSubagent != "a0974b0b8591dc76b" {
+			t.Errorf("phase %s: ParentSubagent = %q, want the a0974b0b8591dc76b the CALLER sent", ev.Phase, ev.ParentSubagent)
 		}
 	}
 }
@@ -67,6 +72,7 @@ func TestRecordInboundResponseEvent_CarriesTheSubagent(t *testing.T) {
 
 	h := http.Header{}
 	h.Set(pipeline.ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	h.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
 	s.recordInboundResponseEvent(&pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "POST",
@@ -79,7 +85,7 @@ func TestRecordInboundResponseEvent_CarriesTheSubagent(t *testing.T) {
 	if v == nil || len(v.Events) != 1 {
 		t.Fatalf("expected 1 response event, got %+v", v)
 	}
-	if got := v.Events[0].Subagent; got != "a1a2e36cb5946f31c" {
-		t.Errorf("Subagent = %q, want a1a2e36cb5946f31c", got)
+	if ev := v.Events[0]; ev.Subagent != "a1a2e36cb5946f31c" || ev.ParentSubagent != "a0974b0b8591dc76b" {
+		t.Errorf("Subagent/ParentSubagent = %q/%q, want a1a2e36cb5946f31c/a0974b0b8591dc76b", ev.Subagent, ev.ParentSubagent)
 	}
 }

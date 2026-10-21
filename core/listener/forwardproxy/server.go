@@ -1249,6 +1249,7 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 		UpgradeStripped: pctx.UpgradeStripped,
 		Client:          pctx.ClientInfo(),
 		Subagent:        pctx.Subagent(),
+		ParentSubagent:  pctx.ParentSubagent(),
 	}
 	s.appendOutbound(tl, sid, ev)
 }
@@ -1520,25 +1521,26 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	sid := s.responseSessionID(pctx)
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	ev := pipeline.SessionEvent{
-		At:            time.Now(),
-		Direction:     pipeline.Outbound,
-		Phase:         pipeline.SessionResponse,
-		RequestID:     pctx.RequestID(),
-		BytesDown:     pctx.ResponseBytes,
-		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-		Plugins:       plugins,
-		Identity:      pipeline.SnapshotIdentity(pctx),
-		Host:          pctx.Host,
-		RequestedHost: pctx.RequestedHost(),
-		HTTPMethod:    pctx.Method,
-		HTTPPath:      pctx.Path,
-		StatusCode:    statusCode,
-		Error:         pipeline.EventErrorOr(pctx, fail),
-		Duration:      pipeline.DurationSince(pctx.StartedAt),
-		Client:        pctx.ClientInfo(),
-		Subagent:      pctx.Subagent(),
+		At:             time.Now(),
+		Direction:      pipeline.Outbound,
+		Phase:          pipeline.SessionResponse,
+		RequestID:      pctx.RequestID(),
+		BytesDown:      pctx.ResponseBytes,
+		MCP:            pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		Plugins:        plugins,
+		Identity:       pipeline.SnapshotIdentity(pctx),
+		Host:           pctx.Host,
+		RequestedHost:  pctx.RequestedHost(),
+		HTTPMethod:     pctx.Method,
+		HTTPPath:       pctx.Path,
+		StatusCode:     statusCode,
+		Error:          pipeline.EventErrorOr(pctx, fail),
+		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Client:         pctx.ClientInfo(),
+		Subagent:       pctx.Subagent(),
+		ParentSubagent: pctx.ParentSubagent(),
 	}
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode

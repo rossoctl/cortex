@@ -264,9 +264,10 @@ func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelR
 		// Why the bytes stayed opaque. The caller knows; this function does
 		// not, which is why it is a parameter rather than something derived
 		// here from host shape.
-		TunnelReason: reason,
-		Client:       pctx.ClientInfo(),
-		Subagent:     pctx.Subagent(),
+		TunnelReason:   reason,
+		Client:         pctx.ClientInfo(),
+		Subagent:       pctx.Subagent(),
+		ParentSubagent: pctx.ParentSubagent(),
 	}
 }
 
@@ -293,23 +294,24 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 		return
 	}
 	s.Sessions.AppendTrailing(b, pipeline.SessionEvent{
-		At:           time.Now(),
-		Direction:    pipeline.Outbound,
-		Phase:        pipeline.SessionResponse,
-		RequestID:    pctx.RequestID(),
-		Identity:     pipeline.SnapshotIdentity(pctx),
-		Host:         pctx.Host,
-		HTTPMethod:   pctx.Method,
-		HTTPPath:     pctx.Path,
-		StatusCode:   statusCode,
-		Error:        fail,
-		Duration:     pipeline.DurationSince(pctx.StartedAt),
-		Tunnel:       true,
-		TunnelReason: reason,
-		BytesUp:      up,
-		BytesDown:    down,
-		Client:       pctx.ClientInfo(),
-		Subagent:     pctx.Subagent(),
+		At:             time.Now(),
+		Direction:      pipeline.Outbound,
+		Phase:          pipeline.SessionResponse,
+		RequestID:      pctx.RequestID(),
+		Identity:       pipeline.SnapshotIdentity(pctx),
+		Host:           pctx.Host,
+		HTTPMethod:     pctx.Method,
+		HTTPPath:       pctx.Path,
+		StatusCode:     statusCode,
+		Error:          fail,
+		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Tunnel:         true,
+		TunnelReason:   reason,
+		BytesUp:        up,
+		BytesDown:      down,
+		Client:         pctx.ClientInfo(),
+		Subagent:       pctx.Subagent(),
+		ParentSubagent: pctx.ParentSubagent(),
 	})
 }
 

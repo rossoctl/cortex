@@ -106,7 +106,9 @@ of a subagent's system prompt, and agentop's context gauge uses the tag to follo
 main conversation rather than a subagent's. Each subagent request also carries
 `X-Claude-Code-Agent-Id`, and Cortex records it on the event as `subagent`: the id that
 names the subagent's `<session>/subagents/agent-<id>.meta.json`, which holds its type and
-description. Listing subagents separately in agentop is
+description. A subagent another subagent started also carries
+`X-Claude-Code-Parent-Agent-Id`, recorded as `parentSubagent`; a subagent the conversation
+started has none. Listing subagents separately in agentop is
 [#1047](https://github.com/rossoctl/cortex/issues/1047).
 
 **Typed inference.** Requests to a path ending in `/v1/messages` are parsed as the

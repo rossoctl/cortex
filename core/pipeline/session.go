@@ -327,6 +327,16 @@ type SessionEvent struct {
 	//
 	// Client-asserted, with the same caveat as Client above.
 	Subagent string
+
+	// ParentSubagent is the agent that started Subagent, read from
+	// X-Claude-Code-Parent-Agent-Id by Context.ParentSubagent. Together the two give a
+	// row's place in the session's tree of agents: Subagent is the node, this is its
+	// parent, and EMPTY HERE ON A SUBAGENT'S ROW MEANS THE PARENT IS THE CONVERSATION —
+	// Claude Code sends the header only when the spawner was itself an agent. See
+	// Context.ParentSubagent for the other empty cases.
+	//
+	// Client-asserted, with the same caveat as Client above.
+	ParentSubagent string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -532,6 +542,8 @@ type sessionEventWire struct {
 	// omitempty: absent on every row but a subagent's, and the same skew reason as
 	// TunnelReason above.
 	Subagent string `json:"subagent,omitempty"`
+	// omitempty: absent on every row but a nested subagent's.
+	ParentSubagent string `json:"parentSubagent,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -563,6 +575,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		UpgradeStripped: e.UpgradeStripped,
 		Client:          e.Client,
 		Subagent:        e.Subagent,
+		ParentSubagent:  e.ParentSubagent,
 	})
 }
 
@@ -602,6 +615,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		UpgradeStripped: w.UpgradeStripped,
 		Client:          w.Client,
 		Subagent:        w.Subagent,
+		ParentSubagent:  w.ParentSubagent,
 	}
 	return nil
 }

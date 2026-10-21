@@ -33,6 +33,7 @@ func TestExtProcRecordersCarryTheClient(t *testing.T) {
 			// Rides with the User-Agent so the same present/absent pair covers both
 			// fields: a Claude Code subagent sends the two together.
 			h.Set(pipeline.ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+			h.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
 		}
 		return &pipeline.Context{
 			Direction: dir,
@@ -115,14 +116,19 @@ func TestExtProcRecordersCarryTheClient(t *testing.T) {
 				t.Errorf("%s: Subagent = %q, want a1a2e36cb5946f31c; the recorder does not copy pctx.Subagent()",
 					tc.name, ev.Subagent)
 			}
+			if ev.ParentSubagent != "a0974b0b8591dc76b" {
+				t.Errorf("%s: ParentSubagent = %q, want a0974b0b8591dc76b; the recorder does not copy pctx.ParentSubagent()",
+					tc.name, ev.ParentSubagent)
+			}
 
 			absent := firstEvent(t, tc.name, tc.record, newPctx(tc.dir, tc.phase, ""))
 			if absent.Client != nil {
 				t.Errorf("%s: Client = %+v, want nil for a request with no User-Agent; an invented agent in a cost table reads as a real program that spent real money",
 					tc.name, absent.Client)
 			}
-			if absent.Subagent != "" {
-				t.Errorf("%s: Subagent = %q, want empty for a request that named no subagent", tc.name, absent.Subagent)
+			if absent.Subagent != "" || absent.ParentSubagent != "" {
+				t.Errorf("%s: Subagent/ParentSubagent = %q/%q, want both empty for a request that named no subagent",
+					tc.name, absent.Subagent, absent.ParentSubagent)
 			}
 		})
 	}

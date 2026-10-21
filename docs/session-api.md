@@ -214,6 +214,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   bytes), which is refused rather than cleaned up. The row is still filed in
   its parent conversation's session. `inference.agentRole` says whether a
   request was a subagent's; this says which one.
+- `parentSubagent` — the agent that started `subagent`, from
+  `X-Claude-Code-Parent-Agent-Id`, under the same rules. Claude Code sends it
+  only when the spawner was itself an agent, so on a subagent's row an absent
+  `parentSubagent` means the conversation started it. The two keys together
+  give a row's place in the session's tree of agents.
 
 ## Invocation action vocabulary
 
