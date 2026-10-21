@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
@@ -132,12 +133,13 @@ type Server struct {
 	// ClientAffinity; false keeps today's resolution byte for byte.
 	ClientAffinity bool
 
-	// DeclineResponsesWebSockets answers a WebSocket upgrade on a Responses API path
-	// with 426 instead of forwarding it with Upgrade stripped; see
-	// declineResponsesWebSocket. Set from config.ListenerConfig's
-	// DeclinesResponsesWebSockets, which defaults on; false keeps the forwarding byte
-	// for byte.
-	DeclineResponsesWebSockets bool
+	// ResponsesWebSockets is what a WebSocket upgrade on a Responses API path gets:
+	// config.ResponsesWebSocketsParse carries and parses it (serveResponsesWebSocket),
+	// Decline answers 426 (declineResponsesWebSocket), and Forward — which is also
+	// what "" means here, so a Server built without it behaves as one always did —
+	// strips the Upgrade and forwards a bare GET. cmd/cortex sets it from
+	// config.ListenerConfig.ResponsesWebSocketsMode, which defaults to parse.
+	ResponsesWebSockets string
 
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
@@ -488,11 +490,24 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Upgrade present on the inbound request is one that will be removed.
 	pctx.RecordStrippedUpgrade(r.Header)
 
-	// After the pipeline, so a plugin's reject still wins; before any row, since this
-	// records its own pair. See declineResponsesWebSocket.
-	if !skipped && s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r) {
-		s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
-		return
+	// After the pipeline, so a plugin's reject still wins; before any row, since both
+	// arms record their own. A socket that cannot be carried is declined rather than
+	// forwarded, so asking for parse never makes Codex sit through the 405 retries.
+	if !skipped && wantsResponsesWebSocket(r) {
+		switch s.ResponsesWebSockets {
+		case config.ResponsesWebSocketsParse:
+			sid := s.recordingSessionID(sessionID, r.Header, chain)
+			if why := s.cannotCarryWebSocket(r, tl); why != "" {
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
+				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
+				return
+			}
+			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain)
+			return
+		case config.ResponsesWebSocketsDecline:
+			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
+			return
+		}
 	}
 
 	if !skipped && s.Sessions != nil {
@@ -1009,19 +1024,6 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 // declinedUpgradeBody is the 426's body. Static, like misdirectedBody: nothing the
 // client sent is echoed back.
 const declinedUpgradeBody = `{"detail":"WebSocket transport is not available through Cortex; use HTTPS"}` + "\n"
-
-// wantsResponsesWebSocket reports whether r asks to open a WebSocket on an OpenAI
-// Responses API path — the one shape declineResponsesWebSocket answers.
-//
-// Scoped to the Responses suffix inference-parser reads (/v1/responses, and Codex's
-// /backend-api/codex/responses), because 426 is an answer only that endpoint's
-// clients are known to read as "use HTTPS": every other WebSocket keeps the strip
-// and whatever its origin makes of the bare GET.
-func wantsResponsesWebSocket(r *http.Request) bool {
-	return r.Method == http.MethodGet &&
-		strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") &&
-		strings.HasSuffix(r.URL.Path, "/responses")
-}
 
 // declineResponsesWebSocket answers a WebSocket upgrade on a Responses API path with
 // 426 Upgrade Required, without contacting the origin.

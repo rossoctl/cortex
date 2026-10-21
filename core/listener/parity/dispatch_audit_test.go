@@ -93,6 +93,14 @@ var dispatchSites = map[string]dispatchClass{
 	"forwardproxy/server.go:streamFallbackBuffered:phaseCtx": finalization,
 	"forwardproxy/server.go:streamFallbackBuffered:foldCtx":  finalization,
 	"forwardproxy/server.go:streamFallbackBuffered:finalCtx": finalization,
+	// A carried Responses WebSocket: each turn's terminal frame, once the origin's
+	// terminal event (or the socket's end) has already gone to the client — the SSE
+	// finish defer's case, one turn at a time.
+	"forwardproxy/websocket.go:endTurn:finalCtx": finalizationDelivered,
+	// Each of a turn's server messages, mid-turn: the WebSocket counterpart of the SSE
+	// path's per-block frames. Detached from the handshake request, which ended when the
+	// upgrade was answered; the socket's own lifetime bounds it.
+	"forwardproxy/websocket.go:serverMessage:ws.ctx()": inFlight,
 
 	// ext_proc's teardown flush: the stream is gone by definition here, and its two dispatches take
 	// separate budgets. The second goes through dispatchTerminalFrame, and the CALL is audited here

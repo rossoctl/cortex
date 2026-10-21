@@ -595,8 +595,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `error.kind: "upgrade_declined"` is the forward proxy refusing a WebSocket on a
   Responses API path** (a path ending `/responses`): the origin would only answer the
   stripped GET with a 405, which Codex retries for ~6s, while a 426 sends it straight to
-  HTTPS. Nothing is forwarded, and the Finisher sees an allow with status 426. On by
-  default; `listener.decline_responses_websockets: false` forwards the upgrade instead. On all of these the
+  HTTPS. Nothing is forwarded, and the Finisher sees an allow with status 426. It is
+  what `listener.responses_websockets: decline` does to every such socket, and what the
+  default, `parse`, does to one it cannot carry (not bridged, HTTP/2, or a
+  `WritesResponseBody` plugin in the chain); a carried socket records instead a `GET` open
+  and close with `tunnelReason: "websocket"` and one ordinary `POST` request/response pair
+  per turn on it (`core/listener/forwardproxy/websocket.go`). `forward` restores the
+  stripped GET and the 405. On all of these the
   Finisher sees `OutcomeError` with `Outcome.StatusCode` **0**, because that zero is
   what marks the request as an error rather than an allow — the event and the outcome
   disagree about the status on purpose. **A request whose body could not be buffered

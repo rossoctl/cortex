@@ -905,27 +905,29 @@ or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
 guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
 
-#### Declining Responses API WebSockets (`listener.decline_responses_websockets`)
+#### Responses API WebSockets (`listener.responses_websockets`)
 
-The forward proxy answers a WebSocket upgrade on an OpenAI Responses API path — a
-`GET` with `Upgrade: websocket` on a path ending `/responses` — with **426 Upgrade
-Required** itself, and forwards nothing. On by default in every deployment.
+What the forward proxy does with a WebSocket upgrade on an OpenAI Responses API path — a
+`GET` with `Upgrade: websocket` on a path ending `/responses`, which is Codex's preferred
+transport:
 
 ```yaml
 listener:
-  decline_responses_websockets: false   # forward the upgrade instead, as before
+  responses_websockets: parse   # parse (default) | decline | forward
 ```
 
-The proxy cannot carry the WebSocket either way: `Upgrade` is hop-by-hop, so a
-forwarded handshake reaches the origin as a bare `GET`, which OpenAI's endpoint answers
-405. Codex — the one client known to use this transport — retries a 405 five times over
-about six seconds before falling back to HTTPS, and reads a 426 as "use HTTP" and falls
-back at once. `false` restores the forwarding byte for byte, for a client that reads a
-426 some other way. Every other WebSocket is forwarded whatever this says. Restart to
-apply, like every `listener.*` field. The key goes in the runtime config: on a laptop,
-`~/.cortex/config.yaml`, then `agentop service restart`; in a cluster, the
-`authbridge-runtime-config` ConfigMap, then a pod restart. See
-[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for the measured difference.
+| Mode | What happens |
+|---|---|
+| `parse` | The socket is carried: the handshake is completed with the origin, frames are relayed unchanged, and every turn on it — a `response.create` message and the event messages answering it — runs the outbound pipeline as the equivalent HTTPS request and SSE stream would. Each turn records a request/response pair, is priced, and finishes; the socket records an open and a close with `tunnelReason: "websocket"`. A plugin rejecting a turn keeps it from the origin and answers the client with a Responses `error` event; a request-body writer's rewrite is what the origin receives. `permessage-deflate` is stripped from the handshake so frames stay readable. A socket that cannot be carried — not decrypted by the TLS bridge, HTTP/2, or a pipeline with a `WritesResponseBody` plugin — is declined as below. |
+| `decline` | Answered **426 Upgrade Required** by the proxy, contacting no origin. Codex reads that as "use HTTP" and switches to HTTPS at once. Recorded as `error.kind: "upgrade_declined"`. |
+| `forward` | The behaviour before either existed: forwarded with `Upgrade` stripped (it is hop-by-hop), so the origin sees a bare `GET`, which OpenAI's endpoint answers 405. Codex retries a 405 five times over about six seconds before falling back to HTTPS. |
+
+Every other WebSocket is forwarded with `Upgrade` stripped whatever this says. A
+misspelt mode is refused at startup. Restart to apply, like every `listener.*` field. The
+key goes in the runtime config: on a laptop, `~/.cortex/config.yaml`, then `agentop service
+restart`; in a cluster, the `authbridge-runtime-config` ConfigMap, then a pod restart. See
+[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for what Codex shows and the
+measured difference.
 
 ---
 

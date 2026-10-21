@@ -120,7 +120,7 @@ func redirectHeader(e *pipeline.SessionEvent) string {
 // user blames Cortex. Cortex must not forward Upgrade (RFC 9110 makes it hop-by-hop),
 // so the request either reaches the origin as a bare GET — which an endpoint wanting
 // a POST or an upgrade answers 405 — or, on a Responses API path, is answered 426 by
-// the proxy itself (listener.decline_responses_websockets). Codex falls back to
+// the proxy itself (listener.responses_websockets). Codex falls back to
 // HTTPS after either.
 //
 // The wording holds for both because this line is drawn from the REQUEST row, which
