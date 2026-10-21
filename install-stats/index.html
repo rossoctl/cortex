@@ -79,10 +79,11 @@
   The release smoke test installs <em>exactly as a real user would</em>
   (<code>curl | sh</code> from GitHub Releases), so it lands in that number too and
   cannot be filtered out by behaviour. It can be subtracted by <em>count</em>: one
-  install per successful job lands in these figures — each job installs three
-  times, but on a push to main the other two land on <code>main-latest</code>,
-  whose counts reset on every push and are excluded here. The test runs an
-  architecture matrix, so a run is worth as many installs as it had legs succeed;
+  install per job that ran the test lands in these figures, passed or failed —
+  each job installs three times, but on a push to main the other two land on
+  <code>main-latest</code>, whose counts reset on every push and are excluded
+  here. The test runs an architecture matrix, so a run is worth as many installs
+  as it had legs run;
   the collector records that per run rather than this page assuming a number, which
   is what keeps runs from before the matrix counted correctly too.
   <br><br>
@@ -120,10 +121,11 @@ const PLATFORMS = ["darwin_arm64", "darwin_amd64", "linux_amd64", "linux_arm64"]
 
 // Installs one smoke run adds to the figures THIS PAGE reads.
 //
-// Recorded per run by the collector, as that run's successful-JOB count, and read
-// here rather than assumed. The workflow runs an architecture matrix and every leg
-// fresh-installs the current stable release, so a run is worth as many installs as
-// it had legs succeed -- and the number changes whenever a leg is added or removed.
+// Recorded per run by the collector, as how many of its jobs ran the smoke-test
+// step, and read here rather than assumed. The workflow runs an architecture matrix
+// and every leg fresh-installs the current stable release first thing, so a run is
+// worth as many installs as it had legs run, passing or not -- and the number
+// changes whenever a leg is added or removed.
 // A constant cannot track that: 1 undercounts every run since the matrix landed,
 // and 2 would overcount every run before it, retroactively, because the figures
 // those runs produced are already in the series.
@@ -186,8 +188,8 @@ function people(installs, ciTests) {
 // though measured. Merging keeps a run for as long as the series is kept.
 //
 // The install count travels WITH the run rather than being applied to a total,
-// because it varies per run: the matrix means a run is worth its successful-job
-// count, and the series spans runs from before the matrix existed. Summing
+// because it varies per run: the matrix means a run is worth one install per job
+// that ran, and the series spans runs from before the matrix existed. Summing
 // per-run is the only arithmetic that is right for both.
 //
 // LAST SNAPSHOT WINS on a repeated id, which is what lets a run first recorded
@@ -266,7 +268,7 @@ function renderDaily(snapshots) {
     // snapshot at or after its end actually carries a run list.
     //
     // That second test is the one that matters: a snapshot whose query failed holds
-    // null, mergeRunTimes skips it, and no earlier snapshot's window reaches forward
+    // null, mergeRuns skips it, and no earlier snapshot's window reaches forward
     // into this interval -- so runsBetween would return 0 and the row would read
     // "no CI" on the strength of a failed request. Checking from i onward is enough
     // because the next successful snapshot's last-100 list covers the gap, which is
@@ -277,7 +279,7 @@ function renderDaily(snapshots) {
       ? runsBetween(prevSnap.taken_at, currSnap.taken_at) : null;
     const ciRuns = span === null ? null : span.runs;
 
-    // One install per successful JOB reaches these figures, summed per run rather
+    // One install per JOB that ran reaches these figures, summed per run rather
     // than multiplied: an arch matrix makes a run worth more than one, and the
     // series spans runs from before it. Each job installs three times, but on a
     // push to main the two extra legs land on main-latest, which the collector
@@ -310,7 +312,7 @@ function renderDaily(snapshots) {
       <td>${peopleCell}</td>
       <td style="text-align:left">${w ? `<span class="bar" style="width:${w}px"></span>` : ""}</td>
       <td class="ci"${r.ciRuns !== null
-        ? ` title="${r.ciRuns} runs, one install per successful job"` : ""
+        ? ` title="${r.ciRuns} runs, one install per job that ran"` : ""
       }>${r.ciInstalls === null ? "?" : r.ciInstalls}</td>
     </tr>`;
   }).reverse().join("");
@@ -329,8 +331,8 @@ function renderDaily(snapshots) {
     <code>checksums.txt</code>, one per install on every platform — and this column
     is that figure minus the CI installs beside it. Add the two columns back
     together to recover it.
-    <strong>Cortex CI Tests</strong> is one install per successful job of the
-    release smoke test, which runs one job per architecture. It installs exactly the
+    <strong>Cortex CI Tests</strong> is one install per job of the release smoke
+    test that ran, passed or failed, with one job per architecture. It installs exactly the
     way a person does, which is why it has to be subtracted rather than filtered
     out. On a day that cut a release tag the real figure is higher by 1-2 per job,
     because each job's upgrade leg lands on that tag instead of on
@@ -593,7 +595,7 @@ function renderReleases(snapshots) {
     const ci = ciByTag.get(r.tag) || null;
     const ciRuns = ci === null ? null : ci.runs;
     // Summed per run, for the reason in installsOf: an arch matrix makes a run worth
-    // its successful-job count, and this span reaches back across runs from before
+    // one install per job that ran, and this span reaches back across runs from before
     // the matrix existed, which were worth one apiece.
     const ciInstalls = ci === null ? null : ci.installs;
     const ciPartial = ci !== null && partialFor(r);
@@ -630,7 +632,7 @@ function renderReleases(snapshots) {
       <td>${linuxCell}</td>
       <td class="mac">${r.mac}</td>
       <td class="delta"${ciRuns !== null
-        ? ` title="${ciRuns} runs, one install per successful job, while ${esc(r.tag)} was the newest release${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
+        ? ` title="${ciRuns} runs, one install per job that ran, while ${esc(r.tag)} was the newest release${ciPartial ? " — at least this many; the run history does not reach back to publication" : ""}"`
         : ""}>${
         ciInstalls === null ? "—"
           : (ciPartial ? "≥" : "") + ciInstalls
@@ -662,7 +664,7 @@ function renderReleases(snapshots) {
     two binaries of one platform, so they can disagree with the independent
     <code>checksums.txt</code> count. <code>checksums.txt</code> is the figure to
     trust where they differ.
-    <strong>CI Tests</strong> is one install per successful job of the smoke test
+    <strong>CI Tests</strong> is one install per job of the smoke test that ran
     (one job per architecture): a run carries no tag, so what is known is that it
     installed whichever release was newest when it started, which is what assigns it
     to a release.
