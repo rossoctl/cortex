@@ -112,6 +112,13 @@ func validateListeners(cfg *Config) error {
 			return fmt.Errorf("listener.inbound_interception: %q is not valid (use %q or %q)",
 				cfg.Listener.InboundInterception, InboundInterceptionReverseProxy, InboundInterceptionTransparent)
 		}
+		switch cfg.Listener.ResponsesWebSockets {
+		case "", ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward:
+			// valid
+		default:
+			return fmt.Errorf("listener.responses_websockets: %q is not valid (use %q, %q or %q)",
+				cfg.Listener.ResponsesWebSockets, ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward)
+		}
 		roles := cfg.Listener.ActiveRoles()
 		if cfg.Listener.InboundTransparent() && !roles[RoleReverse] {
 			return fmt.Errorf("listener.inbound_interception: transparent requires the %q role (it selects how inbound reaches the inbound pipeline)", RoleReverse)

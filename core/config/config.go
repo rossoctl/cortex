@@ -935,29 +935,45 @@ type ListenerConfig struct {
 	// in #496.
 	SkipHosts []string `yaml:"skip_hosts" json:"skip_hosts"`
 
-	// DeclineResponsesWebSockets: whether the forward proxy answers a WebSocket
-	// upgrade on an OpenAI Responses API path (one ending /responses, on chatgpt.com
-	// or api.openai.com) with 426 itself, instead of forwarding the request with its Upgrade stripped. nil means
-	// unset, and the default is on; explicit false restores the forwarding. See
-	// DeclinesResponsesWebSockets for why on is the default.
-	//
-	// A pointer for the reason SessionConfig.Enabled is one: with a plain bool,
-	// "unset" and "false" are the same value, and the default could not be on.
-	DeclineResponsesWebSockets *bool `yaml:"decline_responses_websockets,omitempty" json:"decline_responses_websockets,omitempty"`
+	// ResponsesWebSockets is what the forward proxy does with a WebSocket upgrade on
+	// an OpenAI Responses API path (a GET with Upgrade: websocket on a path ending
+	// /responses — Codex's transport): one of the ResponsesWebSockets* values below.
+	// Empty means the default, ResponsesWebSocketsParse. See
+	// ResponsesWebSocketsMode.
+	ResponsesWebSockets string `yaml:"responses_websockets,omitempty" json:"responses_websockets,omitempty"`
 }
 
-// DeclinesResponsesWebSockets reports whether the forward proxy answers a WebSocket
-// upgrade on a Responses API path with 426 rather than forwarding it.
+// Valid ListenerConfig.ResponsesWebSockets values.
+const (
+	// ResponsesWebSocketsParse carries the WebSocket and parses every turn on it the
+	// way an HTTPS Responses request is parsed. Where the proxy cannot do that — the
+	// connection is HTTP/2, the request was not decrypted, or a plugin rewrites
+	// response bodies — it falls back to ResponsesWebSocketsDecline for that socket.
+	ResponsesWebSocketsParse = "parse"
+	// ResponsesWebSocketsDecline answers the upgrade with 426 Upgrade Required and
+	// contacts no origin; Codex reads that as "use HTTPS" and switches at once.
+	ResponsesWebSocketsDecline = "decline"
+	// ResponsesWebSocketsForward forwards the upgrade with Upgrade stripped, as
+	// every WebSocket was before: the origin sees a bare GET and answers 405, which
+	// Codex retries for about six seconds before falling back to HTTPS.
+	ResponsesWebSocketsForward = "forward"
+)
+
+// ResponsesWebSocketsMode is ListenerConfig.ResponsesWebSockets with the default
+// applied: parse, in every deployment.
 //
-// On unless set false, in every deployment. The proxy must strip Upgrade (RFC 9110
-// makes it hop-by-hop), so a forwarded upgrade reaches the origin as a bare GET, and
-// OpenAI's Responses endpoint answers that 405. Codex reads a 405 as transient and
-// retries for about six seconds before falling back to HTTPS; it reads a 426 as "use
-// HTTP" and falls back at once. The forwarded request can never become a WebSocket, so
-// nothing is lost by answering it here. False is the escape hatch for a client that
-// reads 426 some other way.
-func (l ListenerConfig) DeclinesResponsesWebSockets() bool {
-	return l.DeclineResponsesWebSockets == nil || *l.DeclineResponsesWebSockets
+// Parse is the default because it is the transport Codex asks for and the one it
+// performs best on: one socket for a whole session, with later turns sending only new
+// input instead of the whole conversation. Every turn on it is still parsed — model,
+// tokens, cost, tool calls — so carrying it costs Cortex no visibility, and where it
+// cannot be carried the socket is declined rather than broken. Decline and forward are
+// the escape hatches: decline keeps Codex on HTTPS without delay, and forward is the
+// behaviour before either existed.
+func (l ListenerConfig) ResponsesWebSocketsMode() string {
+	if l.ResponsesWebSockets == "" {
+		return ResponsesWebSocketsParse
+	}
+	return l.ResponsesWebSockets
 }
 
 // Proxy roles selectable via ListenerConfig.Roles in proxy-sidecar mode.

@@ -600,11 +600,15 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `api.openai.com`; other hosts keep the strip), because the origin
   would only answer the stripped GET with a 405, which Codex retries for ~6s, while a
   426 sends it straight to HTTPS. Nothing is forwarded, the Finisher sees an allow with
-  status 426, and `/v1/usage` does not count it as an error. On by default;
-  `listener.decline_responses_websockets: false` forwards the upgrade instead.
-  **A request whose body could not be buffered is the other exception:** it never
-  reached the pipeline, so its request row carries no
-  parse and no Finisher runs. Over the forward proxy's `maxRequestBodySize` (32 MiB)
+  status 426, and `/v1/usage` does not count it as an error. It is what
+  `listener.responses_websockets: decline` does to every such socket, and what the
+  default, `parse`, does to one it cannot carry (not bridged, HTTP/2, or a
+  `WritesResponseBody` plugin in the chain); a carried socket records instead a `GET`
+  open and close with `tunnelReason: "websocket"` and one ordinary `POST`
+  request/response pair per turn on it (`core/listener/forwardproxy/websocket.go`).
+  `forward` restores the stripped GET and the 405. **A request whose body could not be
+  buffered is the other exception:** it never reached the pipeline, so its request row
+  carries no parse and no Finisher runs. Over the forward proxy's `maxRequestBodySize` (32 MiB)
   it is a 413 `proxy_error` with an empty `error.code`; a client that hung up
   mid-upload gets a 499 `client_canceled`, which here does log a WARN (`request body
   unreadable`); anything else unreadable is a 400 `request_unreadable`. Before these

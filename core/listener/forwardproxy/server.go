@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
@@ -132,12 +133,13 @@ type Server struct {
 	// ClientAffinity; false keeps today's resolution byte for byte.
 	ClientAffinity bool
 
-	// DeclineResponsesWebSockets answers a WebSocket upgrade on a Responses API path
-	// with 426 instead of forwarding it with Upgrade stripped; see
-	// declineResponsesWebSocket. Set from config.ListenerConfig's
-	// DeclinesResponsesWebSockets, which defaults on; false keeps the forwarding byte
-	// for byte.
-	DeclineResponsesWebSockets bool
+	// ResponsesWebSockets is what a WebSocket upgrade on a Responses API path gets:
+	// config.ResponsesWebSocketsParse carries and parses it (serveResponsesWebSocket),
+	// Decline answers 426 (declineResponsesWebSocket), and Forward — which is also
+	// what "" means here, so a Server built without it behaves as one always did —
+	// strips the Upgrade and forwards a bare GET. cmd/cortex sets it from
+	// config.ListenerConfig.ResponsesWebSocketsMode, which defaults to parse.
+	ResponsesWebSockets string
 
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
@@ -147,6 +149,11 @@ type Server struct {
 	// (peerproc.New). The http.Server must carry ConnContext. nil keeps today's
 	// resolution byte for byte.
 	Processes peerproc.Resolver
+
+	// dialTunnel opens a CONNECT tunnel's upstream TCP connection; nil is
+	// net.DialTimeout. A seam for tests that address an origin by a real hostname —
+	// chatgpt.com, so the Responses WebSocket path applies — while it listens locally.
+	dialTunnel func(addr string, timeout time.Duration) (net.Conn, error)
 
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
@@ -488,11 +495,24 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Upgrade present on the inbound request is one that will be removed.
 	pctx.RecordStrippedUpgrade(r.Header)
 
-	// After the pipeline, so a plugin's reject still wins; before any row, since this
-	// records its own pair. See declineResponsesWebSocket.
-	if !skipped && s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r) {
-		s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
-		return
+	// After the pipeline, so a plugin's reject still wins; before any row, since both
+	// arms record their own. A socket that cannot be carried is declined rather than
+	// forwarded, so asking for parse never makes Codex sit through the 405 retries.
+	if !skipped && wantsResponsesWebSocket(r) {
+		switch s.ResponsesWebSockets {
+		case config.ResponsesWebSocketsParse:
+			sid := s.recordingSessionID(sessionID, r.Header, chain)
+			if why := s.cannotCarryWebSocket(r, tl); why != "" {
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
+				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
+				return
+			}
+			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain)
+			return
+		case config.ResponsesWebSocketsDecline:
+			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
+			return
+		}
 	}
 
 	if !skipped && s.Sessions != nil {
@@ -1009,59 +1029,6 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 // declinedUpgradeBody is the 426's body. Static, like misdirectedBody: nothing the
 // client sent is echoed back.
 const declinedUpgradeBody = `{"detail":"WebSocket transport is not available through Cortex; use HTTPS"}` + "\n"
-
-// wantsResponsesWebSocket reports whether r asks to open a WebSocket on an OpenAI
-// Responses API path — the one shape declineResponsesWebSocket answers.
-//
-// Scoped twice: to OpenAI's own hosts (isOpenAIResponsesHost), and to the Responses
-// suffix inference-parser reads (/v1/responses, and Codex's
-// /backend-api/codex/responses). A 426 is an answer only Codex is known to read as
-// "use HTTPS", and only against OpenAI is that known: every other WebSocket keeps the
-// strip and whatever its origin makes of the bare GET.
-func wantsResponsesWebSocket(r *http.Request) bool {
-	return r.Method == http.MethodGet &&
-		upgradesToWebSocket(r.Header) &&
-		isOpenAIResponsesHost(r.URL.Host) &&
-		strings.HasSuffix(r.URL.Path, "/responses")
-}
-
-// isOpenAIResponsesHost reports whether authority is one of OpenAI's own Responses API
-// hosts: chatgpt.com, which serves Codex on a ChatGPT login, and api.openai.com, which
-// serves it on an API key and is the public /v1/responses.
-//
-// OpenAI's only, because what a 426 means to a client is only known for Codex — it is
-// read from Codex's own source. Another harness speaking the same API through another
-// host (a LiteLLM gateway, OpenCode Zen, a local server) may treat a 426 as a hard
-// failure where today it falls back, so those keep the strip and the origin's answer.
-// Exact names, compared case-insensitively without a port or a trailing dot: a
-// subdomain is not the same service.
-//
-// authority is r.URL.Host, the address the request is dialed to — on a bridged request
-// the tunnel's own, which tunnelAuthorityMatches has already held the Host header to,
-// and after a redirect the redirect's — so the judgement follows where the bytes go.
-func isOpenAIResponsesHost(authority string) bool {
-	switch strings.TrimSuffix(strings.ToLower(hostOnly(authority)), ".") {
-	case "chatgpt.com", "api.openai.com":
-		return true
-	}
-	return false
-}
-
-// upgradesToWebSocket reports whether h's Upgrade names websocket. RFC 9110 §7.8 makes
-// Upgrade a comma-separated list, matched case-insensitively and in any repeat of the
-// header, so "websocket, h2c" asks for a WebSocket as surely as "websocket" does. A
-// token may carry a version ("websocket/13"); only the name before it is compared.
-func upgradesToWebSocket(h http.Header) bool {
-	for _, line := range h.Values("Upgrade") {
-		for _, tok := range strings.Split(line, ",") {
-			name, _, _ := strings.Cut(strings.TrimSpace(tok), "/")
-			if strings.EqualFold(name, "websocket") {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // declineResponsesWebSocket answers a WebSocket upgrade on a Responses API path with
 // 426 Upgrade Required, without contacting the origin.
@@ -2043,6 +2010,14 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 	s.appendOutbound(tl, sid, sessionevent.Deny(pctx, action, pipeline.Outbound))
 }
 
+// dialUpstream opens a CONNECT tunnel's upstream TCP connection to addr.
+func (s *Server) dialUpstream(addr string) (net.Conn, error) {
+	if s.dialTunnel != nil {
+		return s.dialTunnel(addr, connectDialTimeout)
+	}
+	return net.DialTimeout("tcp", addr, connectDialTimeout)
+}
+
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
 // Once the tunnel is open the timeout no longer applies — the agent's TLS
 // handshake and subsequent traffic flow at their own pace.
@@ -2174,7 +2149,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Plain TCP dial. See package-level comment on why mTLS doesn't
 	// apply here. r.Host on a CONNECT carries "host:port" already.
-	upstream, err := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+	upstream, err := s.dialUpstream(r.Host)
 	if err != nil {
 		slog.Warn("forward-proxy: CONNECT upstream dial failed", "host", r.Host, "error", err)
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
@@ -2229,7 +2204,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
 			// like any other opaque one.
-			up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+			up2, derr := s.dialUpstream(r.Host)
 			if derr != nil {
 				// The client already has its 200, so that stays the status, and the
 				// error says why the tunnel died. Closing the client is what makes

@@ -71,7 +71,7 @@ subsystem each one drives rather than in one file, so this table is the index.
 | `session.archive:` | The laptop's on-disk session history, its bounds, and clearing it | [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions) |
 | `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | [`framework-architecture.md`](framework-architecture.md) |
 | `spiffe:` | SVID sourcing over the Workload API and the `/opt` file mirror | [`architecture.md`](architecture.md#spiffe-configuration) |
-| `listener:` | Listener addresses, `roles`, interception mode, `skip_hosts`, `decline_responses_websockets` | [`cmd/README.md`](../cmd/README.md) (ports, roles), [`framework-architecture.md`](framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) (reload rules, `skip_hosts`), [`framework-architecture.md`](framework-architecture.md#declining-responses-api-websockets-listenerdecline_responses_websockets) (`decline_responses_websockets`) |
+| `listener:` | Listener addresses, `roles`, interception mode, `skip_hosts`, `responses_websockets` | [`cmd/README.md`](../cmd/README.md) (ports, roles), [`framework-architecture.md`](framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) (reload rules, `skip_hosts`), [`framework-architecture.md`](framework-architecture.md#responses-api-websockets-listenerresponses_websockets) (`responses_websockets`) |
 | `mtls:` | Transport mTLS on the listeners, both deployment shapes | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) |
 | `tls_bridge:` | The laptop TLS bridge and its CA | [`laptop-service.md`](laptop-service.md#the-tls_bridge-configuration) |
 

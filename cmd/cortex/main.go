@@ -972,10 +972,10 @@ func main() {
 		fpSrv.SkipHosts = skipHosts
 		fpSrv.TLSBridge = bridge
 		fpSrv.Shared = sharedStore
-		// A Responses API WebSocket is answered 426 so Codex falls back to HTTPS at once,
-		// rather than after ~6s of retrying the origin's 405. On unless
-		// listener.decline_responses_websockets: false.
-		fpSrv.DeclineResponsesWebSockets = cfg.Listener.DeclinesResponsesWebSockets()
+		// A Responses API WebSocket — Codex's transport — is carried and parsed turn by
+		// turn by default; listener.responses_websockets: decline answers it 426 so Codex
+		// uses HTTPS at once, and forward restores the stripped GET.
+		fpSrv.ResponsesWebSockets = cfg.Listener.ResponsesWebSocketsMode()
 		// Per-session bucketing. Without it every coding-agent session on the
 		// machine records into one shared bucket: two Claude Code windows
 		// interleave and per-session cost cannot be computed at all. Defaults to
