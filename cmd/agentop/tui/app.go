@@ -1283,8 +1283,30 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 	}
 }
 
-// Update handles every message + dispatches the next Cmd.
+// Update handles every message + dispatches the next Cmd, and repaints the whole
+// screen when the message changed panes.
+//
+// THE REPAINT IS A BACKSTOP, not the fix for #1461: Run turns autowrap off, which is
+// what keeps a row the terminal draws wider than bubbletea measured from scrolling the
+// screen. But bubbletea's renderer skips a row equal to the one it drew there last, and
+// the divider under the spend band is the same on every pane, so any drift that still
+// reaches the screen — a terminal that ignores DECAWM, a write from outside the
+// renderer — would otherwise stay on those rows until a resize. A pane change is the
+// moment the operator is looking at a new screen, so it is when a stale row costs most
+// and a repaint costs least: one frame, at 60fps.
+//
+// Decided HERE, around the dispatch, rather than at the thirty-odd places that assign
+// m.pane, so a pane change added later cannot forget it.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	before := m.pane
+	next, cmd := m.update(msg)
+	if m.pane != before {
+		cmd = tea.Batch(tea.ClearScreen, cmd)
+	}
+	return next, cmd
+}
+
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -2901,6 +2923,24 @@ func Run(ctx context.Context, opts RunOptions) error {
 		fmt.Fprint(os.Stdout, ansi.SetModeCursorKeys)
 		defer fmt.Fprint(os.Stdout, ansi.ResetModeCursorKeys)
 	}
+	// Autowrap (DECAWM) off for the life of the program, so a row the terminal draws
+	// wider than bubbletea measured cannot scroll the screen. bubbletea pads and truncates
+	// every row to the width x/ansi reports, and the terminal has its own width tables:
+	// "वि" is one column to x/ansi and two to go-runewidth. A row bubbletea thinks fills
+	// the terminal exactly then wraps, and in the last row that scrolls the alt screen up
+	// by one. bubbletea's renderer skips any row equal to the one it drew there before,
+	// so after a scroll the rows that never change — the divider under the spend band
+	// above all — keep whatever moved onto them, across pane changes, until a full
+	// repaint (#1461). With autowrap off the overflow overwrites the last column instead,
+	// and nothing moves.
+	//
+	// Every terminal, not only Terminal.app: the disagreement is between two width
+	// tables, and any terminal can hold the other one. bubbletea never sets the mode
+	// itself. Set before the renderer starts and reset after it stops, like the
+	// cursor-key mode above, and reset around $EDITOR by autowrapCmd, which expects a
+	// terminal in its default state.
+	fmt.Fprint(os.Stdout, ansi.ResetModeAutoWrap)
+	defer fmt.Fprint(os.Stdout, ansi.SetModeAutoWrap)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	return err
@@ -2938,9 +2978,49 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 		return editorExitedMsg{gen: gen, err: err}
 	}
 	if wantCursorKeys() {
-		return tea.Exec(cursorKeysCmd{c}, exited)
+		return tea.Exec(cursorKeysCmd{autowrapCmd{c}}, exited)
 	}
-	return tea.ExecProcess(c, exited)
+	return tea.Exec(autowrapCmd{c}, exited)
+}
+
+// autowrapCmd lends the terminal to a command with autowrap on, and turns it off again
+// once the command exits. Run turns it off for agentop's own rows (see there), but an
+// editor drawing its own screen expects the terminal's default, and bubbletea's
+// ReleaseTerminal and RestoreTerminal do not know about the mode.
+//
+// Written to the command's own stdout, before its output and after it, for the reason
+// cursorKeysCmd writes there: bubbletea has released the terminal while Run is called,
+// so the writes cannot land inside a frame.
+type autowrapCmd struct{ *exec.Cmd }
+
+// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
+func (c autowrapCmd) SetStdin(r io.Reader) {
+	if c.Stdin == nil {
+		c.Stdin = r
+	}
+}
+
+func (c autowrapCmd) SetStdout(w io.Writer) {
+	if c.Stdout == nil {
+		c.Stdout = w
+	}
+}
+
+func (c autowrapCmd) SetStderr(w io.Writer) {
+	if c.Stderr == nil {
+		c.Stderr = w
+	}
+}
+
+func (c autowrapCmd) Run() error {
+	if c.Stdout != nil {
+		_, _ = io.WriteString(c.Stdout, ansi.SetModeAutoWrap)
+	}
+	err := c.Cmd.Run()
+	if c.Stdout != nil {
+		_, _ = io.WriteString(c.Stdout, ansi.ResetModeAutoWrap)
+	}
+	return err
 }
 
 // cursorKeysCmd runs a command that borrows the terminal and sets application
@@ -2949,29 +3029,13 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 // Without this, one `e` would leave the trackpad scrolling the terminal's
 // scrollback for the rest of the session. Run is called while bubbletea has
 // released the terminal, so the write cannot interleave with a frame.
-type cursorKeysCmd struct{ *exec.Cmd }
-
-// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
-func (c cursorKeysCmd) SetStdin(r io.Reader) {
-	if c.Stdin == nil {
-		c.Stdin = r
-	}
-}
-
-func (c cursorKeysCmd) SetStdout(w io.Writer) {
-	if c.Stdout == nil {
-		c.Stdout = w
-	}
-}
-
-func (c cursorKeysCmd) SetStderr(w io.Writer) {
-	if c.Stderr == nil {
-		c.Stderr = w
-	}
-}
+//
+// It wraps an autowrapCmd because every command agentop lends the terminal to needs
+// that one, and takes its stream setters from it.
+type cursorKeysCmd struct{ autowrapCmd }
 
 func (c cursorKeysCmd) Run() error {
-	err := c.Cmd.Run()
+	err := c.autowrapCmd.Run()
 	if c.Stdout != nil {
 		_, _ = io.WriteString(c.Stdout, ansi.SetModeCursorKeys)
 	}

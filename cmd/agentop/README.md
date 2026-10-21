@@ -1386,6 +1386,15 @@ selection stays the terminal's and copying text out of a pane works as it does a
 shell prompt. The cost is that a scroll moves the focused pane, not the one under the
 pointer.
 
+**Autowrap is off while agentop runs**, in every terminal, and back on when it exits or
+hands the terminal to `$EDITOR`. agentop fits every row to the width its rendering library
+measures, and a terminal can draw some text wider than that — Devanagari with a vowel
+sign, such as `वि`, measures one column to that library and two to others. With autowrap
+on, such a row wrapped and scrolled the whole screen up a line, and text from the event
+detail pane then stayed on the divider rows after leaving it (#1461). With it off, an
+overwide row loses its last column instead. agentop also repaints the whole screen on
+every pane change, which clears anything that still drifted.
+
 **The picker also opens itself at startup**, once per connection, when two or more
 agents have spent in the window or own a listed session, so a one-agent proxy goes
 straight to the sessions pane and says nothing; `A` still opens it there. The
