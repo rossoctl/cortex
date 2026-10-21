@@ -94,10 +94,17 @@ func (c *Context) resolveSubagents() {
 	c.parentSubagent = subagentHeader(c.Headers.Get(ClaudeCodeParentAgentIDHeader))
 }
 
-// subagentHeader is a header value trimmed and checked by validSubagentID, or "" when
-// it fails the check.
+// subagentHeader is a header value with its padding trimmed and checked by
+// validSubagentID, or "" when it fails the check.
+//
+// PADDING IS SP AND HTAB ONLY — RFC 9110's optional whitespace around a field value —
+// and not strings.TrimSpace, which also strips \n, \r, \v, \f and U+0085 from either
+// end. Those are control characters, not padding: trimming them would hand
+// validSubagentID a clean id and record "a1a2…\n" as "a1a2…", which is sanitising by
+// another route. Left in place, they reach the check and refuse the value, which is
+// the rule validSubagentID states.
 func subagentHeader(v string) string {
-	if id := strings.TrimSpace(v); validSubagentID(id) {
+	if id := strings.Trim(v, " \t"); validSubagentID(id) {
 		return id
 	}
 	return ""

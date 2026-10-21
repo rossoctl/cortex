@@ -44,12 +44,19 @@ func TestSubagent_AbsentHeaderIsEmpty(t *testing.T) {
 	}
 }
 
-// Surrounding whitespace is not part of the id; net/http trims it from a value on the
-// forward proxy, but ext_proc hands bytes over as sent.
+// HTTP's optional whitespace around a value — SP and HTAB, RFC 9110 §5.5 — is not part
+// of the id; net/http trims it on the forward proxy, but ext_proc hands bytes over as
+// sent. Both kinds, at both ends, so a trim narrowed to spaces alone fails here.
 func TestSubagent_TrimsSurroundingSpace(t *testing.T) {
-	c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{" a1a2e36cb5946f31c "}}}
-	if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
-		t.Errorf("Subagent() = %q, want the id without its padding", got)
+	for name, v := range map[string]string{
+		"spaces": " a1a2e36cb5946f31c ",
+		"tabs":   "\ta1a2e36cb5946f31c\t",
+		"mixed":  " \t a1a2e36cb5946f31c \t ",
+	} {
+		c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{v}}}
+		if got := c.Subagent(); got != "a1a2e36cb5946f31c" {
+			t.Errorf("%s: Subagent() = %q, want the id without its padding", name, got)
+		}
 	}
 }
 
@@ -66,6 +73,18 @@ func TestSubagent_RefusesUnusableValues(t *testing.T) {
 		"zero-width join": "a1a2\u200de36cb",
 		"invalid UTF-8":   "a1a2\xffe36cb",
 		"over the cap":    strings.Repeat("a", maxClientLen+1),
+		// AT THE EDGES, where a trim runs first. strings.TrimSpace would strip every one of
+		// these and hand validSubagentID a clean id, so the value would be recorded cleaned
+		// up — the opposite of this function's rule. Only HTTP's optional whitespace (SP,
+		// HTAB) is padding; anything else at either end is part of the value and refuses it.
+		"trailing newline": "a1a2e36cb5946f31c\n",
+		"leading newline":  "\na1a2e36cb5946f31c",
+		"trailing CR":      "a1a2e36cb5946f31c\r",
+		"trailing CRLF":    "a1a2e36cb5946f31c\r\n",
+		"leading VT":       "\va1a2e36cb5946f31c",
+		"trailing FF":      "a1a2e36cb5946f31c\f",
+		"trailing NEL":     "a1a2e36cb5946f31c\u0085",
+		"leading NEL":      "\u0085a1a2e36cb5946f31c",
 	} {
 		c := &Context{Headers: http.Header{ClaudeCodeAgentIDHeader: []string{v}}}
 		if got := c.Subagent(); got != "" {
@@ -169,6 +188,9 @@ func TestParentSubagent_RefusesUnusableValues(t *testing.T) {
 		"bidi override": "a0974\u202eb0b8",
 		"invalid UTF-8": "a0974\xffb0b8",
 		"over the cap":  strings.Repeat("a", maxClientLen+1),
+		// The parent goes through the same trim; see the child's edge cases.
+		"trailing newline": "a0974b0b8591dc76b\n",
+		"leading NEL":      "\u0085a0974b0b8591dc76b",
 	} {
 		c := &Context{Headers: http.Header{
 			ClaudeCodeAgentIDHeader:       []string{"a21728bb34d27cb12"},
