@@ -83,7 +83,7 @@
   each job installs three times, but on a push to main the other two land on
   <code>main-latest</code>, whose counts reset on every push and are excluded
   here. The test runs an architecture matrix, so a run is worth as many installs
-  as it had legs run;
+  as it had legs that ran;
   the collector records that per run rather than this page assuming a number, which
   is what keeps runs from before the matrix counted correctly too.
   <br><br>
@@ -124,7 +124,7 @@ const PLATFORMS = ["darwin_arm64", "darwin_amd64", "linux_amd64", "linux_arm64"]
 // Recorded per run by the collector, as how many of its jobs ran the smoke-test
 // step, and read here rather than assumed. The workflow runs an architecture matrix
 // and every leg fresh-installs the current stable release first thing, so a run is
-// worth as many installs as it had legs run, passing or not -- and the number
+// worth as many installs as it had legs that ran, passing or not -- and the number
 // changes whenever a leg is added or removed.
 // A constant cannot track that: 1 undercounts every run since the matrix landed,
 // and 2 would overcount every run before it, retroactively, because the figures
