@@ -53,6 +53,7 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 | Set up model pricing and gateway discounts, or read the `cost` record | [`pricing.md`](pricing.md) |
 | Read sessions and events over HTTP — endpoints, event schema, SSE | [`session-api.md`](session-api.md) |
 | See the rates actually in effect | `agentop pricing [--host <gateway>]` |
+| See how many people install Cortex | [install stats](https://rossoctl.github.io/cortex/install-stats/) — estimated from GitHub's release-download counts, never from your machine. The page is explicit that the figures still include maintainers and contributors |
 | Implement an IdP plugin for token-exchange | [`idp-plugin-contract.md`](idp-plugin-contract.md) |
 | The lineage OTLP wire contract | [`lineage-wire-contract.md`](lineage-wire-contract.md) |
 
