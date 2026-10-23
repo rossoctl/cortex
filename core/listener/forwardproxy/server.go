@@ -132,6 +132,13 @@ type Server struct {
 	// ClientAffinity; false keeps today's resolution byte for byte.
 	ClientAffinity bool
 
+	// DeclineResponsesWebSockets answers a WebSocket upgrade on a Responses API path
+	// with 426 instead of forwarding it with Upgrade stripped; see
+	// declineResponsesWebSocket. Set from config.ListenerConfig's
+	// DeclinesResponsesWebSockets, which defaults on; false keeps the forwarding byte
+	// for byte.
+	DeclineResponsesWebSockets bool
+
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
 	// nearest ancestor's — before client affinity is consulted; see
@@ -480,6 +487,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// end to end.) Reading it here is equivalent: the strip is unconditional, so an
 	// Upgrade present on the inbound request is one that will be removed.
 	pctx.RecordStrippedUpgrade(r.Header)
+
+	// After the pipeline, so a plugin's reject still wins; before any row, since this
+	// records its own pair. See declineResponsesWebSocket.
+	if !skipped && s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r) {
+		s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
+		return
+	}
 
 	if !skipped && s.Sessions != nil {
 		sid := s.recordingSessionID(sessionID, r.Header, chain)
@@ -989,6 +1003,68 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
 		Kind:    "misdirected_request",
 		Message: fmt.Sprintf("Host %q does not name the tunnel's destination %s", claimed, r.URL.Host),
+	})
+}
+
+// declinedUpgradeBody is the 426's body. Static, like misdirectedBody: nothing the
+// client sent is echoed back.
+const declinedUpgradeBody = `{"detail":"WebSocket transport is not available through Cortex; use HTTPS"}` + "\n"
+
+// wantsResponsesWebSocket reports whether r asks to open a WebSocket on an OpenAI
+// Responses API path — the one shape declineResponsesWebSocket answers.
+//
+// Scoped to the Responses suffix inference-parser reads (/v1/responses, and Codex's
+// /backend-api/codex/responses), because 426 is an answer only that endpoint's
+// clients are known to read as "use HTTPS": every other WebSocket keeps the strip
+// and whatever its origin makes of the bare GET.
+func wantsResponsesWebSocket(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") &&
+		strings.HasSuffix(r.URL.Path, "/responses")
+}
+
+// declineResponsesWebSocket answers a WebSocket upgrade on a Responses API path with
+// 426 Upgrade Required, without contacting the origin.
+//
+// THE ORIGIN'S ANSWER IS ALREADY KNOWN, AND IT IS THE EXPENSIVE ONE. stripForUpstream
+// must remove Upgrade, so the origin would get a bare GET on an endpoint that takes a
+// POST or an upgrade and answer 405. Codex reads a 405 as transient: it retries five
+// times on a 200ms-doubling backoff, about six seconds, printing `Reconnecting… n/5`,
+// before falling back to HTTPS. A 426 is the one status it reads as "this endpoint wants
+// HTTP": it switches at once, for the rest of the session, with no retry and no warning
+// (codex-rs/core/src/client.rs, the UPGRADE_REQUIRED arms). Measured on Codex 0.163.0,
+// eight runs each of a one-word `codex exec` turn: 10.2–15.1s (median 11.0s) through the
+// 405, 2.4–6.4s (median 3.0s) through this, with one handshake attempt instead of seven.
+//
+// RFC 9110 gives 426 the opposite sense — the server requires the client to upgrade.
+// OpenAI's backend uses it this way and Codex reads it this way, and a client that reads
+// neither treats it as an ordinary failed handshake, which is what the 405 already was.
+//
+// The rows are an ordinary request and response, so the timeline still shows the
+// attempt; the request row keeps its upgradeStripped marker, since the Upgrade was not
+// forwarded. error.kind "upgrade_declined" says the 426 is ours, as misdirected_request
+// does for the 421.
+func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
+	slog.Debug("forward-proxy: declined a WebSocket upgrade on a Responses path; the client falls back to HTTPS",
+		"host", r.Host, "path", r.URL.Path)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUpgradeRequired)
+	_, _ = io.WriteString(w, declinedUpgradeBody)
+	// A delivered answer, not a failed exchange: the deferred RunFinish reads zero as
+	// OutcomeError, and nothing went wrong here.
+	pctx.StatusCode = http.StatusUpgradeRequired
+
+	if s.Sessions == nil {
+		return
+	}
+	pctx.OutboundSessionID = sid
+	if chain != nil {
+		defer s.Sessions.TouchProcess(sid, chain)
+	}
+	s.recordOutboundRequestEvent(tl, pctx, sid)
+	s.recordOutboundResponseEvent(pctx, http.StatusUpgradeRequired, &pipeline.EventError{
+		Kind:    "upgrade_declined",
+		Message: "WebSocket upgrade answered 426 by the proxy; the client falls back to HTTPS",
 	})
 }
 

@@ -934,6 +934,30 @@ type ListenerConfig struct {
 	// enforcement. Mirrors the bypass-pattern guard added to ibac
 	// in #496.
 	SkipHosts []string `yaml:"skip_hosts" json:"skip_hosts"`
+
+	// DeclineResponsesWebSockets: whether the forward proxy answers a WebSocket
+	// upgrade on an OpenAI Responses API path (one ending /responses) with 426
+	// itself, instead of forwarding the request with its Upgrade stripped. nil means
+	// unset, and the default is on; explicit false restores the forwarding. See
+	// DeclinesResponsesWebSockets for why on is the default.
+	//
+	// A pointer for the reason SessionConfig.Enabled is one: with a plain bool,
+	// "unset" and "false" are the same value, and the default could not be on.
+	DeclineResponsesWebSockets *bool `yaml:"decline_responses_websockets,omitempty" json:"decline_responses_websockets,omitempty"`
+}
+
+// DeclinesResponsesWebSockets reports whether the forward proxy answers a WebSocket
+// upgrade on a Responses API path with 426 rather than forwarding it.
+//
+// On unless set false, in every deployment. The proxy must strip Upgrade (RFC 9110
+// makes it hop-by-hop), so a forwarded upgrade reaches the origin as a bare GET, and
+// OpenAI's Responses endpoint answers that 405. Codex reads a 405 as transient and
+// retries for about six seconds before falling back to HTTPS; it reads a 426 as "use
+// HTTP" and falls back at once. The forwarded request can never become a WebSocket, so
+// nothing is lost by answering it here. False is the escape hatch for a client that
+// reads 426 some other way.
+func (l ListenerConfig) DeclinesResponsesWebSockets() bool {
+	return l.DeclineResponsesWebSockets == nil || *l.DeclineResponsesWebSockets
 }
 
 // Proxy roles selectable via ListenerConfig.Roles in proxy-sidecar mode.

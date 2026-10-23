@@ -109,26 +109,31 @@ func redirectHeader(e *pipeline.SessionEvent) string {
 	return fmt.Sprintf("redirected:  %s → %s", sanitizeLabel(e.RequestedHost), sanitizeLabel(e.Host))
 }
 
-// upgradeHeader says a request asked to switch protocol and that Cortex removed the
-// header asking. Empty on every request that asked for nothing, which is nearly all
-// of them, so the caller can prepend unconditionally.
+// upgradeHeader says a request asked to switch protocol and that Cortex did not pass
+// the request on as one. Empty on every request that asked for nothing, which is nearly
+// all of them, so the caller can prepend unconditionally.
 //
-//	upgrade:     websocket stripped (hop-by-hop) — origin may answer 405
+//	upgrade:     websocket not forwarded — the client is expected to retry over HTTPS
 //
-// It names the likely symptom because that is the question this line exists to
-// answer. Codex asks chatgpt.com for a WebSocket, Cortex must not forward Upgrade
-// (RFC 9110 makes it hop-by-hop), the origin gets a bare GET on an endpoint wanting
-// a POST or an upgrade and answers 405 — and the user sees `405 Method Not Allowed`
-// in their agent's output and blames Cortex, which then works a second later over
-// HTTPS. Without this the paired response row says `backend_error/405` and nothing
-// on the timeline connects the two.
+// It says what happens next because that is the question this line exists to answer:
+// the client's own output reports a failed WebSocket handshake, and without this the
+// user blames Cortex. Cortex must not forward Upgrade (RFC 9110 makes it hop-by-hop),
+// so the request either reaches the origin as a bare GET — which an endpoint wanting
+// a POST or an upgrade answers 405 — or, on a Responses API path, is answered 426 by
+// the proxy itself (listener.decline_responses_websockets). Codex falls back to
+// HTTPS after either.
+//
+// The wording holds for both because this line is drawn from the REQUEST row, which
+// cannot tell them apart: which one happened is the paired response's status, beside
+// it on the timeline. It used to say "origin may answer 405", which was wrong for every
+// Codex handshake once the proxy began declining them.
 func upgradeHeader(e *pipeline.SessionEvent) string {
 	if e.UpgradeStripped == "" {
 		return ""
 	}
 	// Sanitised at record time already; passed through sanitizeLabel anyway, as
 	// every caller-supplied label agentop prints is, so one rule covers them all.
-	return fmt.Sprintf("upgrade:     %s stripped (hop-by-hop) — origin may answer 405",
+	return fmt.Sprintf("upgrade:     %s not forwarded — the client is expected to retry over HTTPS",
 		sanitizeLabel(e.UpgradeStripped))
 }
 

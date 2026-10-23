@@ -248,7 +248,9 @@ type SessionEvent struct {
 	// On the REQUEST row; pair it with the response row's StatusCode by RequestID.
 	// A 405 next to this is the origin rejecting the un-upgraded request, which is
 	// the sequence worth being able to read off the timeline rather than out of an
-	// agent's stderr.
+	// agent's stderr. A 426 with error.kind "upgrade_declined" is the proxy answering
+	// a Responses API WebSocket itself, before any origin is contacted
+	// (listener.decline_responses_websockets).
 	UpgradeStripped string
 
 	// HTTPMethod and HTTPPath are the request's HTTP verb and its

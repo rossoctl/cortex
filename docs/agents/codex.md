@@ -202,6 +202,42 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
+**HTTPS, not WebSocket.** Codex prefers a WebSocket to the same `/responses` path, and
+Cortex cannot carry one: `Upgrade` is a hop-by-hop header a proxy must not forward, and
+the parser reads HTTP requests, not frames. So the forward proxy answers that handshake
+itself with **426 Upgrade Required**, which Codex reads as "this endpoint wants HTTP" and
+switches to HTTPS straight away, for the rest of its session. The attempt shows on the
+timeline as a `GET` on the Responses path answered 426 with `error.kind:
+"upgrade_declined"`, and Codex prints one line for it:
+
+```
+ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket:
+      HTTP error: 426 Upgrade Required, url: wss://chatgpt.com/backend-api/codex/responses
+```
+
+That line is expected and harmless; the turn continues over HTTPS. Before the 426, the
+proxy forwarded the stripped `GET` and chatgpt.com answered **405**, which Codex treats
+as a transient failure: it retried five times on a doubling backoff, printing
+`Reconnecting… n/5`, before falling back. Measured on Codex 0.163.0, a one-word
+`codex exec` turn took a median **11.0s** that way and **3.0s** with the 426. There is no
+supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
+hardcodes `supports_websockets = true` and Codex refuses a config that overrides a
+built-in provider.
+
+The 426 is Cortex's setting, not Codex's, and it is on by default, so there is nothing to
+configure. To turn it off — which brings back the 405 and its retries — add the key to the
+`listener:` block that is already in `~/.cortex/config.yaml`:
+
+```yaml
+listener:
+  # ...the lines already here...
+  decline_responses_websockets: false
+```
+
+and restart the proxy with `agentop service restart`. Unlike most of that file, a
+`listener:` edit is not picked up live, and the restart briefly disconnects every agent
+routed through Cortex.
+
 **Tokens always; cost on a laptop once the price list downloads, or wherever you
 configure a rate.** Token counts come from the Responses
 API's usage block and aggregate alongside other agents (verified: a one-turn `codex exec`
@@ -287,7 +323,12 @@ with Cortex built from the change that added this page. This was exercised:
   real interactive session driven through the proxy over a pty, not inferred from
   Codex's source — and including the telemetry exporter staying unrecognised;
 - the `codex` series in `GET /v1/usage?group=agent`, and the model showing as priceable
-  but unpriced.
+  but unpriced;
+- **on Codex 0.163.0**, the WebSocket decline: eight `codex exec` turns each made one
+  handshake attempt, answered 426, then completed over HTTPS with the model, tokens and a
+  cost from the downloaded price list — against seven 405'd attempts and a fallback
+  warning per turn without it. A TUI turn, driven over a pty, did the same: one 426, then
+  its inference parsed over HTTPS under `codex-tui`.
 
 Not tested:
 
@@ -301,10 +342,6 @@ Not tested:
   dialect is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
-- **Cost from a downloaded rate, against live Codex traffic.** The rate exists upstream and
-  the bundled table now carries first-party OpenAI prices, so the arithmetic is the same one
-  every other agent uses — but nobody has watched a real `codex exec` turn get priced from
-  `~/.cortex/price-list.json`. A configured `pricing:` entry is the exercised path.
 - **Tool pruning**, which is unsupported above rather than merely untested.
 
 ## Known issues

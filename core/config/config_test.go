@@ -1043,6 +1043,33 @@ func TestSessionConfig_ClientAffinity(t *testing.T) {
 	}
 }
 
+// TestListenerConfig_DeclineResponsesWebSockets pins the default (on) and the key that
+// turns it off. Unset must mean on with or without a listener block: every laptop config
+// already on disk predates the key, and the built-in one is never regenerated.
+func TestListenerConfig_DeclineResponsesWebSockets(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"no listener block", "mode: proxy-sidecar\n", true},
+		{"listener block without the key", "listener:\n  roles: [forward]\n", true},
+		{"explicit true", "listener:\n  decline_responses_websockets: true\n", true},
+		{"explicit false", "listener:\n  decline_responses_websockets: false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Listener.DeclinesResponsesWebSockets(); got != tt.want {
+				t.Errorf("DeclinesResponsesWebSockets() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestLoad_PreAffinityLaptopConfigGetsClientAffinity loads a laptop config written before
 // session.client_affinity existed — no session block at all, which is what every install
 // made before it still has on disk. With affinity off, Bob Shell's header-less startup

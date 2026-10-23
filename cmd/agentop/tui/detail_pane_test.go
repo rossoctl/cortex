@@ -260,8 +260,8 @@ func TestFilterForDetail_KeepsRequestedModel(t *testing.T) {
 }
 
 // The upgrade line is absent on every request that asked for no upgrade — nearly
-// all of them — and names the symptom when one did, since "why a 405?" is the
-// question it exists to answer.
+// all of them — and says what happens next when one did, since "why did my agent's
+// WebSocket fail?" is the question it exists to answer.
 func TestUpgradeHeader(t *testing.T) {
 	for name, e := range map[string]*pipeline.SessionEvent{
 		"no upgrade":       {Host: "api.anthropic.com"},
@@ -279,8 +279,13 @@ func TestUpgradeHeader(t *testing.T) {
 	if !strings.Contains(got, "websocket") {
 		t.Errorf("upgradeHeader = %q, want it to name the protocol", got)
 	}
-	if !strings.Contains(got, "405") {
-		t.Errorf("upgradeHeader = %q, want it to name the symptom it explains", got)
+	if !strings.Contains(got, "not forwarded") || !strings.Contains(got, "HTTPS") {
+		t.Errorf("upgradeHeader = %q, want it to say the upgrade was not forwarded and the client retries over HTTPS", got)
+	}
+	// The request row cannot tell a 405 from the origin from the proxy's own 426, so
+	// the line must not name either status: one of them would be false.
+	if strings.Contains(got, "405") || strings.Contains(got, "426") {
+		t.Errorf("upgradeHeader = %q, names a status the request row cannot know", got)
 	}
 }
 

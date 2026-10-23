@@ -905,6 +905,28 @@ or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
 guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
 
+#### Declining Responses API WebSockets (`listener.decline_responses_websockets`)
+
+The forward proxy answers a WebSocket upgrade on an OpenAI Responses API path — a
+`GET` with `Upgrade: websocket` on a path ending `/responses` — with **426 Upgrade
+Required** itself, and forwards nothing. On by default in every deployment.
+
+```yaml
+listener:
+  decline_responses_websockets: false   # forward the upgrade instead, as before
+```
+
+The proxy cannot carry the WebSocket either way: `Upgrade` is hop-by-hop, so a
+forwarded handshake reaches the origin as a bare `GET`, which OpenAI's endpoint answers
+405. Codex — the one client known to use this transport — retries a 405 five times over
+about six seconds before falling back to HTTPS, and reads a 426 as "use HTTP" and falls
+back at once. `false` restores the forwarding byte for byte, for a client that reads a
+426 some other way. Every other WebSocket is forwarded whatever this says. Restart to
+apply, like every `listener.*` field. The key goes in the runtime config: on a laptop,
+`~/.cortex/config.yaml`, then `agentop service restart`; in a cluster, the
+`authbridge-runtime-config` ConfigMap, then a pod restart. See
+[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for the measured difference.
+
 ---
 
 ## 10. Writing a plugin

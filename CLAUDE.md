@@ -591,7 +591,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   what the client got, because every consumer keys on it. **A 499 with `error.kind:
   "client_canceled"` is the client hanging up first** — and since neither proxy times
   out a slow upstream, that is how a hung one usually ends. It counts as an error in
-  `/v1/usage` but stays out of the 5xx series, and logs no WARN. On all of these the
+  `/v1/usage` but stays out of the 5xx series, and logs no WARN. **A 426 with
+  `error.kind: "upgrade_declined"` is the forward proxy refusing a WebSocket on a
+  Responses API path** (a path ending `/responses`): the origin would only answer the
+  stripped GET with a 405, which Codex retries for ~6s, while a 426 sends it straight to
+  HTTPS. Nothing is forwarded, and the Finisher sees an allow with status 426. On by
+  default; `listener.decline_responses_websockets: false` forwards the upgrade instead. On all of these the
   Finisher sees `OutcomeError` with `Outcome.StatusCode` **0**, because that zero is
   what marks the request as an error rather than an allow — the event and the outcome
   disagree about the status on purpose. **A request whose body could not be buffered
