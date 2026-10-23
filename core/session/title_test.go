@@ -1753,3 +1753,77 @@ func TestSessionTitle_LocalCommandTagsInProseAreLeftAlone(t *testing.T) {
 		t.Errorf("got %q, want %q", got, content)
 	}
 }
+
+// A PASTE'S WRAPPER IS MARKUP, ITS BODY IS THE USER'S. Verbatim from a live session, which served
+// `<pasted_content id="8f8e">`: Claude Code's title request wraps the opening message in <session>, the
+// message was a paste, and the tag was the body's first line.
+func TestSessionTitle_PasteYieldsItsFirstLine(t *testing.T) {
+	const paste = "<pasted_content id=\"8f8e\">\n" +
+		"The list screener is showing\n" +
+		"ONS_057: 1 run(s) | UNPLACED 1 -- nothing outstanding\n" +
+		"MuPDF error: library error: FT_New_Memory_Face(*Tahoma-Bold-12379): unknown file format\n" +
+		"</pasted_content id=\"8f8e\">"
+	const want = "The list screener is showing"
+	for _, tc := range []struct{ name, in, want string }{
+		{"inside a session envelope", "<session>\n" + paste + "\n</session>\n\n" +
+			"Write the title in the predominant language of the session — …", want},
+		{"a bare paste", paste, want},
+		{"text after the close is not the title", paste + "\nwhat does this mean?", want},
+		{"no attributes", "<pasted_content>\nthe body\n</pasted_content>", "the body"},
+		{"a close without the id", "<pasted_content id=\"1\">the body</pasted_content>", "the body"},
+		{"no close at all", "<pasted_content id=\"1\">\nthe body\nmore", "the body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// AN UNWRAPPED PASTE THAT IS STILL MARKUP NAMES NOTHING. Each of these is non-blank, so under first-wins
+// it would otherwise keep the session's title for good.
+func TestSessionTitle_PasteThatIsStillMarkupNamesNothing(t *testing.T) {
+	for _, tc := range []struct{ name, in string }{
+		{"an empty body", "<pasted_content id=\"1\"></pasted_content id=\"1\">"},
+		{"a blank body", "<pasted_content id=\"1\">\n  \n</pasted_content id=\"1\">"},
+		{"an empty body in a session envelope", "<session>\n<pasted_content id=\"1\"></pasted_content id=\"1\">\n</session>\n\nWrite the title"},
+		{"a nested wrapper", "<pasted_content id=\"1\">\n<bash-stdout>total 40</bash-stdout>\n</pasted_content id=\"1\">"},
+		{"a truncated open tag", "<pasted_content id=\"1\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != "" {
+				t.Errorf("got %q, want no title", got)
+			}
+		})
+	}
+	t.Run("a real prompt behind an empty paste still names the session", func(t *testing.T) {
+		const want = "the real ask"
+		got := foldTitle(t, titleEvent("<pasted_content id=\"1\"></pasted_content id=\"1\">"), titleEvent(want))
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// ONLY A LEADING <pasted_content> IS UNWRAPPED, and only that tag. Prose quoting it keeps its own words,
+// a tag that merely shares the prefix is not a paste, and the harness-output wrappers stay as they were.
+func TestSessionTitle_PasteUnwrapIsNarrow(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"prose mentioning the tag keeps its own words",
+			"why does <pasted_content id=\"8f8e\"> show up as my title?",
+			"why does <pasted_content id=\"8f8e\"> show up as my title?",
+		},
+		{"a longer tag name is not a paste", "<pasted_contents>x</pasted_contents>", "<pasted_contents>x</pasted_contents>"},
+		// Unchanged by this fix, which unwraps pastes only.
+		{"another wrapper in a session envelope", "<session>\n<bash-stdout>out</bash-stdout>\n</session>", "<bash-stdout>out</bash-stdout>"},
+		{"a paste opening on prose with a '<'", "<pasted_content>\nis 3 < 5 in Go?\n</pasted_content>", "is 3 < 5 in Go?"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
