@@ -11,8 +11,8 @@
 // A script declares, in its handshake, which hooks it implements and whether it
 // enforces. It starts in shadow mode — its denies and edits are recorded and not
 // applied — so trying a script cannot break a request. A script that errors (a
-// crash, a timeout, a malformed reply) lets the request through unless its slot is
-// fail_closed.
+// crash, a timeout, a malformed reply) or does not start lets the request through
+// unless its slot is fail_closed.
 //
 // Scripts run only on a local install (plugins.Deps.LocalInstall). Anywhere else a
 // `script` entry loads nothing, so a config that names one cannot run commands
@@ -52,7 +52,7 @@ var pool = worker.NewPool()
 type config struct {
 	Dir        string `json:"dir" description:"Folder of scripts, relative to ~/.cortex/plugins. Empty: that folder itself." default:""`
 	Timeout    string `json:"timeout" description:"How long one script may take to answer one hook." default:"2s"`
-	FailClosed bool   `json:"fail_closed" description:"Deny the request when a script errors, instead of letting it through." default:"false"`
+	FailClosed bool   `json:"fail_closed" description:"Deny the request when a script errors or did not start, instead of letting it through." default:"false"`
 }
 
 // Script is the plugin.
@@ -66,7 +66,10 @@ type Script struct {
 	// runs nothing.
 	holder int
 	loaded []*loaded
-	m      metrics
+	// missing names the scripts in the folder that did not start, in file order.
+	// A fail_closed slot refuses every request while it is not empty.
+	missing []string
+	m       metrics
 	// stateKey is where this slot keeps a streamed response's frames on the
 	// request's context. Per folder: two slots in one chain see the same frames,
 	// and a reload's rebuild of a slot carries on with the copy the old build kept.
@@ -134,7 +137,9 @@ func (s *Script) SetLocalInstall(local bool) { s.local = local }
 
 // Configure loads the slot's scripts and starts their workers. A script that will
 // not start is skipped with a WARN, never failing the build: one broken file must
-// not stop the proxy from starting or a config edit from applying.
+// not stop the proxy from starting or a config edit from applying. A fail_closed
+// slot remembers it and refuses requests until a build in which it starts; see
+// notStarted.
 func (s *Script) Configure(raw json.RawMessage) error {
 	s.configured = true
 	if len(raw) > 0 {
@@ -201,11 +206,13 @@ func (s *Script) Configure(raw json.RawMessage) error {
 		}()
 	}
 	wg.Wait()
-	for _, l := range results {
-		if l != nil {
-			s.loaded = append(s.loaded, l)
-			slog.Info("script plugin: loaded", "script", l.name, "hooks", l.hs.Hooks, "enforce", l.hs.Enforce)
+	for i, l := range results {
+		if l == nil {
+			s.missing = append(s.missing, files[i].name)
+			continue
 		}
+		s.loaded = append(s.loaded, l)
+		slog.Info("script plugin: loaded", "script", l.name, "hooks", l.hs.Hooks, "enforce", l.hs.Enforce)
 	}
 	return nil
 }
@@ -250,6 +257,9 @@ func SlotDir(dir string) (string, error) {
 // request as the scripts before it left it, except that a shadow script's edits
 // are not applied and so are not seen.
 func (s *Script) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
+	if s.cfg.FailClosed && len(s.missing) > 0 {
+		return s.notStarted(pctx)
+	}
 	var msg map[string]any
 	for _, l := range s.loaded {
 		if !l.hs.Has("request") {
@@ -620,6 +630,30 @@ func (s *Script) failed(pctx *pipeline.Context, l *loaded, err error, logs []str
 	return pipeline.Action{}, false
 }
 
+// notStarted refuses a request in a fail_closed slot while one of its scripts did
+// not start. The slot cannot tell which requests that script would have acted on,
+// so it refuses them all: fail_closed means a request the script never saw does
+// not go through. Under on_error: observe the refusal is recorded as shadow, as
+// failed records one.
+func (s *Script) notStarted(pctx *pipeline.Context) pipeline.Action {
+	name := s.missing[0]
+	inv := pipeline.Invocation{
+		Plugin:  name,
+		Action:  pipeline.ActionObserve,
+		Reason:  "script_not_started",
+		Details: map[string]string{"error": "did not start; see the Cortex log", "not_started": strings.Join(s.missing, ",")},
+		Shadow:  pctx.Observing(),
+	}
+	if inv.Shadow {
+		pctx.Record(inv)
+		return pipeline.Action{}
+	}
+	inv.Action = pipeline.ActionDeny
+	pctx.Record(inv)
+	v := &pipeline.Violation{Code: "plugin.script-failed", Reason: "script " + name + " did not start", Status: 502, PluginName: name}
+	return pipeline.Action{Type: pipeline.Reject, Violation: v}
+}
+
 // denyStatus is a script's deny status when it is an HTTP error, and otherwise 0,
 // which lets the violation's code choose one. A 200 would present the refusal to
 // the agent as an answer, and a status outside 100-999 panics net/http.
@@ -656,6 +690,7 @@ func withLogs(d map[string]string, logs []string) map[string]string {
 func (s *Script) Metrics() []pipeline.Metric {
 	return []pipeline.Metric{
 		{Name: "scripts loaded", Value: float64(len(s.loaded))},
+		{Name: "scripts not started", Value: float64(len(s.missing)), Note: "a fail_closed slot refuses every request while this is not 0"},
 		{Name: "calls", Value: float64(s.m.calls.Load())},
 		{Name: "errors", Value: float64(s.m.errors.Load())},
 		{Name: "denies", Value: float64(s.m.denies.Load())},

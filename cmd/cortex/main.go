@@ -610,13 +610,12 @@ func main() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 	// The script plugin's folders are watched as well as the config, so adding or
-	// editing a script reloads as a config edit does. The folders come from the
-	// startup config: a slot added later is watched from the next restart, though
-	// the reload that adds it loads its scripts.
-	slots := scriptFolders(cfg)
+	// editing a script reloads as a config edit does. The reloader asks each config
+	// it puts into effect for its folders, so a slot a config edit adds is watched
+	// from that reload on.
 	rld := reloader.New(*configPath, inboundH, outboundH, buildPipelines, cfg,
 		reloader.WithOnCommit(applyPricing),
-		reloader.WithExtraWatch(slots, func() string { return scriptFingerprint(slots) }))
+		reloader.WithExtraWatch(scriptFolders, scriptFingerprint))
 	if err := rld.Start(ctx); err != nil {
 		log.Fatalf("reloader: %v", err)
 	}

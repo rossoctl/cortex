@@ -702,13 +702,25 @@ func TestValidateReloadable_RefusesASessionArchiveEdit(t *testing.T) {
 	}
 }
 
+// withLateSlot is the fixture's config after an edit that adds a script slot.
+func withLateSlot() *config.Config {
+	c := &config.Config{Mode: "envoy-sidecar"}
+	c.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "script", Config: []byte(`{"dir":"late"}`)}}
+	return c
+}
+
+// staticDirs is a WithExtraWatch folder function that ignores the config.
+func staticDirs(dirs ...string) func(*config.Config) []string {
+	return func(*config.Config) []string { return dirs }
+}
+
 // A change in a WithExtraWatch folder reloads with the config file untouched, and an
 // event there that leaves the fingerprint unchanged does not.
 func TestReloader_ExtraWatchFolderReloads(t *testing.T) {
 	extra := filepath.Join(t.TempDir(), "plugins") // created by Start
 	var fp atomic.Value
 	fp.Store("one")
-	r, b, _, _, _ := setupWith(t, WithExtraWatch([]string{extra}, func() string { return fp.Load().(string) }))
+	r, b, _, _, _ := setupWith(t, WithExtraWatch(staticDirs(extra), func([]string) string { return fp.Load().(string) }))
 	if _, err := os.Stat(extra); err != nil {
 		t.Fatalf("Start did not create the watched folder: %v", err)
 	}
@@ -728,6 +740,109 @@ func TestReloader_ExtraWatchFolderReloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK >= 1 }, "a folder change to reload")
+}
+
+// A folder named by a config that a reload accepted is watched from then on: an
+// edit in it reloads without a restart. The folder's content counts in the hash
+// from that reload, so the edit is a change. A folder created by hand before the
+// config names it — with the script already in it — is watched the same way.
+func TestReloader_WatchesAFolderAReloadAdds(t *testing.T) {
+	root := t.TempDir()
+	early := filepath.Join(root, "early")
+	late := filepath.Join(root, "late")
+	if err := os.MkdirAll(late, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(late, "guard.py"), []byte("v1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dirs := func(c *config.Config) []string {
+		if c != nil && len(c.Pipeline.Outbound.Plugins) > 0 {
+			return []string{early, late}
+		}
+		return []string{early}
+	}
+	// Each folder's fingerprint is the content of the file in it, as the script
+	// plugin's is.
+	fingerprint := func(ds []string) string {
+		var s string
+		for _, d := range ds {
+			b, _ := os.ReadFile(filepath.Join(d, "guard.py"))
+			s += d + "=" + string(b) + ";"
+		}
+		return s
+	}
+	r, b, cfgPath, _, _ := setupWith(t, WithExtraWatch(dirs, fingerprint))
+
+	// The config edit that adds the slot: a reload the builder accepts. mode stays,
+	// since a mode change is refused.
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: withLateSlot()})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# with the late slot\n")
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK == 1 }, "the config edit to reload")
+
+	// An edit in the folder that reload added.
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: withLateSlot()})
+	if err := os.WriteFile(filepath.Join(late, "guard.py"), []byte("v2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK == 2 }, "an edit in the added folder to reload")
+}
+
+// A folder watched from startup counts in the startup hash: an event that changes
+// nothing does not reload, and /reload/status names what is running.
+func TestReloader_StartupHashCoversTheWatchedFolders(t *testing.T) {
+	extra := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extra, "guard.py"), []byte("v1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := func(ds []string) string {
+		var s string
+		for _, d := range ds {
+			b, _ := os.ReadFile(filepath.Join(d, "guard.py"))
+			s += d + "=" + string(b) + ";"
+		}
+		return s
+	}
+	r, b, cfgPath, _, _ := setupWith(t, WithExtraWatch(staticDirs(extra), fingerprint))
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := r.Status().ActiveConfigSHA256, r.hash(data); got != want {
+		t.Fatalf("startup hash %q leaves out the watched folder, want %q", got, want)
+	}
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
+	if err := os.WriteFile(filepath.Join(extra, "scratch"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := r.Status().ReloadsOK; got != 0 {
+		t.Fatalf("an event that changed nothing reloaded %d times", got)
+	}
+}
+
+// A refused reload adds no watch: the folders follow the config that runs.
+func TestReloader_ARefusedReloadWatchesNothingNew(t *testing.T) {
+	root := t.TempDir()
+	late := filepath.Join(root, "late")
+	var asked atomic.Int32
+	dirs := func(c *config.Config) []string {
+		if c != nil && len(c.Pipeline.Outbound.Plugins) > 0 {
+			asked.Add(1)
+			return []string{late}
+		}
+		return nil
+	}
+	_, b, cfgPath, _, _ := setupWith(t, WithExtraWatch(dirs, func([]string) string { return "" }))
+	b.set(builderResult{err: errBuildRefused, cfg: withLateSlot()})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# with the late slot\n")
+	time.Sleep(200 * time.Millisecond)
+	if asked.Load() != 0 {
+		t.Fatal("a refused reload asked for the new config's folders")
+	}
+	if _, err := os.Stat(late); !os.IsNotExist(err) {
+		t.Fatalf("a refused reload created a folder: %v", err)
+	}
 }
 
 // Without WithExtraWatch the hash is the config file's own sha256, which is what

@@ -53,3 +53,43 @@ func TestLocalChain_BuildsWithEachKindOfScript(t *testing.T) {
 		})
 	}
 }
+
+// A user's response-reading script in the default slot, next to a slot that
+// rewrites responses (the moca-sandbox example's shape), still builds: the default
+// slot goes first, because a response reader must precede every response writer.
+func TestLocalChain_BuildsWithAResponseRewritingSlotAdded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "")
+	root := filepath.Join(home, ".cortex", "plugins")
+	scripts := map[string]string{
+		filepath.Join(root, "watch"):                 `{"cortex":1,"hooks":["response"]}`,
+		filepath.Join(root, "moca-sandbox", "guard"): `{"cortex":1,"hooks":["request","response"],"enforce":true,"rewrite_response":true}`,
+	}
+	for path, handshake := range scripts {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+handshake+"'\ncat >/dev/null\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := writeBuiltinConfig(filepath.Join(home, ".cortex"), filepath.Join(home, ".cortex", "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ApplyPreset(cfg)
+	cfg.Pipeline.Outbound.Plugins = append(cfg.Pipeline.Outbound.Plugins,
+		config.PluginEntry{Name: "script", Config: []byte(`{"dir":"moca-sandbox","fail_closed":true}`)})
+	addScriptSlot(cfg, true)
+	pipe, err := plugins.BuildWithDeps(cfg.Pipeline.Outbound.Plugins,
+		plugins.Deps{Listener: forwardproxy.Support(false), LocalInstall: true})
+	if err != nil {
+		t.Fatalf("the local chain did not build: %v", err)
+	}
+	pipe.Stop(t.Context())
+}

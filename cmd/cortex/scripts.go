@@ -15,21 +15,41 @@ import (
 // imported so that this file builds with or without the plugin's tag.
 const scriptPlugin = "script"
 
-// addScriptSlot appends a `script` entry to the end of the outbound chain of a local
-// install that names none, so a user who drops a file into ~/.cortex/plugins has it
-// running without editing YAML. A chain that names `script` anywhere — including
-// with on_error: off — is the user's own arrangement and is left alone. A binary
-// built without the plugin adds nothing, since the entry could only fail to load.
+// addScriptSlot puts the default slot, ~/.cortex/plugins itself, into the outbound
+// chain of a local install, so a user who drops a file there has it running without
+// editing YAML.
+//
+// A chain that names no script entry gets it appended. A chain whose script entries
+// all name a dir — a slot another tool added, such as the moca-sandbox example's —
+// gets it just before the first of them, so adding a slot does not switch the
+// user's own scripts off. Before, not after: a slot that rewrites responses must
+// come after every response reader, and the default slot's scripts may read them.
+// A chain that already has an entry for the default slot, under any on_error,
+// including off, is the user's own arrangement and is left alone. A binary built
+// without the plugin adds nothing, since the entry could only fail to load.
 func addScriptSlot(c *config.Config, local bool) {
 	if !local || !slices.Contains(plugins.RegisteredPlugins(), scriptPlugin) {
 		return
 	}
-	for _, e := range c.Pipeline.Outbound.Plugins {
-		if e.Name == scriptPlugin {
+	chain := c.Pipeline.Outbound.Plugins
+	first := -1
+	for i, e := range chain {
+		if e.Name != scriptPlugin {
+			continue
+		}
+		if entryDir(e) == "" {
 			return
 		}
+		if first < 0 {
+			first = i
+		}
 	}
-	c.Pipeline.Outbound.Plugins = append(c.Pipeline.Outbound.Plugins, config.PluginEntry{Name: scriptPlugin})
+	slot := config.PluginEntry{Name: scriptPlugin}
+	if first < 0 {
+		c.Pipeline.Outbound.Plugins = append(chain, slot)
+		return
+	}
+	c.Pipeline.Outbound.Plugins = slices.Insert(chain, first, slot)
 }
 
 // checkScriptSlots refuses a chain with two built `script` entries on one folder:

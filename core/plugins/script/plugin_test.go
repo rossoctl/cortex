@@ -423,6 +423,126 @@ func TestOnRequest_FailClosedSparesShadowScripts(t *testing.T) {
 	}
 }
 
+// broken writes a script into dir that exits before its handshake.
+func broken(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func metric(s *Script, name string) float64 {
+	for _, m := range s.Metrics() {
+		if m.Name == name {
+			return m.Value
+		}
+	}
+	return -1
+}
+
+// A fail_closed slot whose script did not start refuses every request: nothing can
+// tell which ones that script would have stopped.
+func TestOnRequest_FailClosedRefusesWhileAScriptDidNotStart(t *testing.T) {
+	dir := home(t)
+	script(t, dir, "10-mask", "mask")
+	broken(t, dir, "20-guard")
+	s := configured(t, true, `{"fail_closed": true}`)
+	pctx := request("secret")
+	a := s.OnRequest(context.Background(), pctx)
+	if a.Type != pipeline.Reject || a.Violation.Code != "plugin.script-failed" || a.Violation.Status != 502 ||
+		a.Violation.Reason != "script guard did not start" {
+		t.Fatalf("OnRequest = %+v, want a 502 naming guard", a.Violation)
+	}
+	if string(pctx.Body) != "secret" {
+		t.Errorf("a refused request was still edited: %s", pctx.Body)
+	}
+	if invs := invocations(pctx); len(invs) != 1 || invs[0].Plugin != "guard" || invs[0].Action != pipeline.ActionDeny {
+		t.Errorf("invocations = %+v, want one deny row for guard", invs)
+	}
+	if got := metric(s, "scripts not started"); got != 1 {
+		t.Errorf("scripts not started = %v, want 1", got)
+	}
+}
+
+// Without fail_closed a script that did not start is skipped, as before, and the
+// others still run.
+func TestOnRequest_AScriptThatDidNotStartFailsOpen(t *testing.T) {
+	dir := home(t)
+	script(t, dir, "10-mask", "mask")
+	broken(t, dir, "20-guard")
+	pctx := request("secret")
+	if a := configured(t, true, "").OnRequest(context.Background(), pctx); a.Type != pipeline.Continue {
+		t.Fatalf("a slot without fail_closed refused: %+v", a.Violation)
+	}
+	if string(pctx.Body) != "***" {
+		t.Errorf("body = %s, want the loaded script's edit", pctx.Body)
+	}
+}
+
+// The refusal lasts until a build in which the script starts — an edit triggers
+// one — or from which its file is gone. An edit that breaks a loaded script
+// refuses from that build on.
+func TestConfigure_ARebuildClearsAScriptThatDidNotStart(t *testing.T) {
+	dir := home(t)
+	slot := func() pipeline.ActionType {
+		return configured(t, true, `{"fail_closed": true}`).OnRequest(context.Background(), request("x")).Type
+	}
+	broken(t, dir, "guard")
+	if slot() != pipeline.Reject {
+		t.Fatal("the broken script did not refuse")
+	}
+	script(t, dir, "guard", "count") // fixed
+	if slot() != pipeline.Continue {
+		t.Fatal("a rebuild with the script fixed still refused")
+	}
+	broken(t, dir, "guard") // broken again by an edit
+	if slot() != pipeline.Reject {
+		t.Fatal("an edit that broke a loaded script let requests through")
+	}
+	if err := os.Remove(filepath.Join(dir, "guard")); err != nil {
+		t.Fatal(err)
+	}
+	if slot() != pipeline.Continue {
+		t.Fatal("a slot whose broken script was deleted still refused")
+	}
+}
+
+// A script that never sends its handshake is given up on at the start timeout, and
+// counts as not started.
+func TestOnRequest_FailClosedRefusesAScriptThatNeverAnswers(t *testing.T) {
+	dir := home(t)
+	if err := os.WriteFile(filepath.Join(dir, "guard"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	s := configured(t, true, `{"fail_closed": true}`)
+	if d := time.Since(start); d > worker.DefaultStartTimeout+2*time.Second {
+		t.Errorf("Configure took %v", d)
+	}
+	if a := s.OnRequest(context.Background(), request("x")); a.Type != pipeline.Reject {
+		t.Fatal("a script that never answered let requests through")
+	}
+}
+
+// Under on_error: observe the refusal is recorded, as a shadow row, and the request
+// goes on.
+func TestRun_ObservePolicyDoesNotRefuseForAScriptThatDidNotStart(t *testing.T) {
+	dir := home(t)
+	broken(t, dir, "guard")
+	s := configured(t, true, `{"fail_closed": true}`)
+	p, err := pipeline.New([]pipeline.Plugin{s}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := request("x")
+	if a := p.Run(context.Background(), pctx); a.Type != pipeline.Continue {
+		t.Fatalf("an observed slot refused: %+v", a.Violation)
+	}
+	if invs := invocations(pctx); len(invs) != 1 || invs[0].Plugin != "guard" || !invs[0].Shadow {
+		t.Errorf("invocations = %+v, want one shadow row for guard", invs)
+	}
+}
+
 // A rebuild with an unchanged script keeps its process, and with it the script's state.
 func TestConfigure_RebuildKeepsScriptState(t *testing.T) {
 	dir := home(t)

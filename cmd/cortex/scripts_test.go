@@ -3,16 +3,23 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
+// outboundNames lists the outbound chain as name, or name:dir for a script slot
+// that names one.
 func outboundNames(c *config.Config) []string {
 	var out []string
 	for _, e := range c.Pipeline.Outbound.Plugins {
-		out = append(out, e.Name)
+		if d := entryDir(e); d != "" {
+			out = append(out, e.Name+":"+d)
+		} else {
+			out = append(out, e.Name)
+		}
 	}
 	return out
 }
@@ -24,25 +31,34 @@ func TestAddScriptSlot(t *testing.T) {
 		return c
 	}
 	parser := config.PluginEntry{Name: "inference-parser"}
+	prune := config.PluginEntry{Name: "tool-prune"}
+	moca := config.PluginEntry{Name: "script", Config: []byte(`{"dir":"moca-sandbox","fail_closed":true}`)}
+	early := config.PluginEntry{Name: "script", Config: []byte(`{"dir":"early"}`)}
+	def := config.PluginEntry{Name: "script"}
+	defOff := config.PluginEntry{Name: "script", OnError: pipeline.ErrorPolicyOff}
+	emptyDir := config.PluginEntry{Name: "script", Config: []byte(`{"dir":""}`)}
 
-	c := chain(parser)
-	addScriptSlot(c, true)
-	if got := outboundNames(c); len(got) != 2 || got[1] != "script" {
-		t.Errorf("local install: %v, want script appended last", got)
-	}
-
-	c = chain(parser)
-	addScriptSlot(c, false)
-	if got := outboundNames(c); len(got) != 1 {
-		t.Errorf("not a local install: %v, want nothing added", got)
-	}
-
-	// A chain that names script — even switched off — is the user's arrangement.
-	off := config.PluginEntry{Name: "script", OnError: pipeline.ErrorPolicyOff}
-	c = chain(off, parser)
-	addScriptSlot(c, true)
-	if got := outboundNames(c); len(got) != 2 || got[0] != "script" {
-		t.Errorf("user's own script entry: %v, want it left alone", got)
+	for _, tc := range []struct {
+		name  string
+		local bool
+		in    []config.PluginEntry
+		want  []string
+	}{
+		{"no script entry: appended last", true, []config.PluginEntry{parser, prune}, []string{"inference-parser", "tool-prune", "script"}},
+		{"not a local install: nothing added", false, []config.PluginEntry{parser}, []string{"inference-parser"}},
+		{"a named slot: the default goes just before it", true, []config.PluginEntry{parser, prune, moca}, []string{"inference-parser", "tool-prune", "script", "script:moca-sandbox"}},
+		{"two named slots: before the first", true, []config.PluginEntry{parser, early, prune, moca}, []string{"inference-parser", "script", "script:early", "tool-prune", "script:moca-sandbox"}},
+		{"the user's default after a named slot: left alone", true, []config.PluginEntry{parser, moca, def}, []string{"inference-parser", "script:moca-sandbox", "script"}},
+		{"the user's default switched off: left alone", true, []config.PluginEntry{defOff, parser, moca}, []string{"script", "inference-parser", "script:moca-sandbox"}},
+		{"an explicit empty dir is the default slot", true, []config.PluginEntry{parser, moca, emptyDir}, []string{"inference-parser", "script:moca-sandbox", "script"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := chain(slices.Clone(tc.in)...)
+			addScriptSlot(c, tc.local)
+			if got := outboundNames(c); !slices.Equal(got, tc.want) {
+				t.Errorf("chain = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
