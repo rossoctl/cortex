@@ -51,10 +51,14 @@ import (
 // relay reads plain frames. Codex offers it and does not require it.
 
 const (
-	// wsMessageLimit is the largest message read for parsing. A larger one is relayed
-	// whole and not read: the turn it belongs to is still recorded, just without a
-	// parse. Matches the forward proxy's own response-body cap.
-	wsMessageLimit = maxBodySize
+	// wsClientMessageLimit and wsServerMessageLimit are the largest messages read for
+	// parsing, each direction matching what the HTTPS path parses: maxRequestBodySize
+	// for what the client sends — a socket's first turn carries the whole
+	// conversation, the same body an HTTPS POST would — and maxBodySize for each event
+	// the origin sends back, the SSE path's per-frame cap. A larger message is relayed
+	// whole and not read: its turn is still recorded, just without a parse.
+	wsClientMessageLimit = maxRequestBodySize
+	wsServerMessageLimit = maxBodySize
 	// wsFrameLimit is the largest single frame relayed. Raw is buffered whole before
 	// it is forwarded, so this bounds what one frame can cost; a frame over it ends the
 	// socket. Matches the request-body cap, the largest thing the HTTPS path accepts.
@@ -311,6 +315,13 @@ type wsSocket struct {
 // wsTurn is one response.create and the server messages that answer it.
 type wsTurn struct {
 	pctx *pipeline.Context
+	// p is the pipeline the turn began on, and every later step of the turn runs on
+	// it. A hot reload swaps OutboundPipeline for new requests and keeps the old one
+	// running for its drain window so requests already in flight finish where they
+	// started; an HTTPS turn does that by lasting seconds. A socket outlives the
+	// window, so a turn looking the pipeline up again at each step would end on one
+	// whose parser never saw it begin — no tokens, no cost.
+	p *pipeline.Pipeline
 }
 
 func (ws *wsSocket) run() {
@@ -335,8 +346,8 @@ func (ws *wsSocket) run() {
 
 // relayUp carries client frames to the origin, reading each data message on the way.
 func (ws *wsSocket) relayUp() {
-	fr := wsframe.NewReader(ws.clientR, wsMessageLimit, wsFrameLimit)
-	msg := wsframe.NewMessage(wsMessageLimit)
+	fr := wsframe.NewReader(ws.clientR, wsClientMessageLimit, wsFrameLimit)
+	msg := wsframe.NewMessage(wsClientMessageLimit)
 	// held collects a data message's frames until it is whole: a turn a plugin
 	// rejects or rewrites must not have reached the origin first.
 	var held [][]byte
@@ -384,8 +395,8 @@ func (ws *wsSocket) relayUp() {
 // relayDown carries origin frames to the client, feeding each data message to the turn
 // it belongs to.
 func (ws *wsSocket) relayDown() {
-	fr := wsframe.NewReader(ws.up, wsMessageLimit, wsFrameLimit)
-	msg := wsframe.NewMessage(wsMessageLimit)
+	fr := wsframe.NewReader(ws.up, wsServerMessageLimit, wsFrameLimit)
+	msg := wsframe.NewMessage(wsServerMessageLimit)
 	for {
 		f, err := fr.ReadFrame()
 		if err != nil {
@@ -471,12 +482,12 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 	}
 
 	pctx := ws.newTurnContext(body)
-	t := &wsTurn{pctx: pctx}
-	action := ws.s.OutboundPipeline.Run(ws.ctx(), pctx)
+	t := &wsTurn{pctx: pctx, p: ws.s.OutboundPipeline.Load()}
+	action := t.p.Run(ws.ctx(), pctx)
 	if action.Type == pipeline.Reject {
 		ws.s.recordOutboundRejectIn(nil, pctx, action, ws.sid)
 		ws.refuseTurn(action)
-		ws.s.OutboundPipeline.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
+		t.p.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
 		return nil, true
 	}
 	if ws.s.Sessions != nil {
@@ -518,7 +529,7 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 		ws.finishTurn(t, status, &pipeline.EventError{Kind: "backend_error", Code: fmt.Sprintf("%d", status), Message: "the origin answered the turn with an error event"})
 		return
 	}
-	ws.s.OutboundPipeline.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
+	t.p.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
 	t.pctx.ResponseBytes += int64(len(payload))
 	// The three events inference-parser reads usage and the finish reason from; each
 	// ends a response, as response.completed ends Codex's own read loop.
@@ -550,9 +561,9 @@ func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
 	if fail == nil {
 		t.pctx.StatusCode = status
 	}
-	ws.s.OutboundPipeline.RunResponseFrame(finalCtx, t.pctx, nil, true)
+	t.p.RunResponseFrame(finalCtx, t.pctx, nil, true)
 	ws.s.recordOutboundResponseEvent(t.pctx, status, fail)
-	ws.s.OutboundPipeline.RunFinish(finalCtx, t.pctx, pipeline.OutcomeFromContext(t.pctx))
+	t.p.RunFinish(finalCtx, t.pctx, pipeline.OutcomeFromContext(t.pctx))
 }
 
 // ctx is the context every turn's pipeline runs under: the handshake request's values
@@ -568,7 +579,11 @@ func (ws *wsSocket) ctx() context.Context {
 func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	hs := ws.hs
 	headers := ws.r.Header.Clone()
-	for _, h := range []string{"Upgrade", "Connection", "Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Extensions", "Sec-Websocket-Protocol"} {
+	// The handshake's own framing headers, and what it said about a body it does not
+	// have: a turn's body is a WebSocket text message, never encoded, and the
+	// handshake's Content-Encoding and Content-Length describe nothing the turn carries.
+	// A plugin reading them would be told something false about the body it is shown.
+	for _, h := range []string{"Upgrade", "Connection", "Sec-Websocket-Key", "Sec-Websocket-Version", "Sec-Websocket-Extensions", "Sec-Websocket-Protocol", "Content-Encoding", "Content-Length"} {
 		headers.Del(h)
 	}
 	headers.Set("Content-Type", "application/json")

@@ -203,7 +203,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "response"`), carrying the CONNECT's own status, the duration, and the bytes
   each way. It is not the destination's status: that travels inside the
   client's end-to-end TLS. Tunnel rows are kept out of `/v1/usage`: a tunnel's
-  lifetime is not a request latency.
+  lifetime is not a request latency. **`tunnelReason: "websocket"` is the one
+  that is not opaque:** a Responses API WebSocket the forward proxy carries
+  (`listener.responses_websockets`). Its open is the handshake `GET`, its close
+  is status 101 with the whole socket's duration and bytes, and every turn on it
+  records its own ordinary `POST` request and response rows between the two,
+  parsed and priced like an HTTPS turn.
 - `httpMethod`, `httpPath` — the HTTP verb and query-stripped,
   percent-decoded path, so a request no parser recognized is still
   identifiable. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath`

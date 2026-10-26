@@ -106,8 +106,8 @@ func wsAccept(key string) string {
 }
 
 func (o *wsOrigin) serve(conn net.Conn, br *bufio.Reader) {
-	fr := wsframe.NewReader(br, 1<<20, 1<<20)
-	msg := wsframe.NewMessage(1 << 20)
+	fr := wsframe.NewReader(br, 64<<20, 64<<20)
+	msg := wsframe.NewMessage(64 << 20)
 	turn := 0
 	for {
 		f, err := fr.ReadFrame()
@@ -171,6 +171,9 @@ type wsHarness struct {
 	origin *wsOrigin
 	proxy  *httptest.Server
 	caPEM  []byte
+	// holder is the outbound pipeline the proxy runs, so a test can swap it as a hot
+	// reload does.
+	holder *pipeline.Holder
 }
 
 func newWSHarness(t *testing.T, mode string, plugins ...pipeline.Plugin) *wsHarness {
@@ -208,8 +211,9 @@ func newWSHarness(t *testing.T, mode string, plugins ...pipeline.Plugin) *wsHarn
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.holder = pipeline.NewHolder(p)
 	srv := &Server{
-		OutboundPipeline: pipeline.NewHolder(p),
+		OutboundPipeline: h.holder,
 		Sessions:         h.store,
 		Client:           http.DefaultClient,
 		TLSBridge:        engine,
@@ -649,6 +653,87 @@ func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	}
 	if res.Error == nil || res.Inference == nil || res.Inference.Completion != "par" {
 		t.Errorf("interrupted turn: error=%+v completion=%v, want an error and the partial text", res.Error, res.Inference)
+	}
+}
+
+// A hot reload mid-turn must not move the rest of that turn onto the new pipeline. The
+// turn's Finishers are the plugins whose OnRequest ran — lineage's span, a budget's
+// reservation — and RunFinish dispatches them by their index in the pipeline it is
+// called on, so ending the turn on a newer pipeline would finish the wrong plugins, or
+// none, and leave the started ones open. The turn ends on the pipeline it began on; the
+// next turn takes the new one.
+func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T) {
+	started := &outcomeRecorder{}
+	h := newWSHarness(t, config.ResponsesWebSocketsParse, started)
+	midTurn := make(chan struct{})
+	resume := make(chan struct{})
+	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+		conn, brw, _ := w.(http.Hijacker).Hijack()
+		defer conn.Close()
+		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(r.Header.Get("Sec-Websocket-Key")) + "\r\n\r\n")
+		_ = brw.Flush()
+		fr := wsframe.NewReader(brw.Reader, 1<<20, 1<<20)
+		if _, err := fr.ReadFrame(); err != nil {
+			return
+		}
+		evs := turnEvents(1)
+		for _, ev := range evs[:3] {
+			_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
+		}
+		close(midTurn)
+		<-resume
+		for _, ev := range evs[3:] {
+			_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
+		}
+		_, _ = fr.ReadFrame()
+	})
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	<-midTurn
+
+	// The reload: a pipeline of different plugins, with a Finisher of its own that
+	// never saw this turn begin.
+	other := &outcomeRecorder{}
+	fresh, err := plugintesting.BuildPipeline([]pipeline.Plugin{inferenceparser.NewInferenceParser(), &turnDenier{}, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.holder.Store(fresh)
+	close(resume)
+	c.readUntil("response.completed")
+	c.close()
+
+	if started.seen() == nil {
+		t.Error("the turn's own Finisher never ran: the turn ended on a pipeline other than the one it began on")
+	}
+	if other.got != nil {
+		t.Error("the reloaded pipeline's Finisher ran for a turn it never saw begin")
+	}
+}
+
+// A socket's first turn carries the whole conversation, so it can be far over the
+// 10 MB per-event cap the origin's messages get. It is parsed up to the same 32 MiB an
+// HTTPS request body is.
+func TestResponsesWebSocket_LargeFirstTurnIsParsed(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	c := h.dial(t, nil)
+	big := strings.Repeat("x", 15<<20)
+	c.send(responseCreate(big))
+	c.readUntil("response.completed")
+	c.close()
+
+	var req *pipeline.SessionEvent
+	for _, e := range h.events(t, codexSID, true) {
+		if e.HTTPMethod == http.MethodPost && e.Phase == pipeline.SessionRequest {
+			e := e
+			req = &e
+		}
+	}
+	if req == nil || req.Inference == nil || req.Inference.Model != "gpt-6-luna" {
+		t.Fatalf("a 15 MB first turn was not parsed: %+v", req)
 	}
 }
 
