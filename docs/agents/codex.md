@@ -369,27 +369,35 @@ with Cortex built from the change that added this page. This was exercised:
   tokens and a cost, as was the TUI's own model check on `gpt-5.6-luna`;
 - **Esc mid-answer in the TUI**: the WebSocket closed within milliseconds, the
   interrupted turn was recorded with the 1,491 characters that had arrived, and the
-  next prompt opened a new socket and was answered and parsed normally.
+  next prompt opened a new socket and was answered and parsed normally;
+- **an API-key login**, on macOS: Codex opened the WebSocket to `api.openai.com`
+  instead of `chatgpt.com`, and a single-turn and a three-turn run were each parsed
+  with model (`gpt-6.1-sol`), tokens and a cost;
+- **Linux**, on Codex 0.164.0 in an Ubuntu 26.10 arm64 VM with an API-key login: a
+  single turn, three turns on one socket, and a TUI turn, each carried and parsed with
+  tokens and a cost, and Codex's traffic attributed to its process and filed under its
+  own session.
 
 Not tested:
 
-- **Linux.** Everything here was exercised on macOS only.
-- **An API-key login over the WebSocket.** Codex then opens it to `api.openai.com`
-  rather than `chatgpt.com`; Cortex treats the two hosts alike, but only the ChatGPT
-  login was watched.
+- **Linux beyond the WebSocket.** On Linux only the WebSocket transport above was
+  exercised; `agentop configure codex`, the dotenv routing and the HTTPS fallback were
+  tested on macOS only.
 - **Codex's in-band interrupt.** For some internal cases — steering a turn already
   under way, or queued "mailbox" input, on models with `use_responses_lite` set — Codex
   sends `response.interrupt` on the open socket and waits for the server's
   `response.interrupt.accepted` instead of closing it. The relay forwards both unchanged
   and its tests cover the exchange in both orders, but it was not seen live: Esc does
   not use it.
-- **Codex versions other than 0.160.1 and 0.162.1.** Both appeared in one capture (an
-  auto-update landed mid-session) and both parse identically, which is some evidence the
-  User-Agent shape is stable across releases rather than pinned to one build — but the
-  `.env` loading behaviour and the `CODEX_` filter were only read from 0.160.1's source.
-- **The public `/v1/responses` API** (an OpenAI API key rather than a ChatGPT
-  subscription). The parser recognises the path, and the non-streaming shape of that
-  dialect is modelled from the published schema rather than from captured traffic.
+- **Codex versions other than 0.160.1 through 0.164.0.** 0.160.1 and 0.162.1 appeared in
+  one capture (an auto-update landed mid-session) and parse identically, and the
+  WebSocket transport was run on 0.163.0 and 0.164.0, which is some evidence the wire
+  shape is stable across releases rather than pinned to one build — but the `.env`
+  loading behaviour and the `CODEX_` filter were only read from 0.160.1's source.
+- **The public `/v1/responses` API over HTTPS.** An API-key login was exercised over the
+  WebSocket above; over HTTPS — with `responses_websockets: decline`, or a client that
+  does not ask for the socket — it was not, and the non-streaming shape of that dialect
+  is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
 - **Tool pruning**, which is unsupported above rather than merely untested.
