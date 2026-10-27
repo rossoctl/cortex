@@ -214,3 +214,21 @@ func TestClosePayload_FitsAControlFrame(t *testing.T) {
 		t.Errorf("code bytes = % x, want 03 f0 (1008)", p[:2])
 	}
 }
+
+func TestDescribeClose(t *testing.T) {
+	cases := map[string]struct {
+		payload []byte
+		want    string
+	}{
+		"no code":          {nil, "close without a code"},
+		"normal":           {ClosePayload(1000, ""), "close code 1000 normal closure"},
+		"internal, reason": {ClosePayload(1011, "boom"), "close code 1011 internal error: boom"},
+		"unnamed code":     {ClosePayload(4000, ""), "close code 4000"},
+		"escape in reason": {ClosePayload(1008, "a\x1b[2Jb"), "close code 1008 policy violation: a[2Jb"},
+	}
+	for name, tc := range cases {
+		if got := DescribeClose(tc.payload); got != tc.want {
+			t.Errorf("%s: DescribeClose = %q, want %q", name, got, tc.want)
+		}
+	}
+}

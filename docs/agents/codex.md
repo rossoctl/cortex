@@ -225,6 +225,16 @@ with the text that had arrived, as `statusCode` 499 with `error.kind:
 upstream failure. OpenAI sends no usage for a turn cut off this way, so it has no token
 count or cost: it shows as priceable but unpriced, the same as a cancelled HTTPS stream.
 
+**A turn's status follows what the same turn would get over HTTPS.** An open WebSocket
+carries no HTTP status after its 101, so each turn row is given the one its HTTPS
+equivalent would have: 200 for a completed turn; for a refusal the origin sends as an
+`error` event, the event's own status, else the one its error code is answered with
+(`insufficient_quota` and `rate_limit_exceeded` are 429, `context_length_exceeded` 400,
+`server_is_overloaded` 503), else 500; 499 `client_canceled` when Codex ended the socket
+mid-turn and 502 `upstream_error` when OpenAI did. Who ended it is read from the first
+close frame either side sent, whose code and reason go into the row's message, and from
+which side's connection dropped first when neither sent one.
+
 Where Cortex cannot carry the socket it answers the handshake with **426 Upgrade
 Required** instead, which Codex reads as "this endpoint wants HTTP" and switches to HTTPS
 at once, for the rest of its session. That happens for a connection the bridge did not

@@ -701,6 +701,138 @@ func TestResponsesWebSocket_OriginDropFinalizesTheOpenTurnAsUpstreamError(t *tes
 	_ = c.conn.Close()
 }
 
+// A clean close mid-turn names who ended the socket even when the other side's relay
+// stops first. Here the client sends a close frame, the origin answers with one of its
+// own and drops the connection at once, so the relay reading from the origin is the
+// first to see its connection gone — timing alone would blame the origin. The client
+// sent the first close, so the turn is the client's: 499, with the code it closed with.
+func TestResponsesWebSocket_FirstCloseFrameDecidesWhoEndedTheTurn(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+		conn, brw, _ := w.(http.Hijacker).Hijack()
+		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(r.Header.Get("Sec-Websocket-Key")) + "\r\n\r\n")
+		_ = brw.Flush()
+		fr := wsframe.NewReader(brw.Reader, 1<<20, 1<<20)
+		if _, err := fr.ReadFrame(); err != nil {
+			_ = conn.Close()
+			return
+		}
+		_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(`{"type":"response.created","response":{"id":"r","status":"in_progress"}}`), false))
+		_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(`{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"par"}`), false))
+		// Answer the client's close with our own, then drop the connection at once.
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				_ = conn.Close()
+				return
+			}
+			if f.Opcode == wsframe.OpClose {
+				_, _ = conn.Write(wsframe.Encode(wsframe.OpClose, f.Payload, false))
+				_ = conn.Close()
+				return
+			}
+		}
+	})
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	c.readUntil("response.output_text.delta")
+	_, _ = c.conn.Write(wsframe.Encode(wsframe.OpClose, wsframe.ClosePayload(1001, "user left"), true))
+
+	var res *pipeline.SessionEvent
+	for _, e := range h.events(t, codexSID, true) {
+		if e.HTTPMethod == http.MethodPost && e.Phase == pipeline.SessionResponse {
+			e := e
+			res = &e
+		}
+	}
+	_ = c.conn.Close()
+	if res == nil {
+		t.Fatal("the closed turn recorded no response row")
+	}
+	if res.StatusCode != pipeline.StatusClientClosedRequest || res.Error == nil || res.Error.Kind != "client_canceled" {
+		t.Fatalf("turn = status %d error %+v, want 499 client_canceled: the client sent the first close", res.StatusCode, res.Error)
+	}
+	if !strings.Contains(res.Error.Message, "close code 1001 going away: user left") {
+		t.Errorf("message %q does not name the client's close code and reason", res.Error.Message)
+	}
+}
+
+// A refused turn's status follows the error event's own status when it has one, and
+// otherwise the status its error code is answered with over HTTPS — so a quota refusal,
+// which arrived live with no status, counts as the 429 it is and not as a 500.
+func TestErrorEventStatus(t *testing.T) {
+	cases := []struct {
+		name          string
+		status        int
+		code, errType string
+		want          int
+	}{
+		{"the event's own status wins", 429, "server_is_overloaded", "", 429},
+		{"quota, no status", 0, "insufficient_quota", "", 429},
+		{"quota as the type", 0, "", "insufficient_quota", 429},
+		{"rate limit", 0, "rate_limit_exceeded", "", 429},
+		{"usage limit", 0, "", "usage_limit_reached", 429},
+		{"socket limit", 0, "websocket_connection_limit_reached", "", 429},
+		{"context too long", 0, "context_length_exceeded", "", 400},
+		{"stale previous response", 0, "previous_response_not_found", "", 400},
+		{"overloaded", 0, "server_is_overloaded", "", 503},
+		{"unknown code", 0, "something_new", "", 500},
+		{"nothing at all", 0, "", "", 500},
+		{"a non-error status is not taken", 200, "insufficient_quota", "", 429},
+	}
+	for _, tc := range cases {
+		if got := errorEventStatus(tc.status, tc.code, tc.errType); got != tc.want {
+			t.Errorf("%s: errorEventStatus(%d, %q, %q) = %d, want %d", tc.name, tc.status, tc.code, tc.errType, got, tc.want)
+		}
+	}
+}
+
+// End to end: a quota refusal with no status, as one arrived live, is recorded as 429
+// with its code named, and the client receives the event unchanged.
+func TestResponsesWebSocket_QuotaRefusalIsRecordedAs429(t *testing.T) {
+	const refusal = `{"type":"error","error":{"type":"insufficient_quota","code":"insufficient_quota","message":"You exceeded your current quota."}}`
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+		conn, brw, _ := w.(http.Hijacker).Hijack()
+		defer conn.Close()
+		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(r.Header.Get("Sec-Websocket-Key")) + "\r\n\r\n")
+		_ = brw.Flush()
+		fr := wsframe.NewReader(brw.Reader, 1<<20, 1<<20)
+		if _, err := fr.ReadFrame(); err != nil {
+			return
+		}
+		_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(refusal), false))
+		_, _ = fr.ReadFrame()
+	})
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	got := c.readUntil("error")
+	c.close()
+	if b, _ := json.Marshal(got[len(got)-1]); !strings.Contains(string(b), `"insufficient_quota"`) {
+		t.Errorf("client received %s, want the refusal unchanged", b)
+	}
+
+	var res *pipeline.SessionEvent
+	for _, e := range h.events(t, codexSID, true) {
+		if e.HTTPMethod == http.MethodPost && e.Phase == pipeline.SessionResponse {
+			e := e
+			res = &e
+		}
+	}
+	if res == nil || res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("refused turn = %+v, want status 429", res)
+	}
+	if res.Error == nil || !strings.Contains(res.Error.Message, "insufficient_quota") {
+		t.Errorf("refused turn error %+v does not name the code", res.Error)
+	}
+}
+
 // Codex's in-band interrupt: for steering a turn already under way, or for queued
 // mailbox input, on models with use_responses_lite set, it sends response.interrupt
 // naming the response and waits on the same socket for the server's

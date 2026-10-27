@@ -210,6 +210,49 @@ func ClosePayload(code uint16, reason string) []byte {
 	return append(b, reason...)
 }
 
+// closeCodeNames are the RFC 6455 §7.4.1 codes a close frame commonly carries.
+var closeCodeNames = map[uint16]string{
+	1000: "normal closure",
+	1001: "going away",
+	1002: "protocol error",
+	1003: "unsupported data",
+	1007: "invalid payload",
+	1008: "policy violation",
+	1009: "message too big",
+	1010: "missing extension",
+	1011: "internal error",
+	1012: "service restart",
+	1013: "try again later",
+}
+
+// DescribeClose renders a close frame's payload for a log or a recorded row: its code,
+// the code's RFC 6455 name when it has one, and the sender's reason. "close without a
+// code" for an empty payload, which RFC 6455 allows. The reason is the sender's own
+// text, so it is kept to printable ASCII and cut to fit a short line.
+func DescribeClose(payload []byte) string {
+	if len(payload) < 2 {
+		return "close without a code"
+	}
+	code := binary.BigEndian.Uint16(payload[:2])
+	out := fmt.Sprintf("close code %d", code)
+	if name, ok := closeCodeNames[code]; ok {
+		out += " " + name
+	}
+	var reason []byte
+	for _, b := range payload[2:] {
+		if len(reason) >= 80 {
+			break
+		}
+		if b >= 0x20 && b < 0x7f {
+			reason = append(reason, b)
+		}
+	}
+	if len(reason) > 0 {
+		out += ": " + string(reason)
+	}
+	return out
+}
+
 // Message reassembles a data message from its frames.
 //
 // It sees control frames go by without letting them interrupt a message, as RFC 6455

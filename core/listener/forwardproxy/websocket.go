@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -315,6 +316,22 @@ type wsSocket struct {
 	// decides how a turn still open at that moment is recorded. Set once, by the
 	// first relay to return; the other only ever sees the connection closed under it.
 	endedBy atomic.Value
+
+	// closedBy is the side that sent the first close frame, and closeNote its code and
+	// reason. A close frame is the sender saying it is ending the socket, which is
+	// better evidence than which relay happened to stop first: when one side closes
+	// cleanly the other answers with a close of its own, and that answer can make its
+	// relay stop first. Set once, by the first close frame either relay sees.
+	closedBy  atomic.Value
+	closeNote atomic.Value
+}
+
+// sawClose records a close frame from side, if none has been seen yet.
+func (ws *wsSocket) sawClose(side string, f *wsframe.Frame) {
+	if !ws.closedBy.CompareAndSwap(nil, side) {
+		return
+	}
+	ws.closeNote.Store(wsframe.DescribeClose(f.Payload))
 }
 
 // wsEnd records who ended the socket, if no one has yet.
@@ -366,17 +383,86 @@ func (ws *wsSocket) run() {
 // series, rather than as a 502-shaped upstream_error that would read as OpenAI failing
 // every time someone interrupts a turn. The origin closing first, or the socket breaking
 // on a frame the relay cannot read, is what upstream_error is for.
+//
+// A close frame decides first, when either side sent one: whoever sent the first close
+// ended the socket, and its code and reason go into the message. Without one — a
+// connection dropped, which is what Codex's Esc does — the relay that stopped first
+// decides. Either way the statuses are the same two; a close code is evidence about
+// who, recorded beside the status, not a status of its own.
 func (ws *wsSocket) unfinishedTurn() (int, *pipeline.EventError) {
-	if side, _ := ws.endedBy.Load().(string); side == "client" {
+	side, _ := ws.closedBy.Load().(string)
+	note, _ := ws.closeNote.Load().(string)
+	if side == "" {
+		side, _ = ws.endedBy.Load().(string)
+	}
+	suffix := ""
+	if note != "" {
+		suffix = " (" + note + ")"
+	}
+	if side == "client" {
 		return pipeline.StatusClientClosedRequest, &pipeline.EventError{
 			Kind:    "client_canceled",
-			Message: "the client closed the WebSocket before the turn completed",
+			Message: "the client closed the WebSocket before the turn completed" + suffix,
 		}
 	}
 	return http.StatusBadGateway, &pipeline.EventError{
 		Kind:    "upstream_error",
-		Message: "the origin closed the WebSocket before the turn completed",
+		Message: "the origin closed the WebSocket before the turn completed" + suffix,
 	}
+}
+
+// errorEventStatus is the HTTP status recorded for a turn the origin refused with an
+// error event.
+//
+// AN OPEN WEBSOCKET HAS NO HTTP STATUS: the handshake's 101 was the last one. So the
+// origin reports a refused turn inside a message, and the status field is optional —
+// Codex's own fixtures carry "status": 429 on a usage limit, while a live quota refusal
+// arrived with none. The row records the status the same refusal answers over HTTPS,
+// so a WebSocket turn and an HTTPS one count alike in /v1/usage: the event's own status
+// when it has one; else the one its error code is answered with over HTTPS; else 500.
+// Codes are the Responses API's, as Codex's source maps them (codex-api's api_bridge).
+func errorEventStatus(status int, code, errType string) int {
+	if status >= 400 && status <= 599 {
+		return status
+	}
+	for _, name := range []string{code, errType} {
+		switch name {
+		case "rate_limit_exceeded", "insufficient_quota", "usage_limit_reached",
+			"usage_not_included", "websocket_connection_limit_reached", "slow_down":
+			return http.StatusTooManyRequests
+		case "context_length_exceeded", "invalid_prompt", "invalid_request_error",
+			"previous_response_not_found":
+			return http.StatusBadRequest
+		case "server_is_overloaded":
+			return http.StatusServiceUnavailable
+		}
+	}
+	return http.StatusInternalServerError
+}
+
+// firstNonEmpty is the first of vs that is not empty, or "".
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// capErrorName bounds an origin-supplied error code before it reaches a row an
+// operator reads in a terminal: printable ASCII only, 64 bytes at most.
+func capErrorName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= 64 {
+			break
+		}
+		if r >= 0x20 && r < 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // relayUp carries client frames to the origin, reading each data message on the way.
@@ -396,6 +482,9 @@ func (ws *wsSocket) relayUp() (endedBy string) {
 		}
 		ws.bytesUp.Add(int64(len(f.Raw)))
 		if f.IsControl() {
+			if f.Opcode == wsframe.OpClose {
+				ws.sawClose("client", f)
+			}
 			if !ws.writeUp(f.Raw) {
 				return "origin"
 			}
@@ -450,6 +539,9 @@ func (ws *wsSocket) relayDown() (endedBy string) {
 			return "client"
 		}
 		if f.IsControl() {
+			if f.Opcode == wsframe.OpClose {
+				ws.sawClose("origin", f)
+			}
 			continue
 		}
 		op, payload, readable, complete, err := msg.Add(f)
@@ -555,16 +647,20 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 	var env struct {
 		Type   string `json:"type"`
 		Status int    `json:"status"`
+		Error  struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
 	}
 	_ = json.Unmarshal(payload, &env)
 	if env.Type == "error" {
-		// Codex's wrapped error event — a refused turn (usage limit, bad input), with
-		// the HTTP status the HTTPS path would have answered.
-		status := env.Status
-		if status == 0 {
-			status = http.StatusInternalServerError
+		// The origin refused the turn (a usage limit, bad input). See errorEventStatus.
+		status := errorEventStatus(env.Status, env.Error.Code, env.Error.Type)
+		message := "the origin answered the turn with an error event"
+		if name := firstNonEmpty(env.Error.Code, env.Error.Type); name != "" {
+			message += ": " + capErrorName(name)
 		}
-		ws.finishTurn(t, status, &pipeline.EventError{Kind: "backend_error", Code: fmt.Sprintf("%d", status), Message: "the origin answered the turn with an error event"})
+		ws.finishTurn(t, status, &pipeline.EventError{Kind: "backend_error", Code: strconv.Itoa(status), Message: message})
 		return
 	}
 	t.p.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
