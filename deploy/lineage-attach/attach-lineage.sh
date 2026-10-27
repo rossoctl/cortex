@@ -66,8 +66,9 @@
 #                   platform collector). Any OTLP consumer works. Plain gRPC
 #                   unless it starts with https://.
 #   CAPTURE_IO      false (default, the plugin's own) | true — whether the spans
-#                   carry the parsed content (input.value / output.value:
-#                   prompts, tool arguments, messages). PII-bearing: opt in.
+#                   carry the content (input.value / output.value:
+#                   prompts, tool arguments, messages, plain-HTTP bodies).
+#                   PII-bearing, credentials included: opt in.
 #   MAX_PAYLOAD_BYTES  cap on a captured value (plugin default 4096 when unset;
 #                   -1 = attach whole). Only meaningful with CAPTURE_IO=true.
 #   OUTBOUND_PORTS_EXCLUDE  ports proxy-init must not intercept — an app's OWN
@@ -175,7 +176,7 @@ parse_inputs() {
   if [ "$EMIT" = "cm" ] && [ "$CAPTURE_IO" = "true" ]; then
     case "$OTEL_ENDPOINT" in
       https://*) ;;
-      *) echo "NOTE: CAPTURE_IO=true sends parsed content (PII) to ${OTEL_ENDPOINT} over plain gRPC." >&2
+      *) echo "NOTE: CAPTURE_IO=true sends captured content (PII) to ${OTEL_ENDPOINT} over plain gRPC." >&2
          echo "      Use an https:// OTEL_ENDPOINT for TLS if that endpoint leaves the cluster." >&2 ;;
     esac
   fi

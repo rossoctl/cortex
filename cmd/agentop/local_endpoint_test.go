@@ -191,8 +191,8 @@ func TestLocalFallbackNamesABrokenConfig(t *testing.T) {
 	}
 }
 
-// A proxy binds every port before it replays its session archive, and serves only once
-// the replay is done — up to usageReplayBudget (5s) later. The kernel accepts a connection
+// A proxy binds every port before it opens its session archive, and serves only once
+// that is done — seconds later on a loaded machine. The kernel accepts a connection
 // to a socket that is bound but not yet served, so "connected, no answer yet" means a
 // Cortex that is starting: worth waiting for, where a 400ms answer deadline sent agentop
 // to the cluster picker on every launch that met a restart.

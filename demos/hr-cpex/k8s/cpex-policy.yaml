@@ -1,57 +1,45 @@
-# CPEX runtime config for the HR demo.
+# CPEX runtime config for the HR demo (CPEX 0.3 schema).
 #
-# DEMO ONLY — points at a local Keycloak over plaintext http. Do NOT use
-# in production without TLS to the IdP.
+# DEMO ONLY — points at an in-cluster Keycloak over plaintext http. Do NOT
+# use in production without TLS to the IdP. Keycloak resolves to a private
+# cluster address, which CPEX's HTTP transport refuses unless the cpex
+# plugin sets `private_destinations: true` (see k8s/authbridge.yaml).
 #
-# The gateway client secret is sourced with `client_secret_source.kind: file`
-# from a mounted Secret (see the cpex-gateway-secret Secret + /etc/cpex-secrets
-# mount in k8s/30-agent.yaml), so the secret value is NOT inlined in this
-# policy manifest. The `literal` and `env_var` source kinds also exist; file
-# is the production-shaped one.
+# The gateway client secret is read from a mounted Secret
+# (`client_secret_source.kind: file`, /etc/cpex-secrets), so its value is
+# not inlined here.
 #
 # ── How to read this file ───────────────────────────────────────────
-# The `routes:` block at the BOTTOM is the story: three tool routes,
-# one per demo act, each spelling out the authorization chain for that
-# tool. Read those first. Everything above them is the toolbox the
-# routes pull from:
+# The `routes:` block at the bottom is the story: one route per tool, each
+# spelling out its authentication and ordered authorization steps. Read
+# those first. Everything above them is the toolbox the routes pull from:
 #
-#   plugins:         2 identities (jwt-user, jwt-client)
-#                    2 delegators (workday-oauth, github-oauth)
-#                    2 validators (pii-scan, audit-log)
-#   global.apl.pdp:  1 Cedar PDP (relationship-based authorization)
+#   plugins:   3 identities (jwt-user, jwt-client, jwt-workload)
+#              2 delegators (workday-oauth, github-oauth)
+#              1 approval channel (manager-approver)
+#   global:    the Cedar and CEL decision points, and the identity headers
+#              the engine asserts to the tool
 #
-# Each route names the identities it needs in its `authentication:`
-# block and lists its ordered authorization effects under
-# `authorization.pre_invocation:`. Plugins otherwise resolve by name +
-# hook, so the grouping above is purely for reading.
+# A plugin runs only where a route reaches it (`authentication:`,
+# `delegate(...)`, `require_approval(...)`), and every plugin that makes HTTP calls declares
+# `perform_http`.
 #
-# Syntax note: this file uses the CPEX v0.2.3 *canonical* APL shape —
-# per-route `authentication:` + `authorization:` sibling blocks, no
-# `apl:` wrapper, `args:`/`result:` as route-level siblings, and `run(...)`
-# to invoke a plugin as an effect (the old `plugin(...)` spelling still
-# works as an alias). The pre-0.2.1 `identity:` / `policy:` keys are hard
-# errors now.
+# Two things the 0.2.x version did with plugins are now policy and
+# Cortex: the PII check is a CEL step on send_email, and the audit trail
+# is the Cortex session timeline, where every cpex decision is recorded
+# with its violation code.
 # ────────────────────────────────────────────────────────────────────
-#
-# Keycloak runs locally at http://localhost:8081. JWTs are RS256-signed
-# by the realm's automatically-generated signing key. We point at the
-# realm's JWKS URL so the resolver fetches the active public key at
-# init time (no manual PEM paste).
-
-plugin_settings:
-  routing_enabled: true
 
 plugins:
   # ── IDENTITY ─────────────────────────────────────────────────────
-  # Two JWT resolvers fire on identity.resolve: the human user's token
-  # (X-User-Token) and the agent's client token (Authorization). Both
-  # verify against the realm JWKS. Each route lists the ones it needs in
-  # its `authentication:` block.
+  # The human user's token (X-User-Token) and the agent's client token
+  # (Authorization), both verified against the realm JWKS.
 
-  # User identity. Carries the human's roles + permissions claims.
+  # User identity. Carries the human's roles, teams and permissions claims.
   - name: jwt-user
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     on_error: fail
     config:
       role: user
@@ -63,9 +51,7 @@ plugins:
           decoding_key:
             kind: jwks_url
             url: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/certs"
-            # Cluster-internal http is intentional — Keycloak runs
-            # in the same namespace and isn't TLS-terminated.
-            insecure_http: true
+            insecure_http: true   # in-cluster Keycloak, no TLS
           leeway_seconds: 60
       claim_mapper: standard
 
@@ -73,6 +59,7 @@ plugins:
   - name: jwt-client
     kind: identity/jwt
     hooks: [identity.resolve]
+    capabilities: [perform_http]
     on_error: fail
     config:
       role: client
@@ -84,35 +71,51 @@ plugins:
           decoding_key:
             kind: jwks_url
             url: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/certs"
-            # Cluster-internal http is intentional — Keycloak runs
-            # in the same namespace and isn't TLS-terminated.
             insecure_http: true
           leeway_seconds: 60
       claim_mapper: standard
 
-  # ── DELEGATORS (RFC 8693 token exchange) ─────────────────────────
-  # Two OAuth delegators, one per downstream audience. A route's
-  # delegate(...) step names which one to invoke.
+  # Workload identity. The agent's own SPIFFE JWT-SVID, which the
+  # sidecar fetches from SPIRE and presents on X-Workload-Token (the cpex
+  # plugin's `workload:` setting). Only get_headcount names it. Without
+  # the SPIRE overlay the key fetch fails and only that route denies.
+  # SPIRE signs with ES256, and the SVID's audience is the realm issuer
+  # because Keycloak takes it as a client assertion.
+  - name: jwt-workload
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    capabilities: [perform_http]
+    on_error: fail
+    config:
+      role: caller_workload
+      header: X-Workload-Token
+      trusted_issuers:
+        - issuer: "http://spire-oidc.spire:8443"
+          audiences: ["http://keycloak.cpex-demo:8080/realms/cpex-demo"]
+          algorithms: ["ES256"]
+          decoding_key:
+            kind: jwks_url
+            url: "http://spire-oidc.spire:8443/keys"
+            insecure_http: true   # in-cluster SPIRE, no TLS
+          leeway_seconds: 60
+      claim_mapper: standard
 
-  # RFC 8693 token-exchange delegator. Trades the user's hr-copilot
-  # token for a workday-api-audience-scoped access token.
+  # ── DELEGATORS (RFC 8693 token exchange) ─────────────────────────
+  # One per downstream audience; a route's delegate(...) step names one.
   #
-  # Pattern 1 (workday flow): the user already carries view_ssn etc.
-  # as a Keycloak user attribute → claim. The exchange just changes
-  # the audience; the perms come along for the ride.
+  # By default CPEX mints the token but does not hand its value back to Cortex,
+  # so Cortex refuses to forward a call whose route delegated
+  # (cpex.delegation_unavailable) rather than send the caller's own bearer.
+
+  # Workday: the user's token already carries view_ssn etc.; the exchange
+  # only changes the audience.
   - name: workday-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
-    on_error: fail   # delegation failure must BLOCK the call — get_compensation
-                     # has no require(delegation.granted) post-check, so without
-                     # this a failed token exchange would fail open.
-    capabilities:
-      - read_inbound_credentials
-      - write_delegated_tokens
+    capabilities: [perform_http, read_inbound_credentials, write_delegated_tokens]
+    on_error: fail   # a failed exchange must block the call
     config:
       token_endpoint: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/token"
-      # Cluster-internal http to Keycloak — same justification as
-      # the identity plugins' insecure_http.
       insecure_http: true
       client_id: "cpex-gateway"
       client_secret_source:
@@ -121,27 +124,16 @@ plugins:
       timeout_seconds: 5
       default_outbound_header: "Authorization"
 
-  # Second delegator — same plugin kind, different audience.
-  #
-  # Pattern 3 (github flow): the user's inbound token does NOT
-  # carry github perms. The github-api client in Keycloak has a
-  # per-audience claim mapper (`gh-permissions-as-scope`) that
-  # injects `gh_permissions` from the user attribute as the
-  # minted token's `permissions` claim. The IdP is the source of
-  # system-specific perm truth; the gateway just asks.
+  # GitHub: the user's token does NOT carry github permissions. The
+  # github-api client's mapper injects them into the minted token's
+  # `permissions` claim, so the IdP stays the source of that truth.
   - name: github-oauth
     kind: delegator/oauth
     hooks: [token.delegate]
-    on_error: fail   # delegation failure must BLOCK the call. search_repos also
-                     # has a granted-permissions post-check, but fail-closed here
-                     # keeps a transport/exchange error from ever slipping through.
-    capabilities:
-      - read_inbound_credentials
-      - write_delegated_tokens
+    capabilities: [perform_http, read_inbound_credentials, write_delegated_tokens]
+    on_error: fail
     config:
       token_endpoint: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/token"
-      # Cluster-internal http to Keycloak — same justification as
-      # the identity plugins' insecure_http.
       insecure_http: true
       client_id: "cpex-gateway"
       client_secret_source:
@@ -150,170 +142,114 @@ plugins:
       timeout_seconds: 5
       default_outbound_header: "Authorization"
 
-  # ── VALIDATORS ───────────────────────────────────────────────────
-  # pii-scan denies on sensitive patterns; audit-log observes and never
-  # blocks. Routes invoke them via run(pii-scan) / run(audit-log).
-
-  # ----------------------------------------------------------------
-  # Field-level validator: PII scanner.
-  # ----------------------------------------------------------------
-  # Walks tool/prompt arguments looking for SSN / credit-card / email
-  # patterns. If found in `deny` mode, refuses the request. Wired on
-  # `cmf.tool_pre_invoke` so it fires before every tool call.
-  - name: pii-scan
-    kind: validator/pii-scan
-    hooks: [cmf.tool_pre_invoke]
+  # ── ELICITATION (human approval over OIDC CIBA) ──────────────────
+  # require_approval(...) asks a person through Keycloak's backchannel
+  # and polls the token endpoint on each retry. While the person has not
+  # answered, the call is suspended, not denied.
+  - name: manager-approver
+    kind: elicitation/ciba
+    hooks: [elicit]
+    capabilities: [perform_http]
     on_error: fail
     config:
-      detect:
-        - { kind: ssn }
-        - { kind: credit_card }
-      mode: deny
-
-  # ----------------------------------------------------------------
-  # Observation: structured audit logger.
-  # ----------------------------------------------------------------
-  # Emits one JSON line per dispatched request capturing subject,
-  # client, entity, tool args, and any delegation outcomes. Never
-  # blocks — observation only. Wired on every CMF entity hook so
-  # the audit trail covers all tool / prompt / resource traffic.
-  # Placed LAST in each route's pre_invocation so the record reflects
-  # the final decision + minted tokens.
-  - name: audit-log
-    kind: audit/logger
-    hooks:
-      - cmf.tool_pre_invoke
-      - cmf.prompt_pre_invoke
-      - cmf.resource_pre_fetch
-    on_error: ignore  # observation failures don't halt traffic
-    capabilities:
-      - read_subject
-      - read_client
-      - read_meta
-      - read_delegated_tokens
-    config:
-      destination: stderr
-      source: cpex-demo-gateway
+      backchannel_endpoint: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/ext/ciba/auth"
+      token_endpoint: "http://keycloak.cpex-demo:8080/realms/cpex-demo/protocol/openid-connect/token"
+      insecure_http: true
+      client_id: "cpex-gateway"
+      client_secret_source:
+        kind: file
+        path: /etc/cpex-secrets/client-secret
+      scope: openid
+      # The approval token must name the person who was asked.
+      approver_claim: preferred_username
+      default_requested_expiry_seconds: 300
 
 global:
-  # ----------------------------------------------------------------
-  # Cedar PDP — declarative authorization for relationship-based
-  # decisions. The Cedar policies live inline below. APL routes
-  # call into Cedar via `cedar:` steps and translate decisions
-  # into allow/deny in the broader policy pipeline.
-  #
-  # Why Cedar here: pure APL predicates like `require(role.engineer)`
-  # are great for flat principal attributes. Cedar shines when the
-  # decision needs to relate principal attributes to resource
-  # attributes (e.g. "engineers can read repos when the repo's
-  # visibility is internal"). The two compose naturally — APL handles
-  # the orchestration around Cedar's discrete decisions.
-  # ----------------------------------------------------------------
-  apl:
-    pdp:
-      - kind: cedar-direct
-        dialect: cedar
-        policy_text: |
-          // Engineers can read INTERNAL repos. The relationship
-          // (principal's role × resource's visibility) is the
-          // archetypal Cedar shape.
-          @id("engineering-internal-repos")
-          permit(
-            principal,
-            action == Action::"read",
-            resource is Repo
-          ) when {
-            principal.roles.contains("engineer") &&
-            resource.visibility == "internal"
-          };
+  pdp:
+    # CEL backs the PII check on send_email.
+    - kind: cel
 
-          // Security team can read ANY repo regardless of visibility.
-          @id("security-team-any-repo")
-          permit(
-            principal,
-            action == Action::"read",
-            resource is Repo
-          ) when {
-            principal.roles.contains("security")
-          };
+    # Cedar decides relationships between principal and resource
+    # attributes ("engineers can read internal repos"), which flat APL
+    # predicates express poorly.
+    - kind: cedar-direct
+      dialect: cedar
+      policy_text: |
+        @id("engineering-internal-repos")
+        permit(
+          principal,
+          action == Action::"read",
+          resource is Repo
+        ) when {
+          principal.roles.contains("engineer") &&
+          resource.visibility == "internal"
+        };
 
-          // Default-deny otherwise — Cedar's defaults make this
-          // implicit but spelling it out documents intent.
+        // Security can read any repo regardless of visibility.
+        @id("security-team-any-repo")
+        permit(
+          principal,
+          action == Action::"read",
+          resource is Repo
+        ) when {
+          principal.roles.contains("security")
+        };
+
+        // Anything else is denied by Cedar's default.
+
+  # What the engine tells the tool. Each entry removes its header from
+  # the request before setting it, so a caller's own x-auth-user-id never
+  # reaches hr-mcp. The values are unsigned: the tool trusts them only
+  # because nothing between the sidecar and it can set them.
+  assertions:
+    request:
+      headers:
+        - name: x-auth-user-id
+          from: subject.id
+        - name: x-auth-username
+          from: claim.preferred_username
+        - name: x-auth-roles
+          from: subject.roles
+          encode: csv
+      # The user's raw JWT has done its job once identity is resolved.
+      strip:
+        - x-user-token
 
 routes:
   # ════════════════════════════════════════════════════════════════
-  # ACT 1 ·WORKDAY FLOW · scenarios 01-bob-allow / 03-eve-redact
+  # WORKDAY · scenarios 01, 02, 03 (and the taint in 08, 09)
   # ════════════════════════════════════════════════════════════════
-  # Pattern 1 (centralized IdP knows all perms).
-  # User token carries view_ssn directly; APL gates on a flat
-  # role/perm predicate + redacts ssn on the wire if missing.
-  # ----------------------------------------------------------------
+  # A flat role gate, a token exchange, a session taint, and SSN
+  # redaction on both the request and the response.
   - tool: get_compensation
-    authentication:
-      - jwt-user
-      - jwt-client
+    authentication: [jwt-user, jwt-client]
     authorization:
       pre_invocation:
         - "require(role.hr)"
         - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation])"
-        # Taint the session: reading compensation marks this session as
-        # having touched secret data. The label persists in the CPEX
-        # session store (keyed by Agent.SessionID, threaded from the
-        # X-Session-Id header) and is checked later by send_email — a
-        # data-flow control that spans two separate tool calls. See
-        # ACT 4 / scenario 08.
+        # Reading compensation marks the session as having touched secret
+        # data; send_email checks for it (scenario 08). The label is keyed
+        # by the subject and X-Session-Id.
         - "taint(secret, session)"
-        # Emit a structured audit record AFTER the policy + delegate
-        # decisions are in. Records who called what, with which scope.
-        - "run(audit-log)"
     args:
-      # `redact(!perm.view_ssn)` fires when the caller LACKS the
-      # permission. The arg key remains, value becomes "[REDACTED]" —
-      # downstream tool can see "ssn was here but you can't read it."
+      # The key stays; the value becomes "[REDACTED]" for a caller
+      # without perm.view_ssn.
       ssn: "str | redact(!perm.view_ssn)"
     result:
-      # Symmetric guard on the response side. The tool may include
-      # the SSN in its result (it does, when include_ssn=true);
-      # without this rule, a caller with role.hr but NOT
-      # perm.view_ssn (e.g. eve) would receive it. Redacting on the
-      # response closes the loop — the LLM-driven flow doesn't even
-      # require the caller to mention `ssn` in args for the guard
-      # to fire, because the SSN comes back unsolicited in the
-      # upstream tool's response.
+      # The tool returns the SSN unasked when include_ssn is set, so the
+      # response needs the same guard.
       ssn: "str | redact(!perm.view_ssn)"
 
   # ════════════════════════════════════════════════════════════════
-  # ACT 2 · GITHUB FLOW · scenarios 04-alice-internal / 05-external / 06-bob
+  # GITHUB · scenarios 04, 05, 06
   # ════════════════════════════════════════════════════════════════
-  # Pattern 3 (IdP per-audience mapping + Cedar PDP).
-  #
-  # Four authorization layers in one route:
-  #
-  #   1. APL gate     — cheap predicate. Short-circuits requests
-  #                     from users who can't ever read repos.
-  #   2. Cedar PDP    — relationship between principal role and
-  #                     resource attributes (repo visibility).
-  #                     This is what pure flat predicates struggle
-  #                     with and what Cedar shines at.
-  #   3. Delegation   — RFC 8693 to github-api audience. Keycloak's
-  #                     per-audience mapper injects gh_permissions
-  #                     into the `permissions` claim.
-  #   4. Post-check   — verify the IdP actually granted enough.
-  #                     If the IdP narrowed the scope, refuse to
-  #                     forward — the token never reaches GitHub.
-  # ----------------------------------------------------------------
+  # Four layers: a cheap APL gate, Cedar on principal × repo, a token
+  # exchange, and a check that the IdP granted enough.
   - tool: search_repos
-    authentication:
-      - jwt-user
-      - jwt-client
+    authentication: [jwt-user, jwt-client]
     authorization:
       pre_invocation:
-        # Layer 1 — coarse APL gate on group membership.
         - "require(team.engineering | team.security)"
-
-        # Layer 2 — Cedar fine-grained authorization. The resource
-        # type+id come from the tool args; the principal is built
-        # from the user's token automatically (subject + roles).
         - cedar:
             action: 'Action::"read"'
             resource:
@@ -321,54 +257,103 @@ routes:
               id: ${args.repo_name}
               attributes:
                 visibility: ${args.visibility}
-
-        # Layer 3 — Token exchange. Keycloak's github-api mapper
-        # injects the user's gh_permissions as the `permissions`
-        # claim on the minted token.
         - "delegate(github-oauth, target: github-api, audience: github-api, permissions: [repo:read:internal])"
-
-        # Layer 4 — Verify the IdP granted enough. If the user's
-        # gh_permissions attribute didn't include repo:read:internal,
-        # the minted token comes back narrower than asked. Deny here
-        # rather than forwarding an insufficient token.
+        # Refuse to forward a token the IdP narrowed below what the call needs.
         - "!(delegation.granted.permissions contains 'repo:read:internal'): deny"
 
-        # Audit every github call.
-        - "run(audit-log)"
-
   # ════════════════════════════════════════════════════════════════
-  # ACT 3 · PII SCANNER · scenario 07-bob-pii-deny
+  # EMAIL · scenarios 07, 08, 09, 12
   # ════════════════════════════════════════════════════════════════
-  # SEND_EMAIL — PII scanner gate.
-  #
-  # The interesting flow: when the LLM composes an email body, it
-  # might include raw PII pulled from earlier tool responses ("Bob's
-  # SSN is 555-12-3456"). The PII scanner catches that before the
-  # email goes out. Operators see the deny in real time on stderr
-  # via the audit logger.
-  # ----------------------------------------------------------------
+  # No delegation: the call is forwarded with the asserted identity
+  # headers (scenario 12).
   - tool: send_email
-    authentication:
-      - jwt-user
-      - jwt-client
+    authentication: [jwt-user, jwt-client]
     authorization:
       pre_invocation:
         - "require(perm.email_send)"
-        # Walks args.body / args.subject / args.to and denies if any
-        # carries an SSN-like or credit-card-like pattern.
-        - "run(pii-scan)"
-        # ACT 4 · TAINT PROPAGATION · scenario 08-bob-taint-deny
-        # Block external email from a session that previously accessed
-        # secret data (get_compensation taints the session "secret").
-        # Placed AFTER pii-scan deliberately: a body carrying PII still
-        # denies via pii-scan (cpex.pii_detected) regardless of taint;
-        # this rule catches the subtler case where the body is clean but
-        # the SESSION is tainted. Denies even without any PII in args.
-        # `taint(secret, session)` on get_compensation persists "secret" to
-        # the CPEX session store; on the next request in that session it is
-        # hydrated into `security.labels`, the attribute key the bag exposes
-        # for labels (the DSL's `session.labels`/`message.labels` split is not
-        # yet wired in the pinned FFI — labels surface uniformly under
-        # `security.labels`). Session scope is what makes it survive to here.
+        # PII in the subject or body (SSN or card-number shapes). This
+        # catches the shapes it names; it is not data-loss prevention.
+        - cel:
+            expr: >-
+              !((has(args.subject) ? args.subject : '') + ' ' + (has(args.body) ? args.body : ''))
+              .matches('[0-9]{3}-[0-9]{2}-[0-9]{4}|[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}[ -]?[0-9]{4}')
+            on_deny: ["deny('PII in email', 'pii.detected')"]
+        # A clean body from a session that read compensation is still
+        # refused: the session is tainted, not the content.
         - "security.labels contains \"secret\": deny('external email blocked: this session accessed secret data', 'session_tainted_secret')"
-        - "run(audit-log)"
+
+  # ════════════════════════════════════════════════════════════════
+  # COMPENSATION CHANGE · scenarios 10, 11
+  # ════════════════════════════════════════════════════════════════
+  # A change of more than $10,000 either way needs the requester's
+  # manager (the `manager` claim) to approve. The approval holds only for
+  # this requester, route and tool, is spent by the call it lets through,
+  # and `scope` re-checks the live amount, so a sign-off cannot be
+  # stretched past $25,000. The amount must be a JSON number: a missing
+  # or string amount is refused before the threshold is read, so it
+  # cannot slip under it. (`float`, not `int`: a JSON number reaches the
+  # engine as a float, whole or not. hr-mcp refuses a fraction.)
+  - tool: adjust_compensation
+    authentication: [jwt-user, jwt-client]
+    args:
+      amount: "float"
+    authorization:
+      pre_invocation:
+        - "require(role.hr)"
+        - "require(exists(args.amount))"
+        - when: "args.amount > 10000 | args.amount < -10000"
+          do:
+            - "require_approval(manager-approver, from: claim.manager, channel: \"ciba\", scope: \"args.amount <= 25000 & args.amount >= -25000\", purpose: \"Approve a compensation adjustment\", timeout: 5m)"
+
+  # ════════════════════════════════════════════════════════════════
+  # HEADCOUNT · scenario 13
+  # ════════════════════════════════════════════════════════════════
+  # The agent acts as itself, with no person behind the call. The route
+  # authenticates by the agent's SVID alone (replace_inherited drops the
+  # user and client resolvers). `subject: caller_workload` makes the
+  # delegator run two legs: the SVID as an RFC 7523 client assertion
+  # authenticates the agent's Keycloak client (hr-copilot-agent), and an
+  # RFC 8693 exchange scopes that token to workday-api. The agent holds
+  # no standing workday-api entitlement.
+  #
+  # The global assertions describe a person, so this route replaces them
+  # and strips the identity headers a caller could send instead.
+  - tool: get_headcount
+    authentication:
+      replace_inherited: true
+      steps: [jwt-workload]
+    assertions:
+      request:
+        replace_inherited: true
+        strip:
+          - x-user-token
+          - x-auth-*
+    authorization:
+      pre_invocation:
+        - "delegate(workday-oauth, target: workday-api, audience: workday-api, permissions: [read_compensation], subject: caller_workload)"
+        - "!delegation.granted: deny"
+
+  # ════════════════════════════════════════════════════════════════
+  # READ-ONLY LOOKUPS
+  # ════════════════════════════════════════════════════════════════
+  # Neither returns a salary or an SSN, but both still need a verified
+  # caller.
+  - tool: display_compensation
+    authentication: [jwt-user, jwt-client]
+    authorization:
+      pre_invocation:
+        - "require(perm.tool_execute)"
+
+  - tool: get_directory
+    authentication: [jwt-user, jwt-client]
+    authorization:
+      pre_invocation:
+        - "require(perm.tool_execute)"
+
+  # Every other tool name, including a differently cased spelling of one
+  # above, is refused. A tool with no route would otherwise pass with no
+  # policy and no authentication.
+  - tool: "*"
+    authorization:
+      pre_invocation:
+        - "deny('no policy for this tool', 'tool_unrouted')"

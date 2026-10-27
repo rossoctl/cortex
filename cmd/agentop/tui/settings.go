@@ -27,6 +27,8 @@ var Settings UserSettings
 type UserSettings struct {
 	Events EventSettings `yaml:"events,omitempty"`
 	Usage  UsageSettings `yaml:"usage,omitempty"`
+	// Timeline is the Timeline pane's window.
+	Timeline TimelineSettings `yaml:"timeline,omitempty"`
 	// No filter: `/` searches now and a search is not saved (#1339). A `filter:` key an
 	// older agentop wrote loads as an unknown key — ignored — and the next save drops it.
 }
@@ -229,6 +231,31 @@ func (u UserSettings) usageSelection() (metric usageMetric, windowIdx int, group
 		group = g
 	}
 	return metric, windowIdx, group
+}
+
+// TimelineSettings is the Timeline pane's view. Window is a label from timelineWindows
+// (5m, 1h, 24h, all); empty or unknown means the first.
+type TimelineSettings struct {
+	Window string `yaml:"window,omitempty"`
+}
+
+// timelineWindow is the persisted [w] choice as an index into timelineWindows, matched by
+// label so a window inserted into the list does not move a saved choice.
+func (u UserSettings) timelineWindow() int {
+	for i, w := range timelineWindows {
+		if w.label == u.Timeline.Window {
+			return i
+		}
+	}
+	return 0
+}
+
+// captureTimeline records the window, empty for the default, as captureUsage does.
+func captureTimeline(windowIdx int) TimelineSettings {
+	if windowIdx > 0 && windowIdx < len(timelineWindows) {
+		return TimelineSettings{Window: timelineWindows[windowIdx].label}
+	}
+	return TimelineSettings{}
 }
 
 // captureUsage records the pane's current view for the next start.

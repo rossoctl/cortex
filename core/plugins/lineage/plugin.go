@@ -50,6 +50,7 @@
 package lineage
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -203,10 +204,19 @@ func (p *LineageTelemetry) Capabilities() pipeline.PluginCapabilities {
 		// ordering (for the principal facts) cannot be soft-declared under
 		// this capabilities model — list it before lineage in the YAML.
 		RequiresAny: []string{"a2a-parser", "mcp-parser", "inference-parser"},
+		// No body capability, on purpose. The raw bodies are read directly —
+		// pctx.Body for the request size and the http payload,
+		// pctx.ResponseBody for the http payload — but every parser in
+		// RequiresAny declares ReadsBody, so the listener buffers them
+		// already (TestRequiredParsersBufferTheBody pins it). Declaring
+		// ReadsBody here would forbid lineage after a body-rewriting plugin,
+		// and after the rewriters is where it records the request as it was
+		// forwarded.
+		ReadsBody: false,
 		// The contract is cited major.minor only, deliberately: patch
 		// revisions (v1.5.x) clarify prose and never change span semantics,
 		// so a patch bump must not imply a producer change.
-		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.7).",
+		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.8).",
 	}
 }
 
@@ -853,6 +863,12 @@ func (p *LineageTelemetry) OnFinish(ctx context.Context, pctx *pipeline.Context)
 	if deniedBy != "" {
 		attrs = append(attrs, p.capped("lineage.denied_by", deniedBy))
 	}
+	// The body as the listener counted it on the wire (pipeline.Context's
+	// ResponseBytes), not the length of the buffer: the buffer is the trailing
+	// chunk on an event stream and a floor past the listener's cap. Emitted
+	// whatever capture_io says — a size is metadata, and it is what lets the
+	// consumer tell a bodyless leg from one whose body was not captured.
+	attrs = append(attrs, attribute.Int64("http.response.body.size", pctx.ResponseBytes))
 	if p.cfg.CaptureIO {
 		if v := ioOutputValue(pctx, state.protocol); v != "" {
 			attrs = append(attrs, attribute.String("output.value", truncate(v, p.cfg.MaxPayloadBytes)))
@@ -967,6 +983,10 @@ func (p *LineageTelemetry) appendRequestFacts(attrs []attribute.KeyValue, pctx *
 	if pctx.Scheme != "" {
 		attrs = append(attrs, p.capped("url.scheme", pctx.Scheme))
 	}
+	// The request body is buffered whole or the request is refused (every
+	// listener caps it before the pipeline runs), so the buffer's length is
+	// the size. Twin of http.response.body.size on the response span.
+	attrs = append(attrs, attribute.Int64("http.request.body.size", int64(len(pctx.Body))))
 	switch protocol {
 	case "a2a":
 		a := pctx.Extensions.A2A
@@ -1163,10 +1183,15 @@ func serviceLabel(selfID string) string {
 // any JSON-RPC body, including every a2a exchange), so falling through to
 // another parser's output would attach a mislabeled protocol envelope. A hop
 // whose own parser yields nothing keeps a NULL payload — the contract's
-// "interactions are independent of payloads".
+// "interactions are independent of payloads". For "http" — an exchange no
+// parser claimed — the payload is the raw request body itself, when it is
+// text (textBody): the REST backend behind a tool is where its data comes
+// from, and no parser will ever reduce it.
 func ioInputValue(pctx *pipeline.Context, protocol string) string {
 	ext := pctx.Extensions
 	switch {
+	case protocol == "http":
+		return textBody(pctx.Body)
 	case protocol == "a2a" && ext.A2A != nil && len(ext.A2A.Parts) > 0:
 		// Collect all text parts; fall back to JSON if non-text parts present.
 		var texts []string
@@ -1233,10 +1258,18 @@ func isA2AProtocolEvent(s string) bool {
 // read, for the same reason as ioInputValue: mcp-parser also parses every a2a
 // response (any JSON-RPC body), and falling through to it would emit the raw
 // JSON-RPC envelope — including the protocol events isA2AProtocolEvent exists
-// to suppress — as an a2a hop's payload.
+// to suppress — as an a2a hop's payload. For "http" the payload is the raw
+// response body, when the listener's buffer holds all of it (wholeResponseBody)
+// and it is text (textBody), and not when the response was denied: the buffer
+// then holds the upstream's body, which the client never received.
 func ioOutputValue(pctx *pipeline.Context, protocol string) string {
 	ext := pctx.Extensions
 	switch {
+	case protocol == "http":
+		if o := pctx.Outcome(); o != nil && o.FinalAction == pipeline.OutcomeDeny {
+			return ""
+		}
+		return textBody(wholeResponseBody(pctx))
 	case protocol == "a2a" && ext.A2A != nil && ext.A2A.Artifact != "" && !isA2AProtocolEvent(ext.A2A.Artifact):
 		return ext.A2A.Artifact
 	case protocol == "a2a" && ext.A2A != nil && ext.A2A.ErrorMessage != "":
@@ -1279,6 +1312,39 @@ func ioOutputValue(pctx *pipeline.Context, protocol string) string {
 		}
 	}
 	return ""
+}
+
+// wholeResponseBody returns the buffered response body when it is the whole
+// body, else nil. The listener's buffer is not always the body: extproc keeps
+// only the trailing chunk of an event stream and stops growing at its cap,
+// and the proxies' streaming relays never fill it. Each listener does count
+// every byte it relayed into pctx.ResponseBytes, so the buffer is whole
+// exactly when its length is that count — a comparison of two listener facts,
+// with no header consulted. A fragment is not emitted as if it were the body;
+// the size fact still reports what went over the wire. The count is taken
+// before any response rewriter and the buffer read after them, so a rewrite
+// that changes the length reads as not whole and is not emitted either.
+func wholeResponseBody(pctx *pipeline.Context) []byte {
+	if int64(len(pctx.ResponseBody)) != pctx.ResponseBytes {
+		return nil
+	}
+	return pctx.ResponseBody
+}
+
+// textBody returns a raw body as the http payload value, or "" when there is
+// none or it is not text. The test is on the bytes rather than on a
+// Content-Type claim: UTF-8 validity, because an OTLP string attribute must be
+// UTF-8 and one that is not fails the export of the whole batch it rides in,
+// taking every other span in it along; and no NUL byte, which is valid UTF-8
+// but which a JSON or text column downstream refuses, with the same effect on
+// the batch. The plugin decodes nothing — a compressed or binary body is
+// reported by its size fact alone, which is the honest shape: a body existed,
+// and it was not text.
+func textBody(b []byte) string {
+	if len(b) == 0 || !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
+		return ""
+	}
+	return string(b)
 }
 
 // Compile-time interface assertions.

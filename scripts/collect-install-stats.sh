@@ -17,13 +17,13 @@
 # by behaviour. Treating linux_amd64 as "CI" would therefore erase every real
 # Linux user -- confidently wrong rather than merely noisy.
 #
-# What the smoke test IS, is countable: ONE install per successful JOB, as far as
-# these figures are concerned.
+# What the smoke test IS, is countable: ONE install per JOB that ran the smoke
+# test, as far as these figures are concerned.
 #
 # Per job, not per run, because the workflow runs an architecture matrix and each
-# leg installs independently. A run is worth however many legs succeeded, which is
-# why this script records that number per run instead of letting the page multiply
-# by a constant -- see the query below.
+# leg installs independently. A run is worth however many legs got that far, which
+# is why this script records that number per run instead of letting the page
+# multiply by a constant -- see the query below.
 #
 # Each job itself installs three times -- a fresh install of the newest stable tag,
 # an upgrade to the tag under test, and a no-op re-run of it -- so it fetches more
@@ -33,7 +33,7 @@
 # noise that can go negative when a real --ref=main install is erased). One fetch
 # per job therefore lands where this page counts.
 #
-#   CI installs per run = its successful-job count
+#   CI installs per run = its jobs that ran the smoke-test step
 #
 # The live figures settled the per-job figure rather than the reading of the
 # workflow, back when a run WAS one job: v0.8.1 had 71 checksums fetches against 51
@@ -121,7 +121,8 @@ trap 'rm -f "${tmp}" "${snap}" "${runs}" "${latest}" "${merged}" \
 # understate the all-time figure.
 gh api "repos/${REPO}/releases" --paginate >"${tmp}"
 
-# Smoke runs, as {id, created_at, installs} rather than per-day counts.
+# Smoke runs, as {id, created_at, installs, installs_rule} rather than per-day
+# counts.
 #
 # Timestamps, not calendar dates, because a snapshot interval is not a day. The
 # cron fires at 03:17 UTC, so a row covers (previous 03:17, this 03:17] -- and
@@ -141,18 +142,22 @@ gh api "repos/${REPO}/releases" --paginate >"${tmp}"
 # fetches checksums.txt once per leg. Counting runs and multiplying by a constant
 # was right while there was one job and is a phantom install per run now -- and a
 # constant of 2 would be just as wrong, retroactively, for every run already in
-# the series. So the count is RECORDED PER RUN, from the run's own successful-job
-# count, and the page multiplies by nothing. Adding or removing a matrix leg then
-# needs no change on either side.
+# the series. So the count is RECORDED PER RUN, from the run's own jobs, and the
+# page multiplies by nothing. Adding or removing a matrix leg then needs no change
+# on either side.
 #
-# Counting jobs also fixes a case fail-fast: false creates. If one arch fails the
-# whole run concludes `failure`, and a conclusion filter would drop it -- losing
-# the OTHER leg's real install from the subtraction. Every COMPLETED run is
-# therefore queried whatever its conclusion, and a run whose every job failed or
-# skipped contributes 0 and is left out below. That also subsumes the old
-# `conclusion == "success"` filter's purpose: of 64 runs in the first sampled
-# window 18 were skipped and downloaded nothing, and a skipped job is not a
-# successful one.
+# A job counts when its smoke-test step RAN, whether or not it passed. The fresh
+# install is that step's first action, and every check comes after it, so a job
+# that fails has almost always installed already (#1455). Counting successful
+# jobs missed exactly those: run 38583376563 installed v0.8.1, failed its upgrade
+# on an HTTP 500 from GitHub, and was recorded as 0, so its install read as a
+# person. A skipped job runs no steps and counts 0. The one error left: a job
+# that fails inside the step BEFORE the fresh install (resolving tags, say) counts
+# 1 having installed nothing. Exact would need the install in its own step.
+#
+# Every COMPLETED run is queried whatever its conclusion, because fail-fast: false
+# lets one arch fail while the other installs, and a run conclusion filter would
+# drop both.
 #
 # Queried by workflow FILE rather than by filtering every run in the repo: the
 # repo-wide /actions/runs endpoint needs --paginate over thousands of runs and
@@ -172,17 +177,30 @@ if ! gh api \
 	warn "could not read ${SMOKE_WORKFLOW} runs; recording CI as unknown for today"
 	echo 'null' >"${runs}"
 else
-	# A completed run's job outcomes never change, so a count already in the series
+	# A completed run's job outcomes rarely change, so a count already in the series
 	# is reused rather than re-fetched. Without this the jobs query below would run
-	# ~100 times a day forever to re-derive numbers that cannot have moved; with it,
-	# steady state is the handful of runs since yesterday, and the one-off backfill
-	# of the existing window happens on the first run after this merges.
+	# ~100 times a day forever to re-derive numbers that have not moved; with it,
+	# steady state is the handful of runs since yesterday.
 	#
-	# Keyed on the id alone, so a snapshot written before this change -- whose runs
-	# carry no `installs` -- contributes nothing here and gets queried properly.
+	# Only counts carrying installs_rule "step" are reused. A count recorded without
+	# it was taken under the old successful-jobs rule (#1455), so a run still in the
+	# last-100 window is queried once more, which costs ~100 queries on the first
+	# run after the rule changed. A run already outside the window keeps its old
+	# count for good. None of those had failed, so the two rules agree on all of them.
+	#
+	# "Rarely", not never: "Re-run failed jobs" keeps the run id, so a leg re-run
+	# after its run was counted installs again, and this loop never asks about that
+	# run again. That install reads as a person. No smoke run had been re-run as of
+	# 2026-10-21. Re-querying when run_attempt rises is not enough on its own: the
+	# jobs endpoint defaults to filter=latest, which lists every job under the new
+	# attempt, including copies of the jobs that were not re-run, so a failed leg
+	# that installed and was then re-run counts once instead of twice. Counting
+	# exactly needs filter=all, dropping each copy (a job whose name and started_at
+	# match a job in an earlier attempt).
 	if [ -f "${OUT}" ]; then
 		jq -r '[.snapshots[]?.smoke_runs[]?
-		        | select(type == "object" and (.installs | type) == "number")
+		        | select(type == "object" and (.installs | type) == "number"
+		                 and .installs_rule == "step")
 		        | "\(.id) \(.installs)"]
 		       | unique | .[]' "${OUT}" >"${known}" 2>/dev/null || : >"${known}"
 	else
@@ -203,8 +221,18 @@ else
 		n=$(awk -v id="${id}" '$1 == id { print $2; exit }' "${known}")
 		if [ -z "${n}" ]; then
 			queried=$((queried + 1))
-			if ! n=$(gh api "repos/${REPO}/actions/runs/${id}/jobs" \
-				--jq '[.jobs[] | select(.conclusion == "success")] | length' 2>/dev/null); then
+			# A job counts when its smoke-test step ran (see the comment above the
+			# runs query). The step name must match release-smoke-linux.yaml. If it
+			# drifts, `conclusion == "success"` still counts every passing job, so a
+			# rename brings back #1455 rather than zeroing CI.
+			#
+			# per_page=100 because the endpoint defaults to 30 jobs, and a run with
+			# more legs than that would be undercounted without any error.
+			if ! n=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100" \
+				--jq '[.jobs[] | select(.conclusion == "success"
+				        or any(.steps[]?; .name == "Run the Linux release smoke test"
+				                         and .conclusion != "skipped"))] | length' \
+				2>/dev/null); then
 				# One unreadable run is not worth discarding the rest. It is simply
 				# absent from today's snapshot and gets queried again tomorrow, which
 				# is the same self-repair the merge-on-id already provides.
@@ -237,7 +265,8 @@ else
 		          | split("\t")
 		          | {id: (.[0] | tonumber),
 		             created_at: .[1],
-		             installs: (.[2] | tonumber)}]}
+		             installs: (.[2] | tonumber),
+		             installs_rule: "step"}]}
 		' <"${rows}" >"${runs}"
 	fi
 fi
@@ -304,14 +333,16 @@ jq --arg date "${today}" \
     # and almost every run lands after that.
     taken_at: $taken_at,
 
-    # Every completed smoke run, as {id, created_at, installs}, or null when the
-    # query failed. The page merges these across snapshots on id, so a run stays
-    # counted after it falls out of the last-100 window the API returns, and it
-    # ignores the installs:0 rows when counting runs.
+    # Every completed smoke run, as {id, created_at, installs, installs_rule}, or
+    # null when the query failed. The page merges these across snapshots on id, so
+    # a run stays counted after it falls out of the last-100 window the API
+    # returns, and it ignores the installs:0 rows when counting runs.
     #
-    # The installs field is a successful-job count for that run. Runs recorded
-    # before the arch matrix landed have no such field, and the page reads a missing
-    # one as 1 -- exactly right for them, since the workflow then had one job.
+    # The installs field counts the jobs of that run that ran the smoke-test step,
+    # and installs_rule "step" marks it as counted that way (an older record without
+    # it counted successful jobs). Runs recorded before the arch matrix landed have
+    # no installs field, and the page reads a missing one as 1 -- exactly right for
+    # them, since the workflow then had one job.
     #
     # (No apostrophes in this jq program, as the note further down says: it is
     # single-quoted in the shell, so one ends the quote and shellcheck reports it as

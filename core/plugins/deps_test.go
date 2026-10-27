@@ -1,9 +1,12 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -309,4 +312,176 @@ func TestBuildWithDeps_InjectsTheHistoryBeforeConfigure(t *testing.T) {
 	if !p.hadAtConfigure {
 		t.Error("the history was not injected before Configure ran")
 	}
+}
+
+// narrowingPlugin reports ceiling until Configure, and configured after it: the shape
+// of a plugin whose config decides how much of its ceiling it uses.
+type narrowingPlugin struct {
+	name                string
+	ceiling, configured pipeline.PluginCapabilities
+	done                bool
+}
+
+func (p *narrowingPlugin) Name() string { return p.name }
+func (p *narrowingPlugin) Capabilities() pipeline.PluginCapabilities {
+	if p.done {
+		return p.configured
+	}
+	return p.ceiling
+}
+func (p *narrowingPlugin) Configure(json.RawMessage) error { p.done = true; return nil }
+func (p *narrowingPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *narrowingPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func registerNarrowing(t *testing.T, name string, ceiling, configured pipeline.PluginCapabilities) []config.PluginEntry {
+	t.Helper()
+	RegisterPlugin(name, func() pipeline.Plugin {
+		return &narrowingPlugin{name: name, ceiling: ceiling, configured: configured}
+	})
+	t.Cleanup(func() { UnregisterPlugin(name) })
+	return entriesFor(name)
+}
+
+// The listener check holds for the capabilities the pipeline runs, not only for the
+// ceiling: a plugin that takes WritesDestination on at Configure is refused wherever a
+// plugin declaring it up front would be.
+func TestBuildWithDeps_RefusesADestinationWriterThatWidensIntoIt(t *testing.T) {
+	widened := pipeline.PluginCapabilities{WritesDestination: true}
+	for _, listener := range []pipeline.ListenerSupport{{Listener: "reverse proxy"}, {}} {
+		entries := registerNarrowing(t, "test-widen-dest", pipeline.PluginCapabilities{}, widened)
+		_, err := BuildWithDeps(entries, Deps{Listener: listener})
+		if err == nil {
+			t.Fatalf("%s admitted a plugin that widened into WritesDestination", listener.Name())
+		}
+		for _, want := range []string{`"test-widen-dest"`, "WritesDestination", listener.Name()} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %s", err, want)
+			}
+		}
+		UnregisterPlugin("test-widen-dest")
+	}
+
+	entries := registerNarrowing(t, "test-widen-dest-ok", pipeline.PluginCapabilities{}, widened)
+	deps := Deps{Listener: pipeline.ListenerSupport{Listener: "forward proxy", Destination: true}}
+	if _, err := BuildWithDeps(entries, deps); err != nil {
+		t.Fatalf("a listener that honors WritesDestination refused a plugin widening into it: %v", err)
+	}
+}
+
+func TestBuildWithDeps_AdmitsAPluginThatNarrowsAwayWhatTheListenerCannotHonor(t *testing.T) {
+	entries := registerNarrowing(t, "test-narrow-dest", pipeline.PluginCapabilities{WritesDestination: true}, pipeline.PluginCapabilities{})
+	if _, err := BuildWithDeps(entries, Deps{Listener: pipeline.ListenerSupport{Listener: "reverse proxy"}}); err != nil {
+		t.Fatalf("a plugin whose config drops WritesDestination was refused: %v", err)
+	}
+}
+
+// The pipeline a narrowed plugin is built into sees the narrower set, so a plugin whose
+// config turns off its response rewriting no longer buffers every response.
+func TestBuildWithDeps_AConfiguredPluginMayNarrowItsCapabilities(t *testing.T) {
+	entries := registerNarrowing(t, "test-narrow",
+		pipeline.PluginCapabilities{WritesRequestBody: true, WritesResponseBody: true},
+		pipeline.PluginCapabilities{WritesRequestBody: true})
+	p, err := BuildWithDeps(entries, Deps{})
+	if err != nil {
+		t.Fatalf("BuildWithDeps refused a narrowed plugin: %v", err)
+	}
+	if p.WritesResponseBody() {
+		t.Error("the pipeline still reports WritesResponseBody for a plugin that narrowed it away")
+	}
+	if !p.WritesRequestBody() {
+		t.Error("the pipeline lost the WritesRequestBody the plugin kept")
+	}
+}
+
+// Widening is reported, not refused: nothing enforced the old "capabilities never vary"
+// rule, so refusing it now would break a plugin that relied on that. The pipeline uses
+// what the configured instance declares, as it always has.
+func TestBuildWithDeps_AdmitsAConfiguredPluginThatWidens(t *testing.T) {
+	entries := registerNarrowing(t, "test-widen",
+		pipeline.PluginCapabilities{WritesRequestBody: true},
+		pipeline.PluginCapabilities{WritesRequestBody: true, WritesResponseBody: true})
+	p, err := BuildWithDeps(entries, Deps{})
+	if err != nil {
+		t.Fatalf("BuildWithDeps refused a plugin that widens: %v", err)
+	}
+	if !p.WritesResponseBody() {
+		t.Error("the pipeline dropped the capability the configured instance declared")
+	}
+}
+
+func TestBuildWithDeps_WarnsOfADifferenceFromTheCeiling(t *testing.T) {
+	cases := []struct {
+		name                string
+		ceiling, configured pipeline.PluginCapabilities
+		want                string
+	}{
+		{"widened", pipeline.PluginCapabilities{WritesRequestBody: true},
+			pipeline.PluginCapabilities{WritesRequestBody: true, WritesResponseBody: true}, "difference=WritesResponseBody"},
+		{"narrowed to a pure reader", pipeline.PluginCapabilities{WritesRequestBody: true},
+			pipeline.PluginCapabilities{ReadsBody: true}, `difference="ReadsBody without a body writer"`},
+		{"RequiresAny name dropped", pipeline.PluginCapabilities{RequiresAny: []string{"a", "b"}},
+			pipeline.PluginCapabilities{RequiresAny: []string{"b"}}, `difference="RequiresAny without \"a\""`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			entries := slices.Concat(registerNarrowing(t, "b", pipeline.PluginCapabilities{}, pipeline.PluginCapabilities{}),
+				registerNarrowing(t, "test-ceiling-warn", tc.ceiling, tc.configured))
+			if _, err := BuildWithDeps(entries, Deps{}); err != nil {
+				t.Fatalf("BuildWithDeps: %v", err)
+			}
+			line := logs.String()
+			for _, want := range []string{"level=WARN", "the catalog misdescribes it", "plugin=test-ceiling-warn", tc.want} {
+				if !strings.Contains(line, want) {
+					t.Errorf("log %q does not contain %s", line, want)
+				}
+			}
+			UnregisterPlugin("test-ceiling-warn")
+			UnregisterPlugin("b")
+		})
+	}
+}
+
+func TestBuildWithDeps_DoesNotWarnOfANarrowingWithinTheCeiling(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	entries := registerNarrowing(t, "test-ceiling-quiet",
+		pipeline.PluginCapabilities{WritesRequestBody: true, WritesResponseBody: true, RequiresAny: []string{"a"}},
+		pipeline.PluginCapabilities{WritesRequestBody: true})
+	if _, err := BuildWithDeps(entries, Deps{}); err != nil {
+		t.Fatalf("BuildWithDeps: %v", err)
+	}
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Errorf("a narrowing within the ceiling logged %q", logs.String())
+	}
+}
+
+// The catalog keeps reporting the ceiling: it is built from an unconfigured instance, so
+// a narrowed build cannot shrink what /v1/plugins advertises.
+func TestCatalog_ReportsTheCeilingOfANarrowingPlugin(t *testing.T) {
+	registerNarrowing(t, "test-narrow-catalog",
+		pipeline.PluginCapabilities{WritesResponseBody: true, Description: "test"},
+		pipeline.PluginCapabilities{})
+	resetCatalogCache()
+	t.Cleanup(resetCatalogCache)
+	for _, e := range Catalog() {
+		if e.Name == "test-narrow-catalog" {
+			if !e.Capabilities.WritesResponseBody {
+				t.Error("the catalog lost the ceiling's WritesResponseBody")
+			}
+			return
+		}
+	}
+	t.Fatal("test-narrow-catalog missing from the catalog")
 }

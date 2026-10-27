@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 790 470" width="790" height="470" role="img" aria-label="How Cortex works: your coding agent sends its traffic through Cortex, a local process that decrypts it, runs it through the plugin pipeline, records it in the session store, and re-encrypts it on to the model and tool servers it was meant for. agentop observe reads the session store over the session API.">
+<!-- cortex-architecture-dark.svg is this file with the <style> block swapped.
+     Change the drawing in both, or the README differs by theme. -->
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;fill:#24292f}
+.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}
+.t{font-size:14px;font-weight:600}
+.s,.lbl{font-size:11px;fill:#57606a}
+.h{font-size:13px;font-weight:600}
+.client{fill:#ddf4ff;stroke:#54aeff}
+.client-t{fill:#0a3069}
+.frame{fill:#f6f8fa;stroke:#8c959f;stroke-dasharray:5 4}
+.box{fill:#ffffff;stroke:#d0d7de}
+.pipe{fill:#fff8c5;stroke:#d4a72c}
+.up{fill:#dafbe1;stroke:#4ac26b}
+.up-t{fill:#116329}
+.disk{fill:#fbefff;stroke:#c297ff}
+.arrow{stroke:#57606a;stroke-width:1.6;fill:none}
+.head{fill:#57606a}
+</style>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path class="head" d="M0,0 L10,5 L0,10 z"/>
+</marker>
+</defs>
+
+<rect class="client" x="15" y="150" width="160" height="70" rx="10"/>
+<text class="t client-t" x="95" y="180" text-anchor="middle">Your coding agent</text>
+<text class="s" x="95" y="200" text-anchor="middle">Claude Code · Codex · …</text>
+
+<rect class="frame" x="230" y="25" width="300" height="335" rx="14"/>
+<text class="h" x="380" y="50" text-anchor="middle">cortex — one local process</text>
+
+<rect class="box" x="255" y="70" width="250" height="60" rx="8"/>
+<text class="t" x="380" y="96" text-anchor="middle">TLS bridge</text>
+<text class="s" x="380" y="115" text-anchor="middle">decrypts with your own CA</text>
+
+<rect class="pipe" x="255" y="160" width="250" height="70" rx="8"/>
+<text class="t" x="380" y="184" text-anchor="middle">Plugin pipeline</text>
+<text class="s" x="380" y="202" text-anchor="middle">parses model, tool and agent calls</text>
+<text class="s" x="380" y="217" text-anchor="middle">prunes unused tools (opt-in)</text>
+
+<rect class="box" x="255" y="260" width="250" height="60" rx="8"/>
+<text class="t" x="380" y="286" text-anchor="middle">Session store</text>
+<text class="s" x="380" y="305" text-anchor="middle">sessions · tokens · cost</text>
+
+<rect class="up" x="610" y="160" width="165" height="70" rx="10"/>
+<text class="t up-t" x="692" y="190" text-anchor="middle">LLM and tool servers</text>
+<text class="s" x="692" y="210" text-anchor="middle">model APIs · MCP · A2A</text>
+
+<path class="disk" d="M610,262 a82,10 0 0 0 165,0 v48 a82,10 0 0 1 -165,0 z"/>
+<ellipse class="disk" cx="692" cy="262" rx="82" ry="10"/>
+<text class="s mono" x="692" y="292" text-anchor="middle">~/.cortex/sessions</text>
+<text class="s mono" x="692" y="308" text-anchor="middle">~/.cortex/cost</text>
+
+<rect class="client" x="300" y="400" width="160" height="50" rx="10"/>
+<text class="t client-t" x="380" y="430" text-anchor="middle">agentop observe</text>
+
+<g class="arrow" marker-end="url(#ah)">
+<path d="M175,175 C215,175 215,100 253,100"/>
+<path d="M380,130 V158"/>
+<path d="M380,230 V258"/>
+<path d="M505,195 H608"/>
+<path d="M505,290 H608"/>
+<path d="M380,320 V398"/>
+</g>
+<text class="lbl mono" x="40" y="132">HTTPS_PROXY :47600</text>
+<text class="lbl" x="538" y="187">re-encrypted</text>
+<text class="lbl mono" x="390" y="385">session API :47601</text>
+</svg>

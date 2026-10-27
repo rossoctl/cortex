@@ -219,7 +219,7 @@ jobs:
       # `docker run` rather than as a job container: GitHub's runner cannot run
       # JavaScript actions (checkout, upload-artifact) inside an Alpine container on
       # arm64.
-      ALPINE_GO: golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2
+      ALPINE_GO: golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca
       # The build, run natively on macOS and inside ALPINE_GO on Linux. The FFI is
       # fetched and verified (pinned digest, cosign, VERSION and FFI_ABI) by the same
       # script the image and `make cortex-cpex` use. On Linux, -extldflags -static
@@ -325,7 +325,7 @@ jobs:
           persist-credentials: false
 
       - name: Download the tarballs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: dist-*
           path: dist

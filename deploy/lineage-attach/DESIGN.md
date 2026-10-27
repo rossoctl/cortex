@@ -316,11 +316,13 @@ from that same apply does persist, inert on its own (no pod references it).
   this kit exposes no inbound exclusion (`proxy-init` supports
   `INBOUND_PORTS_EXCLUDE`; the generator does not offer it). An app that
   *serves* a plaintext non-HTTP protocol cannot be adopted as is.
-- **Content is captured through parsers, not off the wire.** With
+- **Content is the parsed message, or the raw body.** With
   `capture_io: true` the A2A, MCP and inference parsers attach the parsed
-  message as `input.value` / `output.value`; a plain HTTP exchange has no
-  parser and is recorded bodyless — who called whom, with what outcome, but
-  not what was said. Payloads are capped (`max_payload_bytes`, 4096 by
+  message as `input.value` / `output.value`; a plain HTTP exchange, which no
+  parser claims, carries its raw request and response bodies when they are
+  text (and, for the response, whole). That is whatever the app sends in plain
+  HTTP, credentials included: a token request's `client_secret`, the access
+  token in its reply. Payloads are capped (`max_payload_bytes`, 4096 by
   default) with a visible truncation marker.
 
 ## Where you see the spans, on the rossoctl platform

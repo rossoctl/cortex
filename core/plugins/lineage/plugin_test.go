@@ -32,6 +32,9 @@ import (
 
 	"github.com/rossoctl/cortex/core/bypass"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/a2aparser"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
+	"github.com/rossoctl/cortex/core/plugins/mcpparser"
 )
 
 // newTestPlugin creates a LineageTelemetry wired to an in-memory span exporter
@@ -684,11 +687,11 @@ func TestBodyless_UnparsedNoCaptureStillEmitsBothSpans(t *testing.T) {
 	if got := attrStr(resp, "lineage.outcome"); got != "ok" {
 		t.Errorf("outcome = %q, want ok", got)
 	}
-	// Deliberately no capture_io assertion here: protocol http has no payload
-	// extractor (ioInputValue/ioOutputValue dispatch on a2a/mcp/inference
-	// only), so this fixture yields "" whatever the flag says. The default is
-	// proven in TestCaptureIO_OffByDefaultEmitsNoPayload, on a fixture where
-	// the flag is the only thing that can suppress the payload.
+	// Deliberately no capture_io assertion here: this fixture carries no
+	// bodies, so it yields no payload whatever the flag says. The default is
+	// proven in TestCaptureIO_OffByDefaultEmitsNoPayload and
+	// TestCaptureIO_OffKeepsPlainHTTPBodiesOut, on fixtures where the flag is
+	// the only thing that can suppress the payload.
 }
 
 // TestCaptureIO_OffByDefaultEmitsNoPayload proves the privacy default: with
@@ -978,6 +981,10 @@ func TestPayloadExtractors(t *testing.T) {
 			{"inference messages as JSON", inf(&pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{{Role: "system", Content: "be brief"}}}), "inference", `[{"role":"system","content":"be brief"}]`},
 			{"inference no messages is empty", inf(&pipeline.InferenceExtension{Model: "m"}), "inference", ""},
 			{"protocol keyed: a2a parser output not read on an mcp hop", a2a(&pipeline.A2AExtension{Parts: []pipeline.A2APart{{Kind: "text", Content: "x"}}}), "mcp", ""},
+			{"http raw request body", &pipeline.Context{Body: []byte(`{"city":"Tokyo"}`)}, "http", `{"city":"Tokyo"}`},
+			{"http no body is empty", &pipeline.Context{}, "http", ""},
+			{"http non-UTF-8 body is empty", &pipeline.Context{Body: []byte{0xff, 0xfe}}, "http", ""},
+			{"protocol keyed: raw body not read on an mcp hop", &pipeline.Context{Body: []byte(`{"jsonrpc":"2.0"}`), Extensions: pipeline.Extensions{MCP: &pipeline.MCPExtension{Method: "ping"}}}, "mcp", ""},
 		} {
 			if got := ioInputValue(tc.pctx, tc.protocol); got != tc.want {
 				t.Errorf("%s: ioInputValue = %q, want %q", tc.name, got, tc.want)
@@ -1001,6 +1008,11 @@ func TestPayloadExtractors(t *testing.T) {
 			{"inference completion wins over tool calls", inf(&pipeline.InferenceExtension{Completion: "done", ToolCalls: []pipeline.InferenceToolCall{{Name: "t"}}}), "inference", "done"},
 			{"inference nothing is empty", inf(&pipeline.InferenceExtension{Model: "m"}), "inference", ""},
 			{"protocol keyed: inference parser output not read on an a2a hop", inf(&pipeline.InferenceExtension{Completion: "x"}), "a2a", ""},
+			{"http whole response body", &pipeline.Context{ResponseBody: []byte(`{"ok":true}`), ResponseBytes: 11}, "http", `{"ok":true}`},
+			{"http no body is empty", &pipeline.Context{}, "http", ""},
+			{"http partial buffer is empty", &pipeline.Context{ResponseBody: []byte("tail"), ResponseBytes: 4000}, "http", ""},
+			{"http non-UTF-8 body is empty", &pipeline.Context{ResponseBody: []byte{0xff, 0xfe}, ResponseBytes: 2}, "http", ""},
+			{"protocol keyed: raw body not read on an inference hop", &pipeline.Context{ResponseBody: []byte("x"), ResponseBytes: 1, Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "m"}}}, "inference", ""},
 		} {
 			if got := ioOutputValue(tc.pctx, tc.protocol); got != tc.want {
 				t.Errorf("%s: ioOutputValue = %q, want %q", tc.name, got, tc.want)
@@ -1300,6 +1312,7 @@ func TestForbiddenKeysNeverEmitted(t *testing.T) {
 			c.Extensions.Inference = &pipeline.InferenceExtension{Model: "qwen2.5:7b"}
 			return c
 		},
+		func() *pipeline.Context { return httpContext(`{"card":"4111"}`, `{"charged":true}`) },
 	}
 
 	for _, mk := range shapes {
@@ -2399,4 +2412,295 @@ func TestLogExportFailure(t *testing.T) {
 	if !slices.Equal(logged, []uint64{1, 2, 4, 8, 16, 32}) {
 		t.Errorf("logged failures = %v, want the powers of two up to 32", logged)
 	}
+}
+
+// ---- plain-HTTP payloads and body sizes (wire contract v1.8) ----
+
+// httpContext is an exchange no parser claimed — a JSON POST to a REST
+// backend with a JSON reply, the shape of a tool's own data source. The
+// response buffer is whole: ResponseBytes equals its length, as every
+// listener's buffered arm leaves it.
+func httpContext(reqBody, respBody string) *pipeline.Context {
+	pctx := fakeContext(pipeline.Outbound, http.Header{})
+	pctx.Host = "weather-service:9000"
+	pctx.Path = "/weather"
+	pctx.Body = []byte(reqBody)
+	pctx.ResponseBody = []byte(respBody)
+	pctx.ResponseBytes = int64(len(respBody))
+	return pctx
+}
+
+// checkInt asserts an integer attribute's presence and value.
+func checkInt(t *testing.T, span tracetest.SpanStub, key string, want int64) {
+	t.Helper()
+	got, ok := intAttr(span, key)
+	if !ok {
+		t.Errorf("attribute %q not found in span %q", key, span.Name)
+		return
+	}
+	if got != want {
+		t.Errorf("attr %q = %d, want %d", key, got, want)
+	}
+}
+
+// TestRequiredParsersBufferTheBody pins what the raw-body reads rest on,
+// since lineage declares no body capability of its own: every parser it can
+// require asks the listener to buffer the bodies. A parser that stopped
+// declaring ReadsBody would leave pctx.Body nil in a chain where it is the
+// only parser, and every size would read as an empty body.
+func TestRequiredParsersBufferTheBody(t *testing.T) {
+	parsers := map[string]pipeline.Plugin{
+		"a2a-parser":       a2aparser.NewA2AParser(),
+		"mcp-parser":       mcpparser.NewMCPParser(),
+		"inference-parser": inferenceparser.NewInferenceParser(),
+	}
+	for _, name := range NewLineageTelemetry().Capabilities().RequiresAny {
+		p, ok := parsers[name]
+		if !ok {
+			t.Errorf("RequiresAny names %q, which this test does not check", name)
+			continue
+		}
+		if !p.Capabilities().ReadsBody {
+			t.Errorf("%s does not declare ReadsBody; lineage reads the bodies it buffers", name)
+		}
+	}
+}
+
+// bodyRewriter is a request-body mutator and nothing else.
+type bodyRewriter struct{}
+
+func (bodyRewriter) Name() string { return "test-body-rewriter" }
+func (bodyRewriter) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{WritesRequestBody: true, Description: "test"}
+}
+func (bodyRewriter) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (bodyRewriter) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestChain_LineageAfterBodyRewriter: lineage may sit after a plugin that
+// rewrites the request body, which is where it records the request as it was
+// forwarded. A body reader may not (pipeline.New refuses a reader after a
+// mutator), so this fails if lineage ever declares ReadsBody.
+func TestChain_LineageAfterBodyRewriter(t *testing.T) {
+	if _, err := pipeline.New([]pipeline.Plugin{
+		mcpparser.NewMCPParser(), bodyRewriter{}, NewLineageTelemetry(),
+	}); err != nil {
+		t.Fatalf("parser → rewriter → lineage refused: %v", err)
+	}
+}
+
+// TestCaptureIO_PlainHTTPBodiesAreThePayload: an exchange no parser claimed
+// carries its raw bodies as input.value / output.value under capture_io —
+// the REST backend behind a tool is where the data comes from.
+func TestCaptureIO_PlainHTTPBodiesAreThePayload(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	run(t, p, httpContext(`{"city":"Tokyo"}`, `{"tempC":22,"sky":"sunny"}`), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	checkAttr(t, req, "lineage.protocol", "http")
+	checkAttr(t, req, "input.value", `{"city":"Tokyo"}`)
+	checkAttr(t, resp, "output.value", `{"tempC":22,"sky":"sunny"}`)
+	if req.Name != "weather-service http" {
+		t.Errorf("request span name = %q (a raw body must not leak into the name)", req.Name)
+	}
+}
+
+// TestCaptureIO_OffKeepsPlainHTTPBodiesOut: the privacy default holds for raw
+// bodies exactly as for parsed ones, while the size facts — metadata, not
+// content — stay.
+func TestCaptureIO_OffKeepsPlainHTTPBodiesOut(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	if p.cfg.CaptureIO {
+		t.Fatal("capture_io must default to false")
+	}
+	run(t, p, httpContext(`{"city":"Tokyo"}`, `{"tempC":22}`), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	if v, ok := findAttr(req, "input.value"); ok {
+		t.Errorf("input.value = %v present with capture_io off", v)
+	}
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %v present with capture_io off", v)
+	}
+	checkInt(t, req, "http.request.body.size", int64(len(`{"city":"Tokyo"}`)))
+	checkInt(t, resp, "http.response.body.size", int64(len(`{"tempC":22}`)))
+}
+
+// TestBodySize_OnEverySpanPair: the two size facts are on every exchange,
+// whatever the protocol and whatever capture_io says, so the consumer can
+// tell "no body" (size 0) from "body not captured" (a size, no value).
+func TestBodySize_OnEverySpanPair(t *testing.T) {
+	t.Run("mcp hop, capture off", func(t *testing.T) {
+		p, exp := newTestPlugin(t)
+		pctx := fakeContext(pipeline.Outbound, http.Header{})
+		pctx.Body = []byte(`{"jsonrpc":"2.0","method":"tools/call"}`)
+		pctx.ResponseBody = []byte(`{"jsonrpc":"2.0","result":{}}`)
+		pctx.ResponseBytes = int64(len(pctx.ResponseBody))
+		pctx.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/call"}
+		run(t, p, pctx, allow(200))
+		req, resp := roleSplit(t, exp.GetSpans())
+		checkAttr(t, req, "lineage.protocol", "mcp")
+		checkInt(t, req, "http.request.body.size", int64(len(pctx.Body)))
+		checkInt(t, resp, "http.response.body.size", pctx.ResponseBytes)
+	})
+	t.Run("GET with no body", func(t *testing.T) {
+		p, exp := newTestPlugin(t)
+		p.cfg.CaptureIO = true
+		pctx := httpContext("", "")
+		pctx.Method = "GET"
+		run(t, p, pctx, allow(204))
+		req, resp := roleSplit(t, exp.GetSpans())
+		checkInt(t, req, "http.request.body.size", 0)
+		checkInt(t, resp, "http.response.body.size", 0)
+		if _, ok := findAttr(req, "input.value"); ok {
+			t.Error("input.value present on a bodyless request")
+		}
+		if _, ok := findAttr(resp, "output.value"); ok {
+			t.Error("output.value present on a bodyless response")
+		}
+	})
+	t.Run("CONNECT tunnel", func(t *testing.T) {
+		// A proxy-sidecar tunnel is an exchange with no body on either side by
+		// construction (contract §5): both sizes 0 and no payload, under
+		// capture_io. No tunnel-specific branch exists in the plugin; this
+		// pins that the general rule already says the right thing.
+		p, exp := newTestPlugin(t)
+		p.cfg.CaptureIO = true
+		pctx := fakeContext(pipeline.Outbound, http.Header{})
+		pctx.Method, pctx.Scheme, pctx.Path, pctx.Host = "CONNECT", "tcp", "", "api.example.com:443"
+		run(t, p, pctx, allow(200))
+		req, resp := roleSplit(t, exp.GetSpans())
+		checkAttr(t, req, "http.method", "CONNECT")
+		checkInt(t, req, "http.request.body.size", 0)
+		checkInt(t, resp, "http.response.body.size", 0)
+		if _, ok := findAttr(req, "input.value"); ok {
+			t.Error("input.value present on a CONNECT tunnel")
+		}
+		if _, ok := findAttr(resp, "output.value"); ok {
+			t.Error("output.value present on a CONNECT tunnel")
+		}
+	})
+}
+
+// TestCaptureIO_PlainHTTPNonTextBodyReportedBySizeOnly: a body that is not
+// UTF-8 text (an image, a gzip-encoded reply) is not emitted — an OTLP string
+// attribute must be UTF-8, and one that is not fails the whole export batch —
+// but its size fact says a body existed.
+func TestCaptureIO_PlainHTTPNonTextBodyReportedBySizeOnly(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	binary := string([]byte{0x1f, 0x8b, 0x08, 0xff, 0xfe, 'x'})
+	run(t, p, httpContext(binary, binary+binary), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	if v, ok := findAttr(req, "input.value"); ok {
+		t.Errorf("input.value = %q emitted for a non-UTF-8 request body", v.AsString())
+	}
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %q emitted for a non-UTF-8 response body", v.AsString())
+	}
+	checkInt(t, req, "http.request.body.size", int64(len(binary)))
+	checkInt(t, resp, "http.response.body.size", int64(2*len(binary)))
+}
+
+// TestCaptureIO_PlainHTTPNULBodyReportedBySizeOnly: a body with a NUL byte is
+// valid UTF-8 but not text a downstream JSON or text column accepts, so it is
+// reported by its size alone, like a body that is not UTF-8.
+func TestCaptureIO_PlainHTTPNULBodyReportedBySizeOnly(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	framed := "\x00\x00\x00\x00\x05hello" // a gRPC-framed message: valid UTF-8, NULs in the prefix
+	run(t, p, httpContext(framed, framed), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	if v, ok := findAttr(req, "input.value"); ok {
+		t.Errorf("input.value = %q emitted for a request body with a NUL byte", v.AsString())
+	}
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %q emitted for a response body with a NUL byte", v.AsString())
+	}
+	checkInt(t, req, "http.request.body.size", int64(len(framed)))
+	checkInt(t, resp, "http.response.body.size", int64(len(framed)))
+}
+
+// TestCaptureIO_PlainHTTPDeniedResponseIsNotEmitted: a response a policy
+// denied never reached the client, so the upstream's body in the buffer is not
+// the payload. The request body still is, and the size still reports the
+// response as it came back.
+func TestCaptureIO_PlainHTTPDeniedResponseIsNotEmitted(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	run(t, p, httpContext(`{"q":1}`, `{"ssn":"123-45-6789"}`), pipeline.Outcome{
+		FinalAction: pipeline.OutcomeDeny, StatusCode: 403, DenyingPlugin: "opa",
+	})
+	req, resp := roleSplit(t, exp.GetSpans())
+	checkAttr(t, req, "input.value", `{"q":1}`)
+	checkAttr(t, resp, "lineage.outcome", "denied")
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %q emitted for a denied response", v.AsString())
+	}
+	checkInt(t, resp, "http.response.body.size", int64(len(`{"ssn":"123-45-6789"}`)))
+}
+
+// TestCaptureIO_PlainHTTPLengthChangingRewriteIsNotEmitted: the count is taken
+// before any response rewriter and the buffer read after them, so a rewrite
+// that lengthens the body leaves a buffer longer than the count. It reads as
+// not whole, the same as a buffer shorter than the count, and is not emitted;
+// the size still reports the body as it came back.
+func TestCaptureIO_PlainHTTPLengthChangingRewriteIsNotEmitted(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	pctx := httpContext(`{"q":1}`, `{"card":"[redacted by a rewriter]"}`)
+	pctx.ResponseBytes = int64(len(`{"card":"4111"}`)) // what the upstream sent
+	run(t, p, pctx, allow(200))
+	_, resp := roleSplit(t, exp.GetSpans())
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %q emitted from a buffer longer than the count", v.AsString())
+	}
+	checkInt(t, resp, "http.response.body.size", int64(len(`{"card":"4111"}`)))
+}
+
+// TestCaptureIO_PlainHTTPFragmentIsNotTheBody: when the listener's buffer is
+// not the whole response — an event stream, where extproc keeps only the
+// trailing chunk, or a body past the listener's buffer limit — ResponseBytes
+// exceeds the buffer, and the fragment is not emitted as if it were the body.
+// The size fact still reports what went over the wire.
+func TestCaptureIO_PlainHTTPFragmentIsNotTheBody(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	pctx := httpContext(`{"q":1}`, "data: {\"seq\":9}\n\n")
+	pctx.ResponseBytes = 4096 // the stream was longer than what is buffered
+	run(t, p, pctx, allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	checkAttr(t, req, "input.value", `{"q":1}`)
+	if v, ok := findAttr(resp, "output.value"); ok {
+		t.Errorf("output.value = %q emitted from a partial response buffer", v.AsString())
+	}
+	checkInt(t, resp, "http.response.body.size", 4096)
+}
+
+// TestCaptureIO_PlainHTTPTruncatesOversizeBody: the raw bodies ride the same
+// max_payload_bytes cap as the parsed payloads, marker included.
+func TestCaptureIO_PlainHTTPTruncatesOversizeBody(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	p.cfg.MaxPayloadBytes = 64
+	big := strings.Repeat("x", 500)
+	run(t, p, httpContext(big, big), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	for _, tc := range []struct {
+		span tracetest.SpanStub
+		key  string
+	}{{req, "input.value"}, {resp, "output.value"}} {
+		v, ok := findAttr(tc.span, tc.key)
+		if !ok {
+			t.Fatalf("%s absent on a captured http hop", tc.key)
+		}
+		if got := v.AsString(); len(got) > 64 || !strings.HasSuffix(got, truncatedSuffix) {
+			t.Errorf("%s = %d bytes, suffix %v; want ≤ 64 bytes ending in %q", tc.key, len(got), strings.HasSuffix(got, truncatedSuffix), truncatedSuffix)
+		}
+	}
+	// The sizes report the body as sent, not as captured.
+	checkInt(t, req, "http.request.body.size", 500)
+	checkInt(t, resp, "http.response.body.size", 500)
 }

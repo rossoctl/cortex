@@ -579,6 +579,28 @@ applies the change. Everything else — undo by hand, CA trust, the record
 file, verified depth, known issues — is in
 [opencode.md](../../docs/agents/opencode.md).
 
+## Installing a bundled script plugin (`agentop script`)
+
+Cortex ships some [script plugins](../../docs/script-plugin.md#bundled-scripts)
+inside agentop. `agentop script` installs one in a single step:
+
+    agentop script list                  every bundled plugin and its state
+    agentop script install <name>        copy it and add its slot
+    agentop script remove <name>         take both back out
+
+- **`install`** copies the plugin's folder to `~/.cortex/plugins/<name>/` and
+  adds a `script` slot for it to `~/.cortex/config.yaml`. It then waits for
+  Cortex to load the slot and checks every script in it started. If one did not,
+  it takes back what it added and says why.
+- **Run again,** it updates a copy from an earlier release and leaves a current
+  one alone. A copy you edited is refused: `remove` it first.
+- **`remove`** refuses a folder holding a file `install` did not write.
+- **`list --json`** is for other programs, such as moca. Its fields are `name`,
+  `description`, `state`, `failClosed`, `scripts` and, with Cortex running,
+  `loaded` and `notStarted`.
+
+`--config PATH` names another Cortex config, as for `agentop server`.
+
 ## Choosing an inference server (`agentop server`)
 
 With several inference servers — LiteLLM gateways or local model servers — each
@@ -714,10 +736,10 @@ Code's opening turn can pass 64k tokens, Bob's is around 10k.
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
 
-**Sessions is the only pane you land on.** Pipeline (`P`), Usage (`u`) and the
-plugin catalog (`C`) are each opened by a key from anywhere in the session views
+**Sessions is the only pane you land on.** Pipeline (`P`), Usage (`u`), Timeline
+(`T`) and the plugin catalog (`C`) are each opened by a key from the session views
 and return to the pane you pressed it on. There is no tab strip: Sessions is what
-agentop is for, and the other three are surfaces you visit and leave.
+agentop is for, and the other four are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: session (truncated), title, updated
@@ -1222,6 +1244,59 @@ agentop is for, and the other three are surfaces you visit and leave.
     ┼ mean   ┬ +1σ   ┴ −1σ   (blank = no measured responses)
   ```
 
+- **Timeline**: where one session's time went, opened by `T` from Sessions (the
+  highlighted row), Events or Detail, from `GET /v1/sessions/{id}/timeline`. Rows
+  are the main agent, each subagent indented under the agent that spawned it, and
+  then the hosts the session talked to, busiest first, with a blank line between
+  rows:
+
+  ```
+  window 5m 1h [all]  10-26 14:28 → 10-26 20:08
+                            14:28           15:17           16:06   37m  39m      18:41
+                                                                                           model  tools  calls
+  main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m    316
+
+    Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     41
+
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  llm-gateway.example   LLM ▂▃▂▁▂  ▁▂▁▁▃▄▄▂▁▁▁ ▁▁▁▂▂▂▂▂▂▂▂▂▂▂▁▁   ▂▁ ┆ ▁▁ ┆ ▂▂▁▁▁   │           1041 req
+  ```
+
+  An agent cell is a bar of how that cell's time divided, stacked from the
+  bottom: amber the agent's tools running, purple its model generating, red
+  retrying after a failed model call, teal waiting on its subagents, grey waiting
+  on you. Blank is idle. Waiting is read from the gaps between an agent's model
+  calls: after a failed call it is retrying; a gap that one of its subagents was
+  running in, or that a subagent's result ended, is waiting on subagents; a gap
+  after a finished reply otherwise is waiting on you, for the main agent only. A
+  subagent's cells are measured against the part of the cell it was alive for, so
+  its row is one run from spawn to hand-back. A terminal cell holds two colours,
+  so a cell that mixed three states (8% of cells at "all" in real sessions, none
+  at 1h or 5m) shows its two largest; the line below the chart has the detail. A
+  host cell's height is how many requests were in flight at once (`▁` one … `█`
+  eight or more); red is an error or a refusal. Loopback hosts, the proxy itself
+  among them, are not drawn. The gutter is the window's model time, tool time and
+  tool calls for an agent, and the request count for a host.
+
+  `w` cycles 5m / 1h / 24h / all, offering only the windows shorter than the
+  session, so a short session shows "all" alone; the choice is saved, and a saved
+  window too long for a session shows "all" without being overwritten. A session
+  is live while its last recorded event is under 30 minutes old: its windows
+  follow now, and a call still in flight grows. Once it is not, an open call ends
+  at the session's last event, the last moment anything was seen, and the window
+  ends at its last activity. "all" squeezes each idle stretch over 30 minutes into a `┆`, and the
+  axis says how long it was. `←`/`→` pick a moment, skipping those stretches, and
+  the line under the chart lists every tool that started then with its duration
+  and its command, path or description; `↵` opens the Events pane on that event.
+  `↑`/`↓` scroll the agent rows when they do not all fit. The pane refreshes at
+  most once a second while the stream delivers that session's events, and every
+  ten seconds while a call is in flight with nothing new recorded.
+
+  **Claude Code only.** Agents come from the requests the proxy attributed to a
+  Claude Code agent, and a tool's end from the first request carrying its
+  result. Sessions recorded before the proxy captured agent ids show their
+  subagents as one row; other agents show host rows alone. A proxy too old to
+  serve the endpoint gets a line saying so.
 - **Catalog**: registered-plugin browser, opened by `P` from any
   session-view pane. Lists every plugin the running binary knows how to
   construct, including ones not in the active pipeline. Useful for
@@ -1350,7 +1425,13 @@ Layered on top of all of them:
 | `o` | events | load the page before the oldest event shown — the timeline's history goes back further than one response holds, and `o` pages backward into it |
 | `t` | events | back to the live tail from a paged-back timeline — resumes receiving updates |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
-| `$` | every pane except the two pickers and usage | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. `$` again closes it; `Esc` does not, so it always backs out of the pane in one press. Needs 27 rows; refuses on the two pickers (nothing is connected yet) and on the usage pane, which is already a breakdown with its own cycles. On the agents pane the breakdown — and the band above it, and the title — is scoped to the highlighted row, the same agent `↵` would scope to, read but never committed, and follows the cursor; leaving the pane returns both to the committed scope |
+| `T` | sessions, events, detail | open the timeline (sessions: the highlighted row; events/detail: the selected session) |
+| `w` | timeline | cycle window: 5m / 1h / 24h / all, only the windows shorter than the session |
+| `←` `→` / `h` `l` | timeline | pick a moment, skipping collapsed idle stretches; the line below lists the tools that started then |
+| `↑` `↓` / `k` `j` | timeline | scroll the agent rows |
+| `Enter` | timeline | open the events pane at the cursor's first tool |
+| `Esc` | timeline | back to the pane it was opened from |
+| `$` | every pane except the two pickers, usage and timeline | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. `$` again closes it; `Esc` does not, so it always backs out of the pane in one press. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the timeline, whose `w` is its window. On the agents pane the breakdown — and the band above it, and the title — is scoped to the highlighted row, the same agent `↵` would scope to, read but never committed, and follows the cursor; leaving the pane returns both to the committed scope |
 | `a` | while the breakdown is open | cycle the axis: model / endpoint / agent. Not `g`, which is the global "jump to top" |
 | `w` | while the breakdown is open | cycle the span: the band's four — last 1h / today / 7 days / month. Without a cost ledger only the hour is distinct; see [Spans and the cost ledger](#spans-and-the-cost-ledger) |
 | `w` | agents | cycle the pane's window, drawer open or not: the rows, the title and the breakdown move together through the same four spans. Opens on today; the drawer's own span on other panes is left alone |
@@ -1385,6 +1466,15 @@ agentop cannot read. agentop does not ask for mouse reporting, so click-and-drag
 selection stays the terminal's and copying text out of a pane works as it does at a
 shell prompt. The cost is that a scroll moves the focused pane, not the one under the
 pointer.
+
+**Autowrap is off while agentop runs**, in every terminal, and back on when it exits or
+hands the terminal to `$EDITOR`. agentop fits every row to the width its rendering library
+measures, and a terminal can draw some text wider than that — Devanagari with a vowel
+sign, such as `वि`, measures one column to that library and two to others. With autowrap
+on, such a row wrapped and scrolled the whole screen up a line, and text from the event
+detail pane then stayed on the divider rows after leaving it (#1461). With it off, an
+overwide row loses its last column instead. agentop also repaints the whole screen on
+every pane change, which clears anything that still drifted.
 
 **The picker also opens itself at startup**, once per connection, when two or more
 agents have spent in the window or own a listed session, so a one-agent proxy goes
@@ -1535,6 +1625,7 @@ events:
 | `events.sortDesc` | bool | `false` | sort descending; ignored unless `sortColumn` names a sortable column |
 | `usage.metric` | string | `tokens` | usage-pane metric: `tokens`, `requests`, `errors`, `latency` or `cost` |
 | `usage.window` | string | `10m0s` | usage-pane window: `10m0s`, `1h0m0s` or `6h0m0s` |
+| `timeline.window` | string | `5m` | timeline-pane window: `5m`, `1h`, `24h` or `all`. A session shorter than it shows `all` |
 | `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may also use `model`, `endpoint`, `session` or `agent` |
 
 List a column only to change it — the thirteen are all visible until you hide one, and

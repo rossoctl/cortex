@@ -26,7 +26,7 @@ func PluginsCatalog() []CatalogEntry {
 		n := e.Capabilities.Normalize()
 		out[i] = CatalogEntry{
 			Name:        e.Name,
-			ReadsBody:   n.ReadsBody,
+			ReadsBody:   n.ReadsResponseBody,
 			Requires:    n.Requires,
 			RequiresAny: n.RequiresAny,
 			Description: n.Description,

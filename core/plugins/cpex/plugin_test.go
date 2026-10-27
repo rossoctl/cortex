@@ -281,6 +281,10 @@ func TestConfigure_DelegatedCredentialHosts(t *testing.T) {
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["**"]}}`,
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["api.example:443"]}}`,
 		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["[bad"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["0.0.0.0/0"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["::/0"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["10.96.*.*"]}}`,
+		`{"delegated_credentials":true,"delegated_credential_hosts":{"api":["10.96.0.10:9100"]}}`,
 	} {
 		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
 			t.Errorf("Configure(%s): want error", raw)
@@ -317,6 +321,49 @@ func TestCredentialHostsAllows(t *testing.T) {
 			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
 		}
 	}
+	// An address binding matches the canonical address however it is
+	// written as an IP literal, and nothing the resolver alone would read
+	// as that address; a name binding matches no address.
+	ip, err := newCredentialHosts(map[string][]string{
+		"workday-api": {"10.96.0.10", "fd00:10:96::/112"},
+		"named":       {"hr-mcp", "*.svc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		target, host string
+		want         bool
+	}{
+		{"workday-api", "10.96.0.10", true},
+		{"workday-api", "10.96.0.10:9100", true},
+		{"workday-api", "[::ffff:10.96.0.10]:9100", true},
+		{"workday-api", "[::ffff:a60:a]", true},
+		{"workday-api", "[FD00:10:96::A]:9100", true},
+		{"workday-api", "[fd00:0010:0096::000a]", true},
+		{"workday-api", "[fd00:10:96::a%25eth0]:9100", true},
+		{"workday-api", "10.96.0.11", false},
+		{"workday-api", "010.096.0.10", false},
+		{"workday-api", "012.0140.0.012", false},
+		{"workday-api", "0x0a.0x60.0.0x0a", false},
+		{"workday-api", "10.6291466", false},
+		{"workday-api", "174063626", false},
+		{"workday-api", "10.96.0.10.", false},
+		{"workday-api", "10.96.0.10%eth0", false},
+		{"workday-api", "hr-mcp", false},
+		{"named", "10.96.0.10", false},
+		{"named", "0x0a.0x60.0.0x0a", false},
+		{"named", "1.svc", true},
+		{"named", "hr-mcp%00", false},
+		{"named", "[hr-mcp]", false},
+		{"workday-api", "10.96.0.256", false},
+		{"workday-api", "[10.96.0.10]", false},
+		{"named", "hr-mcp.", true},
+	} {
+		if got := ip.allows(tc.target, tc.host); got != tc.want {
+			t.Errorf("allows(%q, %q) = %v, want %v", tc.target, tc.host, got, tc.want)
+		}
+	}
 	if credentialTarget("workday-api", "aud") != "workday-api" || credentialTarget("", "aud") != "aud" {
 		t.Fatal("credentialTarget: want Target, else Audience")
 	}
@@ -335,6 +382,145 @@ func TestConfigure_RejectsWildcardBypassPath(t *testing.T) {
 	err := p.Configure([]byte(`{"bypass_paths":["/*"]}`))
 	if err == nil {
 		t.Fatal("Configure: expected error for wildcard bypass_paths pattern")
+	}
+}
+
+func TestConfigure_StrictHosts(t *testing.T) {
+	for _, bad := range []string{`[""]`, `["*"]`, `["hr-mcp:9100"]`, `["["]`,
+		`["0.0.0.0/0"]`, `["::/0"]`, `["::ffff:0.0.0.0/96"]`, `["10.96.0.1:9100"]`, `["[fd00::1]:9100"]`,
+		`["10.96.0.0/33"]`, `["fe80::1%eth0"]`, `["10.96.0.0/12:80"]`,
+		`["10.96.*.*"]`, `["*.1"]`, `["0x0a.*"]`, `["10.96.0.*"]`,
+		// Numeric or address-like, but neither a canonical IP nor a CIDR.
+		`["10.1"]`, `["010.96.0.1"]`, `["0x0a.0x60.0.1"]`, `["174063617"]`, `["10.96.0.1."]`,
+		`["10.96.0.1*"]`, `["10.96.0.[0-9]"]`, `["*.*"]`, `["**"]`, `["?"]`,
+		`["10.96.0.1/12"]`, `["fd00:10:96::1/112"]`, `["10.96.0.0/12/"]`, `["/12"]`, `["hr-mcp/16"]`,
+		`["[10.96.0.1]"]`, `["[hr-mcp]"]`, `["[fd00::1"]`, `["fd00::%25eth0"]`, `["10.96.0.1%eth0"]`,
+		`["hr mcp"]`, `["hr-mcp/"]`, `["hr_mcp@x"]`,
+		// Covers every address once unmapped.
+		`["::ffff:0:0/96"]`} {
+		if err := setupFake(&FakeManager{}).Configure([]byte(`{"strict_hosts":` + bad + `}`)); err == nil {
+			t.Errorf("strict_hosts %s: Configure accepted it", bad)
+		}
+		raw := `{"delegated_credentials":true,"delegated_credential_hosts":{"api":` + bad + `}}`
+		if err := setupFake(&FakeManager{}).Configure([]byte(raw)); err == nil {
+			t.Errorf("delegated_credential_hosts %s: Configure accepted it", bad)
+		}
+	}
+	p := setupFake(&FakeManager{})
+	if err := p.Configure([]byte(`{"strict_hosts":["hr-mcp","*.tools.svc"," 10.96.0.0/12 ","10.244.1.7","fd00:10:96::/112","[fd00::7]","::ffff:192.168.0.0/112"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	for host, want := range map[string]bool{
+		"hr-mcp": true, "HR-MCP:9100": true, "hr-mcp.": true, "a.tools.svc": true,
+		"hr-mcp.evil": false, "tools.svc": false, "": false,
+		"10.96.0.1": true, "10.96.0.1:9100": true, "10.111.255.255": true, "10.112.0.0": false,
+		"10.244.1.7": true, "10.244.1.7:9100": true, "10.244.1.8": false,
+		"[fd00:10:96::a]:9100": true, "fd00:10:96::a": true, "[FD00:10:96::A]": true, "[fd00:10:97::a]": false,
+		"[fd00::7]:9100": true, "[fd00::8]": false,
+		"[::ffff:10.96.0.1]:9100": true, "192.168.3.4": true, "192.169.0.1": false,
+		// inet_aton spellings a resolver may still dial as the same address.
+		"0x0a.0x60.0.1": true, "012.0140.0.1": true, "10.6291457": true, "174063617": true,
+		"0xa600001": true, "174063617:9100": true, "1.2.3.4": false,
+		"10.6291457:9100": true, "012.0140.0.1:9100": true, "010.0140.0.1": false, "10.96.0.1.": true, "10.96.0.1.:9100": true,
+		"10.1": false, "0x0a.0x60.0.0xa": true,
+		"[::ffff:a60:a]:9100": true, "::ffff:10.96.0.10": true, "[::FFFF:10.96.0.10]": true,
+		"[fd00:0010:0096:0000::000a]:9100": true, "[FD00:10:96:0:0:0:0:A]": true,
+		"[fd00:10:96::a%eth0]:9100": true, "[fd00:10:96::a%25eth0]:9100": true, "fd00:10:96::a%25eth0": true,
+		"10.96.0.1%eth0": true, "[fe80::1%eth0]": false,
+		// A numeric host never matches a name glob.
+		"0x0a.0x60.0.0x1.tools.svc": false,
+		// A host the matcher cannot read is treated as strict, not as
+		// another destination.
+		"10.96.0.256": true, "1.2.3.4.5": true, "999999999999": true, "08.0.0.1": true, "0x.0.0.1": false, "0x1g.0.0.1": false, "10.96.0.1x": false,
+		"[10.96.0.1]": true, "[hr-mcp]": true, "[fd00::1": true, "hr mcp": true, "hr-mcp%00": true,
+		"hr-mcp/x": true, "@hr-mcp": true, "[]": true, "10.96.0.1%": true,
+	} {
+		if got := p.strictHosts.match(host); got != want {
+			t.Errorf("strictHosts.match(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// Outside strict_hosts an unclaimed body is not checked; to one of them,
+// named or reached by an address it lists, an unreadable JSON object is
+// refused before the manager sees it, bypass lists notwithstanding.
+func TestOnRequest_UnparseableOnlyOnStrictHosts(t *testing.T) {
+	fake := &FakeManager{}
+	p := setupFake(fake)
+	cfg := `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},` +
+		`"strict_hosts":["hr-mcp","10.96.0.0/16","fd00:10:96::/112"],` +
+		`"bypass_hosts":["hr-mcp","10.96.0.9","fd00:10:96::9"],` +
+		`"bypass_paths":["/healthz"]}`
+	if err := p.Configure([]byte(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"method":"tools/call","params":{"name":"a","arguments":{"x":NaN}}}`)
+	utf16 := []byte{0, '{', 0, '"', 0, 'a', 0, '"', 0, ':', 0, '1', 0, '}'}
+	type tc struct {
+		host, path string
+		body       []byte
+		want       string
+	}
+	for _, c := range []tc{
+		{"hr-mcp", "/mcp", body, "cpex.unparseable_request"},
+		{"hr-mcp:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"hr-mcp:9100", "/healthz", body, "cpex.unparseable_request"},
+		{"10.96.0.9", "/mcp", body, "cpex.unparseable_request"},
+		{"10.96.12.34:9100", "/mcp", utf16, "cpex.unparseable_request"},
+		{"[fd00:10:96::9]:9100", "/mcp", utf16, "cpex.unparseable_request"},
+		{"fd00:10:96::a", "/mcp", body, "cpex.unparseable_request"},
+		{"[::ffff:a60:a]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"::ffff:10.96.0.10", "/mcp", body, "cpex.unparseable_request"},
+		{"[fd00:10:96::a%25eth0]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"[FD00:0010:0096::000A]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"012.0140.0.012:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"0x0a.0x60.0.0xa:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.6291466:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"174063626:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.96.0.10.:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"HR-MCP.:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"10.96.0.256:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"[10.96.0.9]:9100", "/mcp", body, "cpex.unparseable_request"},
+		{"metrics.example", "/mcp", body, ""},
+		{"10.97.0.1:9100", "/mcp", body, ""},
+		{"[fd00:10:97::1]:9100", "/mcp", utf16, ""},
+	} {
+		pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: c.host, Path: c.path, Body: c.body}
+		got := ""
+		if a := p.OnRequest(context.Background(), pctx); a.Violation != nil {
+			got = a.Violation.Code
+		}
+		if got != c.want {
+			t.Errorf("%s%s: code %q, want %q", c.host, c.path, got, c.want)
+		}
+	}
+	// A readable body to a strict host still honors bypass_hosts.
+	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: "hr-mcp:9100", Path: "/mcp", Body: []byte(`{"a":1}`)}
+	if a := p.OnRequest(context.Background(), pctx); a.Type != pipeline.Continue || a.Violation != nil {
+		t.Errorf("readable body to a bypassed strict host: %+v", a)
+	}
+	// Bodies a non-strict host may legitimately carry are not refused.
+	for label, b := range map[string]string{
+		"NDJSON":            "{\"a\":1}\n{\"b\":2}\n",
+		"NaN metrics":       `{"loss":NaN,"step":3}`,
+		"non-string method": `{"method":{"type":"card"},"amount":5}`,
+	} {
+		for _, host := range []string{"metrics.example", "10.97.0.1:4318"} {
+			pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: host, Path: "/v1/push", Body: []byte(b)}
+			if a := p.OnRequest(context.Background(), pctx); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+				t.Errorf("%s to %s: refused as unparseable", label, host)
+			}
+		}
+	}
+	// Inbound, the Host header is the caller's, so it never selects the check.
+	for _, host := range []string{"hr-mcp", "10.96.0.9"} {
+		pctx := &pipeline.Context{Direction: pipeline.Inbound, Host: host, Path: "/mcp", Body: body}
+		if a := p.OnRequest(context.Background(), pctx); a.Violation != nil && a.Violation.Code == "cpex.unparseable_request" {
+			t.Errorf("inbound %s: refused as unparseable", host)
+		}
 	}
 }
 

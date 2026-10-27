@@ -81,6 +81,11 @@ type CPEX struct {
 	// request; the goroutine-safe scan happens via matchesAnyHost.
 	bypassHosts []string
 
+	// strictHosts is the compiled strict_hosts list: outbound
+	// destinations whose unclaimed bodies are checked by
+	// unparseableObject.
+	strictHosts hostPatterns
+
 	// observeCodes holds the namespaced deny codes recorded as observe
 	// rather than enforced (observe_codes).
 	observeCodes map[string]bool
@@ -198,6 +203,11 @@ func (p *CPEX) Configure(raw json.RawMessage) error {
 	}
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
+	strictHosts, err := newHostPatterns("strict_hosts", c.StrictHosts)
+	if err != nil {
+		return fmt.Errorf("cpex config: %w", err)
+	}
+	p.strictHosts = strictHosts
 	p.observeCodes = nil
 	for _, code := range c.ObserveCodes {
 		if p.observeCodes == nil {
@@ -362,6 +372,18 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
+	// strict_hosts wins over both bypass lists: a strict destination's
+	// unreadable body is refused even when its host or path is also
+	// bypassed, so a bypass entry cannot reopen what strict_hosts closes.
+	// Outbound only: inbound, the Host header is the caller's.
+	strict := pctx.Direction == pipeline.Outbound && p.strictHosts.match(pctx.Host)
+	if strict && pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
+		if code := unpresentableRequest(pctx, true); code == codeUnparseableRequest {
+			code = "cpex." + code
+			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
+		}
+	}
+
 	// Fast-skip bypass: traffic to infrastructure (Keycloak, SPIRE,
 	// liveness probes) shouldn't pay the FFI round-trip. Check paths
 	// first since most bypass traffic is health/discovery rather
@@ -384,7 +406,7 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	}
 
 	if pctx.CurrentPhase() != pipeline.InvocationPhaseResponse {
-		if code := unpresentableRequest(pctx); code != "" {
+		if code := unpresentableRequest(pctx, strict); code != "" {
 			code = "cpex." + code
 			return denyWithStatus(pctx, http.StatusForbidden, code, code, deniedMessage, nil)
 		}

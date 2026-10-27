@@ -517,6 +517,9 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 	if m.pane == paneUsage {
 		return m.resumeUsagePolling()
 	}
+	if m.pane == paneTimeline {
+		return m.resumeTimeline()
+	}
 	return nil
 }
 

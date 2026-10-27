@@ -100,6 +100,7 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		sortCol:      sortCol,
 		sortDesc:     sortDesc,
 		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
+		timeline:     timelineState{windowIdx: Settings.timelineWindow(), cursor: -1},
 		sessionsData: loadSessionMetadataForModel(),
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),

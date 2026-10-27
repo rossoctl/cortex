@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -707,5 +708,28 @@ func TestConfigure_CustomPaths(t *testing.T) {
 	_ = p.OnRequest(context.Background(), pctx)
 	if pctx.Extensions.MCP != nil {
 		t.Error("/mcp should NOT match when custom paths exclude it")
+	}
+}
+
+// A zstd-encoded body is decoded before it is parsed, as inference-parser
+// does, so a compressed tool call is claimed rather than passed unparsed.
+func TestMCPParser_ZstdToolCall(t *testing.T) {
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	body := enc.EncodeAll([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"get_weather","arguments":{"city":"NYC"}}}`), nil)
+	_ = enc.Close()
+	pctx := &pipeline.Context{
+		Headers: http.Header{"Content-Encoding": {"zstd"}},
+		Body:    body,
+	}
+	p := NewMCPParser()
+	p.OnRequest(context.Background(), pctx)
+	if pctx.Extensions.MCP == nil {
+		t.Fatal("Extensions.MCP is nil for a zstd tools/call")
+	}
+	if pctx.Extensions.MCP.Method != "tools/call" || pctx.Extensions.MCP.Params["name"] != "get_weather" {
+		t.Errorf("MCP = %+v, want tools/call get_weather", pctx.Extensions.MCP)
 	}
 }

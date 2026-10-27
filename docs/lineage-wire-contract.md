@@ -1,4 +1,4 @@
-# Lineage wire contract — two-span sidecar lineage (v1.7.0)
+# Lineage wire contract — two-span sidecar lineage (v1.8.0)
 
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
@@ -182,19 +182,22 @@ handles `openinference.span.kind`.
 | `http.method` | request, when the listener supplies it | `POST` | all listeners do |
 | `url.path` | request, when present | `/mcp` | query-free: anything from `?` on is stripped before emission (per OTel semconv; the query can carry secrets and is never captured) |
 | `url.scheme` | request, when present | `http` | the listener's observed scheme; `tcp` marks a proxy-sidecar CONNECT tunnel (§5 Limits). Optional: the consumer composes `scheme://peer.host + url.path` only when all three exist |
+| `http.request.body.size` | request | `16` | bytes of the request body as the producer read it from the listener's buffer; `0` when the listener counted none. Emitted whatever `capture_io` says (§5 Body sizes) |
+| `http.response.body.size` | response | `1024` | bytes of the response body as the listener counted it on the wire, buffered or streamed; `0` when it counted none. Emitted whatever `capture_io` says (§5 Body sizes) |
 | `a2a.method`, `a2a.session_id` | request, a2a | `message/send` | parsed facts |
 | `mcp.method`, `mcp.tool` | request, mcp | `tools/call`, `get_weather` | `mcp.tool` only for `tools/call` |
 | `inference.model` | request, inference | `qwen2.5:7b` | from the parsed request body |
 | `lineage.principal.sub`, `lineage.principal.client` | request, inbound, only when a gate plugin validated a JWT | `alice` | raw identity facts, never inferred from a network address |
 | `input.value` | request, with `capture_io` | `{"city":"Tokyo"}` | see §5 |
-| `output.value` | response, with `capture_io` | `{...}` | see §5; absent when unparsed or streamed |
+| `output.value` | response, with `capture_io` | `{...}` | see §5; absent when the protocol's parser yielded nothing, and for `http` when the body was streamed, cut or refused by the listener, changed in length by a rewriter, denied, or not text |
 | `http.status_code` | response, when a status was produced | `200` | |
 | `lineage.outcome` | response | `ok` \| `denied` \| `error` \| `abandoned` | how the exchange ended as the proxy saw it; `ok` and `denied` are the pipeline's verdicts, with or without a status; `abandoned` is a nil outcome, or an error that never produced a status |
 | `lineage.denied_by` | response, denials | `jwt-validation` | the plugin that denied |
 
 `http.method` and `http.status_code` are the pre-1.21 OpenTelemetry semantic-convention keys, kept
-deliberately: this producer's vocabulary is `lineage.*` plus these two well-known keys, and
-interoperability with generic OpenTelemetry tooling is not a goal.
+deliberately; `http.request.body.size` and `http.response.body.size` (v1.8) are the current ones.
+This producer's vocabulary is `lineage.*` plus these four well-known keys, and interoperability
+with generic OpenTelemetry tooling is not a goal.
 
 Span names: request = `{self.id} {protocol} {op}`, where op is `mcp.tool` (else `mcp.method`),
 `a2a.method`, or `inference.model`, and is omitted when the protocol's parser yielded none — so an
@@ -214,6 +217,33 @@ construction.
 - `input.value` and `output.value` are the parsers' semantic reduction of the request and
   response: for a2a the message or artifact text, for mcp the tool arguments and the text content
   of a result, for inference the messages and the completion or tool calls.
+- For `http` — an exchange no parser claimed, which is what a tool's REST backend looks like — there
+  is no reduction, and the payload is the **raw body**: `input.value` the request body,
+  `output.value` the response body (v1.8). Each is emitted only when it is text — valid UTF-8 with
+  no NUL byte, a property of the bytes, not of a `Content-Type` claim: an OTLP string attribute must
+  be UTF-8, and one that is not fails the export of the whole batch it rides in, as a NUL does at a
+  JSON or text column downstream — and the response only when the listener's buffer holds the whole
+  body, judged by the listener's byte count against its buffer (a streamed response leaves at most
+  the trailing chunk; the count is taken before any response rewriter, so a rewrite that changes the
+  length also reads as not whole), and not when the exchange was denied (the client then never
+  received an upstream body). The producer decodes nothing: a compressed or binary body is reported
+  by its size alone. In proxy-sidecar mode the proxy's own HTTP client removes a gzip encoding it
+  negotiated, so there the body and its size are the decoded ones. The raw body is whatever the
+  application sent in plain HTTP, credentials included; with the forward proxy's TLS bridge on, that
+  includes the HTTPS exchanges it decrypts. Behind a request rewriter the raw request body is the
+  one forwarded, while a parser's value describes the client's original; a response rewrite that
+  keeps the length is emitted as rewritten. The query string stays out, as for `url.path` (§4).
+- **Body sizes.** `http.request.body.size` and `http.response.body.size` are on every exchange,
+  whatever the protocol and whatever `capture_io` says — a size is metadata, not content. They are
+  what lets the consumer tell *no body* from *body not captured*. A size is what the listener
+  counted. `0` is a leg on which it counted nothing: no body was sent (a GET, a 204, a tunnel) or,
+  in envoy-sidecar mode, the body never reached the producer (the listener asks Envoy for no request
+  body on a GET, HEAD, OPTIONS or DELETE, or when neither `Content-Length` nor `Transfer-Encoding`
+  is present; Envoy refuses a response over its own buffer limit before the producer sees it). A
+  size beside no value is a body the producer saw and did not emit (`capture_io` off, not text, not
+  whole, denied, or a parser that reduced it to nothing). A value cut at `max_payload_bytes` is
+  still a value, and the size still says how long the body was. In proxy-sidecar mode a response
+  over the listener's own limit is refused, and its size is then a floor.
 - Two heuristics live in that reduction, affecting payloads only, never interactions: the a2a
   parser falls back to the status-message text when a result carries no artifact; and the lineage
   plugin suppresses an A2A protocol event from `output.value` when the reduced value is a JSON
@@ -228,8 +258,9 @@ construction.
   produce no exchange — a capture gap. In proxy-sidecar mode an HTTPS destination is a CONNECT
   tunnel, which IS an exchange: an ordinary span pair with `http.method=CONNECT`,
   `url.scheme=tcp`, `lineage.peer.host` naming the dial target, no path and no payload — the bytes
-  inside the tunnel are opaque. The producer does not filter tunnel exchanges; what they mean is
-  the consumer's call, like every other fact.
+  inside the tunnel are opaque, and both body sizes are `0` (no body on either side by
+  construction, so the sizes read *no body*, never *not captured*). The producer does not filter
+  tunnel exchanges; what they mean is the consumer's call, like every other fact.
 
 ## 6. Producer configuration
 
@@ -238,7 +269,7 @@ construction.
 | `otel_endpoint` | `localhost:4317` | OTLP gRPC target; `host:port`, `http://host:port` or `https://host:port`; any other scheme is refused |
 | `otel_tls` | `false` | TLS to the collector, verified against the system roots or `otel_ca_file`; an `https://` endpoint implies it. Refused contradictions: `https://` with `otel_tls: false`, `http://` with `otel_tls: true` or `otel_ca_file`. Plaintext to a non-loopback collector is allowed and logged as a WARN at start — spans carry principal facts, and payloads under `capture_io` |
 | `otel_ca_file` | — | PEM bundle to verify the collector's certificate against, for a private CA; implies `otel_tls`, and `otel_ca_file` with `otel_tls: false` is refused. An unreadable file, or one with no certificate, refuses to start |
-| `capture_io` | `false` | attach `input.value` / `output.value` |
+| `capture_io` | `false` | attach `input.value` / `output.value` — the parsers' reduction, or the raw bodies of an exchange no parser claimed (§5). The two body-size facts are emitted regardless |
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `0` or unset takes the default, `-1` attaches whole, any other negative is refused at start |
 | `max_attr_bytes` | `256` | cap on every variable-content string attribute and the span name (§4), except the two identity facts `lineage.self.id` and `lineage.self.namespace`, which are operator configuration and never truncated; same `0` / `-1` / negative semantics as `max_payload_bytes` |
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
@@ -302,7 +333,10 @@ Unknown keys are a boot error.
 - The consumer never welds a fragmented trace: an anchor whose parent is not a stored anchor derives
   as a root.
 - `content_kind` vocabulary stays ADR-0014-compatible; the classification processor consumes
-  `interaction_payloads` as a stream.
+  `interaction_payloads` as a stream. Every protocol row names its content kinds — plain `http`
+  classifies to `http_request_body` / `http_response_body` (v1.8), so a captured raw body is
+  content-addressed like any other — and `classify()` raises on a `lineage.protocol` outside the
+  §4 vocabulary rather than reading it as `http`.
 - Drain loop = the shared `data_governance/processors/_driver.py` StreamSpec.
 
 ## 8. Retired names
@@ -325,6 +359,15 @@ The producer must not emit these, and the consumer reads nothing from them.
 Version ladder, newest first. Each line is what changed on the wire or in the vocabulary; the
 mechanisms named as removed are not to be reintroduced.
 
+- **v1.8.0** — plain-HTTP payloads and body sizes. An exchange no parser claimed
+  (`lineage.protocol=http`) carries its raw bodies as `input.value` / `output.value` under
+  `capture_io`, when text and (for the response) whole; before, the two values were defined as the
+  parsers' reduction only, so a tool's REST backend — a GET to a weather service, a POST of a card
+  to a PSP — always landed with NULL payloads, invisible to classification and data lineage. Two
+  new facts on every exchange, `http.request.body.size` and `http.response.body.size`, tell *no
+  body* from *body not captured*. Consumer: the `http` rows of the kind table gain
+  `http_request_body` / `http_response_body`, and an unknown protocol raises instead of reading as
+  `http`. Additive on the wire; configuration unchanged.
 - **v1.7.0** — `lineage.self.namespace` on both spans, from a new **required** `namespace` config
   key or a `namespace_file` (absent, blank, or not a DNS label refuses at start, as a blank
   `self_id` does; resolved first, so a refusal leaves nothing behind); a `self_id` made only of

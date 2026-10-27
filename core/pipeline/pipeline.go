@@ -414,10 +414,7 @@ func (p *Pipeline) NeedsBody() bool {
 // capabilities exist to remove.
 //
 // ReadsBody still counts toward both, and deliberately: it is itself undirected
-// ("reads pctx.Body and/or pctx.ResponseBody"), so a plugin that only reads
-// responses cannot be distinguished from one that only reads requests. Closing
-// that needs direction-specific READ capabilities — the same prerequisite as the
-// reverse-order reader gap noted in validateCapabilities.
+// ("reads pctx.Body and/or pctx.ResponseBody").
 func (p *Pipeline) NeedsRequestBody() bool {
 	for _, plugin := range p.plugins {
 		// RAW capabilities, not Normalize(). The ReadsBody promotion means "you
@@ -439,7 +436,7 @@ func (p *Pipeline) NeedsRequestBody() bool {
 func (p *Pipeline) NeedsResponseBody() bool {
 	for _, plugin := range p.plugins {
 		caps := plugin.Capabilities() // raw — see NeedsRequestBody
-		if caps.ReadsBody || caps.WritesResponseBody {
+		if caps.ReadsBody || caps.ReadsResponseBody || caps.WritesResponseBody {
 			return true
 		}
 	}
@@ -642,23 +639,37 @@ func (p *Pipeline) dispatchFinish(parent context.Context, name string, f Finishe
 //     the listener sends what the last to run left.
 //   - A body reader (ReadsBody) must not follow a body mutator of either direction, so
 //     readers see what the agent saw: the request the client sent, and the response
-//     the client receives.
+//     the client receives. A response reader (ReadsResponseBody) must not follow a
+//     response mutator.
 //   - At most one WritesDestination plugin per pipeline — a request goes to one
 //     place, and a second redirect would silently override the first.
 func validateCapabilities(plugins []Plugin) error {
 	var destinationWriter string
-	var firstMutator, readerAfterMutator string
+	var firstMutator, firstResponseMutator, readerAfterMutator string
 	for _, plugin := range plugins {
-		caps := plugin.Capabilities().Normalize()
+		raw := plugin.Capabilities()
+		caps := raw.Normalize()
 		if caps.WritesDestination {
 			if destinationWriter != "" {
 				return fmt.Errorf("pipeline: two plugins declare WritesDestination: %q and %q — a request goes to one place; at most one destination writer per pipeline is allowed", destinationWriter, plugin.Name())
 			}
 			destinationWriter = plugin.Name()
 		}
+		// A response reader — one that reads response bodies without rewriting
+		// them — must not follow a response mutator: the mutator runs after it on
+		// the reverse response pass, so the reader would see the upstream's bytes
+		// instead of the client's. Declared capabilities, not Normalize's:
+		// promotion turns a request writer into a response reader, and a plugin
+		// may be both.
+		if raw.ReadsResponseBody && !raw.WritesResponseBody && firstResponseMutator != "" && readerAfterMutator == "" {
+			readerAfterMutator, firstMutator = plugin.Name(), firstResponseMutator
+		}
 		if caps.WritesRequestBody || caps.WritesResponseBody {
 			if firstMutator == "" {
 				firstMutator = plugin.Name()
+			}
+			if caps.WritesResponseBody && firstResponseMutator == "" {
+				firstResponseMutator = plugin.Name()
 			}
 			continue
 		}

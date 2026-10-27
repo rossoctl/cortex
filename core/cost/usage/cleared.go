@@ -10,6 +10,7 @@ package usage
 func (a *Aggregator) Cleared() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.logReplayLocked(func(r *Aggregator) { r.Cleared() })
 	clear(a.sessions)
 	dropSessionLabels(a.all)
 	for _, ring := range a.agents {

@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -79,6 +80,22 @@ func WithStartTimeout(d time.Duration) Option { return func(r *Reloader) { r.sta
 // which is serialised (see reloadOnce), so a hook needs no locking of its own.
 func WithOnCommit(f func(*config.Config)) Option { return func(r *Reloader) { r.onCommit = f } }
 
+// WithExtraWatch makes the pipelines depend on more than the config file: any event
+// in one of the folders dirs names triggers a reload, and fingerprint's result over
+// those folders joins the config's content in the hash that decides whether
+// anything changed. The script plugin uses it for its folders, so adding or editing
+// a script reloads exactly as a config edit does.
+//
+// dirs is called with the startup config at Start, and again with each config a
+// reload accepts, so a folder a config edit adds is watched from that reload on.
+// A folder that does not exist yet is created so it can be watched: one the user
+// creates later would otherwise go unseen until the next config edit. A folder the
+// config stops naming stays watched until restart. fingerprint is called on every
+// candidate reload, with every folder watched so far.
+func WithExtraWatch(dirs func(*config.Config) []string, fingerprint func(dirs []string) string) Option {
+	return func(r *Reloader) { r.extraDirs, r.fingerprint = dirs, fingerprint }
+}
+
 // Reloader owns the fsnotify watcher and the reload orchestration.
 // Safe for concurrent use — all internal state transitions happen
 // inside the single watch goroutine or are guarded by atomic.Pointer.
@@ -93,6 +110,13 @@ type Reloader struct {
 	startTimeout time.Duration
 	// onCommit is run after a reload is accepted; see WithOnCommit.
 	onCommit func(*config.Config)
+	// extraDirs and fingerprint widen what a reload depends on; see WithExtraWatch.
+	extraDirs   func(*config.Config) []string
+	fingerprint func(dirs []string) string
+	// watched is every WithExtraWatch folder with a watch on it, cleaned, in the
+	// order added. Written by Start and then only by the watch goroutine; hash
+	// reads it on that goroutine, or in New before either exists.
+	watched []string
 
 	status    atomic.Pointer[Status]
 	activeCfg atomic.Pointer[config.Config]
@@ -105,6 +129,8 @@ type Reloader struct {
 
 	// serialized by the watch goroutine
 	lastHash string
+	// startData is the config file as New read it.
+	startData []byte
 }
 
 // New constructs a Reloader. initialCfg must be the config the caller
@@ -129,8 +155,8 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 	// fsnotify event that fires immediately after startup (e.g., the
 	// kubelet touching the mount) doesn't trigger a redundant rebuild.
 	if data, err := os.ReadFile(configPath); err == nil {
-		sum := sha256.Sum256(data)
-		r.lastHash = hex.EncodeToString(sum[:])
+		r.lastHash = r.hash(data)
+		r.startData = data
 	}
 
 	init := Status{LastAttempt: time.Time{}, LastSuccess: time.Now(), ActiveConfigSHA256: r.lastHash}
@@ -202,10 +228,51 @@ func (r *Reloader) Start(ctx context.Context) error {
 		}
 	}
 
+	if r.extraDirs != nil {
+		r.watchExtra(watcher, r.extraDirs(r.activeCfg.Load()))
+		// New hashed before any folder was watched, so its hash left them out.
+		// Seeded again with them, or the first event after startup would see a
+		// change that is not there and rebuild every pipeline.
+		r.seedHash()
+	}
+
 	go r.watchLoop(ctx, watcher)
 	slog.Info("reloader: watching for config changes",
 		"path", r.configPath, "dir", dir, "drainWindow", r.drainWindow)
 	return nil
+}
+
+// watchExtra adds a watch on each of dirs not watched yet, creating it first. A
+// folder that cannot be created or watched is skipped with a WARN: its scripts
+// still load with each reload, and an edit in it reloads only with the config.
+func (r *Reloader) watchExtra(watcher *fsnotify.Watcher, dirs []string) {
+	for _, d := range dirs {
+		d = filepath.Clean(d)
+		if slices.Contains(r.watched, d) {
+			continue
+		}
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			slog.Warn("reloader: cannot create a watched folder", "dir", d, "error", err)
+			continue
+		}
+		if err := watcher.Add(d); err != nil {
+			slog.Warn("reloader: cannot watch a folder; changes in it reload only with the config", "dir", d, "error", err)
+			continue
+		}
+		r.watched = append(r.watched, d)
+	}
+}
+
+// seedHash sets the hash a reload compares against from the config New read, and
+// publishes it as the active config's.
+func (r *Reloader) seedHash() {
+	if r.startData == nil {
+		return
+	}
+	r.lastHash = r.hash(r.startData)
+	next := *r.status.Load()
+	next.ActiveConfigSHA256 = r.lastHash
+	r.status.Store(&next)
 }
 
 // Status returns a snapshot of the most recent reload outcome.
@@ -258,7 +325,8 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			// never returns "", so the comparison is inert in that case.
 			evBase := filepath.Base(ev.Name)
 			if evBase != base && evBase != "..data" &&
-				(r.resolvedBase == "" || evBase != r.resolvedBase) {
+				(r.resolvedBase == "" || evBase != r.resolvedBase) &&
+				!slices.Contains(r.watched, filepath.Dir(ev.Name)) {
 				continue
 			}
 			slog.Debug("reloader: fs event", "name", ev.Name, "op", ev.Op.String())
@@ -277,7 +345,11 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			}
 
 		case <-trigger:
-			r.reloadOnce(ctx)
+			// A config that names a new folder is watched from here. Added on this
+			// goroutine, which owns the watcher; fsnotify's inotify and kqueue
+			// backends send no event while holding the lock Add takes, so this
+			// cannot block on the channel this loop drains.
+			r.reloadOnce(ctx, watcher)
 		}
 	}
 }
@@ -286,7 +358,7 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 // leaves the currently-active pipelines untouched and is reported via
 // Status. Only the debounced timer fires this, so two reloadOnce calls
 // cannot overlap.
-func (r *Reloader) reloadOnce(parent context.Context) {
+func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher) {
 	attempt := time.Now()
 
 	// Content-hash dedup: ignore mtime-only changes (e.g., a touch).
@@ -295,8 +367,7 @@ func (r *Reloader) reloadOnce(parent context.Context) {
 		r.recordFailure(attempt, fmt.Errorf("read: %w", err))
 		return
 	}
-	sum := sha256.Sum256(data)
-	hash := hex.EncodeToString(sum[:])
+	hash := r.hash(data)
 	if hash == r.lastHash {
 		slog.Debug("reloader: content unchanged, skipping reload", "sha256", hash[:12])
 		return
@@ -375,7 +446,26 @@ func (r *Reloader) reloadOnce(parent context.Context) {
 		slog.Info("reloader: drained old pipelines", "sha256", hash[:12])
 	}()
 
+	if r.extraDirs != nil {
+		r.watchExtra(watcher, r.extraDirs(newCfg))
+	}
 	r.recordSuccess(attempt, hash)
+}
+
+// hash is what decides whether a reload has anything to do: the config's bytes,
+// and, with WithExtraWatch, the fingerprint of everything else the pipelines are
+// built from. While the fingerprint is empty it is the config's sha256, as it
+// always was. Once there is something else to fingerprint, /reload/status's
+// active_config_sha256 is the digest of both — it identifies what is running,
+// which is no longer the config file alone.
+func (r *Reloader) hash(data []byte) string {
+	if r.fingerprint != nil {
+		if fp := r.fingerprint(r.watched); fp != "" {
+			data = append(append(append([]byte(nil), data...), 0), fp...)
+		}
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // validateReloadable returns an error when a newly-loaded config

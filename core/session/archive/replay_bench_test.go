@@ -13,7 +13,8 @@ import (
 
 // BenchmarkReplaySince_SixHours is the startup replay's read half over a heavy six hours: twelve
 // sessions of 120 turns with 64KB prompts, each event reduced with usage.ReplayCopy as
-// cmd/cortex does. Its result sizes cmd/cortex's usageReplayBudget.
+// cmd/cortex does. Its result sizes cmd/cortex's usageReplayBudget, which bounds the replay but no
+// longer delays startup.
 func BenchmarkReplaySince_SixHours(b *testing.B) {
 	clk := newClock()
 	root := b.TempDir()

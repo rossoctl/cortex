@@ -44,6 +44,20 @@ type Deps struct {
 	// serves can honor; a plugin declaring one it cannot is refused. The zero value
 	// honors none of them, so a build that names no listener admits no such plugin.
 	Listener pipeline.ListenerSupport
+
+	// LocalInstall is true for a laptop proxy started from ~/.cortex, and is
+	// injected into plugins implementing LocalInstallConsumer. Only cmd/cortex sets
+	// it. The zero value is false, so a binary that has not decided is treated as a
+	// shared deployment, where a plugin that runs the user's own programs must not.
+	LocalInstall bool
+}
+
+// LocalInstallConsumer is implemented by plugins that behave differently on a
+// local install. BuildWithDeps tells every such plugin, before Configure, whether
+// this is one — false included, since false is the safe answer and must not depend
+// on a plugin's zero value.
+type LocalInstallConsumer interface {
+	SetLocalInstall(bool)
 }
 
 // BuildWithDeps constructs a pipeline from an ordered list of plugin entries,
@@ -87,12 +101,10 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 			return nil, fmt.Errorf("unknown plugin %q (registered: %v)", e.Name, pluginNames)
 		}
 		p := factory()
-
-		// Before anything is injected or configured: a plugin the listener cannot honor
-		// is refused before it can build state or start work.
-		if c := deps.Listener.Unsupported(p.Capabilities()); c != "" {
-			return nil, fmt.Errorf("plugin %q declares %s, which the %s does not honor", e.Name, c, deps.Listener.Name())
-		}
+		// Read before Configure: what an unconfigured instance reports is the ceiling
+		// the catalog advertises for this name, and the configured instance is held to
+		// it below.
+		ceiling := p.Capabilities()
 
 		if c, ok := p.(spiffe.ProviderConsumer); ok && deps.SPIFFE != nil {
 			c.SetSPIFFEProvider(deps.SPIFFE)
@@ -106,6 +118,9 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 		if c, ok := p.(session.HistoryConsumer); ok && deps.History != nil {
 			c.SetHistory(deps.History)
 		}
+		if c, ok := p.(LocalInstallConsumer); ok {
+			c.SetLocalInstall(deps.LocalInstall)
+		}
 
 		if c, ok := p.(pipeline.Configurable); ok {
 			if err := c.Configure(e.Config); err != nil {
@@ -115,6 +130,18 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 			p = pipeline.WrapConfigured(p, e.Config)
 		} else if len(e.Config) > 0 {
 			return nil, fmt.Errorf("plugin %q does not accept configuration", e.Name)
+		}
+		if c := deps.Listener.Unsupported(p.Capabilities()); c != "" {
+			return nil, fmt.Errorf("plugin %q declares %s, which the %s does not honor", e.Name, c, deps.Listener.Name())
+		}
+		// A configured instance may narrow its capabilities. One the catalog does not
+		// describe — it declares more than the ceiling, or a chain the catalog accepts
+		// could refuse it — is reported, but not refused: the rule before narrowing existed
+		// said capabilities never vary, nothing enforced it, and a plugin outside this
+		// tree that widens from config would stop building if it were refused now.
+		if diff := p.Capabilities().WithinCeiling(ceiling); diff != "" {
+			slog.Warn("plugin's capabilities once configured differ from its unconfigured instance's; the catalog misdescribes it",
+				"plugin", e.Name, "difference", diff)
 		}
 		ps = append(ps, p)
 		policies = append(policies, e.OnError.Resolved())

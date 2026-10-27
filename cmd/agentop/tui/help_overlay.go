@@ -203,6 +203,8 @@ var jumpTargets = []jumpTarget{
 	{key: "u", pane: paneUsage,
 		desc: "charts over the events the proxy has seen — every session from the " +
 			"sessions table, the selected one from events"},
+	{key: "T", pane: paneTimeline,
+		desc: "the selected session's agents, tools and hosts on a time axis"},
 	{key: "P", pane: panePipeline,
 		desc: "the plugin chain this proxy runs, editable in $EDITOR"},
 	{key: "C", pane: paneCatalog,
@@ -233,6 +235,14 @@ func jumpsFrom(p paneID) []jumpTarget {
 			continue
 		}
 		switch jt.key {
+		case "T":
+			// Only where a session is already chosen. On Sessions it opens the highlighted
+			// row, so whether it works depends on the table, not the pane; its footer says so.
+			switch p {
+			case paneEvents, paneDetail:
+			default:
+				continue
+			}
 		case "u", "P":
 			switch p {
 			case paneSessions, paneEvents, paneDetail:
@@ -362,6 +372,17 @@ var paneKeys = map[paneID]keyGroup{
 			{"esc", "back"},
 		},
 	},
+	paneTimeline: {
+		title:   "TIMELINE (this pane)",
+		purpose: "where one session's time went: each Claude Code agent's model, tools and waits, and its hosts",
+		bindings: []keyBinding{
+			{"w", "cycle window: 5m / 1h / 24h / all, only those shorter than the session"},
+			{"← → / h l", "pick a moment; the line below lists the tools that started then"},
+			{"↑ ↓ / k j", "scroll the agent rows"},
+			{"↵", "open the events pane at the cursor's first tool"},
+			{"esc", "back"},
+		},
+	},
 	paneCatalog: {
 		title:   "PLUGIN CATALOG (this pane)",
 		purpose: "every plugin the proxy offers, whether or not the pipeline runs it",
@@ -413,7 +434,7 @@ var paneKeys = map[paneID]keyGroup{
 // the overlay is stable across openings (Go map iteration is random).
 var otherPaneOrder = []paneID{
 	paneNamespaces, panePods, paneSessions, paneEvents,
-	paneDetail, paneAgents, paneUsage, panePipeline, panePluginDetail, paneCatalog,
+	paneDetail, paneAgents, paneUsage, paneTimeline, panePipeline, panePluginDetail, paneCatalog,
 }
 
 // helpKeyColWidth is the fixed width of the key column so descriptions

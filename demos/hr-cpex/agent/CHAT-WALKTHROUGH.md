@@ -9,6 +9,12 @@ the agent; CPEX enforces on the **agent's outbound** tool calls. The
 user-visible behavior below is identical to the old standalone gateway —
 only the enforcement point moved (gateway-inbound → agent-egress).
 
+By default the tool calls whose route delegates (`get_compensation`,
+`search_repos` past Cedar) fail closed with `cpex.delegation_unavailable`
+after the token exchange, because the sidecar does not take the minted
+token from CPEX. The prompts below describe the outcome once it
+does; see "Delegation by default" in the demo README.
+
 ## Setup (once)
 
 In one terminal:
@@ -21,7 +27,7 @@ make deploy                          # builds images, loads to kind, applies man
 In a second terminal:
 
 ```bash
-make port-forward                    # Keycloak (:8081) + agent (:8082) + fwd proxy (:8083) + session API (:9094)
+make port-forward                    # Keycloak (:8081) + agent (:8082) + fwd proxy (:8083) + session API (:9094) + hr-mcp (:9100)
 ```
 
 In a third terminal (so the audience can see what reaches the backend):
@@ -209,9 +215,9 @@ predicates first, expensive PDP / IdP work only for requests that clear them.
 
 ---
 
-## Act 3 — PLUGIN FLOW (PII scanner + audit logger)
+## Act 3 — PII CHECK + SESSION TIMELINE
 
-### Bob (has `perm.email_send`) — PII scanner denies
+### Bob (has `perm.email_send`) — the PII check denies
 
 ```text
 Bob: send an email to alice@corp.com with the subject "FYI"
@@ -226,24 +232,21 @@ Bob: send an email to alice@corp.com with the subject "FYI"
 
 **Under the hood:**
 1. APL gate `require(perm.email_send)` — passes (Bob has it)
-2. `pii-scan` plugin walks `args.body`, hits the SSN regex pattern
-3. Plugin denies; gateway short-circuits
-4. `audit-log` plugin still fires (it's wired on the same hook with
-   `read_delegated_tokens` etc.) — observation can't block — and emits
-   a JSON record describing the denied attempt
+2. A `cel:` step matches the SSN shape in subject + body and denies
+3. The sidecar short-circuits; hr-mcp never sees the call
+4. The deny is recorded on the session timeline: the cpex invocation
+   carries `action: deny` and `reason: cpex.pii_detected`
 
-**In the sidecar's logs (`kubectl -n cpex-demo logs -f deploy/hr-cpex-agent -c authbridge-cpex`):**
+**On the timeline (`make port-forward`, then):**
 
-```json
-{"ts":"2026-…","plugin":"audit-log","source":"cpex-demo-gateway",
- "subject":{"id":"<bob's uuid>","roles":["hr"], …},
- "entity":{"type":"tool","name":"send_email"},
- "tool_call":{"name":"send_email","args":{"to":"alice@corp.com", …}},
- "delegated_tokens":[…]}
+```bash
+SID=$(curl -s localhost:9094/v1/sessions | jq -r '.sessions[0].id')
+curl -s "localhost:9094/v1/sessions/$SID" \
+  | jq '.events[].invocations.outbound[]? | select(.plugin == "cpex")'
 ```
 
-This is the audit-trail story: even denied attempts get a structured
-record, no plugin coordination required.
+This is the audit-trail story: denied attempts are recorded with their
+violation code.
 
 ---
 

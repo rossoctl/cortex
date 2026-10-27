@@ -345,6 +345,7 @@ inside cpex via its own sub-plugins, so the AuthBridge-side
 | `worker_threads` | `0` | CPEX tokio worker pool size; 0 lets CPEX pick |
 | `bypass_paths` | health + `.well-known` | URL path globs that skip CPEX entirely |
 | `bypass_hosts` | keycloak / SPIRE / observability | host globs that skip CPEX, outbound only |
+| `strict_hosts` | empty | tool servers, as host globs, IP addresses or CIDRs, whose unclaimed, unreadable JSON-object bodies are refused (`cpex.unparseable_request`), outbound only, before `bypass_hosts` and `bypass_paths` are consulted |
 | `fallback_identification` | `global` | identification for requests naming no tool, prompt, resource or model: `global` (CPEX's `http`/`*` entity) or `none` |
 | `session_source` | `header` | session id for CPEX session state: `header` (`X-Session-Id` or the A2A context id) or `resolved` (the listener's session, only when a dedicated agent session header or the process chain named it; a session a parent agent named wins over one its child names, but only where Cortex has process attribution — `cortex` bound to loopback, as the laptop install is; in the `authbridge-cpex` sidecar `resolved` trusts the dedicated header, which the sender sets) |
 | `private_destinations` | `false` | let CPEX builtins (JWKS, token exchange, CIBA, Vault) reach loopback, private and link-local addresses |
@@ -386,7 +387,60 @@ differ only in case. Everywhere else (tool schemas, A2A data parts, `metadata`,
 `response_format`, and inference tool calls, whose arguments are a JSON string
 or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
 `resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
-taking the global identification. Neither denial is subject to `fail_open`.
+taking the global identification. An outbound request to a host listed in
+`strict_hosts` (empty by default) whose body no parser claimed is denied as
+`cpex.unparseable_request` when that body is a JSON object the parsers cannot
+read: one in UTF-16 or UTF-32 or after a byte order mark, one whose first value
+`encoding/json` rejects (`NaN`, `Infinity`, a number out of float64 range, a
+truncated object), one whose keys collide, or one whose top-level `method` key,
+in any case, does not decode as a string. A parser declines such a body, so it
+would otherwise take the global identification, while a server may still run
+it as the tool call no route judged: Python's `json.loads` accepts `NaN`,
+`Infinity` and out-of-range numbers by default, and reads bytes in UTF-16 or
+UTF-32 and UTF-8 after a byte order mark (it rejects a byte order mark in a
+`str`, invalid UTF-8 and truncated JSON). Invalid UTF-8 inside a string is not
+refused: `encoding/json` replaces it with U+FFFD and parses the body. List the
+tool servers that read JSON leniently. The check is scoped by destination, not by the
+body's shape: a caller cannot avoid it by dropping or renaming `jsonrpc`, and
+traffic to every other host (a `{"loss": NaN}` metrics post, NDJSON uploads) is
+not checked. Only the first value is read, so trailing data and NDJSON are not
+refused on a strict host either. None of these denials is subject to
+`fail_open`.
+
+`strict_hosts` protects only the destinations it lists. An entry is a host glob
+(lowercased, matched without the port or a trailing dot), an IP address, or a
+CIDR such as `10.96.0.0/12` or `fd00:10:96::/112`. A request whose host reads as
+an address is matched against the addresses and CIDRs only, by its canonical
+address, port removed: an IP literal in any case or with leading zeros,
+bracketed or not, IPv4-mapped IPv6, with a zone (`%eth0`, `%25eth0`) or a
+trailing dot, or a numeric spelling `inet_aton` and so the system resolver
+accept (`0x0a.0x60.0.10`, `012.0140.0.012`, `10.6291466`, `174063626`). A
+name is matched against the globs only. A name list alone does not cover a tool
+server reached by its cluster IP or pod IP, so list those addresses or ranges
+too; a DNS name that resolves to a listed address is not caught, so list it by
+name. A request host that is neither a name nor an address (characters outside
+a host name, misused brackets, an all-numeric host `inet_aton` refuses such as
+`10.96.0.256`) is treated as strict, so an odd spelling fails closed.
+
+Configure classifies every entry as exactly one of a CIDR (contains `/`; no
+host bits set), a canonical IP address (an IPv6 one optionally in brackets), or
+a name glob (letters, digits, `-`, `_`, `.`, `*` and `?`, with at least one
+label that is not a number or a wildcard), and refuses anything else rather
+than keep an entry that would never match: `10.1`, `010.96.0.1`,
+`10.96.0.1/12`, `10.96.*.*`, `*.*`, `[10.96.0.1]`. It also refuses a CIDR
+covering every address (`0.0.0.0/0`, `::/0`) and an entry with a port or a
+zone.
+
+`delegated_credential_hosts` takes the same entries but matches the other way
+round, because it decides where a credential may go rather than what to check:
+an address entry matches a canonical IP literal only, so a numeric spelling the
+resolver alone would read as that address is not bound and the credential is
+withheld, a name entry never matches an address, and a host it cannot read
+matches nothing. The check runs
+before `bypass_hosts` and `bypass_paths`, so a destination on both lists is
+still checked. It is a backstop, not a substitute for a strict tool server:
+the server should also refuse what it cannot parse strictly, as the HR demo's
+`hr-mcp` does.
 
 ### Plain egress as a tool call
 
@@ -429,6 +483,12 @@ The excerpt is policy input only. The invocation records its size and whether
 it was cut (`egress_excerpt_bytes`, `egress_truncated`), never its content. A
 policy that inspects bodies should deny when `truncated` is true or
 `content_encoding` is set, since it cannot see the rest.
+
+With or without `synthetic_egress`, plain egress is refused before CPEX sees it
+in one case only: an unreadable JSON object sent to a `strict_hosts` host
+(`cpex.unparseable_request`, above), such as a UTF-16 tool call or one with a
+`NaN` in its arguments. That check is not subject to `fail_open`. Bodies to
+any other host, JSON or not, reach the egress policy as they were sent.
 
 ### Cortex-asserted principal
 
@@ -491,8 +551,8 @@ vocabulary:
 - **observe**: audit-only outcome, recorded, request continues.
 
 Some denials come from the plugin rather than from policy, and `fail_open`
-does not apply to them: `cpex.ambiguous_request` and `cpex.unnamed_entity`
-(above), `cpex.principal_unavailable` (above),
+does not apply to them: `cpex.ambiguous_request`, `cpex.unnamed_entity` and
+`cpex.unparseable_request` (above), `cpex.principal_unavailable` (above),
 `cpex.delegation_destination_mismatch` (below), and
 `cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
 step granted a token the plugin cannot forward: `delegated_credentials` is

@@ -11,6 +11,7 @@ holds the repo-level pieces; this file is the index.
 | Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [any other agent](agents/any-agent.md) |
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
+| Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Export sessions to files | [`session-dump.md`](session-dump.md) |
@@ -29,7 +30,7 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) — the index, one summary per plugin; each plugin's full reference is its own `<name>-plugin.md` in this directory |
-| Write a plugin | [`plugin-reference.md`](plugin-reference.md) and [`plugin-tutorial.md`](plugin-tutorial.md) |
+| Write a plugin | [`plugin-reference.md`](plugin-reference.md) and [`plugin-tutorial.md`](plugin-tutorial.md); for a quick one in Python or shell, [`script-plugin.md`](script-plugin.md) |
 | Understand the pipeline internals and hot-reload | [`framework-architecture.md`](framework-architecture.md) |
 
 Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
@@ -53,6 +54,7 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 | Set up model pricing and gateway discounts, or read the `cost` record | [`pricing.md`](pricing.md) |
 | Read sessions and events over HTTP — endpoints, event schema, SSE | [`session-api.md`](session-api.md) |
 | See the rates actually in effect | `agentop pricing [--host <gateway>]` |
+| See how many people install Cortex | [install stats](https://rossoctl.github.io/cortex/install-stats/) — estimated from GitHub's release-download counts, never from your machine. The page is explicit that the figures still include maintainers and contributors |
 | Implement an IdP plugin for token-exchange | [`idp-plugin-contract.md`](idp-plugin-contract.md) |
 | The lineage OTLP wire contract | [`lineage-wire-contract.md`](lineage-wire-contract.md) |
 

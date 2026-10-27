@@ -7,6 +7,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/session/archive"
 )
 
 // withArchivedEvents is the one merge rule for pages: take what the store holds, newest first up
@@ -22,6 +23,30 @@ import (
 // when it reaches further back than memory; totalEvents is at least what either side holds, which
 // is what a client uses it for: telling "there is more behind me" from "this is the beginning".
 func (s *Server) withArchivedEvents(id string, before uint64, limit int, view *pipeline.SessionView) *pipeline.SessionView {
+	return mergeArchived(id, before, limit, view, func(cursor uint64, need int) ([]pipeline.SessionEvent, archive.PageInfo, bool, bool) {
+		return s.readArchive(id, cursor, need)
+	})
+}
+
+// archivePage returns up to need of a session's archived events numbered below cursor, oldest
+// first. ok is false when the archive holds nothing under the id; failed reports a read that
+// stopped early.
+type archivePage func(cursor uint64, need int) (events []pipeline.SessionEvent, info archive.PageInfo, ok, failed bool)
+
+func (s *Server) readArchive(id string, cursor uint64, need int) ([]pipeline.SessionEvent, archive.PageInfo, bool, bool) {
+	var older []pipeline.SessionEvent
+	info, ok, err := s.archive.Page(id, cursor, max(need, 0), func(e *pipeline.SessionEvent) bool {
+		older = append(older, *e)
+		return true
+	})
+	if err != nil {
+		slog.Debug("sessionapi: archive page read failed; serving memory alone", "error", err, "sessionID", id)
+	}
+	slices.Reverse(older)
+	return older, info, ok, err != nil
+}
+
+func mergeArchived(id string, before uint64, limit int, view *pipeline.SessionView, page archivePage) *pipeline.SessionView {
 	cursor, need, memTotal, memOldest := before, limit, 0, uint64(0)
 	if view != nil {
 		memTotal = view.TotalEvents
@@ -38,21 +63,13 @@ func (s *Server) withArchivedEvents(id string, before uint64, limit int, view *p
 			}
 		}
 	}
-	var older []pipeline.SessionEvent
-	info, ok, err := s.archive.Page(id, cursor, max(need, 0), func(e *pipeline.SessionEvent) bool {
-		older = append(older, *e)
-		return true
-	})
-	if err != nil {
-		slog.Debug("sessionapi: archive page read failed; serving memory alone", "error", err, "sessionID", id)
-	}
+	older, info, ok, _ := page(cursor, need)
 	if !ok {
 		return view
 	}
 	if view == nil {
 		view = &pipeline.SessionView{ID: id}
 	}
-	slices.Reverse(older)
 	view.Events = mergeBySeq(older, view.Events, limit)
 
 	oldest := info.OldestSeq

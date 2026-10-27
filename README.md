@@ -16,6 +16,24 @@ the tool definitions your agent never calls, 4–20% of the prompt on every turn
 
 One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
 
+## How it works
+
+<!-- Two copies of one drawing, so it follows the reader's GitHub theme. They differ
+     only in their <style> block: change the shapes or the text in both. -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/cortex-architecture-dark.svg">
+  <img src="./docs/assets/cortex-architecture.svg" width="100%"
+       alt="Your coding agent sends its traffic through Cortex, a local process. Cortex's TLS bridge decrypts it with your own CA, the plugin pipeline parses the model, tool and agent calls, and the request goes on, re-encrypted, to the model or tool server it was meant for. The session store records each session, its tokens and its cost to ~/.cortex, and agentop observe reads it over the session API.">
+</picture>
+
+Your agent uses Cortex as its HTTPS proxy. Cortex decrypts the traffic with a CA
+made on your machine, runs it through a pipeline of plugins that parse the model, tool
+and agent calls, and sends it on, re-encrypted, to the server it was meant for. Every
+request and reply is recorded in its session, with its tokens and cost, and `agentop`
+reads them live from the session API. [Running Cortex](./docs/laptop-service.md) covers
+each piece; the [plugin catalog](./docs/plugin-catalog.md) lists what else the pipeline
+can run.
+
 ## Quick start
 
 <!-- This install command is duplicated in the website's laptop quickstart:

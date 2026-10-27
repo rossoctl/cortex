@@ -35,12 +35,12 @@ func TestWantCursorKeysOnlyInTerminalApp(t *testing.T) {
 // only looked for the sequence.
 func TestCursorKeysCmdRestoresModeAfterCommand(t *testing.T) {
 	var out bytes.Buffer
-	var c tea.ExecCommand = cursorKeysCmd{exec.Command("sh", "-c", `printf 'editor\033[?1l'`)}
+	var c tea.ExecCommand = cursorKeysCmd{autowrapCmd{exec.Command("sh", "-c", `printf 'editor\033[?1l'`)}}
 	c.SetStdout(&out)
 	if err := c.Run(); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got, want := out.String(), "editor"+ansi.ResetModeCursorKeys+ansi.SetModeCursorKeys; got != want {
+	if got, want := out.String(), ansi.SetModeAutoWrap+"editor"+ansi.ResetModeCursorKeys+ansi.ResetModeAutoWrap+ansi.SetModeCursorKeys; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
@@ -49,12 +49,12 @@ func TestCursorKeysCmdRestoresModeAfterCommand(t *testing.T) {
 // bubbletea restores the terminal on that path too.
 func TestCursorKeysCmdRestoresModeWhenCommandFails(t *testing.T) {
 	var out bytes.Buffer
-	c := cursorKeysCmd{exec.Command("sh", "-c", "exit 3")}
+	c := cursorKeysCmd{autowrapCmd{exec.Command("sh", "-c", "exit 3")}}
 	c.SetStdout(&out)
 	if err := c.Run(); err == nil {
 		t.Fatal("Run: want the command's exit error, got nil")
 	}
-	if got := out.String(); got != ansi.SetModeCursorKeys {
-		t.Fatalf("output = %q, want %q", got, ansi.SetModeCursorKeys)
+	if got, want := out.String(), ansi.SetModeAutoWrap+ansi.ResetModeAutoWrap+ansi.SetModeCursorKeys; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

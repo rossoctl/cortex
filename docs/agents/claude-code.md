@@ -103,7 +103,15 @@ each session's title and directory. `--skip-claude-metadata` turns that off; see
 conversation that started it, so they are filed in that session and counted in its cost.
 Cortex tags each one as a subagent, from the marker Claude Code writes on the first line
 of a subagent's system prompt, and agentop's context gauge uses the tag to follow the
-main conversation rather than a subagent's. Listing subagents separately in agentop is
+main conversation rather than a subagent's. A subagent's requests, and an agent-team
+teammate's, also carry `X-Claude-Code-Agent-Id`, which Cortex records on the event as
+`subagent`. For a subagent it is the id that names its
+`<session>/subagents/agent-<id>.meta.json`, which holds its type and description. A
+teammate's rows carry it too but are not tagged as a subagent's, because Claude Code writes
+the marker only for subagents; the tag, not this id, is what says a row is a subagent's.
+An agent that another agent started also carries `X-Claude-Code-Parent-Agent-Id`, recorded
+as `parentSubagent`; one the conversation started has none. Listing subagents separately in
+agentop is
 [#1047](https://github.com/rossoctl/cortex/issues/1047).
 
 **Typed inference.** Requests to a path ending in `/v1/messages` are parsed as the

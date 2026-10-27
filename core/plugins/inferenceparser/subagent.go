@@ -48,6 +48,11 @@ const (
 // IF A REAL HTTP HEADER EVER CARRIES THIS, prefer it: pipeline.Context.Headers is in hand at the
 // call site. On every path measured the line arrived inside the prompt, so that is what this
 // reads, and a header source can be added beside it without changing what callers see.
+//
+// X-Claude-Code-Agent-Id is NOT that header, though it rides on the same requests. It names
+// which agent sent a request, and is recorded as SessionEvent.Subagent (see
+// pipeline.Context.Subagent), but the CLI also sends it from an agent-team teammate's context,
+// so its presence is not a statement of this role.
 func agentRole(msgs []pipeline.InferenceMessage) pipeline.AgentRole {
 	for _, m := range msgs {
 		if m.Role != "system" {

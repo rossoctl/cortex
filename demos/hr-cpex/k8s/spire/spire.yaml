@@ -1,0 +1,330 @@
+# SPIRE for the hr-cpex demo: a server that owns the cpex.demo trust
+# domain, its OIDC discovery provider (the JWKS Keycloak and CPEX
+# validate JWT-SVIDs against), and an agent on each node that attests
+# pods and serves them the Workload API.
+#
+# DEMO ONLY: in-memory keys, an sqlite datastore on an emptyDir, plain
+# HTTP for the discovery provider, and an agent that bootstraps trust in
+# the server without a pinned bundle. Restarting the server rotates the
+# signing keys; Keycloak and CPEX refetch the JWKS on the new key id.
+#
+# `make spire` applies this, registers the agent's SPIFFE ID and
+# redeploys the demo with WITH_SPIRE=1.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spire
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: spire
+
+---
+# k8s_psat node attestation validates the agent's projected token with
+# the TokenReview API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server-cpex-demo
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server-cpex-demo
+subjects:
+  - kind: ServiceAccount
+    name: spire-server
+    namespace: spire
+roleRef:
+  kind: ClusterRole
+  name: spire-server-cpex-demo
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-server
+  namespace: spire
+data:
+  server.conf: |
+    server {
+      bind_address = "0.0.0.0"
+      bind_port = "8081"
+      socket_path = "/tmp/spire-server/private/api.sock"
+      trust_domain = "cpex.demo"
+      data_dir = "/run/spire/data"
+      log_level = "INFO"
+      ca_ttl = "24h"
+      default_x509_svid_ttl = "1h"
+      # Keycloak accepts a SPIFFE client assertion for at most 300s.
+      default_jwt_svid_ttl = "5m"
+      # Stamped into every JWT-SVID; the discovery provider serves the
+      # same issuer, and the cpex policy's jwt-workload trusts it.
+      jwt_issuer = "http://spire-oidc.spire:8443"
+    }
+
+    plugins {
+      DataStore "sql" {
+        plugin_data {
+          database_type = "sqlite3"
+          connection_string = "/run/spire/data/datastore.sqlite3"
+        }
+      }
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          clusters = {
+            "cpex-demo" = {
+              service_account_allow_list = ["spire:spire-agent"]
+            }
+          }
+        }
+      }
+      KeyManager "memory" {
+        plugin_data {}
+      }
+    }
+  oidc-discovery-provider.conf: |
+    log_level = "INFO"
+    domains = ["spire-oidc.spire", "spire-oidc.spire.svc", "spire-oidc", "localhost"]
+    insecure_addr = "0.0.0.0:8443"
+    # Keycloak ignores a JWKS key without "use": "sig".
+    set_key_use = true
+    server_api {
+      address = "unix:///tmp/spire-server/private/api.sock"
+    }
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  namespace: spire
+  labels:
+    app: spire-server
+spec:
+  replicas: 1
+  serviceName: spire-server
+  selector:
+    matchLabels:
+      app: spire-server
+  template:
+    metadata:
+      labels:
+        app: spire-server
+    spec:
+      serviceAccountName: spire-server
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:1.9.6
+          args: ["-config", "/run/spire/config/server.conf"]
+          ports:
+            - name: grpc
+              containerPort: 8081
+          livenessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-server", "healthcheck"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-server", "healthcheck", "--shallow"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: data
+              mountPath: /run/spire/data
+            - name: server-socket
+              mountPath: /tmp/spire-server/private
+        - name: oidc-discovery-provider
+          image: ghcr.io/spiffe/oidc-discovery-provider:1.9.6
+          args: ["-config", "/run/spire/config/oidc-discovery-provider.conf"]
+          ports:
+            - name: http
+              containerPort: 8443
+          volumeMounts:
+            - name: config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: server-socket
+              mountPath: /tmp/spire-server/private
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: spire-server
+        - name: data
+          emptyDir: {}
+        - name: server-socket
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+  namespace: spire
+spec:
+  selector:
+    app: spire-server
+  ports:
+    - name: grpc
+      port: 8081
+      targetPort: 8081
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-oidc
+  namespace: spire
+spec:
+  selector:
+    app: spire-server
+  ports:
+    - name: http
+      port: 8443
+      targetPort: 8443
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  namespace: spire
+
+---
+# The k8s workload attestor asks the kubelet which pod a caller is in.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent-cpex-demo
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "nodes/proxy"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent-cpex-demo
+subjects:
+  - kind: ServiceAccount
+    name: spire-agent
+    namespace: spire
+roleRef:
+  kind: ClusterRole
+  name: spire-agent-cpex-demo
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spire-agent
+  namespace: spire
+data:
+  agent.conf: |
+    agent {
+      data_dir = "/run/spire"
+      log_level = "INFO"
+      server_address = "spire-server.spire"
+      server_port = "8081"
+      socket_path = "/run/spire/cpex-demo-sockets/spire-agent.sock"
+      trust_domain = "cpex.demo"
+      # DEMO ONLY: trust the first server bundle instead of a pinned one.
+      insecure_bootstrap = true
+    }
+
+    plugins {
+      NodeAttestor "k8s_psat" {
+        plugin_data {
+          cluster = "cpex-demo"
+        }
+      }
+      KeyManager "memory" {
+        plugin_data {}
+      }
+      WorkloadAttestor "k8s" {
+        plugin_data {
+          skip_kubelet_verification = true
+        }
+      }
+    }
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  namespace: spire
+  labels:
+    app: spire-agent
+spec:
+  selector:
+    matchLabels:
+      app: spire-agent
+  template:
+    metadata:
+      labels:
+        app: spire-agent
+    spec:
+      serviceAccountName: spire-agent
+      # The workload attestor reads a caller's cgroup from /proc and
+      # reaches the kubelet on the node's address.
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: spire-agent
+          image: ghcr.io/spiffe/spire-agent:1.9.6
+          args: ["-config", "/run/spire/config/agent.conf"]
+          livenessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/cpex-demo-sockets/spire-agent.sock"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: ["/opt/spire/bin/spire-agent", "healthcheck", "-socketPath", "/run/spire/cpex-demo-sockets/spire-agent.sock", "--shallow"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: agent-socket
+              mountPath: /run/spire/cpex-demo-sockets
+            - name: psat-token
+              mountPath: /var/run/secrets/tokens
+      volumes:
+        - name: config
+          configMap:
+            name: spire-agent
+        - name: agent-socket
+          hostPath:
+            path: /run/spire/cpex-demo-sockets
+            type: DirectoryOrCreate
+        - name: psat-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: spire-agent
+                  expirationSeconds: 7200
+                  audience: spire-server

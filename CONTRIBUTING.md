@@ -16,7 +16,7 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ## Prerequisites
 
-- **Go 1.26.5+** (matches `go.work`)
+- **Go 1.26.10+** (matches `go.work`)
 - **Python 3.12+** (for `keycloak_sync.py` and the demo setup scripts)
 - **Docker or Podman** (for building container images)
 - **pre-commit** (for local hooks)
@@ -291,13 +291,13 @@ Two things worth knowing before reading it:
 - **`release-smoke-linux.yaml` is in those numbers.** It installs the way a user
   does, `curl | sh` from GitHub Releases, which is the point of it — so it cannot
   be told apart from a real Linux user by behaviour. The page subtracts it by
-  *count* instead: **one** install per successful run lands in the figures the page
-  reads. The run installs three times — a fresh install of the newest stable tag,
-  an upgrade to the tag under test, and a no-op re-run — but on a push to `main` the
-  latter two land on `main-latest`, which the collector excludes because
-  `--clobber` resets its download counts on every push. Change that structure, and
-  the estimate drifts until `CI_INSTALLS_PER_RUN` in
-  `docs/install-stats/index.html` is updated to match.
+  *count* instead: **one** install per job lands in the figures the page reads,
+  with one job per architecture. Each job installs three times — a fresh install
+  of the newest stable tag, an upgrade to the tag under test, and a no-op re-run —
+  but on a push to `main` the latter two land on `main-latest`, which the collector
+  excludes because `--clobber` resets its download counts on every push. Change
+  that structure, and the estimate drifts until `scripts/collect-install-stats.sh`
+  is updated to match.
 - **The figures include us.** At the current scale, maintainers running the
   installer are a large share of the total. Do not read a daily number as new users.
 

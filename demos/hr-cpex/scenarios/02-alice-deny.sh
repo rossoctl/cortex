@@ -1,24 +1,21 @@
 #!/usr/bin/env bash
-# Alice (engineer, role.engineer) calls get_compensation. Expected:
-#
-#   * Gateway denies with an MCP JSON-RPC 2.0 error frame at HTTP 200:
-#     error.message = the human reason, error.data.error = the cpex code
-#     (cpex.<sanitized-code>), error.data.plugin = cpex. The forward proxy
-#     renders MCP-protocol errors for MCP requests (see
-#     core/listener/httpx/render.go).
-#   * No token exchange happened (Keycloak's /token endpoint
-#     should NOT receive a token-exchange call for this request)
-#   * MCP server NEVER sees the call (request short-circuits at policy)
+# Alice (engineer) calls get_compensation. require(role.hr) denies before
+# delegation, so Keycloak sees no token exchange and hr-mcp no request.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Alice (engineer) → get_compensation"
-note "Expected: HTTP 200 + JSON-RPC error frame, error.data.error=cpex.routes_tool_get_compensation_apl_pre_invocation_0_"
-note "Triggered by: require(role.hr) deny BEFORE delegation runs"
-note "Expected upstream: no inbound request (gateway short-circuited)"
+note "Denied by require(role.hr), the route's first step"
 
 ALICE=$(mint alice)
 CLIENT=$(mint hr-copilot)
 
+reset_upstream
+before=$(kc_exchange_count)
 call_get_compensation "$ALICE" "$CLIENT" false
+
+expect_deny cpex.routes_tool_get_compensation_pre_invocation_0_
+expect_exchanges "$before" 0
+expect_upstream_calls 0
+finish

@@ -130,7 +130,7 @@ type Context struct {
 **Ownership rules:**
 - Plugins **read** any field they declared in `Capabilities.Reads`.
 - Plugins **write** fields they declared in `Capabilities.Writes`. By convention each extension slot has exactly one writer (the parser plugin).
-- Plugins read `pctx.Body` / `pctx.ResponseBody` only if they declared `ReadsBody: true`.
+- Plugins read `pctx.Body` / `pctx.ResponseBody` only if they declared `ReadsBody: true`. One exception: `lineage-telemetry` reads them without declaring it, so that it may sit after a plugin that rewrites the body; the parsers it requires declare `ReadsBody`, so the bodies are buffered (see its `Capabilities()`).
 - Plugins mutate body content via `pctx.SetBody(newBytes)` if they declared `WritesRequestBody: true`, or `pctx.SetResponseBody(newBytes)` if they declared `WritesResponseBody: true`. Direct assignment (`pctx.Body = ...`) compiles but bypasses listener propagation and misses the Invocation + body-mutation event emission — see §6, "Body mutation."
 - `Identity` is populated by whichever auth plugin ran (jwt-validation ships a `claimsIdentity` adapter around `validation.Claims`; a SAML / mTLS / custom plugin publishes its own adapter). The framework reads it through the `Identity` interface (`Subject()` / `ClientID()` / `Scopes()`) so no plugin-specific type leaks into `pipeline/`.
 - `Agent`, `Session` are populated by the listener before `Run`. Plugins treat them as read-only.

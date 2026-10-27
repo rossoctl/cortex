@@ -64,10 +64,10 @@ restarting.
 A restart does not wait for those requests either. On a stop the proxy closes every port at
 once and exits, typically in well under a second, and its supervisor kills one that has not
 gone within 3s — inside launchd's 5s, so no proxy is ever left behind holding the ports. The
-proxy that replaces it binds its ports before it opens anything in `~/.cortex`, then replays
-the session archive (up to 5s, see below) before it serves; a client that connects during
-the replay is answered when it ends rather than refused. When a restart genuinely is needed, `agentop service install` says how many
-connections it is about to cut. Setup does not pass that line on.
+proxy that replaces it binds its ports before it opens anything in `~/.cortex`, so a client
+that connects before it serves is answered once it does rather than refused. When a restart
+genuinely is needed, `agentop service install` says how many connections it is about to cut.
+Setup does not pass that line on.
 
 To restart deliberately: `agentop service restart`.
 
@@ -340,9 +340,10 @@ own eviction (`session.max_sessions`, a `session.ttl`). `agentop` lists every se
 holds beside the ones in memory, and Enter opens one like any other. Each session keeps its
 figures across a restart too — events, tokens, cost, title: the proxy adds what the archive holds
 from before the restart to what it has seen since. LAST 1H and the usage pane's hour windows
-survive a restart as well: at startup, before it serves anything, the proxy replays the archive's
-last six hours into them. If that would take longer than 5 seconds it gives up, and they start
-empty as they used to.
+survive a restart as well: at startup the proxy replays the archive's last six hours into them,
+while it is already serving. For the few seconds that takes they count only traffic since the
+start, then fill in. If the replay would take longer than a minute it gives up, and they count
+only traffic since the start, as they used to.
 
 **Unlike the cost ledger, this is the content.** Prompts, completions, tool arguments and
 tool results — everything the session API serves — sit in

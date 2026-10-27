@@ -164,11 +164,15 @@ func isMCPMethod(method string) bool {
 }
 
 func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	// Parse the bytes as sent after any zstd Content-Encoding, as
+	// inference-parser does, so a compressed call is claimed rather than
+	// passed through unparsed.
+	body := parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)
 	// Body-less transport-layer detection. Scoped to the configured
 	// MCP-endpoint paths because there's no protocol payload to
 	// confirm; without the path narrow, every body-less GET in the
 	// cluster would risk being mis-classified as an MCP SSE channel.
-	if len(pctx.Body) == 0 {
+	if len(body) == 0 {
 		if p.paths != nil && p.paths.Match(pctx.Path) {
 			switch {
 			case pctx.Method == "DELETE" && pctx.Headers.Get("Mcp-Session-Id") != "":
@@ -212,13 +216,13 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// A top-level non-object body (array, string, number, null) is not
 	// JSON-RPC; peek the first byte so it takes the calm skip path below
 	// rather than logging as malformed.
-	trimmed := bytes.TrimLeft(pctx.Body, " \t\r\n")
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	isObject := len(trimmed) > 0 && trimmed[0] == '{'
 
 	var rpc parsercommon.JSONRPCRequest
 	if isObject {
-		if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
-			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(pctx.Body),
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body),
 				"host", pctx.Host, "path", pctx.Path)
 			return pipeline.Action{Type: pipeline.Continue}
 		}
@@ -234,7 +238,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// guard for its own namespace.
 	if !isObject || !isMCPMethod(rpc.Method) {
 		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(pctx.Body), "host", pctx.Host, "path", pctx.Path)
+			"bodyLen", len(body), "host", pctx.Host, "path", pctx.Path)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -246,7 +250,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	}
 
 	slog.Info("mcp-parser: request", "method", rpc.Method, "isAction", pctx.Extensions.MCP.IsAction)
-	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(pctx.Body), parsercommon.DebugBodyMax))
+	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(body), parsercommon.DebugBodyMax))
 
 	pctx.Observe("matched_" + rpc.Method)
 	return pipeline.Action{Type: pipeline.Continue}

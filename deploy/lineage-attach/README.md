@@ -57,7 +57,7 @@ pair is joined by `lineage.exchange.id` (the request span's own id):
 | `lineage.outcome`, `lineage.denied_by` | how the exchange ended |
 | `lineage.principal.sub`, `lineage.principal.client` | the caller's identity when a validated token carried one (the generated pipeline runs no `jwt-validation`, so not with the generated ConfigMap) |
 | `lineage.parent.source` | `tracestate` — parented on the previous sidecar's stamp; `wire` — on a `traceparent` that arrived without a stamp; `none` — nothing valid arrived, so this hop roots a trace and a `traceparent` is minted for the next |
-| `input.value` / `output.value` | with `capture_io: true`: the parsed A2A message, MCP arguments or LLM prompt, cut at `max_payload_bytes` (4096 unless `MAX_PAYLOAD_BYTES` says otherwise) with a visible marker |
+| `input.value` / `output.value` | with `capture_io: true`: the parsed A2A message, MCP arguments or LLM prompt, or the raw body of a plain HTTP exchange, cut at `max_payload_bytes` (4096 unless `MAX_PAYLOAD_BYTES` says otherwise) with a visible marker |
 
 The attributes are the plugin's: [`plugin-catalog.md`](../../docs/plugin-catalog.md#lineage-telemetry)
 lists its knobs, [`lineage-wire-contract.md`](../../docs/lineage-wire-contract.md) the wire format.
@@ -268,10 +268,11 @@ In the cluster:
   `otel-collector.rossoctl-system.svc.cluster.local:4317`. Nothing downstream
   is assumed; DESIGN "Where you see the spans" covers the platform collector.
 - **Know what leaves the pod.** Content capture is off by default, as in the
-  plugin. `CAPTURE_IO=true` makes the spans carry parsed content: LLM prompts,
-  MCP arguments, A2A messages, cut at 4,096 bytes (`MAX_PAYLOAD_BYTES`;
-  `-1` keeps them whole). That content is
-  PII-bearing. It travels to `OTEL_ENDPOINT` as plain gRPC unless the endpoint
+  plugin. `CAPTURE_IO=true` makes the spans carry content: LLM prompts,
+  MCP arguments, A2A messages, and the raw bodies of plain HTTP calls, cut at
+  4,096 bytes (`MAX_PAYLOAD_BYTES`; `-1` keeps them whole). That content is
+  PII-bearing, and a plain HTTP body can be a credential (a token request's
+  `client_secret`, the token in its reply). It travels to `OTEL_ENDPOINT` as plain gRPC unless the endpoint
   starts with `https://`, and on the stock platform the collector prints every
   attribute into its own pod log.
 
@@ -281,7 +282,7 @@ The generated ConfigMap's plugin entry:
 - name: lineage-telemetry
   config:
     otel_endpoint: "otel-collector.rossoctl-system.svc.cluster.local:4317"   # host:port; https:// prefix turns on TLS
-    capture_io: false     # the plugin's default; CAPTURE_IO=true attaches the parsed content — PII lives in it
+    capture_io: false     # the plugin's default; CAPTURE_IO=true attaches the content — PII lives in it
     self_id: "<deploy>"   # ALWAYS set (SELF_ID, default: the Deployment name) — see below
     namespace: "<ns>"     # ALWAYS set (NAMESPACE): the plugin refuses to start without it
     # max_payload_bytes: 4096 — the plugin's default cap on a captured value (MAX_PAYLOAD_BYTES)

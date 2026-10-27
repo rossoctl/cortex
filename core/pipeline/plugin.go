@@ -1,6 +1,10 @@
 package pipeline
 
-import "context"
+import (
+	"context"
+	"slices"
+	"strconv"
+)
 
 // Plugin is the interface that all pipeline extensions implement.
 type Plugin interface {
@@ -23,6 +27,12 @@ type PluginCapabilities struct {
 	// when any plugin declares this; without it, pctx.Body is nil and
 	// a read silently sees "no body."
 	ReadsBody bool
+
+	// ReadsResponseBody: the plugin reads pctx.ResponseBody and never pctx.Body.
+	// The listener buffers the response body, not the request body, and
+	// Pipeline.New orders it against response mutators only: a request mutator
+	// before it changes nothing it reads.
+	ReadsResponseBody bool
 
 	// WritesRequestBody: the plugin may mutate pctx.Body (call
 	// pctx.SetBody or pctx.SetRequestModel). Implies ReadsBody —
@@ -124,20 +134,87 @@ type PluginCapabilities struct {
 	// describing what this plugin does. Surfaces in `agentop`'s
 	// plugin-detail and catalog panes, and in /v1/plugins.
 	//
-	// Capabilities are static type-level metadata: Capabilities() must
-	// return the same value for any instance produced by a given
-	// factory. If a plugin's behavior varies enough that its capabilities
-	// differ, register it under multiple names.
+	// The capabilities an UNCONFIGURED instance reports are the ceiling for
+	// every instance its factory produces: plugins.Catalog() reads them from
+	// such an instance, once, so they are what /v1/plugins and agentop's
+	// catalog show. A CONFIGURED instance may report less — WithinCeiling
+	// says how much less — when its config means it will not use some of
+	// them, and the pipeline it is built into reads the narrower set. That
+	// is the point: a plugin whose config turns off its response rewriting
+	// stops costing every response its streaming. Anything WithinCeiling
+	// does not admit, plugins.BuildWithDeps logs a WARN naming.
 	Description string
 }
 
-// Normalize applies WritesRequestBody-implies-ReadsBody promotion.
+// WithinCeiling reports whether the catalog, which shows ceiling, describes c:
+// whether c declares nothing ceiling does not, and fits every chain ceiling
+// fits. That holds when no flag ceiling leaves false is set; ReadsBody is not
+// kept alone when ceiling writes a body, since a pure reader may not follow a
+// mutator; no Requires or RequiresLater name is added; and RequiresAny is
+// either ceiling's set or empty, since dropping a name and adding one each
+// refuse chains ceiling fits. Both sides are normalized first, so a configured
+// instance that keeps WritesRequestBody need not repeat the ReadsBody it
+// implies. Description is not compared. It names the first difference, or ""
+// when there is none.
+func (c PluginCapabilities) WithinCeiling(ceiling PluginCapabilities) string {
+	c, ceiling = c.Normalize(), ceiling.Normalize()
+	for _, f := range []struct {
+		name      string
+		got, have bool
+	}{
+		{"ReadsBody", c.ReadsBody, ceiling.ReadsBody},
+		{"ReadsResponseBody", c.ReadsResponseBody, ceiling.ReadsResponseBody},
+		{"WritesRequestBody", c.WritesRequestBody, ceiling.WritesRequestBody},
+		{"WritesResponseBody", c.WritesResponseBody, ceiling.WritesResponseBody},
+		{"WritesDestination", c.WritesDestination, ceiling.WritesDestination},
+	} {
+		if f.got && !f.have {
+			return f.name
+		}
+	}
+	if c.ReadsBody && !c.WritesRequestBody && !c.WritesResponseBody &&
+		(ceiling.WritesRequestBody || ceiling.WritesResponseBody) {
+		return "ReadsBody without a body writer"
+	}
+	for _, f := range []struct {
+		name      string
+		got, have []string
+	}{
+		{"Requires", c.Requires, ceiling.Requires},
+		{"RequiresLater", c.RequiresLater, ceiling.RequiresLater},
+	} {
+		for _, n := range f.got {
+			if !slices.Contains(f.have, n) {
+				return f.name + " " + strconv.Quote(n)
+			}
+		}
+	}
+	if len(c.RequiresAny) > 0 {
+		for _, n := range c.RequiresAny {
+			if !slices.Contains(ceiling.RequiresAny, n) {
+				return "RequiresAny " + strconv.Quote(n)
+			}
+		}
+		for _, n := range ceiling.RequiresAny {
+			if !slices.Contains(c.RequiresAny, n) {
+				return "RequiresAny without " + strconv.Quote(n)
+			}
+		}
+	}
+	return ""
+}
+
+// Normalize applies the promotions: either write implies ReadsBody, and ReadsBody
+// implies ReadsResponseBody.
 // Called by Pipeline.New for every plugin's declared capabilities so the
 // rest of the framework reads a normalized form. Plugins never need to
 // call this themselves.
 func (c PluginCapabilities) Normalize() PluginCapabilities {
 	if c.WritesRequestBody || c.WritesResponseBody {
 		c.ReadsBody = true
+	}
+	if c.ReadsBody {
+		c.ReadsResponseBody = true
 	}
 	return c
 }

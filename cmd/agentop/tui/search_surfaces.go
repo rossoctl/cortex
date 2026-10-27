@@ -31,9 +31,27 @@ func (m *model) surface(t paneID) searchSurface {
 		return docSurface{m, t, &m.helpVp, &m.helpDoc}
 	case paneUsage:
 		return usageSurface{m}
+	case paneTimeline:
+		return timelineSurface{m}
 	}
 	return nil
 }
+
+// timelineSurface is the timeline pane, drawn to fit like usage: its place is only which
+// matching line is current.
+type timelineSurface struct{ m *model }
+
+func (s timelineSurface) matchLines() []int { return s.m.timelineDoc.matches }
+
+func (s timelineSurface) spot() searchSpot {
+	r, _ := s.m.timelineDoc.currentRow()
+	return searchSpot{row: r}
+}
+
+func (s timelineSurface) lineOf(sp searchSpot) int { return sp.row }
+func (s timelineSurface) reveal(i int)             { s.m.timelineDoc.setCurrent(i); s.redraw() }
+func (s timelineSurface) restore(searchSpot)       { s.m.timelineDoc.clearCurrent(); s.redraw() }
+func (s timelineSurface) redraw()                  { s.m.timelineBody() }
 
 // tableSurface is a table pane whose rows already hold their whole values: the table matches
 // the rows as they are, and the cursor is the place.

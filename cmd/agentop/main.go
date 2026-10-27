@@ -69,7 +69,7 @@ func displayVersionOf(version, revision string) string {
 // The deprecated "claude-code" alias still dispatches (its case stays in main)
 // but is intentionally omitted here: it is no longer advertised in the usage
 // block or the unknown-subcommand hint. Use "configure claude-code" instead.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "service", "configure", "exec", "server", "tools", "pipeline", "pricing", "cost", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -97,6 +97,8 @@ Usage:
                                environment, for tools with no settings file
   agentop server [<action>]    the inference server each agent's new sessions
                                use: add, remove, use, reset; alone, list them
+  agentop script <action>      the script plugins Cortex ships: list, install,
+                               remove
   agentop tools <action>       tool-definition costs: scan
   agentop pipeline <action>    the plugin pipeline in effect: get
   agentop pricing              show the model rates in effect (--host <gateway>)
@@ -153,6 +155,8 @@ func main() {
 			os.Exit(runExec(os.Args[2:], os.Stdout, os.Stderr))
 		case "server":
 			os.Exit(runServer(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+		case "script":
+			os.Exit(runScript(os.Args[2:], os.Stdout, os.Stderr))
 		case "service":
 			os.Exit(runService(os.Args[2:], os.Stdout, os.Stderr))
 		case "observe":

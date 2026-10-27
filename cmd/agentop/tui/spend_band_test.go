@@ -1147,8 +1147,9 @@ func TestSpendBandNeedsScopeMarker_OnlyWhenOneSessionIsOnScreen(t *testing.T) {
 func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 	// The panes that show ONE session's content, and so need the band's scope spelled out.
 	singleSession := map[paneID]bool{
-		paneEvents: true, // one session's timeline
-		paneDetail: true, // one event of it, manifest view included
+		paneEvents:   true, // one session's timeline
+		paneDetail:   true, // one event of it, manifest view included
+		paneTimeline: true, // one session's agents and hosts
 	}
 	// The panes that do not. Usage is listed here for its own reason: it states its scope in
 	// its own header, and a user who scoped it to one session chose that.
@@ -1166,8 +1167,8 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 			continue
 		}
 		// A session is selected throughout: that is the state the marker exists for, and the
-		// state every pane is reachable in.
-		m := &model{pane: p, selectedSess: "s1"}
+		// state every pane is reachable in. The Timeline names its own, set when it opens.
+		m := &model{pane: p, selectedSess: "s1", timeline: timelineState{session: "s1"}}
 		if got := m.spendBandNeedsScopeMarker(); got != singleSession[p] {
 			t.Errorf("pane %v: spendBandNeedsScopeMarker() = %v, want %v", p, got, singleSession[p])
 		}

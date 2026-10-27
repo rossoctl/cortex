@@ -937,6 +937,11 @@ type Aggregator struct {
 	// rates prices requests that carry no cost event. Optional: nil means only
 	// published figures count, which is the behaviour before WithPricing existed.
 	rates pricing.Resolver
+
+	// replaying is true between BeginReplay and its end; replayOps holds what the replay's
+	// private ring must also do before it merges. See BeginReplay.
+	replaying bool
+	replayOps []func(*Aggregator)
 }
 
 // pendingRequest is the request half of one turn: the plugins that ran before the

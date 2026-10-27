@@ -1,0 +1,18 @@
+# Strategic-merge patch `make apply WITH_SPIRE=1` applies to the
+# hr-cpex-agent Deployment: mount the SPIRE agent's Workload API socket
+# into the sidecar only. The agent container gets no socket, so it
+# cannot fetch an SVID of its own.
+spec:
+  template:
+    spec:
+      containers:
+        - name: authbridge-cpex
+          volumeMounts:
+            - name: spire-agent-socket
+              mountPath: /spiffe-workload-api
+              readOnly: true
+      volumes:
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/cpex-demo-sockets
+            type: Directory

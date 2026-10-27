@@ -97,3 +97,60 @@ func TestReplayCopy_DoesNotGrowWithTheConversation(t *testing.T) {
 		t.Fatalf("a copy grew with the conversation: %d bytes after one turn, %d after fifty", one, many)
 	}
 }
+
+// FinishReplay adds the replay to what live traffic recorded meanwhile, in every ring: the
+// all-sessions ring, an agent's, and a session's — one both sides wrote, and ones only one did.
+func TestFinishReplay_AddsTheReplayToLiveTraffic(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 30, 0, time.UTC)
+	clock := func() time.Time { return now }
+	live := New(WithClock(clock))
+	priv := live.BeginReplay()
+	cc := func(e *pipeline.SessionEvent) *pipeline.SessionEvent {
+		e.Client = &pipeline.EventClient{Name: "claude-code", Version: "1.0"}
+		return e
+	}
+	live.Record("both", cc(respEvent(now, 200, time.Second, "m", 10)))
+	live.Record("live", respEvent(now, 200, time.Second, "m", 20))
+	priv.Replay("both", cc(respEvent(now.Add(-time.Hour), 200, time.Second, "m", 100)))
+	priv.Replay("old", respEvent(now.Add(-2*time.Hour), 200, time.Second, "m", 200))
+	live.FinishReplay(priv)
+
+	for id, want := range map[string]int64{"": 330, "both": 110, "live": 20, "old": 200} {
+		if got := live.Snapshot(MaxWindow, MaxWindow, id, GroupNone).Totals.Tokens; got != want {
+			t.Errorf("session %q: tokens = %d, want %d", id, got, want)
+		}
+	}
+	if got := live.AgentSnapshot(MaxWindow, MaxWindow, "", "claude-code", GroupNone).Totals.Tokens; got != 110 {
+		t.Errorf("claude-code's ring: tokens = %d, want 110", got)
+	}
+}
+
+// The merge keeps the session cap, and what it gives up is the coldest ring: a replayed session
+// before one live traffic is writing.
+func TestFinishReplay_KeepsTheSessionCap(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 30, 0, time.UTC)
+	live := New(WithClock(func() time.Time { return now }), WithMaxSessions(2))
+	priv := live.BeginReplay()
+	live.Record("live", respEvent(now, 200, time.Second, "m", 1))
+	priv.Replay("old", respEvent(now.Add(-2*time.Hour), 200, time.Second, "m", 1))
+	priv.Replay("newer", respEvent(now.Add(-time.Hour), 200, time.Second, "m", 1))
+	live.FinishReplay(priv)
+	for id, want := range map[string]int64{"live": 1, "newer": 1, "old": 0} {
+		if got := live.Snapshot(MaxWindow, MaxWindow, id, GroupNone).Totals.Tokens; got != want {
+			t.Errorf("session %q: tokens = %d, want %d", id, got, want)
+		}
+	}
+}
+
+// Erasures stop being logged once the replay ends, whichever way: a clear after it must not reach
+// the next replay's ring.
+func TestAbandonReplay_StopsLogging(t *testing.T) {
+	live := New()
+	live.BeginReplay()
+	live.Cleared()
+	live.AbandonReplay()
+	live.Cleared()
+	if live.replaying || live.replayOps != nil {
+		t.Fatalf("after AbandonReplay: replaying=%v, %d ops logged", live.replaying, len(live.replayOps))
+	}
+}

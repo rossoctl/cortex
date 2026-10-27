@@ -39,9 +39,9 @@ var allProfiles = []ProfileName{
 //
 // Artifact contents:
 //
-//	local     desktop cortex — the three parsers + tool-prune
+//	local     desktop cortex — the three parsers, tool-prune and script
 //	full      authbridge image, Kubernetes proxy-sidecar, release tarballs,
-//	          make dev-install — all fourteen
+//	          make dev-install — all fifteen
 //	lite      authbridge-lite image — sidecar minimum
 //	envoy     authbridge-envoy image
 //	cpex      authbridge-cpex image
@@ -51,6 +51,11 @@ var membership = map[PluginName][]ProfileName{
 	"inferenceparser": {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"mcpparser":       {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"toolprune":       {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy},
+
+	// Laptop only by behaviour, not by profile: it runs nothing unless cmd/cortex
+	// says the process is a local install. The full profiles carry it because the
+	// laptop's release tarballs are built from them; only cmd/cortex registers it.
+	"script": {ProfileLocal, ProfileFull, ProfileFullCpex},
 
 	"ibac":        {ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"sparc":       {ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},

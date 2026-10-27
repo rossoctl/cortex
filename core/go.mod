@@ -1,6 +1,6 @@
 module github.com/rossoctl/cortex/core
 
-go 1.26.5
+go 1.26.10
 
 require (
 	github.com/contextforge-org/cpex/go/cpex v0.3.1
@@ -10,8 +10,8 @@ require (
 	github.com/klauspost/compress v1.20.3
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/maximhq/bifrost/core v1.7.15
-	github.com/open-policy-agent/opa v1.21.2
-	github.com/rossoctl/context-guru v0.5.2
+	github.com/open-policy-agent/opa v1.21.4
+	github.com/rossoctl/context-guru v0.5.4
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.20.0
 	github.com/tidwall/sjson v1.2.5

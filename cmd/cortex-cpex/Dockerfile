@@ -46,7 +46,7 @@ RUN CPEX_FFI_TARGET="${TARGETOS}-${TARGETARCH}-${CPEX_LIBC}" CPEX_FFI_DEST=/ffi 
 # from any builder arch), this build links a native-arch libcpex_ffi.a, so the
 # builder must run on the target arch. An amd64-only digest would make the
 # arm64 build either fail to find an arm64 builder or link an incompatible .a.
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
 
 RUN apk add --no-cache git ca-certificates gcc musl-dev
 

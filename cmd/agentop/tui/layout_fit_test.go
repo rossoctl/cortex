@@ -210,7 +210,7 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	panes := map[string]paneID{
 		"sessions": paneSessions, "events": paneEvents, "pipeline": panePipeline,
 		"detail": paneDetail, "catalog": paneCatalog, "usage": paneUsage,
-		"agents": paneAgents,
+		"agents": paneAgents, "timeline": paneTimeline,
 	}
 	for _, dim := range fitSizes {
 		for name, p := range panes {

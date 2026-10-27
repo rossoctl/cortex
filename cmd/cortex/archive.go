@@ -98,28 +98,32 @@ func openSessionArchive(cfg *config.Config, configPath string, sessions *session
 	return arch
 }
 
-// usageReplayBudget bounds the startup replay of the session archive into the usage ring. The
-// replay runs before any listener starts, so this is how long it may delay readiness. Over it the
-// replay is abandoned whole; see replayUsage.
-const usageReplayBudget = 5 * time.Second
+// usageReplayBudget bounds the replay of the session archive into the usage ring. The replay runs
+// beside live traffic, so this delays nothing; it only stops a replay that cannot finish from
+// holding six hours of reduced events indefinitely. Over it the replay is abandoned whole; see
+// replayUsage.
+const usageReplayBudget = 60 * time.Second
 
 // replayUsage refills the usage ring — LAST 1H, the usage pane's duration windows — from the
 // session archive, so a restart leaves them as they were. It reads the last usage.MaxWindow of
-// archived events, reduces each with usage.ReplayCopy, sorts them by time and feeds them to
+// archived events in set, reduces each with usage.ReplayCopy, sorts them by time and feeds them to
 // agg.Replay.
 //
-// RUN BEFORE ANY LISTENER STARTS, which is what keeps it simple. Nothing this process records can
-// be in the archive yet, so nothing is counted twice. No clear or rekey can race it. And feeding
-// in time order makes the ring's eviction and request pairing choose as they did live.
+// BESIDE LIVE TRAFFIC, so it costs no readiness. Three things keep that correct. set was taken
+// before any listener started, and a process never appends to a segment it did not open, so
+// nothing this process records is read back and counted twice. agg is the private ring
+// usage.Aggregator.BeginReplay returned, so feeding in time order makes eviction and request
+// pairing choose as they did live. And the live aggregator logs every clear, delete and rename
+// until FinishReplay applies them to agg, so an erased session does not come back with the merge.
 //
 // NEVER THROUGH THE STORE: the store would hand every event to the cost ledger and the archive
 // again, writing durable rows twice. agg.Replay touches the ring and nothing else, and this takes
 // no store or ledger to reach either.
 //
 // ALL OR NOTHING. A read that does not finish within ctx is abandoned before anything is fed, and
-// the ring starts empty as it always did: a partial ring would show a LAST 1H that is too low as if
-// it were real.
-func replayUsage(ctx context.Context, arch *archive.Archive, agg *usage.Aggregator, now time.Time) (events, sessions, incomplete int, err error) {
+// the ring keeps only live traffic: a partial replay would show a LAST 1H that is too low as if it
+// were real.
+func replayUsage(ctx context.Context, set archive.ReplaySet, agg *usage.Aggregator) (events, sessions, incomplete int, err error) {
 	type replayed struct {
 		id string
 		e  pipeline.SessionEvent
@@ -127,7 +131,7 @@ func replayUsage(ctx context.Context, arch *archive.Archive, agg *usage.Aggregat
 	// About 1KB a kept event (see usage.ReplayCopy), held until this returns. Keeping the decoded
 	// event instead would hold six hours of conversations at once.
 	var evs []replayed
-	incomplete, err = arch.ReplaySince(ctx, now.Add(-usage.MaxWindow), func(id string, e *pipeline.SessionEvent) {
+	incomplete, err = set.Read(ctx, func(id string, e *pipeline.SessionEvent) {
 		evs = append(evs, replayed{id, usage.ReplayCopy(e)})
 	})
 	if err != nil {
@@ -151,18 +155,29 @@ func replayUsage(ctx context.Context, arch *archive.Archive, agg *usage.Aggregat
 	return events, len(seen), incomplete, nil
 }
 
-// replayUsageAtStartup runs replayUsage within usageReplayBudget and says how it went.
-func replayUsageAtStartup(arch *archive.Archive, agg *usage.Aggregator) {
-	ctx, cancel := context.WithTimeout(context.Background(), usageReplayBudget)
-	defer cancel()
+// startUsageReplay takes the replay's segment list — before any listener starts, which is what
+// keeps live traffic out of it — and replays it into live in the background, within
+// usageReplayBudget. The returned channel closes when the replay has merged or given up.
+func startUsageReplay(arch *archive.Archive, live *usage.Aggregator) <-chan struct{} {
 	start := time.Now()
-	events, sessions, incomplete, err := replayUsage(ctx, arch, agg, start)
-	took := time.Since(start)
-	if err != nil {
-		slog.Warn("usage: did not replay the session archive into the usage ring; LAST 1H and the usage pane start empty",
-			"error", err, "budget", usageReplayBudget, "took", took)
-		return
-	}
-	slog.Info("usage: replayed the session archive into the usage ring", "window", usage.MaxWindow,
-		"events", events, "sessions", sessions, "incompleteSegments", incomplete, "took", took)
+	set := arch.ReplaySources(start.Add(-usage.MaxWindow))
+	priv := live.BeginReplay()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), usageReplayBudget)
+		defer cancel()
+		events, sessions, incomplete, err := replayUsage(ctx, set, priv)
+		took := time.Since(start)
+		if err != nil {
+			live.AbandonReplay()
+			slog.Warn("usage: did not replay the session archive into the usage ring; LAST 1H and the usage pane count only traffic since the start",
+				"error", err, "budget", usageReplayBudget, "took", took)
+			return
+		}
+		live.FinishReplay(priv)
+		slog.Info("usage: replayed the session archive into the usage ring", "window", usage.MaxWindow,
+			"events", events, "sessions", sessions, "incompleteSegments", incomplete, "took", took)
+	}()
+	return done
 }

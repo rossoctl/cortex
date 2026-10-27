@@ -73,10 +73,14 @@ type Config struct {
 	// For A2A (inbound agent calls): input = user message parts, output = artifact.
 	// For MCP tools/call: input = tool params JSON, output = tool result JSON.
 	// For Inference (LLM): input = messages array JSON, output = completion text.
+	// For plain HTTP (no parser claimed the exchange): input = the request
+	// body, output = the response body, each when whole and UTF-8 text.
 	//
 	// Off by default — enable only if traces do not contain PII or the
-	// OTel backend enforces appropriate access controls.
-	CaptureIO bool `json:"capture_io" description:"Attach parsed request/response content as input.value / output.value." default:"false"`
+	// OTel backend enforces appropriate access controls. The raw bodies carry
+	// whatever the app sends in plain HTTP, credentials included (a token
+	// request's client_secret, the access token in its reply).
+	CaptureIO bool `json:"capture_io" description:"Attach request/response content as input.value / output.value: parsed for a2a/mcp/inference, the raw body for plain HTTP (credentials included)." default:"false"`
 
 	// MaxPayloadBytes caps the size of the input.value / output.value
 	// attributes attached under CaptureIO. A payload longer than this is cut on

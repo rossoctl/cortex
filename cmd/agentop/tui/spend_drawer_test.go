@@ -900,6 +900,7 @@ func TestSpendDrawerHost_CoversEveryPane(t *testing.T) {
 		paneNamespaces:   false, // nothing connected yet
 		panePods:         false, // likewise
 		paneUsage:        false, // already a breakdown, and it owns w/b/m
+		paneTimeline:     false, // owns w
 		paneAgents:       true,  // its rows scope the drawer; see spendDrawerHostPane
 		paneSessions:     true,
 		paneEvents:       true,

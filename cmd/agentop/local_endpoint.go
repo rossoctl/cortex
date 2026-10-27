@@ -23,10 +23,9 @@ import (
 const localProbeTimeout = 400 * time.Millisecond
 
 // localStartupWait bounds the session API's answer once a connection to it has been
-// made — the one case the probe waits on. A proxy binds every port before it replays
-// its session archive and serves only once that is done, up to cmd/cortex's
-// usageReplayBudget (5s) later; meanwhile the kernel accepts connections to the bound
-// socket. So connected-but-silent is a Cortex that is starting, and answering 400ms
+// made — the one case the probe waits on. A proxy binds every port before it opens
+// its session archive and serves only once that is done, seconds later on a loaded
+// machine; meanwhile the kernel accepts connections to the bound socket. So connected-but-silent is a Cortex that is starting, and answering 400ms
 // of it with the cluster picker is what agentop did on every launch that met a
 // restart. Nothing listening is still refused at the connect, inside
 // localProbeTimeout. A var so a test of a socket that never answers need not wait it out.

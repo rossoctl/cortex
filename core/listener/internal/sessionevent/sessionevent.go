@@ -68,9 +68,11 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 			Code:    code,
 			Message: message,
 		},
-		Duration: pipeline.DurationSince(pctx.StartedAt),
-		Client:   pctx.ClientInfo(),
-		TLS:      TLS(pctx),
+		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Client:         pctx.ClientInfo(),
+		Subagent:       pctx.Subagent(),
+		ParentSubagent: pctx.ParentSubagent(),
+		TLS:            TLS(pctx),
 	}
 }
 

@@ -314,6 +314,32 @@ type SessionEvent struct {
 	// ("what program is calling" versus "who is calling"), and treating this one as
 	// the other means building authorization on a request header.
 	Client *EventClient
+
+	// Subagent is the Claude Code agent that made the request — a subagent or an
+	// agent-team teammate — read from the request's X-Claude-Code-Agent-Id header by
+	// Context.Subagent. Empty on the main conversation's requests, on every client that is
+	// not Claude Code, and on a value Context.Subagent refused — see there for what each
+	// case means and why a refused value is not cleaned up instead.
+	//
+	// It names WHICH agent, which Inference.AgentRole cannot, so two subagents running at
+	// once no longer file the same. It does NOT say the row is a subagent's: a teammate
+	// sends this header without the cc_is_subagent marker, so its rows carry an id here
+	// and AgentRole "main". Read AgentRole for that question. For a subagent the same id
+	// names its files under ~/.claude/projects/<dir>/<session>/subagents/, so a consumer
+	// can join a row to its agent-<id>.meta.json for the subagent's type and description.
+	//
+	// Client-asserted, with the same caveat as Client above.
+	Subagent string
+
+	// ParentSubagent is the agent that started Subagent, read from
+	// X-Claude-Code-Parent-Agent-Id by Context.ParentSubagent. Together the two give a
+	// row's place in the session's tree of agents: Subagent is the node, this is its
+	// parent, and EMPTY HERE ON A SUBAGENT'S ROW MEANS THE PARENT IS THE CONVERSATION —
+	// Claude Code sends the header only when the spawner was itself an agent. See
+	// Context.ParentSubagent for the other empty cases.
+	//
+	// Client-asserted, with the same caveat as Client above.
+	ParentSubagent string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -521,6 +547,11 @@ type sessionEventWire struct {
 	// request that sent no User-Agent emits no key at all. A value type here would
 	// make "no client" and "a client that named nothing" the same wire bytes.
 	Client *EventClient `json:"client,omitempty"`
+	// omitempty: absent on every row but a subagent's or a teammate's, and the same skew reason as
+	// TunnelReason above.
+	Subagent string `json:"subagent,omitempty"`
+	// omitempty: absent on every row but those of an agent another agent started.
+	ParentSubagent string `json:"parentSubagent,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -551,6 +582,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		HTTPPath:        e.HTTPPath,
 		UpgradeStripped: e.UpgradeStripped,
 		Client:          e.Client,
+		Subagent:        e.Subagent,
+		ParentSubagent:  e.ParentSubagent,
 	})
 }
 
@@ -589,6 +622,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		HTTPPath:        w.HTTPPath,
 		UpgradeStripped: w.UpgradeStripped,
 		Client:          w.Client,
+		Subagent:        w.Subagent,
+		ParentSubagent:  w.ParentSubagent,
 	}
 	return nil
 }

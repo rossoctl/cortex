@@ -286,6 +286,9 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 		// reach it. A drawer whose hint line advertises [w] on the one pane where `w` belongs to
 		// something else is a lie printed on screen.
 		return false, "spend: the usage pane is the breakdown — use its own [b] and [w]"
+	case paneTimeline:
+		// Its own [w] picks the time window, and runs before the drawer's.
+		return false, "spend: the timeline's [w] is its window — open the drawer from the events pane"
 	case paneAgents:
 		// THE ROW UNDER THE CURSOR SCOPES THE DRAWER, and that is what makes this pane host it
 		// where the usage pane refuses. The pane's rows are a per-agent breakdown of ONE window,

@@ -69,7 +69,7 @@ func TestFitHintLine_DropsFromTheFront(t *testing.T) {
 func TestFitHintLine_EveryPaneFitsAt80(t *testing.T) {
 	for _, pane := range []paneID{
 		paneNamespaces, panePods, paneSessions, paneEvents,
-		paneDetail, paneUsage, panePipeline, panePluginDetail, paneCatalog,
+		paneDetail, paneUsage, paneTimeline, panePipeline, panePluginDetail, paneCatalog,
 	} {
 		m := &model{pane: pane, eventColumns: defaultColumnSelection()}
 		got := fitHintLine(m.helpView(), 80)

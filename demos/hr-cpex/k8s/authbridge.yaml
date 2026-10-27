@@ -1,0 +1,99 @@
+# Cortex runtime config for the hr-cpex sidecar. `make apply` builds the
+# authbridge-config ConfigMap from this file, appending
+# spire/authbridge-spiffe.yaml when WITH_SPIRE=1.
+mode: proxy-sidecar
+listener:
+  # Reverse proxy fronts the agent (inbound passthrough — see pipeline).
+  reverse_proxy_addr: ":8000"
+  reverse_proxy_backend: "http://localhost:8001"
+  # Forward proxy is where the agent's MCP tool calls egress; cpex runs
+  # on this outbound path. Loopback only: the agent reaches it over
+  # localhost, and get_headcount authenticates with the agent's own
+  # workload identity, so anything else that could reach the pod IP
+  # could call it as the agent. `kubectl port-forward` still reaches it.
+  forward_proxy_addr: "127.0.0.1:8081"
+  # Session API and stats bind to localhost only — both expose raw
+  # user content / internal state and have no auth. Reach them via
+  # `kubectl port-forward` (works against the pod regardless of
+  # Service ports), never cluster-wide.
+  session_api_addr: "127.0.0.1:9094"
+stats:
+  stats_address: "127.0.0.1:9093"
+session:
+  # The taint scenarios (08/09) depend on the session store; keep it on.
+  enabled: true
+  ttl: 30m
+pipeline:
+  # Inbound is pure passthrough: the reverse proxy must forward the A2A
+  # client's X-User-Token + Authorization + X-Session-Id headers to the
+  # agent unmodified, so the agent can re-attach them on egress. cpex
+  # does NOT run here — enforcement moved to the outbound path.
+  inbound:
+    plugins: []
+  outbound:
+    plugins:
+      # mcp-parser populates pctx.Extensions.MCP from the agent's
+      # JSON-RPC tool call; cpex reads from there for CMF dispatch.
+      - name: mcp-parser
+      # cpex handles identity, policy, delegation, redaction, PII, and
+      # session taint through the CPEX policy. Identity
+      # resolvers (jwt-user ← X-User-Token, jwt-client ← Authorization)
+      # MUST run here so the resolved subject is present — the cpex
+      # session store binds taint to that subject (Finding 2). The
+      # CPEX-side YAML lives in the cpex-policy ConfigMap, mounted at
+      # /etc/cpex/cpex.yaml.
+      - name: cpex
+        config:
+          hooks:
+            on_request:
+              - cmf.tool_pre_invoke
+            on_response:
+              - cmf.tool_post_invoke
+          config_file: /etc/cpex/cpex.yaml
+          fail_open: false
+          # Keycloak is a cluster-private address, which CPEX's JWKS
+          # fetches and token exchange refuse by default.
+          private_destinations: true
+          # Forward the token delegate() mints in place of the caller's.
+          # `make apply CPEX_DELEGATION=available` turns it on; it needs
+          # CPEX 0.3.1 or later.
+          delegated_credentials: false
+          # The hosts each delegation target's token may be sent to. Every
+          # delegating tool is on hr-mcp: get_compensation and
+          # get_headcount (the agent's own SVID) delegate to workday-api,
+          # search_repos to github-api. A delegating call to any other
+          # host is denied (cpex.delegation_destination_mismatch).
+          delegated_credential_hosts:
+            workday-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
+            github-api: [hr-mcp, hr-mcp.cpex-demo, hr-mcp.cpex-demo.svc, hr-mcp.cpex-demo.svc.cluster.local]
+          # hr-mcp reads JSON with Python's json, which accepts bodies the
+          # sidecar's parsers cannot (UTF-16, NaN, Infinity, 1e400, a byte
+          # order mark), so such a body to it is refused rather than passed
+          # to CPEX as traffic no tool route judges
+          # (cpex.unparseable_request). The names cover hr-mcp reached
+          # by its Service name; the CIDRs cover it reached by address,
+          # since the agent can dial its cluster IP or pod IP directly and
+          # a name list alone would not see that. They are kind's default
+          # Service and pod ranges (--service-cluster-ip-range,
+          # --cluster-cidr); change them if your cluster uses others. A
+          # pinned clusterIP would be narrower but leaves the pod IP open,
+          # and pod IPs cannot be pinned, so the ranges are the narrowest
+          # form that covers both. Only unclaimed, unreadable JSON objects
+          # are refused, so other in-cluster traffic is unaffected.
+          strict_hosts:
+            - hr-mcp
+            - hr-mcp.cpex-demo
+            - hr-mcp.cpex-demo.svc
+            - hr-mcp.cpex-demo.svc.cluster.local
+            - 10.96.0.0/16
+            - 10.244.0.0/16
+          # Bypass hosts default covers keycloak/SPIRE/observability so
+          # those egress calls don't pay the FFI cost.
+          #
+          # The agent's own JWT-SVID, fetched from SPIRE, for routes that
+          # authenticate the agent as itself (get_headcount). Its audience
+          # is the realm issuer, because the delegator hands it to
+          # Keycloak as a client assertion. Inert without the spiffe:
+          # block that WITH_SPIRE=1 appends.
+          workload:
+            audience: "http://keycloak.cpex-demo:8080/realms/cpex-demo"

@@ -8,8 +8,10 @@ One fact shapes it: Codex loads a dotenv file — `$CODEX_HOME/.env` when `CODEX
 otherwise `~/.codex/.env` — itself at process start,
 confirmed against the real Codex CLI (writing a dead proxy address there and running bare
 `codex exec`, with no `agentop` wrapper at all, broke both its websocket and its HTTPS
-fallback transport). There is no settings JSON and no background service, so the routing
-goes into that file directly.
+fallback transport). There is no settings JSON, so the routing goes into that file
+directly. **Every Codex process reads it once, when it starts** — and that includes
+Codex's own background server, which outlives the windows you type into; see
+[Restart Codex's background app-server](#restart-codexs-background-app-server).
 
 ## Enable and revert
 
@@ -87,18 +89,49 @@ skips the question. If you decline, or there is no terminal to ask on, they chan
 and exit 3. `--env PATH` points at a different dotenv file; `--config PATH` reads a
 different Cortex config.
 
+### Restart Codex's background app-server
+
+**Enabling Cortex does not reach a Codex that is already running.** Codex runs a
+long-lived background server, its app-server daemon (`codex app-server --managed-daemon`),
+and the `codex` you type into is only a screen that hands it each prompt: the daemon makes
+the model calls. It reads the dotenv file when it starts and never again, and it is shared
+by every Codex window, so it is often days old. A daemon started before `enable` keeps
+calling OpenAI directly — the window's own startup checks and telemetry reach Cortex, its
+prompts do not, and agentop shows Codex only as a small `pending:codex@…` bucket under
+**Other**, with no tokens. `disable` has the mirror problem: the daemon keeps routing
+through Cortex, and Codex stops working if Cortex is then stopped.
+
+`enable` and `disable` say so when they find a running daemon, naming its pid and when it
+started. To apply the change, restart it:
+
+```sh
+codex app-server daemon restart    # ends any Codex session running through it
+```
+
+Then start `codex` again. To confirm the daemon now goes through Cortex, its connections
+should be to `127.0.0.1:47600` rather than to OpenAI:
+
+```sh
+lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
+```
+
+`agentop` does not restart the daemon itself, because that would end Codex work running in
+any other terminal or editor.
+
 ### Undoing it by hand
 
 Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
 if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
 `~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
-Cortex's. Then delete the record.
+Cortex's. Then delete the record, and restart Codex's background server so it stops using
+the proxy.
 
 ```sh
 # Remove only lines matching these five keys, and only if they point at Cortex:
 #   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
 $EDITOR ~/.codex/.env
 rm -f ~/.cortex/codex-state.json
+codex app-server daemon restart
 ```
 
 ## CA trust
@@ -404,6 +437,12 @@ Not tested:
 
 ## Known issues
 
+- **A running Codex keeps its old routing until its background server restarts.**
+  `enable` and `disable` change a file Codex's app-server daemon reads only when it
+  starts, so the change does not reach a daemon already running — prompts keep bypassing
+  Cortex after an enable, and keep needing it after a disable. Both commands warn when
+  they find a live daemon; `codex app-server daemon restart` applies the change. See
+  [Restart Codex's background app-server](#restart-codexs-background-app-server).
 - **Cost is blank where no list price reaches the model.** Two cases, and neither is
   Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
   model newer than the pinned commit has no rate there; and `bundled: false` turns the

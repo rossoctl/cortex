@@ -18,6 +18,7 @@ tool results.
 | `GET /v1/sessions` | `application/json` | List active sessions (see below) |
 | `GET /v1/sessions/{id}` | `application/json` | The session's most recent events; `?limit=N` and `?before=<seq>` page backward |
 | `GET /v1/sessions/{id}/events/{seq}` | `application/json` | One event by its sequence number |
+| `GET /v1/sessions/{id}/timeline` | `application/json` | The session as spans: Claude Code agents, tool calls, subagent spawns and returns, and hosts (see below) |
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
@@ -86,6 +87,59 @@ history, one evicted from memory is served instead of 404'd, and
 `totalEvents`/`oldestSeq` describe the merged history. `GET
 /v1/sessions/{id}/events/{seq}` falls back to the archive the same way, and
 answers 404 rather than a neighbour when neither holds that seq.
+
+## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
+
+The session's history as spans, for agentop's Timeline pane. Computed from the
+whole session: memory first, then the archive behind it (a 6,000-event session
+takes a few milliseconds; reading one that is only on disk takes over a second).
+The result is cached per session until its newest event changes, or for a minute
+on an idle session, so a pane refreshing every second costs one compute per new
+event. Reads at most 50,000 events, newest first;
+`truncated: true` says older ones exist. 404 for an unknown session. `?from=` and
+`?to=` (RFC 3339) keep only the spans that overlap the range; `agents` is always
+the whole list.
+
+```json
+{"id": "…", "lastSeq": 1225, "start": "…", "end": "…",
+ "agents":  [{"id": "main", "label": "main agent"},
+             {"id": "a1bf9707ee0e71012", "parent": "main", "label": "Survey the code",
+              "type": "Explore", "spawnTool": "toolu_…", "spawnedAt": "…", "returnedAt": "…"}],
+ "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12}],
+ "tools":   [{"agent": "main", "id": "toolu_…", "name": "Bash", "start": "…", "end": "…",
+              "preview": "go test ./...", "seq": 13}],
+ "returns": [{"agent": "a1bf9707ee0e71012", "into": "main", "at": "…", "seq": 90}],
+ "hosts":   [{"host": "api.github.com", "kind": "tunnel", "start": "…", "end": "…", "status": 200, "seq": 7}]}
+```
+
+**Agents, turns, tools and returns are Claude Code only.** They come from the
+requests the inference parser attributed to a Claude Code agent (`agentRole`),
+and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
+
+- A **turn** is one model call, request to end of response. Claude Code's
+  progress-label calls and tool-less side calls (titler, classifier) are left
+  out. `error` marks a call that failed.
+- A **tool** runs from the response that requested it to the agent's first
+  request carrying its result (`inference.toolResults[].toolUseId`). A tool
+  Claude Code started while the response was still streaming can have its
+  result recorded first; its end is clamped to its start. `preview` is up to
+  80 characters of the command, path or description.
+- An **agent** links to the `Agent` tool call that started it by the id the
+  call's result names (`agentId: …`). A fork's result names none, so a fork
+  takes its parent's earliest unmatched spawn. Requests recorded before the
+  proxy captured agent ids are one `subagents` agent.
+- A **return** is a subagent's result reaching another agent:
+  `<agent-message from="…">` or `<task-notification>` in a message that agent
+  had not sent before.
+
+**Hosts** are every outbound request paired with its response, every opaque
+tunnel, and every denial. `kind` is `llm`, `mcp`, `http` or `tunnel`, and
+`h:443` shares `h`'s row.
+
+**`end` absent means still in flight.** A span that never got an answer but
+provably stopped is `lost` and ends where it started: a turn or tool whose agent
+moved on, a `SubagentHandback` (it ends the run), or a request more than ten
+minutes old.
 
 ## `DELETE /v1/sessions`
 
@@ -215,6 +269,21 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   is absent. Note a secret in a path *segment* (a bot token, a webhook path)
   does survive on this unauthenticated surface — worth knowing before
   exporting events off-box.
+- `subagent` — present on rows from a Claude Code subagent or agent-team
+  teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
+  is the same id that names its files under
+  `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.*`. Absent on the
+  main conversation's rows and on every other client's, and absent too when
+  the value was not usable (a control character, over 128 bytes), which is
+  refused rather than cleaned up. The row is still filed in its parent
+  conversation's session. **This key names an agent; it does not say the row
+  is a subagent's.** `inference.agentRole` says that, and on a teammate's row
+  it is `main` while `subagent` is set.
+- `parentSubagent` — the agent that started the one `subagent` names, from
+  `X-Claude-Code-Parent-Agent-Id`, under the same rules. Claude Code sends it
+  only when the spawner was itself an agent, so on a row that names a
+  `subagent` an absent `parentSubagent` means the conversation started it. The
+  two keys together give a row's place in the session's tree of agents.
 
 ## Invocation action vocabulary
 

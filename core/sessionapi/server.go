@@ -60,6 +60,8 @@ type Server struct {
 	// archive serves history the store no longer holds. nil — every deployment but a laptop
 	// with the archive on — leaves every endpoint exactly as it was. See archive.go.
 	archive *archive.Archive
+	// timelines caches /v1/sessions/{id}/timeline per session; see timeline.go.
+	timelines timelineCache
 	// allowClear lets DELETE /v1/sessions clear; false refuses it. clearRefusals and
 	// lastRefusalLog rate-limit the log of refusals. See clear.go.
 	allowClear     bool
@@ -201,6 +203,7 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /v1/sessions/{id}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDelete)
 	mux.HandleFunc("GET /v1/sessions/{id}/events/{seq}", s.handleGetEvent)
+	mux.HandleFunc("GET /v1/sessions/{id}/timeline", s.handleTimeline)
 	mux.HandleFunc("GET /v1/events", s.handleStream)
 	mux.HandleFunc("GET /v1/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /v1/plugins", s.handlePluginCatalog)
@@ -244,8 +247,8 @@ const indexBody = `Cortex / AuthBridge Session API
   DELETE /v1/sessions     clear every session, memory and disk (laptop only)
   GET /v1/sessions/{id}   recent events (?limit=N max 2000, ?before=<seq>,
                           ?view=summary drops message bodies, ~163x smaller)
-  GET /v1/sessions/{id}/events/{seq}
-                          one event in full, payloads included
+  GET /v1/sessions/{id}/events/{seq}  one event in full, payloads included
+  GET /v1/sessions/{id}/timeline      agents, tools and hosts as spans
   DELETE /v1/sessions/{id}
                           erase one session, memory and disk (laptop only)
   GET /v1/events          SSE stream of new events (?session=<id> to filter)
@@ -363,7 +366,7 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 			Name:        pl.Name(),
 			Direction:   direction,
 			Position:    i + 1,
-			ReadsBody:   caps.ReadsBody,
+			ReadsBody:   caps.ReadsResponseBody,
 			Requires:    caps.Requires,
 			RequiresAny: caps.RequiresAny,
 			Description: caps.Description,

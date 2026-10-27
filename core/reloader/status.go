@@ -34,7 +34,9 @@ type Status struct {
 
 	// ActiveConfigSHA256 is the sha256 hex digest of the currently-
 	// active config file bytes. Lets operators cross-check which YAML
-	// revision is running.
+	// revision is running. Where WithExtraWatch adds something the pipelines
+	// are built from (the script plugin's folders, when they hold scripts), it
+	// digests that too, and stops being the config file's own sha256.
 	ActiveConfigSHA256 string `json:"active_config_sha256"`
 }
 

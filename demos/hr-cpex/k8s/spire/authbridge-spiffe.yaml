@@ -1,0 +1,7 @@
+
+# Appended by `make apply WITH_SPIRE=1`. The sidecar fetches its SVIDs
+# in process from the SPIRE agent socket mounted at /spiffe-workload-api
+# (see agent-patch.yaml). Nothing here reads the /opt file mirror.
+spiffe:
+  socket: "unix:///spiffe-workload-api/spire-agent.sock"
+  mirror_files: false

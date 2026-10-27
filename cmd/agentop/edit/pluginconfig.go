@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -28,12 +29,31 @@ type ConfigChange struct {
 	// CreatePlugin appends an entry for Plugin at the end of Chain when the chain
 	// has none. Without it a missing entry is an error. A removal never creates one.
 	CreatePlugin bool
+	// Match, when set, picks the entry among those named Plugin whose config: holds
+	// every key in it with that string value, such as {"dir": "moca-sandbox"}: the
+	// way to address one of several entries sharing a name, as every script slot
+	// does. Two matches are still an error. A created entry gets Match's keys in its
+	// config:, ahead of Path.
+	Match map[string]string
+	// RemoveEntry removes the whole entry, comments inside it included, instead of
+	// editing its config:. Path and Value are then unused. An absent entry changes
+	// nothing.
+	RemoveEntry bool
 }
 
 // ScalarValue is a string value for ConfigChange.Value. It is written as a YAML
 // string whatever it looks like, so "123" or "true" stay strings.
 func ScalarValue(s string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+}
+
+// BoolValue is a boolean value for ConfigChange.Value, written as true or false.
+func BoolValue(b bool) *yaml.Node {
+	v := "false"
+	if b {
+		v = "true"
+	}
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: v}
 }
 
 // MapValue is a mapping of string keys to string values, in the order given:
@@ -66,7 +86,7 @@ func MapValue(pairs ...string) *yaml.Node {
 // plugins list, written in flow style ({...} or [...]) is refused with an error
 // saying so; a value it replaces whole may be in any style.
 func SetPluginConfig(src []byte, ch ConfigChange) ([]byte, error) {
-	if len(ch.Path) == 0 {
+	if len(ch.Path) == 0 && !ch.RemoveEntry {
 		return nil, errors.New("edit: a config change needs at least one key")
 	}
 	// Refuse a src holding U+0085 (NEL), U+2028 (LS), U+2029 (PS), or a \r not
@@ -92,13 +112,17 @@ func SetPluginConfig(src []byte, ch ConfigChange) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	item, err := findEntry(lines, plugins, ch.Plugin)
+	item, err := findEntry(lines, plugins, ch.Plugin, ch.Match)
 	if err != nil {
 		return nil, err
 	}
 
 	var out []string
 	switch {
+	case ch.RemoveEntry && item == nil:
+		return src, nil
+	case ch.RemoveEntry:
+		out = removeEntry(lines, plugins, item)
 	case item == nil && ch.Value == nil:
 		return src, nil
 	case item == nil && !ch.CreatePlugin:
@@ -132,11 +156,15 @@ func chainPlugins(root *yaml.Node, ch ConfigChange) (*yaml.Node, error) {
 	return plugins, nil
 }
 
-// findEntry is the plugins list item named name, or nil when there is none.
-func findEntry(lines []string, plugins *yaml.Node, name string) (*yaml.Node, error) {
+// findEntry is the plugins list item named name whose config: holds match, or nil
+// when there is none.
+func findEntry(lines []string, plugins *yaml.Node, name string, match map[string]string) (*yaml.Node, error) {
 	var found *yaml.Node
 	for _, item := range plugins.Content {
 		if item.Kind == yaml.ScalarNode && item.Value == name {
+			if len(match) > 0 {
+				continue // a bare name has no config:, so it matches nothing
+			}
 			return nil, fmt.Errorf("the %s entry is written as a bare name; write it as `- name: %s` to give it config", name, name)
 		}
 		if item.Kind != yaml.MappingNode {
@@ -145,7 +173,13 @@ func findEntry(lines []string, plugins *yaml.Node, name string) (*yaml.Node, err
 		if _, n := mappingEntry(item, "name"); n == nil || n.Value != name {
 			continue
 		}
+		if !configHolds(item, match) {
+			continue
+		}
 		if found != nil {
+			if len(match) > 0 {
+				return nil, fmt.Errorf("two %s entries in one chain match %s; edit the config by hand", name, describeMatch(match))
+			}
 			return nil, fmt.Errorf("two %s entries in one chain; edit the config by hand", name)
 		}
 		if item.Style&yaml.FlowStyle != 0 || !strings.HasPrefix(strings.TrimSpace(lines[item.Line-1]), "-") {
@@ -156,8 +190,51 @@ func findEntry(lines []string, plugins *yaml.Node, name string) (*yaml.Node, err
 	return found, nil
 }
 
+// configHolds reports whether item's config: has each key of match set to that
+// string value. An empty match holds for every entry.
+func configHolds(item *yaml.Node, match map[string]string) bool {
+	if len(match) == 0 {
+		return true
+	}
+	_, cfg := mappingEntry(item, "config")
+	for k, want := range match {
+		_, v := mappingEntry(cfg, k)
+		if v == nil || v.Kind != yaml.ScalarNode || v.Value != want {
+			return false
+		}
+	}
+	return true
+}
+
+// describeMatch is match as `dir: x`, keys sorted, for errors.
+func describeMatch(match map[string]string) string {
+	keys := make([]string, 0, len(match))
+	for k := range match {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + ": " + match[k]
+	}
+	return strings.Join(parts, ", ")
+}
+
+// removeEntry drops item's lines from the plugins list. It refuses nothing: an
+// entry the list holds can always be cut, since findEntry only returns one written
+// as `- name:` with its keys below. A chain left with no entries keeps its
+// plugins: key, with an empty list, so the file still loads.
+func removeEntry(lines []string, plugins *yaml.Node, item *yaml.Node) []string {
+	start := item.Line - 1
+	end := blockEnd(lines, start, plugins.Column-1, false)
+	if len(plugins.Content) == 1 {
+		return splice(lines, start, end+1, []string{pad(plugins.Column-1) + "[]"})
+	}
+	return splice(lines, start, end+1, nil)
+}
+
 // appendEntry adds `- name: <Plugin>` and its config: after the chain's last entry,
-// at the indentation that entry uses.
+// at the indentation that entry uses. Match's keys come first in config:.
 func appendEntry(lines []string, plugins *yaml.Node, ch ConfigChange) ([]string, error) {
 	dash := plugins.Column - 1
 	last := plugins.Content[len(plugins.Content)-1]
@@ -169,9 +246,25 @@ func appendEntry(lines []string, plugins *yaml.Node, ch ConfigChange) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	body, err := renderPath(ch.Path, ch.Value, keys+2)
-	if err != nil {
-		return nil, err
+	var body []string
+	mkeys := make([]string, 0, len(ch.Match))
+	for k := range ch.Match {
+		mkeys = append(mkeys, k)
+	}
+	sort.Strings(mkeys)
+	for _, k := range mkeys {
+		line, err := renderPath([]string{k}, ScalarValue(ch.Match[k]), keys+2)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, line...)
+	}
+	if len(ch.Path) > 0 {
+		rest, err := renderPath(ch.Path, ch.Value, keys+2)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, rest...)
 	}
 	add := append([]string{
 		pad(dash) + "-" + pad(keys-dash-1) + "name: " + name,
@@ -272,6 +365,9 @@ func renderPath(path []string, value *yaml.Node, indent int) ([]string, error) {
 func renderKey(key string, value *yaml.Node, indent int) ([]string, error) {
 	switch value.Kind {
 	case yaml.ScalarNode:
+		if value.Tag == "!!bool" && (value.Value == "true" || value.Value == "false") {
+			return []string{pad(indent) + key + ": " + value.Value}, nil
+		}
 		s, err := scalarText(value.Value)
 		if err != nil {
 			return nil, err

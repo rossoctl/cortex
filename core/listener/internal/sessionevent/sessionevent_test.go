@@ -29,6 +29,8 @@ func richContext() *pipeline.Context {
 	spiffeURI, _ := url.Parse("spiffe://example.org/ns/team1/sa/weather-agent")
 	hdr := http.Header{}
 	hdr.Set("User-Agent", "claude-cli/1.2.3")
+	hdr.Set(pipeline.ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	hdr.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
 	return &pipeline.Context{
 		Direction: pipeline.Inbound,
 		Method:    "POST",
@@ -131,6 +133,12 @@ func TestDeny_PopulatesEveryFieldTheContextCarries(t *testing.T) {
 	}
 	if ev.Client == nil || ev.Client.Name == "" {
 		t.Errorf("Client = %+v, want the User-Agent resolved", ev.Client)
+	}
+	if ev.Subagent != "a1a2e36cb5946f31c" {
+		t.Errorf("Subagent = %q, want a1a2e36cb5946f31c from X-Claude-Code-Agent-Id", ev.Subagent)
+	}
+	if ev.ParentSubagent != "a0974b0b8591dc76b" {
+		t.Errorf("ParentSubagent = %q, want a0974b0b8591dc76b from X-Claude-Code-Parent-Agent-Id", ev.ParentSubagent)
 	}
 	if ev.At.IsZero() {
 		t.Error("At is zero")

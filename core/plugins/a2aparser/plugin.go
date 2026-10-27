@@ -33,12 +33,16 @@ func (p *A2AParser) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	// Parse the bytes as sent after any zstd Content-Encoding, as
+	// inference-parser does, so a compressed call is claimed rather than
+	// passed through unparsed.
+	body := parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)
 	// No Invocation recorded when the parser doesn't apply to this
 	// message (empty body, non-JSON-RPC body) — otherwise every
 	// unrelated HTTP call through the pipeline would show an "a2a-parser
 	// skip" row in agentop, which is noise. Operators infer "a2a-parser
 	// exists in this pipeline" from the pipeline config, not per-event.
-	if len(pctx.Body) == 0 {
+	if len(body) == 0 {
 		slog.Debug("a2a-parser: no body, skipping")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -46,13 +50,13 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// A top-level non-object body (array, string, number, null) is not
 	// JSON-RPC; peek the first byte so it takes the calm skip path below
 	// rather than logging as malformed.
-	trimmed := bytes.TrimLeft(pctx.Body, " \t\r\n")
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	isObject := len(trimmed) > 0 && trimmed[0] == '{'
 
 	var rpc parsercommon.JSONRPCRequest
 	if isObject {
-		if err := json.Unmarshal(pctx.Body, &rpc); err != nil {
-			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(pctx.Body),
+		if err := json.Unmarshal(body, &rpc); err != nil {
+			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body),
 				"host", pctx.Host, "path", pctx.Path)
 			return pipeline.Action{Type: pipeline.Continue}
 		}
@@ -69,7 +73,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
 		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(pctx.Body), "host", pctx.Host, "path", pctx.Path)
+			"bodyLen", len(body), "host", pctx.Host, "path", pctx.Path)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

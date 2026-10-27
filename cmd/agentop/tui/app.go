@@ -49,13 +49,16 @@ const (
 	// which lists Kubernetes workloads and whose own purpose line used to call them "agents"
 	// too — see paneKeys for how the two are told apart.
 	paneAgents
+	// paneTimeline draws one session's Claude Code agents, tool calls and hosts on a time
+	// axis; see timeline_pane.go.
+	paneTimeline
 )
 
 // lastPaneID is the highest valid paneID. Kept adjacent to the iota block so
 // adding a pane means updating one line here, and TestPaneKeysCoverAllPanes then
 // fails until that pane is documented in paneKeys — which is how paneUsage
 // shipped reachable by `u` but named in no footer and no help overlay.
-const lastPaneID = paneAgents
+const lastPaneID = paneTimeline
 
 // paneNone is the explicit "no previous pane recorded" sentinel for
 // model.previousPane. Using paneNamespaces (the zero value) as a
@@ -572,6 +575,9 @@ type model struct {
 	usage usageState
 	// usageDoc is the usage pane's drawn lines, searched — see usageBody.
 	usageDoc searchDoc
+	// timeline is the Timeline pane's state, and timelineDoc its drawn lines, searched.
+	timeline    timelineState
+	timelineDoc searchDoc
 
 	// spend backs the always-on spend strip. Separate from usage on purpose —
 	// see spendState, which records why sharing one poll chain would blank the
@@ -711,6 +717,11 @@ type model struct {
 	// selectedEventKey pins the events-pane cursor to an event across
 	// rebuilds (see eventKey). Zero value = unpinned.
 	selectedEventKey eventKey
+	// revealSeq is an event the Timeline's enter asked to land on, in session revealSess,
+	// waiting for the snapshot that holds it. Zero when none. Seqs are per session, so the
+	// session is part of the target.
+	revealSeq  uint64
+	revealSess string
 
 	// pipeline is the fetched plugin composition. nil until the initial
 	// GetPipeline response arrives; the pipeline pane shows "(loading…)"
@@ -935,6 +946,7 @@ func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 		sortCol:      sortCol,
 		sortDesc:     sortDesc,
 		usage:        usageState{metric: usageMetric, windowIdx: usageWindowIdx, group: usageGroup},
+		timeline:     timelineState{windowIdx: Settings.timelineWindow(), cursor: -1},
 		sessionsData: sessionMeta,
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
@@ -1031,6 +1043,9 @@ func (m *model) backToPodsPane() {
 	// as if it described the new one.
 	m.usage.reqSeq++
 	m.usage.tickGen++
+	// And the timeline: a session id on the new pod is someone else's session.
+	m.timeline = timelineState{windowIdx: m.timeline.windowIdx, cursor: -1, reqSeq: m.timeline.reqSeq + 1, tickGen: m.timeline.tickGen + 1}
+	m.revealSeq, m.revealSess = 0, ""
 	// Same for the spend strip, and for the same reason. Not optional just because the
 	// strip is always on: a strip left showing the previous pod's dollars while the
 	// operator picks a new one is a figure attributed to the wrong workload, which is
@@ -1283,8 +1298,30 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 	}
 }
 
-// Update handles every message + dispatches the next Cmd.
+// Update handles every message + dispatches the next Cmd, and repaints the whole
+// screen when the message changed panes.
+//
+// THE REPAINT IS A BACKSTOP, not the fix for #1461: Run turns autowrap off, which is
+// what keeps a row the terminal draws wider than bubbletea measured from scrolling the
+// screen. But bubbletea's renderer skips a row equal to the one it drew there last, and
+// the divider under the spend band is the same on every pane, so any drift that still
+// reaches the screen — a terminal that ignores DECAWM, a write from outside the
+// renderer — would otherwise stay on those rows until a resize. A pane change is the
+// moment the operator is looking at a new screen, so it is when a stale row costs most
+// and a repaint costs least: one frame, at 60fps.
+//
+// Decided HERE, around the dispatch, rather than at the thirty-odd places that assign
+// m.pane, so a pane change added later cannot forget it.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	before := m.pane
+	next, cmd := m.update(msg)
+	if m.pane != before {
+		cmd = tea.Batch(tea.ClearScreen, cmd)
+	}
+	return next, cmd
+}
+
+func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -1534,6 +1571,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usage.lastFetch = time.Now()
 		return m, nil
 
+	case timelineLoadedMsg:
+		m.handleTimelineLoaded(msg)
+		return m, nil
+
+	case timelineTickMsg:
+		return m, m.handleTimelineTick(msg)
+
 	case usageTickMsg:
 		// Stop when the pane loses focus, and drop ticks from a previous visit:
 		// a quick exit and re-entry would otherwise leave two chains alive, each
@@ -1728,6 +1772,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.paging, msg.id)
 		if m.pane == paneEvents && m.selectedSess == msg.id {
 			m.rebuildEventsTable()
+			if m.revealSess == msg.id && !m.revealPendingSeq() {
+				// Older than the tail the snapshot holds: say so rather than leave the cursor
+				// somewhere the operator did not ask for.
+				m.revealSeq, m.revealSess = 0, ""
+				m.setFlash("that event is older than the loaded tail — [o] loads earlier pages")
+			}
 		}
 		// AND THE SESSIONS ROW, because the rebase above changed this session's CTX(1M)
 		// figure and the table holds BAKED cells — rebuildSessionsTable renders each gauge to a
@@ -1857,6 +1907,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// mark the connection as failed so the user sees why nothing is
 		// appearing.
 		if strings.HasPrefix(msg.where, "snapshot") || msg.where == "get pipeline" {
+			if m.revealSess == strings.TrimPrefix(msg.where, "snapshot ") {
+				m.revealSeq, m.revealSess = 0, ""
+			}
 			m.setFlash(msg.where + " failed: " + msg.err.Error())
 			// A failed tail snapshot has to re-arm [t] and leave the paged window
 			// described as it stands, rather than stranding the operator on a middle
@@ -2241,6 +2294,9 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 stale:
 	m.sessionsStale = true
+	if m.pane == paneTimeline && m.timeline.session == e.SessionID {
+		m.timeline.stale = true // refetched on the pane's next tick, at most once a second
+	}
 	if m.pane == paneEvents && m.selectedSess == e.SessionID {
 		// TODO: coalesce these rebuilds. Every streamed event rebuilds the whole table
 		// for the session being watched: ~1.5ms flat plus ~0.23ms per 1000 events held
@@ -2477,6 +2533,9 @@ func (m *model) paneView() string {
 		default:
 			body = m.agentsTbl.View()
 		}
+	case paneTimeline:
+		title = m.sessionHeader(m.timeline.session, "timeline")
+		body = m.timelineBody()
 	case paneCatalog:
 		title = fmt.Sprintf("%s · %s · catalog", m.appName(), m.endpoint)
 		if m.catalog == nil {
@@ -2901,6 +2960,24 @@ func Run(ctx context.Context, opts RunOptions) error {
 		fmt.Fprint(os.Stdout, ansi.SetModeCursorKeys)
 		defer fmt.Fprint(os.Stdout, ansi.ResetModeCursorKeys)
 	}
+	// Autowrap (DECAWM) off for the life of the program, so a row the terminal draws
+	// wider than bubbletea measured cannot scroll the screen. bubbletea pads and truncates
+	// every row to the width x/ansi reports, and the terminal has its own width tables:
+	// "वि" is one column to x/ansi and two to go-runewidth. A row bubbletea thinks fills
+	// the terminal exactly then wraps, and in the last row that scrolls the alt screen up
+	// by one. bubbletea's renderer skips any row equal to the one it drew there before,
+	// so after a scroll the rows that never change — the divider under the spend band
+	// above all — keep whatever moved onto them, across pane changes, until a full
+	// repaint (#1461). With autowrap off the overflow overwrites the last column instead,
+	// and nothing moves.
+	//
+	// Every terminal, not only Terminal.app: the disagreement is between two width
+	// tables, and any terminal can hold the other one. bubbletea never sets the mode
+	// itself. Set before the renderer starts and reset after it stops, like the
+	// cursor-key mode above, and reset around $EDITOR by autowrapCmd, which expects a
+	// terminal in its default state.
+	fmt.Fprint(os.Stdout, ansi.ResetModeAutoWrap)
+	defer fmt.Fprint(os.Stdout, ansi.SetModeAutoWrap)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	return err
@@ -2938,9 +3015,49 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 		return editorExitedMsg{gen: gen, err: err}
 	}
 	if wantCursorKeys() {
-		return tea.Exec(cursorKeysCmd{c}, exited)
+		return tea.Exec(cursorKeysCmd{autowrapCmd{c}}, exited)
 	}
-	return tea.ExecProcess(c, exited)
+	return tea.Exec(autowrapCmd{c}, exited)
+}
+
+// autowrapCmd lends the terminal to a command with autowrap on, and turns it off again
+// once the command exits. Run turns it off for agentop's own rows (see there), but an
+// editor drawing its own screen expects the terminal's default, and bubbletea's
+// ReleaseTerminal and RestoreTerminal do not know about the mode.
+//
+// Written to the command's own stdout, before its output and after it, for the reason
+// cursorKeysCmd writes there: bubbletea has released the terminal while Run is called,
+// so the writes cannot land inside a frame.
+type autowrapCmd struct{ *exec.Cmd }
+
+// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
+func (c autowrapCmd) SetStdin(r io.Reader) {
+	if c.Stdin == nil {
+		c.Stdin = r
+	}
+}
+
+func (c autowrapCmd) SetStdout(w io.Writer) {
+	if c.Stdout == nil {
+		c.Stdout = w
+	}
+}
+
+func (c autowrapCmd) SetStderr(w io.Writer) {
+	if c.Stderr == nil {
+		c.Stderr = w
+	}
+}
+
+func (c autowrapCmd) Run() error {
+	if c.Stdout != nil {
+		_, _ = io.WriteString(c.Stdout, ansi.SetModeAutoWrap)
+	}
+	err := c.Cmd.Run()
+	if c.Stdout != nil {
+		_, _ = io.WriteString(c.Stdout, ansi.ResetModeAutoWrap)
+	}
+	return err
 }
 
 // cursorKeysCmd runs a command that borrows the terminal and sets application
@@ -2949,29 +3066,13 @@ func openEditorCmd(gen int, path string) tea.Cmd {
 // Without this, one `e` would leave the trackpad scrolling the terminal's
 // scrollback for the rest of the session. Run is called while bubbletea has
 // released the terminal, so the write cannot interleave with a frame.
-type cursorKeysCmd struct{ *exec.Cmd }
-
-// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
-func (c cursorKeysCmd) SetStdin(r io.Reader) {
-	if c.Stdin == nil {
-		c.Stdin = r
-	}
-}
-
-func (c cursorKeysCmd) SetStdout(w io.Writer) {
-	if c.Stdout == nil {
-		c.Stdout = w
-	}
-}
-
-func (c cursorKeysCmd) SetStderr(w io.Writer) {
-	if c.Stderr == nil {
-		c.Stderr = w
-	}
-}
+//
+// It wraps an autowrapCmd because every command agentop lends the terminal to needs
+// that one, and takes its stream setters from it.
+type cursorKeysCmd struct{ autowrapCmd }
 
 func (c cursorKeysCmd) Run() error {
-	err := c.Cmd.Run()
+	err := c.autowrapCmd.Run()
 	if c.Stdout != nil {
 		_, _ = io.WriteString(c.Stdout, ansi.SetModeCursorKeys)
 	}

@@ -1,6 +1,6 @@
 module github.com/rossoctl/cortex/cmd/cortex-praxis
 
-go 1.26.5
+go 1.26.10
 
 require github.com/rossoctl/cortex/core v0.0.0-20260819180630-8386e3004363
 

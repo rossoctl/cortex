@@ -19,9 +19,10 @@
 # docs/install-stats/ subtracts those installs to estimate real ones. It reads
 # the count off this workflow's run list, per run — so going from one job to two
 # doubled what each run installs. scripts/collect-install-stats.sh therefore
-# records each run's successful-JOB count rather than assuming one, and the page
-# subtracts that. Add or remove a leg here and the arithmetic follows on its
-# own; hardcode a number over there and it will not.
+# records how many of each run's jobs ran the "Run the Linux release smoke test"
+# step, passed or failed, and the page subtracts that. Add or remove a leg here
+# and the arithmetic follows on its own; hardcode a number over there and it will
+# not. Renaming that step means updating the collector's jq to match.
 #
 # Deliberately not covered: driving a real request through the proxy and
 # asserting a parsed event with a non-zero token count (#957's third
@@ -133,6 +134,8 @@ jobs:
             exit 1
           }
 
+      # scripts/collect-install-stats.sh matches this step by name to count the
+      # job's install. Rename both together.
       - name: Run the Linux release smoke test
         env:
           GH_TOKEN: ${{ github.token }}

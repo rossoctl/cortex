@@ -826,3 +826,16 @@ func TestHandlePipeline_ServesANonDefaultErrorPolicy(t *testing.T) {
 		t.Errorf("inference-router: onError = %s, want \"observe\"", got)
 	}
 }
+
+// A plugin that reads only responses still reads a body, and the view says so.
+func TestHandlePipeline_ResponseReaderReadsBody(t *testing.T) {
+	outbound, err := pipeline.New([]pipeline.Plugin{
+		&fakePlugin{name: "watch", caps: pipeline.PluginCapabilities{ReadsResponseBody: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views := describePipeline(pipeline.NewHolder(outbound), "outbound"); !views[0].ReadsBody {
+		t.Errorf("a response reader's view = %+v, want readsBody", views[0])
+	}
+}

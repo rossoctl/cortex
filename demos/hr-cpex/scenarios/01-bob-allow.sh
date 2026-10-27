@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Bob (HR manager, perm.view_ssn) calls get_compensation. Expected:
+# Bob (HR, perm.view_ssn) calls get_compensation. The route passes
+# require(role.hr) and delegate(...) exchanges Bob's token for a
+# workday-api token at Keycloak.
 #
-#   * Gateway returns 200 with the tool's response
-#   * The HR MCP server logs show:
-#       - Authorization: Bearer <minted workday-api-scoped token>
-#         (NOT bob's user JWT)
-#       - args.ssn arrived intact (Bob has perm.view_ssn → no redact)
-#
-# Watch the MCP server with:
-#   docker compose logs -f hr-mcp
+# By default CPEX does not hand the minted token to Cortex, so the sidecar
+# refuses to forward the call (cpex.delegation_unavailable) rather than
+# send Bob's own bearer to the tool. With CPEX_DELEGATION=available the
+# scenario asserts the full outcome: 200, hr-mcp holds the minted token,
+# and args.ssn is intact.
 
 set -euo pipefail
 source "$(dirname "$0")/_lib.sh"
 
 step "Bob (HR) → get_compensation (include_ssn=true)"
-note "Expected: 200 OK"
-note "Expected upstream: Authorization is the IdP-minted workday-api token (NOT bob's user JWT)"
-note "Expected upstream: args.ssn intact ('would-be-removed-if-redact-fires')"
 
 BOB=$(mint bob)
 CLIENT=$(mint hr-copilot)
 
+reset_upstream
+before=$(kc_exchange_count)
 call_get_compensation "$BOB" "$CLIENT" true
+
+if delegation_available; then
+  expect_status 200
+  expect_rpc_ok
+  expect_upstream_calls 1
+  expect_upstream_audience workday-api
+  expect_upstream_arg ssn would-be-removed-if-redact-fires
+else
+  expect_delegation_pending "$before"
+fi
+finish

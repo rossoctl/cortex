@@ -16,6 +16,7 @@ func (a *Aggregator) Rekeyed(oldID, newID string) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.logReplayLocked(func(r *Aggregator) { r.Rekeyed(oldID, newID) })
 	if ring, ok := a.sessions[oldID]; ok {
 		delete(a.sessions, oldID)
 		relabelSession(ring.buckets, oldID, newID)

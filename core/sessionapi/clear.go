@@ -59,6 +59,7 @@ func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 	}
+	s.timelines.clear()
 	slog.Warn("sessionapi: cleared every session", "sessions", body.Sessions,
 		"archivedSessions", body.ArchivedSessions, "bytes", body.Bytes, "archiveError", body.ArchiveError,
 		"remote", r.RemoteAddr)
@@ -103,6 +104,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 	}
+	s.timelines.forget(id)
 	if status == http.StatusOK && body.Sessions == 0 && body.ArchivedSessions == 0 {
 		http.NotFound(w, r)
 		return

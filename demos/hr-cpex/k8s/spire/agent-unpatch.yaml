@@ -1,0 +1,12 @@
+# Reverses agent-patch.yaml (`make spire-undeploy`).
+spec:
+  template:
+    spec:
+      containers:
+        - name: authbridge-cpex
+          volumeMounts:
+            - mountPath: /spiffe-workload-api
+              $patch: delete
+      volumes:
+        - name: spire-agent-socket
+          $patch: delete

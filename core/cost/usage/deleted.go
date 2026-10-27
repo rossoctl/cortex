@@ -6,6 +6,7 @@ package usage
 func (a *Aggregator) Deleted(sessionID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.logReplayLocked(func(r *Aggregator) { r.Deleted(sessionID) })
 	delete(a.sessions, sessionID)
 	dropSessionLabel(a.all, sessionID)
 	for _, ring := range a.agents {

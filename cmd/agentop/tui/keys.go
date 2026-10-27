@@ -116,6 +116,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 
+	// The Timeline pane's own keys, ahead of the global ones for the same reason as Usage's
+	// below: its w, arrows and enter mean something else everywhere else.
+	if m.pane == paneTimeline && !m.searching {
+		if cmd, ok := m.timelineKey(msg.String()); ok {
+			return cmd
+		}
+	}
+
 	// The Usage pane owns the keyboard while it is up, except for esc/q which
 	// the shared handling above already routed.
 	if m.pane == paneUsage && !m.searching {
@@ -190,6 +198,21 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		case paneSessions:
 			return m.openUsage("")
+		}
+	}
+
+	// `T` opens the Timeline for one session, from the same panes `u` opens Usage from. On
+	// Sessions it is the highlighted row: unlike Usage, a timeline has no all-sessions view.
+	if msg.String() == "T" && !m.searching && !m.colPicker && m.editState.phase == editPhaseDone {
+		switch m.pane {
+		case paneEvents, paneDetail:
+			if m.selectedSess != "" {
+				return m.openTimeline(m.selectedSess)
+			}
+		case paneSessions:
+			if id := m.selectedSessionID(); id != "" {
+				return m.openTimeline(id)
+			}
 		}
 	}
 
@@ -511,6 +534,18 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.pane == paneUsage {
 				return m.resumeUsagePolling()
 			}
+			if m.pane == paneTimeline {
+				return m.resumeTimeline()
+			}
+		case paneTimeline:
+			// esc only: the pane binds left/h to its cursor, ahead of this arm.
+			if m.timeline.returnPane != paneNone {
+				m.pane = m.timeline.returnPane
+				m.timeline.returnPane = paneNone
+			} else {
+				m.pane = paneSessions
+			}
+			m.timeline.tickGen++
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
 			// model.previousPane is shared with the catalog overlay and gets
@@ -584,6 +619,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.rebuildSessionsTable()
 			return m.startSpendPolling()
 		case paneSessions:
+			// A pick from the list replaces any event the Timeline asked to land on.
+			m.revealSeq, m.revealSess = 0, ""
 			id := m.selectedSessionID()
 			if id == "" {
 				return nil
@@ -918,6 +955,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	case paneEvents:
 		var cmd tea.Cmd
+		// The operator moved the cursor: an event the Timeline asked to land on no longer applies.
+		m.revealSeq, m.revealSess = 0, ""
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
 		m.selectedEventKey = keyOf(m.selectedEvent())
 		return cmd
@@ -1080,6 +1119,11 @@ func (m *model) persistUsage() {
 	m.persistSettings()
 }
 
+func (m *model) persistTimeline() {
+	Settings.Timeline = captureTimeline(m.timeline.windowIdx)
+	m.persistSettings()
+}
+
 // setStickyFlash shows a message that stays until the next keypress. For yank,
 // where the whole point is giving the operator time to read or copy a path —
 // flashDuration is shared with ten other producers, so lengthening it is not an
@@ -1229,6 +1273,8 @@ func (m *model) helpView() string {
 		return base + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case panePluginDetail:
 		return "[↑↓] scroll  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+	case paneTimeline:
+		return "[w] window  [←→] moment  [↑↓] agents  [enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [s] only appears when there is a session to scope to, so the footer
 		// never advertises a key that would do nothing.

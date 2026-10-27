@@ -556,6 +556,10 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 	}
 	if len(pl.changes) == 0 {
 		fmt.Fprintf(stdout, "Already enabled: %s routes Codex through Cortex.\n", envPath)
+		// Said here too: a second enable is what someone runs when Codex does not seem
+		// to be going through Cortex, and a daemon older than the file is the usual
+		// reason.
+		noteCodexDaemon(envPath, true, stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "Sets in %s:\n%s\n", envPath, strings.Join(pl.changes, "\n"))
@@ -569,6 +573,7 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 		return 1
 	}
 	fmt.Fprintln(stdout, "Enabled — run `codex` as usual. agentop configure codex disable undoes this.")
+	noteCodexDaemon(envPath, true, stdout)
 	return 0
 }
 
@@ -682,6 +687,7 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 		fmt.Fprintf(stdout, "\nRestored to the value(s) you had before: %s\n", strings.Join(restored, ", "))
 	}
 	fmt.Fprintf(stdout, "\nDisabled. Codex no longer routes through Cortex.\n")
+	noteCodexDaemon(envPath, false, stdout)
 	return 0
 }
 

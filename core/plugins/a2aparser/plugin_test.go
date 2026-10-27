@@ -2,8 +2,10 @@ package a2aparser
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -665,5 +667,27 @@ func TestA2AParser_Classification(t *testing.T) {
 					pctx.Extensions.A2A.IsAction, tc.isAction, tc.method)
 			}
 		})
+	}
+}
+
+// A zstd-encoded body is decoded before it is parsed, as inference-parser
+// does, so a compressed message/send is claimed rather than passed unparsed.
+func TestA2AParser_ZstdMessageSend(t *testing.T) {
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatalf("zstd.NewWriter: %v", err)
+	}
+	body := enc.EncodeAll([]byte(`{"jsonrpc":"2.0","method":"message/send","id":"req-1","params":{"message":{"role":"user","parts":[{"kind":"text","text":"Hello agent"}],"messageId":"msg-001"}}}`), nil)
+	_ = enc.Close()
+	pctx := &pipeline.Context{
+		Headers: http.Header{"Content-Encoding": {"zstd"}},
+		Body:    body,
+	}
+	NewA2AParser().OnRequest(context.Background(), pctx)
+	if pctx.Extensions.A2A == nil {
+		t.Fatal("Extensions.A2A is nil for a zstd message/send")
+	}
+	if ext := pctx.Extensions.A2A; ext.Method != "message/send" || len(ext.Parts) != 1 || ext.Parts[0].Content != "Hello agent" {
+		t.Errorf("A2A = %+v, want message/send with one text part", ext)
 	}
 }

@@ -68,6 +68,8 @@ const (
 	takeArgs
 	// takeQueryBody: the body, preferring a whole-message envelope over a bracketed one.
 	takeQueryBody
+	// takePaste: the body of a leading <pasted_content> wrapper, reduced to one line by pasteLine.
+	takePaste
 )
 
 // titleRule is one tag's row: recognize `open`, extract per `take`, rank the result `rank`.
@@ -119,6 +121,14 @@ var titleRules = []titleRule{
 	{open: "<bash-input>", close: "</bash-input>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
 	{open: "<session>", close: "</session>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
 	{open: "<conversation>", close: "</conversation>", match: matchPrefix, take: takeFirstLine, rank: rankUserMsg},
+
+	// A bare paste: the wrapper is markup, its body is what the user pasted. Observed live inside a
+	// <session> body as well, which takeFirstLine handles; this row is the same paste with no envelope.
+	//
+	// rankUserMsg, so quickRank needs no comparison for it: its fall-through already guesses that, and
+	// unwrapping can only settle lower. The open is matched without its `>` so attributes are allowed;
+	// unwrapPaste rejects a longer tag name, and the message then keeps its own words.
+	{open: pasteOpen, match: matchPrefix, take: takePaste, rank: rankUserMsg},
 
 	// The one title the user typed, so it outranks everything.
 	{open: renamePrefix, match: matchPrefix, take: takeArgs, rank: rankRename},
@@ -401,7 +411,13 @@ func (r titleRule) extract(content string) (string, takeOutcome) {
 		return "", takeClaimed
 	case takeFirstLine:
 		// Anchored on the open, so a match is the machinery. A blank body claims the message.
-		return firstLine(between(content, r.open, r.close)), takeClaimed
+		body := between(content, r.open, r.close)
+		// A paste is the one wrapper unwrapped inside an envelope. Its opening tag would otherwise be
+		// the body's first line, and so the title.
+		if b, ok := unwrapPaste(strings.TrimLeft(body, " \t\r\n")); ok {
+			return pasteLine(b), takeClaimed
+		}
+		return firstLine(body), takeClaimed
 	case takeArgs:
 		// Anchored likewise. A message opening on the /rename envelope is a /rename whether or not it
 		// carried arguments.
@@ -420,8 +436,85 @@ func (r titleRule) extract(content string) (string, takeOutcome) {
 		// Anything else declines. This is the unanchored row, so a body that will not extract is the
 		// signal that the tag is loose in prose.
 		return between(content, r.open, r.close), takeDeclined
+	case takePaste:
+		if b, ok := unwrapPaste(content); ok {
+			return pasteLine(b), takeClaimed
+		}
+		// A longer tag name that shares the prefix, such as <pasted_contents>. Not a paste.
+		return "", takeDeclined
 	}
 	return "", takeClaimed
+}
+
+// pasteOpen is the opening of a paste wrapper, without its `>`: the harness writes an id attribute,
+// `<pasted_content id="8f8e">`.
+const pasteOpen = "<pasted_content"
+
+// unwrapPaste returns the body of a <pasted_content> wrapper that opens s, and reports whether s opens
+// with one at all.
+//
+// A local copy of core/observe/claude's stripWrapperTag, narrowed to the one wrapper. That function's
+// allowlist, contentBearingWrappers, explains why it is the only one: a paste's body is the user's
+// text, while the body of any other harness wrapper is the harness's own output and must not be
+// promoted into a title. Not imported, for the reason between() gives.
+//
+// The close is matched on its name alone because it carries the id too: `</pasted_content id="8f8e">`.
+// A missing close leaves the body running to the end of s. A missing `>` on the open is a truncated
+// tag, still markup, so it reports a paste with an empty body.
+func unwrapPaste(s string) (string, bool) {
+	if !strings.HasPrefix(s, pasteOpen) {
+		return "", false
+	}
+	rest := s[len(pasteOpen):]
+	if rest == "" {
+		return "", true
+	}
+	if c := rest[0]; c != '>' && c != ' ' && c != '\t' {
+		return "", false // a longer tag name, not this one
+	}
+	i := strings.IndexByte(rest, '>')
+	if i < 0 {
+		return "", true
+	}
+	body := rest[i+1:]
+	if j := strings.Index(body, "</pasted_content"); j >= 0 {
+		body = body[:j]
+	}
+	return body, true
+}
+
+// pasteLine reduces a paste body to the line that names it, or "" when that line is markup.
+//
+// RE-TESTED, as stripWrapperTag re-tests its result. A nested wrapper, or a close tag the unwrap did not
+// cut, would otherwise become the title. Under first-wins it would then keep that title. The cost is a
+// paste that genuinely opens on markup, such as HTML, names nothing, and the walk looks behind it.
+func pasteLine(body string) string {
+	if l := firstLine(body); !opensWithTag(l) {
+		return l
+	}
+	return ""
+}
+
+// opensWithTag reports whether s begins with an opening or closing tag: `<`, an optional `/`, a
+// lowercase name, then a space, tab, `/` or `>`. The same shape core/observe/claude's isSyntheticPrompt
+// treats as markup, so "is 3 < 5" and "<3" are prose.
+func opensWithTag(s string) bool {
+	if !strings.HasPrefix(s, "<") {
+		return false
+	}
+	t := strings.TrimPrefix(s[1:], "/")
+	n := 0
+	for n < len(t) && ((t[n] >= 'a' && t[n] <= 'z') || t[n] == '-' || t[n] == '_') {
+		n++
+	}
+	if n == 0 || n == len(t) {
+		return false
+	}
+	switch t[n] {
+	case ' ', '\t', '/', '>':
+		return true
+	}
+	return false
 }
 
 const (

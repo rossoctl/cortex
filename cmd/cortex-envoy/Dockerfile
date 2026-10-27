@@ -13,7 +13,7 @@
 # core embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY). It is pure-Go (skeleton cgo is behind the cg_skeleton tag), so
 # CGO_ENABLED=0 stays correct.
-FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS builder
 
 RUN apk add --no-cache git
 

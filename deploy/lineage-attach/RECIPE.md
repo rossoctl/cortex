@@ -77,7 +77,7 @@ deployment "<deploy>" successfully rolled out
 ```
 (preceded by `configmap/authbridge-lineage-config-<deploy> created` and `deployment.apps/<deploy> patched`;
 the back-out line is printed before the rollout wait so it is there even when the wait fails).
-Add `CAPTURE_IO=true` to attach the parsed content — prompts, tool arguments, messages — to the spans (off by default; PII).
+Add `CAPTURE_IO=true` to attach the content — prompts, tool arguments, messages, plain-HTTP bodies — to the spans (off by default; PII, and a plain-HTTP body can be a credential).
 Fail `already has a container named` / `already declares containerPort` / `already has a volume named` → enrolled or colliding workload (README "How to attach").
 Fail `has no container named` → wrong `APP_CONTAINER`; nothing was applied.
 Rollout stuck → the Deployment is left patched on purpose (Kubernetes keeps the old pod serving);

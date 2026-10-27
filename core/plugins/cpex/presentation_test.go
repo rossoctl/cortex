@@ -5,6 +5,7 @@ package cpex
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -99,11 +100,72 @@ func TestUnpresentableRequest(t *testing.T) {
 			Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "b"}}}, codeAmbiguousRequest},
 		{"a2a duplicate", &pipeline.Context{Body: []byte(`{"method":"message/send","Method":"tasks/get"}`),
 			Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "tasks/get"}}}, codeAmbiguousRequest},
-		{"unparsed duplicate is egress input, not refused", &pipeline.Context{Body: []byte(`{"a":1,"a":2}`)}, ""},
+		{"parsed body with NaN is not unparseable", mcp("tools/list", nil, `{"method":"tools/list","x":NaN}`), codeAmbiguousRequest},
 	}
 	for _, c := range cases {
-		if got := unpresentableRequest(c.pctx); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		for _, strict := range []bool{false, true} {
+			if got := unpresentableRequest(c.pctx, strict); got != c.want {
+				t.Errorf("%s (strict=%v): got %q, want %q", c.name, strict, got, c.want)
+			}
+		}
+	}
+}
+
+// A body no parser claimed is checked only on a strict_hosts destination.
+// There, any JSON object the parsers cannot read is refused, whatever keys
+// it carries; elsewhere, and for bodies that are not such an object, it is
+// opaque egress input.
+func TestUnpresentableRequest_Unparsed(t *testing.T) {
+	const call = `"method":"tools/call","params":{"name":"a","arguments":{"x":%s}}`
+	obj := func(prefix, x string) string { return "{" + prefix + fmt.Sprintf(call, x) + "}" }
+	refused := map[string][]byte{
+		"NaN":                           []byte(obj(`"jsonrpc":"2.0",`, "NaN")),
+		"NaN without jsonrpc":           []byte(obj("", "NaN")),
+		"NaN with JSONRPC":              []byte(obj(`"JSONRPC":"2.0",`, "NaN")),
+		"NaN with a renamed jsonrpc":    []byte(obj(`"json_rpc":"2.0",`, "NaN")),
+		"Infinity without jsonrpc":      []byte(obj("", "-Infinity")),
+		"1e400 without jsonrpc":         []byte(obj("", "1e400")),
+		"invalid UTF-8":                 []byte(obj("", "\"\xff\"")),
+		"byte order mark":               []byte("\xef\xbb\xbf" + obj("", "1")),
+		"truncated object":              []byte(` {"method":"tools/call"`),
+		"UTF-16BE object":               utf16Body(true, obj("", "1")),
+		"UTF-16LE object":               utf16Body(false, obj(`"jsonrpc":"2.0",`, "1")),
+		"UTF-16LE object with a BOM":    append([]byte{0xff, 0xfe}, utf16Body(false, `{"a":1}`)...),
+		"UTF-32BE object":               utf32BEBody(obj("", "1")),
+		"duplicate method":              []byte(`{"method":"tools/list","method":"tools/call","params":{"name":"a"}}`),
+		"case-variant method":           []byte(`{"method":"tools/call","METHOD":"x/y","params":{"name":"a"}}`),
+		"duplicate params":              []byte(`{"method":"tools/call","params":{"name":"a"},"params":{"name":"b"}}`),
+		"case-variant method of a type": []byte(`{"Method":5,"method":"tools/call","params":{"name":"a"}}`),
+		"non-string method":             []byte(`{"method":{"type":"card"},"amount":5}`),
+		"NaN metrics":                   []byte(`{"loss": NaN, "step": 3}`),
+		"NaN after a valid value":       []byte(`{"a":1,"x":NaN}` + "\n" + `{"b":2}`),
+	}
+	allowed := map[string][]byte{
+		"NDJSON":                          []byte("{\"a\":1}\n{\"b\":2}\n"),
+		"tool call followed by more data": []byte(obj(`"jsonrpc":"2.0",`, "1") + `{"x":NaN}`),
+		"positional JSON-RPC params":      []byte(`{"jsonrpc":"2.0","method":"eth_call","params":[1]}`),
+		"params of another shape":         []byte(`{"method":"tools/call","params":"x"}`),
+		"large integer in range":          []byte(`{"x":9007199254740993,"y":-0,"z":1.5e4}`),
+		"non-JSON body":                   []byte("raw"),
+		"binary body":                     {0x89, 'P', 'N', 'G', 0, 0},
+		"UTF-16 array":                    utf16Body(true, `[1]`),
+		"array with NaN":                  []byte(`[NaN]`),
+	}
+	for name, body := range refused {
+		pctx := &pipeline.Context{Direction: pipeline.Outbound, Body: body}
+		if got := unpresentableRequest(pctx, true); got != codeUnparseableRequest {
+			t.Errorf("%s, strict host: got %q, want %q", name, got, codeUnparseableRequest)
+		}
+		if got := unpresentableRequest(pctx, false); got != "" {
+			t.Errorf("%s, other host: got %q, want none", name, got)
+		}
+	}
+	for name, body := range allowed {
+		for _, strict := range []bool{false, true} {
+			pctx := &pipeline.Context{Direction: pipeline.Outbound, Body: body}
+			if got := unpresentableRequest(pctx, strict); got != "" {
+				t.Errorf("%s (strict=%v): got %q, want none", name, strict, got)
+			}
 		}
 	}
 }
@@ -134,7 +196,7 @@ func TestUnpresentableRequest_ZstdResponsesBody(t *testing.T) {
 		if pctx.Extensions.Inference == nil {
 			t.Fatalf("%s: inference-parser did not parse the body", c.name)
 		}
-		if got := unpresentableRequest(pctx); got != c.want {
+		if got := unpresentableRequest(pctx, true); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -144,7 +206,7 @@ func TestUnpresentableRequest_ZstdResponsesBody(t *testing.T) {
 		Body:       []byte("\x28\xb5\x2f\xfdnot zstd"),
 		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "m"}},
 	}
-	if got := unpresentableRequest(bad); got != codeAmbiguousRequest {
+	if got := unpresentableRequest(bad, true); got != codeAmbiguousRequest {
 		t.Errorf("undecodable zstd body: got %q", got)
 	}
 }
@@ -206,4 +268,25 @@ func TestDispatch_EgressIgnoresOutboundBypass(t *testing.T) {
 	if a := p.OnRequest(context.Background(), egressRequest("POST", "otel.internal", "/v1/traces", "", nil)); a.Type != pipeline.Continue {
 		t.Fatalf("explicit bypass host: %v", a.Type)
 	}
+}
+
+// utf16Body encodes an ASCII string as UTF-16, big- or little-endian.
+func utf16Body(bigEndian bool, s string) []byte {
+	out := make([]byte, 0, 2*len(s))
+	for i := 0; i < len(s); i++ {
+		if bigEndian {
+			out = append(out, 0, s[i])
+		} else {
+			out = append(out, s[i], 0)
+		}
+	}
+	return out
+}
+
+func utf32BEBody(s string) []byte {
+	out := make([]byte, 0, 4*len(s))
+	for i := 0; i < len(s); i++ {
+		out = append(out, 0, 0, 0, s[i])
+	}
+	return out
 }

@@ -512,7 +512,11 @@ func main() {
 		}
 		c.Mode = config.ModeProxySidecar
 		config.ApplyPreset(c)
+		addScriptSlot(c, localInstall)
 		if err := config.Validate(c); err != nil {
+			return nil, nil, nil, err
+		}
+		if err := checkScriptSlots(c); err != nil {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
@@ -536,8 +540,8 @@ func main() {
 		// cannot honor fails here — on startup and on every reload — instead of
 		// running to no effect. The reverse proxy honors no redirect, which is what
 		// keeps a WritesDestination plugin off the inbound chain.
-		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support()}
-		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil)}
+		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
+		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, inDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
@@ -605,8 +609,13 @@ func main() {
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
+	// The script plugin's folders are watched as well as the config, so adding or
+	// editing a script reloads as a config edit does. The reloader asks each config
+	// it puts into effect for its folders, so a slot a config edit adds is watched
+	// from that reload on.
 	rld := reloader.New(*configPath, inboundH, outboundH, buildPipelines, cfg,
-		reloader.WithOnCommit(applyPricing))
+		reloader.WithOnCommit(applyPricing),
+		reloader.WithExtraWatch(scriptFolders, scriptFingerprint))
 	if err := rld.Start(ctx); err != nil {
 		log.Fatalf("reloader: %v", err)
 	}
@@ -729,8 +738,8 @@ func main() {
 		sessArchive = openSessionArchive(cfg, *configPath, sessions)
 		if sessArchive != nil {
 			history.open(sessArchive)
-			// Before any listener starts: see replayUsage for why that is the whole design.
-			replayUsageAtStartup(sessArchive, usageAgg)
+			// Started before any listener, finished beside them: see replayUsage.
+			startUsageReplay(sessArchive, usageAgg)
 		}
 
 		// Through lim.LogAttrs, not a hand-rolled attribute list. #999 gave the session
