@@ -218,6 +218,13 @@ rows. Plugins act on each turn: one that rejects it keeps it from reaching chatg
 and Codex is answered with the error event it reads for a server refusal; one that
 rewrites the request body (`tool-prune`) changes what is sent.
 
+**Pressing Esc mid-answer closes the socket.** Codex drops the turn's stream, which ends
+the WebSocket, and opens a new one for the next prompt. The interrupted turn is recorded
+with the text that had arrived, as `statusCode` 499 with `error.kind:
+"client_canceled"` — the same as an HTTPS client hanging up — so it is not counted as an
+upstream failure. OpenAI sends no usage for a turn cut off this way, so it has no token
+count or cost: it shows as priceable but unpriced, the same as a cancelled HTTPS stream.
+
 Where Cortex cannot carry the socket it answers the handshake with **426 Upgrade
 Required** instead, which Codex reads as "this endpoint wants HTTP" and switches to HTTPS
 at once, for the rest of its session. That happens for a connection the bridge did not
@@ -349,7 +356,10 @@ with Cortex built from the change that added this page. This was exercised:
   incremental input described in #1515;
 - **the TUI over a carried socket**: a prompt typed into the real interactive TUI over
   a pty opened a WebSocket under `codex-tui`, and its turn was parsed with model,
-  tokens and a cost, as was the TUI's own model check on `gpt-5.6-luna`.
+  tokens and a cost, as was the TUI's own model check on `gpt-5.6-luna`;
+- **Esc mid-answer in the TUI**: the WebSocket closed within milliseconds, the
+  interrupted turn was recorded with the 1,491 characters that had arrived, and the
+  next prompt opened a new socket and was answered and parsed normally.
 
 Not tested:
 
@@ -357,10 +367,12 @@ Not tested:
 - **An API-key login over the WebSocket.** Codex then opens it to `api.openai.com`
   rather than `chatgpt.com`; Cortex treats the two hosts alike, but only the ChatGPT
   login was watched.
-- **Interrupting a turn over the WebSocket** (Esc in the TUI). Codex sends a
-  `response.interrupt` message and waits for the server's acknowledgement on the same
-  socket; the relay forwards both unchanged and its tests cover the shape, but a live
-  interrupt was not watched.
+- **Codex's in-band interrupt.** For some internal cases — steering a turn already
+  under way, or queued "mailbox" input, on models with `use_responses_lite` set — Codex
+  sends `response.interrupt` on the open socket and waits for the server's
+  `response.interrupt.accepted` instead of closing it. The relay forwards both unchanged
+  and its tests cover the exchange in both orders, but it was not seen live: Esc does
+  not use it.
 - **Codex versions other than 0.160.1 and 0.162.1.** Both appeared in one capture (an
   auto-update landed mid-session) and both parse identically, which is some evidence the
   User-Agent shape is stable across releases rather than pinned to one build — but the

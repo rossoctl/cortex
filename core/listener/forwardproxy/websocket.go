@@ -310,6 +310,16 @@ type wsSocket struct {
 	// server side feeds and ends it.
 	turnMu sync.Mutex
 	turn   *wsTurn
+
+	// endedBy is the side whose relay stopped first, "client" or "origin", which
+	// decides how a turn still open at that moment is recorded. Set once, by the
+	// first relay to return; the other only ever sees the connection closed under it.
+	endedBy atomic.Value
+}
+
+// wsEnd records who ended the socket, if no one has yet.
+func (ws *wsSocket) wsEnd(side string) {
+	ws.endedBy.CompareAndSwap(nil, side)
 }
 
 // wsTurn is one response.create and the server messages that answer it.
@@ -326,8 +336,8 @@ type wsTurn struct {
 
 func (ws *wsSocket) run() {
 	done := make(chan struct{}, 2)
-	go func() { ws.relayUp(); done <- struct{}{} }()
-	go func() { ws.relayDown(); done <- struct{}{} }()
+	go func() { ws.wsEnd(ws.relayUp()); done <- struct{}{} }()
+	go func() { ws.wsEnd(ws.relayDown()); done <- struct{}{} }()
 	<-done
 	// One side is gone: close both, so the other relay's read returns.
 	_ = ws.client.Close()
@@ -339,13 +349,40 @@ func (ws *wsSocket) run() {
 	ws.turn = nil
 	ws.turnMu.Unlock()
 	if t != nil {
-		ws.endTurn(t, http.StatusOK, &pipeline.EventError{Kind: "upstream_error", Message: "the WebSocket closed before the turn completed"})
+		status, fail := ws.unfinishedTurn()
+		ws.endTurn(t, status, fail)
 	}
 	ws.recordClose()
 }
 
+// unfinishedTurn is how a turn still open when the socket ended is recorded, by who
+// ended it — the WebSocket counterpart of what the HTTPS path records for a stream that
+// stops before its last event.
+//
+// THE CLIENT CLOSING IS NOT AN UPSTREAM FAILURE. It is what Codex does on Esc: it drops
+// the turn's stream, which closes this socket, and opens another for the next prompt.
+// So it is recorded as the HTTPS path records a client that hangs up before its answer
+// — 499, client_canceled — which /v1/usage counts as an error but keeps out of the 5xx
+// series, rather than as a 502-shaped upstream_error that would read as OpenAI failing
+// every time someone interrupts a turn. The origin closing first, or the socket breaking
+// on a frame the relay cannot read, is what upstream_error is for.
+func (ws *wsSocket) unfinishedTurn() (int, *pipeline.EventError) {
+	if side, _ := ws.endedBy.Load().(string); side == "client" {
+		return pipeline.StatusClientClosedRequest, &pipeline.EventError{
+			Kind:    "client_canceled",
+			Message: "the client closed the WebSocket before the turn completed",
+		}
+	}
+	return http.StatusBadGateway, &pipeline.EventError{
+		Kind:    "upstream_error",
+		Message: "the origin closed the WebSocket before the turn completed",
+	}
+}
+
 // relayUp carries client frames to the origin, reading each data message on the way.
-func (ws *wsSocket) relayUp() {
+// It returns the side that stopped it: the client when reading from it failed, the
+// origin when writing to it did.
+func (ws *wsSocket) relayUp() (endedBy string) {
 	fr := wsframe.NewReader(ws.clientR, wsClientMessageLimit, wsFrameLimit)
 	msg := wsframe.NewMessage(wsClientMessageLimit)
 	// held collects a data message's frames until it is whole: a turn a plugin
@@ -355,19 +392,19 @@ func (ws *wsSocket) relayUp() {
 		f, err := fr.ReadFrame()
 		if err != nil {
 			ws.logEnd("client", err)
-			return
+			return "client"
 		}
 		ws.bytesUp.Add(int64(len(f.Raw)))
 		if f.IsControl() {
 			if !ws.writeUp(f.Raw) {
-				return
+				return "origin"
 			}
 			continue
 		}
 		op, payload, readable, complete, err := msg.Add(f)
 		if err != nil {
 			ws.logEnd("client", err)
-			return
+			return "client"
 		}
 		held = append(held, f.Raw)
 		if !complete {
@@ -386,22 +423,23 @@ func (ws *wsSocket) relayUp() {
 		}
 		for _, raw := range out {
 			if !ws.writeUp(raw) {
-				return
+				return "origin"
 			}
 		}
 	}
 }
 
 // relayDown carries origin frames to the client, feeding each data message to the turn
-// it belongs to.
-func (ws *wsSocket) relayDown() {
+// it belongs to. It returns the side that stopped it: the origin when reading from it
+// failed, the client when writing to it did.
+func (ws *wsSocket) relayDown() (endedBy string) {
 	fr := wsframe.NewReader(ws.up, wsServerMessageLimit, wsFrameLimit)
 	msg := wsframe.NewMessage(wsServerMessageLimit)
 	for {
 		f, err := fr.ReadFrame()
 		if err != nil {
 			ws.logEnd("origin", err)
-			return
+			return "origin"
 		}
 		ws.bytesDown.Add(int64(len(f.Raw)))
 		// Forwarded first, as handleStreamingResponse writes a block after its
@@ -409,7 +447,7 @@ func (ws *wsSocket) relayDown() {
 		// WebSocket turn cannot be retracted once it started, so the frame goes
 		// now and the parse follows.
 		if !ws.writeClient(f.Raw) {
-			return
+			return "client"
 		}
 		if f.IsControl() {
 			continue
@@ -417,7 +455,7 @@ func (ws *wsSocket) relayDown() {
 		op, payload, readable, complete, err := msg.Add(f)
 		if err != nil {
 			ws.logEnd("origin", err)
-			return
+			return "origin"
 		}
 		if complete && op == wsframe.OpText && readable {
 			ws.serverMessage(payload)

@@ -615,8 +615,10 @@ func TestResponsesWebSocket_OriginRefusalIsRelayed(t *testing.T) {
 	}
 }
 
-// A client that hangs up mid-turn still gets that turn recorded, with what had
-// arrived, and the socket's close.
+// A client that hangs up mid-turn — Codex does this on Esc, closing the socket rather
+// than interrupting over it — still gets that turn recorded with what had arrived, as a
+// 499 client_canceled the way an HTTPS client hanging up is, not as an upstream
+// failure: the origin did nothing wrong.
 func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
 	// An origin that answers a create with a partial stream and then stalls.
@@ -651,15 +653,60 @@ func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	if res == nil {
 		t.Fatal("the interrupted turn recorded no response row")
 	}
-	if res.Error == nil || res.Inference == nil || res.Inference.Completion != "par" {
-		t.Errorf("interrupted turn: error=%+v completion=%v, want an error and the partial text", res.Error, res.Inference)
+	if res.Inference == nil || res.Inference.Completion != "par" {
+		t.Errorf("interrupted turn completion = %+v, want the partial text", res.Inference)
+	}
+	if res.StatusCode != pipeline.StatusClientClosedRequest || res.Error == nil || res.Error.Kind != "client_canceled" {
+		t.Errorf("interrupted turn = status %d error %+v, want 499 client_canceled", res.StatusCode, res.Error)
 	}
 }
 
-// Esc in Codex's TUI interrupts a turn over the socket: it sends response.interrupt
-// naming the response, and waits on the same socket for the server's
+// The origin dropping the socket mid-turn is the upstream failure: a 502 upstream_error,
+// as the HTTPS path records a stream that breaks off from the server's side.
+func TestResponsesWebSocket_OriginDropFinalizesTheOpenTurnAsUpstreamError(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+		conn, brw, _ := w.(http.Hijacker).Hijack()
+		_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(r.Header.Get("Sec-Websocket-Key")) + "\r\n\r\n")
+		_ = brw.Flush()
+		fr := wsframe.NewReader(brw.Reader, 1<<20, 1<<20)
+		if _, err := fr.ReadFrame(); err != nil {
+			_ = conn.Close()
+			return
+		}
+		_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(`{"type":"response.created","response":{"id":"r","status":"in_progress"}}`), false))
+		_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(`{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"par"}`), false))
+		_ = conn.Close() // the origin goes away mid-turn
+	})
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	c.readUntil("response.output_text.delta")
+
+	var res *pipeline.SessionEvent
+	for _, e := range h.events(t, codexSID, true) {
+		if e.HTTPMethod == http.MethodPost && e.Phase == pipeline.SessionResponse {
+			e := e
+			res = &e
+		}
+	}
+	if res == nil {
+		t.Fatal("the dropped turn recorded no response row")
+	}
+	if res.StatusCode != http.StatusBadGateway || res.Error == nil || res.Error.Kind != "upstream_error" {
+		t.Errorf("dropped turn = status %d error %+v, want 502 upstream_error", res.StatusCode, res.Error)
+	}
+	_ = c.conn.Close()
+}
+
+// Codex's in-band interrupt: for steering a turn already under way, or for queued
+// mailbox input, on models with use_responses_lite set, it sends response.interrupt
+// naming the response and waits on the same socket for the server's
 // response.interrupt.accepted carrying that id, which it rejects as "unexpected" or
-// "invalid" if it does not arrive intact. The relay must carry both unchanged, record
+// "invalid" if it does not arrive intact. (Esc does not use this: it closes the socket,
+// which TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn covers.) The relay must carry both unchanged, record
 // the interrupted turn once with what had arrived, and not mistake the acknowledgement
 // for anything that opens or ends a turn — in either order the server may send the
 // acknowledgement and the turn's terminal event.
