@@ -656,6 +656,109 @@ func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	}
 }
 
+// Esc in Codex's TUI interrupts a turn over the socket: it sends response.interrupt
+// naming the response, and waits on the same socket for the server's
+// response.interrupt.accepted carrying that id, which it rejects as "unexpected" or
+// "invalid" if it does not arrive intact. The relay must carry both unchanged, record
+// the interrupted turn once with what had arrived, and not mistake the acknowledgement
+// for anything that opens or ends a turn — in either order the server may send the
+// acknowledgement and the turn's terminal event.
+func TestResponsesWebSocket_InterruptIsRelayedAndTheTurnRecordedOnce(t *testing.T) {
+	const (
+		interrupt = `{"type":"response.interrupt","response_id":"resp_i","mode":"discard_partial_items"}`
+		ack       = `{"type":"response.interrupt.accepted","response_id":"resp_i"}`
+		terminal  = `{"type":"response.incomplete","response":{"id":"resp_i","status":"incomplete","usage":{` +
+			`"input_tokens":12862,"input_tokens_details":{"cached_tokens":11008},"output_tokens":2,"total_tokens":12864}}}`
+	)
+	for _, order := range []struct {
+		name  string
+		after []string
+	}{
+		{"ack then terminal", []string{ack, terminal}},
+		{"terminal then ack", []string{terminal, ack}},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			h := newWSHarness(t, config.ResponsesWebSocketsParse)
+			var gotInterrupt atomic.Value
+			h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead {
+					return
+				}
+				conn, brw, _ := w.(http.Hijacker).Hijack()
+				defer conn.Close()
+				_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + wsAccept(r.Header.Get("Sec-Websocket-Key")) + "\r\n\r\n")
+				_ = brw.Flush()
+				fr := wsframe.NewReader(brw.Reader, 1<<20, 1<<20)
+				if _, err := fr.ReadFrame(); err != nil { // the response.create
+					return
+				}
+				for _, ev := range []string{
+					`{"type":"response.created","response":{"id":"resp_i","status":"in_progress"}}`,
+					`{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"po"}`,
+				} {
+					_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
+				}
+				f, err := fr.ReadFrame() // the interrupt
+				if err != nil {
+					return
+				}
+				gotInterrupt.Store(string(f.Payload))
+				for _, ev := range order.after {
+					_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
+				}
+				_, _ = fr.ReadFrame()
+			})
+
+			c := h.dial(t, nil)
+			c.send(responseCreate("hello"))
+			c.readUntil("response.output_text.delta")
+			c.send(interrupt)
+			var sawAck, sawTerminal string
+			for sawAck == "" || sawTerminal == "" {
+				for _, m := range c.readUntil(map[bool]string{true: "response.incomplete", false: "response.interrupt.accepted"}[sawTerminal == ""]) {
+					b, _ := json.Marshal(m)
+					switch m["type"] {
+					case "response.interrupt.accepted":
+						sawAck = string(b)
+					case "response.incomplete":
+						sawTerminal = string(b)
+					}
+				}
+			}
+			c.close()
+
+			if got, _ := gotInterrupt.Load().(string); got != interrupt {
+				t.Errorf("origin received %q, want the interrupt unchanged", got)
+			}
+			if !strings.Contains(sawAck, `"response_id":"resp_i"`) {
+				t.Errorf("client's acknowledgement %s lost the response id Codex matches on", sawAck)
+			}
+
+			var reqs, resps []pipeline.SessionEvent
+			for _, e := range h.events(t, codexSID, true) {
+				if e.HTTPMethod != http.MethodPost {
+					continue
+				}
+				if e.Phase == pipeline.SessionRequest {
+					reqs = append(reqs, e)
+				} else {
+					resps = append(resps, e)
+				}
+			}
+			if len(reqs) != 1 || len(resps) != 1 {
+				t.Fatalf("got %d turn requests and %d responses, want one of each: the interrupt and its acknowledgement are not turns", len(reqs), len(resps))
+			}
+			res := resps[0]
+			if res.Error != nil {
+				t.Errorf("an interrupted turn was recorded as an error: %+v", res.Error)
+			}
+			if res.Inference == nil || res.Inference.Completion != "po" || res.Inference.FinishReason != "incomplete" || res.Inference.CompletionTokens != 2 {
+				t.Errorf("interrupted turn = %+v, want the partial text, finish reason incomplete and its usage", res.Inference)
+			}
+		})
+	}
+}
+
 // A hot reload mid-turn must not move the rest of that turn onto the new pipeline. The
 // turn's Finishers are the plugins whose OnRequest ran — lineage's span, a budget's
 // reservation — and RunFinish dispatches them by their index in the pipeline it is

@@ -342,11 +342,25 @@ with Cortex built from the change that added this page. This was exercised:
   was recorded with its model, a 13,188-token total and a cost — in about 3s, against a
   median 11.0s through the old 405 retries. The `decline` mode was measured the same way
   over eight turns (one 426, then HTTPS), and a TUI turn driven over a pty declined and
-  parsed over HTTPS under `codex-tui`.
+  parsed over HTTPS under `codex-tui`;
+- **several turns on one socket**: a `codex exec` prompt that ran two shell commands
+  carried two turns on one WebSocket, each recorded with its model, tokens and a cost.
+  The second turn's request held no messages, only the tool results, which is the
+  incremental input described in #1515;
+- **the TUI over a carried socket**: a prompt typed into the real interactive TUI over
+  a pty opened a WebSocket under `codex-tui`, and its turn was parsed with model,
+  tokens and a cost, as was the TUI's own model check on `gpt-5.6-luna`.
 
 Not tested:
 
 - **Linux.** Everything here was exercised on macOS only.
+- **An API-key login over the WebSocket.** Codex then opens it to `api.openai.com`
+  rather than `chatgpt.com`; Cortex treats the two hosts alike, but only the ChatGPT
+  login was watched.
+- **Interrupting a turn over the WebSocket** (Esc in the TUI). Codex sends a
+  `response.interrupt` message and waits for the server's acknowledgement on the same
+  socket; the relay forwards both unchanged and its tests cover the shape, but a live
+  interrupt was not watched.
 - **Codex versions other than 0.160.1 and 0.162.1.** Both appeared in one capture (an
   auto-update landed mid-session) and both parse identically, which is some evidence the
   User-Agent shape is stable across releases rather than pinned to one build — but the
@@ -356,11 +370,6 @@ Not tested:
   dialect is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
-- **The TUI over a carried WebSocket.** It shares `codex exec`'s transport code, and its
-  decline path was watched, but a TUI turn over a carried socket was not.
-- **A multi-turn session over one socket against the real backend.** The relay's own
-  tests drive several turns, a prewarm, a rejected turn and a rewritten one over one
-  socket; the live runs were one turn each.
 - **Tool pruning**, which is unsupported above rather than merely untested.
 
 ## Known issues
