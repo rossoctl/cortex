@@ -433,7 +433,7 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 		t.Errorf("after stop systemd says %+v, want inactive and disabled", s)
 	}
 	code, out = status()
-	expect("status after stop", code, out, 0, "Cortex is stopped (agentop service stop)")
+	expect("status after stop", code, out, 0, "Cortex is stopped, and stays stopped")
 
 	code, out = control("start")
 	expect("start", code, out, 0)

@@ -779,10 +779,10 @@ func TestServiceManagerUsable_Linux(t *testing.T) {
 func TestSystemdUnitState(t *testing.T) {
 	t.Run("parses every field, with the unit asked for by name", func(t *testing.T) {
 		logPath, logLine := callLog(t)
-		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\n"+`printf 'ActiveState=failed\nSubState=failed\nUnitFileState=enabled\nResult=start-limit-hit\nNRestarts=5\n'
+		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\n"+`printf 'LoadState=loaded\nActiveState=failed\nSubState=failed\nUnitFileState=enabled\nResult=start-limit-hit\nNRestarts=5\n'
 `)
 		got := systemdUnitState()
-		want := unitState{known: true, active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}
+		want := unitState{known: true, load: "loaded", active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}
 		if got != want {
 			t.Errorf("systemdUnitState() = %+v, want %+v", got, want)
 		}
@@ -817,29 +817,43 @@ func TestReportUnitNotAnswering(t *testing.T) {
 		rejected []string
 	}{
 		{"stopped by service stop",
-			unitState{known: true, active: "inactive", sub: "dead", enabled: "disabled", result: "success"}, 0,
-			[]string{"Cortex is stopped (agentop service stop)", "agentop service start"},
-			[]string{"NOT answering", "NOT running", "Last log lines"}},
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "disabled", result: "success"}, 0,
+			[]string{"Cortex is stopped, and stays stopped across logins and reboots", "agentop service start"},
+			[]string{"NOT answering", "NOT running", "Last log lines", "still enabled"}},
 		{"stopped by hand, still enabled",
-			unitState{known: true, active: "inactive", sub: "dead", enabled: "enabled", result: "success"}, 1,
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "enabled", result: "success"}, 1,
 			[]string{"still enabled, so it starts again", "agentop service start"},
-			[]string{"agentop service stop)", "NOT answering"}},
+			[]string{"stays stopped", "NOT answering"}},
 		{"crashed, restart pending",
-			unitState{known: true, active: "activating", sub: "auto-restart", enabled: "enabled", result: "signal", restarts: 0}, 1,
+			unitState{known: true, load: "loaded", active: "activating", sub: "auto-restart", enabled: "enabled", result: "signal", restarts: 0}, 1,
 			[]string{"exited (signal) and systemd is restarting it (restart 1)", "Last log lines"},
 			[]string{"stopped"}},
 		{"gave up after the start limit",
-			unitState{known: true, active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}, 1,
+			unitState{known: true, load: "loaded", active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}, 1,
 			[]string{"systemd stopped restarting it (start-limit-hit) after 5 restart(s)", "agentop service restart", "Last log lines"},
-			[]string{"stopped (agentop"}},
+			[]string{"stays stopped"}},
 		{"active but silent",
-			unitState{known: true, active: "active", sub: "running", enabled: "enabled", result: "success"}, 1,
+			unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}, 1,
 			[]string{"Cortex is NOT answering"}, nil},
 		{"still starting",
-			unitState{known: true, active: "activating", sub: "start", enabled: "enabled", result: "success"}, 1,
+			unitState{known: true, load: "loaded", active: "activating", sub: "start", enabled: "enabled", result: "success"}, 1,
 			[]string{"Cortex is NOT answering"}, nil},
 		{"systemd could not be asked", unitState{}, 1,
 			[]string{"Cortex is NOT answering"}, nil},
+		// A unit file systemd has not loaded: systemd reports it inactive, with no
+		// enablement at all. Not "stopped", not "still enabled": nothing it says
+		// describes this unit.
+		{"unit file not loaded",
+			unitState{known: true, load: "not-found", active: "inactive", sub: "dead", enabled: "", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stopped", "still enabled"}},
+		{"masked",
+			unitState{known: true, load: "masked", active: "inactive", sub: "dead", enabled: "masked", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stopped", "still enabled"}},
+		// Loaded but neither enabled nor disabled, such as "static": no claim about
+		// what happens at the next login.
+		{"stopped, enablement neither enabled nor disabled",
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "static", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stays stopped", "still enabled"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := servicePathsFixture(t)
@@ -871,7 +885,7 @@ func TestServiceStatusAsksSystemdOnlyWhenSilent(t *testing.T) {
 	saved := unitStateOf
 	unitStateOf = func() unitState {
 		asked++
-		return unitState{known: true, active: "inactive", sub: "dead", enabled: "disabled", result: "success"}
+		return unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "disabled", result: "success"}
 	}
 	t.Cleanup(func() { unitStateOf = saved })
 
@@ -880,7 +894,7 @@ func TestServiceStatusAsksSystemdOnlyWhenSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if code := serviceStatus(p, &out); code != 0 || !strings.Contains(out.String(), "Cortex is stopped (agentop service stop)") {
+	if code := serviceStatus(p, &out); code != 0 || !strings.Contains(out.String(), "Cortex is stopped, and stays stopped") {
 		t.Errorf("status = %d:\n%s\nwant 0 and the stopped line", code, out.String())
 	}
 	if asked != 1 {

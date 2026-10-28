@@ -666,6 +666,10 @@ func clearStartLimit() {
 // on. The zero value means systemd could not be asked.
 type unitState struct {
 	known bool
+	// LoadState: loaded when systemd has the unit; not-found when its file is not
+	// where systemd looks, masked when it is blocked. Every other field describes
+	// a loaded unit only, so status reads them only then.
+	load string
 	// ActiveState and SubState: active/running, inactive/dead after a stop,
 	// activating/auto-restart between a crash and its restart, failed/failed once
 	// the restarts run out.
@@ -687,7 +691,7 @@ func systemdUnitState() unitState {
 		return unitState{}
 	}
 	out, err := exec.Command("systemctl", "--user", "show", systemdUnit,
-		"-p", "ActiveState", "-p", "SubState", "-p", "UnitFileState", "-p", "Result", "-p", "NRestarts").Output()
+		"-p", "LoadState", "-p", "ActiveState", "-p", "SubState", "-p", "UnitFileState", "-p", "Result", "-p", "NRestarts").Output()
 	if err != nil {
 		return unitState{}
 	}
@@ -698,6 +702,8 @@ func systemdUnitState() unitState {
 			continue
 		}
 		switch k {
+		case "LoadState":
+			s.load = v
 		case "ActiveState":
 			s.active = v
 		case "SubState":

@@ -567,7 +567,7 @@ On Linux, when nothing answers, status asks systemd why, and says which of these
 
 | Status says | What happened | Exit |
 |---|---|---|
-| `Cortex is stopped (agentop service stop)` | You stopped it. It stays stopped across logins and reboots until `agentop service start` | 0 |
+| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
 | `Cortex is stopped, but still enabled` | Stopped some other way, such as `systemctl --user stop`; it starts again at the next login or boot | 1 |
 | `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
 | `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |

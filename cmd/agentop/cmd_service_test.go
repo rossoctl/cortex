@@ -497,7 +497,7 @@ func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
 func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 	saved := unitStateOf
 	unitStateOf = func() unitState {
-		return unitState{known: true, active: "active", sub: "running", enabled: "enabled", result: "success"}
+		return unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}
 	}
 	t.Cleanup(func() { unitStateOf = saved })
 	p := servicePathsFixture(t)
