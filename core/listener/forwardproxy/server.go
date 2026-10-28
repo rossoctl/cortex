@@ -2069,8 +2069,9 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 // unanswered; a handshake that misses five straight tries is not being saved
 // by a sixth at 16s, so the rest of the budget bought no connection, only
 // latency before the 502. Matches the budget the bridge already trusts for
-// its own upstream probe (upstreamVerifyTimeout) and the mTLS dialer, which
-// had settled on 10s independently.
+// its own upstream probe (upstreamVerifyTimeout), the mTLS dialer, which had
+// settled on 10s independently, and this file's own plain dialer — the 30s
+// CONNECT dial was the outlier in its own file.
 const connectDialTimeout = 10 * time.Second
 
 // handleConnect tunnels HTTPS (and any other TLS-wrapped protocol) through

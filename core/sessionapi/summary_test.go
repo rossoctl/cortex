@@ -24,6 +24,7 @@ func fullEvent() pipeline.SessionEvent {
 		Host:       "api.example.com",
 		StatusCode: 200,
 		Duration:   1200 * time.Millisecond,
+		Ttfb:       412 * time.Millisecond,
 		BytesUp:    4210,
 		BytesDown:  18230,
 		Identity:   &pipeline.EventIdentity{},
@@ -149,6 +150,12 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.RequestedHost != full.RequestedHost {
 		t.Errorf("requestedHost = %q, want %q — the detail pane's redirected: line reads it",
 			got.RequestedHost, full.RequestedHost)
+	}
+	// ttfb is kept for the same reason as requestedHost: the detail pane draws its
+	// timing: line from the projected event, splitting a response's duration into the
+	// origin's answer time and the body's (#1251).
+	if got.Ttfb != full.Ttfb {
+		t.Errorf("ttfb = %v, want %v — the detail pane's timing: line reads it", got.Ttfb, full.Ttfb)
 	}
 	// upgradeStripped is kept for the same reason as requestedHost: the detail pane's
 	// upgrade: line reads it off the projected event, and a 405 whose explanation only
@@ -360,7 +367,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 27 since Subagent, which is TIMELINE data: it says which agent made the row. A
 		// scalar capped at maxClientLen, so the struct copy keeps it; asserted above.
 		// 28 since ParentSubagent, TIMELINE data for the same reason; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 28},
+		// 29 since Ttfb, which is kept as RequestedHost is: agentop's detail pane draws
+		// its timing: line from the projected event, splitting a response's duration
+		// into the origin's answer time and the body's (#1251). A scalar, so the struct
+		// copy keeps it; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 29},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two
