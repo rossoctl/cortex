@@ -251,6 +251,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
   and a client such as Codex reads it as "use HTTPS" and retries at once over
   HTTPS. It is not counted as an error in `/v1/usage`.
+- `ttfbMs` — on a delivered response row, the wall time from request entry to
+  the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
+  how long the body took — for a streamed completion, the stream time. The pair
+  separates a slow-to-answer origin from one that answered and then trickled,
+  which `durationMs` alone cannot (#1251). Absent when the exchange failed
+  before headers (the 502 cases above), on request rows, and on tunnel rows —
+  an opaque tunnel has no headers to time. agentop's detail pane renders the
+  split as a `timing:` line.
 - `requestedHost` — present only when a plugin redirected the request: the
   host the client asked for. `host` is where the request actually went, and
   usage, the cost ledger and pricing all follow `host`.

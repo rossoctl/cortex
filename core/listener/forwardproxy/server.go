@@ -577,6 +577,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Response phase: populate pctx and run plugins in reverse order.
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
+	// Taken HERE and not where client.Do returned, because a resend
+	// (resendIfAsked above) discards that response and re-issues the exchange:
+	// the figure the response row should carry is for the response the client
+	// actually got. Both proxy listeners measure at the same point in their
+	// own flow — the moment the delivered response's headers are in hand —
+	// so ttfb means one thing wherever a row reports it. Stays zero on the
+	// error path above, where no headers ever arrived (#1251).
+	pctx.ResponseHeadersAt = time.Now()
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else. Every
 	// arm below reads this one body — buffered whole, relayed SSE block by block, relayed
@@ -1654,6 +1662,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		StatusCode:     statusCode,
 		Error:          pipeline.EventErrorOr(pctx, fail),
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -2050,7 +2059,19 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
 // Once the tunnel is open the timeout no longer applies — the agent's TLS
 // handshake and subsequent traffic flow at their own pace.
-const connectDialTimeout = 30 * time.Second
+//
+// 10s, not the 30s it long was, because the only dials that wait it out are
+// black-holed ones (#1251): a refused or unroutable destination answers a TCP
+// SYN with an RST in well under a second, while a host that drops the SYN
+// silently — off the VPN that reaches it, behind a dead NAT — consumes the
+// whole budget and the agent spends it staring at nothing. By 10s the initial
+// SYN and its first four scheduled retransmits (1s, 2s, 4s, 8s) have all gone
+// unanswered; a handshake that misses five straight tries is not being saved
+// by a sixth at 16s, so the rest of the budget bought no connection, only
+// latency before the 502. Matches the budget the bridge already trusts for
+// its own upstream probe (upstreamVerifyTimeout) and the mTLS dialer, which
+// had settled on 10s independently.
+const connectDialTimeout = 10 * time.Second
 
 // handleConnect tunnels HTTPS (and any other TLS-wrapped protocol) through
 // the forward proxy as raw TCP. Mirrors the TLS-passthrough behavior of

@@ -456,6 +456,7 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		HTTPMethod:     pctx.Method,
 		HTTPPath:       pctx.Path,
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -492,6 +493,7 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 		HTTPMethod:     pctx.Method,
 		HTTPPath:       pctx.Path,
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -665,6 +667,12 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	statusStr := getHeader(headers, ":status")
 	pctx.StatusCode, _ = strconv.Atoi(statusStr)
 	pctx.ResponseHeaders = headerMapToHTTP(headers)
+	// Envoy delivering response headers is this listener's headers-arrival
+	// moment — the same point in the exchange where the proxy listeners set
+	// theirs — so ttfb means one thing on a row from any listener (#1251).
+	// The body phase and end-of-stream recording run later, which is what
+	// makes this headers-arrival rather than body-completion.
+	pctx.ResponseHeadersAt = time.Now()
 
 	p := s.OutboundPipeline
 	if direction == "inbound" {

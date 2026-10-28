@@ -711,6 +711,120 @@ func TestForwardProxy_RecordsMessageWithNoPluginActivity(t *testing.T) {
 	}
 }
 
+// TestForwardProxy_ResponseEventCarriesTtfb pins the decomposition #1251 asked
+// for: a response row's Duration must split into ttfb (request entry to the
+// upstream's headers arriving) and the remainder (the body, which for a
+// streamed completion is the stream time). The backend flushes its headers and
+// then waits before finishing the body, so a row that reports ttfb at all — and
+// one smaller than its duration — proves both halves were measured where the
+// exchange actually spent its time. An 11-minute response with a small ttfb
+// says "the origin answered, then trickled", which Duration alone could not.
+func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	const drip = 60 * time.Millisecond
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(drip)
+		w.Write([]byte("data: done\n\n"))
+	}))
+	defer backend.Close()
+
+	p, err := pipeline.New([]pipeline.Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", backend.URL+"/stream", nil)
+	proxyClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 2 {
+		t.Fatalf("expected 2 events (request + response), got %+v", v)
+	}
+	respEv := v.Events[1]
+	if respEv.Phase != pipeline.SessionResponse {
+		t.Fatalf("second event phase = %v, want SessionResponse", respEv.Phase)
+	}
+	if respEv.Ttfb <= 0 {
+		t.Errorf("response event ttfb = %v, want > 0 — headers arrived, so the figure exists", respEv.Ttfb)
+	}
+	if respEv.Ttfb > respEv.Duration {
+		t.Errorf("response event ttfb %v > duration %v — headers cannot arrive after the row is recorded", respEv.Ttfb, respEv.Duration)
+	}
+	// The drip happens entirely after the flush, so the body's share of the
+	// duration is at least most of it. The bound is deliberately loose: the
+	// claim is the ORDER of the two phases, not a stopwatch.
+	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
+		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed", body, drip/2, drip)
+	}
+}
+
+// TestForwardProxy_ResponseEventOmitsTtfbOnFailedExchange pins the other half
+// of the field's contract: an exchange that never got response headers reports
+// NO ttfb rather than a zero one. The dead-backend 502 is the #1251 shape — a
+// black-holed or refused upstream — and a ttfbMs of 0 on that row would read
+// as "the origin answered instantly" instead of "it never answered".
+func TestForwardProxy_ResponseEventOmitsTtfbOnFailedExchange(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	// A server that is already closed: its port answers with a refusal, which
+	// is the fast half of the failure family. The 502 the proxy synthesizes is
+	// the same row shape a timed-out (black-holed) dial produces.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	p, err := pipeline.New([]pipeline.Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", deadURL+"/gone", nil)
+	proxyClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 2 {
+		t.Fatalf("expected 2 events (request + response), got %+v", v)
+	}
+	respEv := v.Events[1]
+	if respEv.Ttfb != 0 {
+		t.Errorf("response event ttfb = %v, want 0 — no headers ever arrived", respEv.Ttfb)
+	}
+	// The wire half of the same contract: absence, not a serialized zero.
+	data, err := json.Marshal(respEv)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"ttfbMs"`) {
+		t.Errorf("failed exchange serialized a ttfbMs key: %s", data)
+	}
+}
+
 // schemeCapturePlugin captures pctx.Scheme for the scheme-wiring
 // test below.
 type schemeCapturePlugin struct {

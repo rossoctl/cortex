@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -241,6 +242,36 @@ func TestRewriteHeader_StacksTheRedirectAndTheModel(t *testing.T) {
 	}
 	if got := rewriteHeader(&pipeline.SessionEvent{Host: "x"}); got != "" {
 		t.Errorf("rewriteHeader = %q for an event nothing changed, want empty", got)
+	}
+}
+
+// The #1251 shape: an 11-minute response whose ttfb is small says "the origin
+// answered, then the stream trickled" — the header exists to make that legible
+// without dividing two millisecond figures in one's head.
+func TestTimingHeader_SplitsDurationIntoTtfbAndBody(t *testing.T) {
+	got := timingHeader(&pipeline.SessionEvent{
+		Phase:    pipeline.SessionResponse,
+		Duration: 667 * time.Second,
+		Ttfb:     5 * time.Second,
+	})
+	want := "timing:      ttfb 5.00s · body 11m02s of 11m07s total"
+	if got != want {
+		t.Errorf("timingHeader = %q, want %q", got, want)
+	}
+}
+
+// No header where the decomposition would be fiction: a request row (no
+// duration), a failed exchange (no ttfb — nothing answered), and a tunnel
+// close (no headers to time).
+func TestTimingHeader_EmptyWhereTheFiguresAreNot(t *testing.T) {
+	for _, e := range []*pipeline.SessionEvent{
+		{Phase: pipeline.SessionRequest, Duration: time.Second, Ttfb: 100 * time.Millisecond},
+		{Phase: pipeline.SessionResponse, Duration: 30 * time.Second},
+		{Phase: pipeline.SessionResponse},
+	} {
+		if got := timingHeader(e); got != "" {
+			t.Errorf("timingHeader = %q for phase %v duration %v ttfb %v, want empty", got, e.Phase, e.Duration, e.Ttfb)
+		}
 	}
 }
 

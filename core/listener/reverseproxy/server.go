@@ -487,6 +487,14 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
+	// The forward proxy's handleRequest sets its ResponseHeadersAt at the same
+	// point in its own flow — the moment the delivered response's headers are
+	// in hand — so ttfb means the same thing on a row from either listener.
+	// Runs for the streaming arm too: modifyResponse executes before the body
+	// is relayed, which is exactly what makes this headers-arrival, not
+	// body-completion. Stays zero on errorHandler paths, where no headers
+	// arrived (#1251).
+	pctx.ResponseHeadersAt = time.Now()
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else — at
 	// the wire, before either arm below gets at the body. The streaming arm sees
@@ -651,6 +659,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 			StatusCode:     resp.StatusCode,
 			Error:          pipeline.DeriveError(pctx),
 			Duration:       pipeline.DurationSince(pctx.StartedAt),
+			Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 			TLS:            eventTLS(pctx),
 		})
 	}
@@ -844,6 +853,7 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		StatusCode:     statusCode,
 		Error:          pipeline.EventErrorOr(pctx, fail),
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		TLS:            eventTLS(pctx),
 	})
 }

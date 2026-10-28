@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -1021,10 +1022,18 @@ func formatBytes(n int64) string {
 // Seconds hand over to minutes at 59.995s rather than 60s, because %.2f rounds
 // 59.999s up to "60.00s", a seconds figure that is already a minute.
 func durationCell(e pipeline.SessionEvent) string {
-	if e.Duration == 0 {
+	return formatDuration(e.Duration)
+}
+
+// formatDuration is durationCell's body, split out so the detail pane's timing
+// header can format ttfb and the body's share of a response at the same
+// precision the DURATION column uses — one rule for the same unit, everywhere
+// a reader sees it.
+func formatDuration(d time.Duration) string {
+	if d == 0 {
 		return ""
 	}
-	ms := e.Duration.Milliseconds()
+	ms := d.Milliseconds()
 	switch {
 	case ms < 1000:
 		return fmt.Sprintf("%dms", ms)

@@ -616,6 +616,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   open and a close saying 200. An opaque CONNECT that could not be dialed
   reports the same situation one layer down as `tunnelReason: "dial-failed"` with
   `error.kind: "dial_failed"`.
+- `ttfbMs` — on a delivered response row, the wall time from request entry into the
+  listener to the upstream's response **headers** arriving, so `durationMs` − `ttfbMs`
+  is how long the body took — for a streamed completion, the stream time. The pair
+  separates a slow-to-answer origin from one that answered and then trickled, which
+  `durationMs` alone cannot (#1251). Absent when the exchange failed before headers, on
+  request rows, and on tunnel rows (an opaque tunnel has no headers to time). All three
+  listeners set `pctx.ResponseHeadersAt` at their own headers-arrival moment — `client.Do`
+  returning (forward and reverse proxy), Envoy's response-headers callback (extproc) —
+  and every response-event builder derives the figure the same way
+  (`pipeline.DurationBetween`). agentop's detail pane renders the split as a `timing:` line.
 - `requestedHost` — present only when a plugin redirected the request (`pctx.Redirect`): the host the client asked for. `host` is where the request actually went, and usage, the cost ledger and pricing all follow `host`. agentop's detail pane shows both on a `redirected:` line.
 - `inference.requestedModel` — present only when a plugin changed the model (`pctx.SetRequestModel`): the model the client asked for. `inference.model` is the model the request was sent for, which settlement prices; agentop's detail pane shows both on a `model:` line.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row carries `bytesUp`, the body **as forwarded** (so a `tool-prune`-style rewrite is reflected, since the count is taken after the pipeline ran), and a response row carries `bytesDown`, the body **as it came back from the destination** — not as delivered, because extproc records the row before it emits a response mutator's replacement. Headers are not counted. A tunnel close is the one row carrying both. **Zero means the listener counted nothing, not that the body was empty**, and there is no third value for "unknown": every listener buffers bodies only when a plugin asks, so an unbuffered request reports zero, and so does a response relayed straight through — both proxies copy that one after the row is appended. agentop renders a zero side blank rather than as `0B`, and that is why its BYTES column can be trusted as a size when it shows one. All three listeners count the same thing for the same response, which took some doing: extproc sums the chunks Envoy hands it, while the proxies count off the upstream body at one choke point each, so every arm — buffered, block-by-block SSE, or chunk copy — reports the same figure. `core/listener/internal/bodycount` and `core/listener/parity`'s bytes fixtures hold that line.

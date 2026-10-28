@@ -169,6 +169,18 @@ type SessionEvent struct {
 	// it has a duration even though no response was ever recorded.
 	Duration time.Duration
 
+	// Ttfb is the wall-clock time from request entry into the listener
+	// (pctx.StartedAt) to the upstream's response HEADERS arriving — not to
+	// the first body byte, which no listener measures. Zero when the exchange
+	// failed before headers (and on every request-phase event), so Duration −
+	// Ttfb on a delivered response is how long the body took: for a streamed
+	// completion, the stream time. Duration alone cannot separate an origin
+	// that was slow to answer from one that answered and then streamed slowly
+	// (#1251) — an 11-minute response with a small ttfb says "the origin
+	// answered, then trickled", which is a different problem than a large one.
+	// Tunnel rows carry none: an opaque tunnel has no headers to time.
+	Ttfb time.Duration
+
 	// TLS, when non-nil, carries connection-level identity for events
 	// that arrived over TLS: negotiated version, cipher, and the peer's
 	// SPIFFE ID extracted from the URI SAN. Nil for plaintext events
@@ -514,10 +526,17 @@ type sessionEventWire struct {
 	Host        string                     `json:"host,omitempty"`
 	// omitempty for the same skew reason as TunnelReason: an old agentop ignores the
 	// key, and an event from a proxy that predates redirects decodes to "".
-	RequestedHost string    `json:"requestedHost,omitempty"`
-	DurationMs    int64     `json:"durationMs,omitempty"`
-	TLS           *EventTLS `json:"tls,omitempty"`
-	Tunnel        bool      `json:"tunnel,omitempty"`
+	RequestedHost string `json:"requestedHost,omitempty"`
+	DurationMs    int64  `json:"durationMs,omitempty"`
+	// TtfbMs omitempty, like DurationMs: absence is the meaningful value. Zero
+	// means the exchange never got as far as response headers — the upstream
+	// timed out, was refused, or failed TLS — and a ttfb of 0ms would read as
+	// an instant answer instead. Same wire-skew safety as DurationMs: an old
+	// agentop ignores the key, and an event from a proxy that predates the
+	// field decodes to zero and omits.
+	TtfbMs int64     `json:"ttfbMs,omitempty"`
+	TLS    *EventTLS `json:"tls,omitempty"`
+	Tunnel bool      `json:"tunnel,omitempty"`
 	// omitempty so both skew directions are safe: an old agentop ignores an unknown
 	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
@@ -568,6 +587,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Host:            e.Host,
 		RequestedHost:   e.RequestedHost,
 		DurationMs:      e.Duration.Milliseconds(),
+		TtfbMs:          e.Ttfb.Milliseconds(),
 		TLS:             e.TLS,
 		Tunnel:          e.Tunnel,
 		TunnelReason:    e.TunnelReason,
@@ -608,6 +628,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Host:            w.Host,
 		RequestedHost:   w.RequestedHost,
 		Duration:        time.Duration(w.DurationMs) * time.Millisecond,
+		Ttfb:            time.Duration(w.TtfbMs) * time.Millisecond,
 		TLS:             w.TLS,
 		Tunnel:          w.Tunnel,
 		TunnelReason:    w.TunnelReason,
