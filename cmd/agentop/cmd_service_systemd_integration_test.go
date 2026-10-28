@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,5 +292,218 @@ func TestSupervisorStaysStoppedAfterDeliberateStop_RealSystemd(t *testing.T) {
 	time.Sleep(4 * time.Second) // past RestartSec=1; a wrongly-firing restart would show by now
 	if unitIsActive(unit) {
 		t.Error("unit restarted after a deliberate `systemctl stop` — Restart=on-failure should not cover this")
+	}
+}
+
+// healthStub writes a stand-in for the cortex binary: a script that serves
+// /healthz on addr, as the proxy's health listener does, until it is told to stop.
+// What `agentop service` decides is all from the unit's state and that one
+// endpoint, so this exercises every decision without building the proxy. python3,
+// because it is on every CI runner and on the hosts this runs on by hand; the test
+// skips without it rather than fail for an environment reason.
+func healthStub(t *testing.T, dir, addr string) string {
+	t.Helper()
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("python3 not on PATH: %v", err)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "cortex")
+	body := "#!" + py + " -I\n" +
+		"import http.server, signal, sys\n" +
+		"signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))\n" +
+		"class H(http.server.BaseHTTPRequestHandler):\n" +
+		"    def do_GET(self):\n" +
+		"        self.send_response(200 if self.path == '/healthz' else 404)\n" +
+		"        self.end_headers()\n" +
+		"    def log_message(self, *a):\n" +
+		"        pass\n" +
+		"http.server.HTTPServer(('" + host + "', " + port + "), H).serve_forever()\n"
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	return path
+}
+
+// freeLoopbackAddr is a 127.0.0.1 port nothing holds right now.
+func freeLoopbackAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+// TestServiceLifecycle_RealSystemd drives `agentop service` itself — install,
+// status, stop, start, restart, a crash, a crash loop and uninstall — against a
+// live systemd --user session, and checks what each command reports against what
+// systemd says the unit is doing. The two tests above prove systemd's own restart
+// behaviour on a throwaway unit; this proves agentop's reading of it, which is
+// what #945's "status | start | stop | restart accurate in every state" asks for.
+//
+// It installs the real cortex.service, the name every agentop command addresses,
+// so it refuses to run where one is already installed: that would be someone's
+// Cortex, and this test stops and uninstalls what it finds.
+func TestServiceLifecycle_RealSystemd(t *testing.T) {
+	requireRealSystemd(t)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realUnit := filepath.Join(home, ".config", "systemd", "user", systemdUnit)
+	if _, err := os.Stat(realUnit); err == nil {
+		t.Skipf("%s exists: this account has a Cortex installed, which this test would replace", realUnit)
+	}
+	if exec.Command("systemctl", "--user", "cat", systemdUnit).Run() == nil {
+		t.Skipf("systemd already knows %s; not replacing it", systemdUnit)
+	}
+
+	dir := t.TempDir()
+	addr := freeLoopbackAddr(t)
+	bin := healthStub(t, dir, addr)
+	cfg := filepath.Join(dir, "config.yaml")
+	body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n" +
+		"  forward_proxy_addr: " + freeLoopbackAddr(t) + "\n" +
+		"  health_addr: " + addr + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := resolveServicePaths(cfg, "", bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.unitFile != realUnit {
+		t.Fatalf("unit file = %s, want %s", p.unitFile, realUnit)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
+		_ = exec.Command("systemctl", "--user", "reset-failed", systemdUnit).Run()
+		_ = os.Remove(realUnit)
+		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	})
+
+	run := func(name string, f func(stdout, stderr io.Writer) int) (int, string) {
+		t.Helper()
+		var out, errb bytes.Buffer
+		code := f(&out, &errb)
+		t.Logf("%s -> exit %d\n%s%s", name, code, out.String(), errb.String())
+		return code, out.String() + errb.String()
+	}
+	status := func() (int, string) {
+		t.Helper()
+		return run("status", func(o, _ io.Writer) int { return serviceStatus(p, o) })
+	}
+	control := func(action string) (int, string) {
+		t.Helper()
+		return run(action, func(o, e io.Writer) int { return serviceControl(action, p, o, e) })
+	}
+	expect := func(step string, code int, out string, wantCode int, wants ...string) {
+		t.Helper()
+		if code != wantCode {
+			t.Errorf("%s: exit %d, want %d:\n%s", step, code, wantCode, out)
+		}
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: output lacks %q:\n%s", step, w, out)
+			}
+		}
+	}
+	unit := func() unitState { return systemdUnitState() }
+
+	code, out := status()
+	expect("status before install", code, out, 0, "not installed")
+
+	code, out = run("install", func(o, e io.Writer) int { return serviceInstall(p, true, false, o, e) })
+	expect("install", code, out, 0, "healthy")
+	if s := unit(); s.active != "active" || s.enabled != "enabled" {
+		t.Fatalf("after install systemd says %+v, want active and enabled", s)
+	}
+	code, out = status()
+	expect("status running", code, out, 0, "Cortex is healthy according to")
+
+	code, out = control("stop")
+	expect("stop", code, out, 0, "stopped")
+	if s := unit(); s.active != "inactive" || s.enabled != "disabled" {
+		t.Errorf("after stop systemd says %+v, want inactive and disabled", s)
+	}
+	code, out = status()
+	expect("status after stop", code, out, 0, "Cortex is stopped (agentop service stop)")
+
+	code, out = control("start")
+	expect("start", code, out, 0)
+	code, out = status()
+	expect("status after start", code, out, 0, "Cortex is healthy according to")
+
+	before := currentMainPID(systemdUnit)
+	code, out = control("restart")
+	expect("restart", code, out, 0, "restarted")
+	if after := currentMainPID(systemdUnit); after == 0 || after == before {
+		t.Errorf("restart left MainPID %d (was %d), want a new process", after, before)
+	}
+
+	// A crash: the unit's own RestartSec=10 brings it back.
+	pid := currentMainPID(systemdUnit)
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill -9 %d: %v", pid, err)
+	}
+	if !waitUntil(3*time.Second, func() bool { return unit().sub == "auto-restart" }) {
+		t.Fatalf("after kill -9 systemd says %+v, want auto-restart", unit())
+	}
+	code, out = status()
+	expect("status while a crash restarts", code, out, 1, "systemd is restarting it")
+	if _, ok := waitForNewMainPID(t, systemdUnit, pid, 20*time.Second); !ok {
+		t.Fatalf("no restart within 20s of kill -9; systemd says %+v", unit())
+	}
+	if !waitHealthy(p.healthURL, 10*time.Second) {
+		t.Fatal("restarted unit never answered /healthz")
+	}
+	code, out = status()
+	expect("status after crash recovery", code, out, 0, "Cortex is healthy according to")
+
+	// A crash loop until systemd gives up: a binary that exits at once. Stopped
+	// first, so the running stand-in is not the file being replaced.
+	if code, out := control("stop"); code != 0 {
+		t.Fatalf("stop before crash loop: exit %d:\n%s", code, out)
+	}
+	good, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	_, _ = control("start") // fails: nothing answers
+	if !waitUntil(90*time.Second, func() bool { return unit().active == "failed" }) {
+		t.Fatalf("the crash loop never hit the start limit; systemd says %+v", unit())
+	}
+	// Not "(start-limit-hit)": which reason systemd records here varies by version.
+	// 261 records the limit; 257 keeps the last exit, "exit-code". What status must
+	// say either way is that systemd gave up, and what to run once it is fixed.
+	code, out = status()
+	expect("status after the start limit", code, out, 1, "systemd stopped restarting it (", "agentop service restart")
+
+	// Fixed, then the restart status just told the user to run. Before
+	// clearStartLimit this failed with "start of the service was attempted too
+	// often" for the rest of systemd's five-minute window.
+	if err := os.WriteFile(bin, good, 0o700); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	code, out = control("restart")
+	expect("restart after the start limit", code, out, 0)
+	code, out = status()
+	expect("status after recovering", code, out, 0, "Cortex is healthy according to")
+
+	code, out = run("uninstall", func(o, e io.Writer) int { return serviceUninstall(p, true, o, e) })
+	expect("uninstall", code, out, 0, "Removed.")
+	code, out = status()
+	expect("status after uninstall", code, out, 0, "not installed")
+	if unitIsActive(systemdUnit) {
+		t.Error("unit still active after uninstall")
 	}
 }
