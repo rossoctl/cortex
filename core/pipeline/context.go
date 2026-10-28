@@ -140,8 +140,9 @@ type Context struct {
 	// with nothing connecting the two. (Codex no longer reaches that 405 by default:
 	// the forward proxy carries a Responses API WebSocket, or answers it 426 itself,
 	// which Codex reads as "use HTTPS" at once — see listener.responses_websockets.
-	// The marker is still set on the handshake row, since the client's Upgrade header
-	// is never forwarded as it was sent.)
+	// Neither sets the marker: a carried socket forwards the upgrade, and its open
+	// row is a tunnel row; a declined one forwards nothing. It is set only under
+	// responses_websockets: forward, and for every other WebSocket.)
 	//
 	// Recorded on the REQUEST row, where the fact is true, and paired with the
 	// response row's status by RequestID — the same split Tunnel/TunnelReason use.

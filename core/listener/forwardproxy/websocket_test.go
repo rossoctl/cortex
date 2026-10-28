@@ -348,7 +348,7 @@ func responseCreate(text string) string {
 // events reads the session's rows once the socket has closed and recorded its close.
 func (h *wsHarness) events(t *testing.T, sid string, wantClose bool) []pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		v := h.store.View(sid)
 		if v != nil {
@@ -365,7 +365,9 @@ func (h *wsHarness) events(t *testing.T, sid string, wantClose bool) []pipeline.
 			if v == nil {
 				t.Fatalf("no session %q", sid)
 			}
-			return v.Events
+			// Failing here, not returning what there is: a slow run would otherwise
+			// fail later, on an assertion about rows that had not landed yet.
+			t.Fatalf("session %q has no WebSocket close row after 10s (%d events)", sid, len(v.Events))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -496,6 +498,8 @@ func TestResponsesWebSocket_RejectedTurnIsAnsweredAndNotForwarded(t *testing.T) 
 	}
 	c.close()
 
+	// After the socket has ended, so a forwarded frame would have been read by now.
+	events := h.events(t, codexSID, true)
 	h.origin.mu.Lock()
 	n := len(h.origin.creates)
 	h.origin.mu.Unlock()
@@ -503,7 +507,7 @@ func TestResponsesWebSocket_RejectedTurnIsAnsweredAndNotForwarded(t *testing.T) 
 		t.Errorf("origin received %d response.create; a rejected turn must not be forwarded", n)
 	}
 	var denied bool
-	for _, e := range h.events(t, codexSID, true) {
+	for _, e := range events {
 		if e.Phase == pipeline.SessionDenied {
 			denied = true
 		}
@@ -656,8 +660,10 @@ func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	if res.Inference == nil || res.Inference.Completion != "par" {
 		t.Errorf("interrupted turn completion = %+v, want the partial text", res.Inference)
 	}
-	if res.StatusCode != pipeline.StatusClientClosedRequest || res.Error == nil || res.Error.Kind != "client_canceled" {
-		t.Errorf("interrupted turn = status %d error %+v, want 499 client_canceled", res.StatusCode, res.Error)
+	// As HTTPS records a stream the client leaves part way: the 200 the origin was
+	// answering with, and a kind /v1/usage does not count as an error.
+	if res.StatusCode != http.StatusOK || res.Error == nil || res.Error.Kind != pipeline.ErrorKindTurnInterrupted {
+		t.Errorf("interrupted turn = status %d error %+v, want 200 %s", res.StatusCode, res.Error, pipeline.ErrorKindTurnInterrupted)
 	}
 }
 
@@ -752,8 +758,8 @@ func TestResponsesWebSocket_FirstCloseFrameDecidesWhoEndedTheTurn(t *testing.T) 
 	if res == nil {
 		t.Fatal("the closed turn recorded no response row")
 	}
-	if res.StatusCode != pipeline.StatusClientClosedRequest || res.Error == nil || res.Error.Kind != "client_canceled" {
-		t.Fatalf("turn = status %d error %+v, want 499 client_canceled: the client sent the first close", res.StatusCode, res.Error)
+	if res.StatusCode != http.StatusOK || res.Error == nil || res.Error.Kind != pipeline.ErrorKindTurnInterrupted {
+		t.Fatalf("turn = status %d error %+v, want 200 %s: the client sent the first close", res.StatusCode, res.Error, pipeline.ErrorKindTurnInterrupted)
 	}
 	if !strings.Contains(res.Error.Message, "close code 1001 going away: user left") {
 		t.Errorf("message %q does not name the client's close code and reason", res.Error.Message)
@@ -991,7 +997,11 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 	if started.seen() == nil {
 		t.Error("the turn's own Finisher never ran: the turn ended on a pipeline other than the one it began on")
 	}
-	if other.got != nil {
+	h.events(t, codexSID, true) // the socket has ended, and with it every Finisher
+	other.mu.Lock()
+	got := other.got
+	other.mu.Unlock()
+	if got != nil {
 		t.Error("the reloaded pipeline's Finisher ran for a turn it never saw begin")
 	}
 }

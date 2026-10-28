@@ -405,6 +405,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		skipped = true
 	}
 
+	// The pipeline this request runs on, from Run to its Finishers. RunFinish replays the
+	// plugins Run dispatched, by position, so it must be handed the same pipeline: a
+	// reload between the two would finish plugins that never saw the request, or index
+	// past the end of a shorter chain. An HTTPS request spans a reload only by bad luck;
+	// a carried WebSocket's handshake spans the whole Codex session, so it always can.
+	p := s.OutboundPipeline.Load()
+
 	// Finisher dispatch runs after every exit path. RunFinish is a
 	// no-op when pctx.dispatched is empty (pre-pipeline rejects), so
 	// this defer is safe on every path including the body-too-large
@@ -412,7 +419,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// this request and there is nothing to finalize.
 	if !skipped {
 		defer func() {
-			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+			p.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
 		}()
 	}
 
@@ -450,7 +457,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 
 	if !skipped {
-		action := s.OutboundPipeline.Run(r.Context(), pctx)
+		action := p.Run(r.Context(), pctx)
 
 		// Send the request where the pipeline pointed it, before any row is recorded,
 		// so the row names the host the bytes went to. The target comes from
@@ -501,16 +508,19 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	if !skipped && wantsResponsesWebSocket(r) {
 		switch s.ResponsesWebSockets {
 		case config.ResponsesWebSocketsParse:
-			sid := s.recordingSessionID(sessionID, r.Header, chain)
-			if why := s.cannotCarryWebSocket(r, tl); why != "" {
-				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
+			// logValue changes nothing a header id can hold — IDHeaderFrom already refused
+			// control characters — but the socket carries this id into rows and log lines
+			// for a whole session, so it is cleaned where the socket takes it.
+			sid := logValue(s.recordingSessionID(sessionID, r.Header, chain))
+			if why := s.cannotCarryWebSocket(tl, p); why != "" {
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", logValue(r.Host), "reason", why)
 				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
 				return
 			}
-			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain)
+			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain, p)
 			return
 		case config.ResponsesWebSocketsDecline:
-			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
+			s.declineResponsesWebSocket(w, r, pctx, tl, logValue(s.recordingSessionID(sessionID, r.Header, chain)), chain)
 			return
 		}
 	}
@@ -1053,7 +1063,7 @@ const declinedUpgradeBody = `{"detail":"WebSocket transport is not available thr
 // does for the 421.
 func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
 	slog.Debug("forward-proxy: declined a WebSocket upgrade on a Responses path; the client falls back to HTTPS",
-		"host", r.Host, "path", r.URL.Path)
+		"host", logValue(r.Host), "path", logValue(r.URL.Path))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUpgradeRequired)
 	_, _ = io.WriteString(w, declinedUpgradeBody)
@@ -2079,9 +2089,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	var sessionID string
 	var chain []session.Proc
+	// One pipeline from Run to RunFinish, for serveOutbound's reason: a tunnel can stay
+	// open across any number of reloads.
+	p := s.OutboundPipeline.Load()
 	if !skipped {
 		defer func() {
-			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
+			p.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
 		}()
 
 		// Same one-identity rule as the request path, and the same local-variable
@@ -2099,7 +2112,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Run the outbound pipeline. Plugins that policy on host/identity
 		// (ibac, content gates) still get to allow/deny; plugins that need
 		// HTTP body (parsers) see no body, which they handle gracefully.
-		action := s.OutboundPipeline.Run(r.Context(), pctx)
+		action := p.Run(r.Context(), pctx)
 		if action.Type == pipeline.Reject {
 			s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, r.Header, chain))
 			// Render as a JSON-RPC error frame when the rejected

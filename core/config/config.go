@@ -941,14 +941,20 @@ type ListenerConfig struct {
 	// Empty means the default, ResponsesWebSocketsParse. See
 	// ResponsesWebSocketsMode.
 	ResponsesWebSockets string `yaml:"responses_websockets,omitempty" json:"responses_websockets,omitempty"`
+
+	// LegacyDeclineResponsesWebSockets is the boolean responses_websockets replaced,
+	// read only so a config that still sets it is refused with the new key named. It
+	// merged in #1462 and never shipped in a release, but someone who set it to false
+	// to forward the upgrade would otherwise silently get parse. Never written.
+	LegacyDeclineResponsesWebSockets *bool `yaml:"decline_responses_websockets,omitempty" json:"-"`
 }
 
 // Valid ListenerConfig.ResponsesWebSockets values.
 const (
 	// ResponsesWebSocketsParse carries the WebSocket and parses every turn on it the
 	// way an HTTPS Responses request is parsed. Where the proxy cannot do that — the
-	// connection is HTTP/2, the request was not decrypted, or a plugin rewrites
-	// response bodies — it falls back to ResponsesWebSocketsDecline for that socket.
+	// request was not decrypted, or a plugin rewrites response bodies or redirects
+	// requests — it falls back to ResponsesWebSocketsDecline for that socket.
 	ResponsesWebSocketsParse = "parse"
 	// ResponsesWebSocketsDecline answers the upgrade with 426 Upgrade Required and
 	// contacts no origin; Codex reads that as "use HTTPS" and switches at once.

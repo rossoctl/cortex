@@ -1094,6 +1094,31 @@ func TestValidate_ResponsesWebSockets(t *testing.T) {
 	}
 }
 
+// The boolean responses_websockets replaced is refused with the mode that matches it
+// named, not ignored: someone who set it false to forward the upgrade would otherwise get
+// parse with no word said.
+func TestLoad_RemovedDeclineKeyIsRefusedWithItsReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		value, want string
+	}{
+		{"false", "responses_websockets: " + ResponsesWebSocketsForward},
+		{"true", "responses_websockets: " + ResponsesWebSocketsDecline},
+	} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  decline_responses_websockets: " + tc.value + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err == nil {
+			err = validateListeners(cfg)
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("decline_responses_websockets: %s: err = %v, want one naming %q", tc.value, err, tc.want)
+		}
+	}
+}
+
 // TestLoad_PreAffinityLaptopConfigGetsClientAffinity loads a laptop config written before
 // session.client_affinity existed — no session block at all, which is what every install
 // made before it still has on disk. With affinity off, Bob Shell's header-less startup

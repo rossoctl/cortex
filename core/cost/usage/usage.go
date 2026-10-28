@@ -1271,7 +1271,7 @@ func (a *Aggregator) evictColdestLocked() {
 // design and on the default path, so counting it would give every healthy Codex
 // fleet a nonzero error rate. The Finisher sees it as an allow for the same reason.
 func countsAsError(e *pipeline.SessionEvent) bool {
-	if e.Error != nil && e.Error.Kind == pipeline.ErrorKindUpgradeDeclined {
+	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined || e.Error.Kind == pipeline.ErrorKindTurnInterrupted) {
 		return false
 	}
 	return e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied

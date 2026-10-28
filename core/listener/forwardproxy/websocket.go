@@ -56,8 +56,9 @@ const (
 	// parsing, each direction matching what the HTTPS path parses: maxRequestBodySize
 	// for what the client sends — a socket's first turn carries the whole
 	// conversation, the same body an HTTPS POST would — and maxBodySize for each event
-	// the origin sends back, the SSE path's per-frame cap. A larger message is relayed
-	// whole and not read: its turn is still recorded, just without a parse.
+	// the origin sends back, the SSE path's per-frame cap. A larger message ends the
+	// socket with close code 1009, as the HTTPS path refuses an oversized body with a
+	// 413: relaying it unread would carry a turn no plugin saw and no row records.
 	wsClientMessageLimit = maxRequestBodySize
 	wsServerMessageLimit = maxBodySize
 	// wsFrameLimit is the largest single frame relayed. Raw is buffered whole before
@@ -126,24 +127,34 @@ func upgradesToWebSocket(h http.Header) bool {
 // can. Each reason is a shape the relay below does not handle; the caller declines
 // those with a 426 rather than forwarding them, so a parse-mode client is never left
 // sitting through the origin's 405.
-func (s *Server) cannotCarryWebSocket(r *http.Request, tl *tunnelLog) string {
-	switch {
-	case tl == nil || s.TLSBridge == nil:
+//
+// An HTTP/2 client never gets here: x/net/http2 refuses any request carrying Upgrade
+// with a 400 before the handler runs, so that is what an h2 client sees.
+func (s *Server) cannotCarryWebSocket(tl *tunnelLog, p *pipeline.Pipeline) string {
+	if tl == nil || s.TLSBridge == nil {
 		// A plaintext proxied request: no TLS bridge to re-originate over, and no
 		// Responses endpoint is served over plain HTTP.
 		return "not a bridged request"
-	case r.ProtoMajor != 1:
-		// An h2 extended CONNECT (RFC 8441) carries the socket as a stream, not a
-		// connection to take over. tungstenite, Codex's client, does not send one.
-		return "not HTTP/1.1"
-	case s.OutboundPipeline.WritesResponseBody():
+	}
+	return pipelineCannotCarry(p)
+}
+
+// pipelineCannotCarry says why p cannot run a carried socket's turns, or "" when it
+// can. Checked at the handshake and again at every turn, since a hot reload can change
+// the answer under a socket that is already open.
+func pipelineCannotCarry(p *pipeline.Pipeline) string {
+	switch {
+	case p.WritesResponseBody():
 		// A response-body writer rewrites a whole response; a turn's response is a
 		// live stream of frames already on their way to the client. The SSE path
 		// buffers instead, and a WebSocket has no buffered form.
 		return "a plugin rewrites response bodies"
+	case p.WritesDestination():
+		// A destination writer (inference-router) sends a request to another server.
+		// A turn rides a socket already connected to OpenAI, so it cannot be sent
+		// elsewhere; over HTTPS each turn is its own request, which can.
+		return "a plugin redirects requests"
 	}
-	// A connection that cannot be taken over is the one case left, and only the
-	// ResponseWriter can say; serveResponsesWebSocket declines it there.
 	return ""
 }
 
@@ -153,7 +164,7 @@ func (s *Server) cannotCarryWebSocket(r *http.Request, tl *tunnelLog) string {
 // pctx is the handshake's, after the pipeline ran on it. Its rows are the socket's open
 // (now) and close (when it ends), sharing its RequestID the way an opaque tunnel's do;
 // the turns record their own pairs between them.
-func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
+func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc, p *pipeline.Pipeline) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
@@ -178,10 +189,10 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 
 	client := s.TLSBridge.Upstream
 	resp, err := client.Do(up)
-	cancel()
 	if err != nil {
+		cancel()
 		status, fail := pipeline.ExchangeFailure(r.Context(), err)
-		slog.Warn("forward-proxy: WebSocket handshake with the origin failed", "host", r.Host, "kind", fail.Kind, "error", fail.Message)
+		slog.Warn("forward-proxy: WebSocket handshake with the origin failed", "host", logValue(r.Host), "kind", fail.Kind, "error", logValue(fail.Message))
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 		s.recordWebSocketRefusal(pctx, tl, sid, chain, status, fail)
 		return
@@ -189,6 +200,9 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		// The origin refused the upgrade (401, 403, 426…): relay its answer as an
 		// ordinary response, so the client sees what it would have without Cortex.
+		// The handshake's deadline still covers the body: cancelled before the copy, it
+		// would cut the answer off part way.
+		defer cancel()
 		defer resp.Body.Close()
 		for k, vs := range resp.Header {
 			for _, v := range vs {
@@ -202,6 +216,8 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 		s.recordWebSocketRefusal(pctx, tl, sid, chain, resp.StatusCode, nil)
 		return
 	}
+	// A 101: the deadline was for the handshake, and the socket outlives it.
+	cancel()
 	upConn, ok := resp.Body.(io.ReadWriteCloser)
 	if !ok {
 		_ = resp.Body.Close()
@@ -221,7 +237,7 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
 		_ = upConn.Close()
-		slog.Warn("forward-proxy: could not take over the client connection for a WebSocket", "host", r.Host, "error", err)
+		slog.Warn("forward-proxy: could not take over the client connection for a WebSocket", "host", logValue(r.Host), "error", logValue(err.Error()))
 		return
 	}
 	// The bridge's handshake deadline was cleared before serving; nothing sets one
@@ -248,10 +264,12 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	}
 
 	pctx.StatusCode = http.StatusSwitchingProtocols
+	ctx, stop := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer stop()
 	sock := &wsSocket{
 		s: s, r: r, hs: pctx, tl: tl, sid: sid, chain: chain,
 		client: clientConn, clientR: clientBuf.Reader, up: upConn,
-		start: time.Now(),
+		start: time.Now(), ctxv: ctx, stop: stop, hsp: p,
 	}
 	s.recordWebSocketOpen(sock)
 	sock.run()
@@ -307,10 +325,23 @@ type wsSocket struct {
 	// written in place of the client's frame.
 	upMu sync.Mutex
 
-	// turnMu guards turn, which both relays touch: the client side opens one, the
-	// server side feeds and ends it.
+	// turnMu guards turns, which both relays touch. The client side appends a turn
+	// when it sends a response.create; the server side alone ends one, on that turn's
+	// terminal event. A turn is ended where its last event is parsed, never from the
+	// client side, so a response.create that arrives while relayDown is still parsing
+	// the previous turn's response.completed cannot end that turn early, and an answer
+	// cannot be fed to a turn it does not belong to: the server answers turns in the
+	// order they were sent, which is the order of this queue.
 	turnMu sync.Mutex
-	turn   *wsTurn
+	turns  []*wsTurn
+
+	// ctxv is the context every turn's plugins run under: the handshake's values
+	// without its cancellation, cancelled by stop when the socket ends, so a plugin
+	// waiting on something (a budget pause, a slow script) is released with it.
+	ctxv context.Context
+	stop context.CancelFunc
+	// hsp is the pipeline the handshake ran on.
+	hsp *pipeline.Pipeline
 
 	// endedBy is the side whose relay stopped first, "client" or "origin", which
 	// decides how a turn still open at that moment is recorded. Set once, by the
@@ -349,6 +380,9 @@ type wsTurn struct {
 	// window, so a turn looking the pipeline up again at each step would end on one
 	// whose parser never saw it begin — no tokens, no cost.
 	p *pipeline.Pipeline
+	// prewarm is a generate:false response.create: run through the request phase, not
+	// recorded, and its answer not parsed.
+	prewarm bool
 }
 
 func (ws *wsSocket) run() {
@@ -361,28 +395,33 @@ func (ws *wsSocket) run() {
 	_ = ws.up.Close()
 	<-done
 
+	// Both relays have returned, so nothing else touches the queue: every turn still
+	// in it was sent and never answered in full.
 	ws.turnMu.Lock()
-	t := ws.turn
-	ws.turn = nil
+	open := ws.turns
+	ws.turns = nil
 	ws.turnMu.Unlock()
-	if t != nil {
-		status, fail := ws.unfinishedTurn()
+	status, fail := ws.unfinishedTurn()
+	for _, t := range open {
 		ws.endTurn(t, status, fail)
 	}
 	ws.recordClose()
+	// Released last: endTurn's teardown contexts derive from it.
+	ws.stop()
 }
 
 // unfinishedTurn is how a turn still open when the socket ended is recorded, by who
 // ended it — the WebSocket counterpart of what the HTTPS path records for a stream that
 // stops before its last event.
 //
-// THE CLIENT CLOSING IS NOT AN UPSTREAM FAILURE. It is what Codex does on Esc: it drops
-// the turn's stream, which closes this socket, and opens another for the next prompt.
-// So it is recorded as the HTTPS path records a client that hangs up before its answer
-// — 499, client_canceled — which /v1/usage counts as an error but keeps out of the 5xx
-// series, rather than as a 502-shaped upstream_error that would read as OpenAI failing
-// every time someone interrupts a turn. The origin closing first, or the socket breaking
-// on a frame the relay cannot read, is what upstream_error is for.
+// THE CLIENT CLOSING IS NOT A FAILURE. It is what Codex does on Esc: it drops the turn's
+// stream, which closes this socket, and opens another for the next prompt. Over HTTPS
+// the same Esc ends a stream the origin had already answered 200, and that is how it is
+// recorded — the upstream's 200 and no error — so an interrupted turn counts in
+// /v1/usage as priceable-but-unpriced rather than as an error. A turn ended here is
+// recorded the same way: 200, with the reason in Message only, under a kind that
+// countsAsError leaves alone. The origin closing first, or the socket breaking on a
+// frame the relay cannot read, is what upstream_error is for.
 //
 // A close frame decides first, when either side sent one: whoever sent the first close
 // ended the socket, and its code and reason go into the message. Without one — a
@@ -400,8 +439,8 @@ func (ws *wsSocket) unfinishedTurn() (int, *pipeline.EventError) {
 		suffix = " (" + note + ")"
 	}
 	if side == "client" {
-		return pipeline.StatusClientClosedRequest, &pipeline.EventError{
-			Kind:    "client_canceled",
+		return http.StatusOK, &pipeline.EventError{
+			Kind:    pipeline.ErrorKindTurnInterrupted,
 			Message: "the client closed the WebSocket before the turn completed" + suffix,
 		}
 	}
@@ -492,9 +531,14 @@ func (ws *wsSocket) relayUp() (endedBy string) {
 		}
 		op, payload, readable, complete, err := msg.Add(f)
 		if err != nil {
+			if errors.Is(err, wsframe.ErrMessageTooBig) {
+				// Neither relayed unread nor held any longer: see wsClientMessageLimit.
+				ws.closeBoth(wsframe.CloseMessageTooBig, "message too big for the proxy to read")
+			}
 			ws.logEnd("client", err)
 			return "client"
 		}
+		// Bounded by Message: it ends the message before its frames pass the limit.
 		held = append(held, f.Raw)
 		if !complete {
 			continue
@@ -546,6 +590,9 @@ func (ws *wsSocket) relayDown() (endedBy string) {
 		}
 		op, payload, readable, complete, err := msg.Add(f)
 		if err != nil {
+			if errors.Is(err, wsframe.ErrMessageTooBig) {
+				ws.closeBoth(wsframe.CloseMessageTooBig, "message too big for the proxy to read")
+			}
 			ws.logEnd("origin", err)
 			return "origin"
 		}
@@ -553,6 +600,15 @@ func (ws *wsSocket) relayDown() (endedBy string) {
 			ws.serverMessage(payload)
 		}
 	}
+}
+
+// closeBoth sends each end a close frame with code and reason before the socket is torn
+// down, so both see why rather than a dropped connection. Best effort: a write that fails
+// is the connection already gone.
+func (ws *wsSocket) closeBoth(code uint16, reason string) {
+	payload := wsframe.ClosePayload(code, reason)
+	ws.writeClient(wsframe.Encode(wsframe.OpClose, payload, false))
+	ws.writeUp(wsframe.Encode(wsframe.OpClose, payload, true))
 }
 
 func (ws *wsSocket) writeUp(b []byte) bool {
@@ -574,10 +630,10 @@ func (ws *wsSocket) logEnd(side string, err error) {
 		return
 	}
 	if errors.Is(err, wsframe.ErrProtocol) {
-		slog.Warn("forward-proxy: ending a WebSocket on a frame the relay cannot read", "host", ws.r.Host, "side", side, "error", err)
+		slog.Warn("forward-proxy: ending a WebSocket on a frame the relay cannot read", "host", logValue(ws.r.Host), "side", side, "error", logValue(err.Error()))
 		return
 	}
-	slog.Debug("forward-proxy: WebSocket ended", "host", ws.r.Host, "side", side, "error", err)
+	slog.Debug("forward-proxy: WebSocket ended", "host", logValue(ws.r.Host), "side", side, "error", logValue(err.Error()))
 }
 
 // wsEnvelope is the one field every message on the socket carries.
@@ -595,41 +651,43 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 		return nil, false
 	}
 	body, generate := responseCreateBody(payload)
-	if !generate {
-		// A prewarm: generate:false asks the server to set up state and answer at
-		// once, with no model output. Not inference, so not a turn.
-		return nil, false
-	}
 
-	ws.turnMu.Lock()
-	prev := ws.turn
-	ws.turn = nil
-	ws.turnMu.Unlock()
-	if prev != nil {
-		// Codex holds the socket for one response at a time, so a second
-		// response.create means the first one ended without a terminal event.
-		ws.endTurn(prev, http.StatusOK, &pipeline.EventError{Kind: "upstream_error", Message: "a new turn began before this one completed"})
+	p := ws.s.OutboundPipeline.Load()
+	if why := pipelineCannotCarry(p); why != "" {
+		// A reload since the handshake made this socket one the proxy would have
+		// declined. End it with "try again later": Codex reconnects, and the new
+		// handshake is answered 426 and falls back to HTTPS, where the plugin applies.
+		slog.Info("forward-proxy: ending a carried WebSocket after a reload", "host", logValue(ws.r.Host), "reason", why)
+		ws.closeBoth(wsframe.CloseTryAgainLater, "the proxy's pipeline changed; reconnect")
+		return nil, true
 	}
 
 	pctx := ws.newTurnContext(body)
-	t := &wsTurn{pctx: pctx, p: ws.s.OutboundPipeline.Load()}
-	action := t.p.Run(ws.ctx(), pctx)
+	t := &wsTurn{pctx: pctx, p: p, prewarm: !generate}
+	action := p.Run(ws.ctx(), pctx)
 	if action.Type == pipeline.Reject {
 		ws.s.recordOutboundRejectIn(nil, pctx, action, ws.sid)
 		ws.refuseTurn(action)
-		t.p.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
+		p.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
 		return nil, true
 	}
-	if ws.s.Sessions != nil {
+	if t.prewarm {
+		// generate:false asks the server to set up state and answer at once, with no
+		// model output. It carries the same prompt a real turn does — the turn after it
+		// sends only what is new — so its request phase runs, and a plugin can refuse
+		// or rewrite it. But it is not inference: no row, and its answer is not a
+		// turn's response.
+		p.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
+	} else if ws.s.Sessions != nil {
 		pctx.OutboundSessionID = ws.sid
 		ws.s.Sessions.Append(ws.sid, ws.turnRequestEvent(pctx))
 	}
 	ws.turnMu.Lock()
-	ws.turn = t
+	ws.turns = append(ws.turns, t)
 	ws.turnMu.Unlock()
 
 	if pctx.BodyMutated() {
-		return withType(pctx.Body), false
+		return withType(pctx.Body, !generate), false
 	}
 	return nil, false
 }
@@ -638,10 +696,13 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 // ends the turn on a terminal event.
 func (ws *wsSocket) serverMessage(payload []byte) {
 	ws.turnMu.Lock()
-	t := ws.turn
+	var t *wsTurn
+	if len(ws.turns) > 0 {
+		t = ws.turns[0]
+	}
 	ws.turnMu.Unlock()
 	if t == nil {
-		// The answer to a prewarm, or to a turn already ended. Nothing to parse into.
+		// Nothing is waiting for an answer. Nothing to parse into.
 		return
 	}
 	var env struct {
@@ -653,6 +714,15 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(payload, &env)
+	if t.prewarm {
+		// A prewarm's answer is set-up, not output. It ends on the same events a turn
+		// does, and is not recorded.
+		switch env.Type {
+		case "error", "response.completed", "response.incomplete", "response.failed":
+			ws.popTurn(t)
+		}
+		return
+	}
 	if env.Type == "error" {
 		// The origin refused the turn (a usage limit, bad input). See errorEventStatus.
 		status := errorEventStatus(env.Status, env.Error.Code, env.Error.Type)
@@ -660,9 +730,18 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 		if name := firstNonEmpty(env.Error.Code, env.Error.Type); name != "" {
 			message += ": " + capErrorName(name)
 		}
+		// The origin answered, so the status is its answer, not a failure of the proxy:
+		// the row carries the error, and Finishers see what HTTPS would show them for
+		// the same refusal — an allow with this status, not an error with none.
+		t.pctx.StatusCode = status
 		ws.finishTurn(t, status, &pipeline.EventError{Kind: "backend_error", Code: strconv.Itoa(status), Message: message})
 		return
 	}
+	// Delivered before it is read: relayDown forwarded this frame to the client already,
+	// and a WebSocket answer cannot be retracted. Marked here, not only at the turn's
+	// end, so a plugin rejecting a mid-turn frame records a late refusal rather than
+	// turning a turn the client received into a denial.
+	t.pctx.MarkResponseDelivered()
 	t.p.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
 	t.pctx.ResponseBytes += int64(len(payload))
 	// The three events inference-parser reads usage and the finish reason from; each
@@ -673,16 +752,24 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 	}
 }
 
-// finishTurn ends t if it is still the open turn.
+// finishTurn ends t, the turn at the head of the queue. Only relayDown calls it, so no
+// other path can end t while its last event is still being parsed.
 func (ws *wsSocket) finishTurn(t *wsTurn, status int, fail *pipeline.EventError) {
-	ws.turnMu.Lock()
-	if ws.turn != t {
-		ws.turnMu.Unlock()
-		return
+	if ws.popTurn(t) {
+		ws.endTurn(t, status, fail)
 	}
-	ws.turn = nil
-	ws.turnMu.Unlock()
-	ws.endTurn(t, status, fail)
+}
+
+// popTurn removes t from the head of the queue, reporting whether it was there.
+func (ws *wsSocket) popTurn(t *wsTurn) bool {
+	ws.turnMu.Lock()
+	defer ws.turnMu.Unlock()
+	if len(ws.turns) == 0 || ws.turns[0] != t {
+		return false
+	}
+	ws.turns[0] = nil
+	ws.turns = ws.turns[1:]
+	return true
 }
 
 // endTurn finalizes a turn: the terminal frame that settles its cost, its response
@@ -692,7 +779,7 @@ func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
 	finalCtx, cancelFinal := httpx.TeardownContext(ws.ctx())
 	defer cancelFinal()
 	t.pctx.MarkResponseDelivered()
-	if fail == nil {
+	if fail == nil || fail.Kind == pipeline.ErrorKindTurnInterrupted {
 		t.pctx.StatusCode = status
 	}
 	t.p.RunResponseFrame(finalCtx, t.pctx, nil, true)
@@ -701,11 +788,10 @@ func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
 }
 
 // ctx is the context every turn's pipeline runs under: the handshake request's values
-// (the client's process, for attribution) without its cancellation, since the handshake
-// request ended when the upgrade was answered and the socket outlives it.
-func (ws *wsSocket) ctx() context.Context {
-	return context.WithoutCancel(ws.r.Context())
-}
+// (the client's process, for attribution) without its cancellation — the handshake
+// request ended when the upgrade was answered, and the socket outlives it — cancelled
+// instead when the socket ends.
+func (ws *wsSocket) ctx() context.Context { return ws.ctxv }
 
 // newTurnContext builds a turn's pipeline.Context: the handshake's identity — host,
 // path, headers, client, session — with the request the turn would have been over
@@ -722,16 +808,19 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	}
 	headers.Set("Content-Type", "application/json")
 	pctx := &pipeline.Context{
-		Direction:     pipeline.Outbound,
-		Method:        http.MethodPost,
-		Scheme:        hs.Scheme,
-		Host:          hs.Host,
-		Path:          hs.Path,
-		Headers:       headers,
-		Body:          body,
-		Shared:        ws.s.Shared,
-		StartedAt:     time.Now(),
-		Session:       hs.Session,
+		Direction: pipeline.Outbound,
+		Method:    http.MethodPost,
+		Scheme:    hs.Scheme,
+		Host:      hs.Host,
+		Path:      hs.Path,
+		Headers:   headers,
+		Body:      body,
+		Shared:    ws.s.Shared,
+		StartedAt: time.Now(),
+		// Built per turn, as HTTPS builds one per request: the handshake's was taken
+		// before any turn was recorded, and a plugin reading the session (an intent, a
+		// request count) would see none of the turns before this one.
+		Session:       ws.s.sessionViewFor(ws.sid),
 		SessionSource: hs.SessionSource,
 		SessionHeader: hs.SessionHeader,
 		ChainSession:  hs.ChainSession,
@@ -833,16 +922,29 @@ func responseCreateBody(payload []byte) (body []byte, generate bool) {
 	return out, generate
 }
 
-// withType turns a rewritten request body back into a response.create message.
-func withType(body []byte) []byte {
+// withType turns a rewritten request body back into a response.create message, with
+// generate:false again when it was a prewarm.
+func withType(body []byte, prewarm bool) []byte {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(body, &fields) != nil {
 		return body
 	}
 	fields["type"] = json.RawMessage(`"response.create"`)
+	if prewarm {
+		fields["generate"] = json.RawMessage(`false`)
+	}
 	out, err := json.Marshal(fields)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+// logValue is s as it may go in a log line: line breaks replaced, so a value a client
+// chose (a Host, an error that quotes one) cannot start a log line of its own. slog's
+// text handler already quotes such a value; this keeps the guarantee independent of
+// which handler a binary installs.
+func logValue(s string) string {
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return strings.ReplaceAll(s, "\r", `\r`)
 }

@@ -606,8 +606,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   426 sends it straight to HTTPS. Nothing is forwarded, the Finisher sees an allow with
   status 426, and `/v1/usage` does not count it as an error. It is what
   `listener.responses_websockets: decline` does to every such socket, and what the
-  default, `parse`, does to one it cannot carry (not bridged, HTTP/2, or a
-  `WritesResponseBody` plugin in the chain); a carried socket records instead a `GET`
+  default, `parse`, does to one it cannot carry (not bridged, or a `WritesResponseBody`
+  or `WritesDestination` plugin in the chain; an HTTP/2 client is refused 400 by Go's
+  HTTP/2 server before the handler runs); a carried socket records instead a `GET`
   open and close with `tunnelReason: "websocket"` and one ordinary `POST`
   request/response pair per turn on it (`core/listener/forwardproxy/websocket.go`).
   `forward` restores the stripped GET and the 405. **A request whose body could not be

@@ -13,11 +13,14 @@
 package wsframe
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"unicode/utf8"
 )
 
 // Opcodes (RFC 6455 §5.2).
@@ -138,20 +141,42 @@ func (r *Reader) ReadFrame() (*Frame, error) {
 		return nil, fmt.Errorf("%w: a %d-byte frame is over the relay's %d-byte limit", ErrProtocol, length, r.maxFrame)
 	}
 
-	f.Raw = make([]byte, n+int(length))
-	copy(f.Raw, hdr[:n])
-	if _, err := io.ReadFull(r.r, f.Raw[n:]); err != nil {
-		return nil, unexpected(err)
+	// Raw grows as the payload arrives rather than being sized from the length the
+	// header claims: a peer that sends a 14-byte header claiming 32 MiB and then
+	// stalls would otherwise hold that much memory for as long as it stalls.
+	var raw bytes.Buffer
+	raw.Grow(n + int(min(length, rawPrealloc)))
+	raw.Write(hdr[:n])
+	if got, err := io.CopyN(&raw, r.r, length); err != nil || got != length {
+		return nil, unexpected(orEOF(err))
 	}
+	f.Raw = raw.Bytes()
 	if length > r.limit {
 		f.Truncated = true
 		return f, nil
 	}
-	f.Payload = append([]byte(nil), f.Raw[n:]...)
-	if f.Masked {
-		maskBytes(f.Payload, key)
+	// Payload aliases Raw only when there is no mask to undo; otherwise it is the one
+	// copy reading needs.
+	if !f.Masked {
+		f.Payload = f.Raw[n:]
+		return f, nil
 	}
+	f.Payload = append([]byte(nil), f.Raw[n:]...)
+	maskBytes(f.Payload, key)
 	return f, nil
+}
+
+// rawPrealloc is how much of a frame's claimed length is reserved up front: enough
+// for the common frame in one allocation, and no more than that before the bytes
+// arrive.
+const rawPrealloc = 64 << 10
+
+// orEOF is err, or io.EOF when a copy stopped short without one.
+func orEOF(err error) error {
+	if err == nil {
+		return io.EOF
+	}
+	return err
 }
 
 func unexpected(err error) error {
@@ -172,7 +197,13 @@ func maskBytes(b []byte, key [4]byte) {
 // must not (RFC 6455 §5.1), so the caller says which side it is writing as.
 func Encode(opcode byte, payload []byte, masked bool) []byte {
 	length := len(payload)
-	hdr := make([]byte, 0, 14+length)
+	// 14 is the largest header; the check keeps the capacity from overflowing an int,
+	// which only a payload near the int's own limit could do.
+	capacity := length
+	if capacity <= math.MaxInt-14 {
+		capacity += 14
+	}
+	hdr := make([]byte, 0, capacity)
 	hdr = append(hdr, 0x80|opcode)
 	var maskBit byte
 	if masked {
@@ -204,7 +235,13 @@ func Encode(opcode byte, payload []byte, masked bool) []byte {
 // reason is cut to fit a control frame.
 func ClosePayload(code uint16, reason string) []byte {
 	if len(reason) > maxControlPayload-2 {
-		reason = reason[:maxControlPayload-2]
+		// RFC 6455 §5.5.1 has the receiver fail the connection on a reason that is
+		// not valid UTF-8, so the cut backs up to a character boundary.
+		cut := maxControlPayload - 2
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut]
 	}
 	b := binary.BigEndian.AppendUint16(nil, code)
 	return append(b, reason...)
@@ -253,28 +290,49 @@ func DescribeClose(payload []byte) string {
 	return out
 }
 
+// ErrMessageTooBig is a data message over its limit. The caller should end the socket
+// (close code 1009, message too big), as the HTTPS path answers a body over its cap
+// with a 413: a message too big to read is also one whose fragments the relay would
+// otherwise have to hold without bound, waiting for an end that may never come.
+var ErrMessageTooBig = errors.New("wsframe: message over the size limit")
+
+// CloseMessageTooBig is RFC 6455 §7.4.1's code for ErrMessageTooBig.
+const CloseMessageTooBig = 1009
+
+// CloseTryAgainLater asks the peer to reconnect (RFC 6455 §7.4.1, registered by IANA).
+const CloseTryAgainLater = 1013
+
+// maxFragments bounds the frames one message may arrive in. Each fragment is a
+// separate allocation the relay holds until the message ends, so a flood of empty
+// continuations — six bytes each on the wire, and never over the byte limit — would
+// cost memory without bound. Codex sends each message as one frame.
+const maxFragments = 1024
+
 // Message reassembles a data message from its frames.
 //
 // It sees control frames go by without letting them interrupt a message, as RFC 6455
 // §5.4 allows a peer to interleave them between fragments. It reports a message whole
-// once its final fragment arrives, and only if every fragment was readable and the total
-// stayed within limit; otherwise the message is still relayed, just not read.
+// once its final fragment arrives. A message over limit — in payload, in wire bytes, or
+// in fragments — is ErrMessageTooBig, which ends the socket: it is never relayed
+// unread, because a turn too big to read is one no plugin would see.
 type Message struct {
-	limit    int64
-	opcode   byte
-	buf      []byte
-	inFlight bool
-	// lost is set when a fragment of the current message was over the reader's
-	// limit or the total grew past this one's.
-	lost bool
+	limit     int64
+	opcode    byte
+	buf       []byte
+	wire      int64 // wire bytes of the message so far, header and all
+	fragments int
+	inFlight  bool
 }
 
 // NewMessage reassembles messages of up to limit bytes.
 func NewMessage(limit int64) *Message { return &Message{limit: limit} }
 
 // Add takes the next data frame and, when it completes a message, returns that
-// message's opcode and payload with ok true. A message that could not be read returns
-// ok true and a nil payload with readable false, so the caller can still count it.
+// message's opcode and payload with ok true. It returns ErrMessageTooBig once the
+// message passes its limit, and ErrProtocol for fragments out of order.
+//
+// readable is false only for a binary message, which is relayed and counted but not
+// parsed. The payload is the caller's to keep: the next message does not reuse it.
 func (m *Message) Add(f *Frame) (opcode byte, payload []byte, readable, ok bool, err error) {
 	if f.IsControl() {
 		return 0, nil, false, false, nil
@@ -285,19 +343,25 @@ func (m *Message) Add(f *Frame) (opcode byte, payload []byte, readable, ok bool,
 	case f.Opcode != OpContinuation && m.inFlight:
 		return 0, nil, false, false, fmt.Errorf("%w: a new message began before the last one finished", ErrProtocol)
 	case f.Opcode != OpContinuation:
-		m.opcode, m.buf, m.lost, m.inFlight = f.Opcode, m.buf[:0], false, true
+		m.opcode, m.buf, m.wire, m.fragments, m.inFlight = f.Opcode, nil, 0, 0, true
 	}
-	if f.Truncated || int64(len(m.buf))+int64(len(f.Payload)) > m.limit {
-		m.lost = true
-	} else if !m.lost {
-		m.buf = append(m.buf, f.Payload...)
+	m.wire += int64(len(f.Raw))
+	m.fragments++
+	if f.Truncated || int64(len(m.buf))+int64(len(f.Payload)) > m.limit || m.wire > m.limit+maxFragments*14 || m.fragments > maxFragments {
+		m.buf, m.inFlight = nil, false
+		return 0, nil, false, false, fmt.Errorf("%w: over %d bytes or %d fragments", ErrMessageTooBig, m.limit, maxFragments)
 	}
+	if f.Fin && m.fragments == 1 {
+		// The common case, one frame: hand the frame's own payload over rather than
+		// copying it into buf and out again.
+		m.inFlight = false
+		return m.opcode, f.Payload, m.opcode == OpText, true, nil
+	}
+	m.buf = append(m.buf, f.Payload...)
 	if !f.Fin {
 		return 0, nil, false, false, nil
 	}
 	m.inFlight = false
-	if m.lost {
-		return m.opcode, nil, false, true, nil
-	}
-	return m.opcode, append([]byte(nil), m.buf...), true, true, nil
+	payload, m.buf = m.buf, nil
+	return m.opcode, payload, m.opcode == OpText, true, nil
 }

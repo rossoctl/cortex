@@ -112,6 +112,15 @@ func validateListeners(cfg *Config) error {
 			return fmt.Errorf("listener.inbound_interception: %q is not valid (use %q or %q)",
 				cfg.Listener.InboundInterception, InboundInterceptionReverseProxy, InboundInterceptionTransparent)
 		}
+		if v := cfg.Listener.LegacyDeclineResponsesWebSockets; v != nil {
+			want := ResponsesWebSocketsDecline
+			if !*v {
+				want = ResponsesWebSocketsForward
+			}
+			return fmt.Errorf("listener.decline_responses_websockets was replaced by listener.responses_websockets; "+
+				"for decline_responses_websockets: %t use responses_websockets: %s (the default is %s)",
+				*v, want, ResponsesWebSocketsParse)
+		}
 		switch cfg.Listener.ResponsesWebSockets {
 		case "", ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward:
 			// valid

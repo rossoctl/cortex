@@ -650,6 +650,12 @@ type EventError struct {
 // usage does not count it as an error, and the Finisher sees an allow.
 const ErrorKindUpgradeDeclined = "upgrade_declined"
 
+// ErrorKindTurnInterrupted is a carried WebSocket turn the client ended before its last
+// event: Codex's Esc, which drops the socket. The row keeps the 200 the origin was
+// answering with, as an HTTPS stream the client leaves part way does, and /v1/usage
+// does not count it as an error. The kind says what happened; it is not a failure.
+const ErrorKindTurnInterrupted = "turn_interrupted"
+
 // SessionSource is how a listener resolved Context.Session.
 type SessionSource string
 

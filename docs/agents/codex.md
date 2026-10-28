@@ -249,21 +249,30 @@ On the timeline a socket is a `GET` on the Responses path with `tunnelReason:
 duration and bytes. Its turns sit between the two as ordinary `POST` request and response
 rows. Plugins act on each turn: one that rejects it keeps it from reaching chatgpt.com
 and Codex is answered with the error event it reads for a server refusal; one that
-rewrites the request body (`tool-prune`) changes what is sent.
+rewrites the request body (a redaction script, `context-guru`) changes what is sent.
+Codex's prewarm — a `response.create` with `generate: false`, sent before the first turn
+with the prompt the turns build on — goes through the same request plugins, so a plugin
+that refuses or rewrites content does so there too. It records no turn: it produces no
+output.
+
+A turn over the **32 MiB** an HTTPS request body may be ends the socket with close code
+1009, "message too big" — the WebSocket counterpart of the 413 HTTPS answers. It is never
+relayed unread, since no plugin would see it and no row would record it.
 
 **Pressing Esc mid-answer closes the socket.** Codex drops the turn's stream, which ends
 the WebSocket, and opens a new one for the next prompt. The interrupted turn is recorded
-with the text that had arrived, as `statusCode` 499 with `error.kind:
-"client_canceled"` — the same as an HTTPS client hanging up — so it is not counted as an
-upstream failure. OpenAI sends no usage for a turn cut off this way, so it has no token
-count or cost: it shows as priceable but unpriced, the same as a cancelled HTTPS stream.
+with the text that had arrived, as `statusCode` 200 with `error.kind:
+"turn_interrupted"` — the way HTTPS records a stream the client leaves part way, with the
+200 the origin was already answering — so `/v1/usage` does not count it as an error.
+OpenAI sends no usage for a turn cut off this way, so it has no token count or cost: it
+shows as priceable but unpriced, the same as a cancelled HTTPS stream.
 
 **A turn's status follows what the same turn would get over HTTPS.** An open WebSocket
 carries no HTTP status after its 101, so each turn row is given the one its HTTPS
 equivalent would have: 200 for a completed turn; for a refusal the origin sends as an
 `error` event, the event's own status, else the one its error code is answered with
 (`insufficient_quota` and `rate_limit_exceeded` are 429, `context_length_exceeded` 400,
-`server_is_overloaded` 503), else 500; 499 `client_canceled` when Codex ended the socket
+`server_is_overloaded` 503), else 500; 200 `turn_interrupted` when Codex ended the socket
 mid-turn and 502 `upstream_error` when OpenAI did. Who ended it is read from the first
 close frame either side sent, whose code and reason go into the row's message, and from
 which side's connection dropped first when neither sent one.
@@ -271,8 +280,15 @@ which side's connection dropped first when neither sent one.
 Where Cortex cannot carry the socket it answers the handshake with **426 Upgrade
 Required** instead, which Codex reads as "this endpoint wants HTTP" and switches to HTTPS
 at once, for the rest of its session. That happens for a connection the bridge did not
-decrypt, an HTTP/2 connection, or a pipeline with a plugin that rewrites response bodies,
-since a live socket's frames are on their way to Codex before a whole response exists. The
+decrypt; a pipeline with a plugin that rewrites response bodies, since a live socket's
+frames are on their way to Codex before a whole response exists; and a pipeline with a
+plugin that sends requests elsewhere — `inference-router`, as `agentop server use` sets
+up — since a turn rides a socket already connected to OpenAI, where over HTTPS each turn
+is its own request and can be routed. A reload that adds either kind of plugin while a
+socket is open ends that socket at its next turn with close code 1013, "try again later":
+Codex reconnects, is answered 426, and goes on over HTTPS with the plugin applied. (An
+HTTP/2 connection never reaches this far: Go's HTTP/2 server answers any request carrying
+`Upgrade` with a 400 before Cortex sees it. Codex's client speaks HTTP/1.1.) The
 timeline then shows a 426 with `error.kind: "upgrade_declined"`, and Codex prints one
 harmless `failed to connect to websocket: HTTP error: 426 Upgrade Required` line before
 carrying on over HTTPS.

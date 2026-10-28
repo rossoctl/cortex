@@ -98,8 +98,10 @@ var dispatchSites = map[string]dispatchClass{
 	// finish defer's case, one turn at a time.
 	"forwardproxy/websocket.go:endTurn:finalCtx": finalizationDelivered,
 	// Each of a turn's server messages, mid-turn: the WebSocket counterpart of the SSE
-	// path's per-block frames. Detached from the handshake request, which ended when the
-	// upgrade was answered; the socket's own lifetime bounds it.
+	// path's per-block frames. inFlight for its context — the socket's, cancelled when
+	// the socket ends, not a teardown budget that would cut a long answer short — but
+	// unlike an SSE block the frame is already on the wire, so serverMessage marks the
+	// turn delivered before dispatching: a reject here is late, never a denial.
 	"forwardproxy/websocket.go:serverMessage:ws.ctx()": inFlight,
 
 	// ext_proc's teardown flush: the stream is gone by definition here, and its two dispatches take
