@@ -807,20 +807,26 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 		headers.Del(h)
 	}
 	headers.Set("Content-Type", "application/json")
+	// The session as it is when this turn starts, built per turn as HTTPS builds one per
+	// request: the handshake's view was taken before any turn was recorded, so a plugin
+	// reading the session (an intent, a request count) would see none of the turns before
+	// this one. From the handshake's resolved session, as hydrateSession resolves one for
+	// an HTTPS request, so a turn has no view exactly when that request would have none.
+	var view *pipeline.SessionView
+	if hs.Session != nil {
+		view = ws.s.sessionViewFor(hs.Session.ID)
+	}
 	pctx := &pipeline.Context{
-		Direction: pipeline.Outbound,
-		Method:    http.MethodPost,
-		Scheme:    hs.Scheme,
-		Host:      hs.Host,
-		Path:      hs.Path,
-		Headers:   headers,
-		Body:      body,
-		Shared:    ws.s.Shared,
-		StartedAt: time.Now(),
-		// Built per turn, as HTTPS builds one per request: the handshake's was taken
-		// before any turn was recorded, and a plugin reading the session (an intent, a
-		// request count) would see none of the turns before this one.
-		Session:       ws.s.sessionViewFor(ws.sid),
+		Direction:     pipeline.Outbound,
+		Method:        http.MethodPost,
+		Scheme:        hs.Scheme,
+		Host:          hs.Host,
+		Path:          hs.Path,
+		Headers:       headers,
+		Body:          body,
+		Shared:        ws.s.Shared,
+		StartedAt:     time.Now(),
+		Session:       view,
 		SessionSource: hs.SessionSource,
 		SessionHeader: hs.SessionHeader,
 		ChainSession:  hs.ChainSession,

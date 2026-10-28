@@ -508,10 +508,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	if !skipped && wantsResponsesWebSocket(r) {
 		switch s.ResponsesWebSockets {
 		case config.ResponsesWebSocketsParse:
-			// logValue changes nothing a header id can hold — IDHeaderFrom already refused
-			// control characters — but the socket carries this id into rows and log lines
-			// for a whole session, so it is cleaned where the socket takes it.
-			sid := logValue(s.recordingSessionID(sessionID, r.Header, chain))
+			sid := s.recordingSessionID(sessionID, r.Header, chain)
 			if why := s.cannotCarryWebSocket(tl, p); why != "" {
 				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", logValue(r.Host), "reason", why)
 				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
@@ -520,7 +517,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain, p)
 			return
 		case config.ResponsesWebSocketsDecline:
-			s.declineResponsesWebSocket(w, r, pctx, tl, logValue(s.recordingSessionID(sessionID, r.Header, chain)), chain)
+			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
 			return
 		}
 	}
