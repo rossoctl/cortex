@@ -192,7 +192,7 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	if err != nil {
 		cancel()
 		status, fail := pipeline.ExchangeFailure(r.Context(), err)
-		slog.Warn("forward-proxy: WebSocket handshake with the origin failed", "host", logValue(r.Host), "kind", fail.Kind, "error", logValue(fail.Message))
+		slog.Warn("forward-proxy: WebSocket handshake with the origin failed", "host", r.Host, "kind", fail.Kind, "error", fail.Message)
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 		s.recordWebSocketRefusal(pctx, tl, sid, chain, status, fail)
 		return
@@ -237,7 +237,7 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
 		_ = upConn.Close()
-		slog.Warn("forward-proxy: could not take over the client connection for a WebSocket", "host", logValue(r.Host), "error", logValue(err.Error()))
+		slog.Warn("forward-proxy: could not take over the client connection for a WebSocket", "host", r.Host, "error", err)
 		return
 	}
 	// The bridge's handshake deadline was cleared before serving; nothing sets one
@@ -630,10 +630,10 @@ func (ws *wsSocket) logEnd(side string, err error) {
 		return
 	}
 	if errors.Is(err, wsframe.ErrProtocol) {
-		slog.Warn("forward-proxy: ending a WebSocket on a frame the relay cannot read", "host", logValue(ws.r.Host), "side", side, "error", logValue(err.Error()))
+		slog.Warn("forward-proxy: ending a WebSocket on a frame the relay cannot read", "host", ws.r.Host, "side", side, "error", err)
 		return
 	}
-	slog.Debug("forward-proxy: WebSocket ended", "host", logValue(ws.r.Host), "side", side, "error", logValue(err.Error()))
+	slog.Debug("forward-proxy: WebSocket ended", "host", ws.r.Host, "side", side, "error", err)
 }
 
 // wsEnvelope is the one field every message on the socket carries.
@@ -657,7 +657,7 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 		// A reload since the handshake made this socket one the proxy would have
 		// declined. End it with "try again later": Codex reconnects, and the new
 		// handshake is answered 426 and falls back to HTTPS, where the plugin applies.
-		slog.Info("forward-proxy: ending a carried WebSocket after a reload", "host", logValue(ws.r.Host), "reason", why)
+		slog.Info("forward-proxy: ending a carried WebSocket after a reload", "host", ws.r.Host, "reason", why)
 		ws.closeBoth(wsframe.CloseTryAgainLater, "the proxy's pipeline changed; reconnect")
 		return nil, true
 	}
@@ -944,13 +944,4 @@ func withType(body []byte, prewarm bool) []byte {
 		return body
 	}
 	return out
-}
-
-// logValue is s as it may go in a log line: line breaks replaced, so a value a client
-// chose (a Host, an error that quotes one) cannot start a log line of its own. slog's
-// text handler already quotes such a value; this keeps the guarantee independent of
-// which handler a binary installs.
-func logValue(s string) string {
-	s = strings.ReplaceAll(s, "\n", `\n`)
-	return strings.ReplaceAll(s, "\r", `\r`)
 }

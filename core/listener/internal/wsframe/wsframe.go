@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"unicode/utf8"
 )
 
@@ -197,13 +196,7 @@ func maskBytes(b []byte, key [4]byte) {
 // must not (RFC 6455 §5.1), so the caller says which side it is writing as.
 func Encode(opcode byte, payload []byte, masked bool) []byte {
 	length := len(payload)
-	// 14 is the largest header; the check keeps the capacity from overflowing an int,
-	// which only a payload near the int's own limit could do.
-	capacity := length
-	if capacity <= math.MaxInt-14 {
-		capacity += 14
-	}
-	hdr := make([]byte, 0, capacity)
+	hdr := make([]byte, 0, 14+length)
 	hdr = append(hdr, 0x80|opcode)
 	var maskBit byte
 	if masked {

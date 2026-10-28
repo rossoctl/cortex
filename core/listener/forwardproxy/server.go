@@ -510,7 +510,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		case config.ResponsesWebSocketsParse:
 			sid := s.recordingSessionID(sessionID, r.Header, chain)
 			if why := s.cannotCarryWebSocket(tl, p); why != "" {
-				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", logValue(r.Host), "reason", why)
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
 				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
 				return
 			}
@@ -1060,7 +1060,7 @@ const declinedUpgradeBody = `{"detail":"WebSocket transport is not available thr
 // does for the 421.
 func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
 	slog.Debug("forward-proxy: declined a WebSocket upgrade on a Responses path; the client falls back to HTTPS",
-		"host", logValue(r.Host), "path", logValue(r.URL.Path))
+		"host", r.Host, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUpgradeRequired)
 	_, _ = io.WriteString(w, declinedUpgradeBody)
