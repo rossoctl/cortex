@@ -260,6 +260,21 @@ func TestTimingHeader_SplitsDurationIntoTtfbAndBody(t *testing.T) {
 	}
 }
 
+// A body that landed inside the same millisecond as the headers is a computed
+// zero, not an unknown one: the column convention renders counted-nothing
+// blank, but a blank here would leave a hole in the middle of the sentence.
+func TestTimingHeader_RendersAZeroBodyExplicitly(t *testing.T) {
+	got := timingHeader(&pipeline.SessionEvent{
+		Phase:    pipeline.SessionResponse,
+		Duration: 412 * time.Millisecond,
+		Ttfb:     412 * time.Millisecond,
+	})
+	want := "timing:      ttfb 412ms · body 0ms of 412ms total"
+	if got != want {
+		t.Errorf("timingHeader = %q, want %q", got, want)
+	}
+}
+
 // No header where the decomposition would be fiction: a request row (no
 // duration), a failed exchange (no ttfb — nothing answered), and a tunnel
 // close (no headers to time).

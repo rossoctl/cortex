@@ -772,6 +772,69 @@ func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
 	}
 }
 
+// TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody pins the arm the
+// SSE test above cannot reach: a plain response no plugin asked to buffer is
+// relayed by the io.Copy at the bottom of serveOutbound, and the row used to be
+// filed before that copy — Duration stopped at the headers, so duration−ttfb
+// read as a zero body while the body was still arriving (#1251's misreading, on
+// exactly the rows the split was built to diagnose). The row now waits for the
+// copy, which also completes ResponseBytes for the same arm.
+func TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	const drip = 60 * time.Millisecond
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Plain JSON, not event-stream: no streaming responder, and an empty
+		// pipeline buffers nothing — the final io.Copy arm.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(drip)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	p, err := pipeline.New([]pipeline.Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", backend.URL+"/plain", nil)
+	proxyClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 2 {
+		t.Fatalf("expected 2 events (request + response), got %+v", v)
+	}
+	respEv := v.Events[1]
+	if respEv.Phase != pipeline.SessionResponse {
+		t.Fatalf("second event phase = %v, want SessionResponse", respEv.Phase)
+	}
+	if respEv.Ttfb <= 0 {
+		t.Errorf("response event ttfb = %v, want > 0 — headers arrived, so the figure exists", respEv.Ttfb)
+	}
+	// The drip happens entirely after the flush, so the body's share is at least
+	// most of it — the same loose bound as the SSE test: the claim is the ORDER
+	// of the two phases, not a stopwatch.
+	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
+		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed",
+			body, drip/2, drip)
+	}
+	if respEv.BytesDown == 0 {
+		t.Errorf("response event BytesDown = 0, want the relayed body counted — the row is recorded after the copy")
+	}
+}
+
 // TestForwardProxy_ResponseEventOmitsTtfbOnFailedExchange pins the other half
 // of the field's contract: an exchange that never got response headers reports
 // NO ttfb rather than a zero one. The dead-backend 502 is the #1251 shape — a

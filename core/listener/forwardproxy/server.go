@@ -595,12 +595,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// with what extproc reports for the same response without each having to
 	// count: see bodycount.
 	//
-	// What the wrapper does NOT reach is the final io.Copy at the bottom of this
-	// function — the arm a response takes when nothing buffered it and it was not
-	// streamed. The row is recorded above that copy, so those bytes are counted
-	// after the figure has been read and the row reports zero, which agentop
-	// renders blank rather than wrong. reverseproxy's unbuffered relay has the same
-	// shape for the same reason.
+	// The final io.Copy at the bottom of this function — the arm a response takes
+	// when nothing buffered it and it was not streamed — reads through this
+	// wrapper, and the row is recorded below that copy, so the count is complete
+	// when the figure is read. What the wrapper still does not reach is a SKIPPED
+	// response's row: skip_hosts records nothing at all. reverseproxy's
+	// unbuffered relay defers its row to the end of its copy the same way
+	// (recordOnEOFBody).
 	resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
@@ -726,7 +727,6 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			resp.Header.Del("Content-Encoding")
 		}
 
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}
 
 	for key, values := range resp.Header {
@@ -746,6 +746,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)
+	}
+	// Recorded after the copy, not before it: the arm that reaches this io.Copy
+	// unbuffered is still receiving its body while the copy runs, and a row filed
+	// above it would stop Duration at the headers — reporting a body share of zero
+	// for a body the proxy was still relaying, the exact misreading #1251's split
+	// exists to prevent. After the copy the figure covers the whole exchange,
+	// matching the streamed arms (which record when their relay loop ends), and
+	// ResponseBytes is complete for the same reason. Skipped responses stay
+	// unrecorded, as skip_hosts promises.
+	if !skipped {
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}
 }
 

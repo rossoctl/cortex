@@ -93,8 +93,16 @@ func timingHeader(e *pipeline.SessionEvent) string {
 	if body < 0 {
 		body = 0
 	}
+	// formatDuration renders zero blank because a zero in the DURATION column
+	// means "the listener counted nothing" — an unknown. This zero is a computed
+	// difference and means the body took under a millisecond, which the sentence
+	// wants said rather than elided: a blank would print "body  of 412ms total".
+	bodyText := formatDuration(body)
+	if body == 0 {
+		bodyText = "0ms"
+	}
 	return fmt.Sprintf("timing:      ttfb %s · body %s of %s total",
-		formatDuration(e.Ttfb), formatDuration(body), formatDuration(e.Duration))
+		formatDuration(e.Ttfb), bodyText, formatDuration(e.Duration))
 }
 
 // tunnelHeader summarizes the CONNECT tunnel folded into a TLS-bridged

@@ -77,6 +77,19 @@ func TestParity_DenyOnRequest(t *testing.T) {
 // TestParity_ResponseEventEmission: an OnResponse emit to Extensions.
 // Custom must surface identically on SessionEvent.Plugins from both
 // listeners.
+//
+// Bodyless deliberately. The fixture's claim is about the plugin event, and a
+// headers-only plugin sees the same OnResponse either way — but with a body
+// present and no plugin reading it, the listeners no longer agree on
+// BytesDown: the proxies relay that body through their own process and count
+// it (their row is recorded after the relay, #1251's fix), while extproc asked
+// Envoy for body mode NONE and never received the bytes at all. That split is
+// structural — closing it would mean making extproc request bodies no plugin
+// needs — so it is pinned with its reason in divergence_test.go
+// (TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt) rather than
+// silently failing here. Dropping the body drops only the divergent figure;
+// the emit fires in OnResponse either way, and the absolute anchor below keeps
+// the bodyless zero meaning "no bytes", not "no reader".
 func TestParity_ResponseEventEmission(t *testing.T) {
 	f := fixture{
 		name:      "priced-response-headers-only",
@@ -88,7 +101,7 @@ func TestParity_ResponseEventEmission(t *testing.T) {
 		method:         "GET",
 		path:           "/parity/priced",
 		upstreamStatus: 200,
-		upstreamBody:   []byte(`{"reply":"ok"}`),
+		expectedBytes:  &bytesSummary{},
 	}
 	assertParity(t, f, pipeline.SessionResponse, inboundListeners)
 }

@@ -255,7 +255,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
   separates a slow-to-answer origin from one that answered and then trickled,
-  which `durationMs` alone cannot (#1251). Absent when the exchange failed
+  which `durationMs` alone cannot (#1251). The row is recorded when the listener
+  is finished with the body — after the read on a buffered path, after the relay
+  on a streamed or unbuffered one — so the difference really is the body's time.
+  Absent when the exchange failed
   before headers (the 502 cases above), on request rows, and on tunnel rows —
   an opaque tunnel has no headers to time. agentop's detail pane renders the
   split as a `timing:` line.
