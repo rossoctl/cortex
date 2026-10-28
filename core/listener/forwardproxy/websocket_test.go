@@ -999,10 +999,15 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 // A socket's first turn carries the whole conversation, so it can be far over the
 // 10 MB per-event cap the origin's messages get. It is parsed up to the same 32 MiB an
 // HTTPS request body is.
+//
+// The turn is just over that 10 MB, not far over it: the size is what the test is about,
+// and parsing it is the costliest thing in this file — under -race it is ~3s on a laptop
+// and was over 15s on a shared CI runner. The read deadline is raised for the same reason.
 func TestResponsesWebSocket_LargeFirstTurnIsParsed(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
 	c := h.dial(t, nil)
-	big := strings.Repeat("x", 15<<20)
+	_ = c.conn.SetDeadline(time.Now().Add(60 * time.Second))
+	big := strings.Repeat("x", maxBodySize+1<<20)
 	c.send(responseCreate(big))
 	c.readUntil("response.completed")
 	c.close()
@@ -1015,7 +1020,7 @@ func TestResponsesWebSocket_LargeFirstTurnIsParsed(t *testing.T) {
 		}
 	}
 	if req == nil || req.Inference == nil || req.Inference.Model != "gpt-6-luna" {
-		t.Fatalf("a 15 MB first turn was not parsed: %+v", req)
+		t.Fatalf("an 11 MB first turn was not parsed: %+v", req)
 	}
 }
 
