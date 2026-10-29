@@ -246,4 +246,18 @@ func TestMocaRefusal(t *testing.T) {
 	if a.Violation.Headers.Get("Content-Type") != "" {
 		t.Error("Render leaked a Content-Type into the action's own headers")
 	}
+
+	// The body is client-visible reflection of a client-named destination, so
+	// a hostile "host" carrying HTML metacharacters is escaped, not echoed: the
+	// refusal names the destination without becoming a rendering surface. For
+	// every legitimate host — the conformance suite's included — EscapeString
+	// is the identity, which is why the case above pins exact bytes.
+	hostile := MocaRefusal(403, "destination_denied", `<script>x</script>`)
+	_, _, hbody := hostile.Violation.Render()
+	if want := "destination_denied: &lt;script&gt;x&lt;/script&gt;\n"; string(hbody) != want {
+		t.Errorf("body = %q, want %q — HTML metacharacters must not reach the body raw", hbody, want)
+	}
+	if hostile.Violation.Reason != `<script>x</script>` {
+		t.Error("Reason must stay raw — it never reaches the wire body and is read as data")
+	}
 }

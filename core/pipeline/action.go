@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"time"
 )
@@ -189,6 +190,15 @@ func DenyStatus(status int, code, reason string) Action {
 // shape as-is. Do NOT route one of these through WriteRejectionForRequest
 // on a path where the named refusal IS the answer: the MCP JSON-RPC 200
 // rewrite would hide it behind a protocol frame.
+//
+// name is HTML-escaped into the body. Every name the contract defines — a
+// host, a VM id — is drawn from a character set EscapeString never touches,
+// so the conformance bytes are identical for every legitimate input; the
+// escape only bites on a hostile "host" carrying HTML metacharacters, which
+// no valid destination can. The body is client-visible reflection, so it
+// gets the same neutralisation any reflected value owes (CodeQL's reflected-
+// XSS query, the high-severity alert this keeps closed), and the refusal's
+// header stays the raw code, which is a constant of the contract.
 func MocaRefusal(status int, code, name string) Action {
 	h := http.Header{}
 	h.Set("X-Moca-Egress-Error", code)
@@ -197,7 +207,7 @@ func MocaRefusal(status int, code, name string) Action {
 		Code:     code,
 		Reason:   name,
 		Headers:  h,
-		Body:     []byte(code + ": " + name + "\n"),
+		Body:     []byte(code + ": " + html.EscapeString(name) + "\n"),
 		BodyType: "text/plain",
 	}}
 }
