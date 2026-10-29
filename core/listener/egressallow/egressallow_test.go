@@ -1,6 +1,9 @@
 package egressallow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestNew_RejectsWideningEntries pins the construction guards: the entries that
 // would silently widen — or silently narrow to nothing — the boundary the list
@@ -121,6 +124,77 @@ func TestAllows_NilMatcherAllowsEverything(t *testing.T) {
 	}
 	if empty.Allows("anything.test:443", "https") {
 		t.Error("empty matcher allowed a destination; built = deny-by-default")
+	}
+}
+
+// TestAllows_StrayBracketDeniedNotPanic: the destination comes off the wire,
+// so a hostile spelling must be denied rather than panic. A bare "]" used to
+// take the bracketed-literal branch on a LastIndex hit at 0 and index s[1:0];
+// only a LEADING "[" takes that branch now, and a stray "]" is not host:port.
+func TestAllows_StrayBracketDeniedNotPanic(t *testing.T) {
+	m, err := New([]string{"allowed.test:443"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, dest := range []string{
+		"]:443",
+		"]",
+		"]]:443",
+		"a]b:443",
+		"[::1", // opened, never closed
+		"[]:443",
+		"[::1]x", // closed, then junk instead of :port
+		"allowed.test]:443",
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Allows(%q) panicked: %v", dest, r)
+				}
+			}()
+			if m.Allows(dest, "https") {
+				t.Errorf("Allows(%q) = true, want false", dest)
+			}
+		}()
+	}
+	// The spelling that is genuinely bracketed still parses.
+	v6, err := New([]string{"[::1]:443"})
+	if err != nil {
+		t.Fatalf("New([::1]:443): %v", err)
+	}
+	if !v6.Allows("[::1]:443", "https") {
+		t.Error("Allows([::1]:443) = false, want true — the bracketed branch must still work")
+	}
+}
+
+// TestNew_RejectsUnbracketedIPv6Entry: an unbracketed v6 entry parses into a
+// host:port that no destination can match ("2001:db8::1" → host "2001:db8:",
+// port 1), so the operator would believe they allowed a host and have allowed
+// nothing. It fails closed, but the contract is that entries which silently
+// empty the boundary are startup errors — so it is one, naming the bracketed
+// spelling that works.
+func TestNew_RejectsUnbracketedIPv6Entry(t *testing.T) {
+	for _, e := range []string{"::1", "2001:db8::1", "fd00::2"} {
+		_, err := New([]string{e})
+		if err == nil {
+			t.Errorf("New(%q) = nil error, want a startup error", e)
+			continue
+		}
+		if !strings.Contains(err.Error(), "IPv6") {
+			t.Errorf("New(%q) error = %q, want it to name the IPv6 spelling", e, err)
+		}
+	}
+	// A v6 entry whose last segment is not numeric trips the port check
+	// first — a zone id, or an embedded v4 address. Still a startup error,
+	// just reported as the bad port rather than as the bracket spelling.
+	for _, e := range []string{"fe80::1%eth0", "::ffff:203.0.113.7"} {
+		if _, err := New([]string{e}); err == nil {
+			t.Errorf("New(%q) = nil error, want a startup error", e)
+		}
+	}
+	// The bracketed spellings the message points at are accepted.
+	if _, err := New([]string{"[::1]:443", "[2001:db8::1]:8443"}); err != nil {
+		t.Errorf("New(bracketed v6) = %v, want nil", err)
 	}
 }
 

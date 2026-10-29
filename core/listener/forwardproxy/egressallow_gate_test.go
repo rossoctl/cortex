@@ -326,3 +326,57 @@ func TestEgressAllow_RefusesOffListRedirect(t *testing.T) {
 		t.Fatalf("want a request row and a denial row, got %+v", v)
 	}
 }
+
+// TestEgressAllow_RefusesStrayBracketDestination: the destination is
+// client-chosen, so a parser on this boundary must not panic on a hostile
+// spelling. A bare "]" authority used to index s[1:0] inside splitPort and
+// panic — net/http recovered it, so the proxy stayed up and nothing was
+// dialed, but any client could write a stack trace into the log on every
+// request and the refusal row never landed. It is now simply not host:port,
+// which deny-by-default refuses by name like any other unparseable
+// destination — with the audit row that a panic skipped.
+func TestEgressAllow_RefusesStrayBracketDestination(t *testing.T) {
+	// "[::1" (opened, never closed) is not in this list: net/http rejects
+	// that request line with a 400 before the handler runs, so the gate
+	// never sees it. Refused either way; only these reach the gate.
+	for _, target := range []string{"]:443", "]", "]]:443", "a]b:443"} {
+		t.Run(target, func(t *testing.T) {
+			h := newAllowHarness(t)
+			line, br, conn := connectRaw(t, h.proxy, target)
+			defer conn.Close()
+			if !strings.Contains(line, "403") {
+				t.Fatalf("CONNECT %q = %q, want 403", target, line)
+			}
+			body, _ := io.ReadAll(br)
+			if !strings.HasPrefix(string(body), "destination_denied: ") {
+				t.Errorf("body = %q, want a destination_denied refusal", body)
+			}
+			if n := h.reached.Load(); n != 0 {
+				t.Errorf("origin accepted %d connection(s), want 0", n)
+			}
+			// The row a panic used to cost: a recovered panic unwound
+			// before anything was recorded.
+			if row := deniedRow(t, h); row.Invocations == nil {
+				t.Error("denied row carries no invocations")
+			}
+		})
+	}
+}
+
+// TestEgressAllow_StrayBracketGETRefused is the absolute-form half of the
+// same hostile input: url.ParseRequestURI accepts "http://]:80/", so it
+// reaches the gate too.
+func TestEgressAllow_StrayBracketGETRefused(t *testing.T) {
+	h := newAllowHarness(t)
+	resp, err := proxyClient(h.proxy, nil).Get("http://]:80/x")
+	if err != nil {
+		t.Fatalf("GET through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if n := h.reached.Load(); n != 0 {
+		t.Errorf("origin reached %d time(s), want 0", n)
+	}
+}

@@ -48,6 +48,10 @@ type Matcher struct {
 //   - non-numeric or out-of-range ports, and an empty host.
 //   - "*" / "**" hosts: exact match means these could only ever match a
 //     literal host of that name, which is not what anyone means by them.
+//   - unbracketed IPv6 literals ("2001:db8::1"): the last colon reads as
+//     the port separator, leaving an entry no destination can match. That
+//     empties the boundary rather than widening it, but it is just as
+//     wrong, so it is an error naming "[<address>]:<port>".
 //
 // Hosts are normalized (see the package comment), so "Example.COM:443"
 // and "example.com:443" are one entry. An empty input is valid and yields
@@ -86,6 +90,21 @@ func normalizeEntry(e string) (string, error) {
 	if host == "*" || host == "**" {
 		return "", fmt.Errorf("egressallow: entry %q is a wildcard; the allow list is exact-match "+
 			"by design — list each host:port the sandbox may reach", e)
+	}
+	// A colon left in the host of an entry that was NOT bracketed means an
+	// unbracketed IPv6 literal: "2001:db8::1" splits at its last colon into
+	// host "2001:db8:" and port "1" — a valid-looking entry that no
+	// destination can ever match, because a request carries a v6 literal
+	// bracketed and that normalizes to "2001:db8::1". The operator would
+	// believe they allowed a host and have allowed nothing. It fails closed,
+	// but an entry that silently empties the boundary is a startup error
+	// here just as a portless or wildcard one is — named, with the spelling
+	// that works. The bracketed form is excluded because its host keeps its
+	// colons legitimately: "[::1]:443" → host "::1", port 443.
+	if !strings.HasPrefix(trimmed, "[") && strings.Contains(host, ":") {
+		return "", fmt.Errorf("egressallow: entry %q looks like an unbracketed IPv6 literal; "+
+			"write it as [<address>]:<port> — unbracketed, the last colon is read as the "+
+			"port separator and the entry can never match", e)
 	}
 	return host + ":" + strconv.Itoa(port), nil
 }
@@ -152,10 +171,22 @@ func splitHostPort(s string) (host string, port int, err error) {
 // literals ("[::1]:443" → "::1", "443"; "[::1]" → "::1", "") and returning
 // the host WITHOUT its brackets, so netip.ParseAddr in the caller can
 // canonicalize it.
+//
+// The bracketed branch is taken only on a LEADING "[", never on a stray
+// "]" anywhere in the string. The destination here is client-chosen — a
+// CONNECT authority or an absolute-form URL host — so "]:443" arrives from
+// the wire, and reading it as a bracketed literal would index s[1:0] and
+// panic. A parser on a trust boundary does not get to panic: a stray "]"
+// is simply not host:port, and falls through to be denied like any other
+// unparseable destination.
 func splitPort(s string) (host, port string, err error) {
-	// A right bracket means the host part is a bracketed IPv6 literal;
+	// A leading bracket means the host part is a bracketed IPv6 literal;
 	// everything after its closing colon is the port.
-	if i := strings.LastIndex(s, "]"); i >= 0 {
+	if strings.HasPrefix(s, "[") {
+		i := strings.LastIndex(s, "]")
+		if i < 0 {
+			return "", "", fmt.Errorf("%q is not host:port", s)
+		}
 		host = s[1:i] // strip the brackets
 		rest := s[i+1:]
 		if rest == "" {
@@ -165,6 +196,9 @@ func splitPort(s string) (host, port string, err error) {
 			return "", "", fmt.Errorf("%q is not host:port", s)
 		}
 		return host, rest[1:], nil
+	}
+	if strings.Contains(s, "]") {
+		return "", "", fmt.Errorf("%q is not host:port", s)
 	}
 	if i := strings.LastIndex(s, ":"); i >= 0 {
 		return s[:i], s[i+1:], nil
