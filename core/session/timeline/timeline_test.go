@@ -677,3 +677,177 @@ func TestLoseUnansweredMatchesAFreshBuild(t *testing.T) {
 		t.Errorf("aged cached = %+v, fresh = %+v, want both lost", cached.Hosts[0], fresh.Hosts[0])
 	}
 }
+
+// Claude Code can send system messages after the progress prompt (a <total_tokens> count), so
+// the prompt is found in the last message that is not a system one.
+func TestProgressLabelFollowedBySystemMessagesIsNotATurn(t *testing.T) {
+	var r rec
+	r.turn("a1", 0, 1, []pipeline.InferenceMessage{user("work")}, nil, "end_turn")
+	r.turn("a1", 2, 1, []pipeline.InferenceMessage{user("work"),
+		user("Describe your most recent action in 3-5 words using present tense (-ing)."),
+		{Role: "system", Content: "<total_tokens>14939408 tokens left</total_tokens>"}}, nil, "end_turn")
+	// The prompt quoted earlier in a real turn's history does not make it a side call.
+	r.turn("a1", 4, 1, []pipeline.InferenceMessage{user("Describe your most recent action in 3-5 words"), user("next")}, nil, "end_turn")
+	tl := Build("s", r.events, time.Time{})
+	if len(tl.Turns) != 2 || !tl.Turns[0].Start.Equal(at(0)) || !tl.Turns[1].Start.Equal(at(4)) {
+		t.Errorf("turns = %+v, want the 0s and 4s turns only", tl.Turns)
+	}
+}
+
+// The away recap Claude Code asks for when the user returns carries the whole context and tool
+// list, like a progress label, and is no more a turn. Two of an unchanged conversation are not a
+// retry.
+func TestAwayRecapIsNotATurn(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "end_turn")
+	recap := append(slices.Clone(h), user("The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences."),
+		pipeline.InferenceMessage{Role: "system", Content: "<total_tokens>1 tokens left</total_tokens>"})
+	r.turn("", 3600, 1, recap, nil, "end_turn")
+	r.turn("", 7200, 1, recap, nil, "end_turn")
+	if tl := Build("s", r.events, at(7200)); len(tl.Turns) != 1 {
+		t.Errorf("turns = %+v, want only the real one", tl.Turns)
+	}
+}
+
+// failedConnect records a CONNECT to host that could not be dialed: no inference parse, no agent.
+func (r *rec) failedConnect(host string, sec float64) {
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(sec), Phase: pipeline.SessionRequest, RequestID: id, Host: host + ":443", Tunnel: true, TunnelReason: "dial-failed"})
+	r.add(pipeline.SessionEvent{At: at(sec), Phase: pipeline.SessionResponse, RequestID: id, Host: host + ":443", Tunnel: true, TunnelReason: "dial-failed",
+		StatusCode: 502, Error: &pipeline.EventError{Kind: "dial_failed"}})
+}
+
+// A tool whose agent never sent its result ends at the agent's first failed attempt to reach
+// the model host, not at the session's last event hours later. A failure to another host is not
+// that attempt, nor is a call that reached the proxy and failed.
+func TestStrandedToolEndsAtTheFailedAttemptToReportBack(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.failedConnect("raw.githubusercontent.com", 100)
+	// A side call (no tool manifest) the client gave up on is its own failure, not t1's agent
+	// trying to report back.
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(200), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example",
+		Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Messages: h}})
+	r.add(pipeline.SessionEvent{At: at(200), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example",
+		StatusCode: 499, Error: &pipeline.EventError{Kind: "client_canceled"}, Inference: &pipeline.InferenceExtension{}})
+	r.failedConnect("llm.example", 300)
+	r.failedConnect("llm.example", 301)
+	r.failedConnect("raw.githubusercontent.com", 36000) // the session's last event, ten hours on
+	tl := Build("s", r.events, at(36000))
+	if x := findTool(t, tl, "t1"); x.End == nil || !x.End.Equal(at(300)) || x.Lost {
+		t.Errorf("t1 = %+v, want it ended at the first failed request to llm.example (300s)", x)
+	}
+}
+
+// A tool still running when nothing has failed stays open. A result that reached the proxy only
+// after a failed dial, when the network came back, ends the tool at the failure: that is when the
+// agent finished and tried to report. An upstream error is not a dial failure and ends nothing.
+func TestToolEndsAtAFailedDialBeforeItsResult(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	if x := findTool(t, Build("s", r.events, at(60)), "t1"); x.End != nil {
+		t.Errorf("t1 = %+v, want it still running", x)
+	}
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example"})
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 502,
+		Error: &pipeline.EventError{Kind: "upstream_error"}})
+	r.failedConnect("llm.example", 30)
+	r.turn("", 28800, 1, h, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn") // back online 8h later
+	if x := findTool(t, Build("s", r.events, at(28800)), "t1"); x.End == nil || !x.End.Equal(at(30)) {
+		t.Errorf("t1 = %+v, want it ended at the failed dial at 30s", x)
+	}
+}
+
+// A background job no notification named ends at the first failed request to the model host
+// after its agent's last turn, when the agent was cut off.
+func TestStrandedJobEndsAtTheAgentsLastFailure(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.turn("", 2, 1, h, []pipeline.InferenceToolResult{result("t1", "Command running in background with ID: bk42.")}, "end_turn")
+	r.failedConnect("llm.example", 100)                  // after the job started, before the agent's last turn: not where it stopped
+	r.turn("", 500, 1, append(h, user("more")), nil, "") // cut mid-reply: the agent's last turn, and a failed one
+	r.failedConnect("llm.example", 900)
+	tl := Build("s", r.events, at(36000))
+	if len(tl.Jobs) != 1 || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(900)) {
+		t.Errorf("jobs = %+v, want bk42 ended at 900s", tl.Jobs)
+	}
+}
+
+// A failure some agent recovered from is a blip, not where anyone was cut off: the parent's
+// Agent tool stays open while its subagent retries past one failed CONNECT. A failed request
+// that reached the model host is not a CONNECT that could not be dialed.
+func TestRecoveredOrAnsweredFailureEndsNoTool(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Agent"})
+	r.turn("a1", 2, 1, h, nil, "end_turn")
+	r.failedConnect("llm.example", 10)
+	r.turn("a1", 11, 1, append(h, user("x")), nil, "end_turn")
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example"})
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 404})
+	tl := Build("s", r.events, at(30))
+	if x := findTool(t, tl, "t1"); x.End != nil {
+		t.Errorf("t1 = %+v, want it still running", x)
+	}
+}
+
+// The headline case: a subagent cut off mid-tool, and the main agent carrying on once the
+// network is back. The main agent's success is another branch's, so the subagent's tool still
+// ends at its failed report-back.
+func TestStrandedSubagentToolEndsAfterTheMainAgentRecovers(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "sp", Name: "Agent"})
+	r.turn("a1", 2, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.failedConnect("llm.example", 300)
+	r.turn("", 600, 1, append(h, user("agent failed")), []pipeline.InferenceToolResult{result("sp", "error")}, "end_turn")
+	tl := Build("s", r.events, at(36000))
+	if x := findTool(t, tl, "t1"); x.End == nil || !x.End.Equal(at(300)) {
+		t.Errorf("t1 = %+v, want it ended at a1's failed report-back (300s)", x)
+	}
+}
+
+// One outage strands two subagents mid-tool. Both results arrive once the network is back, and
+// the first one through is not the other's recovery: each tool ends at the failed dial.
+func TestOneOutageEndsEveryStrandedSiblingsTool(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "sp1", Name: "Agent"}, pipeline.InferenceToolCall{ID: "sp2", Name: "Agent"})
+	r.turn("a1", 2, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.turn("a2", 2, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Bash"})
+	r.failedConnect("llm.example", 300)
+	r.turn("a2", 28800, 1, h, []pipeline.InferenceToolResult{result("t2", "ok")}, "end_turn")
+	r.turn("a1", 28801, 1, h, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn")
+	tl := Build("s", r.events, at(28900))
+	for _, id := range []string{"t1", "t2"} {
+		if x := findTool(t, tl, id); x.End == nil || !x.End.Equal(at(300)) {
+			t.Errorf("%s = %+v, want it ended at the failed dial (300s)", id, x)
+		}
+	}
+}
+
+// A turn whose stream died is lost, not a success, so a subagent's lost turn does not move the
+// failure that ends the Agent tool waiting on it.
+func TestLostTurnIsNotASuccess(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "sp", Name: "Agent"})
+	r.turn("a1", 2, 1, h, nil, "end_turn")
+	r.failedConnect("llm.example", 300)
+	for _, sec := range []float64{310, 320} { // unanswered; the second makes the first lost
+		r.add(pipeline.SessionEvent{At: at(sec), Phase: pipeline.SessionRequest, RequestID: r.id(), Host: "llm.example", Subagent: "a1",
+			Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleSubagent, Tools: tools, Messages: append(h, user("more"))}})
+	}
+	r.failedConnect("llm.example", 330)
+	tl := Build("s", r.events, at(36000))
+	if x := findTool(t, tl, "sp"); x.End == nil || !x.End.Equal(at(300)) {
+		t.Errorf("sp = %+v, want it ended at the first failure (300s)", x)
+	}
+}

@@ -164,6 +164,14 @@ type divergentExpectation struct {
 	// therefore asserts the event carried no plugin payload — which is the
 	// whole claim on the reverse proxy's leg below, where OnResponse never ran.
 	pluginEvents map[string]string
+
+	// bytes, when non-nil, pins BytesUp/BytesDown on this listener's row — the
+	// one field here that has to be optional against this struct's "every field
+	// is asserted on every row" rule, because zero is itself a value a row may
+	// want to pin (the extproc leg of the unread-body fixtures below claims
+	// exactly ↓0), so a plain pair could not tell "assert nothing" from "assert
+	// zero". A pointer, for the same reason fixture.expectedBytes is one.
+	bytes *bytesSummary
 }
 
 // assertDivergence runs the fixture through every listener and checks each one
@@ -293,6 +301,12 @@ func assertDivergence(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, 
 				t.Errorf("%s: unexpected plugin event %q: %s", where, key, gotJSON)
 			}
 		}
+		if e.bytes != nil {
+			got := bytesSummary{Up: obs.BytesUp, Down: obs.BytesDown}
+			if got != *e.bytes {
+				t.Errorf("%s: bytes counted\n  got:  %+v\n  want: %+v", where, got, *e.bytes)
+			}
+		}
 	}
 }
 
@@ -318,6 +332,15 @@ func divergentRows(listeners []listenerRun, want map[string]divergentExpectation
 func sameRow(a, b divergentExpectation) bool {
 	if a.why != b.why || a.pipelineRan != b.pipelineRan || a.wireStatus != b.wireStatus ||
 		a.eventStatusCode != b.eventStatusCode || a.errorKind != b.errorKind || a.errorCode != b.errorCode {
+		return false
+	}
+	// bytes participates too, with nil and an empty summary kept distinct for
+	// the reason the field's own comment gives: ↓0 is a claim, so a row pinning
+	// it diverges from a row making no claim about bytes at all.
+	if (a.bytes == nil) != (b.bytes == nil) {
+		return false
+	}
+	if a.bytes != nil && *a.bytes != *b.bytes {
 		return false
 	}
 	if len(a.pluginEvents) != len(b.pluginEvents) {
@@ -668,6 +691,122 @@ func TestDivergence_OutboundResponseBodyCapOnShippedEnvoy(t *testing.T) {
 			pluginEvents: map[string]string{
 				spyPluginA + bodyRespDigestStrippedSuffix: digestJSON(big),
 			},
+		},
+	})
+}
+
+// pricedEvents is the emit both unread-body fixtures declare on every row: the
+// spy's OnResponse publish, which must surface identically regardless of what
+// the listener did with the bytes.
+var pricedEvents = map[string]string{
+	spyPluginA: jsonOf(spyEvent{Marker: "priced", Count: 3}),
+}
+
+// TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt: a response body
+// no plugin asked to see, and the one field the listeners now honestly
+// disagree on — BytesDown.
+//
+// The split is #1251's fix making it visible. Before it, the reverse proxy
+// appended its response row inside modifyResponse, BEFORE httputil.ReverseProxy
+// copies the body to the client, so this arm reported ↓0; extproc reported ↓0
+// too, because with no body-reading plugin it asks Envoy for body mode NONE and
+// Envoy never sends it the bytes. Three zeros agreed — the shared gap
+// observationDiff's BytesDown comment describes — so parity held for the wrong
+// reason. The fix moved the proxies' row to after the relay, where the body they
+// relay through their own process is counted, and the agreement broke into the
+// split this file exists to document.
+//
+// It cannot be closed on the extproc side. Matching the proxies would mean
+// requesting bodies no plugin needs — defeating body mode NONE, which is what
+// keeps unobserved responses unbuffered — so the honest options were restoring
+// the shared zero (un-fixing the misread duration #1251 exists to fix) or
+// pinning the divergence with its reason. Pinned.
+//
+// Narrower than it looks: every shipped pipeline includes inference-parser,
+// whose undirected ReadsBody counts on both directions, so NeedsBody() is true
+// there and extproc buffers, counts and records at body end like the proxies.
+// This divergence is the custom body-less pipeline — an auth-only gate, say —
+// not any shape a shipped profile runs.
+//
+// Duration has the same shape — extproc's stops at the headers, the proxies'
+// now covers the relay — and is deliberately not pinned here: a timing figure
+// needs sleeps to assert against, and the proxies' own packages pin their side
+// (TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody and the
+// forwardproxy twin). The parity suite's HasDuration check is presence-only.
+//
+// The spy emits — the same priced emit the parity fixture this arm used to live
+// in carried — for two reasons: the row must exist on every leg (extproc's
+// recorders write nothing for a pipeline whose plugins published no A2A, no
+// Invocation and no Custom entry), and the emit surfacing identically in both
+// rows keeps a slice of that fixture's old claim, TestParity_
+// ResponseEventEmission's, pinned here rather than dropped with the move.
+func TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt(t *testing.T) {
+	f := fixture{
+		name:      "inbound-unread-response-body",
+		direction: pipeline.Inbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginA, spyConfig{
+			EmitOnResponse: true,
+			ResponseEvent:  &spyEvent{Marker: "priced", Count: 3},
+		})},
+		method:         "GET",
+		path:           "/divergence/unread-response",
+		upstreamStatus: 200,
+		upstreamBody:   []byte(`{"reply":"ok"}`),
+	}
+	assertDivergence(t, f, pipeline.SessionResponse, inboundListeners, map[string]divergentExpectation{
+		"extproc": {
+			why:             "no plugin reads bodies, so the listener asks Envoy for body mode NONE and Envoy never sends it the response body; the row is recorded at the headers with ↓0 — not bytes it saw and failed to count, but bytes it asked not to see",
+			pipelineRan:     true,
+			wireStatus:      0, // success path; this listener has no HTTP transport to report from
+			eventStatusCode: 200,
+			bytes:           &bytesSummary{},
+			pluginEvents:    pricedEvents,
+		},
+		"reverseproxy": {
+			why:             "the unbuffered relay copies this body through the listener's own process, so it is counted at the wire and the row recorded after the copy (#1251); before that fix this leg reported ↓0 too and the two shapes agreed for the wrong reason",
+			pipelineRan:     true,
+			wireStatus:      200,
+			eventStatusCode: 200,
+			bytes:           &bytesSummary{Down: int64(len(`{"reply":"ok"}`))},
+			pluginEvents:    pricedEvents,
+		},
+	})
+}
+
+// TestDivergence_OutboundResponseBodyCountWhenNoPluginReadsIt is the egress
+// twin, and exists for the same reason the cap fixtures come in pairs: the
+// forward proxy's unbuffered relay is separate code from the reverse proxy's
+// (serveOutbound's io.Copy against recordOnEOFBody), so the post-copy recording
+// could regress on one side only. Same body, same split, different recorder.
+func TestDivergence_OutboundResponseBodyCountWhenNoPluginReadsIt(t *testing.T) {
+	f := fixture{
+		name:      "outbound-unread-response-body",
+		direction: pipeline.Outbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginA, spyConfig{
+			EmitOnResponse: true,
+			ResponseEvent:  &spyEvent{Marker: "priced", Count: 3},
+		})},
+		method:         "GET",
+		path:           "/divergence/unread-response",
+		upstreamStatus: 200,
+		upstreamBody:   []byte(`{"reply":"ok"}`),
+	}
+	assertDivergence(t, f, pipeline.SessionResponse, outboundListeners, map[string]divergentExpectation{
+		"extproc": {
+			why:             "same mechanism as the inbound twin: body mode NONE means Envoy never sends the bytes, so the row is recorded at the headers with ↓0",
+			pipelineRan:     true,
+			wireStatus:      0, // success path; this listener has no HTTP transport to report from
+			eventStatusCode: 200,
+			bytes:           &bytesSummary{},
+			pluginEvents:    pricedEvents,
+		},
+		"forwardproxy": {
+			why:             "serveOutbound relays the body through this process and records the row after its io.Copy (#1251); the count is complete for the same reason the duration is",
+			pipelineRan:     true,
+			wireStatus:      200,
+			eventStatusCode: 200,
+			bytes:           &bytesSummary{Down: int64(len(`{"reply":"ok"}`))},
+			pluginEvents:    pricedEvents,
 		},
 	})
 }

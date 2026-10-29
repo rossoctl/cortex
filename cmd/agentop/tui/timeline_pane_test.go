@@ -1250,3 +1250,42 @@ func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
 		}
 	}
 }
+
+// A question the agent put to the user is the user's time: grey, not amber, and kept out of the
+// row's tool total.
+func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
+	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
+	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1200), End: tlPtr(1500), Seq: 35})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.user, 1) || c.tool != 0 {
+		t.Errorf("while the question waited: %+v, want waiting on the user", c)
+	}
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if got, want := lay.agents[0].toolTime, without.agents[0].toolTime; got != want {
+		t.Errorf("tool time = %s, want %s: the question is not tool time", got, want)
+	}
+
+	// At "all", a question left overnight collapses like any other wait on the user, so the work
+	// keeps the width; and one still open is the live wait's capped tail.
+	overnight := func(ask bool) *timeline.Timeline {
+		tl := sampleTimeline()
+		if ask {
+			tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), End: tlPtr(1800 + 7*3600), Seq: 45})
+		}
+		tl.Turns = append(tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: tlAt(1800 + 7*3600), End: tlPtr(1800 + 7*3600 + 60), Finish: "end_turn", Seq: 50})
+		tl.End = tlAt(1800 + 7*3600 + 60)
+		return tl
+	}
+	work := func(tl *timeline.Timeline) int {
+		ax := buildTimelineLayout(tl, time.Time{}, time.Time{}, 180, tl.End.Add(time.Hour)).axis
+		return ax.width() - ax.cellsFrom(tlAt(1800))
+	}
+	if got, want := work(overnight(true)), work(overnight(false)); got != want {
+		t.Errorf("at all, the work before an overnight question got %d cells, want %d as before a plain wait", got, want)
+	}
+	open := sampleTimeline()
+	open.Tools = append(open.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), Seq: 45})
+	if ax := buildTimelineLayout(open, time.Time{}, tlAt(1800+7*3600), 180, tlAt(1800+7*3600)).axis; ax.tail != timelineTailCells {
+		t.Errorf("an open question's wait has tail %d, want the capped %d", ax.tail, timelineTailCells)
+	}
+}

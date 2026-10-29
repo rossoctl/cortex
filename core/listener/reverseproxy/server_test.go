@@ -720,6 +720,76 @@ func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
 	}
 }
 
+// TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody pins the arm the
+// buffered tests cannot reach: when no inbound plugin asks for the body,
+// modifyResponse returns before ReverseProxy copies it, and the row used to be
+// appended right there — Duration stopped at the headers, so duration−ttfb read
+// as a zero body while the body was still being relayed (#1251's misreading).
+// The row is now deferred to the end of the copy (recordOnEOFBody), which also
+// completes BytesDown for the same arm.
+func TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	const drip = 60 * time.Millisecond
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Plain JSON, not event-stream, and the pipeline below is empty: nothing
+		// buffers the body, so ReverseProxy's own copy is the relay.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(drip)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	p, err := pipeline.New([]pipeline.Plugin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(pipeline.NewHolder(p), store, backend.URL, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	resp, err := http.DefaultClient.Get(proxy.URL + "/api")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// The row is deferred to the end of ReverseProxy's copy, which can finish
+	// after the client has read the body and returned — wait for it rather
+	// than racing the recording (see recording_test.go for the flake this
+	// shape produced in CI).
+	waitForResponseEvent(t, store)
+
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 2 {
+		t.Fatalf("expected 2 events (request + response) in the default bucket, got %+v", v)
+	}
+	respEv := v.Events[1]
+	if respEv.Phase != pipeline.SessionResponse {
+		t.Fatalf("second event phase = %v, want SessionResponse", respEv.Phase)
+	}
+	if respEv.Ttfb <= 0 {
+		t.Errorf("response event ttfb = %v, want > 0 — headers arrived, so the figure exists", respEv.Ttfb)
+	}
+	// The drip happens entirely after the flush, so the body's share is at least
+	// most of it. Loose bound on purpose: the claim is the ORDER of the two
+	// phases, not a stopwatch.
+	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
+		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed",
+			body, drip/2, drip)
+	}
+	if respEv.BytesDown == 0 {
+		t.Errorf("response event BytesDown = 0, want the relayed body counted — the row is recorded after the copy")
+	}
+}
+
 // TestInboundSessionID_NoActiveSessionFallback locks in the
 // reverseproxy's bucketing rule: when the A2A request has no
 // contextId (first turn of a conversation), inboundSessionID returns
