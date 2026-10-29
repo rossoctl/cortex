@@ -278,6 +278,83 @@ func TestHostOwns(t *testing.T) {
 	}
 }
 
+// A ZONED IPv6 LITERAL must not walk past the host-owned-address rule.
+// netip.Addr equality includes the zone, and net.InterfaceAddrs reports the
+// host's addresses unzoned, so `[2001:db8::5%eth0]` compared unequal to the
+// `2001:db8::5` the host actually owns — writing a zone the host itself would
+// ignore was enough to reach its own address. Confirmed against the code before
+// the fix: hostOwns(bare) true, hostOwns(zoned) false (#1539 review).
+//
+// hostOwns is the whole exposure, which is why this test is here and not only in
+// the CheckAddr table: loopback, link-local, private and CGNAT are all RANGE
+// predicates, and a zone does not move an address out of a range. Equality is
+// the one place a zone bites.
+// Driven through CheckAddr, not hostOwns directly: a test that strips the zone
+// itself before calling hostOwns asserts the fix rather than the path, and
+// passes against the unfixed code. This one fails before the fix (verified) and
+// passes after, because CheckAddr is where the stripping has to happen.
+func TestCheckAddr_ZonedV6DoesNotEscapeHostOwned(t *testing.T) {
+	// A host whose own address is a GLOBAL IPv6 one — deliberately not loopback,
+	// link-local or ULA, so hostOwns is the only rule that can refuse it and the
+	// test cannot pass for an unrelated reason.
+	g, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	g.ifaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{ifaceAddr("2001:db8::5/64")}, nil
+	}
+
+	// The premise: unzoned, the host's own address is refused.
+	if _, cerr := g.CheckAddr(context.Background(), "tcp", "[2001:db8::5]:443"); cerr == nil {
+		t.Fatal("CheckAddr([2001:db8::5]:443) = nil, want a refusal — the premise of this test")
+	}
+	// The hole: the same address with a zone the host itself would ignore.
+	got, cerr := g.CheckAddr(context.Background(), "tcp", "[2001:db8::5%eth0]:443")
+	if cerr == nil {
+		t.Errorf("CheckAddr([2001:db8::5%%eth0]:443) = %q with no refusal; a written zone reached the host's own address", got)
+	}
+}
+
+// The zone must survive into the DIALED address even though the check ignores
+// it: on a link-scoped destination Go needs the zone to pick an interface, so
+// stripping it for the dial would break a legitimate request rather than
+// refusing an illegitimate one. A permitted zoned address is the only way to
+// observe this, since every refused one returns "".
+func TestCheckAddr_ZoneKeptOnTheDialedAddress(t *testing.T) {
+	// fe80::/10 is never-permitted, so use a ULA with a covering permit: ULA is
+	// refused-but-permit-able, which is the state that lets a zoned address
+	// through to the return value.
+	g, err := New([]string{"fd00::/8"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	g.ifaceAddrs = func() ([]net.Addr, error) { return nil, nil }
+
+	got, cerr := g.CheckAddr(context.Background(), "tcp", "[fd00::5%eth0]:443")
+	if cerr != nil {
+		t.Fatalf("CheckAddr on a permitted ULA = %v, want it allowed", cerr)
+	}
+	if want := "[fd00::5%eth0]:443"; got != want {
+		t.Errorf("dialed address = %q, want %q — the zone is dropped for the check, not for the dial", got, want)
+	}
+}
+
+// The same hole through the full CheckAddr path, for the ranges a zone never
+// moved: a zoned loopback and link-local stay refused. Pins that stripping the
+// zone for the check did not loosen anything that was already closed.
+func TestCheckAddr_ZonedV6StillRefused(t *testing.T) {
+	g, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, addr := range []string{"[::1%lo0]:443", "[fe80::1%eth0]:443"} {
+		if _, cerr := g.CheckAddr(context.Background(), "tcp", addr); cerr == nil {
+			t.Errorf("CheckAddr(%s) = nil, want a refusal", addr)
+		}
+	}
+}
+
 // TestRefusalErrorsAs: the typed error must be reachable through the wrapping
 // net/http puts around dial errors (*url.Error), which is how serveOutbound
 // detects it.

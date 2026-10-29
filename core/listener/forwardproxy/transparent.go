@@ -160,6 +160,15 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 					// client-controlled.
 					"host", pipeline.SanitizeControlRunes(host),
 					"dst", dst, "addr", ref.Addr.String())
+				// The 426 rule, as on both CONNECT paths: a non-zero StatusCode is
+				// what OutcomeFromContext reads as an allow, and the guard did what
+				// it was configured to. Without it the RunFinish defer above sees
+				// StatusCode 0 and hands every Finisher an OutcomeError, so the
+				// three listener paths disagreed about the same refusal — this one
+				// reporting an error for what the docs call a delivered 403. No
+				// status reaches the client here (this path speaks no HTTP to it);
+				// the field exists for the Finishers and the row (#1539 review).
+				pctx.StatusCode = http.StatusForbidden
 				tl.open(pipeline.TunnelDestPrivate)
 				tl.close(http.StatusForbidden, &pipeline.EventError{
 					Kind:    pipeline.ErrorKindDestinationPrivate,

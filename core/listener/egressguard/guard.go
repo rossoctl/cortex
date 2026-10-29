@@ -39,6 +39,13 @@ type Guard struct {
 	// tests can pin "resolved exactly once" against a counting fake; the
 	// production value is net.DefaultResolver.LookupNetIP.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+
+	// ifaceAddrs enumerates this host's interface addresses. A field for the
+	// same reason as resolve: the host-owned rule is the one refusal that
+	// depends on the machine the test runs on, so a test asserting it has to
+	// supply the addresses rather than hope for them. Production is
+	// net.InterfaceAddrs.
+	ifaceAddrs func() ([]net.Addr, error)
 }
 
 // New builds a Guard that refuses the destinations described in the package
@@ -59,6 +66,7 @@ func New(permitCIDRs []string) (*Guard, error) {
 		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		},
+		ifaceAddrs: net.InterfaceAddrs,
 	}, nil
 }
 
@@ -128,13 +136,23 @@ func (g *Guard) CheckAddr(ctx context.Context, network, addr string) (string, er
 	// Check the first answer — the one the caller will dial. See CheckAddr's
 	// doc for why the later records are not consulted.
 	dialAddr := dial[0].Unmap()
+	// The IPv6 zone is dropped for the CHECK and kept for the dial. netip.Addr
+	// equality includes the zone, so `[2001:db8::5%eth0]` compared unequal to the
+	// `2001:db8::5` that net.InterfaceAddrs reports and walked straight past
+	// hostOwns — the host's own address, reachable by writing a zone the host
+	// itself would ignore. Loopback, link-local and private were never exposed
+	// this way (those are range predicates, which a zone does not perturb), so
+	// hostOwns was the whole hole, and equality is exactly where a zone bites.
+	// A permit is unaffected either way: Prefix.Contains is false for any zoned
+	// address, so stripping the zone can only make a permit apply, never remove
+	// one (#1539 review).
+	checkAddr := dialAddr.WithZone("")
 	// A NAT64 well-known-prefix address is judged by the IPv4 it embeds —
 	// [64:ff9b::7f00:1] is 127.0.0.1 wearing a v6 hat — but the v6 form is
 	// what gets dialed and returned, since on a NAT64 host the v4 may not
 	// route. The mapping is arithmetic, not a lookup, so checking one form
 	// and dialing the other opens no check-vs-dial window.
-	checkAddr := dialAddr
-	if embedded, ok := nat64Embedded(dialAddr); ok {
+	if embedded, ok := nat64Embedded(checkAddr); ok {
 		checkAddr = embedded
 	}
 	if ref := g.check(host, checkAddr); ref != nil {
@@ -227,7 +245,13 @@ func (g *Guard) refusable(ip netip.Addr) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || cgnat.Contains(ip) {
 		return true
 	}
-	ifaces, err := net.InterfaceAddrs()
+	enumerate := g.ifaceAddrs
+	if enumerate == nil {
+		// A zero-value Guard (and one built before this field existed) still
+		// asks the host.
+		enumerate = net.InterfaceAddrs
+	}
+	ifaces, err := enumerate()
 	if err != nil {
 		// Fail closed: unable to enumerate the host's addresses, treat the
 		// candidate as one of them.

@@ -256,6 +256,63 @@ func TestForwardProxy_EgressGuardOffByDefault(t *testing.T) {
 	}
 }
 
+// The TRANSPARENT listener's refusal must reach Finishers as an allow with 403,
+// the same as both CONNECT paths. handleConnect sets pctx.StatusCode before its
+// tl.close; this path did not, and OutcomeFromContext reads a zero StatusCode as
+// OutcomeError — so the three listener paths disagreed about the same refusal,
+// this one reporting a failure for what the docs call a delivered 403, and
+// lineage labelling a deliberate answer a failure (#1539 review).
+//
+// No status reaches the client here: a transparently redirected connection
+// speaks no HTTP to the agent, so the field exists for the Finishers and the
+// row, which is exactly why nothing else noticed it was missing.
+func TestTransparent_EgressGuardRefusalReportsAnAllowToFinishers(t *testing.T) {
+	g, err := egressguard.New(nil)
+	if err != nil {
+		t.Fatalf("egressguard.New: %v", err)
+	}
+	// Something to be refused: a loopback literal, which is what SO_ORIGINAL_DST
+	// hands this path for a redirected connection to the host itself.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listen unavailable: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	fin := &outcomeRecorder{}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	p, err := pipeline.New([]pipeline.Plugin{fin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		EgressGuard:      g,
+	}
+
+	agentSide, proxySide := net.Pipe()
+	go srv.HandleTransparentConn(proxySide, ln.Addr().String())
+	defer func() { _ = agentSide.Close() }()
+
+	// OnFinish runs on the handler's goroutine, after the refusal.
+	var got *pipeline.Outcome
+	for i := 0; i < 200; i++ {
+		if got = fin.seen(); got != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got == nil {
+		t.Fatal("OnFinish never ran, so the outcome is unasserted")
+	}
+	if got.FinalAction != pipeline.OutcomeAllow || got.StatusCode != http.StatusForbidden {
+		t.Errorf("outcome = %v/%d, want allow/403 — the same shape handleConnect reports",
+			got.FinalAction, got.StatusCode)
+	}
+}
+
 func mustParseProxy(proxy *httptest.Server) func(*http.Request) (*url.URL, error) {
 	return func(*http.Request) (*url.URL, error) { return mustParseURL(proxy.URL), nil }
 }
