@@ -27,7 +27,6 @@ func TestDelete_RemovesOneSessionAndItsBookkeeping(t *testing.T) {
 	s, clk := newProcStore()
 	defer s.Close()
 	s.Append("pending:bob-shell", ev())
-	s.Claim("task-1", "bob-shell") // an owner, and an adoption of the pending bucket
 	recordIn(s, clk, "s2")
 	recordIn(s, clk, "task-1") // the active session now
 
@@ -44,19 +43,8 @@ func TestDelete_RemovesOneSessionAndItsBookkeeping(t *testing.T) {
 	if s.activeID == "task-1" {
 		t.Fatal("activeID still names the deleted session")
 	}
-	if _, ok := s.owners["task-1"]; ok {
-		t.Fatal("task-1's owner survived")
-	}
-	for p, to := range s.adopted {
-		if p == "task-1" || to == "task-1" {
-			t.Fatalf("adoption %s -> %s survived", p, to)
-		}
-	}
-	// The adoption is gone, so a straggler under the pending id is its own bucket again rather
-	// than re-creating task-1.
-	s.Append("pending:bob-shell", ev())
-	if s.View("task-1") != nil || s.View("pending:bob-shell") == nil {
-		t.Fatal("a straggler followed an adoption Delete should have forgotten")
+	if s.View("pending:bob-shell") == nil {
+		t.Fatal("Delete(task-1) removed the pending bucket too")
 	}
 }
 
@@ -95,28 +83,5 @@ func TestDelete_TheNextAppendIsNumberedAfterTheSeeder(t *testing.T) {
 	s.Append("a", ev())
 	if got := seqsOf(t, s, "a"); len(got) != 1 || got[0] != 4 {
 		t.Fatalf("a after Delete = %v, want one event numbered 4", got)
-	}
-}
-
-// A Delete of an id memory does not hold changes nothing in memory. An adopted pending id is
-// the case that matters: its bucket is gone, but its adoption still redirects the response that
-// was in flight when the pending bucket was adopted. Dropping the adoption would let that
-// response re-create the pending bucket as a stray row.
-func TestDelete_AnIDMemoryDoesNotHoldKeepsItsAdoption(t *testing.T) {
-	s, _ := newProcStore()
-	defer s.Close()
-	s.Append("pending:bob-shell", ev())
-	s.Claim("task-1", "bob-shell") // adopts the pending bucket into task-1
-	before := len(s.View("task-1").Events)
-
-	if s.Delete("pending:bob-shell") {
-		t.Fatal("Delete(pending:bob-shell) = true, want false: the bucket was adopted away")
-	}
-	s.Append("pending:bob-shell", ev()) // the straggler the adoption exists to redirect
-	if s.View("pending:bob-shell") != nil {
-		t.Fatal("the straggler re-created the pending bucket: Delete dropped the adoption")
-	}
-	if got := len(s.View("task-1").Events); got != before+1 {
-		t.Fatalf("task-1 holds %d events, want %d: the straggler did not follow the adoption", got, before+1)
 	}
 }

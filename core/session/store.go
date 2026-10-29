@@ -7,8 +7,8 @@ package session
 
 import (
 	"log/slog"
+	"maps"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,6 +166,13 @@ type entry struct {
 	// A LATEST VALUE, NOT A SUM, so in context's class above: a trim has nothing to subtract, and
 	// the request that set it is the newest of its kind, which is the last a trim would take.
 	inferenceHost string
+
+	// procs is each process that NAMED this session through its own header, with when it first
+	// and last did (applyProcs); owner is the agent whose header named it first (applyOwner).
+	// Neither is shed on trim. lastRequestAt is the newest request's time, for Link.
+	procs         map[string]ProcSpan
+	owner         string
+	lastRequestAt time.Time
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -206,16 +213,6 @@ type Store struct {
 	// recorders are notified of every appended event. Registered at setup via
 	// AddRecorder, before the store serves traffic.
 	recorders []Recorder
-
-	// owners and adopted serve client affinity; see affinity.go. Both nil until
-	// the first Claim, so a store nothing claims from carries neither.
-	owners  map[string]string
-	adopted map[string]string
-
-	// procs and lastProcClaim serve process attribution; see process.go. nil and zero
-	// until a listener with it on first asks.
-	procs         map[procKey]*procState
-	lastProcClaim time.Time
 }
 
 // subscriberChanBuf caps each subscriber's channel depth. 64 absorbs short
@@ -476,7 +473,6 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 		}
 		sess, sessionID = b.e, b.e.ID
 	} else {
-		sessionID = s.followAdoptedLocked(sessionID)
 		var ok bool
 		sess, ok = s.sessions[sessionID]
 		if !ok {
@@ -569,6 +565,11 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 	// the local parameter, for the reason given there.
 	if h := inferenceHostOf(&event); h != "" {
 		sess.inferenceHost = h
+	}
+	sess.procs = applyProcs(sess.procs, sessionID, &event)
+	sess.owner = applyOwner(sess.owner, sessionID, agentName, &event)
+	if event.Phase == pipeline.SessionRequest && event.At.After(sess.lastRequestAt) {
+		sess.lastRequestAt = event.At
 	}
 	if b == nil {
 		sess.UpdatedAt = now
@@ -717,11 +718,13 @@ func applyTrim[T any](in []T, p trimPlan) []T {
 	return append(out, in[p.tailStart:]...)
 }
 
-// AddRecorder registers a Recorder. Call before the store serves traffic; it is
-// not safe to call concurrently with Append.
+// AddRecorder registers a Recorder. Safe at any time: every reader of the list holds the
+// store's lock, and so does this. A recorder added late misses the events before it.
 func (s *Store) AddRecorder(r Recorder) {
 	if r != nil {
+		s.mu.Lock()
 		s.recorders = append(s.recorders, r)
+		s.mu.Unlock()
 	}
 }
 
@@ -892,11 +895,8 @@ type SessionSummary struct {
 	// was a session that nothing in the list could attribute to any program, which is what #1214
 	// was filed about; a spoofable label is the same axis the usage ring and the ledger already
 	// key on, never an identity.
-	Agent string `json:"agent,omitempty"`
-	// Adopted names the pending buckets this session took in (see Store.Claim), so a client still
-	// holding one of those buckets' events can tell they now head this session.
-	Adopted     []string `json:"adopted,omitempty"`
-	TotalTokens int      `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
+	Agent       string `json:"agent,omitempty"`
+	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
 	// the records the session itself holds — where a session archive runs, including those from
 	// before this entry.
@@ -1031,6 +1031,23 @@ type SessionSummary struct {
 	// omitempty on a bool drops exactly the false the wire needs; absent then means "resident",
 	// so a client reading a proxy that predates the archive sees every row as it always did.
 	Resident *bool `json:"resident,omitempty"`
+
+	// Procs are the processes that named this session through their own session header,
+	// "<pid>.<start>", sorted. Absent when none did, and on a summary from before the field.
+	Procs []string `json:"procs,omitempty"`
+	// LastRequestAt is the time of the newest request this session holds, zero when it holds
+	// none. On a pending bucket it is what Link compares with a process's claims.
+	LastRequestAt time.Time `json:"lastRequestAt,omitzero"`
+	// LinkedTo, on a pending bucket, is the sessions its process named that OwnerAt gives a
+	// call of the bucket, each with the span of its naming requests (Link says how close that
+	// is); LinkedAll says every request in the bucket falls before one of them. Set by Link when
+	// the list is read, never stored. agentop folds a fully linked bucket that links to one
+	// session into it and lists any other as its own row.
+	LinkedTo  []PendingLink `json:"linkedTo,omitempty"`
+	LinkedAll bool          `json:"linkedAll,omitempty"`
+
+	// procSpans is Procs with each process's span, for Link; not on the wire.
+	procSpans map[string]ProcSpan
 }
 
 // sessionAgent is one client's first label in a session.
@@ -1051,55 +1068,6 @@ func (e *entry) agentLabel(name string) string {
 	return agentLabelIn(e.agents, name)
 }
 
-// agentOfLocked is SessionSummary.Agent: the label of the owner that claimed the session, else of
-// the first RECOGNISED agent in it, else — #1214 — of the first unrecognised client. earlier is
-// the agents of the history before this entry (see PriorKeeper), nil when there is none; being
-// earlier, it is searched first.
-//
-// THE UNRECOGNISED FALLBACK IS LAST FOR A REASON, and it is not a tie-break detail. Appending an
-// unrecognised client into one first-wins order with the recognised ones would re-label a Claude
-// Code session after whatever `curl` or an SDK probe happened to reach it first — the field's
-// existing contract, which this change is not allowed to move. Two orders, recognised first,
-// leaves every session that already names an agent naming the same one.
-//
-// WHY "FIRST UNRECOGNISED" IS ALSO "THE ONE THAT NAMED THE SESSION", which is what #1214 asks
-// for. An unrecognised client's own session header is the only thing that files its traffic under
-// its id: SessionForClient answers "" or the default bucket for a client it cannot name
-// (affinity.go, cases 2 and 3), and Claim refuses the empty name, so an unrecognised client's
-// header-less calls never route into the session it named. The headered request is therefore the
-// first of its client's events to land there, and the store needs no record of which request
-// carried the header in order to prefer it.
-func (s *Store) agentOfLocked(id string, sess *entry, earlier []sessionAgent) string {
-	if id == DefaultSessionID || strings.HasPrefix(id, PendingPrefix) {
-		return ""
-	}
-	if owner := s.owners[id]; owner != "" {
-		if l := agentLabelIn(earlier, owner); l != "" {
-			return l
-		}
-		return sess.agentLabel(owner)
-	}
-	if l := firstAgentLabel(earlier, sess.agents, true); l != "" {
-		return l
-	}
-	return firstAgentLabel(earlier, sess.agents, false)
-}
-
-// adoptedByLocked maps each session to the pending buckets it adopted; see SessionSummary.Adopted.
-func (s *Store) adoptedByLocked() map[string][]string {
-	if len(s.adopted) == 0 {
-		return nil
-	}
-	out := make(map[string][]string, len(s.adopted))
-	for pending, id := range s.adopted {
-		out[id] = append(out[id], pending)
-	}
-	for _, ids := range out {
-		sort.Strings(ids)
-	}
-	return out
-}
-
 // ListSessions returns summaries for every non-expired session. Order is
 // UpdatedAt descending (most recent first). Safe for concurrent use.
 func (s *Store) ListSessions() []SessionSummary {
@@ -1108,7 +1076,6 @@ func (s *Store) ListSessions() []SessionSummary {
 
 	now := s.clock()
 	out := make([]SessionSummary, 0, len(s.sessions))
-	adoptedBy := s.adoptedByLocked()
 	for id, sess := range s.sessions {
 		if s.isExpired(sess, now) {
 			continue
@@ -1128,9 +1095,8 @@ func (s *Store) ListSessions() []SessionSummary {
 			// shapes that agree at ~165ns, which is the standing evidence against a walk
 			// reappearing here — they would diverge immediately if one did. This obeys the rule
 			// PromptContext states below, which rejects an O(events) walk under the read lock.
-			Title:   sess.Title,
-			Agent:   s.agentOfLocked(id, sess, nil),
-			Adopted: adoptedBy[id],
+			Title: sess.Title,
+			Agent: pickAgent(id, sess.owner, nil, sess.agents),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),
@@ -1150,6 +1116,9 @@ func (s *Store) ListSessions() []SessionSummary {
 			PromptContext: sess.context.Publish(),
 			// Read, not computed, like Title: Append folds it.
 			InferenceHost: sess.inferenceHost,
+			Procs:         procsList(sess.procs),
+			procSpans:     maps.Clone(sess.procs),
+			LastRequestAt: sess.lastRequestAt,
 		}
 		s.withPriorLocked(&sum, id, sess)
 		out = append(out, sum)
@@ -1322,11 +1291,6 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 	for i := range sess.Events {
 		sess.Events[i].SessionID = newID
 	}
-	// A claim follows its session. Only client affinity makes one; see affinity.go.
-	if owner, ok := s.owners[oldID]; ok {
-		delete(s.owners, oldID)
-		s.owners[newID] = owner
-	}
 	// Every rename tells the recorders that keep per-session state, so that state follows the
 	// session: Adopt's pending bucket → session and Rekey's A2A default → contextId alike. Here
 	// rather than in adoptLocked because both reach this, and only a rename that happened may
@@ -1344,8 +1308,6 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 // held.
 func (s *Store) removeLocked(id string) {
 	delete(s.sessions, id)
-	delete(s.owners, id)
-	s.forgetAdoptedLocked(id)
 	if s.activeID == id {
 		s.activeID = ""
 	}
@@ -1362,6 +1324,16 @@ func (s *Store) cleanupLocked(now time.Time) {
 	for id, sess := range s.sessions {
 		if s.isExpired(sess, now) {
 			s.removeLocked(id)
+			s.evictedLocked(id)
+		}
+	}
+}
+
+// evictedLocked tells every Evicter the store dropped id. s.mu held.
+func (s *Store) evictedLocked(id string) {
+	for _, r := range s.recorders {
+		if e, ok := r.(Evicter); ok {
+			e.Evicted(id)
 		}
 	}
 }
@@ -1384,6 +1356,7 @@ func (s *Store) evictOldestLocked() {
 	}
 	if oldestID != "" {
 		s.removeLocked(oldestID)
+		s.evictedLocked(oldestID)
 	}
 }
 

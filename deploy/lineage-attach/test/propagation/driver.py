@@ -1,5 +1,6 @@
 """Call a probe server with a chosen traceparent (retrying until it is up)
 and print its body."""
+
 import sys
 import time
 import urllib.request

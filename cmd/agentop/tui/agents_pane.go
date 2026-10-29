@@ -11,6 +11,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // agentRow is one coding agent's totals for the whole window, as the AGENTS pane shows them.
@@ -112,11 +113,12 @@ func agentsPaneApplies(rows []agentRow) bool {
 func (m *model) agentChoices() []agentRow {
 	var extra []string
 	for _, s := range m.sessions {
-		if !knownAgentLabel(s.Agent) || slices.Contains(extra, s.Agent) ||
-			slices.ContainsFunc(m.agents, func(a agentRow) bool { return a.label == s.Agent }) {
+		agent := sessionAgent(s)
+		if !knownAgentLabel(agent) || slices.Contains(extra, agent) ||
+			slices.ContainsFunc(m.agents, func(a agentRow) bool { return a.label == agent }) {
 			continue
 		}
-		extra = append(extra, s.Agent)
+		extra = append(extra, agent)
 	}
 	if len(extra) == 0 {
 		return m.agents
@@ -539,7 +541,7 @@ func (m *model) agentSessionsCell(label string) string {
 		n = m.otherSessionsCount()
 	} else {
 		for _, s := range m.sessions {
-			if s.Agent == label {
+			if agentRowLists(s, label) {
 				n++
 			}
 		}
@@ -558,7 +560,7 @@ const agentsLastSeenWidth = len("Oct 23 15:04")
 func (m *model) agentLastSeen(label string) time.Time {
 	var last time.Time
 	for _, s := range m.sessions {
-		if (label == otherAgents && inOtherAgents(s)) || (label != otherAgents && s.Agent == label) {
+		if agentRowLists(s, label) {
 			if s.UpdatedAt.After(last) {
 				last = s.UpdatedAt
 			}
@@ -567,10 +569,23 @@ func (m *model) agentLastSeen(label string) time.Time {
 	return last
 }
 
+// agentRowLists reports whether s is one of the rows the agent label lists: its own sessions and
+// pending buckets — or, for Other, every row naming no recognised agent — less the buckets folded
+// into a session.
+func agentRowLists(s session.SessionSummary, label string) bool {
+	if foldedInto(s) != "" {
+		return false
+	}
+	if label == otherAgents {
+		return inOtherAgents(s)
+	}
+	return sessionAgent(s) == label
+}
+
 // sessionsNameAgents reports whether any listed session names its agent.
 func (m *model) sessionsNameAgents() bool {
 	for _, s := range m.sessions {
-		if s.Agent != "" {
+		if sessionAgent(s) != "" {
 			return true
 		}
 	}

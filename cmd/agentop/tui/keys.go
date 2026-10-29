@@ -701,7 +701,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.showDetail(er, true)
 			m.pane = paneDetail
 			if m.needsFullEvent(er.event) && m.client != nil {
-				return fetchDetailEventCmd(m, m.selectedSess, er.event.Seq)
+				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
 			}
 			return nil
 		case panePipeline:

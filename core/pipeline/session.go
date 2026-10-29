@@ -367,6 +367,25 @@ type SessionEvent struct {
 	//
 	// Client-asserted, with the same caveat as Client above.
 	ParentSubagent string
+
+	// Proc is the agent process the request belongs to, "<pid>.<start>", as process
+	// attribution named it (attribution.Attribution.Proc): the agent root of the client's
+	// chain, so a launcher and its worker are one. Empty where the listener could not name
+	// the process, which is everywhere but a loopback-bound install. It is what links a
+	// process's calls from before it named a session to that session when the list is read
+	// (session.Link), so it is recorded on rows in a session as well as on pending ones.
+	Proc string
+
+	// ClientProc is the client process itself when it differs from Proc: a worker naming the
+	// session its launcher (Proc) is attributed with. Only on a request that named its
+	// session. The fold records a span for it too, so the worker's own pending bucket links.
+	ClientProc string
+
+	// SessionHeader is the session-id header that named this row's session, "" when the
+	// session was not named by the request (process, affinity, ActiveSession). Recorded so
+	// the fold can tell which processes NAMED a session from those merely filed into it,
+	// which Link needs and the session's agent is decided by.
+	SessionHeader string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -589,6 +608,11 @@ type sessionEventWire struct {
 	Subagent string `json:"subagent,omitempty"`
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
+	// omitempty: absent wherever the listener could not name the client's process, and on
+	// every event recorded before the field existed.
+	Proc          string `json:"proc,omitempty"`
+	ClientProc    string `json:"clientProc,omitempty"`
+	SessionHeader string `json:"sessionHeader,omitempty"`
 	// omitempty: absent on every row the egress guard did not dial for — it is
 	// off by default, so the common row costs nothing — and the same skew
 	// reason as TunnelReason above.
@@ -626,6 +650,9 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
+		Proc:            e.Proc,
+		ClientProc:      e.ClientProc,
+		SessionHeader:   e.SessionHeader,
 		DialAddr:        e.DialAddr,
 	})
 }
@@ -668,6 +695,9 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
+		Proc:            w.Proc,
+		ClientProc:      w.ClientProc,
+		SessionHeader:   w.SessionHeader,
 		DialAddr:        w.DialAddr,
 	}
 	return nil

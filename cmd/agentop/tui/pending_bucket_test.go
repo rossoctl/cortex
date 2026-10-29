@@ -146,3 +146,29 @@ func TestPendingBucket(t *testing.T) {
 		}
 	}
 }
+
+// A pending bucket belongs to the agent its id names, not to Other: its spend is already that
+// agent's, and the list must put the row beside it. The default bucket stays Other's.
+func TestSessionAgent_APendingBucketBelongsToItsAgent(t *testing.T) {
+	for _, tc := range []struct{ id, want string }{
+		{pendingOpencode, "opencode"},
+		{"pending:claude-code@100.5", "claude-code"},
+		{"pending:bob-shell@1.2", "bob"}, // archived under a retired spelling
+		{session.DefaultSessionID, ""},
+	} {
+		s := session.SessionSummary{ID: tc.id}
+		if got := sessionAgent(s); got != tc.want {
+			t.Errorf("sessionAgent(%s) = %q, want %q", tc.id, got, tc.want)
+		}
+		if inOtherAgents(s) != (tc.want == "") {
+			t.Errorf("inOtherAgents(%s) = %v", tc.id, inOtherAgents(s))
+		}
+	}
+	m := uuidPicker(t, 200, uuidOpened, "pending:claude-code@100.5", session.DefaultSessionID)
+	m.sessions[0].Agent = "claude-code"
+	m.agentScope = "claude-code"
+	m.rebuildSessionsTable()
+	if !slices.Equal(m.sessionRowIDs, []string{uuidOpened, "pending:claude-code@100.5"}) {
+		t.Errorf("claude-code scope lists %v, want its session and its bucket", m.sessionRowIDs)
+	}
+}

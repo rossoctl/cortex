@@ -337,7 +337,7 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 	}
 	n := 0
 	for _, s := range list {
-		if s.ID == session.DefaultSessionID || strings.HasPrefix(s.ID, session.PendingPrefix) {
+		if !session.IsConversation(s.ID) {
 			continue
 		}
 		if on, ok := servers.ForHost(c, s.InferenceHost); ok && on == name {

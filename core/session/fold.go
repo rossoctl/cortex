@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -181,6 +182,11 @@ type SummaryFold struct {
 	restoredContext *pipeline.PromptContext
 	// inferenceHost is SessionSummary.InferenceHost: the latest inference request's host.
 	inferenceHost string
+	// procs, owner and lastRequestAt are the entry's fields of the same names, by the same
+	// rules (applyProcs, applyOwner).
+	procs         map[string]ProcSpan
+	owner         string
+	lastRequestAt time.Time
 }
 
 // NewSummaryFold returns an empty fold.
@@ -191,6 +197,7 @@ func (f *SummaryFold) Clone() *SummaryFold {
 	c := *f
 	c.units = maps.Clone(f.units)
 	c.agents = slices.Clone(f.agents)
+	c.procs = maps.Clone(f.procs)
 	return &c
 }
 
@@ -217,6 +224,11 @@ func (f *SummaryFold) Add(sessionID string, e *pipeline.SessionEvent) {
 	if h := inferenceHostOf(e); h != "" {
 		f.inferenceHost = h
 	}
+	f.procs = applyProcs(f.procs, sessionID, e)
+	f.owner = applyOwner(f.owner, sessionID, p.agentName, e)
+	if e.Phase == pipeline.SessionRequest && e.At.After(f.lastRequestAt) {
+		f.lastRequestAt = e.At
+	}
 }
 
 // promptContext is the fold's CTX figure, nil when nothing can be said.
@@ -239,16 +251,10 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		Saturated:     f.cost.Saturated || f.avoided.Saturated,
 		PromptContext: f.promptContext(),
 		InferenceHost: f.inferenceHost,
-	}
-	if sessionID != DefaultSessionID && !strings.HasPrefix(sessionID, PendingPrefix) {
-		// Recognised first, then unrecognised, by agentOfLocked's rule and for its reasons — the
-		// store's own preference for the owner that CLAIMED the session is the one difference this
-		// type's godoc names, and it is not reachable from here.
-		if l := firstAgentLabel(nil, f.agents, true); l != "" {
-			sum.Agent = l
-		} else {
-			sum.Agent = firstAgentLabel(nil, f.agents, false)
-		}
+		Procs:         procsList(f.procs),
+		procSpans:     maps.Clone(f.procs),
+		LastRequestAt: f.lastRequestAt,
+		Agent:         pickAgent(sessionID, f.owner, nil, f.agents),
 	}
 	return sum
 }
@@ -274,6 +280,11 @@ type foldJSON struct {
 	// THERE "" MEANS UNKNOWN, NOT "NO INFERENCE TRAFFIC": that history may hold plenty, folded by
 	// a Cortex that did not record where it went. The session's next inference request sets it.
 	InferenceHost string `json:"inferenceHost,omitempty"`
+	// Procs, Owner and LastRequestAt are absent from a session.json written before they
+	// existed: that history names no process, links nothing, and its agent is picked by label.
+	Procs         map[string]ProcSpan `json:"procs,omitempty"`
+	Owner         string              `json:"owner,omitempty"`
+	LastRequestAt time.Time           `json:"lastRequestAt,omitzero"`
 }
 
 // foldAgent is one sessionAgent in session.json.
@@ -304,6 +315,9 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Units:            f.units,
 		PromptContext:    f.promptContext(),
 		InferenceHost:    f.inferenceHost,
+		Procs:            f.procs,
+		Owner:            f.owner,
+		LastRequestAt:    f.lastRequestAt,
 	}
 	for _, a := range f.agents {
 		j.Agents = append(j.Agents, foldAgent{Name: a.name, Label: a.label, Unknown: !a.known})
@@ -327,6 +341,9 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		title:           j.Title,
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
+		procs:           j.Procs,
+		owner:           pipeline.CanonicalAgent(j.Owner),
+		lastRequestAt:   j.LastRequestAt,
 	}
 	if j.TitleRank != nil {
 		f.titleRank = *j.TitleRank

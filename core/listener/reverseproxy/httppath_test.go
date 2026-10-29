@@ -48,15 +48,11 @@ func TestReverseProxyRecordsMethodAndPath(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Waited rather than read: no plugin here reads bodies, so the response row
-	// is deferred to the end of ReverseProxy's copy (recordOnEOFBody), which can
-	// finish after the client has read the body and returned.
+	// The response row lands when ReverseProxy finishes relaying the body, which can be
+	// after the client has its response: wait for it rather than race it.
 	waitForResponseEvent(t, store, session.DefaultSessionID)
 
 	v := store.View(session.DefaultSessionID)
-	if v == nil || len(v.Events) == 0 {
-		t.Fatalf("no events recorded")
-	}
 
 	// Both the request and the response event must carry the pair; a response
 	// event that lost them would leave half the timeline row blank.

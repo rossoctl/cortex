@@ -3,6 +3,8 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # The plans embed unified diffs, whose blank context lines are a lone space.
+        exclude: ^docs/superpowers/plans/
       - id: end-of-file-fixer
       - id: check-added-large-files
         args: ['--maxkb=1024']
