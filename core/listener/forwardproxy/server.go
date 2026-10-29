@@ -184,6 +184,22 @@ type Server struct {
 	// this is deliberately the narrow seam it needs.
 	TrustedSessionID func(r *http.Request) string
 
+	// AdoptBridgedRequest, when set, re-applies a connection-derived identity
+	// to each request a TLS-bridged tunnel decrypts, given the CONNECT that
+	// opened it. It exists because a bridged request is NOT the CONNECT: the
+	// bytes are re-parsed into fresh *http.Requests inside tlsbridge.ServeConn's
+	// own http.Server, so neither the CONNECT's context nor any header the
+	// accepting listener stripped survives into them. A listener that derives
+	// identity from the connection (vmcontrol: which per-VM socket accepted it)
+	// must therefore be given a second chance to stamp it, or TrustedSessionID
+	// answers "" on the decrypted request and resolution falls through to the
+	// guest's own session headers — which is the whole seam inverted.
+	//
+	// connect is the CONNECT request as the listener's wrapper saw it, so a
+	// hook can read the identity it stamped there; r is the decrypted request
+	// to decorate. The returned request replaces r.
+	AdoptBridgedRequest func(connect, r *http.Request) *http.Request
+
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
@@ -1361,6 +1377,15 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 		if tl.conn != nil {
 			r = r.WithContext(context.WithValue(r.Context(), connProcKey{}, tl.conn))
 		}
+		// Before anything reads identity off r. A decrypted request is a NEW
+		// request — the accepting listener's wrapper never saw it, so whatever
+		// it stamped on or stripped from the CONNECT has to be redone here, or
+		// the guest's own headers decide the session (#1569 review).
+		if s.AdoptBridgedRequest != nil && tl.connect != nil {
+			if adopted := s.AdoptBridgedRequest(tl.connect, r); adopted != nil {
+				r = adopted
+			}
+		}
 		r.URL.Scheme = "https"
 		r.URL.Host = authority // host:port — preserves non-443 origins
 		s.serveOutbound(w, r, tl)
@@ -2485,6 +2510,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// plugin ran, so there is nothing to attribute them to.
 	tl := s.newTunnelLog(pctx, skipped)
 	tl.conn = connProcOf(r.Context())
+	// Kept for AdoptBridgedRequest: the requests this tunnel decrypts are parsed
+	// fresh and inherit nothing from here, so a connection-derived identity has
+	// to be re-stamped from the CONNECT onto each of them.
+	tl.connect = r
 
 	// Plain TCP dial. See package-level comment on why mTLS doesn't
 	// apply here. r.Host on a CONNECT carries "host:port" already.
@@ -2937,6 +2966,10 @@ type tunnelLog struct {
 	// conn is the CONNECT's client process slot, handed to the requests a bridged tunnel
 	// decrypts; nil off the CONNECT path.
 	conn *connProc
+	// connect is the CONNECT request itself, kept for AdoptBridgedRequest so a
+	// listener that derived identity from the accepting connection can stamp it
+	// onto each decrypted request too. nil off the CONNECT path.
+	connect *http.Request
 	// program is the client's program when the bridge rules named it, nil when they did
 	// not. bridgeServe records a handshake's failure against it when set and against the
 	// host when not, which is what the transparent listener and a nameless client get.

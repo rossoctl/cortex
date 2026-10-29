@@ -1108,6 +1108,21 @@ func main() {
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
 			}
 		}
+		// The VM control channel serves each handed-over listener through this
+		// same forward proxy — one pipeline, one session store, identity from
+		// the connection — so it starts only where the forward role does.
+		//
+		// BEFORE the listeners below start serving. startVMControl assigns
+		// fpSrv.TrustedSessionID and fpSrv.AdoptBridgedRequest, which nothing
+		// locks; ServeHTTPServer hands its already-bound listener to a serving
+		// goroutine at once, so registering first would leave a window where a
+		// request reads those fields while this writes them — a data race, and
+		// one whose losing side resolves a VM's session from the guest's own
+		// headers. Both hooks are set before any request can reach them.
+		if ctrlCfg.Socket != "" {
+			vmCtrl = startVMControl(ctrlCfg, fpSrv)
+		}
+
 		httpServers = append(httpServers, bootstrap.ServeHTTPServer("forward-proxy", fpSrv.Handler(),
 			listeners.take("forward-proxy"), bootstrap.WithConnContext(fpSrv.ConnContext)))
 
@@ -1119,13 +1134,6 @@ func main() {
 		// is ever REDIRECTed to it.
 		if !localInstall && cfg.Listener.TransparentProxyAddr != "" {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
-		}
-
-		// The VM control channel serves each handed-over listener through this
-		// same forward proxy — one pipeline, one session store, identity from
-		// the connection — so it starts only where the forward role does.
-		if ctrlCfg.Socket != "" {
-			vmCtrl = startVMControl(ctrlCfg, fpSrv)
 		}
 	}
 	if ctrlCfg.Socket != "" && vmCtrl == nil {

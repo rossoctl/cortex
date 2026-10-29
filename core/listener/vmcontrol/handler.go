@@ -42,17 +42,49 @@ func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln 
 // requestBinding is what a VM listener stamps into the request context.
 type requestBinding struct{ vmID, sid string }
 
-var bindingCtxKey struct{}
+// bindingCtxKey is a NAMED type, like the forward proxy's connProcKey and the
+// transparent listener's origDstKey. An untyped `var bindingCtxKey struct{}`
+// would be a zero-size value whose type is plain struct{}, so every package
+// doing the same thing shares one context key: a foreign reader would see this
+// VM's binding, and a foreign writer would overwrite it with a value this
+// package would then type-assert. Naming the type makes the key unique to
+// vmcontrol (and satisfies SA1029) (#1569 review).
+type bindingCtxKey struct{}
 
 // SessionIDFromRequest returns the session id the VM listener resolved for r
 // — from which handed-over socket its connection arrived — or "" when r did
 // not come through one. It is the forward proxy's TrustedSessionID hook: the
 // answer is the listener's own, so nothing the client sent participates.
 func SessionIDFromRequest(r *http.Request) string {
-	if b, ok := r.Context().Value(bindingCtxKey).(requestBinding); ok {
+	if b, ok := r.Context().Value(bindingCtxKey{}).(requestBinding); ok {
 		return b.sid
 	}
 	return ""
+}
+
+// AdoptBridgedRequest is the forward proxy's AdoptBridgedRequest hook: it
+// carries a VM's binding from the CONNECT onto each request that tunnel
+// decrypts, and strips the guest's identity headers from them.
+//
+// It is needed because a bridged request never passes through vmBinding.
+// ServeHTTP: tlsbridge.ServeConn parses the decrypted bytes into fresh
+// requests inside its own http.Server, so the context the wrapper stamped on
+// the CONNECT is not theirs and the headers it stripped were a different
+// header set. Without this, SessionIDFromRequest answers "" on a decrypted
+// request, hydrateSession falls through to header resolution, and a guest
+// sending X-Claude-Code-Session-Id files its traffic in any session it likes
+// — the trusted-session seam inverted, and the guest headers reach the origin
+// too. Pinned by TestBridgedRequestKeepsTheVMBinding (#1569 review).
+//
+// Returns r unchanged when the CONNECT carried no binding, so a bridged
+// tunnel on a non-VM listener is untouched.
+func AdoptBridgedRequest(connect, r *http.Request) *http.Request {
+	b, ok := connect.Context().Value(bindingCtxKey{}).(requestBinding)
+	if !ok {
+		return r
+	}
+	stripGuestHeaders(r)
+	return r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, b))
 }
 
 // guestStrippedHeaders are the client-asserted identity headers a VM guest
@@ -102,7 +134,7 @@ func (b *vmBinding) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b.mu.Unlock()
 	defer b.live.Done()
 
-	r = r.WithContext(context.WithValue(r.Context(), bindingCtxKey, requestBinding{b.vmID, b.sid}))
+	r = r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, requestBinding{b.vmID, b.sid}))
 	sw := newStatusWriter(w)
 	b.inner.ServeHTTP(sw, r)
 	b.emit(r, sw.status)
