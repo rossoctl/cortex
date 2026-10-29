@@ -641,9 +641,6 @@ func controlService(goos, action string, p servicePaths, progress io.Writer) err
 	return nil
 }
 
-// supervisorRunning asks the supervisor whether OUR job is up, which health alone
-// cannot establish: an unadopted proxy keeps the ports, the supervised copy
-// crash-loops on the bind, and the probe succeeds against the survivor.
 // clearStartLimit lifts systemd's start limit on cortex.service before agentop
 // starts it. The unit allows five starts in five minutes (StartLimitBurst), and a
 // proxy that crash-loops spends them in under a minute; systemd then marks the
@@ -720,6 +717,9 @@ func systemdUnitState() unitState {
 	return s
 }
 
+// supervisorRunning asks the supervisor whether OUR job is up, which health alone
+// cannot establish: an unadopted proxy keeps the ports, the supervised copy
+// crash-loops on the bind, and the probe succeeds against the survivor.
 func supervisorRunning(goos string, p servicePaths) (bool, string) {
 	if goos == "darwin" {
 		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + launchdLabel

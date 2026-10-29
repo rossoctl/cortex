@@ -572,6 +572,11 @@ On Linux, when nothing answers, status asks systemd why, and says which of these
 | `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
 | `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
 
+A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
+script, the exit code alone does not say Cortex is serving: check for
+`Cortex is healthy according to` in the output as well. Before, a stopped Cortex
+exited 1. On macOS it still does.
+
 `service start`, `service restart` and `service install` clear systemd's record of the
 crashes first, so they can start a unit systemd had given up on without waiting out
 its five-minute window.

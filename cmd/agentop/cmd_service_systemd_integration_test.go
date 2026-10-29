@@ -328,6 +328,42 @@ func healthStub(t *testing.T, dir, addr string) string {
 	return path
 }
 
+// unitTimings reads RestartSec and StartLimitBurst from the unit file at path.
+// A missing or unparseable value fails the test: every wait the lifecycle test
+// derives from them would otherwise be a guess.
+func unitTimings(t *testing.T, path string) (restartSec time.Duration, burst int) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "RestartSec":
+			// A bare number is seconds; the unit writes nothing else.
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("RestartSec=%q in %s: want whole seconds", v, path)
+			}
+			restartSec = time.Duration(n) * time.Second
+		case "StartLimitBurst":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				t.Fatalf("StartLimitBurst=%q in %s: want a number", v, path)
+			}
+			burst = n
+		}
+	}
+	if restartSec <= 0 || burst <= 0 {
+		t.Fatalf("%s sets no RestartSec or StartLimitBurst (got %s, %d); the waits depend on both", path, restartSec, burst)
+	}
+	return restartSec, burst
+}
+
 // freeLoopbackAddr is a 127.0.0.1 port nothing holds right now.
 func freeLoopbackAddr(t *testing.T) string {
 	t.Helper()
@@ -447,7 +483,17 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 		t.Errorf("restart left MainPID %d (was %d), want a new process", after, before)
 	}
 
-	// A crash: the unit's own RestartSec=10 brings it back.
+	// The waits below are what the installed unit's own timings imply, read from the
+	// file, so changing RestartSec or StartLimitBurst in renderUnitFor moves them too
+	// rather than failing this as if agentop were wrong. A restart takes RestartSec;
+	// the crash loop reaches the start limit after StartLimitBurst starts, one
+	// RestartSec apart. Doubled, plus slack for a loaded runner: on systemd 257 and
+	// 261 with RestartSec=10 and StartLimitBurst=5, the limit took about 50s.
+	restartSec, burst := unitTimings(t, realUnit)
+	restartWait := 2*restartSec + 10*time.Second
+	limitWait := 2*time.Duration(burst)*restartSec + 10*time.Second
+
+	// A crash: the unit's own RestartSec brings it back.
 	pid := currentMainPID(systemdUnit)
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 %d: %v", pid, err)
@@ -457,8 +503,8 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	}
 	code, out = status()
 	expect("status while a crash restarts", code, out, 1, "systemd is restarting it")
-	if _, ok := waitForNewMainPID(t, systemdUnit, pid, 20*time.Second); !ok {
-		t.Fatalf("no restart within 20s of kill -9; systemd says %+v", unit())
+	if _, ok := waitForNewMainPID(t, systemdUnit, pid, restartWait); !ok {
+		t.Fatalf("no restart within %s of kill -9; systemd says %+v", restartWait, unit())
 	}
 	if !waitHealthy(p.healthURL, 10*time.Second) {
 		t.Fatal("restarted unit never answered /healthz")
@@ -479,8 +525,8 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = control("start") // fails: nothing answers
-	if !waitUntil(90*time.Second, func() bool { return unit().active == "failed" }) {
-		t.Fatalf("the crash loop never hit the start limit; systemd says %+v", unit())
+	if !waitUntil(limitWait, func() bool { return unit().active == "failed" }) {
+		t.Fatalf("the crash loop did not hit the start limit within %s; systemd says %+v", limitWait, unit())
 	}
 	// Not "(start-limit-hit)": which reason systemd records here varies by version.
 	// 261 records the limit; 257 keeps the last exit, "exit-code". What status must
