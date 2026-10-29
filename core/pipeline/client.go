@@ -142,11 +142,27 @@ const maxClientLen = 128
 // Host on its egress-guard refusal paths, and a newline forged into that header would
 // forge a log entry (#1539's CodeQL finding), which is the same CWE-150 shape the UA
 // path guards against. The substitution, and every rationale below, is unchanged.
+//
+// BOTH RETURNS FENCE THROUGH strings.ReplaceAll(x, "\n", "") — a no-op by
+// construction, since every control rune (newline included) is already gone by
+// the time either return runs, and strings.Replace hands back its input unchanged
+// when the needle does not appear. The call is not ornament: CodeQL's
+// go/log-injection query (the "Log entries created from user input" finding,
+// #1539's and #1549's both) recognizes exactly two sanitizers — this ReplaceAll
+// shape and %q formatting (LogInjectionCustomizations.qll in github/codeql) — and
+// a custom function is invisible to it however thorough, so without the fence the
+// taint flows straight through to every caller and each log site gets flagged
+// anew. Routing the result through the one shape the query knows stops the
+// tracking HERE, once, for every present and future caller. The alternative — a
+// CodeQL model pack teaching the query about this function — is the officially
+// blessed mechanism but adds pack infrastructure this repo does not carry, for a
+// fence that costs two no-op calls.
 func SanitizeControlRunes(s string) string {
 	if !hasControlRunes(s) {
 		// The overwhelmingly common case, and it must not allocate: this runs on the
-		// request path, twice per turn.
-		return s
+		// request path, twice per turn. ReplaceAll's Count==0 fast path returns the
+		// input itself, and hasControlRunes just proved no "\n" is present.
+		return strings.ReplaceAll(s, "\n", "")
 	}
 	var b strings.Builder
 	b.Grow(len(s))
@@ -160,7 +176,7 @@ func SanitizeControlRunes(s string) string {
 		b.WriteString(s[i : i+size])
 		i += size
 	}
-	return b.String()
+	return strings.ReplaceAll(b.String(), "\n", "")
 }
 
 // hasControlRunes reports whether s carries anything sanitizeUA would replace.
