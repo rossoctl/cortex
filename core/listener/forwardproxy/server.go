@@ -1196,22 +1196,30 @@ func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Reques
 // forwarded as a transparent proxy or not at all — but no row is appended, which
 // is what skip_hosts promises.
 func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, resp *http.Response, record bool) {
+	// The host as this function logs it. r.Host is client-controlled, so it goes
+	// through SanitizeControlRunes — every control rune replaced — and then
+	// through a strings.ReplaceAll that is a NO-OP by construction, because the
+	// sanitizer already took every control rune, "\n" included. The ReplaceAll
+	// is not ornament: CodeQL's go/log-injection (this PR's finding) cannot see
+	// through a custom function however thorough, and recognizes exactly two
+	// sanitizers — this ReplaceAll shape and %q formatting — so the one it knows
+	// has to sit in THIS function, on the value's last step before a log call
+	// (the query's own test suite proves the shape only in the sink's function;
+	// fencing inside SanitizeControlRunes was tried at 6cae5d14 and changed
+	// nothing). A helper would put it back inside a callee — do not lift it.
+	host := strings.ReplaceAll(pipeline.SanitizeControlRunes(r.Host), "\n", "")
 	backConn, ok := resp.Body.(io.ReadWriteCloser)
 	if !ok {
 		// Not reachable through net/http's own transport, which gives a 101 a
 		// writable body; a custom RoundTripper could violate it.
-		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade",
-			// Sanitized: Host is client-controlled, and a control rune forged into
-			// it would forge a log entry — the same finding #1539's lines got.
-			"host", pipeline.SanitizeControlRunes(r.Host))
+		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", host)
 		s.failUpgradedWebSocket(w, pctx, record, "101 switching protocols with a non-writable body")
 		return
 	}
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		// Host sanitized as above; the hijack error is the runtime's own text.
-		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade",
-			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
+		// The host is fenced above; the hijack error is the runtime's own text.
+		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", host, "error", err)
 		s.failUpgradedWebSocket(w, pctx, record, fmt.Sprintf("hijack failed relaying the upgrade: %v", err))
 		return
 	}
@@ -1240,14 +1248,12 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	resp.Header = w.Header()
 	resp.Body = nil
 	if err := resp.Write(brw); err != nil {
-		slog.Error("forward-proxy: writing the 101 failed",
-			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
+		slog.Error("forward-proxy: writing the 101 failed", "host", host, "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("writing the 101 failed: %v", err))
 		return
 	}
 	if err := brw.Flush(); err != nil {
-		slog.Error("forward-proxy: flushing the 101 failed",
-			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
+		slog.Error("forward-proxy: flushing the 101 failed", "host", host, "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("flushing the 101 failed: %v", err))
 		return
 	}
