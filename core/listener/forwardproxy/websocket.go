@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/wsframe"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/session"
 )
 
 // A Responses API WebSocket, carried and parsed.
@@ -167,7 +167,7 @@ func pipelineCannotCarry(p *pipeline.Pipeline) string {
 // pctx is the handshake's, after the pipeline ran on it. Its rows are the socket's open
 // (now) and close (when it ends), sharing its RequestID the way an opaque tunnel's do;
 // the turns record their own pairs between them.
-func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
+func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []attribution.Proc) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
@@ -286,13 +286,13 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 
 // recordWebSocketRefusal records the handshake's request row and the answer it got, for
 // a socket that never opened. The same pair an ordinary request records.
-func (s *Server) recordWebSocketRefusal(pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc, status int, fail *pipeline.EventError) {
+func (s *Server) recordWebSocketRefusal(pctx *pipeline.Context, tl *tunnelLog, sid string, chain []attribution.Proc, status int, fail *pipeline.EventError) {
 	if s.Sessions == nil {
 		return
 	}
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, status, fail)
@@ -318,7 +318,7 @@ type wsSocket struct {
 	hs    *pipeline.Context // the handshake's, for the socket's own rows
 	tl    *tunnelLog
 	sid   string
-	chain []session.Proc
+	chain []attribution.Proc
 
 	client  net.Conn
 	clientR *bufio.Reader // the hijack's buffer: bytes the server read past the request
@@ -913,9 +913,7 @@ func (ws *wsSocket) recordClose() {
 		Client:       ws.hs.ClientInfo(),
 	}
 	ws.s.Sessions.Append(ws.sid, ev)
-	if ws.chain != nil {
-		ws.s.Sessions.TouchProcess(ws.sid, ws.chain)
-	}
+	ws.s.touch(ws.sid, ws.chain)
 }
 
 // responseCreateBody is a response.create message as the HTTPS request body it stands

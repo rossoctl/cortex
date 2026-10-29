@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/pem"
 	"fmt"
+	"github.com/rossoctl/cortex/core/attribution"
 	"io"
 	"net"
 	"net/http"
@@ -750,10 +751,11 @@ func TestSelfTraffic_AnEventStreamIsRelayedAsItArrives(t *testing.T) {
 	}
 }
 
-// A process's own pending bucket is certainly its calls; the agent-wide one is a guess
-// about a process the lookup could not name. When a header claims a session and both
-// buckets exist, the process's own is the one adopted.
-func TestProcessAttribution_AProcessAdoptsItsOwnPendingBucketFirst(t *testing.T) {
+// A process's calls before its first header stay in its own pending bucket, carrying the
+// process, and its headered request carries the same process and the header that named the
+// session: the two facts session.Link joins on. A call the lookup could not name goes to the
+// agent-wide bucket and carries no process, so nothing can link it.
+func TestProcessAttribution_RecordsTheProcessOnEveryRow(t *testing.T) {
 	procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
 	store := session.New(0, 0, 0)
 	defer store.Close()
@@ -764,8 +766,29 @@ func TestProcessAttribution_AProcessAdoptsItsOwnPendingBucketFirst(t *testing.T)
 	sendAs(t, unnamed, backendURL+"/guess", procClaudeUA, "", "")
 	sendAs(t, claude, backendURL+"/own", procClaudeUA, "", "")
 	sendAs(t, claude, backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
-	if got := strings.Join(recordedPaths(store, "s1"), ","); got != "/own,/v1/messages" {
-		t.Errorf("s1 = %s, want the process's own pre-header call adopted", got)
+
+	proc := attribution.Proc{PID: 100, Start: time.Unix(100, 0).UnixNano()}.Key()
+	own := store.View(session.PendingID("claude-code", proc))
+	if own == nil || len(own.Events) != 2 || own.Events[0].HTTPPath != "/own" {
+		t.Fatalf("the process's bucket = %+v, want /own and its response", own)
+	}
+	for _, e := range own.Events {
+		if e.Proc != proc || e.SessionHeader != "" {
+			t.Errorf("%s %s: proc %q header %q, want %q and none", e.Phase, e.HTTPPath, e.Proc, e.SessionHeader, proc)
+		}
+	}
+	s1 := store.View("s1")
+	if s1 == nil || s1.Events[0].Proc != proc || s1.Events[0].SessionHeader != session.ClaudeCodeSessionHeader {
+		t.Fatalf("s1's request = %+v, want proc %q named by the Claude header", s1, proc)
+	}
+	var guess *pipeline.SessionView
+	if guess = store.View(session.PendingSessionID("claude-code")); guess == nil || guess.Events[0].Proc != "" {
+		t.Errorf("the unnamed client's bucket = %+v, want /guess with no process", guess)
+	}
+	for _, sum := range store.ListSessions() {
+		if sum.ID == "s1" && (len(sum.Procs) != 1 || sum.Procs[0] != proc) {
+			t.Errorf("s1's Procs = %v, want [%s]", sum.Procs, proc)
+		}
 	}
 }
 
@@ -826,5 +849,44 @@ func TestSelfTraffic_AServiceThatNamesItsSessionInsideATunnelIsAnAgents(t *testi
 	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
 	if n := countPath(store, "/api/info"); n != 0 {
 		t.Errorf("%d /api/info rows: a claim made inside a tunnel did not make the service an agent's", n)
+	}
+}
+
+// A client that sends attribution headers chooses nothing: they never reach the upstream, and
+// the row lands where the proxy's own resolution puts it.
+func TestForwardProxy_StripsCortexAttributionHeaders(t *testing.T) {
+	var saw http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { saw = r.Header.Clone() }))
+	defer upstream.Close()
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	p, _ := pipeline.New(nil)
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}, ClientAffinity: true}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	via := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+
+	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
+	req.Header.Set("User-Agent", procClaudeUA)
+	req.Header.Set(session.ClaudeCodeSessionHeader, "real")
+	req.Header.Set(attribution.HeaderSession, "forged")
+	req.Header.Set(attribution.HeaderProc, "1.1")
+	req.Header.Set(attribution.HeaderSource, string(pipeline.SessionSourceHeader))
+	resp, err := via.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	for _, k := range []string{attribution.HeaderSession, attribution.HeaderProc, attribution.HeaderSource} {
+		if v := saw.Get(k); v != "" {
+			t.Errorf("upstream saw %s: %q", k, v)
+		}
+	}
+	if store.View("forged") != nil || store.View("real") == nil {
+		t.Errorf("the row went to the forged session; want it under real")
+	}
+	if e := store.View("real").Events[0]; e.Proc != "" {
+		t.Errorf("the row carries proc %q from the forged header; no lookup ran", e.Proc)
 	}
 }

@@ -291,8 +291,9 @@ func (m *model) rebuildSessionsTable() {
 		full = append(full, b.searchRow())
 	}
 	q := m.searchQuery(paneSessions)
+	folded := m.foldedFigures()
 	for _, s := range m.sessions {
-		if !m.sessionListed(s, scope) {
+		if !m.sessionListed(s, scope) || foldedInto(s) != "" {
 			continue
 		}
 		b := newRowBuilder(q != "")
@@ -331,6 +332,10 @@ func (m *model) rebuildSessionsTable() {
 		// traffic. The cached-only rows below use len(cached) because the server does not list
 		// those at all.
 		b.cell(padLeft(fmt.Sprintf("%d", s.EventCount), eventsW))
+		// The buckets folded into this session are its calls; their figures are its too.
+		if f, ok := folded[s.ID]; ok {
+			s.CostMicros, s.AvoidedMicros, s.TotalTokens = s.CostMicros+f.cost, s.AvoidedMicros+f.avoided, s.TotalTokens+f.tokens
+		}
 		b.cell(padLeft(sessionTokens(s.TotalTokens, m.events[s.ID]), tokensW))
 		cost := func() string { return sessionMoneyCellIn(s.CostMicros, s.Saturated, noLimit, s.Currencies) }
 		saved := func() string { return sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, noLimit, s.Currencies) }
@@ -353,12 +358,10 @@ func (m *model) rebuildSessionsTable() {
 	// restart, so without this the picker is empty and the retained history is
 	// unreachable. One with an archive lists everything it holds, and these rows
 	// are then mostly absent.
-	adopted := m.adoptedSessionIDs()
 	for _, id := range m.cachedOnlySessionIDs() {
-		// A scope lists only sessions the server names an agent for, and an adopted pending bucket
-		// lives on under the session that adopted it. Other is the exception: a session the server
-		// no longer lists names no agent, which is that row's definition.
-		if (scope != "" && scope != otherAgents) || adopted[id] {
+		// A scope lists only sessions the server names an agent for. Other is the exception: a
+		// session the server no longer lists names no agent, which is that row's definition.
+		if scope != "" && scope != otherAgents {
 			continue
 		}
 		cached := m.events[id]
@@ -476,7 +479,7 @@ func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
 	case otherAgents:
 		return inOtherAgents(s)
 	}
-	return s.Agent == scope
+	return sessionAgent(s) == scope
 }
 
 // sessionsListTwoAgents reports whether the listed sessions name two or more agents, which is when
@@ -484,30 +487,17 @@ func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
 func (m *model) sessionsListTwoAgents(scope string) bool {
 	var first string
 	for _, s := range m.sessions {
-		if s.Agent == "" || !m.sessionListed(s, scope) {
+		agent := sessionAgent(s)
+		if agent == "" || !m.sessionListed(s, scope) {
 			continue
 		}
 		if first == "" {
-			first = s.Agent
-		} else if s.Agent != first {
+			first = agent
+		} else if agent != first {
 			return true
 		}
 	}
 	return false
-}
-
-// adoptedSessionIDs is the set of pending buckets a listed session says it adopted.
-func (m *model) adoptedSessionIDs() map[string]bool {
-	var out map[string]bool
-	for _, s := range m.sessions {
-		for _, id := range s.Adopted {
-			if out == nil {
-				out = make(map[string]bool)
-			}
-			out[id] = true
-		}
-	}
-	return out
 }
 
 // sessionTitle names a session from the harvested metadata, or "" when nothing names it.

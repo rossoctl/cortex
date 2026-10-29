@@ -48,10 +48,10 @@ func TestReverseProxyRecordsMethodAndPath(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	// The response row lands when ReverseProxy finishes relaying the body, which can be
+	// after the client has its response: wait for it rather than race it.
+	waitForResponseEvent(t, store)
 	v := store.View(session.DefaultSessionID)
-	if v == nil || len(v.Events) == 0 {
-		t.Fatalf("no events recorded")
-	}
 
 	// Both the request and the response event must carry the pair; a response
 	// event that lost them would leave half the timeline row blank.

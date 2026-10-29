@@ -38,7 +38,7 @@ func (m *model) needsFullEvent(e *pipeline.SessionEvent) bool {
 	if e.Inference == nil && e.A2A == nil && e.MCP == nil {
 		return false
 	}
-	return !m.fullFetched[m.selectedSess][e.Seq]
+	return !m.fullFetched[eventSession(m.selectedSess, e)][e.Seq]
 }
 
 // markFullFetched records that this event's bodies have been retrieved.
@@ -87,7 +87,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	if m.pane != paneDetail || m.detailEvent == nil {
 		return
 	}
-	if m.selectedSess != msg.sessionID || m.detailEvent.Seq != msg.seq {
+	if eventSession(m.selectedSess, m.detailEvent) != msg.sessionID || m.detailEvent.Seq != msg.seq {
 		return
 	}
 	if msg.err != nil {
@@ -106,7 +106,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	// Matched on Seq rather than position: the slice is rebuilt from the stream and
 	// snapshots, so an index taken when the fetch was issued may not be the same row
 	// by the time it lands.
-	m.replaceHeldEvent(msg.sessionID, msg.event)
+	m.replaceHeldEvent(m.selectedSess, msg.event)
 	m.markFullFetched(msg.sessionID, msg.seq)
 
 	// AND THE SESSIONS ROW, because replaceHeldEvent rebased the CTX(1M) gauge and that
@@ -136,7 +136,9 @@ func (m *model) replaceHeldEvent(sessionID string, full *pipeline.SessionEvent) 
 	}
 	held := m.events[sessionID]
 	for i := range held {
-		if held[i].Seq == full.Seq {
+		// The session too: a session's timeline holds its linked buckets' events, whose Seqs
+		// count from 1 in their own bucket.
+		if held[i].Seq == full.Seq && eventSession(sessionID, &held[i]) == eventSession(sessionID, full) {
 			held[i] = *full
 			// AND THE GAUGE IS RE-FOLDED, because this write changes the slice's CONTENT at
 			// the same length and sessionContextFor's length check cannot see that.

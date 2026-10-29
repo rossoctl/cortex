@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/httpx"
@@ -156,8 +157,7 @@ type Server struct {
 
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
-	// nearest ancestor's — before client affinity is consulted; see
-	// session.Store.SessionForProcess. Set only where every client is a process on this
+	// nearest ancestor's — before client affinity is consulted; see core/attribution. Set only where every client is a process on this
 	// host (session.process_attribution) and only from a resolver whose self-test passed
 	// (peerproc.New). The http.Server must carry ConnContext. nil keeps today's
 	// resolution byte for byte.
@@ -178,6 +178,10 @@ type Server struct {
 	// chainOverrideLogged holds the session header names hydrateSession has
 	// reported naming a session other than the process chain's.
 	chainOverrideLogged sync.Map
+
+	// attr is the Server's attribution, built once by attributor.
+	attributorOnce sync.Once
+	attr           *attribution.Attributor
 
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
@@ -400,6 +404,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	if isBridge {
 		s.bridgedRequests.Add(1)
 	}
+	// Before anything reads the headers: a client must not assert its own attribution, and
+	// no hop in front of this listener is trusted to (attribution.Strip).
+	attribution.Strip(r.Header)
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -462,7 +469,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 	// The client's process, looked up once per connection; nil when process attribution
 	// is off or the lookup failed, and then resolution is exactly as without it.
-	var chain []session.Proc
+	var chain []attribution.Proc
 	if !skipped {
 		chain = s.clientChain(r)
 	}
@@ -599,7 +606,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// streaming inference response away from its request's session.
 		pctx.OutboundSessionID = sid
 		if chain != nil {
-			defer s.Sessions.TouchProcess(sid, chain)
+			defer s.touch(sid, chain)
 		}
 		// Record EVERY message that reaches the pipeline — even when no
 		// plugin acted and no parser matched (Invocations/MCP/Inference all
@@ -1135,10 +1142,10 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	}
 	pctx.Host = r.URL.Host
 	chain := s.clientChain(r)
-	sid := s.recordingSessionID("", r.Header, chain)
+	sid := s.attributeForRecording(pctx, r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
@@ -1172,7 +1179,7 @@ const declinedUpgradeBody = `{"detail":"WebSocket transport is not available thr
 // attempt; the request row keeps its upgradeStripped marker, since the Upgrade was not
 // forwarded. error.kind "upgrade_declined" says the 426 is ours, as misdirected_request
 // does for the 421.
-func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
+func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []attribution.Proc) {
 	slog.Debug("forward-proxy: declined a WebSocket upgrade on a Responses path; the client falls back to HTTPS",
 		"host", r.Host, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
@@ -1187,7 +1194,7 @@ func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Reques
 	}
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, http.StatusUpgradeRequired, &pipeline.EventError{
@@ -1276,7 +1283,7 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 // Safe to call with s.Sessions == nil: ActiveSession() is skipped and the default
 // bucket is returned, so a future caller that forgets the nil check on Sessions
 // gets a usable answer rather than a panic.
-func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
 	if sid := s.resolvePluginSessionID(clientHeaders, chain); sid != "" {
 		return sid
 	}
@@ -1288,11 +1295,26 @@ func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []ses
 // local so no plugin can rewrite it; "" means hydration found no identity (or ran
 // on a path that has none), and recording — unlike a plugin — must still file the
 // event somewhere, so the full order including the default bucket applies.
-func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
 	if resolved != "" {
 		return resolved
 	}
 	return s.resolveOutboundSessionID(clientHeaders, chain)
+}
+
+// attributeForRecording resolves a request that never reached hydration — refused before the
+// pipeline, or unreadable — pins its attribution on pctx so its rows carry the process, and
+// returns the bucket they go in: the attribution's, else ActiveSession(), else default.
+func (s *Server) attributeForRecording(pctx *pipeline.Context, clientHeaders http.Header, chain []attribution.Proc) string {
+	at := s.attribute(clientHeaders, chain)
+	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	if sid := at.RecordID(); sid != "" {
+		return sid
+	}
+	if sid := s.Sessions.ActiveSession(); sid != "" {
+		return sid
+	}
+	return session.DefaultSessionID
 }
 
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
@@ -1454,6 +1476,9 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 		Client:          pctx.ClientInfo(),
 		Subagent:        pctx.Subagent(),
 		ParentSubagent:  pctx.ParentSubagent(),
+		Proc:            pctx.AttributedProc(),
+		ClientProc:      pctx.AttributedClientProc(),
+		SessionHeader:   pctx.NamingHeader(),
 	}
 	s.appendOutbound(tl, sid, ev)
 }
@@ -1470,14 +1495,14 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 // hydration, which runs after the body is read. Resolution reads only the
 // client's headers and process, never the body, so the answer is the one the
 // request would have got.
-func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, r *http.Request, chain []session.Proc, err error) {
+func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, r *http.Request, chain []attribution.Proc, err error) {
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.recordingSessionID("", r.Header, chain)
+	sid := s.attributeForRecording(pctx, r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	status, fail := bodyread.Failure(r, maxRequestBodySize, err)
 	s.recordOutboundRequestEvent(tl, pctx, sid)
@@ -1501,7 +1526,7 @@ func (s *Server) appendOutbound(tl *tunnelLog, sid string, ev pipeline.SessionEv
 // Those rows keep ActiveSession() at recording time, as without affinity.
 // With the client's process known, an empty answer means a process of no agent, and the
 // row goes to default like that process's requests.
-func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
 	if s.ClientAffinity && resolved == "" && chain == nil && s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
 			return sid
@@ -1550,10 +1575,9 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // in #984, which is where to argue with it.
 //
 // With the client's process known (chain non-nil), a header claims the session for that
-// process as well as for its agent, and a request with no header asks
-// session.Store.SessionForProcess first; client affinity and ActiveSession() answer only
-// what it leaves open.
-func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []session.Proc) string {
+// process as well as for its agent, and a request with no header is filed by process first;
+// client affinity and ActiveSession() answer only what it leaves open. See core/attribution.
+func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
 	sid, _ := s.resolvePluginSession(clientHeaders, chain)
 	return sid
 }
@@ -1567,15 +1591,17 @@ type pluginSession struct {
 // hydrateSession resolves the plugin session for a request and, when there is one,
 // sets pctx.Session and how it was resolved. It returns the id for the caller's
 // local, which recording reads instead of pctx.
-func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Header, chain []session.Proc) string {
-	sid, how := s.resolvePluginSession(clientHeaders, chain)
+func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Header, chain []attribution.Proc) string {
+	at := s.attribute(clientHeaders, chain)
+	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	sid, how := s.pluginSessionOf(at)
 	if sid != "" {
 		pctx.Session = s.sessionViewFor(sid)
 		pctx.SessionSource = how.source
 		pctx.SessionHeader = how.header
 	}
 	if chain != nil && s.processesOn() {
-		pctx.ChainSession = s.Sessions.ChainSession(chain)
+		pctx.ChainSession = at.ChainSession
 		if pctx.ChainSession != "" && sid != pctx.ChainSession && how.source == pipeline.SessionSourceHeader {
 			if _, seen := s.chainOverrideLogged.LoadOrStore(how.header, struct{}{}); !seen {
 				slog.Info("forwardproxy: a process named a session other than its parent agent's; "+
@@ -1588,49 +1614,17 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Heade
 
 // resolvePluginSession is resolvePluginSessionID that also says how the id was
 // resolved.
-func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session.Proc) (string, pluginSession) {
-	affinity := s.affinityOn()
-	procs := chain != nil && s.processesOn()
-	agent := affinityClient(clientHeaders)
-	if sid, header := session.IDHeaderFrom(clientHeaders, s.SessionIDHeaders); sid != "" {
-		// The process's claim first: it adopts the process's own pending bucket, which is
-		// certainly its calls, before the agent-wide guess can take the session.
-		if procs {
-			s.Sessions.ClaimProcess(sid, agent, chain)
-		}
-		if affinity {
-			s.Sessions.Claim(sid, agent)
-		}
-		return sid, pluginSession{source: pipeline.SessionSourceHeader, header: header}
+func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []attribution.Proc) (string, pluginSession) {
+	return s.pluginSessionOf(s.attribute(clientHeaders, chain))
+}
+
+// pluginSessionOf is an attribution as plugins hear it: its plugin id, else — for no
+// identity at all — the store's ActiveSession(), the in-cluster answer.
+func (s *Server) pluginSessionOf(at attribution.Attribution) (string, pluginSession) {
+	if sid := at.PluginID(); sid != "" {
+		return sid, pluginSession{source: at.Source, header: at.Header}
 	}
-	if procs {
-		// The default bucket is SessionForProcess's answer for a process of no agent while
-		// an agent is active, and plugins hear it as "", as they do affinity's below.
-		switch sid := s.Sessions.SessionForProcess(chain, agent); {
-		case sid == "":
-		case sid == session.DefaultSessionID:
-			return "", pluginSession{}
-		case strings.HasPrefix(sid, session.PendingPrefix):
-			return sid, pluginSession{source: pipeline.SessionSourcePending}
-		default:
-			return sid, pluginSession{source: pipeline.SessionSourceProcess}
-		}
-	}
-	if affinity {
-		// See session.Store.SessionForClient for the order. The default bucket is its
-		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
-		// function exists to give them — while recording files it under default.
-		switch sid := s.Sessions.SessionForClient(agent); {
-		case sid == "":
-		case sid == session.DefaultSessionID:
-			return "", pluginSession{}
-		case strings.HasPrefix(sid, session.PendingPrefix):
-			return sid, pluginSession{source: pipeline.SessionSourcePending}
-		default:
-			return sid, pluginSession{source: pipeline.SessionSourceAffinity}
-		}
-	}
-	if s.Sessions != nil {
+	if at.Session == "" && at.Source != pipeline.SessionSourcePending && s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
 			return sid, pluginSession{source: pipeline.SessionSourceActive}
 		}
@@ -1638,23 +1632,47 @@ func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session
 	return "", pluginSession{}
 }
 
-// affinityOn reports whether header-less requests are filed by coding agent. It needs
-// header bucketing: a client's session is the one its header named, so with id_headers
-// empty no session is ever any client's and every known agent would collect in its
-// pending bucket forever.
-func (s *Server) affinityOn() bool {
-	return s.ClientAffinity && s.Sessions != nil && len(s.SessionIDHeaders) > 0
+// attribute is the attributor's answer for a request, or what an attributor with nothing
+// configured gives — no session — when there is none (sessions off, or a test Server built
+// without one).
+func (s *Server) attribute(clientHeaders http.Header, chain []attribution.Proc) attribution.Attribution {
+	a := s.attributor()
+	if a == nil {
+		return attribution.Attribution{Agent: attribution.AgentOf(clientHeaders)}
+	}
+	if !s.processesOn() {
+		chain = nil
+	}
+	return a.Resolve(clientHeaders, chain)
 }
 
-// affinityClient names the coding agent behind a request for session attribution. Read
-// from the headers as RECEIVED, like the session header beside it, so it is the same
-// User-Agent pctx.ResolveClient pins. Nil headers — the transparent path — name nobody.
-func affinityClient(clientHeaders http.Header) string {
-	if clientHeaders == nil {
-		return ""
+// attributor is the Server's Attributor, built on first use from SessionIDHeaders and
+// ClientAffinity — fields the caller sets after NewServer — and registered with the store,
+// which tells it which sessions exist. nil without a store.
+func (s *Server) attributor() *attribution.Attributor {
+	if s.Sessions == nil {
+		return nil
 	}
-	return pipeline.ParseUserAgent(clientHeaders.Get("User-Agent")).AffinityName()
+	s.attributorOnce.Do(func() {
+		s.attr = attribution.New(attribution.Config{
+			SessionIDHeaders: s.SessionIDHeaders,
+			ClientAffinity:   s.ClientAffinity,
+		})
+		s.Sessions.AddRecorder(s.attr)
+	})
+	return s.attr
 }
+
+// touch is attribution's Touch, a no-op without process attribution.
+func (s *Server) touch(sid string, chain []attribution.Proc) {
+	if a := s.attributor(); a != nil && chain != nil {
+		a.Touch(sid, chain)
+	}
+}
+
+// affinityClient names the coding agent behind a request for session attribution; see
+// attribution.AgentOf.
+func affinityClient(clientHeaders http.Header) string { return attribution.AgentOf(clientHeaders) }
 
 // sessionViewFor returns the recorded view for sid, or an empty view carrying
 // just the id when nothing has been recorded under it yet.
@@ -1746,6 +1764,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
+		Proc:           pctx.AttributedProc(),
 	}
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
@@ -2176,6 +2195,7 @@ const connectDialTimeout = 10 * time.Second
 // GitHub API, etc.) where the agent's existing TLS is the right answer.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.noteTunnel()
+	attribution.Strip(r.Header)
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method, // always "CONNECT" here, but populated for parity with handleRequest
@@ -2212,7 +2232,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sessionID string
-	var chain []session.Proc
+	var chain []attribution.Proc
 	// One pipeline from Run to RunFinish, for serveOutbound's reason: a tunnel can stay
 	// open across any number of reloads.
 	p := s.OutboundPipeline.Load()

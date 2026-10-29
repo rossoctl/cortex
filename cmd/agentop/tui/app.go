@@ -263,7 +263,7 @@ type sessionsLoadedMsg []session.SessionSummary
 
 type pipelineLoadedMsg *apiclient.PipelineView
 type snapshotLoadedMsg struct {
-	// olderNotFetched is how many events precede the ones in this response, from the
+	// olderNotFetched is how many events precede the session's own in this response, from the
 	// server's own count of the session. Non-zero means the timeline starts where the
 	// window starts, not where the session does — a distinction the operator cannot
 	// otherwise make, and the one that made a 5000-event session look like a 3-row one.
@@ -1282,6 +1282,7 @@ func streamPump(ch <-chan apiclient.StreamEvent) tea.Cmd {
 func (m *model) snapshotCmd(id string) tea.Cmd {
 	// Read here, on the Update goroutine, not in the closure: the closure runs on its own.
 	gen := m.eraseGen
+	windows := m.linkedInto(id)
 	return func() tea.Msg {
 		view, err := m.client.GetSession(m.ctx, id)
 		if err != nil {
@@ -1291,6 +1292,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 		if view.TotalEvents > len(view.Events) {
 			older = view.TotalEvents - len(view.Events)
 		}
+		view.Events = mergeLinked(view.Events, inWindow(fetchLinked(m.ctx, m.client, id, windows), view))
 		return snapshotLoadedMsg{
 			id: id, events: view.Events, olderNotFetched: older, serverOldest: view.OldestSeq,
 			projected: view.View == apiclient.SummaryView, gen: gen,

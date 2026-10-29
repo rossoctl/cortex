@@ -64,8 +64,8 @@ type Clearer interface {
 	Cleared()
 }
 
-// Clear removes every session, with every map that names one — owners, adoptions, process
-// claims and the active session — tells every Clearer, and reports how many sessions it removed.
+// Clear removes every session and the active-session mark,
+// tells every Clearer, and reports how many sessions it removed.
 // The next append to any id starts a new session, numbered from 1 once the archive has reset.
 //
 // Subscribers stay attached: a clear erases history, it does not end the stream.
@@ -76,8 +76,6 @@ func (s *Store) Clear() int {
 	s.sessions = make(map[string]*entry)
 	s.activeID = ""
 	// nil, as a store nothing has claimed from holds them; every writer allocates on first use.
-	s.owners, s.adopted = nil, nil
-	s.procs, s.lastProcClaim = nil, time.Time{}
 	for _, r := range s.recorders {
 		if c, ok := r.(Clearer); ok {
 			c.Cleared()
@@ -181,7 +179,11 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	// then gives what folding both in order would, because the entry's title is itself the first
 	// at its best rank, or its latest /rename.
 	_, sum.Title = applyTitle(f.titleRank, f.title, sess.titleRank, sess.Title)
-	sum.Agent = s.agentOfLocked(id, sess, f.agents)
+	owner := sess.owner
+	if f.owner != "" {
+		owner = f.owner
+	}
+	sum.Agent = pickAgent(id, owner, f.agents, sess.agents)
 	if !p.CreatedAt.IsZero() && p.CreatedAt.Before(sum.CreatedAt) {
 		sum.CreatedAt = p.CreatedAt
 	}
@@ -190,5 +192,14 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	// none the row says so, since a request the entry holds is what a router's pin is made by.
 	if sum.InferenceHost == "" && f.inferenceHost != "" {
 		sum.InferenceHost, sum.InferenceHostFromHistory = f.inferenceHost, true
+	}
+	// The processes that named the session before this entry still named it, so a resumed
+	// session links calls a process made before the restart.
+	if len(f.procs) > 0 {
+		sum.procSpans = mergeProcs(f.procs, sum.procSpans)
+		sum.Procs = procsList(sum.procSpans)
+	}
+	if f.lastRequestAt.After(sum.LastRequestAt) {
+		sum.LastRequestAt = f.lastRequestAt
 	}
 }

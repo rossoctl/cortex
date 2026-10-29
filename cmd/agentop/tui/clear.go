@@ -124,7 +124,9 @@ func (m *model) clearConfirmKey(msg tea.KeyMsg) tea.Cmd {
 				return clearDoneMsg{res: res, err: err}
 			}
 		}
-		ids, name, agent := cc.ids, `session "`+cc.name+`"`, cc.target == eraseAgent
+		// The buckets folded into these sessions go with them: the operator saw those calls
+		// inside the session, and they would otherwise come back as rows of their own.
+		ids, name, agent := m.withFolded(cc.ids), `session "`+cc.name+`"`, cc.target == eraseAgent
 		if agent {
 			name = "of " + sanitizeLabel(cc.agent) + "'s sessions"
 		}

@@ -11,14 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/peerproc"
-	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
-
-// maxChain is how many processes a client's chain holds — the client and its parents —
-// enough to reach the agent from a tool its shell ran.
-const maxChain = 16
 
 // maxHints is how many processes known to have named a session a lookup looks at first.
 // On Linux each costs a scan of that process's open files.
@@ -32,7 +28,7 @@ type connProcKey struct{}
 // CONNECT decrypts.
 type connProc struct {
 	once  sync.Once
-	chain []session.Proc
+	chain []attribution.Proc
 
 	// mu guards listeners: which process listens behind each loopback destination this
 	// connection's requests went to, for selfTraffic.
@@ -77,7 +73,7 @@ func (s *Server) processesOn() bool {
 // clientChain is the process chain behind r's connection — the client first, then its
 // parents — or nil when process attribution is off or the client could not be named, and
 // then resolution is exactly as without it.
-func (s *Server) clientChain(r *http.Request) []session.Proc {
+func (s *Server) clientChain(r *http.Request) []attribution.Proc {
 	if !s.processesOn() {
 		return nil
 	}
@@ -111,7 +107,7 @@ func (s *Server) bridgeProgram(r *http.Request) (tlsbridge.Program, bool) {
 	}
 	p := tlsbridge.Program{Exe: cp.chain[0].Exe, PID: cp.chain[0].PID, Start: cp.chain[0].Start}
 	for _, proc := range cp.chain {
-		if s.Sessions.IsAgentProcess(proc) {
+		if s.attributor().IsAgentProcess(proc) {
 			p.Agent = proc.Exe
 			break
 		}
@@ -119,7 +115,7 @@ func (s *Server) bridgeProgram(r *http.Request) (tlsbridge.Program, bool) {
 	return p, true
 }
 
-func (s *Server) lookupChain(r *http.Request) []session.Proc {
+func (s *Server) lookupChain(r *http.Request) []attribution.Proc {
 	client, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		return nil
@@ -132,19 +128,11 @@ func (s *Server) lookupChain(r *http.Request) []session.Proc {
 	if err != nil {
 		return nil
 	}
-	owner, err := s.Processes.ConnOwner(client, server, s.Sessions.ProcessHints(maxHints)...)
+	chain, err := s.attributor().Lookup(s.Processes, client, server)
 	if err != nil {
 		slog.Debug("forward-proxy: client process not found, filing as without process attribution",
 			"client", r.RemoteAddr, "error", err)
 		return nil
-	}
-	procs, err := s.Processes.Ancestry(owner.PID, maxChain)
-	if err != nil || len(procs) == 0 {
-		procs = []peerproc.Proc{owner}
-	}
-	chain := make([]session.Proc, len(procs))
-	for i, p := range procs {
-		chain[i] = session.Proc{PID: p.PID, Start: p.Start.UnixNano(), Exe: p.Exe}
 	}
 	return chain
 }
@@ -155,7 +143,7 @@ func (s *Server) lookupChain(r *http.Request) []session.Proc {
 // background service is the case it exists for: about 1.3 requests a second of the agent's
 // own UI, sent nowhere. Comparing executables alone would hide a node-based agent's calls to
 // any local node server, which is why the listener must be an agent's.
-func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
+func (s *Server) selfTraffic(r *http.Request, chain []attribution.Proc) bool {
 	if len(chain) == 0 || chain[0].Exe == "" {
 		return false
 	}
@@ -195,11 +183,11 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 // child. The agent's User-Agent is required because a test suite starting a server of its
 // own interpreter is the same shape, and that is the agent's work; a child cannot start
 // before its parent, so a listener that does is another process's, under a reused pid.
-func (s *Server) agentsOwnService(r *http.Request, client session.Proc, l peerproc.Proc) bool {
+func (s *Server) agentsOwnService(r *http.Request, client attribution.Proc, l peerproc.Proc) bool {
 	if l.PPID == client.PID && l.Start.UnixNano() >= client.Start && affinityClient(r.Header) != "" {
 		return true
 	}
-	return s.Sessions.IsAgentProcess(session.Proc{PID: l.PID, Start: l.Start.UnixNano()})
+	return s.attributor().IsAgentProcess(attribution.Proc{PID: l.PID, Start: l.Start.UnixNano()})
 }
 
 // listenerBehind is which process listens at dest, asked of the kernel at most once per
@@ -213,7 +201,7 @@ func (s *Server) listenerBehind(cp *connProc, dest netip.AddrPort) (peerproc.Pro
 	if ok && now.Sub(seen.at) < listenerTTL {
 		return seen.proc, seen.found
 	}
-	p, err := s.Processes.ListenerOwner(dest, s.Sessions.ProcessHints(maxHints)...)
+	p, err := s.Processes.ListenerOwner(dest, s.attributor().ProcessHints(maxHints)...)
 	seen = listenerSeen{proc: p, found: err == nil, at: now}
 	cp.mu.Lock()
 	if cp.listeners == nil {

@@ -61,32 +61,3 @@ func TestAppendPair_NothingLandsBetweenThePair(t *testing.T) {
 		t.Errorf("%d first-of-pair events, want %d", opens, n)
 	}
 }
-
-// The returned bucket is the one both events went into, so a later trailing event —
-// a tunnel's close — lands beside them, and an adopted pending id is followed exactly
-// as Append follows it.
-func TestAppendPair_ReturnsTheBucketBothWentInto(t *testing.T) {
-	s := New(0, 0, 0)
-	defer s.Close()
-	pending := PendingSessionID("claude-code")
-	s.Append(pending, pairEvent("probe", false))
-	s.Claim("sess-1", "claude-code") // adopts the pending bucket into sess-1
-
-	b := s.AppendPair(pending, pairEvent("p", true), pairEvent("p", false))
-	if !s.AppendTrailing(b, trailingEvent()) {
-		t.Fatal("AppendTrailing refused the bucket AppendPair returned")
-	}
-	v := s.View("sess-1")
-	if v == nil || len(v.Events) != 4 {
-		t.Fatalf("sess-1 = %+v, want the adopted probe, the pair and the trailing event", v)
-	}
-	if !v.Events[1].Tunnel || v.Events[2].Tunnel {
-		t.Errorf("events 1 and 2 are not the pair in order: %+v", v.Events[1:3])
-	}
-	if s.View(pending) != nil {
-		t.Error("AppendPair re-created the adopted pending bucket")
-	}
-	if got := s.ActiveSession(); got != "sess-1" {
-		t.Errorf("ActiveSession() = %q, want sess-1: a pair is that session speaking", got)
-	}
-}

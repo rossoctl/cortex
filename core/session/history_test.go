@@ -108,26 +108,3 @@ func TestRekey_RefusesATargetWithArchivedHistory(t *testing.T) {
 		t.Fatalf("ctx-1 first seq = %d, want 8", got[0])
 	}
 }
-
-// The ordinary case after a restart: Claude Code resumes an archived session and its pending
-// bucket is not adopted into it. The bucket stays its own row, as it does when the target is
-// resident.
-func TestClaim_LeavesThePendingBucketWhenTheTargetIsArchived(t *testing.T) {
-	s := New(0, 0, 0)
-	defer s.Close()
-	a := newFakeArchive()
-	a.last["task-1"] = 3
-	s.AddRecorder(a)
-	r := &rekeyRecorder{}
-	s.AddRecorder(r)
-
-	s.Append("pending:bob-shell", ev())
-	s.Claim("task-1", "bob-shell")
-
-	if s.View("pending:bob-shell") == nil {
-		t.Fatal("pending bucket was adopted into an archived session")
-	}
-	if len(r.rekeyed) != 0 {
-		t.Fatalf("Rekeyed calls = %v, want none for a refused adoption", r.rekeyed)
-	}
-}
