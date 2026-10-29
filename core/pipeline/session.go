@@ -249,8 +249,10 @@ type SessionEvent struct {
 	// — "asked for example.com, dialed 203.0.113.7" — and moca's egress
 	// conformance reads this field (its dial_addr) off the tunnel open row.
 	//
-	// Absent when the guard is off, and on events that dialed nothing. Set
-	// only by the listener, never by a plugin.
+	// Present only on a tunnel's open row: a plain or bridged request dials
+	// through the guarded transport too, but nothing threads the checked
+	// address back to its pctx, so its rows carry Host alone. Absent when the
+	// guard is off. Set only by the listener, never by a plugin.
 	DialAddr string
 
 	// UpgradeStripped names the protocol a client asked to switch to on a request

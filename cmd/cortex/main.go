@@ -816,8 +816,10 @@ func main() {
 			fatalf("listener.egress_guard: %v", gerr)
 		}
 		egress = g
-		slog.Info("egress guard on: refusing loopback, link-local, private and host-local destinations",
-			"permit_cidrs", cfg.Listener.EgressGuard.PermitCIDRs)
+		// The "on" announcement is logged down in the forward-role block, not
+		// here: the guard is only ever enforced through the forward proxy, and
+		// a reverse-only deployment must not boot announcing an enforcement no
+		// listener applies.
 	}
 
 	// TLS bridge: when enabled, the forward proxy terminates agent outbound
@@ -998,6 +1000,10 @@ func main() {
 		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS, forwardproxy.WithEgressGuard(egress))
 		if ferr != nil {
 			fatalf("creating forward proxy: %v", ferr)
+		}
+		if egress != nil {
+			slog.Info("egress guard on: refusing loopback, link-local, private and host-local destinations",
+				"permit_cidrs", cfg.Listener.EgressGuard.PermitCIDRs)
 		}
 		// SkipHosts: outbound destinations that bypass the pipeline AND
 		// session recording entirely. See ListenerConfig.SkipHosts for the
