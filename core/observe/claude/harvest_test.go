@@ -2854,6 +2854,74 @@ func TestTitleFromTranscript_CwdIsBounded(t *testing.T) {
 	}
 }
 
+// SaveMetadata fsyncs the data to disk before Rename swaps it in, so a crash leaves either
+// the old file or the new one.
+func TestSaveMetadata_FsyncsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-metadata.json")
+	const keep = `{"old":{"title":"keep me"}}`
+	if err := os.WriteFile(path, []byte(keep), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var atPath, atTmp []byte
+	was := syncFile
+	syncFile = func(f *os.File) error {
+		atPath, _ = os.ReadFile(path)
+		atTmp, _ = os.ReadFile(f.Name())
+		return f.Sync()
+	}
+	t.Cleanup(func() { syncFile = was })
+
+	if err := SaveMetadata(path, map[string]SessionMetadata{"a": {Title: "t"}}); err != nil {
+		t.Fatal(err)
+	}
+	if string(atPath) != keep {
+		t.Fatalf("at Sync time, path = %q; want the pre-Rename %q", atPath, keep)
+	}
+	var got map[string]SessionMetadata
+	if err := json.Unmarshal(atTmp, &got); err != nil {
+		t.Fatalf("temp at Sync time is invalid: %v (%q)", err, atTmp)
+	}
+	if len(got) != 1 || got["a"].Title != "t" {
+		t.Fatalf("temp at Sync time = %#v; want the new metadata", got)
+	}
+}
+
+// A Sync failure returns an error and leaves the old file in place.
+func TestSaveMetadata_AFailedSyncKeepsTheOldFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-metadata.json")
+	const keep = `{"old":{"title":"keep me"}}`
+	if err := os.WriteFile(path, []byte(keep), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	was := syncFile
+	syncFile = func(*os.File) error { return errors.New("power lost") }
+	t.Cleanup(func() { syncFile = was })
+
+	if err := SaveMetadata(path, map[string]SessionMetadata{"new": {Title: "t"}}); err == nil {
+		t.Fatal("SaveMetadata returned nil after Sync failed")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != keep {
+		t.Errorf("file = %q, want the original %q", b, keep)
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file %s was left behind", e.Name())
+		}
+	}
+}
+
 // A short write must not be renamed over the good file. This is the seam writeAll exists for:
 // the failure is a write error that Close and Rename both survive, which no real filesystem
 // produces, and the bug it guards — `err :=` shadowing inside SaveMetadata — is invisible to

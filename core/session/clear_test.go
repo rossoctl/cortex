@@ -22,20 +22,17 @@ func (c *clearSpy) Cleared() {
 	c.heldAtClear = len(c.s.sessions) // s.mu is held: Cleared runs inside Clear's critical section
 }
 
-// Clear removes every session, and every map that names one: an owner, an adoption or a
-// process claim left behind would route the next request into a session that no longer exists,
-// or re-create it under an id the user just erased.
-func TestClear_RemovesEverySessionAndItsBookkeeping(t *testing.T) {
+// Clear removes every session and the active-session mark: a mark left behind would file the
+// next header-less request under a session the user just erased.
+func TestClear_RemovesEverySession(t *testing.T) {
 	s, clk := newProcStore()
 	defer s.Close()
 	s.Append("pending:bob-shell", ev())
-	s.Claim("task-1", "bob-shell") // an owner, and an adoption of the pending bucket
-	s.ClaimProcess("s1", "claude-code", pchain(100, 50))
 	recordIn(s, clk, "s1")
 	recordIn(s, clk, "s2")
 
 	if n := s.Clear(); n != 3 {
-		t.Fatalf("Clear() = %d, want 3 (task-1, s1, s2)", n)
+		t.Fatalf("Clear() = %d, want 3 (the bucket, s1, s2)", n)
 	}
 	if l := s.ListSessions(); len(l) != 0 {
 		t.Fatalf("ListSessions after Clear = %d rows", len(l))
@@ -44,16 +41,6 @@ func TestClear_RemovesEverySessionAndItsBookkeeping(t *testing.T) {
 	// Rekey read the field itself.
 	if s.activeID != "" {
 		t.Fatalf("activeID after Clear = %q", s.activeID)
-	}
-	if s.owners != nil || s.adopted != nil || s.procs != nil || !s.lastProcClaim.IsZero() {
-		t.Fatalf("bookkeeping survived: owners=%v adopted=%v procs=%d lastProcClaim=%v",
-			s.owners, s.adopted, len(s.procs), s.lastProcClaim)
-	}
-	// The adoption is gone, so a straggler under the pending id is its own bucket again rather
-	// than re-creating task-1.
-	s.Append("pending:bob-shell", ev())
-	if s.View("task-1") != nil || s.View("pending:bob-shell") == nil {
-		t.Fatal("a straggler followed an adoption Clear should have forgotten")
 	}
 }
 

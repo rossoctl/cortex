@@ -365,8 +365,8 @@ back.
   `pending:opencode@<pid>.<start>`, once one of them has identified the process as
   OpenCode by its User-Agent. The bucket is named for the topmost OpenCode process in
   the service's chain of parents, usually the service itself. The first session the
-  service names adopts the bucket, unless that session already holds events. In that
-  case the bucket stays a row of its own.
+  service names is linked to the bucket when the list is read, and agentop shows the
+  bucket's calls inside that session; the bucket itself is never renamed.
 - **Changing the service environment restarts the service.** When `enable` or `disable`
   changes it and the service is running, they restart it once, which interrupts every
   OpenCode session using it; an open OpenCode reconnects to it. Both say so first, and

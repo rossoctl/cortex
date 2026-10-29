@@ -1,6 +1,7 @@
 package forwardproxy
 
 import (
+	"github.com/rossoctl/cortex/core/attribution"
 	"net/http"
 	"testing"
 	"time"
@@ -67,17 +68,17 @@ func TestSessionSourceProcessChain(t *testing.T) {
 		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
 		Processes:        newFakeProcs(),
 	}
-	agent := session.Proc{PID: 100, Start: 1}
-	tool := session.Proc{PID: 200, Start: 2}
+	agent := attribution.Proc{PID: 100, Start: 1}
+	tool := attribution.Proc{PID: 200, Start: 2}
 
 	h := http.Header{"User-Agent": {procClaudeUA}}
 	h.Set(session.ClaudeCodeSessionHeader, "claude-1")
 	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
-	if sid, how := s.resolvePluginSession(h, []session.Proc{agent}); sid != "claude-1" || how.source != pipeline.SessionSourceHeader {
+	if sid, how := s.resolvePluginSession(h, []attribution.Proc{agent}); sid != "claude-1" || how.source != pipeline.SessionSourceHeader {
 		t.Fatalf("agent: %q via %q, want claude-1 via header", sid, how.source)
 	}
 	pctx := &pipeline.Context{}
-	if sid := s.hydrateSession(pctx, http.Header{}, []session.Proc{tool, agent}); sid != "claude-1" {
+	if sid := s.hydrateSession(pctx, http.Header{}, []attribution.Proc{tool, agent}); sid != "claude-1" {
 		t.Fatalf("tool: session %q, want claude-1", sid)
 	}
 	if pctx.SessionSource != pipeline.SessionSourceProcess || pctx.SessionHeader != "" {
@@ -96,9 +97,9 @@ func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
 		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
 		Processes:        newFakeProcs(),
 	}
-	agent := session.Proc{PID: 100, Start: 1}
-	shell := session.Proc{PID: 150, Start: 2}
-	child := session.Proc{PID: 200, Start: 3}
+	agent := attribution.Proc{PID: 100, Start: 1}
+	shell := attribution.Proc{PID: 150, Start: 2}
+	child := attribution.Proc{PID: 200, Start: 3}
 
 	named := func(sid string) http.Header {
 		h := http.Header{"User-Agent": {procClaudeUA}}
@@ -106,14 +107,14 @@ func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
 		return h
 	}
 	pctx := &pipeline.Context{}
-	s.hydrateSession(pctx, named("claude-1"), []session.Proc{agent, shell})
+	s.hydrateSession(pctx, named("claude-1"), []attribution.Proc{agent, shell})
 	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
 	if pctx.ChainSession != "" {
 		t.Errorf("agent: ChainSession %q, want none", pctx.ChainSession)
 	}
 
 	pctx = &pipeline.Context{}
-	sid := s.hydrateSession(pctx, named("fresh"), []session.Proc{child, shell, agent})
+	sid := s.hydrateSession(pctx, named("fresh"), []attribution.Proc{child, shell, agent})
 	store.Append("fresh", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
 	if sid != "fresh" || pctx.SessionSource != pipeline.SessionSourceHeader {
 		t.Fatalf("child: recorded under %q via %q, want fresh via header", sid, pctx.SessionSource)
@@ -123,7 +124,7 @@ func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
 	}
 
 	pctx = &pipeline.Context{}
-	if sid := s.hydrateSession(pctx, http.Header{}, []session.Proc{child, shell, agent}); sid != "fresh" {
+	if sid := s.hydrateSession(pctx, http.Header{}, []attribution.Proc{child, shell, agent}); sid != "fresh" {
 		t.Fatalf("child without header: %q, want its own claim fresh", sid)
 	}
 	if pctx.ChainSession != "claude-1" {

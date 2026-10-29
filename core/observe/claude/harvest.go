@@ -1970,12 +1970,18 @@ func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (add
 // real file does — so the injection point is the only way to reach that path.
 var writeAll = func(w io.Writer, body []byte) (int, error) { return w.Write(body) }
 
+// syncFile flushes f to disk. A test seam that lets a Sync failure be injected.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
 // SaveMetadata writes the map atomically, creating ~/.cortex if needed.
 //
 // Same mechanics as saveUserConfig, for the same reasons: CreateTemp rather than a
 // fixed path+".tmp" (crash debris at a predictable name wedges every later write, and
 // CreateTemp's unpredictable name passes O_EXCL itself), Rename rather than truncate
-// (a half-written file would be read back as malformed), dir 0700 and file 0600.
+// (a half-written file would be read back as malformed), dir 0700 and file 0600. Plus
+// an fsync between write and rename, so a crash leaves either the old file or the new
+// one. File-level guarantee only: a crash between rename and the directory entry hitting
+// disk still loses the update. #1554 tracks the directory-fsync upgrade across the tree.
 //
 // SECURITY: the residual symlink risk is closed the way saveUserConfig closes it, not with
 // tui's checkYankDir Lstat sweep. An earlier version of this comment argued the sweep was
@@ -2020,6 +2026,9 @@ func SaveMetadata(path string, meta map[string]SessionMetadata) error {
 	// real filesystem produces on demand. cmd/agentop has its own copy of this seam for
 	// saveUserConfig; the duplication is two lines and buys each module its own tripwire.
 	_, err = writeAll(f, body)
+	if err == nil {
+		err = syncFile(f)
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

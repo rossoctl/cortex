@@ -45,19 +45,16 @@ func TestListSessions_NamesTheSessionsAgent(t *testing.T) {
 		t.Errorf("claude-2 agent = %q, want claude-code: an agent's releases are one agent", got)
 	}
 
-	s.Claim("task-1", "bob-shell")
+	// Bob's header named task-1, so Bob owns it though Claude's call landed there first.
 	s.Append("task-1", evFrom(claude))
-	s.Append("task-1", evFrom(bob))
+	named := evFrom(bob)
+	named.SessionHeader = BobSessionHeader
+	s.Append("task-1", named)
 	// The claim and the events both carry the pre-convergence spelling "bob-shell";
 	// the read folds it to "bob", so a session claimed under the old name still
 	// names its agent under the new one.
 	if got := agentOf(t, s, "task-1"); got != "bob" {
 		t.Errorf("task-1 agent = %q, want bob (the owner that claimed it)", got)
-	}
-	s.Claim("task-2", "bob-shell")
-	s.Append("task-2", evFrom(claude))
-	if got := agentOf(t, s, "task-2"); got != "" {
-		t.Errorf("task-2 agent = %q, want none: its owner sent nothing", got)
 	}
 
 	webFetch := &pipeline.EventClient{Raw: "Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)"}
@@ -66,7 +63,6 @@ func TestListSessions_NamesTheSessionsAgent(t *testing.T) {
 		t.Errorf("fetch-only agent = %q, want %q (AffinityName reads the comment)", got, webFetch.Label())
 	}
 
-	s.Claim(DefaultSessionID, "bob-shell")
 	for _, id := range []string{DefaultSessionID, PendingSessionID("bob-shell")} {
 		s.Append(id, evFrom(bob))
 		if got := agentOf(t, s, id); got != "" {
@@ -116,26 +112,6 @@ func TestListSessions_AgentIsTheGroupAgentLabel(t *testing.T) {
 		if got := agentOf(t, s, id); got == "" || series[got].Requests != 1 {
 			t.Errorf("session %s agent = %q; group=agent has %v", id, got, slices.Sorted(maps.Keys(series)))
 		}
-	}
-}
-
-// A session that adopted a pending bucket says so, which is how a client tells that bucket's
-// cached history — now this session's head — from a bucket that was evicted.
-func TestListSessions_NamesTheBucketsASessionAdopted(t *testing.T) {
-	s := New(0, 0, 0)
-	defer s.Close()
-	bob := &pipeline.EventClient{Name: "bob-shell", Version: "2.0.5"}
-	pending := PendingSessionID("bob-shell")
-	s.Append(pending, evFrom(bob))
-	s.Claim("task-1", "bob-shell")
-	s.Append("task-1", evFrom(bob))
-	s.Append("claude-1", evFrom(nil))
-
-	if got := summaryOf(t, s, "task-1").Adopted; !slices.Equal(got, []string{pending}) {
-		t.Errorf("task-1 adopted %v, want [%s]", got, pending)
-	}
-	if got := summaryOf(t, s, "claude-1").Adopted; got != nil {
-		t.Errorf("claude-1 adopted %v, want none", got)
 	}
 }
 

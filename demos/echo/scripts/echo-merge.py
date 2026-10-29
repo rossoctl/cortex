@@ -35,6 +35,7 @@ hot-reload SHA comparison in patch-echo-config.sh is deterministic.
 """
 
 import sys
+
 import yaml
 
 

@@ -688,11 +688,13 @@ func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
 
 	// After the response: the `default` bucket should be gone (rekeyed
 	// to ctxID) and the ctxID bucket should hold both events from this
-	// turn (request + response).
+	// turn (request + response). The response row lands when ReverseProxy
+	// finishes relaying the body, which can be after the client has its
+	// response, so wait for it rather than race it.
+	view := waitForEvents(t, store, ctxID, 2)
 	if v := store.View(session.DefaultSessionID); v != nil {
 		t.Errorf("default bucket still exists with %d events; expected rekey to %q", len(v.Events), ctxID)
 	}
-	view := store.View(ctxID)
 	if view == nil {
 		t.Fatalf("session %q not found; rekey did not run", ctxID)
 	}

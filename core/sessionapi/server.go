@@ -394,6 +394,9 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if s.archive != nil && r.URL.Query().Get("archived") == "true" {
 		sessions, usage = s.withArchivedRows(sessions)
 	}
+	// After the archive's rows are in: a bucket only the archive holds links to a resident
+	// session, and the other way round.
+	sessions = session.Link(sessions)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(struct {
 		Sessions []session.SessionSummary `json:"sessions"`

@@ -414,6 +414,20 @@ func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEv
 	return pipeline.SessionEvent{}
 }
 
+// waitForEvents polls id until it holds at least n events, and returns its view: nil when it
+// never held any.
+func waitForEvents(t *testing.T, store *session.Store, id string, n int) *pipeline.SessionView {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v := store.View(id)
+		if (v != nil && len(v.Events) >= n) || !time.Now().Before(deadline) {
+			return v
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // hermeticGet is http.Get without the environment's proxy. The default transport
 // honours HTTP_PROXY / HTTPS_PROXY, which this repo's own laptop setup exports.
 func hermeticGet(target string) (*http.Response, error) {

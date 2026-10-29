@@ -789,12 +789,16 @@ agentop is for, and the other four are surfaces you visit and leave.
   `AGENT`; neither shows until `COST` and `SAVED` do, so widening the window never
   takes one away.
 
-  A **`pending:` bucket**, where an agent's calls that name no session collect
-  until one does, is listed after the real sessions. Its row shows the agent
-  under `SESSION` rather than the truncated id, and, when nothing else names it,
-  `calls outside any session · pid <n>` under `TITLE`. The pid is the process the
-  calls came from. Headers keep the full id, which is still what the API and `/`
-  match on.
+  A **`pending:` bucket** holds an agent's calls from before its process named a
+  session. When the process went on to name one, the bucket is folded into it: its
+  row is hidden, and its calls appear in that session's timeline at the time they
+  were made. A bucket whose process never named a session — or made calls after
+  its last one, or whose calls belong to two sessions — is listed after the real
+  sessions, under its agent. Its row shows
+  the agent under `SESSION` rather than the truncated id, and, when nothing else
+  names it, `calls outside any session · pid <n>` under `TITLE`. The pid is the
+  process the calls came from. Headers keep the full id, which is still what the
+  API and `/` match on.
 
   `CTX(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
@@ -1527,8 +1531,8 @@ proxy names an agent only from a User-Agent it recognises (`claude-code`, `bob`,
 `opencode`, `codex`, `pi`); anything else is reported under its raw
 User-Agent, and one program can send several — the IBM Bob IDE was three rows before
 it was recognised, and none of them could reach its session ([#1210]). Picking `Other`
-lists every session that names no recognised agent, including the `default` and
-`pending:` buckets and sessions only agentop's cache still holds, so every listed
+lists every session that names no recognised agent, including the `default`
+bucket and sessions only agentop's cache still holds, so every listed
 session belongs to exactly one row. An `Other` row that only sessions put there —
 no unrecognised traffic in the window — is shown when the picker opens, but never
 opens it by itself. Its figures are the pooled series, narrowed by agentop rather
@@ -1548,8 +1552,8 @@ all sessions, so under `Other`, within one session, or against a proxy too old
 to keep them, the metric reports that latency is unavailable per agent rather
 than plotting zeroes.
 
-Elsewhere, the sessions pane lists only that agent's sessions — the `default` and
-`pending:` buckets belong to no one agent and are listed under `Other` — and every pane's title
+Elsewhere, the sessions pane lists only that agent's sessions and its `pending:`
+buckets — the `default` bucket belongs to no one agent and is listed under `Other` — and every pane's title
 says `agent=`. Against a server that names no session's agent, the list stays whole
 and its footer says `list not scoped`. The spend band and its drawer show that
 agent's figures, asked of the server with `/v1/usage?agent=`; against a server too

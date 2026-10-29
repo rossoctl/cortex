@@ -261,7 +261,6 @@ func TestRecord_RaceAgainstStoreRekeyAndTrim(t *testing.T) {
 				st.Append(id, e)
 				if i%7 == 0 {
 					st.Rekey(session.DefaultSessionID, "ctx-race")
-					st.Claim("s2", "bob-shell")
 				}
 			}
 		}()
@@ -566,14 +565,13 @@ func TestStats_ReportsBytesAndBounds(t *testing.T) {
 }
 
 // A rename carries the renamed entry's events, and what an earlier entry recorded under the
-// same id stays under it: the store renames one entry, never the id's whole history. Both of
-// the store's renames, each after the two ways an id's entry is re-created.
+// same id stays under it: the store renames one entry, never the id's whole history. After
+// each of the two ways an id's entry is re-created.
 func TestRekeyed_MovesOnlyTheRenamedEntrysEvents(t *testing.T) {
 	renames := []struct {
 		name, from string
 		rename     func(st *session.Store, to string)
 	}{
-		{"claim", session.PendingSessionID("claude-code"), func(st *session.Store, to string) { st.Claim(to, "claude-code") }},
 		{"rekey", session.DefaultSessionID, func(st *session.Store, to string) { st.Rekey(session.DefaultSessionID, to) }},
 	}
 	earlier, entry := synthSession(60, 1, 512), synthSession(61, 1, 512) // 3 events each

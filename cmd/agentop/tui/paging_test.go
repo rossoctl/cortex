@@ -444,3 +444,20 @@ func TestFooter_SaysWhenPagedBack(t *testing.T) {
 		t.Errorf("footer does not report that newer events were dropped: %q", got)
 	}
 }
+
+// A linked bucket's event can sort first, and its seq counts in the bucket: paging goes by the
+// session's own oldest event, both for the cursor and for the restart guard.
+func TestOlderPage_GoesByTheSessionsOwnOldestEvent(t *testing.T) {
+	held := pagedEvents(11, 3)
+	linked := held[0]
+	linked.Seq, linked.SessionID, linked.At = 2, "pending:claude-code@100.5", pagingEpoch
+	m := pagedModel(t, append([]pipeline.SessionEvent{linked}, held...))
+	m.paging["sess-1"].serverOldest = 5
+	if cmd := m.loadOlderPage(); cmd == nil {
+		t.Fatalf("no page request (flash %q): the cursor was the bucket's seq 2", m.flash)
+	}
+	m.applyOlderPage(olderPageLoadedMsg{id: "sess-1", gen: m.paging["sess-1"].wantGen, events: pagedEvents(5, 6), serverOldest: 5})
+	if strings.Contains(m.flash, "restarted") || len(m.events["sess-1"]) != 10 {
+		t.Errorf("an older page was refused against the linked event's time: flash %q, %d held", m.flash, len(m.events["sess-1"]))
+	}
+}

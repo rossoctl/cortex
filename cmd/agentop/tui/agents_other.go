@@ -40,10 +40,10 @@ func knownAgentLabel(label string) bool {
 }
 
 // inOtherAgents reports whether a session belongs to the Other row: it names no recognised agent.
-// That includes the default and pending buckets, which the server attributes to no one agent —
-// see session.SessionSummary.Agent — and which would otherwise be unreachable under any scope.
+// That includes the default bucket, which is no one agent's. A pending bucket belongs to the agent
+// its id names; see sessionAgent.
 func inOtherAgents(s session.SessionSummary) bool {
-	return !knownAgentLabel(s.Agent)
+	return !knownAgentLabel(sessionAgent(s))
 }
 
 // foldOtherAgents returns a copy of a group=agent snapshot with every unrecognised series merged
@@ -121,21 +121,15 @@ func foldOtherAgents(snap *usage.Snapshot) *usage.Snapshot {
 
 // otherSessionsCount is how many sessions the Other scope lists: every server-listed session that
 // names no recognised agent, plus the cached-only rows — sessions the server no longer lists,
-// which therefore name no agent at all. An adopted pending bucket is not counted, because the
-// list does not show it; see rebuildSessionsTable.
+// which therefore name no agent at all.
 func (m *model) otherSessionsCount() int {
 	n := 0
 	for _, s := range m.sessions {
-		if inOtherAgents(s) {
+		if agentRowLists(s, otherAgents) {
 			n++
 		}
 	}
-	adopted := m.adoptedSessionIDs()
-	for _, id := range m.cachedOnlySessionIDs() {
-		if !adopted[id] {
-			n++
-		}
-	}
+	n += len(m.cachedOnlySessionIDs())
 	return n
 }
 

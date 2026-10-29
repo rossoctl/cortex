@@ -144,7 +144,7 @@ edit state machine (cmd/abctl/edit/ + cmd/abctl/tui/edit_overlay.go)
                   last_success_unix > applyTime    → success
                   reloads_failed_total incremented → failure (body has the error)
                   120s elapsed                     → timeout
-                  
+
   ⑦ Refresh     re-fetch /v1/pipeline; rebuild pipeline table; close overlay
 ```
 

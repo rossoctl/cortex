@@ -1,7 +1,7 @@
 # CI - Lint, test, and build for all modules
 #
 # Runs on PRs and pushes to main/release branches.
-# Covers the AuthProxy Go module and Python tests.
+# Covers the Go modules, Python tests, and repo scripts.
 #
 name: CI
 
@@ -35,8 +35,6 @@ jobs:
 
       - name: Run pre-commit
         uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1
-        # TODO: Remove continue-on-error after fixing pre-existing style issues repo-wide
-        continue-on-error: true
         env:
           SKIP: ai-assisted-by-trailer
 
@@ -98,6 +96,25 @@ jobs:
 
       - name: Test (tlsbridge trust check)
         run: go test -v -race -run 'TestOSTrustCheck|TestClientTrust|TestGoExecutables' ./tlsbridge/...
+
+      # cortex (local profile) and agentop are the laptop binaries, and macOS is
+      # where most laptops run them.
+      - name: Build and test cmd/cortex (local profile)
+        working-directory: cmd/cortex
+        env:
+          GOWORK: "off"
+        run: |
+          TAGS=$(go -C ../../scripts/profile-tags run . local)
+          go build -tags "${TAGS}" ./...
+          go test -race -tags "${TAGS}" ./...
+
+      - name: Build and test cmd/agentop
+        working-directory: cmd/agentop
+        env:
+          GOWORK: "off"
+        run: |
+          go build ./...
+          go test -race ./...
 
   # The cpex plugin's FFI-backed code sits behind the `cpex` build tag and needs
   # cgo plus the pinned libcpex_ffi.a, so no other job compiles or tests it. It
@@ -221,6 +238,60 @@ jobs:
             [ -n "${tags}" ] || { echo "profile ${profile} resolved to no tags"; exit 1; }
             echo "${profile}: ${tags}"
           done
+
+  # core/storage/redis is its own module, so `go test ./...` in core/ skips it.
+  go-ci-redis:
+    name: Go CI (core/storage/redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: core/storage/redis
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: core/storage/redis/go.mod
+          cache-dependency-path: core/storage/redis/go.sum
+
+      - name: Lint
+        run: |
+          go fmt ./...
+          go vet ./...
+
+      - name: Test
+        run: go test -v -race -cover ./...
+
+  # The demo modules build against core through a replace directive, so a core
+  # API change can break them; nothing else compiles them.
+  go-ci-demos:
+    name: Go CI (demos/${{ matrix.demo }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: [echo, finance-sparc, ibac]
+    defaults:
+      run:
+        working-directory: demos/${{ matrix.demo }}
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: demos/${{ matrix.demo }}/go.mod
+          cache-dependency-path: demos/${{ matrix.demo }}/go.sum
+
+      - name: Vet and build
+        run: |
+          go vet ./...
+          go build ./...
 
   go-ci-readme-demo:
     name: Go CI (README demo)
@@ -396,6 +467,29 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v -x --ignore=tests/e2e
+
+  # The SPARC reflection service ships as its own image; its suite lives
+  # beside it rather than under tests/. The live-model tests skip without
+  # credentials.
+  python-test-sparc:
+    name: Python Tests (sparc-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: deploy/sparc-service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -e '.[dev]'
+
+      - name: Run tests
+        run: pytest -v
 
   # install.sh is a curl|sh entry point, so a regression there is a
   # stranger's first experience of Cortex. shellcheck in

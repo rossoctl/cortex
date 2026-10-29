@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -75,8 +77,8 @@ func (m *model) loadOlderPage() tea.Cmd {
 	if id == "" || m.client == nil {
 		return nil
 	}
-	held := m.events[id]
-	if len(held) == 0 {
+	own := ownOldest(m.events[id], id)
+	if own == nil {
 		return nil
 	}
 
@@ -88,7 +90,7 @@ func (m *model) loadOlderPage() tea.Cmd {
 	// EVERY reason to refuse is checked before any state is created. Creating it first and
 	// validating after left a session paged-back — live appends suppressed, timeline
 	// silently frozen — after a single [o] that could never have fetched anything.
-	oldest := held[0].Seq
+	oldest := own.Seq
 	if oldest == 0 {
 		// A proxy that predates Seq. Paging cannot work against it, and saying so beats
 		// sending before=0 and silently refetching the tail forever.
@@ -104,7 +106,7 @@ func (m *model) loadOlderPage() tea.Cmd {
 		// The events already held are page one, whatever mixture of snapshot and streamed
 		// events they are. Tentative until a page arrives: fetched stays 0, and
 		// applyOlderPage tears this down if nothing comes back.
-		st = &pagingState{pageSizes: []int{len(held)}}
+		st = &pagingState{pageSizes: []int{len(m.events[id])}}
 		if m.paging == nil {
 			m.paging = map[string]*pagingState{}
 		}
@@ -118,12 +120,19 @@ func (m *model) loadOlderPage() tea.Cmd {
 	st.wantGen = m.pageGen
 	st.loading = true
 	m.setFlash("loading older…")
-	return m.olderPageCmd(id, oldest, st.wantGen)
+	return m.olderPageCmd(id, oldest, own.At, st.wantGen)
 }
 
-func (m *model) olderPageCmd(id string, before, gen uint64) tea.Cmd {
+func (m *model) olderPageCmd(id string, before uint64, heldFrom time.Time, gen uint64) tea.Cmd {
+	buckets := m.linkedInto(id)
 	return func() tea.Msg {
 		view, err := m.client.GetSessionPage(m.ctx, id, before, apiclient.SnapshotEventLimit)
+		if err == nil && len(buckets) > 0 {
+			// The calls linked into the session are merged here, so a long session's start-up
+			// calls are not only reachable through a row the list hides.
+			first := len(view.Events) > 0 && view.Events[0].Seq <= view.OldestSeq
+			view.Events = pageLinked(view.Events, fetchLinked(m.ctx, m.client, id, buckets), first, heldFrom)
+		}
 		if err != nil {
 			// Its OWN message type, not errMsg. errMsg's handler decides severity by
 			// string-prefixing `where`, and anything it does not recognise flips the whole
@@ -208,7 +217,7 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 	//
 	// Refused here rather than by teaching ViewPage to reject high cursors, because the store
 	// cannot tell a re-created session from a trimmed one, and this check does not need to.
-	if len(held) > 0 && msg.events[len(msg.events)-1].At.After(held[0].At) {
+	if own := ownOldest(held, msg.id); own != nil && msg.events[len(msg.events)-1].At.After(own.At) {
 		m.setFlash("session restarted — [t] for the tail")
 		m.abandonIfTentative(msg.id, st)
 		return
@@ -250,8 +259,8 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 	// The count is decremented rather than recomputed from the server's total, because
 	// the total counts events at BOTH ends: once the cap has dropped a newer page,
 	// total-minus-held would report those as older and send the operator looking for them
-	// in the wrong direction. Pages are contiguous going back, so subtracting what just
-	// arrived is exact — give or take events appended since, which only ever makes this
+	// in the wrong direction. Pages are contiguous going back, so subtracting the page's own
+	// events is exact — give or take events appended since, which only ever makes this
 	// an undercount of what is now available.
 	//
 	// Created if absent, because writing to a nil map panics and this map is not always
@@ -261,7 +270,13 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 	if m.olderNotFetched == nil {
 		m.olderNotFetched = map[string]int{}
 	}
-	if n := m.olderNotFetched[msg.id] - len(msg.events); n > 0 {
+	own := 0
+	for i := range msg.events {
+		if eventSession(msg.id, &msg.events[i]) == msg.id {
+			own++
+		}
+	}
+	if n := m.olderNotFetched[msg.id] - own; n > 0 {
 		m.olderNotFetched[msg.id] = n
 	} else {
 		m.olderNotFetched[msg.id] = 0

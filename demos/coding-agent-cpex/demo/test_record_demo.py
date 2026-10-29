@@ -57,7 +57,9 @@ class CheckTest(unittest.TestCase):
         self.assertIn("out of order", problems[0])
 
     def test_step_listed_twice(self):
-        self.edit("demo/steps.md", "| 2 | Sandbox | `01-unapproved-host-deny.sh`", "| 2 | Sandbox | `00-sandbox-boundary.sh`")
+        self.edit(
+            "demo/steps.md", "| 2 | Sandbox | `01-unapproved-host-deny.sh`", "| 2 | Sandbox | `00-sandbox-boundary.sh`"
+        )
         problems = record_demo.check(self.tmp)
         self.assertIn("demo/steps.md is missing 01-unapproved-host-deny.sh", problems)
         self.assertIn("demo/steps.md names 00-sandbox-boundary.sh more than once", problems)

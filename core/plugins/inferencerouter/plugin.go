@@ -724,7 +724,7 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 // one conversation: the default bucket, or an agent's pending bucket. See the
 // package doc for why those are never pinned.
 func synthetic(id string) bool {
-	return id == session.DefaultSessionID || strings.HasPrefix(id, session.PendingPrefix)
+	return !session.IsConversation(id)
 }
 
 // agentOf is the request's agent as the session store and agentop name it, or ""

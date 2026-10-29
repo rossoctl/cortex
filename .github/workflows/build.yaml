@@ -8,6 +8,10 @@ on:
     # Trigger on PR merges to main
     branches:
       - main
+  # Build (without pushing) on PRs, so a broken Dockerfile fails before merge
+  pull_request:
+    branches:
+      - main
   # Allow manual trigger
   workflow_dispatch:
 
@@ -94,8 +98,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
-      # 4. Log in to GitHub Container Registry
+      # 4. Log in to GitHub Container Registry (not on PRs: they don't push)
       - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4
         with:
           registry: ghcr.io
@@ -186,7 +191,8 @@ jobs:
           # plugin surface resolve to empty.
           build-args: |
             ${{ steps.buildargs.outputs.args }}
-          push: true
-          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          # PRs build amd64 only: arm64 runs under QEMU and only adds time.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
