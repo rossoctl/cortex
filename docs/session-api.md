@@ -256,7 +256,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "upgrade_declined"` is the forward proxy's own answer to a WebSocket upgrade on
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
   and a client such as Codex reads it as "use HTTPS" and retries at once over
-  HTTPS. It is not counted as an error in `/v1/usage`.
+  HTTPS. It is not counted as an error in `/v1/usage`. Every other WebSocket
+  upgrade is forwarded (#1488): the 101 the origin answers with is spliced onto
+  the client's connection, the frames after it are relayed uninspected, and the
+  session records the request row plus a **101 response row** paired to it by
+  `requestId`, carrying `bytesUp` and `bytesDown` for the whole WebSocket
+  session — the one response row besides a tunnel close that carries both —
+  with `durationMs` covering the session and `ttfbMs` the handshake.
 - `ttfbMs` — on a delivered response row, the wall time from request entry to
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
@@ -280,8 +286,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the
-  destination. Headers are not counted. A tunnel close is the one row carrying
-  both. **Zero means the listener counted nothing, not that the body was
+  destination. Headers are not counted. A tunnel close and a forwarded
+  WebSocket's 101 response row are the rows carrying both. **Zero means the
+  listener counted nothing, not that the body was
   empty** — every listener buffers bodies only when a plugin asks, so an
   unbuffered request reports zero. A response relayed straight through is
   counted, not zero: both proxies record the row after they finish relaying

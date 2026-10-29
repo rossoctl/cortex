@@ -480,13 +480,25 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 
+	// A WebSocket upgrade is the one hop-by-hop request this proxy forwards
+	// (#1488): the CONNECT-host check above has already held a bridged request to
+	// its tunnel's destination, the pipeline has run, and what is left is to hand
+	// the header across and splice the 101. Every other protocol named in Upgrade
+	// keeps the strip, and so does the one WebSocket this proxy declines — the
+	// Responses-API case below, which answers 426 itself.
+	forwardUpgrade := upgradesToWebSocket(r.Header) &&
+		!(s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r))
+
 	// Before the request row is recorded, 20-odd lines below, and NOT down beside
 	// stripForUpstream where the strip itself happens — the row is appended first,
 	// so a field set after it is set on nothing. (It was, and three unit tests
 	// driving this method directly all passed while the feature recorded nothing
-	// end to end.) Reading it here is equivalent: the strip is unconditional, so an
-	// Upgrade present on the inbound request is one that will be removed.
-	pctx.RecordStrippedUpgrade(r.Header)
+	// end to end.) Reading it here is equivalent: an Upgrade present on the
+	// inbound request is one the strip below will remove, because the one case it
+	// is kept is exactly the case excluded by forwardUpgrade above.
+	if !forwardUpgrade {
+		pctx.RecordStrippedUpgrade(r.Header)
+	}
 
 	// After the pipeline, so a plugin's reject still wins; before any row, since this
 	// records its own pair. See declineResponsesWebSocket.
@@ -534,17 +546,25 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 
 	ownEncoding := !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders())
-	stripForUpstream(r, ownEncoding)
+	stripForUpstream(r, ownEncoding, forwardUpgrade)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
 
 	client := s.Client
 	if isBridge && s.TLSBridge != nil {
+		// No upgrade-specific client, though this one negotiates h2: net/http
+		// pins a WebSocket upgrade to HTTP/1.1 on its own (Request.requiresHTTP1
+		// matches the Connection/Upgrade pair stripForUpstream just normalized
+		// to), so the exchange rides this client as HTTP/1.1.
 		client = s.TLSBridge.Upstream
 	}
 	resp, err := client.Do(r)
-	if err == nil && !skipped {
+	// A Resender reads refused answers, and a 101 is not one — it is the upgrade
+	// succeeding. Peeking at its (empty) body and sending the GET again would tear
+	// down the connection the origin just switched, so a forwarded upgrade never
+	// resends.
+	if err == nil && !skipped && !forwardUpgrade {
 		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
 	}
 	if err != nil {
@@ -570,6 +590,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		if !skipped {
 			s.recordOutboundResponseEvent(pctx, status, fail)
 		}
+		return
+	}
+
+	// The 101: the origin took the upgrade. Hand both connections to a splice and
+	// get out of the way (#1488). The caller's resp.Body.Close() below must NOT
+	// run — the body IS the origin's connection now, and the splice owns closing
+	// it. Anything else the origin answered (a 200 serving the bare GET, a 4xx
+	// from an endpoint that does not upgrade) falls through to the ordinary
+	// response path, headers and body relayed as usual.
+	if forwardUpgrade && resp.StatusCode == http.StatusSwitchingProtocols {
+		pctx.ResponseHeadersAt = time.Now()
+		s.relayUpgradedWebSocket(w, r, pctx, resp, !skipped)
 		return
 	}
 	defer resp.Body.Close()
@@ -1035,8 +1067,8 @@ const declinedUpgradeBody = `{"detail":"WebSocket transport is not available thr
 // Scoped twice: to OpenAI's own hosts (isOpenAIResponsesHost), and to the Responses
 // suffix inference-parser reads (/v1/responses, and Codex's
 // /backend-api/codex/responses). A 426 is an answer only Codex is known to read as
-// "use HTTPS", and only against OpenAI is that known: every other WebSocket keeps the
-// strip and whatever its origin makes of the bare GET.
+// "use HTTPS", and only against OpenAI is that known: every other WebSocket is
+// forwarded (#1488), whatever its origin makes of the upgrade.
 func wantsResponsesWebSocket(r *http.Request) bool {
 	return r.Method == http.MethodGet &&
 		upgradesToWebSocket(r.Header) &&
@@ -1085,15 +1117,21 @@ func upgradesToWebSocket(h http.Header) bool {
 // declineResponsesWebSocket answers a WebSocket upgrade on a Responses API path with
 // 426 Upgrade Required, without contacting the origin.
 //
-// THE ORIGIN'S ANSWER IS ALREADY KNOWN, AND IT IS THE EXPENSIVE ONE. stripForUpstream
-// must remove Upgrade, so the origin would get a bare GET on an endpoint that takes a
-// POST or an upgrade and answer 405. Codex reads a 405 as transient: it retries five
-// times on a 200ms-doubling backoff, about six seconds, printing `Reconnecting… n/5`,
-// before falling back to HTTPS. A 426 is the one status it reads as "this endpoint wants
+// THE EXPENSIVE ANSWER IS THE ONE A STRIPPED HANDSHAKE DREW. Before upgrades were
+// forwarded (#1488) the strip turned this handshake into a bare GET on an endpoint
+// that takes a POST or an upgrade, and the origin answered 405. Codex reads a 405 as
+// transient: it retries five times on a 200ms-doubling backoff, about six seconds,
+// printing `Reconnecting… n/5`, before falling back to HTTPS. A 426 is the one status
+// it reads as "this endpoint wants
 // HTTP": it switches at once, for the rest of the session, with no retry and no warning
 // (codex-rs/core/src/client.rs, the UPGRADE_REQUIRED arms). Measured on Codex 0.163.0,
 // eight runs each of a one-word `codex exec` turn: 10.2–15.1s (median 11.0s) through the
 // 405, 2.4–6.4s (median 3.0s) through this, with one handshake attempt instead of seven.
+//
+// TODAY THE DECLINE IS A STEER RATHER THAN A LIMIT: a forwarded Responses WebSocket
+// works (relayUpgradedWebSocket), but its frames are opaque to every plugin, so a
+// Codex session moved onto one stops being parseable — no token counts, no cost. The
+// 426 keeps it on HTTPS, where its traffic stays observable.
 //
 // RFC 9110 gives 426 the opposite sense — the server requires the client to upgrade.
 // OpenAI's backend uses it this way and Codex reads it this way, and a client that reads
@@ -1125,6 +1163,160 @@ func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Reques
 		Kind:    pipeline.ErrorKindUpgradeDeclined,
 		Message: "WebSocket upgrade answered 426 by the proxy; the client falls back to HTTPS",
 	})
+}
+
+// relayUpgradedWebSocket splices a 101 Switching Protocols answer onto the
+// client's connection and blocks until either side closes (#1488). It mirrors
+// httputil.ReverseProxy's handleUpgradeResponse — hijack the client connection,
+// write the origin's 101 through it, then copy both ways — with two things that
+// proxy does not need and this one does: per-direction byte counts for the
+// session row, and the row itself.
+//
+// resp.Body is the origin's connection once the origin answered 101 (the
+// transport hands back an io.ReadWriteCloser or it never sent a 101), and this
+// function owns it: serveOutbound returns without its resp.Body.Close() defer
+// running, because closing the body here would close the WebSocket.
+//
+// THE ROWS: the request row was recorded before client.Do, as for any request.
+// Its pair is recorded here, after the splice ends, carrying the 101 and both
+// directions' byte counts — the one response row with bytesUp on it, like a
+// tunnel close, because after the 101 the bytes are protocol frames the proxy
+// does not parse and there is no body/header split to report. Duration covers
+// the whole WebSocket session, not the handshake; ttfb is the handshake, set
+// where client.Do returned. That is one audit event per upgrade, the request row
+// plus its paired 101 (MOCA MI1 §8.5 item 5).
+//
+// Response plugins never see the 101 — pctx.ResponseHeaders is not set from it,
+// so no RunResponse runs on this answer: the frames after a successful upgrade
+// belong to the client and the origin ("streamed, never inspected or buffered",
+// the same contract), and a response mutator would have nothing to act on. A
+// non-101 answer never reaches here; it takes the ordinary response path.
+//
+// record=false is skip_hosts: the splice still happens — a skipped request is
+// forwarded as a transparent proxy or not at all — but no row is appended, which
+// is what skip_hosts promises.
+func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, resp *http.Response, record bool) {
+	backConn, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		// Not reachable through net/http's own transport, which gives a 101 a
+		// writable body; a custom RoundTripper could violate it.
+		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", r.Host)
+		s.failUpgradedWebSocket(w, pctx, record, "101 switching protocols with a non-writable body")
+		return
+	}
+	conn, brw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", r.Host, "error", err)
+		s.failUpgradedWebSocket(w, pctx, record, fmt.Sprintf("hijack failed relaying the upgrade: %v", err))
+		return
+	}
+	// The origin's end closes when the client's request context is done — which
+	// covers a client hang-up the copies have not noticed yet (golang.org/issue
+	// 35559, as in ReverseProxy) — or when the splice below ends, whichever is
+	// first; the deferred close of conn takes care of the client's end.
+	backConnCloseCh := make(chan struct{})
+	go func() {
+		select {
+		case <-r.Context().Done():
+		case <-backConnCloseCh:
+		}
+		backConn.Close()
+	}()
+	defer close(backConnCloseCh)
+	defer conn.Close()
+
+	// The origin's 101, as it wrote it, onto the hijacked connection. Moving
+	// resp.Header into w's still-empty header map first is ReverseProxy's trick:
+	// resp.Write then serializes status line and headers as one response, and
+	// nil'ing the body stops it at the blank line.
+	for k, vv := range resp.Header {
+		w.Header()[k] = vv
+	}
+	resp.Header = w.Header()
+	resp.Body = nil
+	if err := resp.Write(brw); err != nil {
+		slog.Error("forward-proxy: writing the 101 failed", "host", r.Host, "error", err)
+		s.recordSpliceFailure(pctx, record, fmt.Sprintf("writing the 101 failed: %v", err))
+		return
+	}
+	if err := brw.Flush(); err != nil {
+		slog.Error("forward-proxy: flushing the 101 failed", "host", r.Host, "error", err)
+		s.recordSpliceFailure(pctx, record, fmt.Sprintf("flushing the 101 failed: %v", err))
+		return
+	}
+
+	// A delivered answer from here: the deferred RunFinish reads any non-zero
+	// status as OutcomeAllow, and 101 is what the client got.
+	pctx.StatusCode = http.StatusSwitchingProtocols
+
+	// Both directions, each one io.Copy so its return count needs no second
+	// counter. Up is client → origin, read from brw rather than conn so bytes
+	// the hijack buffered are not lost; down is origin → client, written
+	// straight to conn, which has no write buffer to strand. An EOF propagates
+	// as CloseWrite where the connection has it (ReverseProxy's
+	// switchProtocolCopier), so a half-closed WebSocket shuts down instead of
+	// hanging on the open half.
+	var up, down int64
+	errc := make(chan error, 2)
+	go func() {
+		var err error
+		if up, err = io.Copy(backConn, brw); err != nil {
+			errc <- err
+			return
+		}
+		if wc, ok := backConn.(interface{ CloseWrite() error }); ok {
+			errc <- wc.CloseWrite()
+			return
+		}
+		errc <- nil
+	}()
+	go func() {
+		var err error
+		if down, err = io.Copy(conn, backConn); err != nil {
+			errc <- err
+			return
+		}
+		if wc, ok := conn.(interface{ CloseWrite() error }); ok {
+			errc <- wc.CloseWrite()
+			return
+		}
+		errc <- nil
+	}()
+	// Both, not one: the counts are read below, and a goroutine's send on errc
+	// is what publishes its write.
+	<-errc
+	<-errc
+
+	if !record || s.Sessions == nil {
+		return
+	}
+	ev := outboundResponseEvent(pctx, http.StatusSwitchingProtocols, nil)
+	ev.BytesUp, ev.BytesDown = up, down
+	s.Sessions.Append(s.responseSessionID(pctx), ev)
+}
+
+// recordSpliceFailure records the response row for a 101 whose relay broke after
+// the hijack — the connection is the client's problem now, so there is no status
+// to write it, but the request row still exists and a row with no pair reads as a
+// request still in flight (#1045). 502 with proxy_error, as failUpgradedWebSocket:
+// this failure is ours.
+func (s *Server) recordSpliceFailure(pctx *pipeline.Context, record bool, cause string) {
+	if !record {
+		return
+	}
+	s.recordOutboundResponseEvent(pctx, http.StatusBadGateway, &pipeline.EventError{
+		Kind:    "proxy_error",
+		Message: cause,
+	})
+}
+
+// failUpgradedWebSocket answers a 101 this proxy could not relay and records the
+// failure row. The status stays off pctx (zero reads as OutcomeError to the
+// deferred RunFinish) for the same reason the client.Do error path in
+// serveOutbound keeps its 502 off it: nothing succeeded here.
+func (s *Server) failUpgradedWebSocket(w http.ResponseWriter, pctx *pipeline.Context, record bool, cause string) {
+	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+	s.recordSpliceFailure(pctx, record, cause)
 }
 
 // tunnelAuthorityMatches reports whether host, a bridged request's Host, names the same
@@ -1260,7 +1452,17 @@ func syncHeaders(r *http.Request, h http.Header) {
 // stripForUpstream removes from r what is the proxy's and not the upstream's: the
 // hop-by-hop headers, and, when ownEncoding, the client's Accept-Encoding. It runs on
 // every request the proxy sends upstream for a client, a resend included.
-func stripForUpstream(r *http.Request, ownEncoding bool) {
+//
+// keepUpgrade is the WebSocket exception (#1488). RFC 9110 makes Upgrade
+// hop-by-hop, and the strip is right everywhere the proxy is a reader between two
+// endpoints — but an upgrade exchange makes it an endpoint of the hop instead:
+// everything after the 101 is opaque to it, so the header must cross or the
+// origin never sees an upgrade request at all. The pair is normalized rather than
+// forwarded raw (mirroring httputil.ReverseProxy): Connection becomes "Upgrade"
+// and Upgrade "websocket", the one protocol this proxy forwards — a client's
+// "Connection: keep-alive, Upgrade" is not the proxy's to pass on, and any other
+// token sharing the client's Upgrade list was never going to be forwarded anyway.
+func stripForUpstream(r *http.Request, ownEncoding, keepUpgrade bool) {
 	// Remove hop-by-hop headers
 	r.Header.Del("Connection")
 	r.Header.Del("Keep-Alive")
@@ -1271,6 +1473,10 @@ func stripForUpstream(r *http.Request, ownEncoding bool) {
 	r.Header.Del("Trailer")
 	r.Header.Del("Transfer-Encoding")
 	r.Header.Del("Upgrade")
+	if keepUpgrade {
+		r.Header.Set("Connection", "Upgrade")
+		r.Header.Set("Upgrade", "websocket")
+	}
 
 	// Strip the client's Accept-Encoding so Go's transport negotiates content
 	// coding on its own behalf.
@@ -1352,7 +1558,10 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 		again := r.Clone(r.Context())
 		syncHeaders(again, pctx.Headers)
 		setBody(again, pctx.Body)
-		stripForUpstream(again, ownEncoding)
+		// No keepUpgrade: a resent request is never a forwarded upgrade — the
+		// 101 branch in serveOutbound skips resendIfAsked entirely, and only that
+		// branch leaves the headers unstripped.
+		stripForUpstream(again, ownEncoding, false)
 		var err error
 		if resp, err = client.Do(again); err != nil {
 			return nil, err
@@ -1654,8 +1863,19 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// when nothing was pinned (defensive — a response-only path), then to
 	// the default bucket. See Context.OutboundSessionID.
 	sid := s.responseSessionID(pctx)
+	// Always record — see the request-phase comment. This is what surfaces
+	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
+	// + Error even with empty invocations.
+	s.Sessions.Append(sid, outboundResponseEvent(pctx, statusCode, fail))
+}
+
+// outboundResponseEvent builds the SessionResponse row every outbound answer is
+// recorded through — the shared shape, so the WebSocket splice
+// (relayUpgradedWebSocket) can adjust its byte fields without forking the
+// snapshotting logic.
+func outboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) pipeline.SessionEvent {
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	ev := pipeline.SessionEvent{
+	return pipeline.SessionEvent{
 		At:             time.Now(),
 		Direction:      pipeline.Outbound,
 		Phase:          pipeline.SessionResponse,
@@ -1678,10 +1898,6 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
 	}
-	// Always record — see the request-phase comment. This is what surfaces
-	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
-	// + Error even with empty invocations.
-	s.Sessions.Append(sid, ev)
 }
 
 // bufferResponseBody reads resp's body whole for the response phase. When it

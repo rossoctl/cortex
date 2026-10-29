@@ -905,6 +905,34 @@ or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
 guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
 
+#### Forwarding WebSocket upgrades
+
+Every WebSocket upgrade the forward proxy does not decline is forwarded (#1488), plain
+and TLS-bridged alike. `Upgrade` is hop-by-hop, which is why it is stripped from
+ordinary requests — but an upgrade exchange makes the proxy an endpoint of the hop
+instead of a reader between two: everything after the 101 is opaque to it, so the
+header must cross or the origin never sees an upgrade request at all. The forwarded
+pair is normalized to `Connection: Upgrade` / `Upgrade: websocket` (the one protocol
+forwarded, mirroring `httputil.ReverseProxy`), which also pins the exchange to
+HTTP/1.1 — net/http does that by itself (`Request.requiresHTTP1`), so the bridge's
+h2-negotiating upstream client needs no HTTP/1.1-only twin for upgrades. An upgrade
+GET on a bridged tunnel is held to the CONNECT-host check like any bridged request
+(421 otherwise); on a bridged tunnel the splice is doubled, agent↔bridge and
+bridge↔origin.
+
+The 101 is hijacked and spliced onto the client's connection
+(`relayUpgradedWebSocket`, modelled on ReverseProxy's `handleUpgradeResponse`), and
+the session records the request row plus a paired 101 response row carrying both
+directions' byte counts, recorded after both splice directions end — `durationMs`
+covers the whole WebSocket session, `ttfbMs` the handshake. The frames after the 101
+are relayed byte for byte and never inspected or buffered, so no response plugin runs
+on a 101 and a body parser sees only the upgrade GET. A non-101 answer (an origin
+serving the bare GET, refusing the upgrade) takes the ordinary response path.
+
+Out of scope: WebSocket over HTTP/2 downstream (RFC 8441 Extended CONNECT) — a client
+that wants h2 websockets through the proxy gets its fallback path, same as before
+forwarding existed.
+
 #### Declining Responses API WebSockets (`listener.decline_responses_websockets`)
 
 The forward proxy answers a WebSocket upgrade on OpenAI's Responses API — a `GET` with
@@ -914,18 +942,18 @@ deployment.
 
 ```yaml
 listener:
-  decline_responses_websockets: false   # forward the upgrade instead, as before
+  decline_responses_websockets: false   # forward the upgrade for real
 ```
 
-The proxy cannot carry the WebSocket either way: `Upgrade` is hop-by-hop, so a
-forwarded handshake reaches the origin as a bare `GET`, which OpenAI's endpoint answers
-405. Codex — the one client known to use this transport — retries a 405 five times over
-about six seconds before falling back to HTTPS, and reads a 426 as "use HTTP" and falls
-back at once. `false` restores the forwarding byte for byte, for a client that reads a
-426 some other way. Every other WebSocket is forwarded whatever this says, including
-one to another host serving the same API (a LiteLLM gateway, OpenCode Zen, a local
-server): what a 426 means is only known for Codex against OpenAI, and another client
-might stop where today it falls back. Restart to
+The decline is a steer, not a capability gap: a forwarded Responses WebSocket works
+(the section above), but its frames are opaque to every plugin, so a Codex session
+moved onto one stops being parseable — no token counts, no cost. A 426 sends Codex
+straight to HTTPS, where its traffic stays observable; before forwarding existed the
+calculation was harsher still, because the stripped handshake drew a 405 that Codex
+retried for ~6s. `false` forwards the upgrade for real instead. The scope is exact —
+OpenAI's own hosts only — because what a 426 means is only known for Codex against
+OpenAI, and another client (or another host serving the same API: a LiteLLM gateway,
+OpenCode Zen, a local server) is forwarded whatever this says. Restart to
 apply, like every `listener.*` field. The key goes in the runtime config: on a laptop,
 `~/.cortex/config.yaml`, then `agentop service restart`; in a cluster, the
 `authbridge-runtime-config` ConfigMap, then a pod restart. See

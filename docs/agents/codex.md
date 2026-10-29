@@ -260,8 +260,10 @@ is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolera
 for this dialect.
 
 **HTTPS, not WebSocket.** Codex prefers a WebSocket to the same `/responses` path, and
-Cortex cannot carry one: `Upgrade` is a hop-by-hop header a proxy must not forward, and
-the parser reads HTTP requests, not frames. So the forward proxy answers that handshake
+Cortex declines one on purpose: the proxy can carry a WebSocket (it forwards the
+upgrade and splices the 101, #1488), but the frames after it are opaque — the parsers
+read HTTP requests, not frames — so a Codex session moved onto a WebSocket stops
+being parseable: no token counts, no cost. The forward proxy answers that handshake
 itself with **426 Upgrade Required**, which Codex reads as "this endpoint wants HTTP" and
 switches to HTTPS straight away, for the rest of its session. That covers both of
 Codex's endpoints — `chatgpt.com` on a ChatGPT login and `api.openai.com` on an API key
@@ -285,7 +287,8 @@ hardcodes `supports_websockets = true` and Codex refuses a config that overrides
 built-in provider.
 
 The 426 is Cortex's setting, not Codex's, and it is on by default, so there is nothing to
-configure. To turn it off — which brings back the 405 and its retries — add the key to the
+configure. To turn it off — which forwards the upgrade for real, putting the session on
+a WebSocket the parsers cannot see — add the key to the
 `listener:` block that is already in `~/.cortex/config.yaml`:
 
 ```yaml

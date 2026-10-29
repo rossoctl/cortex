@@ -126,21 +126,24 @@ type Context struct {
 	// UpgradeStripped names the protocol the client asked to switch to —
 	// "websocket" in every case seen so far — on a request whose Upgrade header
 	// the forward proxy then removed. Empty on every other request, which is
-	// almost all of them.
+	// almost all of them: a WebSocket the proxy FORWARDS (#1488) carries no
+	// marker, because nothing was stripped.
 	//
 	// Set by the listener, not a plugin, and purely diagnostic: nothing reads it
 	// to change behaviour. It exists because the stripping is CORRECT and its
-	// consequence is baffling. RFC 9110 makes Upgrade hop-by-hop, so a proxy must
-	// not forward it; but the request then reaches the origin as a bare GET, and
-	// an origin whose endpoint takes a POST or an upgrade and nothing else answers
-	// 405. Codex does exactly this against chatgpt.com, retries about five times
+	// consequence was baffling. RFC 9110 makes Upgrade hop-by-hop, so a proxy
+	// must not forward it on an ordinary request; but a stripped upgrade request
+	// reaches the origin as a bare GET, and an origin whose endpoint takes a POST
+	// or an upgrade and nothing else answers 405. Codex did exactly this against
+	// chatgpt.com, retried about five times
 	// over roughly six seconds, falls back to HTTPS and works — leaving the user
 	// looking at `405 Method Not Allowed` in their agent's output with every
 	// reason to think Cortex broke, and an event saying only `backend_error/405`
 	// with nothing connecting the two. (Codex no longer reaches that 405 by default:
 	// the forward proxy answers a Responses API WebSocket with 426 itself, which it
 	// reads as "use HTTPS" at once — see listener.decline_responses_websockets. The
-	// marker is still set there, since the Upgrade is still not forwarded.)
+	// marker is still set there, since the Upgrade is still not forwarded. Every
+	// other WebSocket is forwarded, and those rows carry no marker.)
 	//
 	// Recorded on the REQUEST row, where the fact is true, and paired with the
 	// response row's status by RequestID — the same split Tunnel/TunnelReason use.

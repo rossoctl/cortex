@@ -1,0 +1,456 @@
+package forwardproxy
+
+// #1488 end to end: a WebSocket upgrade crossing the forward proxy — plain and
+// TLS-bridged — is forwarded, the 101 is spliced, frames flow both ways, and the
+// audit shows one event: the request row plus its paired 101 response row.
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/sha1" //nolint:gosec // RFC 6455 §1.3 mandates SHA-1 over key+GUID for the accept token; a sanity check, not a secret
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/tlsbridge"
+)
+
+// wsGUID is the fixed GUID RFC 6455 §1.3 folds into the accept computation.
+const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+// The RFC 6455 §1.3 sample handshake pair. Using the spec's own key means the
+// origin's accept is assertable against a published constant, which is what
+// proves the 101 the client read is the origin's own answer relayed unmodified
+// rather than something the proxy synthesized.
+const (
+	rfc6455Key    = "dGhlIHNhbXBsZSBub25jZQ=="
+	rfc6455Accept = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+)
+
+func wsAccept(key string) string {
+	sum := sha1.Sum([]byte(key + wsGUID))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// wsEchoHandler is a minimal WebSocket echo endpoint: a real 101 (accept
+// computed per RFC 6455) followed by a byte-level echo of everything after it.
+// No frame parsing — the proxy under test must not parse them either, and a
+// byte-level echo is what proves the splice is transparent in both directions.
+func wsEchoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.Header.Get("Upgrade") != "websocket" || r.Header.Get("Sec-WebSocket-Version") != "13" {
+		http.Error(w, "expected a version-13 websocket upgrade", http.StatusBadRequest)
+		return
+	}
+	conn, brw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	fmt.Fprintf(brw, "HTTP/1.1 101 Switching Protocols\r\n"+
+		"Upgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Accept: %s\r\n\r\n", wsAccept(r.Header.Get("Sec-WebSocket-Key")))
+	if err := brw.Flush(); err != nil {
+		return
+	}
+	// The echo: client → origin → client, one copy. Reads from brw so bytes
+	// buffered past the request line are not lost — the same rule the proxy's
+	// own splice follows.
+	_, _ = io.Copy(conn, brw)
+}
+
+// maskedTextFrame builds one masked RFC 6455 text frame — masking is mandatory
+// client-to-server — so the exchange after the 101 has the shape of a real
+// WebSocket's. A byte-level echo returns the frame unchanged, so the test
+// asserts the exact bytes back.
+func maskedTextFrame(payload string) []byte {
+	p := []byte(payload)
+	frame := []byte{0x81, 0x80 | byte(len(p))} // FIN + text opcode; MASK set, 7-bit length
+	mask := [4]byte{0x37, 0xfa, 0x21, 0x3d}
+	frame = append(frame, mask[:]...)
+	for i, c := range p {
+		frame = append(frame, c^mask[i%4])
+	}
+	return frame
+}
+
+// writeUpgradeRequest sends the upgrade GET by hand: no stock Go client will
+// both speak to a raw TCP peer and surrender its connection after a 101, which
+// is exactly the behaviour under test. target is the request target as the
+// receiving server must see it — absolute-form through the plain forward proxy,
+// origin-form on the bridged connection — and host the Host header.
+func writeUpgradeRequest(w io.Writer, target, host string) {
+	fmt.Fprintf(w, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"+
+		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", target, host, rfc6455Key)
+}
+
+// echoRound sends one masked frame over conn and reads what comes back on br,
+// asserting the echo is byte-identical. Used by both the plain and bridged
+// tests, after each has read the 101 its own way.
+func echoRound(t *testing.T, conn io.Writer, br io.Reader) {
+	t.Helper()
+	frame := maskedTextFrame("hello through the proxy")
+	if _, err := conn.Write(frame); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	echo := make([]byte, len(frame))
+	if _, err := io.ReadFull(br, echo); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if !bytes.Equal(echo, frame) {
+		t.Errorf("echo = %x, want the frame back unchanged: %x", echo, frame)
+	}
+}
+
+// waitForUpgradedRows polls the store until the 101's response row arrives.
+// That row is recorded only after BOTH splice directions end — i.e. after the
+// client closes — so waiting for event COUNT is not enough: the tunnel-open and
+// request rows land before client.Do even returns, and a count-based poll would
+// race the splice's teardown.
+func waitForUpgradedRows(t *testing.T, store *session.Store) []pipeline.SessionEvent {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v := store.View(session.DefaultSessionID)
+		if v != nil {
+			for _, ev := range v.Events {
+				if ev.Phase == pipeline.SessionResponse && ev.StatusCode == http.StatusSwitchingProtocols {
+					return v.Events
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			if v == nil {
+				t.Fatal("no events recorded within 5s")
+			}
+			for _, ev := range v.Events {
+				t.Logf("  phase=%v tunnel=%v path=%q status=%d", ev.Phase, ev.Tunnel, ev.HTTPPath, ev.StatusCode)
+			}
+			t.Fatalf("no 101 response row within 5s; %d events recorded", len(v.Events))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// assertUpgradedRows checks the audit shape #1488 promises: a request row with
+// no strip marker, paired by RequestID with a 101 response row carrying both
+// directions' byte counts — the one response row that does, like a tunnel
+// close, because after the 101 the proxy does not parse what crosses.
+func assertUpgradedRows(t *testing.T, events []pipeline.SessionEvent, path string) {
+	t.Helper()
+	var req *pipeline.SessionEvent
+	var resp *pipeline.SessionEvent
+	for i := range events {
+		ev := &events[i]
+		switch {
+		case ev.Phase == pipeline.SessionRequest && !ev.Tunnel && ev.HTTPPath == path:
+			if req == nil {
+				req = ev
+			}
+		case ev.Phase == pipeline.SessionResponse && ev.StatusCode == http.StatusSwitchingProtocols:
+			if resp == nil {
+				resp = ev
+			}
+		}
+	}
+	if req == nil {
+		for i := range events {
+			t.Logf("  phase=%v tunnel=%v path=%q status=%d", events[i].Phase, events[i].Tunnel, events[i].HTTPPath, events[i].StatusCode)
+		}
+		t.Fatalf("no request row for %q", path)
+	}
+	if resp == nil {
+		t.Fatalf("no 101 response row among %d events", len(events))
+	}
+	if req.UpgradeStripped != "" {
+		t.Errorf("request row carries UpgradeStripped=%q — a forwarded upgrade must not be marked stripped", req.UpgradeStripped)
+	}
+	if req.RequestID != resp.RequestID {
+		t.Errorf("request row id %q does not pair with the 101 row id %q", req.RequestID, resp.RequestID)
+	}
+	if resp.BytesUp == 0 || resp.BytesDown == 0 {
+		t.Errorf("101 row bytes: up=%d down=%d — both directions carried the frame, both must be counted", resp.BytesUp, resp.BytesDown)
+	}
+}
+
+// THE PLAIN PATH. A ws:// upgrade arrives as an absolute-form GET on the
+// forward proxy's ordinary listener; the 101 comes back over the same
+// connection, hijacked and spliced, and the echo crosses both ways through the
+// proxy's own process. The done-when of #1488, on the non-intercepted side.
+func TestForwardProxy_WebSocketEcho(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(wsEchoHandler))
+	defer origin.Close()
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	writeUpgradeRequest(conn, origin.URL+"/ws", originURL.Host)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d, want 101", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Sec-WebSocket-Accept"); got != rfc6455Accept {
+		t.Errorf("Sec-WebSocket-Accept = %q, want the RFC 6455 sample %q — the 101 must be the origin's own, relayed unmodified", got, rfc6455Accept)
+	}
+
+	echoRound(t, conn, br)
+
+	// Closing is what ends the splice's two copies, and the 101 row records
+	// after they both do.
+	_ = conn.Close()
+	assertUpgradedRows(t, waitForUpgradedRows(t, store), "/ws")
+}
+
+// THE BRIDGED PATH, the one #1488 is about: the agent CONNECTs, the bridge
+// terminates the TLS, and the upgrade GET arrives decrypted. The origin is
+// h2-capable on purpose, and the test asserts it still served the upgrade over
+// HTTP/1.1 — the load-bearing stdlib behavior the whole forwarding rests on
+// (net/http Request.requiresHTTP1 pins a WebSocket upgrade to HTTP/1.1, so the
+// bridge's h2-negotiating upstream client needs no upgrade-specific twin). The
+// echo crosses two splices (agent↔bridge and bridge↔origin) in each direction.
+func TestConnectBridge_WebSocketEcho(t *testing.T) {
+	st := newBridgeStack(t)
+
+	tconn := st.connect(t)
+	writeUpgradeRequest(tconn, "/ws", st.originHostPort)
+	br := bufio.NewReader(tconn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read upgrade response over the bridge: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status = %d, want 101 through the bridge", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Sec-WebSocket-Accept"); got != rfc6455Accept {
+		t.Errorf("Sec-WebSocket-Accept = %q, want the RFC 6455 sample %q — the 101 must be the origin's own, relayed unmodified", got, rfc6455Accept)
+	}
+
+	echoRound(t, tconn, br)
+
+	_ = tconn.Close()
+	if proto := st.upgradeProto(); proto != "HTTP/1.1" {
+		t.Errorf("the origin served the upgrade over %s — net/http should have pinned the exchange to HTTP/1.1 (Request.requiresHTTP1)", proto)
+	}
+	events := waitForUpgradedRows(t, st.store)
+	// The bridged tunnel's open rides along with the request row, so three
+	// rows: tunnel open, request, 101.
+	var tunnelOpen bool
+	for _, ev := range events {
+		if ev.Tunnel && ev.Phase == pipeline.SessionRequest {
+			tunnelOpen = true
+		}
+	}
+	if !tunnelOpen {
+		t.Errorf("no tunnel-open row among %d events — a bridged upgrade's tunnel must still be audited", len(events))
+	}
+	assertUpgradedRows(t, events, "/ws")
+}
+
+// The CONNECT-host check applies to the upgrade request too (MOCA MI1 §8.5
+// item 5): an upgrade GET whose Host names another authority than its tunnel's
+// CONNECT target is refused 421 before anything is forwarded.
+func TestConnectBridge_WebSocketMisdirectedHost(t *testing.T) {
+	st := newBridgeStack(t)
+
+	tconn := st.connect(t)
+	writeUpgradeRequest(tconn, "/ws", "other.example:443")
+	resp, err := http.ReadResponse(bufio.NewReader(tconn), nil)
+	if err != nil {
+		t.Fatalf("read response over the bridge: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMisdirectedRequest {
+		t.Fatalf("misdirected upgrade status = %d, want 421", resp.StatusCode)
+	}
+}
+
+// bridgeStack is the CONNECT-bridge scaffolding the WebSocket tests share: an
+// h2-capable TLS origin running the echo handler, a bridge engine, a forward
+// proxy wired to it, and the session store the rows land in.
+type bridgeStack struct {
+	store          *session.Store
+	proxy          *httptest.Server
+	originHostPort string
+	engine         *tlsbridge.Engine
+
+	// protoMu guards originProto, written by the origin's handler goroutine
+	// and read by the test after the response — a response arriving over a
+	// socket is not a happens-before edge Go's memory model recognises.
+	protoMu     sync.Mutex
+	originProto string
+}
+
+// upgradeProto reports the protocol the origin served the upgrade over,
+// recorded by the handler below. Empty when the origin never saw an upgrade
+// request.
+func (st *bridgeStack) upgradeProto() string {
+	st.protoMu.Lock()
+	defer st.protoMu.Unlock()
+	return st.originProto
+}
+
+func newBridgeStack(t *testing.T) *bridgeStack {
+	t.Helper()
+
+	st := &bridgeStack{}
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") != "" {
+			st.protoMu.Lock()
+			st.originProto = r.Proto
+			st.protoMu.Unlock()
+		}
+		wsEchoHandler(w, r)
+	}))
+	origin.EnableHTTP2 = true
+	origin.StartTLS()
+
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		origin.Close()
+		t.Fatalf("parse origin URL: %v", err)
+	}
+
+	originCAPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: origin.Certificate().Raw,
+	})
+
+	src, err := tlsbridge.NewEphemeralSource()
+	if err != nil {
+		origin.Close()
+		t.Fatalf("NewEphemeralSource: %v", err)
+	}
+	minter := tlsbridge.NewMinter(src, tlsbridge.MinterOpts{})
+	up, err := tlsbridge.NewUpstreamClient(originCAPEM, false)
+	if err != nil {
+		origin.Close()
+		t.Fatalf("NewUpstreamClient: %v", err)
+	}
+	engine := &tlsbridge.Engine{
+		Decision: mustBridgeDecision(t, portOf(originURL.Host)),
+		Term:     tlsbridge.NewTerminator(minter),
+		Skip:     tlsbridge.NewSkipSet(),
+		Upstream: up,
+		CAPEM:    src.CACertPEM(),
+	}
+
+	store := session.New(5*time.Minute, 100, 0)
+	p, err := pipeline.New(nil)
+	if err != nil {
+		origin.Close()
+		store.Close()
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+		TLSBridge:        engine,
+	}
+	proxy := httptest.NewServer(srv.Handler())
+
+	t.Cleanup(func() {
+		proxy.Close()
+		store.Close()
+		origin.Close()
+	})
+	st.store = store
+	st.proxy = proxy
+	st.originHostPort = originURL.Host
+	st.engine = engine
+	return st
+}
+
+// connect does the CONNECT and the agent-side TLS handshake, returning the
+// decrypted connection the test speaks HTTP/1.1 on — the same sequence
+// TestConnectBridge walks, kept here so each WebSocket test starts at the
+// upgrade GET.
+func (st *bridgeStack) connect(t *testing.T) *tls.Conn {
+	t.Helper()
+	proxyURL, err := url.Parse(st.proxy.URL)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	rawConn, err := net.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	connectReq, err := http.NewRequest(http.MethodConnect, "//"+st.originHostPort, nil)
+	if err != nil {
+		t.Fatalf("new CONNECT request: %v", err)
+	}
+	connectReq.Host = st.originHostPort
+	connectReq.URL.Host = st.originHostPort
+	if err := connectReq.Write(rawConn); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(rawConn)
+	connectResp, err := http.ReadResponse(br, connectReq)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	_ = connectResp.Body.Close()
+	if connectResp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", connectResp.StatusCode)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(st.engine.CAPEM) {
+		t.Fatalf("failed to append bridge CA PEM to pool")
+	}
+	tconn := tls.Client(&bufferedConn{Conn: rawConn, r: br}, &tls.Config{
+		ServerName: hostOnly(st.originHostPort),
+		RootCAs:    pool,
+		NextProtos: []string{"http/1.1"},
+	})
+	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tconn.Handshake(); err != nil {
+		t.Fatalf("agent-side TLS handshake through the bridge failed: %v", err)
+	}
+	return tconn
+}

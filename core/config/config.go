@@ -937,8 +937,8 @@ type ListenerConfig struct {
 
 	// DeclineResponsesWebSockets: whether the forward proxy answers a WebSocket
 	// upgrade on an OpenAI Responses API path (one ending /responses, on chatgpt.com
-	// or api.openai.com) with 426 itself, instead of forwarding the request with its Upgrade stripped. nil means
-	// unset, and the default is on; explicit false restores the forwarding. See
+	// or api.openai.com) with 426 itself, instead of forwarding the upgrade. nil
+	// means unset, and the default is on; explicit false forwards it. See
 	// DeclinesResponsesWebSockets for why on is the default.
 	//
 	// A pointer for the reason SessionConfig.Enabled is one: with a plain bool,
@@ -949,13 +949,14 @@ type ListenerConfig struct {
 // DeclinesResponsesWebSockets reports whether the forward proxy answers a WebSocket
 // upgrade on a Responses API path with 426 rather than forwarding it.
 //
-// On unless set false, in every deployment. The proxy must strip Upgrade (RFC 9110
-// makes it hop-by-hop), so a forwarded upgrade reaches the origin as a bare GET, and
-// OpenAI's Responses endpoint answers that 405. Codex reads a 405 as transient and
-// retries for about six seconds before falling back to HTTPS; it reads a 426 as "use
-// HTTP" and falls back at once. The forwarded request can never become a WebSocket, so
-// nothing is lost by answering it here. False is the escape hatch for a client that
-// reads 426 some other way.
+// On unless set false, in every deployment. The proxy CAN forward a WebSocket (it
+// does for every other host, #1488), but a Responses session on one is opaque to
+// every parser — no token counts, no cost — so the 426 keeps Codex on HTTPS where
+// its traffic stays observable. That, and history: before forwarding existed the
+// stripped handshake drew a 405 that Codex retried for about six seconds before
+// falling back to HTTPS, while it reads a 426 as "use HTTP" and falls back at once.
+// False is the escape hatch for a client that reads 426 some other way — or wants
+// the WebSocket for real.
 func (l ListenerConfig) DeclinesResponsesWebSockets() bool {
 	return l.DeclineResponsesWebSockets == nil || *l.DeclineResponsesWebSockets
 }
