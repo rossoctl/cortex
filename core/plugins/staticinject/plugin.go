@@ -178,8 +178,9 @@ func (p *StaticInject) Configure(raw json.RawMessage) error {
 
 // OnRequest implements the fail-closed injection sequence: missing/mismatched
 // placeholder, unresolved key, or an unsafe resolved value all deny with 401
-// and leave the Authorization header unchanged. Only a fully successful
-// resolution swaps the header.
+// and leave the Authorization header unchanged. A resolved credential on a
+// plaintext (http) request denies with 403 plaintext_credential — see the
+// gate below. Only a fully successful resolution swaps the header.
 func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
 	if p.resolver == nil {
 		return pipeline.DenyStatus(401, "static-inject.unconfigured", "static-inject plugin not configured")
@@ -209,6 +210,42 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	// "Bearer " / raw header instead of denying.
 	if !ok || value == "" {
 		return pipeline.DenyStatus(401, "static-inject.unresolved-key", "no credential available for the resolved key")
+	}
+
+	// A credential that is about to be injected must never cross the network
+	// in cleartext (#1481, MOCA MI1 §8.5: 403 plaintext_credential). pctx.Scheme
+	// is "http" exactly for a request the listener knows is plaintext — an
+	// absolute-form http:// URL through the forward proxy, or Envoy's :scheme
+	// on the ext_proc path; a TLS-bridged request carries "https". Checked
+	// here, after resolution and before any header write, so the refusal
+	// names the credential rather than the scheme: plain HTTP to a host
+	// WITHOUT one keeps its normal allow-list/SSRF treatment, and an empty
+	// scheme (listener couldn't tell) is left to those same checks rather
+	// than denied on a guess.
+	//
+	// The check lives in the injector, not in a pre-pipeline gate, because
+	// only the resolver knows whether this host has a credential — a
+	// listener-level gate would have to duplicate that knowledge or refuse
+	// plain HTTP to credential-less hosts too, which the contract routes to
+	// the allow list instead. It is also deliberately not a blanket rule for
+	// every credential-writing plugin: token-exchange injects short-lived
+	// tokens onto plaintext in-cluster calls by design.
+	//
+	// The code is the MOCA contract's identifier verbatim rather than the
+	// repo's usual `static-inject.<kebab>` form, so the egress conformance
+	// suite Cortex and moca-egress share matches it without a translation
+	// table — the same reasoning that freezes `x-authbridge-*` wire names.
+	if strings.EqualFold(pctx.Scheme, "http") {
+		pctx.Record(pipeline.Invocation{
+			Action: pipeline.ActionDeny,
+			Reason: "plaintext_credential",
+			Details: map[string]string{
+				"scheme": pctx.Scheme,
+				"host":   key,
+			},
+		})
+		return pipeline.DenyStatus(403, "plaintext_credential",
+			"refusing to send a credential over plain HTTP")
 	}
 
 	target := p.cfg.InjectHeader

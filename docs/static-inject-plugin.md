@@ -50,3 +50,23 @@ completed cleanly:
 There is no partial-injection path: a denied request never forwards
 the placeholder, and a successful swap only ever writes the fully
 resolved real credential.
+
+### Plaintext refusal (`403 plaintext_credential`)
+
+A credential that is about to be injected is never sent over plain
+HTTP: when the request's scheme is `http` and the resolved host has a
+credential, the plugin denies with `403 plaintext_credential` before
+any header is written, so nothing is injected and nothing is sent
+upstream. The code is the MOCA egress contract's identifier verbatim
+(MI1 §8.5) rather than the usual `static-inject.<reason>` form, so the
+conformance suite Cortex shares with `moca-egress` matches it without
+a translation table.
+
+The refusal names the credential, not the scheme: plain HTTP to a host
+*without* a credential is not refused here — it keeps its normal
+fail-closed treatment above, and allow-list/SSRF policy judges the
+request as it would any other. An empty scheme (the listener couldn't
+determine one) is likewise not treated as plaintext. The check runs
+after resolution on purpose: only the resolver knows whether this host
+has a credential, which is why the gate lives in the injector rather
+than in a pre-pipeline check.

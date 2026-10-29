@@ -17,6 +17,7 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
+	"github.com/rossoctl/cortex/core/plugins/staticinject"
 	"github.com/rossoctl/cortex/core/plugins/tokenexchange/cache"
 	"github.com/rossoctl/cortex/core/plugins/tokenexchange/exchange"
 	"github.com/rossoctl/cortex/core/routing"
@@ -431,6 +432,69 @@ func TestForwardProxy_BodyBuffering(t *testing.T) {
 
 	if string(recorder.receivedBody) != body {
 		t.Errorf("plugin got body = %q, want %q", recorder.receivedBody, body)
+	}
+}
+
+// TestForwardProxy_PlaintextCredentialRefused pins #1481's conformance case
+// end to end: an absolute-form http:// request through the proxy to a host
+// that has a credential is refused 403 plaintext_credential, and the upstream
+// is never dialed — the secret cannot cross the wire in the clear because
+// nothing crosses it at all.
+func TestForwardProxy_PlaintextCredentialRefused(t *testing.T) {
+	var upstreamHits int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	// static-inject keyed by host:port — pctx.Host for a proxied request is
+	// the URL's host:port, so the resolver key must match it exactly.
+	inject := staticinject.New()
+	cfg := `{
+		"source": "mappings",
+		"mappings": {"` + mustParseURL(backend.URL).Host + `": "REAL"},
+		"key_by": "host",
+		"placeholder": "PLACEHOLDER"
+	}`
+	if err := inject.Configure(json.RawMessage(cfg)); err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	p, err := pipeline.New([]pipeline.Plugin{inject})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", backend.URL+"/x", nil)
+	req.Header.Set("Authorization", "Bearer PLACEHOLDER")
+
+	proxyClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(mustParseURL(proxy.URL)),
+		},
+	}
+	resp, err := proxyClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (body %q)", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "plaintext_credential") {
+		t.Errorf("body = %q, want the plaintext_credential error code", body)
+	}
+	if strings.Contains(string(body), "REAL") {
+		t.Errorf("body = %q, must not carry the credential", body)
+	}
+	if upstreamHits != 0 {
+		t.Errorf("upstream hits = %d, want 0 (nothing sent)", upstreamHits)
 	}
 }
 
