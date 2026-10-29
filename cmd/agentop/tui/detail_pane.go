@@ -50,7 +50,7 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 		if r.tunnel != nil {
 			tunnel = tunnelHeader(r.tunnel)
 		}
-		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), tunnel} {
+		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), timingHeader(e), tunnel} {
 			if h != "" {
 				lines = append(lines, strings.Split(h, "\n")...)
 				lines = append(lines, "")
@@ -73,6 +73,36 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	// with dead space beneath it. SetYOffset is the clamping setter; a no-op when the
 	// offset is already in range. Same three lines as syncHelpViewport.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
+}
+
+// timingHeader decomposes a response row's duration the way #1251 asked for:
+// how long the origin took to answer (ttfb) against how long the body then
+// took. Duration alone cannot tell an 11-minute response with 217 tokens
+// apart from a fast one — the two need different fixes, and the reader
+// sorting by duration is asking exactly that question. The body's share is
+// Duration − Ttfb rather than a third measurement: the row already holds
+// both ends of the span. Response rows only, and only when ttfb exists — a
+// failed exchange has no headers to time, and a request row no duration.
+//
+//	timing:  ttfb 412ms · body 10m32s of 11m07s total
+func timingHeader(e *pipeline.SessionEvent) string {
+	if e.Phase != pipeline.SessionResponse || e.Ttfb <= 0 || e.Duration == 0 {
+		return ""
+	}
+	body := e.Duration - e.Ttfb
+	if body < 0 {
+		body = 0
+	}
+	// formatDuration renders zero blank because a zero in the DURATION column
+	// means "the listener counted nothing" — an unknown. This zero is a computed
+	// difference and means the body took under a millisecond, which the sentence
+	// wants said rather than elided: a blank would print "body  of 412ms total".
+	bodyText := formatDuration(body)
+	if body == 0 {
+		bodyText = "0ms"
+	}
+	return fmt.Sprintf("timing:      ttfb %s · body %s of %s total",
+		formatDuration(e.Ttfb), bodyText, formatDuration(e.Duration))
 }
 
 // tunnelHeader summarizes the CONNECT tunnel folded into a TLS-bridged

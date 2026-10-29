@@ -119,17 +119,23 @@ requests the inference parser attributed to a Claude Code agent (`agentRole`),
 and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
 
 - A **turn** is one model call, request to end of response. Claude Code's
-  progress-label calls and tool-less side calls (titler, classifier) are left
-  out. `error` marks a call that failed: an upstream error, a refusal, the
-  client giving up, a finish of `content_filter`, `failed` or `cancelled`, or a
-  response that ended with no finish reason, which is a stream cut mid-reply.
-  `resent` marks a call that sent its agent's previous call's conversation again
-  unchanged: a retry.
+  progress-label and away-recap calls (the prompt in the last non-system
+  message) and tool-less side calls (titler, classifier) are left out. `error`
+  marks a call that failed: an upstream error, a refusal, the client giving up,
+  a finish of `content_filter`, `failed` or `cancelled`, or a response that
+  ended with no finish reason, which is a stream cut mid-reply. `resent` marks
+  a call that sent its agent's previous call's conversation again unchanged: a
+  retry.
 - A **tool** runs from the response that requested it to the agent's first
   request carrying its result (`inference.toolResults[].toolUseId`). A tool
   Claude Code started while the response was still streaming can have its
-  result recorded first; its end is clamped to its start. `preview` is up to
-  80 characters of the command, path or description.
+  result recorded first; its end is clamped to its start. A CONNECT to a model
+  host that could not be dialed, after the tool started and before its result,
+  ends it there unless its agent, or an agent below it, made a successful turn
+  in between: the agent tried to report back and the network was gone, so the
+  result arrived only when it came back, or never. A failure the agent recovered
+  from is a blip and ends nothing. A tool with neither has no `end` and is still
+  running. `preview` is up to 80 characters of the command, path or description.
 - An **agent** links to the `Agent` tool call that started it by the id the
   call's result names (`agentId: …`). A fork's result names none, so a fork
   takes its parent's earliest unmatched spawn. Requests recorded before the
@@ -142,8 +148,9 @@ and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
   `<task-notification>` naming that id. Its tool call ends at the
   acknowledgement, so the job is what shows it still running. A job with no
   `end` is one no notification named: still running, or never reported, as a
-  server left running when its agent exited is. Absent when the session
-  started none.
+  server left running when its agent exited is. A job whose agent was cut off
+  ends where its tools do: at the first failed dial to a model host after the
+  agent's last call. Absent when the session started none.
 
 **Hosts** are every outbound request paired with its response, every opaque
 tunnel, and every denial. `kind` is `llm`, `mcp`, `http` or `tunnel`, and
@@ -251,6 +258,20 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
   and a client such as Codex reads it as "use HTTPS" and retries at once over
   HTTPS. It is not counted as an error in `/v1/usage`.
+- `ttfbMs` — on a delivered response row, the wall time from request entry to
+  the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
+  how long the body took — for a streamed completion, the stream time. The pair
+  separates a slow-to-answer origin from one that answered and then trickled,
+  which `durationMs` alone cannot (#1251). The row is recorded when the listener
+  is finished with the body — after the read on a buffered path, after the relay
+  on a streamed or unbuffered one — so the difference really is the body's time.
+  The one exception is the envoy-sidecar listener with a pipeline no plugin of
+  which reads bodies: the row is recorded at the headers while Envoy relays the
+  body unseen, and ttfb is left absent there rather than reported as a figure
+  equal to the whole duration. Absent when the exchange failed
+  before headers (the 502 cases above), on request rows, and on tunnel rows —
+  an opaque tunnel has no headers to time. agentop's detail pane renders the
+  split as a `timing:` line.
 - `requestedHost` — present only when a plugin redirected the request: the
   host the client asked for. `host` is where the request actually went, and
   usage, the cost ledger and pricing all follow `host`.
@@ -263,7 +284,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   destination. Headers are not counted. A tunnel close is the one row carrying
   both. **Zero means the listener counted nothing, not that the body was
   empty** — every listener buffers bodies only when a plugin asks, so an
-  unbuffered request reports zero.
+  unbuffered request reports zero. A response relayed straight through is
+  counted, not zero: both proxies record the row after they finish relaying
+  it (#1251), so the bytes that crossed their own process are on the row. The
+  one arm that still reports zero is the envoy-sidecar listener with a
+  body-free pipeline — it asked Envoy not to send it the bytes, so zero there
+  means "not asked to see", not "not counted".
 - `tunnel`, `tunnelReason` — an opaque CONNECT (or transparent-redirect) tunnel
   records two rows sharing a `requestId`: the open (`phase: "request"`,
   `tunnelReason` saying why the bytes stayed opaque) and the close (`phase:

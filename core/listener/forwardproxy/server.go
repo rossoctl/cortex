@@ -577,6 +577,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Response phase: populate pctx and run plugins in reverse order.
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
+	// Taken HERE and not where client.Do returned, because a resend
+	// (resendIfAsked above) discards that response and re-issues the exchange:
+	// the figure the response row should carry is for the response the client
+	// actually got. Both proxy listeners measure at the same point in their
+	// own flow — the moment the delivered response's headers are in hand —
+	// so ttfb means one thing wherever a row reports it. Stays zero on the
+	// error path above, where no headers ever arrived (#1251).
+	pctx.ResponseHeadersAt = time.Now()
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else. Every
 	// arm below reads this one body — buffered whole, relayed SSE block by block, relayed
@@ -587,12 +595,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// with what extproc reports for the same response without each having to
 	// count: see bodycount.
 	//
-	// What the wrapper does NOT reach is the final io.Copy at the bottom of this
-	// function — the arm a response takes when nothing buffered it and it was not
-	// streamed. The row is recorded above that copy, so those bytes are counted
-	// after the figure has been read and the row reports zero, which agentop
-	// renders blank rather than wrong. reverseproxy's unbuffered relay has the same
-	// shape for the same reason.
+	// The final io.Copy at the bottom of this function — the arm a response takes
+	// when nothing buffered it and it was not streamed — reads through this
+	// wrapper, and the row is recorded below that copy, so the count is complete
+	// when the figure is read. What the wrapper still does not reach is a SKIPPED
+	// response's row: skip_hosts records nothing at all. reverseproxy's
+	// unbuffered relay defers its row to the end of its copy the same way
+	// (recordOnEOFBody).
 	resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
@@ -718,7 +727,6 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			resp.Header.Del("Content-Encoding")
 		}
 
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}
 
 	for key, values := range resp.Header {
@@ -738,6 +746,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)
+	}
+	// Recorded after the copy, not before it: the arm that reaches this io.Copy
+	// unbuffered is still receiving its body while the copy runs, and a row filed
+	// above it would stop Duration at the headers — reporting a body share of zero
+	// for a body the proxy was still relaying, the exact misreading #1251's split
+	// exists to prevent. After the copy the figure covers the whole exchange,
+	// matching the streamed arms (which record when their relay loop ends), and
+	// ResponseBytes is complete for the same reason. Skipped responses stay
+	// unrecorded, as skip_hosts promises.
+	if !skipped {
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 	}
 }
 
@@ -1654,6 +1673,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		StatusCode:     statusCode,
 		Error:          pipeline.EventErrorOr(pctx, fail),
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -2050,7 +2070,19 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
 // Once the tunnel is open the timeout no longer applies — the agent's TLS
 // handshake and subsequent traffic flow at their own pace.
-const connectDialTimeout = 30 * time.Second
+//
+// 10s, not the 30s it long was, because the only dials that wait it out are
+// black-holed ones (#1251): a refused or unroutable destination answers a TCP
+// SYN with an RST in well under a second, while a host that drops the SYN
+// silently — off the VPN that reaches it, behind a dead NAT — consumes the
+// whole budget and the agent spends it staring at nothing. By 10s the initial
+// SYN and its first four scheduled retransmits (1s, 2s, 4s, 8s) have all gone
+// unanswered; a handshake that misses five straight tries is not being saved
+// by a sixth at 16s, so the rest of the budget bought no connection, only
+// latency before the 502. Matches the budget the bridge already trusts for
+// its own upstream probe (upstreamVerifyTimeout) and the mTLS dialer's plain
+// dial, which had settled on 10s independently.
+const connectDialTimeout = 10 * time.Second
 
 // handleConnect tunnels HTTPS (and any other TLS-wrapped protocol) through
 // the forward proxy as raw TCP. Mirrors the TLS-passthrough behavior of

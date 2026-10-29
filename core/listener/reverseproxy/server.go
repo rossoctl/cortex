@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/httpx"
@@ -487,6 +488,14 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
+	// The forward proxy's handleRequest sets its ResponseHeadersAt at the same
+	// point in its own flow — the moment the delivered response's headers are
+	// in hand — so ttfb means the same thing on a row from either listener.
+	// Runs for the streaming arm too: modifyResponse executes before the body
+	// is relayed, which is exactly what makes this headers-arrival, not
+	// body-completion. Stays zero on errorHandler paths, where no headers
+	// arrived (#1251).
+	pctx.ResponseHeadersAt = time.Now()
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else — at
 	// the wire, before either arm below gets at the body. The streaming arm sees
@@ -496,9 +505,10 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// bytes. The buffered arm's replacement of resp.Body with a reader over what it
 	// already read means nothing is counted twice. See bodycount.
 	//
-	// What this does NOT reach is the fully-unbuffered relay: ReverseProxy copies
-	// that body after modifyResponse returns, which is after the response row is
-	// appended below, so it stays at zero and renders blank rather than wrong.
+	// The fully-unbuffered relay gets its full count too: ReverseProxy copies
+	// that body after modifyResponse returns, and that arm's row is deferred to
+	// the end of the copy (recordOnEOFBody below), so the count is complete when
+	// the figure is read.
 	if resp.Body != nil {
 		resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 	}
@@ -623,9 +633,21 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// SSE responses still get recorded — the body is whatever the
 	// pipeline saw at this point (may be empty for streamed bodies),
 	// but the status code and plugin invocations are always meaningful.
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	// Always pair every inbound request with a response row (carries StatusCode).
-	if s.Sessions != nil {
+	//
+	// The buffered arm has the whole body in hand by the time it gets here, so
+	// its row is complete at this point. The unbuffered arm does not: ReverseProxy
+	// copies resp.Body after modifyResponse returns, and a row filed now would
+	// stop Duration at the headers — a body share of zero for a body still
+	// arriving, the exact misreading #1251's split exists to prevent. That arm
+	// defers the row to the end of the copy via recordOnEOFBody, which is also
+	// when ResponseBytes finishes counting (see the bodycount note above). The
+	// streaming arm returned earlier and records from its own onClose.
+	record := func() {
+		if s.Sessions == nil {
+			return
+		}
+		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
+		// Always pair every inbound request with a response row (carries StatusCode).
 		sid := inboundSessionID(pctx)
 		// Inference is the token report, and it is what a cost consumer reads: without it
 		// this listener served a whole `configured` cost for zero tokens, because the cost
@@ -651,9 +673,21 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 			StatusCode:     resp.StatusCode,
 			Error:          pipeline.DeriveError(pctx),
 			Duration:       pipeline.DurationSince(pctx.StartedAt),
+			Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 			TLS:            eventTLS(pctx),
 		})
 	}
+	// A 101 is recorded here, not deferred: ReverseProxy never copies its body —
+	// it hands the connection to the upgraded protocol — so on a failed upgrade
+	// (protocol mismatch, failed hijack) nothing would ever fire the deferred
+	// record. The row is the 101 itself, and ErrorHandler must not add a second
+	// one after it.
+	if !s.InboundPipeline.NeedsBody() && resp.Body != nil &&
+		resp.StatusCode != http.StatusSwitchingProtocols {
+		resp.Body = &recordOnEOFBody{inner: resp.Body, onClose: record}
+		return nil
+	}
+	record()
 	return nil
 }
 
@@ -844,8 +878,36 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		StatusCode:     statusCode,
 		Error:          pipeline.EventErrorOr(pctx, fail),
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		TLS:            eventTLS(pctx),
 	})
+}
+
+// recordOnEOFBody defers the response row of the fully-unbuffered relay to
+// the moment ReverseProxy finishes with the body. modifyResponse returns
+// before that copy starts, so a row appended there would stop Duration at the
+// headers and report a body share of zero for a body still arriving (#1251) —
+// and a ResponseBytes figure the bodycount wrapper had not finished counting.
+// Records exactly once, on EOF or Close, whichever arrives first: a copy that
+// runs to the end fires from Read, a client that hangs up mid-copy still gets
+// its row from ReverseProxy's Close.
+type recordOnEOFBody struct {
+	inner   io.ReadCloser
+	onClose func()
+	once    sync.Once
+}
+
+func (b *recordOnEOFBody) Read(p []byte) (int, error) {
+	n, err := b.inner.Read(p)
+	if err == io.EOF {
+		b.once.Do(b.onClose)
+	}
+	return n, err
+}
+
+func (b *recordOnEOFBody) Close() error {
+	b.once.Do(b.onClose)
+	return b.inner.Close()
 }
 
 // streamingResponseBody is the io.ReadCloser ReverseProxy ferries

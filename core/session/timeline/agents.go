@@ -14,9 +14,16 @@ import (
 
 // progressPrompt is the instruction Claude Code appends when it asks a model for a subagent's
 // 3-5 word status line. Those calls carry the subagent's whole context and tool list, so only
-// their last message tells them apart from the subagent's real turns. They are a third of all
-// subagent calls on real sessions, and drawing them would bury the turns that matter.
+// their last user message tells them apart from the subagent's real turns; Claude Code can send
+// system messages after it (a <total_tokens> count). They are a third of all subagent calls on
+// real sessions, and drawing them would bury the turns that matter.
 const progressPrompt = "Describe your most recent action in 3-5 words"
+
+// recapPrompt asks for the summary Claude Code shows when the user comes back to an idle
+// session. The same shape as a progress label: whole context and tool list, told apart only by
+// its last user message. Drawn as a turn it was the agent working while the user was away, and
+// two recaps of an unchanged conversation read as a retry: 74 hours of it on one session.
+const recapPrompt = "The user stepped away and is coming back"
 
 // The two ways a background subagent's result reaches the agent that started it. Both name the
 // subagent by the id Claude Code sends as X-Claude-Code-Agent-Id, the id the proxy records as
@@ -367,8 +374,10 @@ func isSideCall(inf *pipeline.InferenceExtension) bool {
 	if len(inf.Tools) == 0 && inf.ToolCount == 0 {
 		return true
 	}
-	if n := len(inf.Messages); n > 0 {
-		return strings.Contains(inf.Messages[n-1].Content, progressPrompt)
+	for i := len(inf.Messages) - 1; i >= 0; i-- {
+		if m := inf.Messages[i]; m.Role != "system" {
+			return strings.Contains(m.Content, progressPrompt) || strings.Contains(m.Content, recapPrompt)
+		}
 	}
 	return false
 }

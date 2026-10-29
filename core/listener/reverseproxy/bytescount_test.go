@@ -88,27 +88,25 @@ func TestBytes_BufferedPairCountsEachDirectionOnItsOwnRow(t *testing.T) {
 	}
 }
 
-// TestBytes_UnbufferedResponseReportsZeroRatherThanAGuess pins the one arm the
-// counting wrapper cannot reach: with no plugin asking for the response body,
-// httputil.ReverseProxy copies it straight to the client — and it does that AFTER
-// modifyResponse returns, which is after the response row has been appended
-// inside it.
+// TestBytes_UnbufferedResponseReportsTheFullCount pins the arm this file used
+// to excuse: with no plugin asking for the response body, httputil.ReverseProxy
+// copies it straight to the client — AFTER modifyResponse returns. The row used
+// to be appended inside modifyResponse, before the copy, so this arm reported
+// zero; it is now deferred to the end of the copy (recordOnEOFBody), and the
+// count the wrapper finishes during that copy is the figure the row carries.
 //
-// Zero is the honest answer and the event contract's own: zero means the listener
-// counted nothing, not that the body was empty, and agentop renders it blank. The
-// tempting alternative is Content-Length, which is -1 on anything chunked and
-// deleted outright on the streaming arm — a guess that would be wrong exactly
-// where it mattered. Pinned so that if the ordering here ever changes, it changes
-// deliberately. forwardproxy's unbuffered relay has the same shape for the same
-// reason.
-func TestBytes_UnbufferedResponseReportsZeroRatherThanAGuess(t *testing.T) {
+// Still counted at the wire, not guessed from Content-Length, which is -1 on
+// anything chunked and deleted outright on the streaming arm. forwardproxy's
+// unbuffered relay records after its copy for the same reason.
+func TestBytes_UnbufferedResponseReportsTheFullCount(t *testing.T) {
 	_, respRow := bytesOf(t, []pipeline.Plugin{}, "GET", "/plain", "",
 		func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"never":"buffered"}`)
 		})
 
-	if respRow.BytesDown != 0 {
-		t.Errorf("response row ↓%d, want ↓0 — ReverseProxy copies after the row is recorded, so any figure here is counted too late to be this row's", respRow.BytesDown)
+	if respRow.BytesDown != int64(len(`{"never":"buffered"}`)) {
+		t.Errorf("response row ↓%d, want ↓%d — the row is recorded after the copy, so the count is complete when the figure is read",
+			respRow.BytesDown, len(`{"never":"buffered"}`))
 	}
 }

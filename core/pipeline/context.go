@@ -155,6 +155,19 @@ type Context struct {
 	// compute SessionEvent.Duration without walking the event history.
 	StartedAt time.Time
 
+	// ResponseHeadersAt is the wall-clock time the upstream's response HEADERS
+	// arrived — when client.Do returned (both proxy listeners) or Envoy delivered
+	// the response-headers callback (extproc). Set by the listener, once, on the
+	// arm that actually got a response; left zero on a failed exchange, so
+	// SessionEvent.Ttfb stays absent rather than reporting a figure for a call
+	// that never answered (#1251). Together with StartedAt it decomposes a
+	// response's Duration: ttfb is how long the origin took to answer, and the
+	// remainder is the body — for a streamed completion, how long it took to
+	// finish streaming. Duration alone cannot tell a slow-to-answer origin from
+	// a slow-to-finish stream, which is the distinction an operator sorting by
+	// duration is usually asking the timeline for.
+	ResponseHeadersAt time.Time
+
 	// requestID backs RequestID(), which generates it on first use. See
 	// requestid.go for why it is lazy rather than a constructor argument.
 	requestID string

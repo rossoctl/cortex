@@ -322,6 +322,9 @@ func buildTimelineLayout(tl *timeline.Timeline, from, to time.Time, cells int, n
 	return tlLayout{axis: ax, from: from, to: to, agents: tlAgentRows(tl, ax, from, to, now), hosts: tlHostRows(tl, ax, from, to, now)}
 }
 
+// askUserTool's span is the user's time: it waits on their answer.
+const askUserTool = "AskUserQuestion"
+
 // tlEndOr is a span's end, or now for one still in flight.
 func tlEndOr(end *time.Time, now time.Time) time.Time {
 	if end == nil {
@@ -338,7 +341,9 @@ func tlBusyPeriods(tl *timeline.Timeline, now time.Time) [][2]time.Time {
 		out = append(out, [2]time.Time{t.Start, tlEndOr(t.End, now)})
 	}
 	for _, t := range tl.Tools {
-		out = append(out, [2]time.Time{t.Start, tlEndOr(t.End, now)})
+		if t.Name != askUserTool {
+			out = append(out, [2]time.Time{t.Start, tlEndOr(t.End, now)})
+		}
 	}
 	if len(out) == 0 {
 		for _, h := range tl.Hosts {
@@ -364,7 +369,9 @@ func activityEnd(tl *timeline.Timeline, now time.Time) time.Time {
 		end = tlMaxTime(end, tlEndOr(t.End, now))
 	}
 	for _, t := range tl.Tools {
-		end = tlMaxTime(end, tlEndOr(t.End, now))
+		if t.Name != askUserTool {
+			end = tlMaxTime(end, tlEndOr(t.End, now))
+		}
 	}
 	if end.IsZero() {
 		return tl.End
@@ -517,7 +524,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 		}
 		life[id] = [2]time.Time{tlMinTime(l[0], s), tlMaxTime(l[1], e)}
 	}
-	model, tool := map[string][][2]time.Time{}, map[string][][2]time.Time{}
+	model, tool, asking := map[string][][2]time.Time{}, map[string][][2]time.Time{}, map[string][][2]time.Time{}
 	calls := map[string]int{}
 	for _, t := range tl.Turns {
 		e := tlEndOr(t.End, now)
@@ -531,8 +538,13 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 			calls[t.Agent]++
 		}
 		// An Agent call's own span is the few seconds until the async ack; the child's row
-		// carries the work.
-		if t.Name != "Agent" && t.Name != "Task" {
+		// carries the work. AskUserQuestion runs until the user answers, which is the user's
+		// time, not a tool's: one left overnight drew as 7 hours of work.
+		switch t.Name {
+		case "Agent", "Task":
+		case askUserTool:
+			asking[t.Agent] = append(asking[t.Agent], [2]time.Time{t.Start, e})
+		default:
 			tool[t.Agent] = append(tool[t.Agent], [2]time.Time{t.Start, e})
 		}
 	}
@@ -556,6 +568,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 	build := func(a timeline.Agent, depth int) tlAgentRow {
 		m, t := newIvs(model[a.ID]), newIvs(tool[a.ID])
 		retry, subs, user := waits(tl, a.ID, children[a.ID], life, now)
+		user = newIvs(append(user, asking[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
 			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
 		l, known := life[a.ID]
