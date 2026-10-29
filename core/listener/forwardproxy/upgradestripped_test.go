@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -108,10 +109,10 @@ func TestStripForUpstream_StillRemovesTheUpgrade(t *testing.T) {
 // Upgrade — so a change that recorded the marker by keeping the header fails here
 // rather than looking like an improvement.
 //
-// WITH THE DECLINE OFF. On a Responses path a WebSocket is otherwise answered 426
-// before anything is forwarded (upgradedeclined_test.go), so the origin would see
-// nothing and the "received no Upgrade" check below would pass without testing the
-// strip at all. That is why it also asserts the origin was reached.
+// IN FORWARD MODE. On a Responses path a WebSocket is otherwise declined or carried
+// (upgradedeclined_test.go, websocket_test.go), so the origin would never see the
+// stripped GET and the "received no Upgrade" check below would pass without testing
+// the strip at all. That is why it also asserts the origin was reached.
 func TestForwardProxy_EndToEnd_RecordsAndStripsTheUpgrade(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
@@ -136,10 +137,10 @@ func TestForwardProxy_EndToEnd_RecordsAndStripsTheUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{
-		OutboundPipeline:           pipeline.NewHolder(p),
-		Sessions:                   store,
-		Client:                     http.DefaultClient,
-		DeclineResponsesWebSockets: false,
+		OutboundPipeline:    pipeline.NewHolder(p),
+		Sessions:            store,
+		Client:              http.DefaultClient,
+		ResponsesWebSockets: config.ResponsesWebSocketsForward,
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()

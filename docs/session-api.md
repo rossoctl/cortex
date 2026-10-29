@@ -273,9 +273,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   is the client hanging up first — since neither proxy times out a slow
   upstream, that is how a hung one usually ends. A 426 with `error.kind:
   "upgrade_declined"` is the forward proxy's own answer to a WebSocket upgrade on
-  OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
-  and a client such as Codex reads it as "use HTTPS" and retries at once over
-  HTTPS. It is not counted as an error in `/v1/usage`. A **403** with
+  OpenAI's Responses API (`chatgpt.com` or `api.openai.com`) that it will not carry:
+  every one under `listener.responses_websockets: decline`, and under the default,
+  `parse`, one it cannot (not decrypted, or a plugin that rewrites response bodies or
+  redirects requests). Nothing is forwarded, and a client such as Codex reads it as
+  "use HTTPS" and retries at once over HTTPS. It is not counted as an error in
+  `/v1/usage`. A carried socket's turn the client ends early (Codex's Esc) is a 200
+  with `error.kind: "turn_interrupted"`, as an HTTPS stream the client leaves part way
+  keeps its 200, and is not counted as an error either. A **403** with
   `error.kind: "destination_private"` is the egress guard's refusal
   (`listener.egress_guard`): the destination resolved into loopback,
   link-local, private or this host's own address space and no permit covered
@@ -319,7 +324,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "response"`), carrying the CONNECT's own status, the duration, and the bytes
   each way. It is not the destination's status: that travels inside the
   client's end-to-end TLS. Tunnel rows are kept out of `/v1/usage`: a tunnel's
-  lifetime is not a request latency. `tunnelReason: "dest-private"` is the
+  lifetime is not a request latency. **`tunnelReason: "websocket"` is the one
+  that is not opaque:** a Responses API WebSocket the forward proxy carries
+  (`listener.responses_websockets`). Its open is the handshake `GET`, its close
+  is status 101 with the whole socket's duration and bytes, and every turn on it
+  records its own ordinary `POST` request and response rows between the two,
+  parsed and priced like an HTTPS turn. `tunnelReason: "dest-private"` is the
   egress guard's refusal: the close row carries 403 and
   `error.kind: "destination_private"`, and no tunnel was ever opened to the
   destination — the same refusal a plain request gets, one layer down.

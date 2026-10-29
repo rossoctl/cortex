@@ -1278,6 +1278,7 @@ func (a *Aggregator) evictColdestLocked() {
 // failing. The Finisher sees it as an allow for the same reason.
 func countsAsError(e *pipeline.SessionEvent) bool {
 	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
+		e.Error.Kind == pipeline.ErrorKindTurnInterrupted ||
 		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}

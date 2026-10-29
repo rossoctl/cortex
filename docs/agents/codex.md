@@ -259,42 +259,87 @@ mislabelled `Content-Type: application/json`. Codex's tool calls arrive as
 is one — so a consumer that parses `ToolCalls[].Arguments` as JSON must tolerate failure
 for this dialect.
 
-**HTTPS, not WebSocket.** Codex prefers a WebSocket to the same `/responses` path, and
-Cortex cannot carry one: `Upgrade` is a hop-by-hop header a proxy must not forward, and
-the parser reads HTTP requests, not frames. So the forward proxy answers that handshake
-itself with **426 Upgrade Required**, which Codex reads as "this endpoint wants HTTP" and
-switches to HTTPS straight away, for the rest of its session. That covers both of
-Codex's endpoints — `chatgpt.com` on a ChatGPT login and `api.openai.com` on an API key
-— and no other host, since what a 426 means is only known for Codex against OpenAI. It
-is not counted as an error in `/v1/usage`. The attempt shows on the
-timeline as a `GET` on the Responses path answered 426 with `error.kind:
-"upgrade_declined"`, and Codex prints one line for it:
+**WebSocket, carried and parsed.** Codex prefers a WebSocket to the same `/responses`
+path — one socket for its whole session, with later turns sending only new input rather
+than the whole conversation. Cortex carries it on both of Codex's endpoints — `chatgpt.com`
+on a ChatGPT login and `api.openai.com` on an API key — and reads every turn on it: the
+forward proxy completes the handshake, relays the frames unchanged, and runs each
+`response.create` and the events answering it through the pipeline as if it were the HTTPS
+request and its SSE stream. So a turn over the socket is parsed, priced and recorded
+exactly as it is over HTTPS — model, messages, tools, completion, tokens, cost.
 
-```
-ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket:
-      HTTP error: 426 Upgrade Required, url: wss://chatgpt.com/backend-api/codex/responses
-```
+On the timeline a socket is a `GET` on the Responses path with `tunnelReason:
+"websocket"`, open and close sharing a request id, the close carrying the socket's
+duration and bytes. Its turns sit between the two as ordinary `POST` request and response
+rows. Plugins act on each turn: one that rejects it keeps it from reaching chatgpt.com
+and Codex is answered with the error event it reads for a server refusal; one that
+rewrites the request body (a redaction script, `context-guru`) changes what is sent.
+Codex's prewarm — a `response.create` with `generate: false`, sent before the first turn
+with the prompt the turns build on — goes through the same request plugins, so a plugin
+that refuses or rewrites content does so there too. It records no turn: it produces no
+output.
 
-That line is expected and harmless; the turn continues over HTTPS. Before the 426, the
-proxy forwarded the stripped `GET` and chatgpt.com answered **405**, which Codex treats
-as a transient failure: it retried five times on a doubling backoff, printing
-`Reconnecting… n/5`, before falling back. Measured on Codex 0.163.0, a one-word
-`codex exec` turn took a median **11.0s** that way and **3.0s** with the 426. There is no
-supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
-hardcodes `supports_websockets = true` and Codex refuses a config that overrides a
+A turn over the **32 MiB** an HTTPS request body may be ends the socket with close code
+1009, "message too big" — the WebSocket counterpart of the 413 HTTPS answers — before any
+of it reaches OpenAI, since no plugin would see it and no row would record it. An answer
+from OpenAI over 10 MiB ends the socket the same way; the frames before the limit have
+already reached Codex, since the relay forwards each frame before reading it.
+
+**Pressing Esc mid-answer closes the socket.** Codex drops the turn's stream, which ends
+the WebSocket, and opens a new one for the next prompt. The interrupted turn is recorded
+with the text that had arrived, as `statusCode` 200 with `error.kind:
+"turn_interrupted"` — the way HTTPS records a stream the client leaves part way, with the
+200 the origin was already answering — so `/v1/usage` does not count it as an error.
+OpenAI sends no usage for a turn cut off this way, so it has no token count or cost: it
+shows as priceable but unpriced, the same as a cancelled HTTPS stream.
+
+**A turn's status follows what the same turn would get over HTTPS.** An open WebSocket
+carries no HTTP status after its 101, so each turn row is given the one its HTTPS
+equivalent would have: 200 for a completed turn; for a refusal the origin sends as an
+`error` event, the event's own status, else the one its error code is answered with
+(`insufficient_quota` and `rate_limit_exceeded` are 429, `context_length_exceeded` 400,
+`server_is_overloaded` 503), else 500; 200 `turn_interrupted` when Codex ended the socket
+mid-turn and 502 `upstream_error` when OpenAI did. Who ended it is read from the first
+close frame either side sent, whose code and reason go into the row's message, and from
+which side's connection dropped first when neither sent one.
+
+Where Cortex cannot carry the socket it answers the handshake with **426 Upgrade
+Required** instead, which Codex reads as "this endpoint wants HTTP" and switches to HTTPS
+at once, for the rest of its session. That happens for a connection the bridge did not
+decrypt; a pipeline with a plugin that rewrites response bodies, since a live socket's
+frames are on their way to Codex before a whole response exists; and a pipeline with a
+plugin that sends requests elsewhere — `inference-router`, as `agentop server use` sets
+up — since a turn rides a socket already connected to OpenAI, where over HTTPS each turn
+is its own request and can be routed. A reload that adds either kind of plugin while a
+socket is open ends that socket at its next turn with close code 1013, "try again later":
+Codex reconnects, is answered 426, and goes on over HTTPS with the plugin applied. (An
+HTTP/2 connection never reaches this far: Go's HTTP/2 server answers any request carrying
+`Upgrade` with a 400 before Cortex sees it. Codex's client speaks HTTP/1.1.) The
+timeline then shows a 426 with `error.kind: "upgrade_declined"`, and Codex prints one
+harmless `failed to connect to websocket: HTTP error: 426 Upgrade Required` line before
+carrying on over HTTPS.
+
+Before either, the proxy forwarded the handshake with `Upgrade` stripped — it is a
+hop-by-hop header — and chatgpt.com answered the bare `GET` with **405**. Codex treats a
+405 as transient: it retried five times on a doubling backoff, printing `Reconnecting…
+n/5`, before falling back. Measured on Codex 0.163.0, a one-word `codex exec` turn took a
+median **11.0s** that way, against **~3s** with the socket carried or declined. There is
+no supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
+hardcodes `supports_websockets = true`, and Codex refuses a config that overrides a
 built-in provider.
 
-The 426 is Cortex's setting, not Codex's, and it is on by default, so there is nothing to
-configure. To turn it off — which brings back the 405 and its retries — add the key to the
-`listener:` block that is already in `~/.cortex/config.yaml`:
+The behaviour is Cortex's setting, not Codex's, and the default is `parse`, so there is
+nothing to configure. To change it, add the key to the `listener:` block that is already
+in `~/.cortex/config.yaml`:
 
 ```yaml
 listener:
   # ...the lines already here...
-  decline_responses_websockets: false
+  responses_websockets: decline   # parse (default) | decline | forward
 ```
 
-and restart the proxy with `agentop service restart`. Unlike most of that file, a
+`decline` keeps Codex on HTTPS with no delay; `forward` brings back the 405 and its
+retries. Then restart the proxy with `agentop service restart`. Unlike most of that file, a
 `listener:` edit is not picked up live, and the restart briefly disconnects every agent
 routed through Cortex.
 
@@ -384,22 +429,50 @@ with Cortex built from the change that added this page. This was exercised:
   Codex's source — and including the telemetry exporter staying unrecognised;
 - the `codex` series in `GET /v1/usage?group=agent`, and the model showing as priceable
   but unpriced;
-- **on Codex 0.163.0**, the WebSocket decline: eight `codex exec` turns each made one
-  handshake attempt, answered 426, then completed over HTTPS with the model, tokens and a
-  cost from the downloaded price list — against seven 405'd attempts and a fallback
-  warning per turn without it. A TUI turn, driven over a pty, did the same: one 426, then
-  its inference parsed over HTTPS under `codex-tui`.
+- **on Codex 0.163.0**, the WebSocket transport: three `codex exec` turns each opened one
+  socket through the bridge, with no handshake error and no fallback, and each turn on it
+  was recorded with its model, a 13,188-token total and a cost — in about 3s, against a
+  median 11.0s through the old 405 retries. The `decline` mode was measured the same way
+  over eight turns (one 426, then HTTPS), and a TUI turn driven over a pty declined and
+  parsed over HTTPS under `codex-tui`;
+- **several turns on one socket**: a `codex exec` prompt that ran two shell commands
+  carried two turns on one WebSocket, each recorded with its model, tokens and a cost.
+  The second turn's request held no messages, only the tool results, which is the
+  incremental input described in #1515;
+- **the TUI over a carried socket**: a prompt typed into the real interactive TUI over
+  a pty opened a WebSocket under `codex-tui`, and its turn was parsed with model,
+  tokens and a cost, as was the TUI's own model check on `gpt-5.6-luna`;
+- **Esc mid-answer in the TUI**: the WebSocket closed within milliseconds, the
+  interrupted turn was recorded with the 1,491 characters that had arrived, and the
+  next prompt opened a new socket and was answered and parsed normally;
+- **an API-key login**, on macOS: Codex opened the WebSocket to `api.openai.com`
+  instead of `chatgpt.com`, and a single-turn and a three-turn run were each parsed
+  with model (`gpt-6.1-sol`), tokens and a cost;
+- **Linux**, on Codex 0.164.0 in an Ubuntu 26.10 arm64 VM with an API-key login: a
+  single turn, three turns on one socket, and a TUI turn, each carried and parsed with
+  tokens and a cost, and Codex's traffic attributed to its process and filed under its
+  own session.
 
 Not tested:
 
-- **Linux.** Everything here was exercised on macOS only.
-- **Codex versions other than 0.160.1 and 0.162.1.** Both appeared in one capture (an
-  auto-update landed mid-session) and both parse identically, which is some evidence the
-  User-Agent shape is stable across releases rather than pinned to one build — but the
-  `.env` loading behaviour and the `CODEX_` filter were only read from 0.160.1's source.
-- **The public `/v1/responses` API** (an OpenAI API key rather than a ChatGPT
-  subscription). The parser recognises the path, and the non-streaming shape of that
-  dialect is modelled from the published schema rather than from captured traffic.
+- **Linux beyond the WebSocket.** On Linux only the WebSocket transport above was
+  exercised; `agentop configure codex`, the dotenv routing and the HTTPS fallback were
+  tested on macOS only.
+- **Codex's in-band interrupt.** For some internal cases — steering a turn already
+  under way, or queued "mailbox" input, on models with `use_responses_lite` set — Codex
+  sends `response.interrupt` on the open socket and waits for the server's
+  `response.interrupt.accepted` instead of closing it. The relay forwards both unchanged
+  and its tests cover the exchange in both orders, but it was not seen live: Esc does
+  not use it.
+- **Codex versions other than 0.160.1 through 0.164.0.** 0.160.1 and 0.162.1 appeared in
+  one capture (an auto-update landed mid-session) and parse identically, and the
+  WebSocket transport was run on 0.163.0 and 0.164.0, which is some evidence the wire
+  shape is stable across releases rather than pinned to one build — but the `.env`
+  loading behaviour and the `CODEX_` filter were only read from 0.160.1's source.
+- **The public `/v1/responses` API over HTTPS.** An API-key login was exercised over the
+  WebSocket above; over HTTPS — with `responses_websockets: decline`, or a client that
+  does not ask for the socket — it was not, and the non-streaming shape of that dialect
+  is modelled from the published schema rather than from captured traffic.
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
 - **Tool pruning**, which is unsupported above rather than merely untested.

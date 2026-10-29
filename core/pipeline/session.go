@@ -277,7 +277,7 @@ type SessionEvent struct {
 	// the sequence worth being able to read off the timeline rather than out of an
 	// agent's stderr. A 426 with error.kind "upgrade_declined" is the proxy answering
 	// a Responses API WebSocket itself, before any origin is contacted
-	// (listener.decline_responses_websockets).
+	// (listener.responses_websockets).
 	UpgradeStripped string
 
 	// HTTPMethod and HTTPPath are the request's HTTP verb and its
@@ -476,6 +476,11 @@ const (
 	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
 	// the exact opposite of what happened, and invisible in a timeline.
 	TunnelPassthroughUnknown TunnelReason = "passthrough-unknown"
+	// TunnelWebSocket — not opaque at all: a Responses API WebSocket the forward
+	// proxy carries and reads. The open row is its handshake and the close row its
+	// end, with the bytes and duration of the whole socket; every turn on it records
+	// its own request and response rows between the two, parsed like an HTTPS turn.
+	TunnelWebSocket TunnelReason = "websocket"
 	// TunnelDestPrivate — the egress guard refused the destination before any
 	// dial: it resolved to loopback, link-local (cloud metadata), RFC 1918 /
 	// unique-local space, or one of this host's own addresses, and no permit
@@ -719,11 +724,17 @@ type EventError struct {
 }
 
 // ErrorKindUpgradeDeclined is the forward proxy answering a Responses API WebSocket
-// upgrade with 426 itself (listener.decline_responses_websockets). It rides on an
+// upgrade with 426 itself (listener.responses_websockets). It rides on an
 // EventError because the status is a 4xx and the row should say whose answer it is,
 // but it is not a failure: the client is expected to switch to HTTPS, and does.
 // usage does not count it as an error, and the Finisher sees an allow.
 const ErrorKindUpgradeDeclined = "upgrade_declined"
+
+// ErrorKindTurnInterrupted is a carried WebSocket turn the client ended before its last
+// event: Codex's Esc, which drops the socket. The row keeps the 200 the origin was
+// answering with, as an HTTPS stream the client leaves part way does, and /v1/usage
+// does not count it as an error. The kind says what happened; it is not a failure.
+const ErrorKindTurnInterrupted = "turn_interrupted"
 
 // ErrorKindDestinationPrivate is the egress guard refusing a destination that
 // resolved into loopback, link-local, private or this host's own address space
