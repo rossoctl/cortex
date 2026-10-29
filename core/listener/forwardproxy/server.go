@@ -949,8 +949,86 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 		}
 		r.URL.Scheme = "https"
 		r.URL.Host = authority // host:port — preserves non-443 origins
+		if !s.hostMatchesConnect(w, r, authority, tl) {
+			return
+		}
 		s.serveOutbound(w, r, tl)
 	})
+}
+
+// hostMatchesConnect enforces that a decrypted request's Host names the host the
+// tunnel was dialed to, answering 421 and recording an event when it does not.
+// It reports whether the request may proceed.
+//
+// This is the bridged path only, and deliberately: it is the one place where a
+// request arrives already inside a connection whose destination the proxy chose
+// from a CONNECT it approved. On an ordinary forward-proxy request there is no
+// second name to disagree with — the Host IS the destination — so there is
+// nothing to check.
+//
+// Why it matters even though the request is dialed correctly regardless:
+// bridgedHandler sets r.URL.Host to the authority, so the bytes always reach the
+// origin the CONNECT named, whatever Host says. What Host reaches is the
+// PIPELINE — pctx.Host is what a plugin reads to pick a credential, a route, or
+// a policy. A client that opens a CONNECT to an allowlisted host and then sends
+// `Host: elsewhere` inside the tunnel therefore shows one name to the policy
+// layer and another to the socket, and a credential chosen for the first would
+// travel to the second. Refusing the mismatch is what makes "the credential
+// decision is made for the host the connection is dialed to" true rather than
+// merely usually true (MOCA MI1 §8.5 item 5).
+//
+// Compared on host only, with the port excluded. A client may legitimately omit
+// a default :443 from Host, hostOnly(authority) is already how the terminator is
+// given its name, and a port disagreement cannot reach a different origin — the
+// dial uses the authority, not Host. So a port check would refuse correct
+// requests and buy no safety.
+func (s *Server) hostMatchesConnect(w http.ResponseWriter, r *http.Request, authority string, tl *tunnelLog) bool {
+	want := hostOnly(authority)
+	// r.Host, not r.Header.Get("Host"): net/http moves HTTP/1.1's Host header
+	// there, and for an HTTP/2 request it is already the :authority pseudo-header.
+	// Reading the header directly sees "" on both, which would pass everything.
+	got := hostOnly(r.Host)
+	if strings.EqualFold(got, want) {
+		return true
+	}
+
+	slog.Warn("forward-proxy: bridged request Host does not match CONNECT host",
+		"connect_host", want, "request_host", got, "path", r.URL.Path)
+
+	if s.Sessions != nil {
+		// Recorded as a denial, like a plugin's terminal rejection: the request
+		// never reached the pipeline, so there is no paired response event to
+		// come. The event names both hosts — which is the whole diagnostic
+		// value, since either one alone looks unremarkable.
+		pctx := &pipeline.Context{
+			Direction: pipeline.Outbound,
+			Method:    r.Method,
+			Host:      want,
+			Path:      r.URL.Path,
+			StartedAt: time.Now(),
+		}
+		sid := s.recordingSessionID("", r.Header, s.clientChain(r))
+		ev := pipeline.SessionEvent{
+			At:         time.Now(),
+			Direction:  pipeline.Outbound,
+			Phase:      pipeline.SessionDenied,
+			RequestID:  pctx.RequestID(),
+			Host:       want,
+			HTTPMethod: r.Method,
+			HTTPPath:   r.URL.Path,
+			StatusCode: http.StatusMisdirectedRequest,
+			Error: &pipeline.EventError{
+				Kind:    "host_mismatch",
+				Message: fmt.Sprintf("Host %q does not match CONNECT host %q", got, want),
+			},
+			Client: pctx.ClientInfo(),
+		}
+		s.appendOutbound(tl, sid, ev)
+	}
+
+	http.Error(w, `{"error":"request Host does not match CONNECT host"}`,
+		http.StatusMisdirectedRequest)
+	return false
 }
 
 // resolveOutboundSessionID picks the bucket an outbound event is recorded
