@@ -182,6 +182,13 @@ func assertUpgradedRows(t *testing.T, events []pipeline.SessionEvent, path strin
 	if resp.BytesUp == 0 || resp.BytesDown == 0 {
 		t.Errorf("101 row bytes: up=%d down=%d — both directions carried the frame, both must be counted", resp.BytesUp, resp.BytesDown)
 	}
+	// A cleanly closed session carries NO error. The counterpart assertion lives
+	// in TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther, which
+	// requires one; both halves are needed, because a marker that is always set
+	// distinguishes nothing and would make every WebSocket read as broken.
+	if resp.Error != nil {
+		t.Errorf("101 row carries error %+v on a clean session — the marker must mean a relay that failed", resp.Error)
+	}
 }
 
 // THE PLAIN PATH. A ws:// upgrade arrives as an absolute-form GET on the
@@ -606,6 +613,18 @@ func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T
 		if v := store.View(session.DefaultSessionID); v != nil {
 			for _, e := range v.Events {
 				if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusSwitchingProtocols {
+					// And the row says the session ended badly. Without this the
+					// only symptom of a WebSocket that broke mid-session was
+					// truncated byte counts, so an audit read it as a clean
+					// upgrade — one event per upgrade that cannot tell the two
+					// outcomes apart only half keeps the contract (#1549 review).
+					if e.Error == nil {
+						t.Fatal("the 101 row carries no error after a broken splice; a session that died " +
+							"reads as one that closed cleanly")
+					}
+					if e.Error.Kind != "proxy_error" {
+						t.Errorf("error.kind = %q, want proxy_error — the relay's failure is ours", e.Error.Kind)
+					}
 					return
 				}
 			}

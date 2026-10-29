@@ -618,7 +618,18 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   stripped and takes the ordinary path, and a 101 that switches to some other
   protocol than the one requested is refused 502 before the hijack instead of
   spliced. Either check missing turns a plain request into an opaque pipe no
-  plugin inspects.
+  plugin inspects. **The 101 row is kept out of `/v1/usage` for the same reasons a
+  tunnel row is** — it is recorded after both splice directions end, so its
+  `durationMs` is the WebSocket SESSION's lifetime, and folding it as a request
+  latency moved one host's mean from 500ms to 6.4s in testing; its bytes are opaque
+  frames with no model, token or cost to attribute; and counting it would add one
+  Request whose latency is its whole lifetime. The `durationMs` stays on the
+  session timeline, where the lifetime is the feature — only the aggregation
+  misread it. **A relay that broke mid-session carries `error.kind:
+  "proxy_error"`** on that row, so a WebSocket that died is distinguishable from
+  one that closed cleanly; an ordinary close (`net.ErrClosed`, from the direction
+  that lost the close race) is deliberately not marked, or every healthy session
+  would read as broken.
   **A 403 with `error.kind: "destination_private"` is the egress guard's
   answer, not the upstream's** (`listener.egress_guard`, off by default): the
   destination resolved into loopback, link-local, private or this host's own

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -613,6 +614,59 @@ func TestRecord_IgnoresTunnelRows(t *testing.T) {
 	if b.Errors != 0 {
 		t.Errorf("errors = %d, want 0 — a failed dial is a tunnel row, not a failed request", b.Errors)
 	}
+}
+
+// A forwarded WebSocket's 101 row is the same shape as a tunnel close and gets the
+// same treatment (#1488, #1549 review). The row is recorded after both splice
+// directions end, so its Duration is the WebSocket SESSION's lifetime — minutes or
+// hours — and folding it as a request latency is exactly the error the tunnel
+// exclusion above exists to prevent.
+//
+// The numbers are the point: a hundred ordinary 500ms requests against one host,
+// plus ONE ten-minute WebSocket, used to report a 6.4-SECOND mean. That is the
+// figure an operator reads off /v1/usage and agentop's per-server latency.
+func TestRecord_WebSocket101IsNotARequestLatency(t *testing.T) {
+	now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+	for i := 0; i < 100; i++ {
+		a.Record("s1", respEvent(now, 200, 500*time.Millisecond, "", 0))
+	}
+	before := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+
+	// The 101 a ten-minute WebSocket session leaves behind, byte counts and all.
+	ws := respEvent(now, http.StatusSwitchingProtocols, 10*time.Minute, "", 0)
+	ws.BytesUp, ws.BytesDown = 1234, 5678
+	a.Record("s1", ws)
+	after := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+
+	if got := after.Totals.Requests; got != before.Totals.Requests {
+		t.Errorf("requests = %d, want %d — a WebSocket session is not one more request",
+			got, before.Totals.Requests)
+	}
+	bl, al := weightedLatMean(before), weightedLatMean(after)
+	if al != bl {
+		t.Errorf("latency mean moved %.1fms -> %.1fms; a 101 row carries the session's "+
+			"lifetime, not a request latency", bl, al)
+	}
+	if bl == 0 {
+		t.Fatal("the ordinary requests recorded no latency; the test would pass vacuously")
+	}
+}
+
+// weightedLatMean is the sample-weighted latency mean across a snapshot's buckets,
+// which is how a client showing one window-wide figure has to compute it (see
+// Bucket.LatSamples).
+func weightedLatMean(s Snapshot) float64 {
+	var sum float64
+	var n int64
+	for _, b := range s.Buckets {
+		sum += b.LatMeanMs * float64(b.LatSamples)
+		n += b.LatSamples
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
 }
 
 // All three groupings accumulate simultaneously, so an operator cycling the

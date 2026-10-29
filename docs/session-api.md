@@ -281,7 +281,17 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   session records the request row plus a **101 response row** paired to it by
   `requestId`, carrying `bytesUp` and `bytesDown` for the whole WebSocket
   session — the one response row besides a tunnel close that carries both —
-  with `durationMs` covering the session and `ttfbMs` the handshake. A **403**
+  with `durationMs` covering the session and `ttfbMs` the handshake. Because
+  that `durationMs` is a session lifetime rather than a request latency, the
+  101 row is **excluded from `/v1/usage`** exactly as a tunnel row is: folding
+  it would drag the latency mean toward WebSocket lifetimes (one 10-minute
+  session moved a host's mean from 500ms to 6.4s in testing), its frames are
+  opaque so there is no model, token or cost to attribute, and counting it
+  would add one Request whose latency is its whole lifetime. On the timeline
+  the lifetime is the point, so the field stays. A relay that ended in an
+  error carries `error.kind: "proxy_error"` on the 101 row, so a session that
+  broke mid-stream is distinguishable from one that closed cleanly; an
+  ordinary close is not marked. A **403**
   with `error.kind: "destination_private"` is the egress guard's refusal
   (`listener.egress_guard`): the destination resolved into loopback,
   link-local, private or this host's own address space and no permit covered

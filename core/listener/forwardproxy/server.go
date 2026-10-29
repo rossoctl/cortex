@@ -704,6 +704,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// succeeding. Peeking at its (empty) body and sending the GET again would tear
 	// down the connection the origin just switched, so a forwarded upgrade never
 	// resends.
+	//
+	// THE RULE IS KEYED ON THE REQUEST, NOT THE ANSWER, so it also covers an
+	// upgrade the origin DECLINED with a non-101 (401/403/429 — those take the
+	// ordinary response path, and a Resender does not see them here). That is
+	// deliberate, and narrowing this to `resp.StatusCode != 101` would break it:
+	// the resend path strips the Upgrade pair (`stripForUpstream(again,
+	// ownEncoding, false)`), so the second attempt would reach the origin as a
+	// bare GET — not the handshake the client sent, and on an endpoint that only
+	// answers an upgrade, not a request worth making. A re-auth that cannot carry
+	// the upgrade cannot rescue the upgrade; the client retries the handshake
+	// itself, with whatever credential it has now. Left as a request-keyed rule
+	// rather than made cleverer (#1549 review).
 	if err == nil && !skipped && !forwardUpgrade {
 		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
 	}
@@ -1545,16 +1557,48 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	// counts stay correct: io.Copy returns what it copied before the error, and
 	// the closes only release a direction that is already finished or broken
 	// (#1549 review).
-	if err := <-errc; err != nil {
+	spliceErr := <-errc
+	if spliceErr != nil {
 		_ = conn.Close()
 		_ = backConn.Close()
 	}
-	<-errc
+	if err := <-errc; spliceErr == nil {
+		spliceErr = err
+	}
 
 	if !record || s.Sessions == nil {
 		return
 	}
-	ev := outboundResponseEvent(pctx, http.StatusSwitchingProtocols, nil)
+	// THE ROW SAYS WHETHER THE SESSION ENDED CLEANLY. Both directions have
+	// finished either way and the status is still 101 — the upgrade did succeed,
+	// and the client got its 101 — but a relay that ended in an error is not the
+	// same event as one that closed cleanly, and without this the only symptom
+	// was truncated byte counts: an operator auditing a WebSocket that broke
+	// mid-session read a successful upgrade. One event per upgrade is the MOCA
+	// contract; one event that cannot distinguish the two outcomes only half
+	// keeps it.
+	//
+	// NOT EVERY ERROR HERE IS A FAILURE, and net.ErrClosed is the one that is not.
+	// A WebSocket normally ends with one side closing; the deferred conn.Close()
+	// and the context goroutine's backConn.Close() then race the direction still
+	// blocked in Read, which returns "use of closed network connection". That is
+	// the ordinary shutdown of a healthy session — marking it would flag EVERY
+	// WebSocket as broken, which is worse than the gap this closes. Caught by
+	// assertUpgradedRows' own "no error on a clean session" assertion, which is
+	// why that one exists alongside the broken-direction test: a marker that is
+	// always set distinguishes nothing.
+	//
+	// proxy_error otherwise, the kind the two pre-splice failure paths already
+	// use, because a relay that broke is on our side. Sanitized: a network
+	// error's text can carry a client-supplied address (#1549 review).
+	var fail *pipeline.EventError
+	if spliceErr != nil && !errors.Is(spliceErr, net.ErrClosed) {
+		fail = &pipeline.EventError{
+			Kind:    "proxy_error",
+			Message: "websocket relay ended in error: " + pipeline.SanitizeControlRunes(spliceErr.Error()),
+		}
+	}
+	ev := outboundResponseEvent(pctx, http.StatusSwitchingProtocols, fail)
 	ev.BytesUp, ev.BytesDown = up, down
 	s.Sessions.Append(s.responseSessionID(pctx), ev)
 }
