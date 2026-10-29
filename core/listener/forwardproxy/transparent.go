@@ -154,7 +154,12 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 			var ref *egressguard.Refusal
 			if errors.As(cerr, &ref) {
 				slog.Warn("transparent-proxy: destination refused by egress guard",
-					"host", host, "dst", dst, "addr", ref.Addr.String())
+					// host is sniffed off the client's own bytes (SNI or Host header),
+					// so it gets the sanitizer; dst is the kernel's SO_ORIGINAL_DST
+					// literal and ref.Addr the guard's parsed address — neither is
+					// client-controlled.
+					"host", pipeline.SanitizeControlRunes(host),
+					"dst", dst, "addr", ref.Addr.String())
 				tl.open(pipeline.TunnelDestPrivate)
 				tl.close(http.StatusForbidden, &pipeline.EventError{
 					Kind:    pipeline.ErrorKindDestinationPrivate,

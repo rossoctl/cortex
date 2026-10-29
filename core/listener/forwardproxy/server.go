@@ -623,7 +623,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		var ref *egressguard.Refusal
 		if errors.As(err, &ref) {
 			slog.Debug("forward-proxy: destination refused by egress guard",
-				"host", r.Host, "method", r.Method, "addr", ref.Addr.String())
+				// Sanitized: Host and Method are client-controlled, and a newline
+				// forged into either would forge a log entry (#1539's CodeQL finding).
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"method", pipeline.SanitizeControlRunes(r.Method), "addr", ref.Addr.String())
 			// The listener's standard rejection shape, code verbatim from the MOCA
 			// egress contract so the shared conformance suite matches.
 			httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
@@ -2282,7 +2285,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			var ref *egressguard.Refusal
 			if errors.As(cerr, &ref) {
 				slog.Warn("forward-proxy: CONNECT destination refused by egress guard",
-					"host", r.Host, "addr", ref.Addr.String())
+					// Sanitized like the Debug line in serveOutbound: r.Host is
+					// client-controlled and lands in a log file.
+					"host", pipeline.SanitizeControlRunes(r.Host), "addr", ref.Addr.String())
 				// A policy answer, not a failed exchange. skip_hosts destinations
 				// are refused too — a bypass must not become an SSRF bypass — and
 				// tl's rows are no-ops for them, exactly as the dial failure's are.
@@ -2300,7 +2305,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			// Not a refusal: the name would not resolve. Same shape as a dial
 			// failure — nothing was dialed, and the client gets the 502.
-			slog.Warn("forward-proxy: CONNECT destination resolution failed", "host", r.Host, "error", cerr)
+			// Both values sanitized: the name is client-controlled, and the error
+			// embeds it (net.DNSError quotes the name it failed to resolve).
+			slog.Warn("forward-proxy: CONNECT destination resolution failed",
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"error", pipeline.SanitizeControlRunes(cerr.Error()))
 			http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
 			tl.open(pipeline.TunnelDialFailed)
 			tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
