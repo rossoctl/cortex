@@ -1310,11 +1310,21 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	// fencing inside SanitizeControlRunes was tried at 6cae5d14 and changed
 	// nothing). A helper would put it back inside a callee — do not lift it.
 	host := strings.ReplaceAll(pipeline.SanitizeControlRunes(r.Host), "\n", "")
+	// BOTH early returns below must close the origin themselves. This function
+	// owns resp.Body (serveOutbound skipped its Close defer, see the doc above),
+	// and the goroutine that closes it on context-done is only armed further
+	// down — so returning before that point without closing here leaves the
+	// origin holding a connection it believes is an established WebSocket, until
+	// its own idle timeout reaps it. The client meanwhile has a 502, so nothing
+	// will ever come back for it (#1549 review).
 	backConn, ok := resp.Body.(io.ReadWriteCloser)
 	if !ok {
 		// Not reachable through net/http's own transport, which gives a 101 a
 		// writable body; a custom RoundTripper could violate it.
 		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", host)
+		// Not an io.ReadWriteCloser, but still an io.Closer: the Body contract
+		// guarantees that much, so the origin's end can be released.
+		_ = resp.Body.Close()
 		s.failUpgradedWebSocket(w, pctx, record, "101 switching protocols with a non-writable body")
 		return
 	}
@@ -1322,6 +1332,7 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		// The host is fenced above; the hijack error is the runtime's own text.
 		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", host, "error", err)
+		_ = backConn.Close()
 		s.failUpgradedWebSocket(w, pctx, record, fmt.Sprintf("hijack failed relaying the upgrade: %v", err))
 		return
 	}
@@ -1399,7 +1410,27 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	}()
 	// Both, not one: the counts are read below, and a goroutine's send on errc
 	// is what publishes its write.
-	<-errc
+	//
+	// But a FAILED direction has to tear both ends down before we wait for the
+	// second, or that wait never returns. A clean EOF propagates as CloseWrite
+	// above, which is what lets a half-closed WebSocket finish; an error has no
+	// such signal, so the peer of the broken direction stays blocked in Read
+	// with nothing coming. Measured: an origin that RSTs mid-session ends the
+	// origin→client copy with an error while client→origin stays blocked on a
+	// silent client, and the 101 row — recorded after both — is never written at
+	// all. That is the one-event-per-upgrade promise lost on exactly the
+	// connections worth auditing.
+	//
+	// ReverseProxy avoids this by returning after the FIRST result and letting
+	// its deferred closes unblock the other; this function waits for both
+	// because it needs their byte counts, so it closes explicitly instead. The
+	// counts stay correct: io.Copy returns what it copied before the error, and
+	// the closes only release a direction that is already finished or broken
+	// (#1549 review).
+	if err := <-errc; err != nil {
+		_ = conn.Close()
+		_ = backConn.Close()
+	}
 	<-errc
 
 	if !record || s.Sessions == nil {

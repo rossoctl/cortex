@@ -454,3 +454,163 @@ func (st *bridgeStack) connect(t *testing.T) *tls.Conn {
 	}
 	return tconn
 }
+
+// A FAILED SPLICE MUST NOT LEAK THE ORIGIN'S CONNECTION. relayUpgradedWebSocket
+// owns resp.Body once the origin answered 101 — serveOutbound deliberately skips
+// its Close defer, because closing the body would close the WebSocket — and the
+// goroutine that closes the origin on context-done is armed only after the
+// hijack succeeds. So the two early returns before it have to close the origin
+// themselves, or the origin is left holding a connection it believes is an
+// established WebSocket while the client already has a 502. Nothing would ever
+// come back for it; it sits until the origin's own idle timeout reaps it.
+//
+// Driven through the hijack-failure path, which is reachable with a plain
+// ResponseWriter: httptest.NewRecorder does not implement http.Hijacker. The
+// non-writable-body path cannot be reached through net/http's own transport at
+// all (it hands a 101 an io.ReadWriteCloser), so it is covered by inspection and
+// the same close, not by a test.
+//
+// The assertion is the ORIGIN's view, not ours: its handler hijacks and blocks
+// in a copy, which returns only when our end of that connection closes. So "the
+// copy returned" is the only honest evidence that we released it (#1549 review).
+func TestForwardProxy_WebSocketSpliceFailureClosesTheOrigin(t *testing.T) {
+	copyReturned := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("origin could not hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		fmt.Fprintf(brw, "HTTP/1.1 101 Switching Protocols\r\n"+
+			"Upgrade: websocket\r\nConnection: Upgrade\r\n"+
+			"Sec-WebSocket-Accept: %s\r\n\r\n", wsAccept(r.Header.Get("Sec-WebSocket-Key")))
+		if err := brw.Flush(); err != nil {
+			return
+		}
+		// Blocks until the proxy's end of this connection is closed.
+		_, _ = io.Copy(io.Discard, brw)
+		close(copyReturned)
+	}))
+	defer origin.Close()
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           origin.Client(),
+	}
+
+	// httptest.NewRecorder is not an http.Hijacker, so the hijack fails after
+	// the origin has already answered 101 — the state this test is about.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, origin.URL+"/ws", nil)
+	req.Host = req.URL.Host
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Key", rfc6455Key)
+	req.Header.Set("Sec-WebSocket-Version", "13")
+
+	srv.serveOutbound(rec, req, nil)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("client status = %d, want 502 — a failed splice is a bad gateway", rec.Code)
+	}
+	select {
+	case <-copyReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the origin's copy never returned: its connection was left open after the splice failed")
+	}
+}
+
+// A BROKEN DIRECTION MUST NOT STRAND THE OTHER. The splice waits for both
+// directions so it can report both byte counts, which means a direction that
+// ends in an ERROR has to tear both ends down before that wait — a clean EOF
+// propagates as CloseWrite and releases its peer, but an error carries no such
+// signal, so the peer sits in Read with nothing coming.
+//
+// The cost is the audit, not just a goroutine: the 101 row is recorded after
+// both directions end, so a stranded direction means the upgrade is never
+// evented at all. Measured before the fix — an origin that RSTs mid-session
+// against a client that has gone quiet leaves the row unwritten past any
+// deadline; after it, the row lands in ~0.1s (#1549 review).
+//
+// The origin here is a raw listener rather than an httptest server because the
+// test needs SetLinger(0) — a Close that sends RST — to make one direction fail
+// rather than EOF. The client is deliberately silent after reading the 101: that
+// is what keeps client→origin blocked, so the test observes the strand and not
+// merely a slow teardown.
+func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T) {
+	origin, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = origin.Close() }()
+	go func() {
+		c, err := origin.Accept()
+		if err != nil {
+			return
+		}
+		req, err := http.ReadRequest(bufio.NewReader(c))
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(c, "HTTP/1.1 101 Switching Protocols\r\n"+
+			"Upgrade: websocket\r\nConnection: Upgrade\r\n"+
+			"Sec-WebSocket-Accept: %s\r\n\r\n", wsAccept(req.Header.Get("Sec-WebSocket-Key")))
+		// RST rather than FIN, so the proxy's origin→client copy ends with an
+		// error instead of the clean EOF that would CloseWrite its peer.
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+		time.Sleep(100 * time.Millisecond)
+		_ = c.Close()
+	}()
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	cc, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cc.Close() }()
+	writeUpgradeRequest(cc, "http://"+origin.Addr().String()+"/ws", origin.Addr().String())
+	resp, err := http.ReadResponse(bufio.NewReader(cc), nil)
+	if err != nil {
+		t.Fatalf("reading the 101: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	// Then say nothing at all: client→origin stays blocked on this read.
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if v := store.View(session.DefaultSessionID); v != nil {
+			for _, e := range v.Events {
+				if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusSwitchingProtocols {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the 101 response row was never recorded: a broken splice direction stranded the other, so the upgrade went unaudited")
+}
