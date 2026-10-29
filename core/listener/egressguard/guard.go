@@ -30,7 +30,10 @@ import (
 )
 
 // Guard checks and dials outbound destinations. Construct with New; the zero
-// value refuses nothing and dials nothing. Safe for concurrent use.
+// value checks literal addresses but cannot resolve names — check runs with an
+// empty permit list, so a loopback, private or metadata literal is refused and
+// a public one is allowed, while a name fails with "no resolver configured".
+// Safe for concurrent use.
 type Guard struct {
 	// permit holds the operator-configured prefixes within the refused space.
 	permit []netip.Prefix
@@ -247,8 +250,8 @@ func (g *Guard) refusable(ip netip.Addr) bool {
 	}
 	enumerate := g.ifaceAddrs
 	if enumerate == nil {
-		// A zero-value Guard (and one built before this field existed) still
-		// asks the host.
+		// A zero-value Guard still asks the host, so the host-owned rule holds
+		// for one as it does for a constructed Guard.
 		enumerate = net.InterfaceAddrs
 	}
 	ifaces, err := enumerate()

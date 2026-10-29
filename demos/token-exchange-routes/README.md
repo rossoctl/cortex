@@ -154,6 +154,11 @@ setting:
 Use this when the workload should never reach an unauthenticated
 upstream — typical for tool-only namespaces.
 
+An unrouted host under `default_policy: "exchange"` is refused with
+503 `no_audience` unless `audience_from_host` derives one: an exchange
+with no audience would return a token valid for every audience the
+caller holds, so it is never sent.
+
 ## Glob pattern tips
 
 - `*` matches any sequence of non-`/` characters within a path

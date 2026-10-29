@@ -970,23 +970,17 @@ func TestForceLocalhost(t *testing.T) {
 	}
 }
 
-// With the bridge enabled, Load() restricts the session API to loopback so
-// other pods can't scrape decrypted bodies.
+// With the bridge enabled, the session API is restricted to loopback so
+// other pods can't scrape decrypted bodies. The rule lives in ApplyPreset
+// (it must run after the ":9094" default; see TestTLSBridge_SessionAPILoopback
+// WhenAddrUnset), so this test drives Load + ApplyPreset like the binaries do.
 func TestLoad_TLSBridgeHardensSessionAPI(t *testing.T) {
-	y := []byte("mode: proxy-sidecar\n" +
-		"listener:\n" +
-		"  session_api_addr: \":9094\"\n" +
-		"tls_bridge:\n" +
-		"  mode: enabled\n" +
+	cfg := loadFrom(t, "mode: proxy-sidecar\n"+
+		"listener:\n"+
+		"  session_api_addr: \":9094\"\n"+
+		"tls_bridge:\n"+
+		"  mode: enabled\n"+
 		"  ca_dir: /etc/authbridge/tls-bridge-ca\n")
-	p := filepath.Join(t.TempDir(), "cfg.yaml")
-	if err := os.WriteFile(p, y, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
 	if cfg.Listener.SessionAPIAddr != "127.0.0.1:9094" {
 		t.Errorf("session_api_addr = %q, want 127.0.0.1:9094 (bridge on => loopback)", cfg.Listener.SessionAPIAddr)
 	}

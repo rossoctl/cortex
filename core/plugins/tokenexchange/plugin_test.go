@@ -250,6 +250,7 @@ func TestTokenExchange_ExchangeSuccess(t *testing.T) {
 	raw := []byte(`{
 	  "token_url":"` + exchangeSrv.URL + `",
 	  "default_policy":"exchange",
+	  "routes":{"rules":[{"host":"target-svc","target_audience":"target-aud"}]},
 	  "identity":{"type":"client-secret","client_id":"agent","client_secret":"secret"}
 	}`)
 	if err := p.Configure(raw); err != nil {
@@ -293,6 +294,7 @@ func TestTokenExchange_ExchangeFailure(t *testing.T) {
 	raw := []byte(`{
 	  "token_url":"` + exchangeSrv.URL + `",
 	  "default_policy":"exchange",
+	  "routes":{"rules":[{"host":"target-svc","target_audience":"target-aud"}]},
 	  "identity":{"type":"client-secret","client_id":"agent","client_secret":"secret"}
 	}`)
 	if err := p.Configure(raw); err != nil {

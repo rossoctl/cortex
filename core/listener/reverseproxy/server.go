@@ -485,6 +485,12 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if pctx == nil {
 		return nil
 	}
+	// Every capability probe below answers for the pipeline this request
+	// ran on, not whatever a mid-request reload left in the Holder: the
+	// buffering and streaming decisions must match the pipeline the
+	// response phases dispatch on, or a reload mid-request silently skips
+	// the pinned plugins (Holder.ForPctx).
+	pinned := s.InboundPipeline.ForPctx(pctx)
 
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
@@ -525,9 +531,9 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// body we've already started forwarding) — fall back to buffered
 	// with a warning.
 	if isEventStream(resp.Header.Get("Content-Type")) &&
-		s.InboundPipeline.HasStreamingResponders() &&
+		pinned.HasStreamingResponders() &&
 		resp.Body != nil {
-		if s.InboundPipeline.WritesResponseBody() {
+		if pinned.WritesResponseBody() {
 			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pctx.Host)
 		} else {
 			s.installStreamingResponseBody(resp, pctx)
@@ -540,7 +546,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		}
 	}
 
-	if s.InboundPipeline.NeedsBody() && resp.Body != nil {
+	if pinned.NeedsBody() && resp.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 		if err != nil {
 			// Wrapped so errorHandler keeps the backend's own status.
@@ -589,7 +595,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// Streaming-aware plugins use a single code path for both shapes:
 	// for buffered application/json we deliver the body as one
 	// last=true frame so plugins can finalize via OnResponseFrame.
-	if s.InboundPipeline.HasStreamingResponders() && resp.Body != nil {
+	if pinned.HasStreamingResponders() && resp.Body != nil {
 		// Its own budget, per the rule above: the settle does not inherit what the phase spent.
 		finalCtx, cancelFinal := httpx.TeardownContext(resp.Request.Context())
 		defer cancelFinal()
@@ -682,7 +688,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// (protocol mismatch, failed hijack) nothing would ever fire the deferred
 	// record. The row is the 101 itself, and ErrorHandler must not add a second
 	// one after it.
-	if !s.InboundPipeline.NeedsBody() && resp.Body != nil &&
+	if !pinned.NeedsBody() && resp.Body != nil &&
 		resp.StatusCode != http.StatusSwitchingProtocols {
 		resp.Body = &recordOnEOFBody{inner: resp.Body, onClose: record}
 		return nil

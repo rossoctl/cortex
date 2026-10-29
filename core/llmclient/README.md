@@ -59,7 +59,7 @@ var ErrJudgeUncertain = fmt.Errorf("%w: judge produced bad output", llmclient.Er
 When a plugin's outbound LLM call passes through the same authbridge listener that hosts the plugin, the plugin's own `OnRequest` will fire on its own request — infinite loop. Two safeguards together solve this:
 
 1. Make the LLM call via this package's `Client`, which uses a standalone `http.Client` and does not route through the local listener.
-2. Set `Options.SentinelHeaderName` (e.g. `X-IBAC-Judge`). At the top of `OnRequest`, the plugin checks for that header and returns immediately when present, so even a misconfiguration that sent the call back through the proxy would short-circuit.
+2. Set `Options.SentinelHeaderName` (e.g. `X-IBAC-Judge`) together with `Options.SentinelValue` from `NewSentinelValue()`. At the top of `OnRequest`, the plugin compares that header against the exact value and returns immediately only on equality, so even a misconfiguration that sent the call back through the proxy would short-circuit. Equality, not presence: outbound headers are the agent's own request, so a caller who can set headers must not be able to switch the plugin off with a guessed value. The header is only sent when both fields are set — a name without a value emits nothing.
 
 Pick a header name unique to the plugin to avoid collisions if multiple LLM-calling plugins are stacked.
 

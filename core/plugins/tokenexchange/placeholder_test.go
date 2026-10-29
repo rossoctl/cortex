@@ -18,6 +18,7 @@ func resolveTestPlugin(t *testing.T, exchangeURL string) *TokenExchange {
 	raw := []byte(`{
 	  "token_url":"` + exchangeURL + `",
 	  "default_policy":"exchange",
+	  "routes":{"rules":[{"host":"target-svc","target_audience":"target-aud"}]},
 	  "resolve_placeholders":true,
 	  "identity":{"type":"client-secret","client_id":"agent","client_secret":"secret"}
 	}`)

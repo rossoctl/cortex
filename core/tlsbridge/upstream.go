@@ -57,9 +57,12 @@ func NewUpstreamClient(extraRootsPEM []byte, insecure bool, opts ...UpstreamOpti
 	}
 	return &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig:       &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, //nolint:gosec // opt-in via upstream_insecure for internal/self-signed upstreams
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
+			TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, //nolint:gosec // opt-in via upstream_insecure for internal/self-signed upstreams
+			ForceAttemptHTTP2: true,
+			MaxIdleConns:      100,
+			// Go's default is 2, which churns connections when more than two
+			// callers share an h1-only upstream (LiteLLM, Keycloak).
+			MaxIdleConnsPerHost:   100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,

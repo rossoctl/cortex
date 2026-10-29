@@ -65,7 +65,7 @@ func TestForwardProxy_Exchange(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	router, _ := routing.NewRouter("exchange", []routing.Route{{Host: "127.0.0.1", Audience: "backend-aud"}})
 	exchanger := exchange.NewClient(exchangeSrv.URL, &exchange.ClientSecretAuth{
 		ClientID: "agent", ClientSecret: "secret",
 	})

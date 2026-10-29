@@ -503,6 +503,12 @@ the edit — `/reload/status` reports a successful reload and `/config` serves
 the new values while the running bridge keeps its startup settings. Restart to
 apply.
 
+With `mode: enabled`, the session API's bind is pinned to loopback whatever
+`listener.session_api_addr` says (an explicit `0.0.0.0:9094` becomes
+`127.0.0.1:9094`): under the bridge it serves **decrypted** request and
+response bodies, and it is unauthenticated. `kubectl port-forward` and
+agentop still reach it through the pod's loopback.
+
 ## `agentop: command not found`
 
 Setup puts both binaries in `~/.local/bin`. If that is not on your PATH, adding it to

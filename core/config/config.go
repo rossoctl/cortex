@@ -1177,12 +1177,6 @@ func Load(path string) (*Config, error) {
 		if err := cfg.TLSBridge.Validate(); err != nil {
 			return nil, err
 		}
-		// With the bridge on, the session API may carry decrypted request/response
-		// bodies; restrict its bind to loopback so other pods can't scrape it.
-		// kubectl port-forward (agentop) still works — it targets the pod's loopback.
-		if cfg.TLSBridge.Mode == "enabled" {
-			cfg.Listener.SessionAPIAddr = forceLocalhost(cfg.Listener.SessionAPIAddr)
-		}
 	}
 
 	return &cfg, nil

@@ -269,7 +269,7 @@ func TestHandleOutbound_CacheHit(t *testing.T) {
 		{Host: "target-svc", Audience: "target-aud"},
 	})
 	c := cache.New()
-	c.Set("user-token", "target-aud", "cached-token", 5*time.Minute)
+	c.Set("user-token", "target-aud", "", "", "cached-token", 5*time.Minute)
 
 	a := New(Config{Router: router, Cache: c})
 
@@ -283,7 +283,9 @@ func TestHandleOutbound_NoToken_ClientCredentials(t *testing.T) {
 	srv := newTestExchangeServer(t)
 	defer srv.Close()
 
-	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	router, _ := routing.NewRouter("exchange", []routing.Route{
+		{Host: "any-svc", Audience: "cc-aud"},
+	})
 	exchanger := exchange.NewClient(srv.URL, &exchange.ClientSecretAuth{
 		ClientID: "agent", ClientSecret: "secret",
 	})
@@ -296,6 +298,32 @@ func TestHandleOutbound_NoToken_ClientCredentials(t *testing.T) {
 	result := a.HandleOutbound(context.Background(), "", "any-svc")
 	if result.Action != ActionReplaceToken {
 		t.Fatalf("expected replace_token from client_credentials, got %s: %s", result.Action, result.DenyReason)
+	}
+	if result.Token != "exchanged-cc-aud" {
+		t.Errorf("token = %q, want exchanged-cc-aud", result.Token)
+	}
+}
+
+// A client_credentials grant with no resolved audience must be refused
+// rather than sent: the IdP answers it with a token valid for every
+// audience the client holds (#1563).
+func TestHandleOutbound_NoToken_ClientCredentials_NoAudienceRefused(t *testing.T) {
+	srv := newTestExchangeServer(t)
+	defer srv.Close()
+
+	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	a := New(Config{
+		Router:        router,
+		Exchanger:     exchange.NewClient(srv.URL, &exchange.ClientSecretAuth{ClientID: "agent", ClientSecret: "secret"}),
+		NoTokenPolicy: NoTokenPolicyClientCredentials,
+	})
+
+	result := a.HandleOutbound(context.Background(), "", "any-svc")
+	if result.Action != ActionDeny {
+		t.Fatalf("expected deny for audience-less client_credentials, got %s: %s", result.Action, result.Token)
+	}
+	if result.DenyReasonCode != OUTBOUND_NO_AUDIENCE {
+		t.Errorf("DenyReasonCode = %v, want OUTBOUND_NO_AUDIENCE", result.DenyReasonCode)
 	}
 }
 

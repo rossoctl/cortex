@@ -267,7 +267,10 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 	transport := &http.Transport{
 		// Sane Go defaults for everything except DialContext, which we
 		// customize when mTLS is on.
-		MaxIdleConns:          100,
+		MaxIdleConns: 100,
+		// Go's default is 2, which churns connections when more than two
+		// callers share an h1-only upstream (LiteLLM, Keycloak).
+		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -659,7 +662,15 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		setBody(r, pctx.Body)
 	}
 
-	ownEncoding := !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders())
+	// The pipeline this request runs on for the rest of the handler: every
+	// capability probe below (encoding, streaming, buffering) must answer
+	// for it, not whatever a mid-request reload left in the Holder — the
+	// path the listener picks has to match the pipeline the response
+	// phases dispatch on. Nil-pinned (skipped requests never ran Run)
+	// falls back to the current pipeline (Holder.ForPctx).
+	pinned := s.OutboundPipeline.ForPctx(pctx)
+
+	ownEncoding := !skipped && (pinned.NeedsResponseBody() || pinned.HasStreamingResponders())
 	stripForUpstream(r, ownEncoding, forwardUpgrade)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
@@ -836,7 +847,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// once isKnownMislabeledSSE started matching every status, not just success.
 		mislabeled := resp.StatusCode/100 == 2 && isKnownMislabeledSSE(r.Host, r.URL.Path)
 		if (isEventStream(resp.Header.Get("Content-Type")) || mislabeled) && resp.Body != nil {
-			if s.OutboundPipeline.WritesResponseBody() {
+			if pinned.WritesResponseBody() {
 				// A response mutator needs the whole response to rewrite it, so
 				// it can't stream — fall back to the buffered path with a warning.
 				// A request-only mutator does NOT land here: it never touches
@@ -847,7 +858,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				s.bufferedFallbackOnce.Do(func() {
 					slog.Info("forward-proxy: text/event-stream responses will use the buffered path — a WritesResponseBody plugin is in the chain", "host", r.Host)
 				})
-			} else if s.OutboundPipeline.HasStreamingResponders() {
+			} else if pinned.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) read each
 				// SSE event's payload; handleStreamingResponse forwards the
 				// upstream bytes unchanged.
@@ -872,7 +883,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				// HasStreamingResponders — a request-only mutator can still be here —
 				// so ask about the response side specifically rather than asserting
 				// what NeedsBody implies.
-				if s.OutboundPipeline.NeedsResponseBody() {
+				if pinned.NeedsResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
 				}
 				s.streamPassthrough(w, r, resp, pctx)
@@ -880,7 +891,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			}
 		}
 
-		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
+		if pinned.NeedsResponseBody() && resp.Body != nil {
 			respBody, ok := s.bufferResponseBody(w, r, resp, pctx)
 			if !ok {
 				return
@@ -915,7 +926,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// as one last=true frame so plugins finalize their running state.
 		// Plugins that didn't migrate — i.e. don't implement
 		// StreamingResponder — are unaffected (RunResponseFrame skips them).
-		if s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
+		if pinned.HasStreamingResponders() && resp.Body != nil {
 			// Its own budget, per the rule above.
 			finalCtx, cancelFinal := httpx.TeardownContext(r.Context())
 			defer cancelFinal()
@@ -1851,7 +1862,10 @@ func setBody(r *http.Request, body []byte) {
 // refused answer that is not sent again goes to the client byte for byte, the bytes
 // read for the Resender included.
 func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool) (*http.Response, error) {
-	if !s.OutboundPipeline.HasResenders() || !s.OutboundPipeline.NeedsRequestBody() {
+	// Both probes and Resend itself answer for the pipeline this request
+	// ran on (Holder.ForPctx): the reload-drain window must not flip the
+	// resend decision onto plugins that never saw the request.
+	if !s.OutboundPipeline.ForPctx(pctx).HasResenders() || !s.OutboundPipeline.ForPctx(pctx).NeedsRequestBody() {
 		return resp, nil
 	}
 	for round := 0; round < pipeline.MaxResends && resp.StatusCode/100 != 2; round++ {
@@ -2517,7 +2531,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 		s.rejectResponse(w, pctx, respAction)
 		return
 	}
-	if s.OutboundPipeline.HasStreamingResponders() {
+	if s.OutboundPipeline.ForPctx(pctx).HasStreamingResponders() {
 		// Re-parse the buffered SSE body frame-by-frame so plugins see the
 		// same per-event shape as the real streaming path. A Reject is
 		// honored here — headers are not yet on the wire.

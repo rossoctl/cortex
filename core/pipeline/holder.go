@@ -47,19 +47,51 @@ func (h *Holder) Store(p *Pipeline) { h.p.Store(p) }
 // one-liner so listeners can keep their Pipeline-era call sites
 // unchanged when they migrate their field type from *Pipeline to
 // *Holder. One atomic Load per call.
+//
+// Run also pins the loaded pipeline on pctx: every later phase on the
+// same request (RunResponse, RunResponseFrame, RunFinish, Resend)
+// dispatches against THAT pipeline, not whatever the Holder holds by
+// then. A reload can Store a new pipeline while the request is open,
+// and pctx.dispatched indexes the pipeline that ran OnRequest — without
+// the pin, a shorter new chain panics in RunFinish and an equal-length
+// one runs hooks on plugins that never saw the request.
 func (h *Holder) Run(ctx context.Context, pctx *Context) Action {
-	return h.p.Load().Run(ctx, pctx)
+	p := h.p.Load()
+	pctx.pinned = p
+	return p.Run(ctx, pctx)
+}
+
+// ForPctx returns the pipeline a pctx-carrying phase should run on: the
+// one pinned by Run when the request started, else the current one (a
+// phase that runs without a preceding Run on this pctx — e.g. a
+// response nobody dispatched a request for — has nothing to stay loyal
+// to).
+//
+// Listeners must also ask this for every capability probe they make
+// AFTER Run — the streaming and body-buffering decisions on the response
+// path (HasStreamingResponders, WritesResponseBody, NeedsBody and
+// friends). A probe on the current pipeline there picks the new
+// pipeline's path while the phases still dispatch on the pinned old one:
+// a StreamingResponder the reload removed never sees its frames, and a
+// body reader never gets the body — the same silent skip the pin exists
+// to prevent. Probes before Run (request-time buffering) have no pin to
+// consult and keep reading the current pipeline.
+func (h *Holder) ForPctx(pctx *Context) *Pipeline {
+	if pctx.pinned != nil {
+		return pctx.pinned
+	}
+	return h.p.Load()
 }
 
 // RunResponse is equivalent to h.Load().RunResponse(ctx, pctx). See Run.
 func (h *Holder) RunResponse(ctx context.Context, pctx *Context) Action {
-	return h.p.Load().RunResponse(ctx, pctx)
+	return h.ForPctx(pctx).RunResponse(ctx, pctx)
 }
 
 // RunResponseFrame is equivalent to h.Load().RunResponseFrame(ctx, pctx, frame, last).
 // See Pipeline.RunResponseFrame.
 func (h *Holder) RunResponseFrame(ctx context.Context, pctx *Context, frame []byte, last bool) Action {
-	return h.p.Load().RunResponseFrame(ctx, pctx, frame, last)
+	return h.ForPctx(pctx).RunResponseFrame(ctx, pctx, frame, last)
 }
 
 // HasStreamingResponders is equivalent to h.Load().HasStreamingResponders().
@@ -73,7 +105,7 @@ func (h *Holder) HasResenders() bool { return h.p.Load().HasResenders() }
 
 // Resend is equivalent to h.Load().Resend(ctx, pctx, status, body). See Resender.
 func (h *Holder) Resend(ctx context.Context, pctx *Context, status int, body []byte) bool {
-	return h.p.Load().Resend(ctx, pctx, status, body)
+	return h.ForPctx(pctx).Resend(ctx, pctx, status, body)
 }
 
 // RunFinish is equivalent to h.Load().RunFinish(ctx, pctx, outcome).
@@ -82,7 +114,7 @@ func (h *Holder) Resend(ctx context.Context, pctx *Context, status int, body []b
 // the contract (LIFO over dispatched plugins, fresh ctx with timeout,
 // pctx.Outcome() populated, silent phase).
 func (h *Holder) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) {
-	h.p.Load().RunFinish(ctx, pctx, outcome)
+	h.ForPctx(pctx).RunFinish(ctx, pctx, outcome)
 }
 
 // NeedsBody is equivalent to h.Load().NeedsBody(). Hot path on listeners

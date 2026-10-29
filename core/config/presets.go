@@ -45,6 +45,18 @@ func ApplyPreset(cfg *Config) {
 	// probe config and the container images expect.
 	setDefault(&cfg.Listener.HealthAddr, ":9091")
 
+	// With the TLS bridge on, the session API may carry decrypted
+	// request/response bodies; restrict its bind to loopback so other pods
+	// can't scrape it. kubectl port-forward (agentop) still works — it
+	// targets the pod's loopback. This must live HERE, after the
+	// session_api_addr default above: in Load the address is still empty
+	// and forceLocalhost("") is "", so the default would re-widen the bind
+	// to every interface (#1564) — the same ordering trap as
+	// BindLoopbackOnly below.
+	if cfg.TLSBridge != nil && cfg.TLSBridge.Mode == "enabled" {
+		cfg.Listener.SessionAPIAddr = forceLocalhost(cfg.Listener.SessionAPIAddr)
+	}
+
 	// LAST, so it wins over every default set above. This must live in ApplyPreset
 	// and not in Load: the binaries call Load first and ApplyPreset second, so a
 	// rule placed in Load runs BEFORE the wildcard defaults exist and silently

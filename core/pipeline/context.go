@@ -409,6 +409,18 @@ type Context struct {
 	// reference so a pctx is safe to pass across pipelines in tests.
 	dispatched []int
 
+	// pinned is the *Pipeline this request's Run dispatched on, set by
+	// Holder.Run. Every later phase on the same pctx (RunResponse,
+	// RunResponseFrame, RunFinish, Resend) runs against it rather than
+	// whatever the Holder currently holds: a reload can Store a new
+	// pipeline while a request is open (CONNECT tunnels and SSE streams
+	// stay open for minutes), and pctx.dispatched holds indexes into the
+	// OLD pipeline's plugin slice — indexing the new one with them panics
+	// when the new chain is shorter and otherwise runs hooks on plugins
+	// that never saw OnRequest. Direct *Pipeline calls (not via a Holder)
+	// never reload under a live request and leave this nil.
+	pinned *Pipeline
+
 	// outcome is populated exactly once by Pipeline.RunFinish immediately
 	// before dispatching OnFinish on the first plugin. Nil during OnRequest
 	// and OnResponse. Read via Outcome() so the "nil outside OnFinish"

@@ -37,6 +37,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/bypass"
 	"github.com/rossoctl/cortex/core/capabilities"
+	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 )
@@ -263,6 +264,7 @@ func (c *ibacConfig) validate() error {
 type IBAC struct {
 	cfg          ibacConfig
 	judge        Judge
+	sentinel     string // unguessable value carried by our own judge calls
 	bypassPaths  *bypass.Matcher
 	bypassHosts  []string // expanded patterns (config + defaults + agent_llm_host)
 	timeoutCalls time.Duration
@@ -325,8 +327,9 @@ func (p *IBAC) Configure(raw json.RawMessage) error {
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
 	p.timeoutCalls = time.Duration(c.TimeoutMs) * time.Millisecond
+	p.sentinel = llmclient.NewSentinelValue()
 	p.judge = newHTTPJudge(c.JudgeEndpoint, c.JudgeModel, c.JudgeBearer, c.SystemPrompt,
-		p.timeoutCalls, c.JudgeMaxTokens, *c.JudgeJSONMode)
+		p.timeoutCalls, c.JudgeMaxTokens, *c.JudgeJSONMode, p.sentinel)
 	return nil
 }
 
@@ -338,7 +341,13 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 	// 1. Reentrancy guard: skip our own judge calls if they ever loop
 	//    back through the pipeline (defense-in-depth — the httpJudge
 	//    uses a standalone http.Client that bypasses the listener).
-	if pctx.Headers.Get("X-IBAC-Judge") == "1" {
+	//    The sentinel is a per-process random value, NOT a constant:
+	//    outbound headers are the agent's own request, and a caller
+	//    who can set headers must not be able to switch IBAC off by
+	//    setting them (the prompt-injection case this plugin exists
+	//    for).
+	if pctx.Headers.Get("X-IBAC-Judge") == p.sentinel {
+		pctx.Skip("self_call")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
