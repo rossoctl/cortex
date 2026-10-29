@@ -214,6 +214,9 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	}
 
 	// The session: one request event and one response event for the request.
+	// Two response rows land (glm's refusal, then the answer), the last after
+	// the relay — wait for both rather than racing the recording.
+	waitForResponseEventCount(t, store, 2)
 	v := store.View("s1")
 	if v == nil {
 		t.Fatal("no session s1 recorded")

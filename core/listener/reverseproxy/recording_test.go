@@ -69,6 +69,14 @@ func TestReverseProxy_RecordsInboundAllowWithoutA2A(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	// No plugin reads bodies here, so the response row is deferred to
+	// recordOnEOFBody — appended while ReverseProxy finishes its copy, which
+	// can be after the client has already read the body and returned. Wait
+	// for the row rather than racing the recording (waitForResponseEvent,
+	// upstreamfailure_test.go); the request row is appended before the
+	// exchange, so it is on the view once the response row is.
+	respEvent := waitForResponseEvent(t, store)
+
 	// No A2A means no contextId, so the event lands in the default bucket.
 	v := store.View(session.DefaultSessionID)
 	if v == nil {
@@ -105,16 +113,9 @@ func TestReverseProxy_RecordsInboundAllowWithoutA2A(t *testing.T) {
 	// The response-phase gate in modifyResponse is widened the same way.
 	// Assert the inbound response event was recorded with its response-phase
 	// invocation, locking in the second gate against regression too.
-	var respEvent *pipeline.SessionEvent
-	for i := range v.Events {
-		ev := v.Events[i]
-		if ev.Direction == pipeline.Inbound && ev.Phase == pipeline.SessionResponse {
-			respEvent = &v.Events[i]
-			break
-		}
-	}
-	if respEvent == nil {
-		t.Fatalf("no inbound response event recorded; events=%+v", v.Events)
+	// respEvent is the row waitForResponseEvent handed us above.
+	if respEvent.Direction != pipeline.Inbound {
+		t.Fatalf("response event direction = %v, want Inbound", respEvent.Direction)
 	}
 	if respEvent.Invocations == nil || len(respEvent.Invocations.Inbound) == 0 {
 		t.Fatalf("response event has no inbound invocations: %+v", respEvent)

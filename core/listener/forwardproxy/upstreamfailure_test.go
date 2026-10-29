@@ -588,6 +588,28 @@ func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEv
 	return pipeline.SessionEvent{}
 }
 
+// waitForResponseEventCount polls until at least n response-phase events are
+// recorded — the multi-attempt shape of a resend, where waiting for the first
+// (waitForResponseEvent) would return while the last attempt's row is still
+// pending behind the relay.
+func waitForResponseEventCount(t *testing.T, store *session.Store, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		count := 0
+		for _, ev := range allEvents(t, store) {
+			if ev.Phase == pipeline.SessionResponse {
+				count++
+			}
+		}
+		if count >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("fewer than %d response events recorded; events = %+v", n, allEvents(t, store))
+}
+
 // truncatingBackend returns the URL of an upstream that promises a 1000-byte
 // body, sends 11 bytes of it, and closes — a real mid-body failure, read through
 // the real transport.

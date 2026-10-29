@@ -54,6 +54,11 @@ func bytesOf(t *testing.T, plugins []pipeline.Plugin, req *http.Request, upstrea
 	// undrained body would under-report by whatever was still in flight.
 	drainAndClose(t, resp)
 
+	// The row is recorded after the relay (io.Copy or the streaming arms' loop),
+	// which can finish after the client has drained and returned — wait for it
+	// rather than racing the recording.
+	waitForResponseEvent(t, store)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("want a request row and a response row, got %+v", v)

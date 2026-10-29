@@ -695,6 +695,13 @@ func TestForwardProxy_RecordsMessageWithNoPluginActivity(t *testing.T) {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 
+	// Empty pipeline: the row is recorded after the final io.Copy, which can
+	// finish after the client has read the body and returned — wait for it
+	// rather than racing the recording (waitForResponseEvent,
+	// upstreamfailure_test.go). The request row is appended before the
+	// exchange, so it is on the view once the response row is.
+	waitForResponseEvent(t, store)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("expected 2 events (request + response) with no plugin activity, got %+v", v)
@@ -749,6 +756,11 @@ func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
 	}
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+
+	// The row is recorded after the relay ends, which can be after the client
+	// has read the stream and returned — wait for it rather than racing the
+	// recording.
+	waitForResponseEvent(t, store)
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
@@ -812,6 +824,11 @@ func TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
+	// The row is recorded after the final io.Copy, which can finish after the
+	// client has read the body and returned — wait for it rather than racing
+	// the recording.
+	waitForResponseEvent(t, store)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("expected 2 events (request + response), got %+v", v)
@@ -869,6 +886,10 @@ func TestForwardProxy_ResponseEventOmitsTtfbOnFailedExchange(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
+
+	// The 502 row is appended just after the response is written, so the
+	// client can beat it — same wait as the success-path tests.
+	waitForResponseEvent(t, store)
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {

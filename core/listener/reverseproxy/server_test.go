@@ -761,6 +761,12 @@ func TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
+	// The row is deferred to the end of ReverseProxy's copy, which can finish
+	// after the client has read the body and returned — wait for it rather
+	// than racing the recording (see recording_test.go for the flake this
+	// shape produced in CI).
+	waitForResponseEvent(t, store)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("expected 2 events (request + response) in the default bucket, got %+v", v)
