@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -875,7 +876,22 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 		t.Errorf("reverseproxy: fixture %q asked for deny but upstream was reached", f.name)
 	}
 
-	obs := finalizeObservation(t, f, "reverseproxy", observe(t, store, pipeline.Inbound, wantPhase), resp.StatusCode)
+	// The response row is deferred to the end of ReverseProxy's body copy
+	// (recordOnEOFBody), which can finish after the client has drained the
+	// body and returned — poll for the event rather than racing the recording,
+	// the way the reverseproxy package's own tests do (waitForResponseEvent
+	// there). A denied or refused fixture's row is recorded synchronously, so
+	// the poll finds it on the first pass and costs nothing.
+	deadline := time.Now().Add(5 * time.Second)
+	var obs *observation
+	for {
+		obs = observe(t, store, pipeline.Inbound, wantPhase)
+		if obs != nil || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	obs = finalizeObservation(t, f, "reverseproxy", obs, resp.StatusCode)
 	if obs != nil {
 		obs.Upstream = upstreamSeen
 	}

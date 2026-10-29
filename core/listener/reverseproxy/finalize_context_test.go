@@ -233,6 +233,10 @@ func TestModifyResponse_BufferedArmSurvivesAHangup(t *testing.T) {
 	if calls, ctxErr := plain.seen(); calls != 1 || ctxErr != nil {
 		t.Errorf("response phases = %d, ctx.Err = %v, want 1 and nil: the phase was skipped or ran on a done context", calls, ctxErr)
 	}
+	// Waited rather than read: the response row is deferred to the end of
+	// ReverseProxy's copy (recordOnEOFBody), which can finish after the body
+	// was drained above.
+	waitForResponseEvent(t, store, session.DefaultSessionID)
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 1 || v.Events[0].Phase != pipeline.SessionResponse {
 		t.Errorf("session events = %+v, want one response row: the early return took the telemetry with it", v)

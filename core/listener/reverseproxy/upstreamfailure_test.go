@@ -50,19 +50,9 @@ func TestReverseProxy_UnreachableBackend_RecordsResponseEvent(t *testing.T) {
 		t.Errorf("client status = %d, want 502", resp.StatusCode)
 	}
 
-	v := store.View(session.DefaultSessionID)
-	if v == nil {
-		t.Fatal("no session recorded")
-	}
-	var respEvent *pipeline.SessionEvent
-	for i := range v.Events {
-		if v.Events[i].Phase == pipeline.SessionResponse {
-			respEvent = &v.Events[i]
-		}
-	}
-	if respEvent == nil {
-		t.Fatalf("no response event recorded for a failed backend call; events = %+v", v.Events)
-	}
+	// Waited rather than read: the failure row is appended from errorHandler
+	// after the 502 went out, so the client can be back first.
+	respEvent := waitForResponseEvent(t, store, session.DefaultSessionID)
 	if respEvent.Direction != pipeline.Inbound {
 		t.Errorf("Direction = %q, want inbound", respEvent.Direction)
 	}
@@ -265,7 +255,7 @@ func TestReverseProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 		t.Fatal("request succeeded; wanted the client to give up on a hung backend")
 	}
 
-	ev := waitForResponseEvent(t, store)
+	ev := waitForResponseEvent(t, store, session.DefaultSessionID)
 	if ev.StatusCode != pipeline.StatusClientClosedRequest {
 		t.Errorf("StatusCode = %d, want %d — a 502 here is a response nobody received", ev.StatusCode, pipeline.StatusClientClosedRequest)
 	}
@@ -312,7 +302,7 @@ func TestReverseProxy_FailedUpgrade_RecordsOneResponse(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	ev := waitForResponseEvent(t, store)
+	ev := waitForResponseEvent(t, store, session.DefaultSessionID)
 	// Give a second row the time to land, if it were going to.
 	time.Sleep(100 * time.Millisecond)
 	v := store.View(session.DefaultSessionID)
@@ -360,7 +350,7 @@ func failedExchange(t *testing.T, target string, timeout time.Duration, plugins 
 		t.Fatalf("client.Do: %v", err)
 	}
 	resp.Body.Close()
-	return waitForResponseEvent(t, store), resp.StatusCode
+	return waitForResponseEvent(t, store, session.DefaultSessionID), resp.StatusCode
 }
 
 // assertBufferingFailure checks the shape every buffering failure records: the
@@ -394,14 +384,17 @@ func assertOutcomeError(t *testing.T, f *finisherStub) {
 	}
 }
 
-// waitForResponseEvent polls the default bucket for a response event. A failure
-// is recorded after the client may already have returned — immediately, on a
-// hangup — so a bare read races the recording.
-func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEvent {
+// waitForResponseEvent polls the session's events for a response row. A
+// response is recorded after the client may already have returned — the
+// unbuffered relay defers its row to the end of ReverseProxy's body copy
+// (recordOnEOFBody), and a failure row is appended from errorHandler after the
+// 502 went out — so a bare read races the recording. The session id is a
+// parameter because a rekeyed turn's rows land under the contextId bucket.
+func waitForResponseEvent(t *testing.T, store *session.Store, sid string) pipeline.SessionEvent {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if v := store.View(session.DefaultSessionID); v != nil {
+		if v := store.View(sid); v != nil {
 			for _, ev := range v.Events {
 				if ev.Phase == pipeline.SessionResponse {
 					return ev
@@ -410,7 +403,7 @@ func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEv
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("no response event recorded")
+	t.Fatalf("no response event recorded in session %q", sid)
 	return pipeline.SessionEvent{}
 }
 

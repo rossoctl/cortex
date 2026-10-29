@@ -75,7 +75,7 @@ func TestReverseProxy_RecordsInboundAllowWithoutA2A(t *testing.T) {
 	// for the row rather than racing the recording (waitForResponseEvent,
 	// upstreamfailure_test.go); the request row is appended before the
 	// exchange, so it is on the view once the response row is.
-	respEvent := waitForResponseEvent(t, store)
+	respEvent := waitForResponseEvent(t, store, session.DefaultSessionID)
 
 	// No A2A means no contextId, so the event lands in the default bucket.
 	v := store.View(session.DefaultSessionID)
