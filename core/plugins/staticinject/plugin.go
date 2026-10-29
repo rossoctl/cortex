@@ -216,12 +216,36 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	// in cleartext (#1481, MOCA MI1 §8.5: 403 plaintext_credential). pctx.Scheme
 	// is "http" exactly for a request the listener knows is plaintext — an
 	// absolute-form http:// URL through the forward proxy, or Envoy's :scheme
-	// on the ext_proc path; a TLS-bridged request carries "https". Checked
+	// on the ext_proc path (would be, if the envoy profile shipped this plugin
+	// — it does not, so no released envoy-sidecar image runs this gate;
+	// extproc/plaintextgate_test.go pins the wiring against that changing);
+	// a TLS-bridged request carries "https". Checked
 	// here, after resolution and before any header write, so the refusal
 	// names the credential rather than the scheme: plain HTTP to a host
 	// WITHOUT one keeps its normal allow-list/SSRF treatment, and an empty
 	// scheme (listener couldn't tell) is left to those same checks rather
 	// than denied on a guess.
+	//
+	// OUTBOUND ONLY, and the direction is load-bearing rather than a
+	// narrowing for caution's sake. On the reverse proxy pctx.Scheme is
+	// requestScheme(r) (reverseproxy/server.go:797) — the scheme the CLIENT
+	// used to reach Cortex, which is "http" whenever the inbound listener is
+	// not TLS. The credential does not travel on that hop; it leaves on the
+	// Cortex→backend hop, whose scheme comes from reverse_proxy_backend and
+	// is invisible from here. So judging an inbound request by pctx.Scheme
+	// asks about the wrong hop entirely.
+	//
+	// That is a real deployment, not a hypothetical: MOCA's AB1 runs
+	// static-inject in the INBOUND pipeline behind a plaintext
+	// reverse_proxy_addr: ":8080" with reverse_proxy_backend:
+	// "https://api.anthropic.com" (moca deploy/knative/authbridge/
+	// ab1-deployment.yaml). Gating on scheme alone refused every LLM call
+	// through it — reproduced at 403 with zero upstream hits (#1537 review).
+	//
+	// Covering inbound properly would mean teaching the reverse proxy to
+	// expose its backend scheme, which #1481 does not ask for; until then an
+	// inbound plaintext hop is the operator's own listener, under their own
+	// network, rather than the guest-controlled egress this gate is about.
 	//
 	// The check lives in the injector, not in a pre-pipeline gate, because
 	// only the resolver knows whether this host has a credential — a
@@ -235,7 +259,7 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	// repo's usual `static-inject.<kebab>` form, so the egress conformance
 	// suite Cortex and moca-egress share matches it without a translation
 	// table — the same reasoning that freezes `x-authbridge-*` wire names.
-	if strings.EqualFold(pctx.Scheme, "http") {
+	if pctx.Direction == pipeline.Outbound && strings.EqualFold(pctx.Scheme, "http") {
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Reason: "plaintext_credential",

@@ -382,8 +382,12 @@ func TestPlaintextGateNamesTheCredentialNotTheScheme(t *testing.T) {
 	p := newPlaintextGatePlugin(t)
 
 	pctx := &pipeline.Context{
-		Scheme: "http",
-		Host:   "no-credential.example.com",
+		// Outbound explicitly: Direction's zero value is Inbound, where the gate
+		// deliberately does not fire, so without this the test would pass for the
+		// wrong reason — on the direction rather than on the missing credential.
+		Direction: pipeline.Outbound,
+		Scheme:    "http",
+		Host:      "no-credential.example.com",
 		Headers: http.Header{
 			"Authorization": []string{"Bearer PLACEHOLDER"},
 		},
@@ -406,8 +410,9 @@ func TestPlaintextGateAllowsHTTPS(t *testing.T) {
 	p := newPlaintextGatePlugin(t)
 
 	pctx := &pipeline.Context{
-		Scheme: "https",
-		Host:   "api.example.com",
+		Direction: pipeline.Outbound,
+		Scheme:    "https",
+		Host:      "api.example.com",
 		Headers: http.Header{
 			"Authorization": []string{"Bearer PLACEHOLDER"},
 		},
@@ -424,6 +429,42 @@ func TestPlaintextGateAllowsHTTPS(t *testing.T) {
 	}
 }
 
+// INBOUND + http STILL INJECTS, and this is the test that keeps MOCA's AB1
+// working. On the reverse proxy pctx.Scheme is the scheme the CLIENT used to
+// reach Cortex (requestScheme, reverseproxy/server.go:797) — "http" whenever
+// the inbound listener is not TLS. The credential leaves on the Cortex→backend
+// hop instead, whose scheme comes from reverse_proxy_backend and cannot be read
+// from here, so an inbound refusal keyed on Scheme judges the wrong hop.
+//
+// AB1 is exactly that shape: static-inject in the inbound pipeline behind a
+// plaintext reverse_proxy_addr ":8080", forwarding to
+// reverse_proxy_backend "https://api.anthropic.com". Gating on scheme alone
+// refused every LLM call through it — reproduced end to end at 403 with zero
+// upstream hits before the direction check (#1537 review).
+func TestPlaintextGateDoesNotFireOnInbound(t *testing.T) {
+	p := newPlaintextGatePlugin(t)
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Inbound,
+		// The client's hop, not the credential's: the backend may well be https.
+		Scheme: "http",
+		Host:   "api.example.com",
+		Headers: http.Header{
+			"Authorization": []string{"Bearer PLACEHOLDER"},
+		},
+	}
+
+	action := p.OnRequest(context.Background(), pctx)
+
+	if action.Type != pipeline.Continue {
+		t.Fatalf("OnRequest() action.Type = %v, want %v — an inbound plaintext front says nothing about the backend hop the credential takes (violation: %+v)",
+			action.Type, pipeline.Continue, action.Violation)
+	}
+	if got := pctx.Headers.Get("Authorization"); got != "Bearer REAL" {
+		t.Errorf("Authorization header = %q, want %q — the credential must still be injected", got, "Bearer REAL")
+	}
+}
+
 // TestPlaintextGateIgnoresUnknownScheme pins that an empty/unknown scheme is
 // NOT treated as plaintext: Context.Scheme's contract says assuming "" means
 // http would silently mask missing listener plumbing, so the gate denies only
@@ -434,8 +475,9 @@ func TestPlaintextGateIgnoresUnknownScheme(t *testing.T) {
 			p := newPlaintextGatePlugin(t)
 
 			pctx := &pipeline.Context{
-				Scheme: scheme,
-				Host:   "api.example.com",
+				Direction: pipeline.Outbound,
+				Scheme:    scheme,
+				Host:      "api.example.com",
 				Headers: http.Header{
 					"Authorization": []string{"Bearer PLACEHOLDER"},
 				},

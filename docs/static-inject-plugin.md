@@ -73,6 +73,42 @@ after resolution on purpose: only the resolver knows whether this host
 has a credential, which is why the gate lives in the injector rather
 than in a pre-pipeline check.
 
+**Outbound only.** The gate fires on outbound requests — the forward
+proxy's egress, which is what the contract is about. It deliberately
+does not fire on an inbound (reverse-proxy) request, because there
+`pctx.Scheme` describes the **wrong hop**: it is the scheme the client
+used to reach Cortex, `http` for any non-TLS inbound listener, while
+the credential leaves on the Cortex→backend hop whose scheme comes
+from `reverse_proxy_backend` and is not visible to the plugin. An
+inbound static-inject behind a plaintext listener in front of an
+`https://` backend is a supported shape — MOCA's AB1 is exactly that —
+and refusing it would block every request while protecting nothing.
+
+Covering the inbound hop properly would mean teaching the reverse
+proxy to expose its backend scheme; that is not implemented. Until it
+is, an operator running static-inject inbound is responsible for the
+front listener's own transport (`mtls:`, or a trusted network), the
+same as for any other header the reverse proxy forwards.
+
+### Deployments this refuses
+
+The refusal is the intended contract, but it is a behaviour change for
+anything that was relying on plaintext egress with a credential:
+
+| Shape | Effect |
+|---|---|
+| Forward-proxy egress, `http://` target **with** a credential | **Now 403.** The request must move to `https://`, or the host must stop having a credential. |
+| Forward-proxy egress, `http://` target without a credential | Unchanged (401 `unresolved-key`, as before). |
+| Inbound static-inject, plaintext front, any backend | Unchanged — the gate does not fire inbound (above). |
+
+Known downstream: **MOCA's AB2 leaf smoke** (`deploy/knative/leaf-smoke.sh`,
+the `H2-inject` allow-path claim) sends
+`curl -s http://echo-target/ -H "Authorization: Bearer $ECHO_CRED"`
+through the forward proxy to a host that has a credential. That request
+is refused by this gate. AB2 is pinned to an image predating it, so
+nothing breaks today, but the next image bump fails that check unless
+`echo-target` moves to TLS or the smoke is updated to expect the 403.
+
 One boundary worth naming: the gate judges the scheme the request
 *arrived* with. A `WritesDestination` plugin later in the chain can
 `Redirect` to an `http://` target (an operator-pinned server), and the
