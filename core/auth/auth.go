@@ -25,9 +25,10 @@ type IdentityConfig struct {
 }
 
 // AudienceDeriver derives a target audience from a request host, for the
-// per-host audience modes (jwt-validation's audience_mode: per-host and
-// token-exchange's audience_from_host) that name the audience after the
-// destination service instead of configuring it statically.
+// per-host audience modes (token-exchange's audience_from_host) that name
+// the audience after the destination service instead of configuring it
+// statically. Outbound only: jwt-validation's inbound audience_mode:per-host
+// was removed — a client-controlled Host must not pick the inbound audience.
 // Returns "" if no derivation is possible (falls back to route config).
 type AudienceDeriver func(host string) string
 

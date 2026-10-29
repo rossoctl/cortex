@@ -970,23 +970,17 @@ func TestForceLocalhost(t *testing.T) {
 	}
 }
 
-// With the bridge enabled, Load() restricts the session API to loopback so
-// other pods can't scrape decrypted bodies.
+// With the bridge enabled, the session API is restricted to loopback so
+// other pods can't scrape decrypted bodies. The rule lives in ApplyPreset
+// (it must run after the ":9094" default; see TestTLSBridge_SessionAPILoopback
+// WhenAddrUnset), so this test drives Load + ApplyPreset like the binaries do.
 func TestLoad_TLSBridgeHardensSessionAPI(t *testing.T) {
-	y := []byte("mode: proxy-sidecar\n" +
-		"listener:\n" +
-		"  session_api_addr: \":9094\"\n" +
-		"tls_bridge:\n" +
-		"  mode: enabled\n" +
+	cfg := loadFrom(t, "mode: proxy-sidecar\n"+
+		"listener:\n"+
+		"  session_api_addr: \":9094\"\n"+
+		"tls_bridge:\n"+
+		"  mode: enabled\n"+
 		"  ca_dir: /etc/authbridge/tls-bridge-ca\n")
-	p := filepath.Join(t.TempDir(), "cfg.yaml")
-	if err := os.WriteFile(p, y, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
 	if cfg.Listener.SessionAPIAddr != "127.0.0.1:9094" {
 		t.Errorf("session_api_addr = %q, want 127.0.0.1:9094 (bridge on => loopback)", cfg.Listener.SessionAPIAddr)
 	}
@@ -1067,6 +1061,40 @@ func TestListenerConfig_DeclineResponsesWebSockets(t *testing.T) {
 				t.Errorf("DeclinesResponsesWebSockets() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestListenerConfig_EgressGuard pins the default (off) and the block that arms
+// it. Unset must mean off with or without a listener block: a sidecar's ordinary
+// upstreams live in exactly the refused space, so a config predating the key
+// turning the guard on would break the deployment it was written for.
+func TestListenerConfig_EgressGuard(t *testing.T) {
+	var noBlock Config
+	if err := yaml.Unmarshal([]byte("mode: proxy-sidecar\n"), &noBlock); err != nil {
+		t.Fatal(err)
+	}
+	if noBlock.Listener.EgressGuard != nil {
+		t.Error("no listener block: EgressGuard is non-nil, want off")
+	}
+
+	var armed Config
+	if err := yaml.Unmarshal([]byte("listener:\n  egress_guard:\n    enabled: true\n    permit_cidrs: [\"127.0.0.1/32\", \"10.0.0.0/8\"]\n"), &armed); err != nil {
+		t.Fatal(err)
+	}
+	g := armed.Listener.EgressGuard
+	if g == nil || !g.Enabled {
+		t.Fatalf("armed config: EgressGuard = %+v, want enabled", g)
+	}
+	if len(g.PermitCIDRs) != 2 || g.PermitCIDRs[0] != "127.0.0.1/32" || g.PermitCIDRs[1] != "10.0.0.0/8" {
+		t.Errorf("PermitCIDRs = %v, want the two configured prefixes", g.PermitCIDRs)
+	}
+
+	var presentButOff Config
+	if err := yaml.Unmarshal([]byte("listener:\n  egress_guard:\n    enabled: false\n"), &presentButOff); err != nil {
+		t.Fatal(err)
+	}
+	if g := presentButOff.Listener.EgressGuard; g == nil || g.Enabled {
+		t.Errorf("explicit false: EgressGuard = %+v, want present and disabled", g)
 	}
 }
 

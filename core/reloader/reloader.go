@@ -521,6 +521,22 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.MTLS, next.MTLS) {
 		diffs = append(diffs, "mtls.*")
 	}
+	// tls_bridge.* is built once at boot (the bridge engine in each cmd main reads the
+	// block at startup and nothing reloads it). Accepting an edit here is the
+	// "worse than a refusal" case: ReloadsOK goes up and /config serves the new block
+	// while the old bridge keeps decrypting — an operator who adds a host to
+	// passthrough_hosts reads the reload as confirmation that it stopped being
+	// intercepted, and it hasn't (#1561).
+	if !reflect.DeepEqual(active.TLSBridge, next.TLSBridge) {
+		diffs = append(diffs, "tls_bridge.*")
+	}
+	// spiffe.* likewise: the Provider is constructed once at boot and handed to the
+	// plugins through Deps at build time. A reload that changes the spiffe block
+	// rebuilds plugins against the NEW provider-shaped config while the running
+	// Provider keeps its boot-time settings.
+	if !reflect.DeepEqual(active.SPIFFE, next.SPIFFE) {
+		diffs = append(diffs, "spiffe.*")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/auth"
@@ -40,13 +41,14 @@ func TestJWTValidation_Configure_UnknownField(t *testing.T) {
 	}
 }
 
-func TestJWTValidation_Configure_PerHost(t *testing.T) {
+func TestJWTValidation_Configure_PerHostRejected(t *testing.T) {
 	p := NewJWTValidation()
-	if err := p.Configure([]byte(`{"issuer":"http://ex","audience_mode":"per-host"}`)); err != nil {
-		t.Fatalf("per-host mode should not require audience: %v", err)
+	err := p.Configure([]byte(`{"issuer":"http://ex","audience_mode":"per-host"}`))
+	if err == nil {
+		t.Fatal("per-host mode must be rejected: it derives the expected audience from the client-controlled Host header")
 	}
-	if p.audienceDeriver == nil {
-		t.Error("per-host mode should set audienceDeriver")
+	if !strings.Contains(err.Error(), "per-host") {
+		t.Errorf("error should name the mode, got: %v", err)
 	}
 }
 
@@ -188,13 +190,10 @@ func TestJWTValidation_Ready_PendingWithoutFile(t *testing.T) {
 	}
 }
 
-func TestJWTValidation_Ready_PerHostAlwaysReady(t *testing.T) {
+func TestJWTValidation_Ready_PerHostRejected(t *testing.T) {
 	p := NewJWTValidation()
-	if err := p.Configure([]byte(`{"issuer":"http://ex","audience_mode":"per-host"}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
-	if !p.Ready() {
-		t.Error("expected Ready() == true in per-host mode")
+	if err := p.Configure([]byte(`{"issuer":"http://ex","audience_mode":"per-host"}`)); err == nil {
+		t.Fatal("per-host mode must be rejected at Configure")
 	}
 }
 

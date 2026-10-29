@@ -911,6 +911,23 @@ func TestTimelinePane_FitsWithOneSideEmpty(t *testing.T) {
 	}
 }
 
+// A linked bucket's events sit in the session's rows numbered in their own bucket, so a seq
+// to reveal lands on the session's own event of that seq, never on a bucket's.
+func TestTimelineEnter_RevealSkipsALinkedBucketsEventOfTheSameSeq(t *testing.T) {
+	m := fitModel(t, paneEvents, 120, 40, []pipeline.SessionEvent{
+		{Seq: 8, At: tlAt(1), SessionID: "pending:claude-code@100.5", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "bucket"},
+		{Seq: 8, At: tlAt(2), SessionID: "sess-1", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "own"},
+	})
+	m.rebuildEventsTable()
+	m.revealSeq, m.revealSess = 8, "sess-1"
+	if !m.revealPendingSeq() {
+		t.Fatal("did not reveal sess-1's seq 8")
+	}
+	if m.selectedEventKey.at != tlAt(2).UnixNano() {
+		t.Errorf("revealed the linked bucket's seq 8, want the session's own")
+	}
+}
+
 // [↑↓] is advertised only when some agent rows do not fit.
 func TestTimelineFooter_ScrollHintOnlyWhenRowsAreHidden(t *testing.T) {
 	m := timelineModel(t, 140, 46)

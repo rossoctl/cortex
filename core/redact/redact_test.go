@@ -88,18 +88,23 @@ func TestJSON_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestJSON_NonStringSecretPreserved(t *testing.T) {
+// A secret is a secret whatever its JSON type: a numeric value under a
+// sensitive key is redacted, not preserved (#1564).
+func TestJSON_NonStringSecretRedacted(t *testing.T) {
 	in := json.RawMessage(`{"client_secret":12345}`)
 	out := JSON(in)
 	var m map[string]any
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["client_secret"] != float64(12345) {
-		t.Errorf("non-string secret should not be redacted: %v", m["client_secret"])
+	if m["client_secret"] != "[REDACTED]" {
+		t.Errorf("non-string secret should be redacted: %v", m["client_secret"])
 	}
 }
 
+// A container under a sensitive key is redacted wholesale — a diagnostic
+// endpoint has no reason to preserve its shape, and enumerating the nested
+// secret-bearing shapes is a losing game (#1564).
 func TestJSON_ContainerValuedSensitiveKey(t *testing.T) {
 	in := json.RawMessage(`{"token":{"access_token":"secret","url":"https://idp"}}`)
 	out := JSON(in)
@@ -107,12 +112,8 @@ func TestJSON_ContainerValuedSensitiveKey(t *testing.T) {
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatal(err)
 	}
-	inner := m["token"].(map[string]any)
-	if inner["access_token"] != "[REDACTED]" {
-		t.Errorf("access_token inside container-valued sensitive key = %v, want [REDACTED]", inner["access_token"])
-	}
-	if inner["url"] != "https://idp" {
-		t.Errorf("url inside container-valued sensitive key = %v, want https://idp", inner["url"])
+	if m["token"] != "[REDACTED]" {
+		t.Errorf("container-valued sensitive key = %v, want [REDACTED]", m["token"])
 	}
 }
 

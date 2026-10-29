@@ -252,6 +252,21 @@ type SessionEvent struct {
 	// listing — none of which the timeline hinted at.
 	TunnelReason TunnelReason
 
+	// DialAddr is the address the proxy actually dialed for this event's
+	// destination, "ip:port", set by the listener when the egress guard is
+	// enabled (listener.egress_guard). It differs from Host whenever the
+	// destination was named: Host is what the request said, DialAddr is the
+	// resolved address the guard checked and the only address the connection
+	// can reach. On a DNS-rebindable name the two together are the audit trail
+	// — "asked for example.com, dialed 203.0.113.7" — and moca's egress
+	// conformance reads this field (its dial_addr) off the tunnel open row.
+	//
+	// Present only on a tunnel's open row: a plain or bridged request dials
+	// through the guarded transport too, but nothing threads the checked
+	// address back to its pctx, so its rows carry Host alone. Absent when the
+	// guard is off. Set only by the listener, never by a plugin.
+	DialAddr string
+
 	// UpgradeStripped names the protocol a client asked to switch to on a request
 	// whose Upgrade header the forward proxy removed — see
 	// pipeline.Context.UpgradeStripped for why that is both correct and
@@ -352,6 +367,25 @@ type SessionEvent struct {
 	//
 	// Client-asserted, with the same caveat as Client above.
 	ParentSubagent string
+
+	// Proc is the agent process the request belongs to, "<pid>.<start>", as process
+	// attribution named it (attribution.Attribution.Proc): the agent root of the client's
+	// chain, so a launcher and its worker are one. Empty where the listener could not name
+	// the process, which is everywhere but a loopback-bound install. It is what links a
+	// process's calls from before it named a session to that session when the list is read
+	// (session.Link), so it is recorded on rows in a session as well as on pending ones.
+	Proc string
+
+	// ClientProc is the client process itself when it differs from Proc: a worker naming the
+	// session its launcher (Proc) is attributed with. Only on a request that named its
+	// session. The fold records a span for it too, so the worker's own pending bucket links.
+	ClientProc string
+
+	// SessionHeader is the session-id header that named this row's session, "" when the
+	// session was not named by the request (process, affinity, ActiveSession). Recorded so
+	// the fold can tell which processes NAMED a session from those merely filed into it,
+	// which Link needs and the session's agent is decided by.
+	SessionHeader string
 }
 
 // TunnelReason is why an opaque tunnel stayed opaque.
@@ -442,6 +476,14 @@ const (
 	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
 	// the exact opposite of what happened, and invisible in a timeline.
 	TunnelPassthroughUnknown TunnelReason = "passthrough-unknown"
+	// TunnelDestPrivate — the egress guard refused the destination before any
+	// dial: it resolved to loopback, link-local (cloud metadata), RFC 1918 /
+	// unique-local space, or one of this host's own addresses, and no permit
+	// covered it (link-local is never permit-able). Recorded with a 403 close
+	// row carrying error.kind "destination_private" — the MOCA egress contract's
+	// identifier, used verbatim. Never confused with dial-failed: a refused
+	// destination was never attempted.
+	TunnelDestPrivate TunnelReason = "dest-private"
 )
 
 // EventTLS describes the TLS state of a connection that produced a
@@ -566,6 +608,15 @@ type sessionEventWire struct {
 	Subagent string `json:"subagent,omitempty"`
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
+	// omitempty: absent wherever the listener could not name the client's process, and on
+	// every event recorded before the field existed.
+	Proc          string `json:"proc,omitempty"`
+	ClientProc    string `json:"clientProc,omitempty"`
+	SessionHeader string `json:"sessionHeader,omitempty"`
+	// omitempty: absent on every row the egress guard did not dial for — it is
+	// off by default, so the common row costs nothing — and the same skew
+	// reason as TunnelReason above.
+	DialAddr string `json:"dialAddr,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
@@ -599,6 +650,10 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
+		Proc:            e.Proc,
+		ClientProc:      e.ClientProc,
+		SessionHeader:   e.SessionHeader,
+		DialAddr:        e.DialAddr,
 	})
 }
 
@@ -640,6 +695,10 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
+		Proc:            w.Proc,
+		ClientProc:      w.ClientProc,
+		SessionHeader:   w.SessionHeader,
+		DialAddr:        w.DialAddr,
 	}
 	return nil
 }
@@ -665,6 +724,15 @@ type EventError struct {
 // but it is not a failure: the client is expected to switch to HTTPS, and does.
 // usage does not count it as an error, and the Finisher sees an allow.
 const ErrorKindUpgradeDeclined = "upgrade_declined"
+
+// ErrorKindDestinationPrivate is the egress guard refusing a destination that
+// resolved into loopback, link-local, private or this host's own address space
+// (listener.egress_guard), rendered as 403 destination_private. Like
+// upgrade_declined it rides on an EventError to say whose answer a 4xx is, and
+// usage does not count it as an error: the guard did what it was configured to.
+// The string is the MOCA egress contract's identifier, used verbatim so the
+// shared conformance suite matches without a translation table.
+const ErrorKindDestinationPrivate = "destination_private"
 
 // SessionSource is how a listener resolved Context.Session.
 type SessionSource string

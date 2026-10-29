@@ -148,11 +148,16 @@ func main() {
 	// config.Validate builds the pricing table and discards it, so an operator's
 	// `pricing:` block validated cleanly and was then never applied.
 	//
-	// Starts EMPTY. buildPipelines below loads the config and swaps the real table in
-	// before anything reads this, so building one here too was duplicate work — and
-	// in this binary it ran before the mode check and Validate, so a wrong-mode
-	// config reported a pricing error instead of the clearer mode error.
+	// Starts EMPTY. The initial build below loads the config and applyPricing
+	// puts its table in before anything reads this, so building one here too was
+	// duplicate work — and in this binary it ran before the mode check and
+	// Validate, so a wrong-mode config reported a pricing error instead of the
+	// clearer mode error.
 	pricingRegistry := pricing.NewRegistry(nil)
+
+	// The table a build prepared but the reloader has not accepted yet.
+	// See applyPricing below.
+	var pendingPricing *pricing.Table
 
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
@@ -170,23 +175,18 @@ func main() {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
-		// Rates reload with the rest of the config, swapped in place so anything
-		// holding this registry from before the reload sees the new table.
+		// Rates are prepared with the rest of the config and applied only once
+		// the reloader accepts it (see pendingPricing / applyPricing below).
 		tab, err := pricing.Build(c.Pricing)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pricing: %w", err)
 		}
 
-		// The registry still holds the PREVIOUS table while the pipelines build, and
-		// is swapped only once both have. Swapping first made a reload
-		// non-transactional: a plugin-build failure makes the reloader reject the
-		// change and keep the running pipelines, but the rates had already moved — so
-		// live traffic priced from a config that was refused. Plugins only store the
-		// resolver during Configure and never resolve through it, so building against
-		// the old table is safe.
 		// ext_proc answers Envoy with header and body mutations only, so it honors no
 		// redirect on either chain; a WritesDestination plugin fails the build here
-		// instead of recording redirects that never happen.
+		// instead of recording redirects that never happen. Plugins only store the
+		// resolver during Configure and never resolve through it, so building against
+		// the still-live previous table is safe.
 		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Listener: extproc.Support()}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
@@ -196,15 +196,36 @@ func main() {
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
-		pricingRegistry.Swap(tab)
-		c.Pricing.WarnIfUnpinned(slog.Default())
+		// PREPARED, NOT APPLIED — the same fix cmd/cortex got: build runs before
+		// the reloader's unreloadable-field check, so a save touching pricing.*
+		// together with a refused field was rejected with pipelines untouched
+		// while live traffic was already priced from the rejected file.
+		// applyPricing below runs from the reloader's commit hook, and from the
+		// initial build, so the table only ever takes effect on an accepted config.
+		pendingPricing = tab
 		return in, out, c, nil
+	}
+
+	// applyPricing puts a prepared table into effect. Called on the reload
+	// goroutine, which is serialised, so the single pending slot needs no lock.
+	applyPricing := func(c *config.Config) {
+		if pendingPricing != nil && c != nil {
+			pricingRegistry.Swap(pendingPricing)
+		}
+		pendingPricing = nil
+		if c != nil {
+			c.Pricing.WarnIfUnpinned(slog.Default())
+		}
 	}
 
 	inboundPipeline, outboundPipeline, cfg, err := buildPipelines()
 	if err != nil {
 		log.Fatalf("initial pipeline build: %v", err)
 	}
+	// The startup build has no reload to accept it, so it applies its own
+	// table. Without this the process would run with an empty registry
+	// until the first successful reload.
+	applyPricing(cfg)
 
 	initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer initCancel()
@@ -220,7 +241,8 @@ func main() {
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
-	rld := reloader.New(*configPath, inboundH, outboundH, buildPipelines, cfg)
+	rld := reloader.New(*configPath, inboundH, outboundH, buildPipelines, cfg,
+		reloader.WithOnCommit(applyPricing))
 	if err := rld.Start(ctx); err != nil {
 		log.Fatalf("reloader: %v", err)
 	}

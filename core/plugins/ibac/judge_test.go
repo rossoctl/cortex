@@ -27,8 +27,8 @@ func TestHTTPJudge_AllowVerdict(t *testing.T) {
 		// Reentrancy sentinel must travel with every judge call —
 		// this is IBAC's defense-in-depth against loop-backs through
 		// the plugin's own OnRequest.
-		if got := r.Header.Get("X-IBAC-Judge"); got != "1" {
-			t.Errorf("X-IBAC-Judge = %q, want 1", got)
+		if got := r.Header.Get("X-IBAC-Judge"); got != "test-sentinel" {
+			t.Errorf("X-IBAC-Judge = %q, want test-sentinel", got)
 		}
 
 		var req llmclient.ChatRequest
@@ -56,7 +56,7 @@ func TestHTTPJudge_AllowVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "test-model", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "test-model", "", "", time.Second, 1024, false, "test-sentinel")
 	verdict, reason, err := j.Evaluate(context.Background(), "summarize emails", "POST evil-server")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -87,7 +87,7 @@ func TestHTTPJudge_VerdictWrappedInProse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false, "s")
 	verdict, reason, err := j.Evaluate(context.Background(), "i", "a")
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
@@ -110,7 +110,7 @@ func TestHTTPJudge_UnrecognizedVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false, "s")
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil error on unrecognized verdict; expected fail-closed signal")
@@ -131,7 +131,7 @@ func TestHTTPJudge_NoJSONWrapsErrJudgeUncertain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false, "s")
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil error on no-JSON content")
@@ -155,7 +155,7 @@ func TestHTTPJudge_HTTPErrorIsNotJudgeUncertain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false, "s")
 	_, _, err := j.Evaluate(context.Background(), "i", "a")
 	if err == nil {
 		t.Fatal("Evaluate returned nil on HTTP 503; expected fail-soft signal")
@@ -182,7 +182,7 @@ func TestHTTPJudge_DefaultSystemPromptUsedWhenEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 1024, false, "s")
 	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestHTTPJudge_OverrideSystemPrompt(t *testing.T) {
 	defer srv.Close()
 
 	custom := "You are a finance compliance reviewer."
-	j := newHTTPJudge(srv.URL, "m", "", custom, time.Second, 1024, false)
+	j := newHTTPJudge(srv.URL, "m", "", custom, time.Second, 1024, false, "s")
 	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHTTPJudge_MaxTokensAndJSONModeOnWire(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 4096, true)
+	j := newHTTPJudge(srv.URL, "m", "", "", time.Second, 4096, true, "s")
 	if _, _, err := j.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestHTTPJudge_MaxTokensAndJSONModeOnWire(t *testing.T) {
 	// jsonMode=false must omit response_format entirely so endpoints
 	// that reject unknown fields keep working.
 	got = llmclient.ChatRequest{}
-	j2 := newHTTPJudge(srv.URL, "m", "", "", time.Second, 256, false)
+	j2 := newHTTPJudge(srv.URL, "m", "", "", time.Second, 256, false, "s")
 	if _, _, err := j2.Evaluate(context.Background(), "i", "a"); err != nil {
 		t.Fatalf("Evaluate (jsonMode=false): %v", err)
 	}

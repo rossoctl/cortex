@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -418,6 +419,20 @@ func flattenHeaders(h map[string]string) []string {
 		out = append(out, k, h[k])
 	}
 	return out
+}
+
+// waitForPhase polls the default bucket, for up to 5s, until it holds an event of wantDir
+// and wantPhase. It reports nothing: observe, which runs next, says what is missing.
+func waitForPhase(store *session.Store, wantDir pipeline.Direction, wantPhase pipeline.SessionPhase) {
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if v := store.View(session.DefaultSessionID); v != nil {
+			for i := range v.Events {
+				if v.Events[i].Phase == wantPhase && v.Events[i].Direction == wantDir {
+					return
+				}
+			}
+		}
+	}
 }
 
 func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wantPhase pipeline.SessionPhase) *observation {
@@ -875,6 +890,11 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 		t.Errorf("reverseproxy: fixture %q asked for deny but upstream was reached", f.name)
 	}
 
+	// The unbuffered relay records its response row when ReverseProxy finishes copying the
+	// body, which can be after the client has its response: wait for it rather than race it.
+	if wantPhase == pipeline.SessionResponse && !f.refusedPreRun("reverseproxy") {
+		waitForPhase(store, pipeline.Inbound, wantPhase)
+	}
 	obs := finalizeObservation(t, f, "reverseproxy", observe(t, store, pipeline.Inbound, wantPhase), resp.StatusCode)
 	if obs != nil {
 		obs.Upstream = upstreamSeen

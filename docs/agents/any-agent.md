@@ -109,4 +109,3 @@ Before Cortex's first start, `ca.crt` does not exist yet. `exec` still runs the
 command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
-

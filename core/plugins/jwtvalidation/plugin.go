@@ -18,7 +18,6 @@ import (
 	"github.com/rossoctl/cortex/core/placeholder"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
-	"github.com/rossoctl/cortex/core/routing"
 )
 
 // jwtValidationConfig is the plugin's local config schema. See
@@ -63,9 +62,9 @@ type jwtValidationConfig struct {
 	KeycloakRealm string `json:"keycloak_realm" description:"Keycloak realm name. Pairs with keycloak_url for jwks_url derivation."`
 
 	// Audience is the literal audience value expected on inbound
-	// tokens. One of {Audience, AudienceFile, AudienceMode:"per-host"}
-	// is required.
-	Audience string `json:"audience" description:"Expected aud claim value. One of audience / audience_file / audience_mode=per-host is required."`
+	// tokens. One of {Audience, AudienceFile} is required (or
+	// allowed_audiences).
+	Audience string `json:"audience" description:"Expected aud claim value. One of audience / audience_file / allowed_audiences is required."`
 
 	// AudienceFile reads the expected audience from a file. Used
 	// together with client-registration's /shared/client-id.txt. The
@@ -78,10 +77,13 @@ type jwtValidationConfig struct {
 	// in when both Audience and AudienceFile are empty.
 	AudienceFile string `json:"audience_file" description:"Read expected audience from this file. Default: /shared/client-id.txt when both audience fields are empty."`
 
-	// AudienceMode chooses how the expected audience is resolved:
-	// "static" (default) uses Audience/AudienceFile; "per-host" derives
-	// it from pctx.Host via routing.ServiceNameFromHost.
-	AudienceMode string `json:"audience_mode" description:"How to resolve expected audience: static or per-host." default:"static" enum:"static,per-host"`
+	// AudienceMode chooses how the expected audience is resolved.
+	// "static" (the default and only accepted value) uses
+	// Audience/AudienceFile/AllowedAudiences. "per-host" is rejected at
+	// validation: it derived the audience from the client-controlled
+	// Host header, so a token minted for any host would be accepted
+	// here (confused deputy).
+	AudienceMode string `json:"audience_mode" description:"How to resolve expected audience: static." default:"static" enum:"static"`
 
 	// AllowedAudiences lists extra audience strings the sidecar accepts
 	// for inbound JWT validation (OR semantics: the token's aud claim
@@ -152,9 +154,16 @@ func (c *jwtValidationConfig) validate() error {
 		// source supplies expected audiences (literal, file path, or
 		// allowed_audiences list).
 	case "per-host":
-		// Audience derived at request time from pctx.Host — nothing to check.
+		// Rejected: per-host derived the expected audience from pctx.Host,
+		// which on the reverse proxy is the client's own Host header — so a
+		// caller holding a token minted for any host could present it with
+		// that Host and pass validation (the confused-deputy case the
+		// audience check exists to stop), and on ext_proc inbound Host is
+		// empty, so no audience was ever derived at all. Use a static
+		// audience, audience_file, or allowed_audiences instead.
+		return errors.New("audience_mode \"per-host\" is not supported: it derives the expected audience from the client-controlled Host header, so a token minted for any host would be accepted for this agent (confused deputy). Use audience, audience_file, or allowed_audiences")
 	default:
-		return fmt.Errorf("audience_mode must be static or per-host, got %q", c.AudienceMode)
+		return fmt.Errorf("audience_mode must be static, got %q", c.AudienceMode)
 	}
 	return nil
 }
@@ -190,9 +199,8 @@ func expectedAudiences(c jwtValidationConfig, audienceFromFile string) []string 
 // via auth.UpdateIdentity, which is atomic with respect to in-flight
 // requests.
 type JWTValidation struct {
-	cfg             jwtValidationConfig
-	inner           *auth.Auth
-	audienceDeriver func(string) string
+	cfg   jwtValidationConfig
+	inner *auth.Auth
 
 	// bgCancel stops the background audience-file poller started by
 	// Init. It's created with context.Background() (not Init's ctx) so
@@ -257,10 +265,6 @@ func (p *JWTValidation) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("jwt-validation config: %w", err)
 	}
 	p.cfg = c
-
-	if c.AudienceMode == "per-host" {
-		p.audienceDeriver = routing.ServiceNameFromHost
-	}
 
 	var audienceFromFile string
 	if c.Audience == "" && c.AudienceFile != "" {
@@ -388,12 +392,10 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	}
 	authHeader := pctx.Headers.Get("Authorization")
 	path := pctx.Path
-	var audience string
-	if p.audienceDeriver != nil {
-		audience = p.audienceDeriver(pctx.Host)
-	}
-
-	result := p.inner.HandleInbound(ctx, authHeader, path, audience)
+	// audience stays "" here: expected audiences are resolved inside
+	// auth.Auth from the static config (audience / audience_file /
+	// allowed_audiences).
+	result := p.inner.HandleInbound(ctx, authHeader, path, "")
 	if result.Action == auth.ActionDeny {
 		// Surface the decision on pctx BEFORE returning so the listener's
 		// reject path can record a SessionDenied event with diagnostic
@@ -406,9 +408,8 @@ func (p *JWTValidation) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			Action: pipeline.ActionDeny,
 			Reason: result.DenyReasonCode.String(),
 			Details: map[string]string{
-				"expected_issuer":        p.cfg.Issuer,
-				"expected_audiences":     strings.Join(p.inner.InboundAudiences(), ","),
-				"expected_audience_host": audience,
+				"expected_issuer":    p.cfg.Issuer,
+				"expected_audiences": strings.Join(p.inner.InboundAudiences(), ","),
 			},
 		})
 		// result.DenyReason carries the specific failure (missing header,
@@ -471,15 +472,10 @@ func (p *JWTValidation) OnResponse(_ context.Context, _ *pipeline.Context) pipel
 // Ready reports whether the plugin can validate traffic. auth.Auth's
 // Ready() returns true once Identity.Audiences is non-empty, which the
 // plugin's synchronous-load path in Configure or the async poll in
-// Init (via auth.UpdateIdentity) arranges. Per-host mode skips the
-// audience check because the audience is derived from pctx.Host per
-// request rather than loaded up front.
+// Init (via auth.UpdateIdentity) arranges.
 func (p *JWTValidation) Ready() bool {
 	if p.inner == nil {
 		return false
-	}
-	if p.cfg.AudienceMode == "per-host" {
-		return true
 	}
 	return p.inner.Ready()
 }

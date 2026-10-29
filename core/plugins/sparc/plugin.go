@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/bypass"
+	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 )
@@ -189,6 +190,7 @@ func (c *sparcConfig) validate() error {
 type SPARC struct {
 	cfg         sparcConfig
 	reflector   Reflector
+	sentinel    string // unguessable value carried by our own reflector calls
 	bypassPaths *bypass.Matcher
 	bypassHosts []string
 	timeout     time.Duration
@@ -247,7 +249,8 @@ func (p *SPARC) Configure(raw json.RawMessage) error {
 	p.bypassPaths = matcher
 	p.bypassHosts = c.BypassHosts
 	p.timeout = time.Duration(c.TimeoutMs) * time.Millisecond
-	p.reflector = newHTTPReflector(c.ReflectorEndpoint, c.ReflectorBearer, p.timeout)
+	p.sentinel = llmclient.NewSentinelValue()
+	p.reflector = newHTTPReflector(c.ReflectorEndpoint, c.ReflectorBearer, p.timeout, p.sentinel)
 	return nil
 }
 
@@ -259,7 +262,11 @@ func (p *SPARC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.
 	if p.cfg.Enforcement != EnforcementMCP {
 		return cont()
 	}
-	if pctx.Headers.Get(sentinelHeader) == "1" {
+	// Per-process random value, not a constant: outbound headers are the
+	// agent's own request, and a caller who can set headers must not be
+	// able to switch SPARC off by setting them.
+	if pctx.Headers.Get(sentinelHeader) == p.sentinel {
+		pctx.Skip("self_call")
 		return cont()
 	}
 	if p.bypassPaths.Match(pctx.Path) {

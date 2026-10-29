@@ -549,6 +549,32 @@ func TestRecord_DeclinedUpgradeIsNotAnError(t *testing.T) {
 	}
 }
 
+// Same shape for the egress guard: its 403 is the guard doing what the operator
+// configured, so a refusal must not read as a failing proxy. The exemption is the
+// kind, not the status — an origin's own 403 is still an error.
+func TestRecord_DestinationPrivateIsNotAnError(t *testing.T) {
+	now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+
+	refused := respEvent(now, 403, 0, "", 0)
+	refused.Error = &pipeline.EventError{Kind: pipeline.ErrorKindDestinationPrivate}
+	a.Record("s1", refused)
+	origin403 := respEvent(now, 403, 0, "", 0)
+	origin403.Error = &pipeline.EventError{Kind: "backend_error", Code: "403"}
+	a.Record("s1", origin403)
+
+	b := a.Snapshot(time.Minute, BucketWidth, "", GroupStatus).Buckets[0]
+	if b.Requests != 2 {
+		t.Errorf("requests = %d, want 2", b.Requests)
+	}
+	if b.Errors != 1 {
+		t.Errorf("errors = %d, want 1 — the origin's 403 only, not the guard's refusal", b.Errors)
+	}
+	if _, ok := b.Series["403"]; !ok {
+		t.Errorf("both 403s still belong under their status; got keys %v", keys(b.Series))
+	}
+}
+
 // Request events carry no status, duration or usage. Counting them would double
 // every request.
 func TestRecord_IgnoresRequestPhase(t *testing.T) {

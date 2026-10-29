@@ -501,7 +501,7 @@ func (m *model) revealPendingSeq() bool {
 		return false
 	}
 	for i, r := range m.visibleRows {
-		if r.event != nil && r.event.Seq == m.revealSeq {
+		if r.event != nil && r.event.Seq == m.revealSeq && eventSession(m.selectedSess, r.event) == m.selectedSess {
 			setCursorVisible(&m.eventsTbl, i)
 			m.selectedEventKey = keyOf(r.event)
 			m.revealSeq, m.revealSess = 0, ""

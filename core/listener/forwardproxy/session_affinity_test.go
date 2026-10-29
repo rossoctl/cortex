@@ -180,18 +180,16 @@ func TestClientAffinity_SeparatesBobFromClaudeCode(t *testing.T) {
 	}
 	want := map[string][]string{
 		"claude-1":               {"/v1/messages", "/web/fetch"},
-		"task-1":                 {"/admin/v1/profile", "/inference/v1/chat/completions", "/inference/v1/chat/completions"},
+		"task-1":                 {"/inference/v1/chat/completions"},
 		session.DefaultSessionID: {"/api/web/domain_info"},
+		// Bob's calls before its first header stay in its bucket: nothing renames a row.
+		// Without a process lookup they cannot be linked to task-1 either (see session.Link).
+		session.PendingSessionID("bob"): {"/admin/v1/profile", "/inference/v1/chat/completions"},
 	}
 	for id, w := range want {
 		if got := paths(id); strings.Join(got, ",") != strings.Join(w, ",") {
 			t.Errorf("session %s request paths = %v, want %v", id, got, w)
 		}
-	}
-	// Pending buckets key by the affinity name, which the converged canonical name
-	// spells "bob" however the User-Agent read.
-	if v := store.View(session.PendingSessionID("bob")); v != nil {
-		t.Errorf("pending:bob still holds %d events after Bob's first header", len(v.Events))
 	}
 	// The axios call is recorded under default but its PLUGINS hear no identity, the same
 	// answer resolvePluginSessionID gives when nothing is known. Handing them "default"
@@ -199,8 +197,7 @@ func TestClientAffinity_SeparatesBobFromClaudeCode(t *testing.T) {
 	if got := probe.sawID[len(probe.sawID)-1]; got != "" {
 		t.Errorf("plugins saw %q for an unknown client beside two live agents, want \"\"", got)
 	}
-	// Every response followed its request, including the classifier's, which was
-	// pinned to the pending id before the adoption.
+	// Every response followed its request.
 	for id := range want {
 		v := store.View(id)
 		var req, resp int
@@ -282,17 +279,30 @@ func TestClientAffinity_TunnelRowsKeepTodaysSessionWhenTheOwnerIsAmbiguous(t *te
 			go func() { _, _ = io.Copy(io.Discard, c); _ = c.Close() }()
 		}
 	}()
-	store := session.New(0, 100, 0) // Bob then Claude Code just spoke: ActiveSession() is claude-1
+	store := session.New(0, 100, 0)
 	defer store.Close()
-	for _, c := range [][2]string{{"task-1", "bob"}, {"claude-1", "claude-code"}} {
-		store.Claim(c[0], c[1])
-		store.Append(c[0], pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
-	}
 	p, _ := pipeline.New(nil)
 	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient,
 		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}, ClientAffinity: true}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
+	// Bob then Claude Code name their sessions through the proxy: ActiveSession() is claude-1.
+	answers := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer answers.Close()
+	via := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	for _, c := range [][3]string{
+		{"task-1", "bob-shell/2.0.5", session.BobSessionHeader},
+		{"claude-1", "claude-cli/2.1.286 (external, cli)", session.ClaudeCodeSessionHeader},
+	} {
+		req, _ := http.NewRequest(http.MethodGet, answers.URL, nil)
+		req.Header.Set("User-Agent", c[1])
+		req.Header.Set(c[2], c[0])
+		resp, err := via.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
 	waitFor := func(id string, want int) {
 		t.Helper()
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {

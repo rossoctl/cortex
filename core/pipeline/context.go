@@ -150,6 +150,15 @@ type Context struct {
 	// an origin quietly serves the un-upgraded request instead.
 	UpgradeStripped string
 
+	// DialedAddr is the address the listener dialed for this request, "ip:port",
+	// set when the egress guard is enabled — the resolved address the guard
+	// checked, which may differ from Host whenever the destination was named.
+	// Read by the recorder onto SessionEvent.DialAddr; moca's egress conformance
+	// pins it as the audit trail against DNS rebinding. Listener-set: a plugin
+	// has no way to write it, for the same reason it has no way to write Host
+	// after the dial.
+	DialedAddr string
+
 	// StartedAt is the wall-clock time this context was constructed by the
 	// listener at the start of a request. Used on the response path to
 	// compute SessionEvent.Duration without walking the event history.
@@ -203,6 +212,12 @@ type Context struct {
 	subagent       string
 	parentSubagent string
 	subagentParsed bool
+
+	// attributedProc, namingHeader and attributed hold SetAttribution's pin.
+	attributedProc string
+	clientProc     string
+	namingHeader   string
+	attributed     bool
 
 	Agent    *AgentIdentity
 	Identity Identity // nil before an auth plugin runs
@@ -391,6 +406,18 @@ type Context struct {
 	// reference so a pctx is safe to pass across pipelines in tests.
 	dispatched []int
 
+	// pinned is the *Pipeline this request's Run dispatched on, set by
+	// Holder.Run. Every later phase on the same pctx (RunResponse,
+	// RunResponseFrame, RunFinish, Resend) runs against it rather than
+	// whatever the Holder currently holds: a reload can Store a new
+	// pipeline while a request is open (CONNECT tunnels and SSE streams
+	// stay open for minutes), and pctx.dispatched holds indexes into the
+	// OLD pipeline's plugin slice — indexing the new one with them panics
+	// when the new chain is shorter and otherwise runs hooks on plugins
+	// that never saw OnRequest. Direct *Pipeline calls (not via a Holder)
+	// never reload under a live request and leave this nil.
+	pinned *Pipeline
+
 	// outcome is populated exactly once by Pipeline.RunFinish immediately
 	// before dispatching OnFinish on the first plugin. Nil during OnRequest
 	// and OnResponse. Read via Outcome() so the "nil outside OnFinish"
@@ -480,7 +507,7 @@ type Context struct {
 // being parsed ten times; it does not escape.
 //
 // THE COPY IS AN ALLOCATION PER CALL, roughly ten per request, and that is the price of the
-// line above. sanitizeUA's fast path is written not to allocate, which bounds what a hostile
+// line above. SanitizeControlRunes's fast path is written not to allocate, which bounds what a hostile
 // header costs; this one is unconditional and buys the integrity claim instead.
 func (c *Context) ClientInfo() *EventClient {
 	if c.clientParsed {
@@ -904,7 +931,7 @@ func (c *Context) RecordStrippedUpgrade(h http.Header) {
 	if v == "" {
 		return
 	}
-	c.UpgradeStripped = capUA(sanitizeUA(strings.ReplaceAll(v, "\t", " ")))
+	c.UpgradeStripped = capUA(SanitizeControlRunes(strings.ReplaceAll(v, "\t", " ")))
 }
 
 // ResponseBodyMutated is the response-side analogue of BodyMutated, and

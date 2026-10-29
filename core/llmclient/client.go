@@ -16,10 +16,14 @@
 // Reentrancy: a plugin's outbound LLM call may itself be intercepted
 // by the same plugin (e.g. IBAC's judge call passing through the
 // IBAC outbound chain). Construct the Client with a
-// SentinelHeaderName, then check that header at the top of OnRequest
-// and short-circuit. Combined with the recommendation that LLM calls
-// bypass the local listener entirely (a standalone http.Client),
-// this gives defense-in-depth against loops.
+// SentinelHeaderName plus an unguessable SentinelValue
+// (NewSentinelValue), then compare that header against the exact
+// value at the top of OnRequest and short-circuit on equality only —
+// outbound headers are the agent's own request, so a caller who can
+// set headers must not be able to switch the plugin off. Combined
+// with the recommendation that LLM calls bypass the local listener
+// entirely (a standalone http.Client), this gives defense-in-depth
+// against loops.
 //
 // Error model:
 //
@@ -42,6 +46,8 @@ package llmclient
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +59,38 @@ import (
 
 // DefaultTimeout is applied when Options.Timeout is zero.
 const DefaultTimeout = 5 * time.Second
+
+// NewSentinelValue returns a fresh unguessable sentinel value for
+// SentinelHeaderName/SentinelValue. A per-process random value keeps the
+// reentrancy breaker working while making it unforgeable by callers, who
+// can otherwise set any header they like.
+func NewSentinelValue() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("llmclient: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// SentinelRedirectPolicy returns an http.Client CheckRedirect that strips
+// the named sentinel header whenever a redirect's host differs from the
+// original request's — the sentinel is a per-process secret that switches
+// guardrails off, and Go's redirect follower keeps custom headers (it strips
+// only Authorization). Same-origin redirects keep it; the reentrancy guard
+// must survive a redirect within the configured endpoint. llmclient's
+// default client installs this; a caller building its own http.Client
+// around a sentinel header (SPARC's reflector) must install it too.
+func SentinelRedirectPolicy(headerName string) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del(headerName)
+		}
+		return nil
+	}
+}
 
 // errorBodyLimit caps how much of an upstream non-2xx body we
 // surface in the error message. Misbehaving upstreams shouldn't
@@ -93,17 +131,28 @@ type Options struct {
 	Timeout time.Duration
 
 	// SentinelHeaderName, if non-empty, is set on every outgoing
-	// request with value "1". Plugins use this as a reentrancy
+	// request with the sentinel value. Plugins use this as a reentrancy
 	// breaker: their OnRequest checks for the header at the top
 	// and short-circuits, so the LLM call doesn't loop back into
 	// the plugin's own pipeline.
 	SentinelHeaderName string
 
+	// SentinelValue is the value set for SentinelHeaderName. Callers
+	// MUST set it to an unguessable per-process secret (see
+	// NewSentinelValue): a constant value lets any client that can set
+	// headers switch the plugin off. The header is only set when both
+	// SentinelHeaderName and SentinelValue are non-empty — a name
+	// without a value emits nothing, not a guessable constant.
+	SentinelValue string
+
 	// HTTPClient overrides the default http.Client. When nil,
-	// llmclient constructs `&http.Client{Timeout: Timeout}`. Use
-	// this to plumb in a transport with custom dialer / TLS /
-	// observability — but keep in mind that http.Client.Timeout
-	// is still authoritative if set.
+	// llmclient constructs a client with Timeout and a
+	// sentinel-stripping redirect policy (SentinelRedirectPolicy).
+	// A custom client replaces that policy: a caller whose client
+	// carries the sentinel must install SentinelRedirectPolicy itself,
+	// or a cross-origin redirect leaks the guardrail secret.
+	// Keep in mind that http.Client.Timeout is still authoritative
+	// if set.
 	HTTPClient *http.Client
 }
 
@@ -174,6 +223,7 @@ type Client struct {
 	model              string
 	bearer             string
 	sentinelHeaderName string
+	sentinelValue      string
 	http               *http.Client
 }
 
@@ -187,13 +237,17 @@ func New(opts Options) *Client {
 		if timeout <= 0 {
 			timeout = DefaultTimeout
 		}
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: SentinelRedirectPolicy(opts.SentinelHeaderName),
+		}
 	}
 	return &Client{
 		endpoint:           strings.TrimRight(opts.Endpoint, "/"),
 		model:              opts.Model,
 		bearer:             opts.Bearer,
 		sentinelHeaderName: opts.SentinelHeaderName,
+		sentinelValue:      opts.SentinelValue,
 		http:               httpClient,
 	}
 }
@@ -275,8 +329,8 @@ func (c *Client) CallRaw(ctx context.Context, req *ChatRequest) (*ChatResponse, 
 	if c.bearer != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
-	if c.sentinelHeaderName != "" {
-		httpReq.Header.Set(c.sentinelHeaderName, "1")
+	if c.sentinelHeaderName != "" && c.sentinelValue != "" {
+		httpReq.Header.Set(c.sentinelHeaderName, c.sentinelValue)
 	}
 
 	httpResp, err := c.http.Do(httpReq)

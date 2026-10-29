@@ -103,8 +103,7 @@ func TestListSessions_TheOwnersLabelMayComeFromTheEarlierHistory(t *testing.T) {
 	st := New(0, 0, 0)
 	defer st.Close()
 	st.AddRecorder(&priorKeeper{last: map[string]uint64{"s1": 1}, prior: map[string]Prior{"s1": {Fold: earlier}}})
-	st.Append("s1", pipeline.SessionEvent{Phase: pipeline.SessionRequest})
-	st.Claim("s1", "claude-code")
+	st.Append("s1", claimedBy("claude-code"))
 	if got, want := summaryOf(t, st, "s1").Agent, earlier.Summary("s1").Agent; got != want || want == "" {
 		t.Fatalf("Agent = %q, want the owner's label from the earlier history, %q", got, want)
 	}
@@ -125,7 +124,7 @@ func TestListSessions_TheOwnersEarlierLabelWinsOverTheEntrys(t *testing.T) {
 	defer whole.Close()
 	whole.Append("s1", first)
 	whole.Append("s1", later)
-	whole.Claim("s1", "claude-code")
+	whole.Append("s1", claimedBy("claude-code"))
 	want := summaryOf(t, whole, "s1").Agent
 
 	earlier := NewSummaryFold()
@@ -141,7 +140,7 @@ func TestListSessions_TheOwnersEarlierLabelWinsOverTheEntrys(t *testing.T) {
 	defer st.Close()
 	st.AddRecorder(&priorKeeper{last: map[string]uint64{"s1": 1}, prior: map[string]Prior{"s1": {Fold: earlier}}})
 	st.Append("s1", later)
-	st.Claim("s1", "claude-code")
+	st.Append("s1", claimedBy("claude-code"))
 	if got := summaryOf(t, st, "s1").Agent; got != want {
 		t.Fatalf("Agent = %q, want the owner's earlier label %q, as a store that never lost the session reports",
 			got, want)

@@ -896,3 +896,50 @@ func TestReloader_AnEditDuringStartIsReloaded(t *testing.T) {
 	}
 	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK == 1 }, "the edit made during Start to reload")
 }
+
+// tls_bridge.* and spiffe.* are built once at boot — the bridge engine in each
+// cmd main and the in-process SPIFFE Provider. Before these checks, an edit to
+// either block was ACCEPTED (ReloadsOK up, /config serving the new values) while
+// the boot-time objects kept running: an operator adding a host to
+// tls_bridge.passthrough_hosts read the reload as confirmation that it stopped
+// being intercepted, and it hadn't (#1561). Same refusal shape as mtls/session.
+func TestValidateReloadable_RefusesTLSBridgeAndSPIFFEEdits(t *testing.T) {
+	// Adding a tls_bridge block.
+	active := &config.Config{}
+	next := &config.Config{TLSBridge: &config.TLSBridgeConfig{Mode: "enabled"}}
+	if err := validateReloadable(active, next); err == nil {
+		t.Fatal("adding a tls_bridge block was accepted")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("tls_bridge.*")) {
+		t.Errorf("error doesn't mention tls_bridge.*: %v", err)
+	}
+
+	// The passthrough_hosts case from the issue: same block, one host added.
+	active = &config.Config{TLSBridge: &config.TLSBridgeConfig{Mode: "enabled", PassthroughHosts: []string{"a.example.com"}}}
+	next = &config.Config{TLSBridge: &config.TLSBridgeConfig{Mode: "enabled", PassthroughHosts: []string{"a.example.com", "b.example.com"}}}
+	if err := validateReloadable(active, next); err == nil {
+		t.Fatal("a passthrough_hosts edit was accepted")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("tls_bridge.*")) {
+		t.Errorf("error doesn't mention tls_bridge.*: %v", err)
+	}
+
+	// An unchanged tls_bridge block is fine.
+	active = &config.Config{TLSBridge: &config.TLSBridgeConfig{Mode: "enabled", PassthroughHosts: []string{"a.example.com"}}}
+	next = &config.Config{TLSBridge: &config.TLSBridgeConfig{Mode: "enabled", PassthroughHosts: []string{"a.example.com"}}}
+	if err := validateReloadable(active, next); err != nil {
+		t.Errorf("unchanged tls_bridge block was refused: %v", err)
+	}
+
+	// A spiffe.* edit.
+	active = &config.Config{SPIFFE: &config.SPIFFEConfig{Socket: "unix:///old.sock"}}
+	next = &config.Config{SPIFFE: &config.SPIFFEConfig{Socket: "unix:///new.sock"}}
+	if err := validateReloadable(active, next); err == nil {
+		t.Fatal("a spiffe.* edit was accepted")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("spiffe.*")) {
+		t.Errorf("error doesn't mention spiffe.*: %v", err)
+	}
+
+	// nil spiffe in both is fine.
+	if err := validateReloadable(&config.Config{}, &config.Config{}); err != nil {
+		t.Errorf("nil tls_bridge and spiffe in both was refused: %v", err)
+	}
+}

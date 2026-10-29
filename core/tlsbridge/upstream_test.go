@@ -37,3 +37,22 @@ func TestUpstreamClient_InjectedRootVerifies(t *testing.T) {
 		t.Errorf("expected success with insecure=true, got %v", err)
 	}
 }
+
+// Go's default MaxIdleConnsPerHost is 2. On an h1-only upstream (LiteLLM is one;
+// it offers no h2 in ALPN) more than two concurrent callers then each open a
+// fresh TCP+TLS per request, costing a handshake every time. The transport is
+// sized to hold a per-host pool, so the caller count sets the connection count.
+func TestUpstreamClient_PoolsIdleConnectionsPerHost(t *testing.T) {
+	client, err := NewUpstreamClient(nil, true)
+	if err != nil {
+		t.Fatalf("NewUpstreamClient: %v", err)
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	if tr.MaxIdleConnsPerHost < 100 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want >= 100 (default of 2 churns connections on h1 upstreams)",
+			tr.MaxIdleConnsPerHost)
+	}
+}

@@ -271,9 +271,17 @@ func TestMCP_Reentrancy(t *testing.T) {
 	fr := &fakeReflector{verdict: ReflectVerdict{Decision: DecisionReject}}
 	p := configured(t, "", fr)
 	pctx := mcpPctx()
-	pctx.Headers.Set(sentinelHeader, "1")
+	pctx.Headers.Set(sentinelHeader, p.sentinel)
 	if act := invokeReq(p, pctx); act.Type != pipeline.Continue || fr.calls != 0 {
 		t.Fatalf("reentrant call should Continue without reflecting")
+	}
+
+	// A forged constant value — the pre-secret wire value — must be
+	// reflected like any other request.
+	forged := mcpPctx()
+	forged.Headers.Set(sentinelHeader, "1")
+	if act := invokeReq(p, forged); fr.calls == 0 || act.Type != pipeline.Reject {
+		t.Fatalf("forged sentinel \"1\" skipped reflection (act=%+v calls=%d)", act, fr.calls)
 	}
 }
 

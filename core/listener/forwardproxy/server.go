@@ -23,6 +23,9 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/attribution"
+	"github.com/rossoctl/cortex/core/listener/egressallow"
+	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
@@ -115,6 +118,19 @@ type Server struct {
 	// motivation.
 	SkipHosts *skiphost.Matcher
 
+	// EgressAllow, when non-nil, is the deny-by-default destination allow
+	// list (#1483, MOCA MI1 §8.5): an outbound destination not on the list
+	// is refused with 403 destination_denied naming the host, before the
+	// pipeline and before DNS resolution or any dial — the moca egress
+	// conformance contract's refusal shape (header X-Moca-Egress-Error,
+	// text/plain body "destination_denied: <host>\n"). Applied to CONNECT
+	// targets, absolute-form http:// hosts, and the target a plugin's
+	// redirect moved a request to. Checked BEFORE SkipHosts: when the list
+	// is on it is the outer boundary, and a skip_hosts entry for an off-list
+	// host must not turn a bypass into an egress bypass. nil keeps the
+	// listener's behavior unchanged; see config.ListenerConfig.EgressAllowHosts.
+	EgressAllow *egressallow.Matcher
+
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
 	// SessionIDHeaders are the request headers consulted, in order, for a
@@ -139,10 +155,21 @@ type Server struct {
 	// for byte.
 	DeclineResponsesWebSockets bool
 
+	// EgressGuard, when non-nil, checks every destination this proxy dials —
+	// CONNECT tunnels, plain and bridged requests, transparent redirects, and
+	// skip_hosts traffic included, because a bypass must not become an SSRF
+	// bypass — against the refusal set in core/listener/egressguard: resolved
+	// once, refused with 403 destination_private when the address is loopback,
+	// link-local, RFC 1918 / unique-local, or one of this host's own addresses
+	// and no permit covers it, and dialed at the checked address so a second
+	// resolution can never re-answer (the DNS-rebinding window). nil keeps the
+	// listener's dial behavior unchanged; see WithEgressGuard and
+	// config.ListenerConfig.EgressGuard.
+	EgressGuard *egressguard.Guard
+
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
-	// nearest ancestor's — before client affinity is consulted; see
-	// session.Store.SessionForProcess. Set only where every client is a process on this
+	// nearest ancestor's — before client affinity is consulted; see core/attribution. Set only where every client is a process on this
 	// host (session.process_attribution) and only from a resolver whose self-test passed
 	// (peerproc.New). The http.Server must carry ConnContext. nil keeps today's
 	// resolution byte for byte.
@@ -167,6 +194,10 @@ type Server struct {
 	// chainOverrideLogged holds the session header names hydrateSession has
 	// reported naming a session other than the process chain's.
 	chainOverrideLogged sync.Map
+
+	// attr is the Server's attribution, built once by attributor.
+	attributorOnce sync.Once
+	attr           *attribution.Attributor
 
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
@@ -211,14 +242,44 @@ type MTLSOptions struct {
 	Metrics *authtls.Metrics
 }
 
+// Option configures optional forward-proxy behavior in NewServer. Variadic so
+// the core constructor signature — and every existing caller — is unchanged.
+type Option func(*options)
+
+type options struct {
+	egress *egressguard.Guard
+}
+
+// WithEgressGuard arms the SSRF dial guard (#1484): every destination the
+// proxy dials is resolved once, refused with 403 destination_private when it
+// lands in loopback / link-local / private / this host's own address space
+// uncovered by a permit, and dialed at the checked address so DNS rebinding
+// cannot re-answer between the check and the connect. Applies to CONNECT
+// tunnels (Server.EgressGuard, checked in handleConnect and the transparent
+// listener) and to every request the transport dials, mTLS included — under
+// mTLS the check runs before the TCP connect, so the TLS handshake never
+// reaches a refused address. A nil guard is accepted and keeps the dial
+// behavior unchanged.
+func WithEgressGuard(g *egressguard.Guard) Option {
+	return func(o *options) { o.egress = g }
+}
+
 // NewServer creates a forward proxy server with a default HTTP client.
 // When mtls is non-nil, every outbound dial does TLS-or-fail using the
 // local SVID; see MTLSOptions for semantics.
-func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOptions) (*Server, error) {
+func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOptions, opts ...Option) (*Server, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	transport := &http.Transport{
 		// Sane Go defaults for everything except DialContext, which we
 		// customize when mTLS is on.
-		MaxIdleConns:          100,
+		MaxIdleConns: 100,
+		// Go's default is 2, which churns connections when more than two
+		// callers share an h1-only upstream (LiteLLM, Keycloak).
+		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
@@ -241,12 +302,17 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 		if err != nil {
 			return nil, fmt.Errorf("forwardproxy: build client tls config: %w", err)
 		}
-		transport.DialContext = mtlsDialer(tlsCfg, mtls.Metrics).DialContext
+		// The guard sits INSIDE the mTLS dialer: check first, then connect,
+		// then handshake — a refused address never gets a TLS ClientHello.
+		transport.DialContext = mtlsDialer(tlsCfg, mtls.Metrics).withGuard(o.egress).DialContext
+	} else if o.egress != nil {
+		transport.DialContext = o.egress.DialContext
 	}
 
 	return &Server{
 		OutboundPipeline: outbound,
 		Sessions:         sessions,
+		EgressGuard:      o.egress,
 		Client: &http.Client{
 			// No Client.Timeout — Go applies that to the entire
 			// request lifecycle including body read, which kills
@@ -268,6 +334,10 @@ type mtlsDialFunc struct {
 	plain   *net.Dialer
 	tlsCfg  *cryptotls.Config
 	metrics *authtls.Metrics
+	// egress, when non-nil, checks the destination before the plain dial —
+	// the TLS handshake is the step after the connect, so it never reaches an
+	// address the guard refused. nil keeps the unguarded dial.
+	egress *egressguard.Guard
 }
 
 func mtlsDialer(cfg *cryptotls.Config, metrics *authtls.Metrics) *mtlsDialFunc {
@@ -278,8 +348,27 @@ func mtlsDialer(cfg *cryptotls.Config, metrics *authtls.Metrics) *mtlsDialFunc {
 	}
 }
 
+// withGuard returns d with the egress guard set. A nil guard is fine: the
+// dialer then behaves exactly as without it, which is why NewServer can pass
+// o.egress unconditionally under mTLS.
+func (d *mtlsDialFunc) withGuard(g *egressguard.Guard) *mtlsDialFunc {
+	d.egress = g
+	return d
+}
+
 func (d *mtlsDialFunc) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	plain, err := d.plain.DialContext(ctx, network, addr)
+	// SNI below reads the ORIGINAL addr, so the name the request used stays
+	// the handshake's ServerName; only the TCP connect follows the checked
+	// address. A literal destination is its own checked address.
+	dialAddr := addr
+	if d.egress != nil {
+		checked, err := d.egress.CheckAddr(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		dialAddr = checked
+	}
+	plain, err := d.plain.DialContext(ctx, network, dialAddr)
 	if err != nil {
 		// TCP failure — separate bug class from "peer doesn't speak TLS".
 		// Returned as-is so callers see the underlying dial error.
@@ -334,6 +423,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	if isBridge {
 		s.bridgedRequests.Add(1)
 	}
+	// Before anything reads the headers: a client must not assert its own attribution, and
+	// no hop in front of this listener is trusted to (attribution.Strip).
+	attribution.Strip(r.Header)
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -369,6 +461,31 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 
+	// Egress allow list (#1483), the request-path half: a plain (non-bridged)
+	// absolute-form request is judged on its dial target, r.URL.Host, the same
+	// boundary the CONNECT gate holds — before SkipHosts (the allowlist is the
+	// outer boundary; a skip entry must not turn a bypass into an egress
+	// bypass), before the pipeline, and before the transport resolves or dials
+	// anything. A bridged request is not re-judged here: its destination was
+	// gated at its CONNECT, and the misdirected check above pins its Host to
+	// that same authority. Plain WriteRejection for the same reason as there:
+	// the named 403 is the contract, not something to re-frame for MCP.
+	if !isBridge && s.EgressAllow != nil && r.URL.Host != "" && !s.EgressAllow.Allows(r.URL.Host, r.URL.Scheme) {
+		host := hostOnly(r.URL.Host)
+		action := egressAllowRefusal(pctx, host)
+		chain := s.clientChain(r)
+		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID("", r.Header, chain))
+		// Sanitized: host (the URL authority), Method and Path are all client-controlled,
+		// and a control rune forged into any of them would forge a log entry — the same
+		// CWE-150 shape #1539's egress guard was flagged for.
+		slog.Info("forward-proxy: destination refused by egress allow list",
+			"host", pipeline.SanitizeControlRunes(host),
+			"method", pipeline.SanitizeControlRunes(r.Method),
+			"path", pipeline.SanitizeControlRunes(r.URL.Path))
+		httpx.WriteRejection(w, action)
+		return
+	}
+
 	// Every request that reaches here is re-originated from pctx below, plain or
 	// TLS-bridged, so a plugin may redirect it. The CONNECT and transparent-connection
 	// contexts are never marked: both dial the address the client chose, so a redirect
@@ -396,7 +513,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 	// The client's process, looked up once per connection; nil when process attribution
 	// is off or the lookup failed, and then resolution is exactly as without it.
-	var chain []session.Proc
+	var chain []attribution.Proc
 	if !skipped {
 		chain = s.clientChain(r)
 	}
@@ -513,7 +630,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// streaming inference response away from its request's session.
 		pctx.OutboundSessionID = sid
 		if chain != nil {
-			defer s.Sessions.TouchProcess(sid, chain)
+			defer s.touch(sid, chain)
 		}
 		// Record EVERY message that reaches the pipeline — even when no
 		// plugin acted and no parser matched (Invocations/MCP/Inference all
@@ -542,11 +659,45 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		setBody(r, pctx.Body)
 	}
 
-	ownEncoding := !skipped && (s.OutboundPipeline.NeedsResponseBody() || s.OutboundPipeline.HasStreamingResponders())
+	// The pipeline this request runs on for the rest of the handler: every
+	// capability probe below (encoding, streaming, buffering) must answer
+	// for it, not whatever a mid-request reload left in the Holder — the
+	// path the listener picks has to match the pipeline the response
+	// phases dispatch on. Nil-pinned (skipped requests never ran Run)
+	// falls back to the current pipeline (Holder.ForPctx).
+	pinned := s.OutboundPipeline.ForPctx(pctx)
+
+	ownEncoding := !skipped && (pinned.NeedsResponseBody() || pinned.HasStreamingResponders())
 	stripForUpstream(r, ownEncoding)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
+
+	// Egress allow list, redirect re-check (#1483): a plugin's redirect —
+	// inference-router moves requests between model servers — can change the
+	// dial target after the gate at the top of this function passed it, and
+	// deny-by-default means the DIAL TARGET is what counts, not the host the
+	// client named. An off-list redirect target is refused here, before the
+	// exchange: the request row has already landed above, and this denial row
+	// follows it. Unconditional rather than only-when-redirected, so the
+	// invariant "nothing dials off-list" holds by one check at the dial
+	// rather than by reasoning about every path that can reach it.
+	if s.EgressAllow != nil && !s.EgressAllow.Allows(r.URL.Host, r.URL.Scheme) {
+		host := hostOnly(r.URL.Host)
+		action := egressAllowRefusal(pctx, host)
+		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(sessionID, r.Header, chain))
+		// A delivered answer, not a failed exchange — the 426 rule: the deferred
+		// RunFinish reads zero StatusCode as OutcomeError, and the allowlist
+		// refusing an off-list redirect is the policy working, not a failure.
+		pctx.StatusCode = http.StatusForbidden
+		// Sanitized like the gate at the top of this function: both hosts are
+		// client-controlled (pctx.Host is the one the client named, pre-redirect).
+		slog.Info("forward-proxy: destination refused by egress allow list (redirect re-check)",
+			"host", pipeline.SanitizeControlRunes(host),
+			"requested", pipeline.SanitizeControlRunes(pctx.Host))
+		httpx.WriteRejection(w, action)
+		return
+	}
 
 	client := s.Client
 	if isBridge && s.TLSBridge != nil {
@@ -557,6 +708,33 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
 	}
 	if err != nil {
+		// The egress guard's refusal, BEFORE the generic 502: a destination that
+		// resolved into refused space is a policy answer (403 destination_private),
+		// not a failed exchange. errors.As traverses the *url.Error client.Do wraps
+		// every dial error in; see TransportError's note on that wrapping.
+		var ref *egressguard.Refusal
+		if errors.As(err, &ref) {
+			slog.Debug("forward-proxy: destination refused by egress guard",
+				// Sanitized: Host and Method are client-controlled, and a newline
+				// forged into either would forge a log entry (#1539's CodeQL finding).
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"method", pipeline.SanitizeControlRunes(r.Method), "addr", ref.Addr.String())
+			// The listener's standard rejection shape, code verbatim from the MOCA
+			// egress contract so the shared conformance suite matches.
+			httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
+				fmt.Sprintf("refusing to reach private destination %s (%s)", ref.Host, ref.Addr)))
+			// A delivered answer, not a failed exchange — the 426 rule: the Finisher
+			// reads non-zero StatusCode as an allow, and the guard did what it was
+			// configured to. usage keys off EventError.Kind, which stays set below.
+			pctx.StatusCode = http.StatusForbidden
+			if !skipped {
+				s.recordOutboundResponseEvent(pctx, http.StatusForbidden, &pipeline.EventError{
+					Kind:    pipeline.ErrorKindDestinationPrivate,
+					Message: ref.Error(),
+				})
+			}
+			return
+		}
 		// A 502 with the cause, or a 499 when the client hung up first — which,
 		// with no timeout on this client, is how a hung upstream usually ends.
 		// See pipeline.ExchangeFailure.
@@ -634,7 +812,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// once isKnownMislabeledSSE started matching every status, not just success.
 		mislabeled := resp.StatusCode/100 == 2 && isKnownMislabeledSSE(r.Host, r.URL.Path)
 		if (isEventStream(resp.Header.Get("Content-Type")) || mislabeled) && resp.Body != nil {
-			if s.OutboundPipeline.WritesResponseBody() {
+			if pinned.WritesResponseBody() {
 				// A response mutator needs the whole response to rewrite it, so
 				// it can't stream — fall back to the buffered path with a warning.
 				// A request-only mutator does NOT land here: it never touches
@@ -645,7 +823,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				s.bufferedFallbackOnce.Do(func() {
 					slog.Info("forward-proxy: text/event-stream responses will use the buffered path — a WritesResponseBody plugin is in the chain", "host", r.Host)
 				})
-			} else if s.OutboundPipeline.HasStreamingResponders() {
+			} else if pinned.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) read each
 				// SSE event's payload; handleStreamingResponse forwards the
 				// upstream bytes unchanged.
@@ -670,7 +848,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				// HasStreamingResponders — a request-only mutator can still be here —
 				// so ask about the response side specifically rather than asserting
 				// what NeedsBody implies.
-				if s.OutboundPipeline.NeedsResponseBody() {
+				if pinned.NeedsResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
 				}
 				s.streamPassthrough(w, r, resp, pctx)
@@ -678,7 +856,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			}
 		}
 
-		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
+		if pinned.NeedsResponseBody() && resp.Body != nil {
 			respBody, ok := s.bufferResponseBody(w, r, resp, pctx)
 			if !ok {
 				return
@@ -713,7 +891,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// as one last=true frame so plugins finalize their running state.
 		// Plugins that didn't migrate — i.e. don't implement
 		// StreamingResponder — are unaffected (RunResponseFrame skips them).
-		if s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
+		if pinned.HasStreamingResponders() && resp.Body != nil {
 			// Its own budget, per the rule above.
 			finalCtx, cancelFinal := httpx.TeardownContext(r.Context())
 			defer cancelFinal()
@@ -1022,10 +1200,10 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	}
 	pctx.Host = r.URL.Host
 	chain := s.clientChain(r)
-	sid := s.recordingSessionID("", r.Header, chain)
+	sid := s.attributeForRecording(pctx, r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
@@ -1112,7 +1290,7 @@ func upgradesToWebSocket(h http.Header) bool {
 // attempt; the request row keeps its upgradeStripped marker, since the Upgrade was not
 // forwarded. error.kind "upgrade_declined" says the 426 is ours, as misdirected_request
 // does for the 421.
-func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
+func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []attribution.Proc) {
 	slog.Debug("forward-proxy: declined a WebSocket upgrade on a Responses path; the client falls back to HTTPS",
 		"host", r.Host, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
@@ -1127,7 +1305,7 @@ func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Reques
 	}
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, http.StatusUpgradeRequired, &pipeline.EventError{
@@ -1216,7 +1394,7 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 // Safe to call with s.Sessions == nil: ActiveSession() is skipped and the default
 // bucket is returned, so a future caller that forgets the nil check on Sessions
 // gets a usable answer rather than a panic.
-func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
 	if sid := s.resolvePluginSessionID(clientHeaders, chain); sid != "" {
 		return sid
 	}
@@ -1228,11 +1406,26 @@ func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []ses
 // local so no plugin can rewrite it; "" means hydration found no identity (or ran
 // on a path that has none), and recording — unlike a plugin — must still file the
 // event somewhere, so the full order including the default bucket applies.
-func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
 	if resolved != "" {
 		return resolved
 	}
 	return s.resolveOutboundSessionID(clientHeaders, chain)
+}
+
+// attributeForRecording resolves a request that never reached hydration — refused before the
+// pipeline, or unreadable — pins its attribution on pctx so its rows carry the process, and
+// returns the bucket they go in: the attribution's, else ActiveSession(), else default.
+func (s *Server) attributeForRecording(pctx *pipeline.Context, clientHeaders http.Header, chain []attribution.Proc) string {
+	at := s.attribute(clientHeaders, chain)
+	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	if sid := at.RecordID(); sid != "" {
+		return sid
+	}
+	if sid := s.Sessions.ActiveSession(); sid != "" {
+		return sid
+	}
+	return session.DefaultSessionID
 }
 
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
@@ -1331,7 +1524,10 @@ func setBody(r *http.Request, body []byte) {
 // refused answer that is not sent again goes to the client byte for byte, the bytes
 // read for the Resender included.
 func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool) (*http.Response, error) {
-	if !s.OutboundPipeline.HasResenders() || !s.OutboundPipeline.NeedsRequestBody() {
+	// Both probes and Resend itself answer for the pipeline this request
+	// ran on (Holder.ForPctx): the reload-drain window must not flip the
+	// resend decision onto plugins that never saw the request.
+	if !s.OutboundPipeline.ForPctx(pctx).HasResenders() || !s.OutboundPipeline.ForPctx(pctx).NeedsRequestBody() {
 		return resp, nil
 	}
 	for round := 0; round < pipeline.MaxResends && resp.StatusCode/100 != 2; round++ {
@@ -1394,6 +1590,9 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 		Client:          pctx.ClientInfo(),
 		Subagent:        pctx.Subagent(),
 		ParentSubagent:  pctx.ParentSubagent(),
+		Proc:            pctx.AttributedProc(),
+		ClientProc:      pctx.AttributedClientProc(),
+		SessionHeader:   pctx.NamingHeader(),
 	}
 	s.appendOutbound(tl, sid, ev)
 }
@@ -1410,14 +1609,14 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 // hydration, which runs after the body is read. Resolution reads only the
 // client's headers and process, never the body, so the answer is the one the
 // request would have got.
-func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, r *http.Request, chain []session.Proc, err error) {
+func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, r *http.Request, chain []attribution.Proc, err error) {
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.recordingSessionID("", r.Header, chain)
+	sid := s.attributeForRecording(pctx, r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
-		defer s.Sessions.TouchProcess(sid, chain)
+		defer s.touch(sid, chain)
 	}
 	status, fail := bodyread.Failure(r, maxRequestBodySize, err)
 	s.recordOutboundRequestEvent(tl, pctx, sid)
@@ -1441,7 +1640,7 @@ func (s *Server) appendOutbound(tl *tunnelLog, sid string, ev pipeline.SessionEv
 // Those rows keep ActiveSession() at recording time, as without affinity.
 // With the client's process known, an empty answer means a process of no agent, and the
 // row goes to default like that process's requests.
-func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
 	if s.ClientAffinity && resolved == "" && chain == nil && s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
 			return sid
@@ -1490,10 +1689,9 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // in #984, which is where to argue with it.
 //
 // With the client's process known (chain non-nil), a header claims the session for that
-// process as well as for its agent, and a request with no header asks
-// session.Store.SessionForProcess first; client affinity and ActiveSession() answer only
-// what it leaves open.
-func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []session.Proc) string {
+// process as well as for its agent, and a request with no header is filed by process first;
+// client affinity and ActiveSession() answer only what it leaves open. See core/attribution.
+func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
 	sid, _ := s.resolvePluginSession(clientHeaders, chain)
 	return sid
 }
@@ -1507,7 +1705,7 @@ type pluginSession struct {
 // hydrateSession resolves the plugin session for a request and, when there is one,
 // sets pctx.Session and how it was resolved. It returns the id for the caller's
 // local, which recording reads instead of pctx.
-func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain []session.Proc) string {
+func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain []attribution.Proc) string {
 	// The listener's own answer first, and it ends the search: a session
 	// resolved from how the connection arrived is not something the client has
 	// any say in, and letting a header or a process chain override it would
@@ -1516,11 +1714,19 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain [
 	// claims and affinity work below is skipped: a VM's traffic must not be
 	// filed by a process it never ran as. A transparently redirected connection
 	// has no request at all (r == nil), so there is nothing to claim either.
+	//
+	// Attribution is pinned EMPTY rather than left unset. SetAttribution is
+	// write-once and AttributedProc() is recorded straight into
+	// SessionEvent.Proc, so claiming the slot here is what stops a later
+	// attributeForRecording from filling a VM's row in with a host process
+	// that merely happens to own the control socket. The VM's identity is the
+	// session id itself, which the connection already settled.
 	if s.TrustedSessionID != nil && r != nil {
 		if sid := s.TrustedSessionID(r); sid != "" {
 			pctx.Session = s.sessionViewFor(sid)
 			pctx.SessionSource = pipeline.SessionSourceConnection
 			pctx.SessionHeader = ""
+			pctx.SetAttribution("", "", "")
 			return sid
 		}
 	}
@@ -1528,14 +1734,16 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain [
 	if r != nil {
 		clientHeaders = r.Header
 	}
-	sid, how := s.resolvePluginSession(clientHeaders, chain)
+	at := s.attribute(clientHeaders, chain)
+	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	sid, how := s.pluginSessionOf(at)
 	if sid != "" {
 		pctx.Session = s.sessionViewFor(sid)
 		pctx.SessionSource = how.source
 		pctx.SessionHeader = how.header
 	}
 	if chain != nil && s.processesOn() {
-		pctx.ChainSession = s.Sessions.ChainSession(chain)
+		pctx.ChainSession = at.ChainSession
 		if pctx.ChainSession != "" && sid != pctx.ChainSession && how.source == pipeline.SessionSourceHeader {
 			if _, seen := s.chainOverrideLogged.LoadOrStore(how.header, struct{}{}); !seen {
 				slog.Info("forwardproxy: a process named a session other than its parent agent's; "+
@@ -1548,49 +1756,17 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain [
 
 // resolvePluginSession is resolvePluginSessionID that also says how the id was
 // resolved.
-func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session.Proc) (string, pluginSession) {
-	affinity := s.affinityOn()
-	procs := chain != nil && s.processesOn()
-	agent := affinityClient(clientHeaders)
-	if sid, header := session.IDHeaderFrom(clientHeaders, s.SessionIDHeaders); sid != "" {
-		// The process's claim first: it adopts the process's own pending bucket, which is
-		// certainly its calls, before the agent-wide guess can take the session.
-		if procs {
-			s.Sessions.ClaimProcess(sid, agent, chain)
-		}
-		if affinity {
-			s.Sessions.Claim(sid, agent)
-		}
-		return sid, pluginSession{source: pipeline.SessionSourceHeader, header: header}
+func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []attribution.Proc) (string, pluginSession) {
+	return s.pluginSessionOf(s.attribute(clientHeaders, chain))
+}
+
+// pluginSessionOf is an attribution as plugins hear it: its plugin id, else — for no
+// identity at all — the store's ActiveSession(), the in-cluster answer.
+func (s *Server) pluginSessionOf(at attribution.Attribution) (string, pluginSession) {
+	if sid := at.PluginID(); sid != "" {
+		return sid, pluginSession{source: at.Source, header: at.Header}
 	}
-	if procs {
-		// The default bucket is SessionForProcess's answer for a process of no agent while
-		// an agent is active, and plugins hear it as "", as they do affinity's below.
-		switch sid := s.Sessions.SessionForProcess(chain, agent); {
-		case sid == "":
-		case sid == session.DefaultSessionID:
-			return "", pluginSession{}
-		case strings.HasPrefix(sid, session.PendingPrefix):
-			return sid, pluginSession{source: pipeline.SessionSourcePending}
-		default:
-			return sid, pluginSession{source: pipeline.SessionSourceProcess}
-		}
-	}
-	if affinity {
-		// See session.Store.SessionForClient for the order. The default bucket is its
-		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
-		// function exists to give them — while recording files it under default.
-		switch sid := s.Sessions.SessionForClient(agent); {
-		case sid == "":
-		case sid == session.DefaultSessionID:
-			return "", pluginSession{}
-		case strings.HasPrefix(sid, session.PendingPrefix):
-			return sid, pluginSession{source: pipeline.SessionSourcePending}
-		default:
-			return sid, pluginSession{source: pipeline.SessionSourceAffinity}
-		}
-	}
-	if s.Sessions != nil {
+	if at.Session == "" && at.Source != pipeline.SessionSourcePending && s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
 			return sid, pluginSession{source: pipeline.SessionSourceActive}
 		}
@@ -1598,23 +1774,47 @@ func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []session
 	return "", pluginSession{}
 }
 
-// affinityOn reports whether header-less requests are filed by coding agent. It needs
-// header bucketing: a client's session is the one its header named, so with id_headers
-// empty no session is ever any client's and every known agent would collect in its
-// pending bucket forever.
-func (s *Server) affinityOn() bool {
-	return s.ClientAffinity && s.Sessions != nil && len(s.SessionIDHeaders) > 0
+// attribute is the attributor's answer for a request, or what an attributor with nothing
+// configured gives — no session — when there is none (sessions off, or a test Server built
+// without one).
+func (s *Server) attribute(clientHeaders http.Header, chain []attribution.Proc) attribution.Attribution {
+	a := s.attributor()
+	if a == nil {
+		return attribution.Attribution{Agent: attribution.AgentOf(clientHeaders)}
+	}
+	if !s.processesOn() {
+		chain = nil
+	}
+	return a.Resolve(clientHeaders, chain)
 }
 
-// affinityClient names the coding agent behind a request for session attribution. Read
-// from the headers as RECEIVED, like the session header beside it, so it is the same
-// User-Agent pctx.ResolveClient pins. Nil headers — the transparent path — name nobody.
-func affinityClient(clientHeaders http.Header) string {
-	if clientHeaders == nil {
-		return ""
+// attributor is the Server's Attributor, built on first use from SessionIDHeaders and
+// ClientAffinity — fields the caller sets after NewServer — and registered with the store,
+// which tells it which sessions exist. nil without a store.
+func (s *Server) attributor() *attribution.Attributor {
+	if s.Sessions == nil {
+		return nil
 	}
-	return pipeline.ParseUserAgent(clientHeaders.Get("User-Agent")).AffinityName()
+	s.attributorOnce.Do(func() {
+		s.attr = attribution.New(attribution.Config{
+			SessionIDHeaders: s.SessionIDHeaders,
+			ClientAffinity:   s.ClientAffinity,
+		})
+		s.Sessions.AddRecorder(s.attr)
+	})
+	return s.attr
 }
+
+// touch is attribution's Touch, a no-op without process attribution.
+func (s *Server) touch(sid string, chain []attribution.Proc) {
+	if a := s.attributor(); a != nil && chain != nil {
+		a.Touch(sid, chain)
+	}
+}
+
+// affinityClient names the coding agent behind a request for session attribution; see
+// attribution.AgentOf.
+func affinityClient(clientHeaders http.Header) string { return attribution.AgentOf(clientHeaders) }
 
 // sessionViewFor returns the recorded view for sid, or an empty view carrying
 // just the id when nothing has been recorded under it yet.
@@ -1706,6 +1906,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
+		Proc:           pctx.AttributedProc(),
 	}
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
@@ -2010,7 +2211,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 		s.rejectResponse(w, pctx, respAction)
 		return
 	}
-	if s.OutboundPipeline.HasStreamingResponders() {
+	if s.OutboundPipeline.ForPctx(pctx).HasStreamingResponders() {
 		// Re-parse the buffered SSE body frame-by-frame so plugins see the
 		// same per-event shape as the real streaming path. A Reject is
 		// honored here — headers are not yet on the wire.
@@ -2096,6 +2297,27 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 	s.appendOutbound(tl, sid, sessionevent.Deny(pctx, action, pipeline.Outbound))
 }
 
+// egressAllowRefusal builds the destination_denied refusal for an off-list
+// destination and records the deny invocation on pctx. The invocation is
+// what makes the denied-phase session row land at all — recordOutboundRejectIn
+// skips events with no invocations, and a listener gate is not a plugin, so
+// the record is ours to make. Phase is stamped explicitly because the gate
+// runs outside a pipeline pass, where the framework's currentPhase is empty
+// and the row's snapshot filters by it. Details name the host the way the
+// moca conformance suite's audit event reads it ({decision:
+// destination_denied, host, ...}); #1482's JSON audit channel builds on the
+// same row.
+func egressAllowRefusal(pctx *pipeline.Context, host string) pipeline.Action {
+	pctx.Record(pipeline.Invocation{
+		Plugin:  "egress-allowlist",
+		Action:  pipeline.ActionDeny,
+		Phase:   pipeline.InvocationPhaseRequest,
+		Reason:  "destination_denied",
+		Details: map[string]string{"host": host},
+	})
+	return pipeline.MocaRefusal(http.StatusForbidden, "destination_denied", host)
+}
+
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
 // Once the tunnel is open the timeout no longer applies — the agent's TLS
 // handshake and subsequent traffic flow at their own pace.
@@ -2128,6 +2350,7 @@ const connectDialTimeout = 10 * time.Second
 // GitHub API, etc.) where the agent's existing TLS is the right answer.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.noteTunnel()
+	attribution.Strip(r.Header)
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method, // always "CONNECT" here, but populated for parity with handleRequest
@@ -2141,6 +2364,32 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// recordTunnelOpened builds its event, so the pin is what keeps the tunnel row
 	// attributed to the agent that opened it.
 	pctx.ResolveClient()
+
+	// Egress allow list (#1483): when on, an off-list CONNECT target is refused
+	// here — before the SkipHosts match, so a skip entry cannot exempt an
+	// off-list host (the allowlist is the outer boundary), and before the
+	// pipeline and the dial, so the destination is neither resolved nor
+	// contacted: the refusal happens at a point Go's resolver has not run
+	// (it runs inside net.DialTimeout, which this return never reaches), which
+	// is the conformance contract's "no DNS, no connect" by construction. The
+	// named 403 is written with plain WriteRejection, never
+	// WriteRejectionForRequest: the egress boundary's answer is the contract,
+	// and the MCP JSON-RPC 200 rewrite would hide it behind a protocol frame.
+	if s.EgressAllow != nil && !s.EgressAllow.Allows(r.Host, "tcp") {
+		host := hostOnly(r.Host)
+		action := egressAllowRefusal(pctx, host)
+		// Session resolution the recordUnbufferedRequest way — pre-pipeline,
+		// from the client's headers and process only — so the denied row lands
+		// in the bucket the request would have recorded under.
+		chain := s.clientChain(r)
+		s.recordOutboundReject(pctx, action, s.recordingSessionID("", r.Header, chain))
+		// Sanitized like the serveOutbound refusal: host is client-controlled and
+		// lands in a log file.
+		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",
+			"host", pipeline.SanitizeControlRunes(host))
+		httpx.WriteRejection(w, action)
+		return
+	}
 
 	// SkipHosts short-circuit: open the tunnel without running the
 	// pipeline or recording a session event. The pipeline never ran,
@@ -2164,7 +2413,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sessionID string
-	var chain []session.Proc
+	var chain []attribution.Proc
 	if !skipped {
 		defer func() {
 			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
@@ -2239,7 +2488,54 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Plain TCP dial. See package-level comment on why mTLS doesn't
 	// apply here. r.Host on a CONNECT carries "host:port" already.
-	upstream, err := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+	//
+	// dialTarget is what actually gets dialed: r.Host itself when the guard is
+	// off, else the address the guard checked — resolved once here, and reused
+	// verbatim by the bridge-fall-open re-dial below, so no second resolution
+	// can ever re-answer between check and connect (the DNS-rebinding window).
+	dialTarget := r.Host
+	if s.EgressGuard != nil {
+		checked, cerr := s.EgressGuard.CheckAddr(r.Context(), "tcp", r.Host)
+		if cerr != nil {
+			var ref *egressguard.Refusal
+			if errors.As(cerr, &ref) {
+				slog.Warn("forward-proxy: CONNECT destination refused by egress guard",
+					// Sanitized like the Debug line in serveOutbound: r.Host is
+					// client-controlled and lands in a log file.
+					"host", pipeline.SanitizeControlRunes(r.Host), "addr", ref.Addr.String())
+				// A policy answer, not a failed exchange. skip_hosts destinations
+				// are refused too — a bypass must not become an SSRF bypass — and
+				// tl's rows are no-ops for them, exactly as the dial failure's are.
+				httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
+					fmt.Sprintf("refusing to reach private destination %s (%s)", ref.Host, ref.Addr)))
+				// The 426 rule again: a delivered 403 the Finisher reads as an
+				// allow, because the guard did what it was configured to.
+				pctx.StatusCode = http.StatusForbidden
+				tl.open(pipeline.TunnelDestPrivate)
+				tl.close(http.StatusForbidden, &pipeline.EventError{
+					Kind:    pipeline.ErrorKindDestinationPrivate,
+					Message: ref.Error(),
+				}, 0, 0)
+				return
+			}
+			// Not a refusal: the name would not resolve. Same shape as a dial
+			// failure — nothing was dialed, and the client gets the 502.
+			// Both values sanitized: the name is client-controlled, and the error
+			// embeds it (net.DNSError quotes the name it failed to resolve).
+			slog.Warn("forward-proxy: CONNECT destination resolution failed",
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"error", pipeline.SanitizeControlRunes(cerr.Error()))
+			http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+			tl.open(pipeline.TunnelDialFailed)
+			tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
+			return
+		}
+		dialTarget = checked
+		// The audit trail against rebinding: "asked for the name, dialed this
+		// address" — moca's egress conformance reads it off the tunnel open row.
+		pctx.DialedAddr = checked
+	}
+	upstream, err := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 	if err != nil {
 		slog.Warn("forward-proxy: CONNECT upstream dial failed", "host", r.Host, "error", err)
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
@@ -2293,8 +2589,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
-			// like any other opaque one.
-			up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+			// like any other opaque one. dialTarget, not r.Host: the address was
+			// already checked once, and re-resolving here would reopen the rebinding
+			// window the check closed.
+			up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 			if derr != nil {
 				// The client already has its 200, so that stays the status, and the
 				// error says why the tunnel died. Closing the client is what makes
