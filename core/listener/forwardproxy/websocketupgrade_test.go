@@ -614,3 +614,179 @@ func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T
 	}
 	t.Fatal("the 101 response row was never recorded: a broken splice direction stranded the other, so the upgrade went unaudited")
 }
+
+// TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped: an "Upgrade:
+// websocket" with no Connection: upgrade token is NOT an upgrade request (RFC
+// 9110 §7.8 — a recipient ignores Upgrade unless Connection lists it), so it
+// must take the ordinary request path: the pair is stripped, the origin sees a
+// plain GET, and the client gets that GET's response.
+//
+// The regression this pins is an escalation, not a missed feature.
+// stripForUpstream SETS the normalized Connection/Upgrade pair for anything it
+// treats as an upgrade, so keying on Upgrade alone had the proxy synthesize a
+// handshake the client never sent — and when the origin answered 101, hijack
+// the client's connection and splice it. A client waiting for an ordinary HTTP
+// response instead got an opaque byte pipe whose frames no plugin inspects.
+// Measured end to end: the client read the origin's post-101 bytes (#1549
+// review).
+func TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	seen := make(chan http.Header, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		// An origin that WOULD upgrade if asked, so the only thing keeping this
+		// request on the ordinary path is the proxy's own refusal to forge the pair.
+		if r.Header.Get("Upgrade") != "" {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("origin: no hijacker")
+				return
+			}
+			c, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("origin hijack: %v", err)
+				return
+			}
+			defer func() { _ = c.Close() }()
+			_, _ = c.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n" +
+				"Upgrade: websocket\r\nSec-WebSocket-Accept: " + wsAccept(rfc6455Key) + "\r\n\r\nORIGINBYTES"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ordinary")
+	}))
+	defer origin.Close()
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	// Note the absent Connection header — that is the whole point.
+	fmt.Fprintf(conn, "GET %s/ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"+
+		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		origin.URL, originURL.Host, rfc6455Key)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a bare Upgrade must take the ordinary path, not be spliced", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ordinary" {
+		t.Errorf("body = %q, want %q", body, "ordinary")
+	}
+	select {
+	case h := <-seen:
+		if got := h.Get("Upgrade"); got != "" {
+			t.Errorf("origin saw Upgrade = %q, want it stripped — the proxy must not forge a handshake", got)
+		}
+		if got := h.Get("Connection"); got != "" {
+			t.Errorf("origin saw Connection = %q, want it stripped", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("origin never received the request")
+	}
+}
+
+// TestForwardProxy_RefusesA101ToAnotherProtocol: a 101 is not self-describing —
+// it says "switching", and its Upgrade header says to what. An origin that
+// answers a WebSocket handshake by switching to something else (h2c here) must
+// not be spliced: net/http's ReverseProxy compares the response's upgrade type
+// against the request's and refuses a mismatch, and this relay is modelled on
+// it, but the comparison was the part left out.
+//
+// Refused BEFORE the hijack, so a 502 is still writable and the client learns
+// the upgrade failed rather than being handed a pipe speaking a protocol it
+// never negotiated (#1549 review).
+func TestForwardProxy_RefusesA101ToAnotherProtocol(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("origin: no hijacker")
+			return
+		}
+		c, _, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("origin hijack: %v", err)
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = c.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n" +
+			"Upgrade: h2c\r\n\r\nNOTWEBSOCKET"))
+	}))
+	defer origin.Close()
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := net.Dial("tcp", proxyURL.Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	writeUpgradeRequest(conn, origin.URL+"/ws", originURL.Host)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — a 101 to another protocol must not be spliced", resp.StatusCode)
+	}
+
+	// And the failure is audited: a request row with no pair reads as still in
+	// flight, which is the thing recordSpliceFailure exists to prevent.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if v := store.View(session.DefaultSessionID); v != nil {
+			for _, e := range v.Events {
+				if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusBadGateway {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no 502 response row recorded for the refused upgrade")
+}

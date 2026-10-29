@@ -280,7 +280,9 @@ func TestForwardProxy_WebSocketTokenMatchesCaseInsensitively(t *testing.T) {
 }
 
 // Upgrade is a comma-separated list (RFC 9110 §7.8), possibly repeated, and websocket
-// anywhere in it is a WebSocket request.
+// anywhere in it is a WebSocket request. Every case here carries the Connection:
+// upgrade token the same section requires alongside it — see the Connection table
+// below for what happens without it.
 func TestUpgradesToWebSocket_ReadsTheTokenList(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -299,12 +301,49 @@ func TestUpgradesToWebSocket_ReadsTheTokenList(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := http.Header{}
+			h := http.Header{"Connection": []string{"Upgrade"}}
 			for _, v := range tc.values {
 				h.Add("Upgrade", v)
 			}
 			if got := upgradesToWebSocket(h); got != tc.want {
 				t.Errorf("upgradesToWebSocket(%q) = %v, want %v", tc.values, got, tc.want)
+			}
+		})
+	}
+}
+
+// RFC 9110 §7.8: Upgrade is only an upgrade request when Connection lists the
+// upgrade token, and a recipient ignores Upgrade otherwise — the check net/http's
+// own upgradeType makes before ReverseProxy honours one.
+//
+// Not a formality here: stripForUpstream SETS the normalized Connection/Upgrade
+// pair whenever the request is treated as an upgrade, so honouring a bare Upgrade
+// would have this proxy synthesize a handshake the client never sent, and splice
+// the origin's 101 onto a connection whose client is waiting for an ordinary
+// response (#1549 review).
+func TestUpgradesToWebSocket_RequiresTheConnectionToken(t *testing.T) {
+	cases := []struct {
+		name       string
+		connection []string
+		want       bool
+	}{
+		{"absent", nil, false},
+		{"keep-alive only", []string{"keep-alive"}, false},
+		{"close", []string{"close"}, false},
+		{"upgrade", []string{"upgrade"}, true},
+		{"capitalised", []string{"Upgrade"}, true},
+		{"in a list", []string{"keep-alive, Upgrade"}, true},
+		{"in a repeated header", []string{"keep-alive", "upgrade"}, true},
+		{"a longer token", []string{"upgrades"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{"Upgrade": []string{"websocket"}}
+			for _, v := range tc.connection {
+				h.Add("Connection", v)
+			}
+			if got := upgradesToWebSocket(h); got != tc.want {
+				t.Errorf("upgradesToWebSocket(Connection=%q) = %v, want %v", tc.connection, got, tc.want)
 			}
 		})
 	}

@@ -920,6 +920,24 @@ GET on a bridged tunnel is held to the CONNECT-host check like any bridged reque
 (421 otherwise); on a bridged tunnel the splice is doubled, agent↔bridge and
 bridge↔origin.
 
+**What counts as an upgrade is both headers, on both sides, and neither check is a
+formality** — because the proxy *writes* the normalized pair, a predicate that is too
+loose does not merely miss a forward, it manufactures one:
+
+- **The request** needs `Connection: upgrade` as well as `Upgrade: websocket` (RFC
+  9110 §7.8: a recipient ignores `Upgrade` unless `Connection` lists it — the same
+  test `Request.requiresHTTP1` and ReverseProxy's `upgradeType` make). A bare
+  `Upgrade: websocket` with no `Connection` token takes the ordinary path and is
+  stripped. Honouring it would have the proxy forge a handshake the client never
+  sent and splice the origin's 101 onto a connection whose client is waiting for an
+  ordinary HTTP response — an opaque byte pipe no plugin inspects, from a request
+  that was not an upgrade.
+- **The response** must switch to the protocol that was asked for. A 101 only says
+  "switching"; its own `Upgrade` header says to what. An origin answering `101
+  Upgrade: h2c` to a WebSocket handshake is refused with 502 *before* the hijack —
+  while a status is still writable — rather than spliced, matching
+  `handleUpgradeResponse`, which rejects a `resUpType`/`reqUpType` mismatch.
+
 The 101 is hijacked and spliced onto the client's connection
 (`relayUpgradedWebSocket`, modelled on ReverseProxy's `handleUpgradeResponse`), and
 the session records the request row plus a paired 101 response row carrying both

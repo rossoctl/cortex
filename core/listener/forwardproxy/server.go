@@ -1265,15 +1265,49 @@ func isOpenAIResponsesHost(authority string) bool {
 	return false
 }
 
-// upgradesToWebSocket reports whether h's Upgrade names websocket. RFC 9110 §7.8 makes
-// Upgrade a comma-separated list, matched case-insensitively and in any repeat of the
-// header, so "websocket, h2c" asks for a WebSocket as surely as "websocket" does. A
-// token may carry a version ("websocket/13"); only the name before it is compared.
+// upgradesToWebSocket reports whether h is a WebSocket upgrade REQUEST. RFC 9110
+// §7.8 makes Upgrade a comma-separated list, matched case-insensitively and in any
+// repeat of the header, so "websocket, h2c" asks for a WebSocket as surely as
+// "websocket" does. A token may carry a version ("websocket/13"); only the name
+// before it is compared.
+//
+// CONNECTION IS CHECKED FIRST, and it is not a formality. RFC 9110 §7.8 is
+// explicit that a sender MUST send Connection: upgrade with the Upgrade header,
+// and that a recipient ignores Upgrade when Connection does not list it — which is
+// exactly what net/http's own httpguts-based upgradeType does before
+// ReverseProxy honours an upgrade at all.
+//
+// Keying on Upgrade alone made this proxy SYNTHESIZE an upgrade the client had not
+// requested: stripForUpstream sets the normalized Connection/Upgrade pair whenever
+// keepUpgrade is true, so a request carrying a bare "Upgrade: websocket" and no
+// Connection token reached the origin as a well-formed handshake, and an origin
+// that answered 101 got its connection hijacked and spliced — turning a request
+// the client expected an ordinary HTTP response to into an opaque byte pipe whose
+// frames no plugin inspects. Measured end to end before this check existed
+// (TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped) (#1549 review).
 func upgradesToWebSocket(h http.Header) bool {
+	if !headerListContainsToken(h, "Connection", "upgrade") {
+		return false
+	}
 	for _, line := range h.Values("Upgrade") {
 		for _, tok := range strings.Split(line, ",") {
 			name, _, _ := strings.Cut(strings.TrimSpace(tok), "/")
 			if strings.EqualFold(name, "websocket") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// headerListContainsToken reports whether the named header — in any repeat, as a
+// comma-separated list — carries token, compared case-insensitively. The shape
+// RFC 9110 gives Connection, and the check net/http makes with
+// httpguts.HeaderValuesContainsToken, which is not importable from here.
+func headerListContainsToken(h http.Header, name, token string) bool {
+	for _, line := range h.Values(name) {
+		for _, tok := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), token) {
 				return true
 			}
 		}
@@ -1382,6 +1416,25 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	// origin holding a connection it believes is an established WebSocket, until
 	// its own idle timeout reaps it. The client meanwhile has a 502, so nothing
 	// will ever come back for it (#1549 review).
+	// THE ORIGIN MUST BE SWITCHING TO THE PROTOCOL THE CLIENT ASKED FOR. A 101 is
+	// not self-describing: it says "switching", and its own Upgrade header says to
+	// what. net/http's ReverseProxy compares the two (handleUpgradeResponse refuses
+	// when resUpType != reqUpType), and this function is modelled on it, but the
+	// comparison was the one part left out — so an origin answering "101 Upgrade:
+	// h2c" to a WebSocket handshake got spliced anyway, handing the client an
+	// opaque pipe speaking a protocol it never negotiated and cannot parse. The
+	// client is the one that would have to detect that, after the proxy already
+	// committed its connection. Refuse before the hijack, while a 502 is still
+	// writable (#1549 review).
+	if !upgradesToWebSocket(resp.Header) {
+		got := strings.ReplaceAll(pipeline.SanitizeControlRunes(resp.Header.Get("Upgrade")), "\n", "")
+		slog.Error("forward-proxy: origin switched to another protocol than the WebSocket requested — not relaying",
+			"host", host, "upgrade", got)
+		_ = resp.Body.Close()
+		s.failUpgradedWebSocket(w, pctx, record,
+			fmt.Sprintf("origin switched to %q, not the websocket requested", got))
+		return
+	}
 	backConn, ok := resp.Body.(io.ReadWriteCloser)
 	if !ok {
 		// Not reachable through net/http's own transport, which gives a 101 a

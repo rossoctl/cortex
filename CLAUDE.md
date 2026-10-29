@@ -611,7 +611,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   pins to HTTP/1.1 even on the bridge's h2-negotiating client), the origin's 101 is
   hijacked and spliced, and the session records the request row plus a paired 101
   response row carrying both directions' byte counts — the frames themselves are
-  never inspected or buffered.
+  never inspected or buffered. **An upgrade is both headers, on both sides**, and
+  since the proxy WRITES the normalized pair a loose predicate forges one rather
+  than missing one: a request needs `Connection: upgrade` as well as `Upgrade:
+  websocket` (RFC 9110 §7.8, and `Request.requiresHTTP1`'s own test) or it is
+  stripped and takes the ordinary path, and a 101 that switches to some other
+  protocol than the one requested is refused 502 before the hijack instead of
+  spliced. Either check missing turns a plain request into an opaque pipe no
+  plugin inspects.
   **A 403 with `error.kind: "destination_private"` is the egress guard's
   answer, not the upstream's** (`listener.egress_guard`, off by default): the
   destination resolved into loopback, link-local, private or this host's own
