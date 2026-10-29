@@ -938,11 +938,17 @@ dials — CONNECT tunnels, plain and bridged requests, transparent redirects,
 and `skip_hosts` traffic too, because a bypass must not become an SSRF bypass
 — is resolved **once**, refused with **403 `destination_private`** when the
 address is loopback, link-local (including the cloud metadata address
-`169.254.169.254`), RFC 1918 / unique-local space, or one of this host's own
-interface addresses, and then **dialed at the checked address**. That last
-part is the DNS-rebinding defense: the address the guard checked and the
-address the proxy connects to are the same value by construction, so a second
-lookup can never re-answer between check and connect.
+`169.254.169.254`), RFC 1918 / unique-local space, RFC 6598 CGNAT shared
+space (`100.64.0.0/10`, where Alibaba's metadata service lives), or one of
+this host's own interface addresses — the addresses themselves, not their
+on-link subnets, so a LAN neighbour or a public neighbour on a large on-link
+prefix is not caught by that clause — and then **dialed at the checked
+address**. That last part is the DNS-rebinding defense: the address the guard
+checked and the address the proxy connects to are the same value by
+construction, so a second lookup can never re-answer between check and
+connect. A well-known-prefix NAT64 address (`64:ff9b::/96`) is judged by the
+IPv4 address it embeds, so `[64:ff9b::7f00:1]` is refused as the `127.0.0.1`
+it carries.
 
 ```yaml
 listener:
@@ -958,10 +964,12 @@ where the sandbox's egress is meant to be public-only, and list the private
 prefixes still needed in `permit_cidrs`.
 
 `permit_cidrs` covers prefixes within the refused space only. Link-local,
-unspecified and multicast addresses are **never** permitted, whatever the list
-says: `0.0.0.0` reaches loopback on every mainstream stack, and
-`169.254.169.254` is the metadata service this guard exists among other
-things to protect — a permit of `0.0.0.0/0` does not open it.
+unspecified, multicast and the AWS IPv6 metadata address (`fd00:ec2::254`)
+are **never** permitted, whatever the list says: `0.0.0.0` reaches loopback
+on every mainstream stack, `169.254.169.254` is the metadata service this
+guard exists among other things to protect — a permit of `0.0.0.0/0` does not
+open it — and `fd00:ec2::254` is that service's IPv6 form, which would
+otherwise sit in the permit-able ULA space.
 
 A refused CONNECT leaves its two tunnel rows with
 `tunnelReason: "dest-private"` and `error.kind: "destination_private"`; a

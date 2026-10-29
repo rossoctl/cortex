@@ -62,8 +62,9 @@ func TestCheckAddr_RefusedRanges(t *testing.T) {
 		{"10.0.0.9:8080", "10.0.0.9"},
 		{"172.16.5.4:80", "172.16.5.4"},
 		{"192.168.1.10:80", "192.168.1.10"},
-		{"[fc00::9]:443", "fc00::9"}, // unique-local
-		{"0.0.0.0:80", "0.0.0.0"},    // unspecified reaches loopback
+		{"[fc00::9]:443", "fc00::9"},              // unique-local
+		{"100.100.100.200:80", "100.100.100.200"}, // Alibaba metadata, in RFC 6598 CGNAT
+		{"0.0.0.0:80", "0.0.0.0"},                 // unspecified reaches loopback
 		{"224.0.0.1:80", "224.0.0.1"},
 	} {
 		_, err := g.CheckAddr(context.Background(), "tcp", c.addr)
@@ -99,6 +100,7 @@ func TestCheckAddr_NeverPermitted(t *testing.T) {
 		"169.254.169.254:80",
 		"169.254.0.9:80",
 		"[fe80::9]:443",
+		"[fd00:ec2::254]:80", // AWS metadata, IPv6 form — ULA, so a fd00::/8 permit must not open it
 		"0.0.0.0:80",
 		"[ff02::1]:443",
 	} {
@@ -179,6 +181,100 @@ func TestCheckAddr_MappedIPv6(t *testing.T) {
 	}
 	if _, err := g.CheckAddr(context.Background(), "tcp", "[::ffff:127.0.0.1]:443"); err == nil {
 		t.Error("v4-mapped loopback = nil, want a Refusal")
+	}
+}
+
+// TestCheckAddr_NAT64CheckedByEmbeddedV4: a well-known-prefix address is
+// judged by the IPv4 it embeds — the loopback one is refused, a public one
+// passes — and the v6 form is what comes back as the dial target, since on a
+// NAT64 host the bare v4 may not route.
+func TestCheckAddr_NAT64CheckedByEmbeddedV4(t *testing.T) {
+	g, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := g.CheckAddr(context.Background(), "tcp", "[64:ff9b::7f00:1]:443"); err == nil {
+		t.Error("NAT64-wrapped 127.0.0.1 = nil, want a Refusal")
+	}
+	if _, err := g.CheckAddr(context.Background(), "tcp", "[64:ff9b::a9fe:a9fe]:80"); err == nil {
+		t.Error("NAT64-wrapped 169.254.169.254 = nil, want a Refusal")
+	}
+	checked, err := g.CheckAddr(context.Background(), "tcp", "[64:ff9b::102:304]:443")
+	if err != nil {
+		t.Fatalf("NAT64-wrapped 1.2.3.4: %v", err)
+	}
+	if checked != "[64:ff9b::102:304]:443" {
+		t.Errorf("NAT64 dial addr = %q, want the v6 form back", checked)
+	}
+}
+
+// TestCheckAddr_CGNATPermittable: RFC 6598 space is refused by default but,
+// like RFC 1918, a covering permit opens it — an operator whose carrier
+// network legitimately sits there should not need 0.0.0.0/0 to say so.
+func TestCheckAddr_CGNATPermittable(t *testing.T) {
+	g, err := New([]string{"100.64.0.0/10"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := g.CheckAddr(context.Background(), "tcp", "100.100.100.200:80"); err != nil {
+		t.Errorf("CGNAT with a covering permit: %v", err)
+	}
+}
+
+// TestCheckAddr_ServiceNamePort: a CONNECT target may name its port as a
+// service ("example.com:https"), which net.DialTimeout resolved itself before
+// the guard existed — LookupPort keeps that working — and an unparseable port
+// is rejected BEFORE the resolve, so it costs no DNS lookup.
+func TestCheckAddr_ServiceNamePort(t *testing.T) {
+	g, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stub := &stubResolver{answers: map[string][]netip.Addr{
+		"dst.test": {mustAddr(t, "203.0.113.7")},
+	}}
+	g.resolve = stub.resolve
+
+	checked, err := g.CheckAddr(context.Background(), "tcp", "dst.test:https")
+	if err != nil {
+		t.Fatalf("service-name port: %v", err)
+	}
+	if checked != "203.0.113.7:443" {
+		t.Errorf("dial addr = %q, want 203.0.113.7:443", checked)
+	}
+
+	stub.lookups = 0
+	if _, err := g.CheckAddr(context.Background(), "tcp", "dst.test:notaport"); err == nil {
+		t.Error("unparseable port = nil, want an error")
+	}
+	if stub.lookups != 0 {
+		t.Errorf("resolver ran %d times on a bad port, want 0 — the port is checked first", stub.lookups)
+	}
+}
+
+// ifaceAddr stands in for a net.InterfaceAddrs entry, whose String() is
+// "ip/mask".
+type ifaceAddr string
+
+func (a ifaceAddr) Network() string { return "ip+net" }
+func (a ifaceAddr) String() string  { return string(a) }
+
+// TestHostOwns pins the #1539 review fix: the host's own interface ADDRESS is
+// refused, its on-link SUBNET is not. net.InterfaceAddrs hands back ip/mask
+// pairs, and testing the prefix instead of the address would refuse every LAN
+// neighbour — and, on a cloud VM with a public address on a large on-link
+// prefix, ordinary public upstreams.
+func TestHostOwns(t *testing.T) {
+	addrs := []net.Addr{ifaceAddr("192.168.1.167/24"), ifaceAddr("9.67.123.175/18")}
+	for _, own := range []string{"192.168.1.167", "9.67.123.175"} {
+		if !hostOwns(mustAddr(t, own), addrs) {
+			t.Errorf("hostOwns(%s) = false, want true — the interface's own address", own)
+		}
+	}
+	for _, neighbour := range []string{"192.168.1.1", "9.67.64.1", "9.67.127.254"} {
+		if hostOwns(mustAddr(t, neighbour), addrs) {
+			t.Errorf("hostOwns(%s) = true, want false — a subnet neighbour, not this host", neighbour)
+		}
 	}
 }
 

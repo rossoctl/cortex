@@ -4,12 +4,21 @@
 // checked — never a second resolution's answer.
 //
 // The refused set is loopback, link-local (including the cloud metadata
-// address 169.254.169.254), RFC 1918 / unique-local space, and the host's own
-// interface addresses. An operator may permit prefixes within that space
-// (a laptop proxy whose upstream is a local model, an in-cluster deployment)
-// — but link-local, unspecified and multicast addresses are never permitted:
-// 0.0.0.0 reaches loopback on every mainstream stack and 169.254.169.254 is
-// the metadata service the guard exists among other things to protect.
+// address 169.254.169.254), RFC 1918 / unique-local space, RFC 6598 CGNAT
+// shared space (100.64.0.0/10 — Alibaba's metadata service, 100.100.100.200,
+// lives there), and the host's own interface addresses — the addresses
+// themselves, NOT their on-link subnets: a neighbour in the host's /24 is
+// not this host. An operator may permit prefixes within that space (a laptop
+// proxy whose upstream is a local model, an in-cluster deployment) — but
+// link-local, unspecified, multicast and the AWS IPv6 metadata address
+// (fd00:ec2::254) are never permitted: 0.0.0.0 reaches loopback on every
+// mainstream stack, 169.254.169.254 is the metadata service the guard exists
+// among other things to protect, and fd00:ec2::254 is that service's IPv6
+// form — ULA, so it would otherwise sit in the permit-able set.
+//
+// A well-known-prefix NAT64 address (64:ff9b::/96) is checked by the IPv4
+// address it embeds, so [64:ff9b::7f00:1] is refused as the 127.0.0.1 it
+// carries; the v6 form is still what gets dialed.
 package egressguard
 
 import (
@@ -17,9 +26,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // Guard checks and dials outbound destinations. Construct with New; the zero
@@ -91,6 +98,15 @@ func (g *Guard) CheckAddr(ctx context.Context, network, addr string) (string, er
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		host = host[1 : len(host)-1]
 	}
+	// The port BEFORE the resolve: net.LookupPort accepts both numbers and
+	// service names ("https" — what a CONNECT request may carry, and what
+	// net.DialTimeout would have resolved itself before the guard existed),
+	// and a bad port now costs no DNS lookup. It also range-checks, which is
+	// what the strconv.ParseUint here used to do.
+	p, err := net.LookupPort(network, port)
+	if err != nil {
+		return "", err
+	}
 
 	var dial []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
@@ -112,15 +128,44 @@ func (g *Guard) CheckAddr(ctx context.Context, network, addr string) (string, er
 	// Check the first answer — the one the caller will dial. See CheckAddr's
 	// doc for why the later records are not consulted.
 	dialAddr := dial[0].Unmap()
-	if ref := g.check(host, dialAddr); ref != nil {
-		return "", ref
+	// A NAT64 well-known-prefix address is judged by the IPv4 it embeds —
+	// [64:ff9b::7f00:1] is 127.0.0.1 wearing a v6 hat — but the v6 form is
+	// what gets dialed and returned, since on a NAT64 host the v4 may not
+	// route. The mapping is arithmetic, not a lookup, so checking one form
+	// and dialing the other opens no check-vs-dial window.
+	checkAddr := dialAddr
+	if embedded, ok := nat64Embedded(dialAddr); ok {
+		checkAddr = embedded
 	}
-	p, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return "", err
+	if ref := g.check(host, checkAddr); ref != nil {
+		return "", ref
 	}
 	return netip.AddrPortFrom(dialAddr, uint16(p)).String(), nil
 }
+
+// nat64Prefix is the NAT64 well-known prefix (RFC 6052): a v6 address in it
+// carries the IPv4 destination in its low 32 bits.
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
+// nat64Embedded returns the IPv4 address a well-known-prefix NAT64 address
+// embeds, and whether ip was one at all.
+func nat64Embedded(ip netip.Addr) (netip.Addr, bool) {
+	if ip.Is4() || ip.Is4In6() || !nat64Prefix.Contains(ip) {
+		return netip.Addr{}, false
+	}
+	b := ip.As16()
+	return netip.AddrFrom4([4]byte(b[12:16])), true
+}
+
+// cgnat is RFC 6598 shared address space: not RFC 1918, not globally routed,
+// and home to Alibaba's metadata service (100.100.100.200). Refused like
+// private space, permit-able like it too.
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// awsMetadataV6 is the AWS instance metadata service's IPv6 form. It is ULA,
+// so without this entry it would sit in the permit-able set — and an operator
+// permitting fd00::/8 (plausible for a ULA-internal upstream) would open it.
+var awsMetadataV6 = netip.MustParseAddr("fd00:ec2::254")
 
 // DialContext is CheckAddr followed by a dial of the checked address —
 // dialer-shaped, for http.Transport. Only the dial address is replaced; the
@@ -133,16 +178,6 @@ func (g *Guard) DialContext(ctx context.Context, network, addr string) (net.Conn
 	}
 	var d net.Dialer
 	return d.DialContext(ctx, network, checked)
-}
-
-// DialTimeout is DialContext with a fixed timeout, for the CONNECT-tunnel
-// dial sites that predate contexts.
-func (g *Guard) DialTimeout(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
-	checked, err := g.CheckAddr(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	return net.DialTimeout(network, checked, timeout)
 }
 
 // check applies the refusal rules to one address. It returns the Refusal to
@@ -166,10 +201,13 @@ func (g *Guard) check(host string, ip netip.Addr) *Refusal {
 
 // neverPermitted reports the ranges no permit can open, as a Refusal when
 // the address is in one. Link-local unicast carries the cloud metadata
-// service (169.254.169.254 on every major cloud); unspecified reaches
-// loopback on mainstream stacks; multicast is not a unicast destination.
+// service (169.254.169.254 on every major cloud, fd00:ec2::254 on AWS's
+// IPv6 path); unspecified reaches loopback on mainstream stacks; multicast
+// is not a unicast destination.
 func (g *Guard) neverPermitted(host string, ip netip.Addr) *Refusal {
 	switch {
+	case ip == awsMetadataV6:
+		return &Refusal{Host: host, Addr: ip}
 	case ip.IsLinkLocalUnicast():
 		return &Refusal{Host: host, Addr: ip}
 	case ip.IsUnspecified():
@@ -181,12 +219,12 @@ func (g *Guard) neverPermitted(host string, ip netip.Addr) *Refusal {
 }
 
 // refusable reports whether ip is in the refused-but-permit-able space:
-// loopback, RFC 1918 / unique-local, or one of this host's own interface
-// addresses. The last set is enumerated per check — an interface address
-// added after boot is guarded without a restart, and InterfaceAddrs costs
-// microseconds against a dial that costs milliseconds.
+// loopback, RFC 1918 / unique-local, RFC 6598 CGNAT, or one of this host's
+// own interface addresses. The last set is enumerated per check — an
+// interface address added after boot is guarded without a restart, and
+// InterfaceAddrs costs microseconds against a dial that costs milliseconds.
 func (g *Guard) refusable(ip netip.Addr) bool {
-	if ip.IsLoopback() || ip.IsPrivate() {
+	if ip.IsLoopback() || ip.IsPrivate() || cgnat.Contains(ip) {
 		return true
 	}
 	ifaces, err := net.InterfaceAddrs()
@@ -195,12 +233,21 @@ func (g *Guard) refusable(ip netip.Addr) bool {
 		// candidate as one of them.
 		return true
 	}
-	for _, ia := range ifaces {
+	return hostOwns(ip, ifaces)
+}
+
+// hostOwns reports whether ip is one of the host's own interface addresses.
+// The address ITSELF, not the interface's on-link subnet: net.InterfaceAddrs
+// hands back ip/mask pairs, and testing the prefix would refuse every
+// neighbour on the LAN — and on a cloud VM with a public address on a large
+// on-link prefix, ordinary public upstreams (#1539 review).
+func hostOwns(ip netip.Addr, ifaceAddrs []net.Addr) bool {
+	for _, ia := range ifaceAddrs {
 		prefix, err := netip.ParsePrefix(ia.String())
 		if err != nil {
 			continue
 		}
-		if prefix.Contains(ip) {
+		if prefix.Addr().Unmap() == ip {
 			return true
 		}
 	}

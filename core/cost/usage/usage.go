@@ -1270,8 +1270,15 @@ func (a *Aggregator) evictColdestLocked() {
 // 426 is Cortex telling Codex to use HTTPS, which it then does, once per session: by
 // design and on the default path, so counting it would give every healthy Codex
 // fleet a nonzero error rate. The Finisher sees it as an allow for the same reason.
+//
+// And except the egress guard's refusal (pipeline.ErrorKindDestinationPrivate). Same
+// shape, same reasoning: its 403 is the guard doing exactly what the operator
+// configured it to, on traffic that was never going to be allowed through — a
+// nonzero "error rate" made of refusals is the policy working, not the proxy
+// failing. The Finisher sees it as an allow for the same reason.
 func countsAsError(e *pipeline.SessionEvent) bool {
-	if e.Error != nil && e.Error.Kind == pipeline.ErrorKindUpgradeDeclined {
+	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
+		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}
 	return e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied

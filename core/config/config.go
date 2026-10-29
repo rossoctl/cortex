@@ -948,11 +948,13 @@ type ListenerConfig struct {
 	// EgressGuard arms the SSRF dial guard on the forward proxy's every
 	// outbound dial (#1484): each destination is resolved once, refused with
 	// 403 destination_private when it lands in loopback, link-local (cloud
-	// metadata, 169.254.169.254), RFC 1918 / unique-local space, or one of
-	// this host's own addresses — and dialed at the checked address, so DNS
-	// rebinding cannot re-answer between check and connect. CONNECT tunnels,
-	// plain and bridged requests, transparent redirects and skip_hosts traffic
-	// are all covered: a bypass must not become an SSRF bypass.
+	// metadata, 169.254.169.254), RFC 1918 / unique-local space, RFC 6598
+	// CGNAT (100.64.0.0/10), or one of this host's own interface addresses —
+	// the addresses themselves, not their on-link subnets — and dialed at the
+	// checked address, so DNS rebinding cannot re-answer between check and
+	// connect. CONNECT tunnels, plain and bridged requests, transparent
+	// redirects and skip_hosts traffic are all covered: a bypass must not
+	// become an SSRF bypass.
 	//
 	// OFF BY DEFAULT, deliberately: a sidecar's ordinary upstreams — Keycloak,
 	// in-cluster services, a laptop's local model — live in exactly the
@@ -962,9 +964,10 @@ type ListenerConfig struct {
 	// and lists the private prefixes still allowed in permit_cidrs.
 	//
 	// permit_cidrs covers prefixes within the refused space only; link-local,
-	// unspecified and multicast addresses are NEVER permitted, whatever the
-	// list says — the metadata range is what this guard exists among other
-	// things to protect.
+	// unspecified, multicast and the AWS IPv6 metadata address
+	// (fd00:ec2::254) are NEVER permitted, whatever the list says — the
+	// metadata ranges are what this guard exists among other things to
+	// protect.
 	//
 	// A pointer so "absent" (off) stays distinguishable from an explicit
 	// enabled: false, mirroring DeclineResponsesWebSockets. Listener.* field:
@@ -981,7 +984,8 @@ type EgressGuardConfig struct {
 	// PermitCIDRs lists CIDR prefixes within the refused space that remain
 	// dialable — e.g. ["127.0.0.1/32"] for a laptop proxy whose upstream is a
 	// local model, or ["10.0.0.0/8"] for an in-cluster deployment. Never has
-	// any effect on link-local, unspecified or multicast addresses.
+	// any effect on link-local, unspecified, multicast or the AWS IPv6
+	// metadata address (fd00:ec2::254).
 	PermitCIDRs []string `yaml:"permit_cidrs,omitempty" json:"permit_cidrs,omitempty"`
 }
 

@@ -476,7 +476,7 @@ type Context struct {
 // being parsed ten times; it does not escape.
 //
 // THE COPY IS AN ALLOCATION PER CALL, roughly ten per request, and that is the price of the
-// line above. sanitizeUA's fast path is written not to allocate, which bounds what a hostile
+// line above. SanitizeControlRunes's fast path is written not to allocate, which bounds what a hostile
 // header costs; this one is unconditional and buys the integrity claim instead.
 func (c *Context) ClientInfo() *EventClient {
 	if c.clientParsed {
