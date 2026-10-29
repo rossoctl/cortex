@@ -57,6 +57,52 @@ func TestSessionSourceThroughTheHandler(t *testing.T) {
 	}
 }
 
+// TrustedSessionID, when it answers, ends the search: the session is resolved
+// from how the connection arrived, and a header naming another session — or
+// the process chain, or affinity — must not override it. vmcontrol's registry
+// tests drive the same seam end to end; this pins the resolution itself.
+func TestTrustedSessionIDOverridesEveryOtherSource(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{
+		Sessions:         store,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
+		TrustedSessionID: func(r *http.Request) string {
+			if r.Header.Get("X-Which-VM") == "vm-a" {
+				return "trusted-sid"
+			}
+			return ""
+		},
+	}
+	agent := session.Proc{PID: 100, Start: 1}
+	store.Append("trusted-sid", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
+
+	h := http.Header{}
+	h.Set(session.ClaudeCodeSessionHeader, "header-sid")
+	h.Set("X-Which-VM", "vm-a")
+	pctx := &pipeline.Context{}
+	if sid := s.hydrateSession(pctx, &http.Request{Header: h}, []session.Proc{agent}); sid != "trusted-sid" {
+		t.Fatalf("session %q, want the trusted trusted-sid", sid)
+	}
+	if pctx.Session == nil || pctx.Session.ID != "trusted-sid" {
+		t.Fatalf("pctx.Session = %+v, want trusted-sid", pctx.Session)
+	}
+	if pctx.SessionSource != pipeline.SessionSourceConnection || pctx.SessionHeader != "" {
+		t.Errorf("source %q/%q, want connection with no header named", pctx.SessionSource, pctx.SessionHeader)
+	}
+
+	// A request the hook does not claim falls through to the old resolution
+	// unchanged.
+	h.Del("X-Which-VM")
+	pctx = &pipeline.Context{}
+	if sid := s.hydrateSession(pctx, &http.Request{Header: h}, nil); sid != "header-sid" {
+		t.Fatalf("unclaimed request: session %q, want header-sid", sid)
+	}
+	if pctx.SessionSource != pipeline.SessionSourceHeader {
+		t.Errorf("unclaimed request: source %q, want header", pctx.SessionSource)
+	}
+}
+
 // A process that never sent a session header takes the session its ancestor
 // named, and that is recorded as a process resolution.
 func TestSessionSourceProcessChain(t *testing.T) {
@@ -77,7 +123,7 @@ func TestSessionSourceProcessChain(t *testing.T) {
 		t.Fatalf("agent: %q via %q, want claude-1 via header", sid, how.source)
 	}
 	pctx := &pipeline.Context{}
-	if sid := s.hydrateSession(pctx, http.Header{}, []session.Proc{tool, agent}); sid != "claude-1" {
+	if sid := s.hydrateSession(pctx, &http.Request{Header: http.Header{}}, []session.Proc{tool, agent}); sid != "claude-1" {
 		t.Fatalf("tool: session %q, want claude-1", sid)
 	}
 	if pctx.SessionSource != pipeline.SessionSourceProcess || pctx.SessionHeader != "" {
@@ -106,14 +152,14 @@ func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
 		return h
 	}
 	pctx := &pipeline.Context{}
-	s.hydrateSession(pctx, named("claude-1"), []session.Proc{agent, shell})
+	s.hydrateSession(pctx, &http.Request{Header: named("claude-1")}, []session.Proc{agent, shell})
 	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
 	if pctx.ChainSession != "" {
 		t.Errorf("agent: ChainSession %q, want none", pctx.ChainSession)
 	}
 
 	pctx = &pipeline.Context{}
-	sid := s.hydrateSession(pctx, named("fresh"), []session.Proc{child, shell, agent})
+	sid := s.hydrateSession(pctx, &http.Request{Header: named("fresh")}, []session.Proc{child, shell, agent})
 	store.Append("fresh", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
 	if sid != "fresh" || pctx.SessionSource != pipeline.SessionSourceHeader {
 		t.Fatalf("child: recorded under %q via %q, want fresh via header", sid, pctx.SessionSource)
@@ -123,7 +169,7 @@ func TestChainSessionOverridesAChildsOwnSession(t *testing.T) {
 	}
 
 	pctx = &pipeline.Context{}
-	if sid := s.hydrateSession(pctx, http.Header{}, []session.Proc{child, shell, agent}); sid != "fresh" {
+	if sid := s.hydrateSession(pctx, &http.Request{Header: http.Header{}}, []session.Proc{child, shell, agent}); sid != "fresh" {
 		t.Fatalf("child without header: %q, want its own claim fresh", sid)
 	}
 	if pctx.ChainSession != "claude-1" {

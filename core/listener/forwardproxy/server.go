@@ -148,6 +148,15 @@ type Server struct {
 	// resolution byte for byte.
 	Processes peerproc.Resolver
 
+	// TrustedSessionID, when set, is the listener's own answer to "which
+	// session is this request on" — resolved from how the connection arrived
+	// (which per-VM socket accepted it, vmcontrol), not from anything the
+	// client sent. A non-empty answer wins over every header- and
+	// process-derived id, and the client's own session headers never override
+	// it. #1476 will generalise this into full connection-derived identity;
+	// this is deliberately the narrow seam it needs.
+	TrustedSessionID func(r *http.Request) string
+
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
@@ -439,7 +448,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// assigned from this local after the pipeline has run.
 	var sessionID string
 	if !skipped && s.Sessions != nil {
-		sessionID = s.hydrateSession(pctx, r.Header, chain)
+		sessionID = s.hydrateSession(pctx, r, chain)
 	}
 
 	if !skipped {
@@ -1498,7 +1507,27 @@ type pluginSession struct {
 // hydrateSession resolves the plugin session for a request and, when there is one,
 // sets pctx.Session and how it was resolved. It returns the id for the caller's
 // local, which recording reads instead of pctx.
-func (s *Server) hydrateSession(pctx *pipeline.Context, clientHeaders http.Header, chain []session.Proc) string {
+func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain []session.Proc) string {
+	// The listener's own answer first, and it ends the search: a session
+	// resolved from how the connection arrived is not something the client has
+	// any say in, and letting a header or a process chain override it would
+	// defeat the point of deriving identity from the connection (vmcontrol).
+	// Hydration still happens — plugins get their pctx.Session view — but the
+	// claims and affinity work below is skipped: a VM's traffic must not be
+	// filed by a process it never ran as. A transparently redirected connection
+	// has no request at all (r == nil), so there is nothing to claim either.
+	if s.TrustedSessionID != nil && r != nil {
+		if sid := s.TrustedSessionID(r); sid != "" {
+			pctx.Session = s.sessionViewFor(sid)
+			pctx.SessionSource = pipeline.SessionSourceConnection
+			pctx.SessionHeader = ""
+			return sid
+		}
+	}
+	var clientHeaders http.Header
+	if r != nil {
+		clientHeaders = r.Header
+	}
 	sid, how := s.resolvePluginSession(clientHeaders, chain)
 	if sid != "" {
 		pctx.Session = s.sessionViewFor(sid)
@@ -2150,7 +2179,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// fall through to ActiveSession() exactly as before.
 		chain = s.clientChain(r)
 		if s.Sessions != nil {
-			sessionID = s.hydrateSession(pctx, r.Header, chain)
+			sessionID = s.hydrateSession(pctx, r, chain)
 		}
 
 		// Run the outbound pipeline. Plugins that policy on host/identity

@@ -684,6 +684,11 @@ const (
 	SessionSourceAffinity SessionSource = "affinity"
 	// SessionSourceActive: the most recently active session.
 	SessionSourceActive SessionSource = "active"
+	// SessionSourceConnection: the listener's own trusted answer, resolved
+	// from how the connection arrived rather than anything the client sent
+	// (which per-VM socket accepted it, vmcontrol). Client-asserted headers
+	// cannot override it.
+	SessionSourceConnection SessionSource = "connection"
 )
 
 // SessionView is a read-only snapshot of a session, safe to pass to plugins.

@@ -965,6 +965,13 @@ func main() {
 	// The transparent (enforce-redirect) listener rides with the forward proxy;
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
+	// The MOCA SBX VM control channel (env-only, #1477): nil unless
+	// MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn, closed on shutdown.
+	var vmCtrl vmControlServer
+	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
+	if ctrlErr != nil {
+		fatalf("vm control: %v", ctrlErr)
+	}
 	if roles[config.RoleForward] {
 		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS)
 		if ferr != nil {
@@ -1034,6 +1041,16 @@ func main() {
 		if !localInstall && cfg.Listener.TransparentProxyAddr != "" {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
 		}
+
+		// The VM control channel serves each handed-over listener through this
+		// same forward proxy — one pipeline, one session store, identity from
+		// the connection — so it starts only where the forward role does.
+		if ctrlCfg.Socket != "" {
+			vmCtrl = startVMControl(ctrlCfg, fpSrv)
+		}
+	}
+	if ctrlCfg.Socket != "" && vmCtrl == nil {
+		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
 	}
 
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
@@ -1120,6 +1137,12 @@ func main() {
 		if transparentLn != nil {
 			_ = transparentLn.Close()
 		}
+		// Before the pipelines stop: closing unregisters every VM, closing its
+		// connections and emitting their aborted audit lines, and the requests
+		// it wakes still need a running pipeline to finish against.
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
+		}
 		statSrv.Shutdown(shutdownCtx)
 		healthSrv.Shutdown(shutdownCtx)
 		if sessionAPISrv != nil {
@@ -1133,6 +1156,9 @@ func main() {
 		}
 		if transparentLn != nil {
 			_ = transparentLn.Close()
+		}
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
 		}
 		_ = statSrv.Close()
 		_ = healthSrv.Close()
