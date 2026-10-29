@@ -262,7 +262,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "use HTTPS" and retries at once over HTTPS. It is not counted as an error in
   `/v1/usage`. A carried socket's turn the client ends early (Codex's Esc) is a 200
   with `error.kind: "turn_interrupted"`, as an HTTPS stream the client leaves part way
-  keeps its 200, and is not counted as an error either.
+  keeps its 200, and is not counted as an error either. A **403** with
+  `error.kind: "destination_private"` is the egress guard's refusal
+  (`listener.egress_guard`): the destination resolved into loopback,
+  link-local, private or this host's own address space and no permit covered
+  it. Also the proxy's own answer rather than the upstream's, and also not
+  counted as an error — the guard did what it was configured to.
 - `ttfbMs` — on a delivered response row, the wall time from request entry to
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
@@ -306,7 +311,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   (`listener.responses_websockets`). Its open is the handshake `GET`, its close
   is status 101 with the whole socket's duration and bytes, and every turn on it
   records its own ordinary `POST` request and response rows between the two,
-  parsed and priced like an HTTPS turn.
+  parsed and priced like an HTTPS turn. `tunnelReason: "dest-private"` is the
+  egress guard's refusal: the close row carries 403 and
+  `error.kind: "destination_private"`, and no tunnel was ever opened to the
+  destination — the same refusal a plain request gets, one layer down.
+- `dialAddr` — present on a tunnel's open row when the egress guard is on:
+  the address the guard checked and the proxy dialed, `"ip:port"`. Together
+  with `host` it is the audit trail against DNS rebinding — "asked for the
+  name, dialed this address" — because under the guard the proxy never dials
+  an address it did not check. Absent when the guard is off and on rows that
+  dialed nothing.
 - `httpMethod`, `httpPath` — the HTTP verb and query-stripped,
   percent-decoded path, so a request no parser recognized is still
   identifiable. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath`

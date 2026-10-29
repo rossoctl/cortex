@@ -44,7 +44,7 @@ type EventClient struct {
 	// the agent was not recognised or sent no version.
 	Version string `json:"version,omitempty"`
 	// Raw is the User-Agent as it was sent, with tabs normalised to spaces, sanitised (see
-	// sanitizeUA) and capped at maxClientLen.
+	// SanitizeControlRunes) and capped at maxClientLen.
 	//
 	// "Verbatim" up to those three rules, which is as verbatim as a string that reaches a
 	// terminal and a durable file can be. Worth knowing before comparing this against a
@@ -97,7 +97,13 @@ type EventClient struct {
 // that order ever change, cap here at 96 rather than leaving the window open.
 const maxClientLen = 128
 
-// sanitizeUA replaces every control character in a User-Agent with U+FFFD.
+// SanitizeControlRunes replaces every control character in s with U+FFFD. It
+// is the rule that lived under sanitizeUA's name until #1539's CodeQL finding
+// made the honest name necessary: it applies to any client-controlled string
+// headed for a surface a terminal or a file renders, not only a User-Agent.
+// Exported for the listeners — the forward proxy logs the destination Host on
+// its egress-guard refusal paths, and a newline forged into that header would
+// forge a log entry, the same CWE-150 shape the UA path guards against.
 //
 // THE PRIMARY CHOKE POINT FOR THIS STRING. ParseUserAgent is the one place a header
 // becomes an EventClient, and Label() is what both consumers of the result read — the
@@ -136,7 +142,7 @@ const maxClientLen = 128
 // one on a file that cannot be edited after the fact. Two copies of a five-line rule
 // is the right trade for a durable file; two DIFFERENT rules is not, so a change to
 // either belongs in both.
-func sanitizeUA(s string) string {
+func SanitizeControlRunes(s string) string {
 	if !hasControlRunes(s) {
 		// The overwhelmingly common case, and it must not allocate: this runs on the
 		// request path, twice per turn.
@@ -157,7 +163,7 @@ func sanitizeUA(s string) string {
 	return b.String()
 }
 
-// hasControlRunes reports whether s carries anything sanitizeUA would replace.
+// hasControlRunes reports whether s carries anything SanitizeControlRunes would replace.
 //
 // A RUNE scan rather than a byte scan, because the C1 block cannot be seen from the
 // bytes alone: 0xC2 0x9B is U+009B, and 0x9B on its own is a continuation byte of
@@ -229,7 +235,7 @@ func IsControlRune(r rune) bool {
 // through cost/ledger the length of an appended line. Cutting on a rune boundary only
 // changes WHERE the byte cap lands (by up to three bytes), never that there is one.
 //
-// It matters because of the order in ParseUserAgent: sanitizeUA runs first and can put
+// It matters because of the order in ParseUserAgent: SanitizeControlRunes runs first and can put
 // 3-byte U+FFFD runes in this string, so a byte cut has a one-in-three chance of
 // leaving a fragment of one — invalid UTF-8 in a label that goes to a durable file and
 // to a chart, which is the failure the substitution was meant to avoid rather than
@@ -442,7 +448,7 @@ func ParseUserAgent(ua string) *EventClient {
 	}
 	// SANITISED, THEN CAPPED, and both before ANY of it is retained or matched against,
 	// so nothing derived from it downstream can carry a control character or exceed the
-	// bound. See sanitizeUA for what the first step removes and maxClientLen for what the
+	// bound. See SanitizeControlRunes for what the first step removes and maxClientLen for what the
 	// second one is for.
 	//
 	// THE ORDER IS LOAD-BEARING, in the same direction as ledger.rowLabel's: a
@@ -455,17 +461,17 @@ func ParseUserAgent(ua string) *EventClient {
 	// TAB NORMALISED TO SPACE FIRST, ahead of the sanitiser, and it is not cosmetic. RFC
 	// 9110 spells the separator RWS = 1*( SP / HTAB ), so a compliant client may separate
 	// the product token from its comment with a tab — and a tab is a C0 control, so
-	// sanitizeUA turns it into U+FFFD and the split below then finds no whitespace at all.
+	// SanitizeControlRunes turns it into U+FFFD and the split below then finds no whitespace at all.
 	// Measured without this: "claude-cli/2.1\t(external)" yielded Version
 	// "2.1�(external)", a byAgent series key of its own, so one agent's spend divided
 	// in two.
 	//
-	// NORMALISATION, NOT SANITISATION, which is why it sits on this side of sanitizeUA
+	// NORMALISATION, NOT SANITISATION, which is why it sits on this side of SanitizeControlRunes
 	// instead of inside it. Mapping legal whitespace onto the canonical whitespace is not
-	// the same job as neutralising what a terminal would act on. The rule inside sanitizeUA is
+	// the same job as neutralising what a terminal would act on. The rule inside SanitizeControlRunes is
 	// shared rather than merely kept identical — every surface calls IsControlRune now — so this
 	// side only has to leave it alone. Byte-length-neutral, so the cap arithmetic is untouched.
-	ua = capUA(sanitizeUA(strings.ReplaceAll(ua, "\t", " ")))
+	ua = capUA(SanitizeControlRunes(strings.ReplaceAll(ua, "\t", " ")))
 	c := &EventClient{Raw: ua}
 	// The product token is the first SPACE-delimited word, so the trailing comment Claude
 	// Code appends — "(external, cli)" — is ignored rather than having to be matched.
