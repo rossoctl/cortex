@@ -843,6 +843,10 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 		ChainSession:  hs.ChainSession,
 	}
 	pctx.ResolveClient()
+	// The handshake's attribution, which hydrateSession pinned on it: a turn is the same
+	// process on the same session, and without it no turn row names the header that named
+	// the session — the rows #1535's fold counts procs and owner from.
+	pctx.SetAttribution(hs.AttributedProc(), hs.AttributedClientProc(), hs.NamingHeader())
 	return pctx
 }
 
@@ -850,20 +854,23 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 // would have recorded.
 func (ws *wsSocket) turnRequestEvent(pctx *pipeline.Context) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
-		At:          time.Now(),
-		Direction:   pipeline.Outbound,
-		Phase:       pipeline.SessionRequest,
-		RequestID:   pctx.RequestID(),
-		BytesUp:     int64(len(pctx.Body)),
-		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
-		Identity:    pipeline.SnapshotIdentity(pctx),
-		Host:        pctx.Host,
-		HTTPMethod:  pctx.Method,
-		HTTPPath:    pctx.Path,
-		Client:      pctx.ClientInfo(),
+		At:            time.Now(),
+		Direction:     pipeline.Outbound,
+		Phase:         pipeline.SessionRequest,
+		RequestID:     pctx.RequestID(),
+		BytesUp:       int64(len(pctx.Body)),
+		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:       pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:      pipeline.SnapshotIdentity(pctx),
+		Host:          pctx.Host,
+		HTTPMethod:    pctx.Method,
+		HTTPPath:      pctx.Path,
+		Client:        pctx.ClientInfo(),
+		Proc:          pctx.AttributedProc(),
+		ClientProc:    pctx.AttributedClientProc(),
+		SessionHeader: pctx.NamingHeader(),
 	}
 }
 

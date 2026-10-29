@@ -448,6 +448,11 @@ func TestResponsesWebSocket_TurnsAreParsedLikeHTTPS(t *testing.T) {
 		if req.Inference == nil || req.Inference.Model != "gpt-6-luna" || len(req.Inference.Messages) != 1 {
 			t.Errorf("turn %d request parse = %+v, want model gpt-6-luna and its one message", i+1, req.Inference)
 		}
+		// The handshake's attribution: on a session Codex uses only the socket for, the
+		// turns are the only request rows that can name the session's header.
+		if req.SessionHeader != session.CodexSessionHeader {
+			t.Errorf("turn %d request row sessionHeader = %q, want %q", i+1, req.SessionHeader, session.CodexSessionHeader)
+		}
 		if res.StatusCode != http.StatusOK || res.Inference == nil {
 			t.Errorf("turn %d response = status %d inference %+v", i+1, res.StatusCode, res.Inference)
 			continue
