@@ -2,12 +2,14 @@ package forwardproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -140,7 +142,34 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 
 	// Always dial the original IP (dst), never the sniffed name — the agent
 	// already chose the IP, and re-resolving the name could diverge from it.
-	upstream, err := net.DialTimeout("tcp", dst, connectDialTimeout)
+	//
+	// The egress guard applies here too, dst being a literal IP: its own
+	// check is over the literal, so no resolution can intervene. The refusal
+	// is recorded but never SENT — this path speaks no HTTP to the client —
+	// the same way the dial failure's synthetic 502 is.
+	dialTarget := dst
+	if s.EgressGuard != nil {
+		checked, cerr := s.EgressGuard.CheckAddr(ctx, "tcp", dst)
+		if cerr != nil {
+			var ref *egressguard.Refusal
+			if errors.As(cerr, &ref) {
+				slog.Warn("transparent-proxy: destination refused by egress guard",
+					"host", host, "dst", dst, "addr", ref.Addr.String())
+				tl.open(pipeline.TunnelDestPrivate)
+				tl.close(http.StatusForbidden, &pipeline.EventError{
+					Kind:    pipeline.ErrorKindDestinationPrivate,
+					Message: ref.Error(),
+				}, 0, 0)
+				return
+			}
+			tl.open(pipeline.TunnelDialFailed)
+			tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
+			return
+		}
+		dialTarget = checked
+		pctx.DialedAddr = checked
+	}
+	upstream, err := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 	if err != nil {
 		slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
 		// The 502 is synthetic — this path sends the client no status at all — but the
@@ -179,7 +208,9 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 					return
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
-				up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout)
+				// dialTarget: the checked address, never re-resolved — same rule as
+				// handleConnect's fall-open re-dial.
+				up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 				if derr != nil {
 					tl.close(http.StatusOK, dialError(derr), 0, 0)
 					return
@@ -264,7 +295,12 @@ func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelR
 		// Why the bytes stayed opaque. The caller knows; this function does
 		// not, which is why it is a parameter rather than something derived
 		// here from host shape.
-		TunnelReason:   reason,
+		TunnelReason: reason,
+		// The address the guard checked and the tunnel dialed — set only when
+		// the egress guard is on, else absent (SessionEvent.DialAddr). On the
+		// open row, which is where a reader pairs it with the Host the client
+		// named; the close row pairs by RequestID and needs no copy.
+		DialAddr:       pctx.DialedAddr,
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),

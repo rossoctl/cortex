@@ -1070,6 +1070,40 @@ func TestListenerConfig_DeclineResponsesWebSockets(t *testing.T) {
 	}
 }
 
+// TestListenerConfig_EgressGuard pins the default (off) and the block that arms
+// it. Unset must mean off with or without a listener block: a sidecar's ordinary
+// upstreams live in exactly the refused space, so a config predating the key
+// turning the guard on would break the deployment it was written for.
+func TestListenerConfig_EgressGuard(t *testing.T) {
+	var noBlock Config
+	if err := yaml.Unmarshal([]byte("mode: proxy-sidecar\n"), &noBlock); err != nil {
+		t.Fatal(err)
+	}
+	if noBlock.Listener.EgressGuard != nil {
+		t.Error("no listener block: EgressGuard is non-nil, want off")
+	}
+
+	var armed Config
+	if err := yaml.Unmarshal([]byte("listener:\n  egress_guard:\n    enabled: true\n    permit_cidrs: [\"127.0.0.1/32\", \"10.0.0.0/8\"]\n"), &armed); err != nil {
+		t.Fatal(err)
+	}
+	g := armed.Listener.EgressGuard
+	if g == nil || !g.Enabled {
+		t.Fatalf("armed config: EgressGuard = %+v, want enabled", g)
+	}
+	if len(g.PermitCIDRs) != 2 || g.PermitCIDRs[0] != "127.0.0.1/32" || g.PermitCIDRs[1] != "10.0.0.0/8" {
+		t.Errorf("PermitCIDRs = %v, want the two configured prefixes", g.PermitCIDRs)
+	}
+
+	var presentButOff Config
+	if err := yaml.Unmarshal([]byte("listener:\n  egress_guard:\n    enabled: false\n"), &presentButOff); err != nil {
+		t.Fatal(err)
+	}
+	if g := presentButOff.Listener.EgressGuard; g == nil || g.Enabled {
+		t.Errorf("explicit false: EgressGuard = %+v, want present and disabled", g)
+	}
+}
+
 // TestLoad_PreAffinityLaptopConfigGetsClientAffinity loads a laptop config written before
 // session.client_affinity existed — no session block at all, which is what every install
 // made before it still has on disk. With affinity off, Bob Shell's header-less startup

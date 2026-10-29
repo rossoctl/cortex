@@ -360,7 +360,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 27 since Subagent, which is TIMELINE data: it says which agent made the row. A
 		// scalar capped at maxClientLen, so the struct copy keeps it; asserted above.
 		// 28 since ParentSubagent, TIMELINE data for the same reason; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 28},
+		// 29 since DialAddr, which is kept: agentop's detail pane can draw the dialed
+		// address beside Host the way it draws redirected: — and the moca egress
+		// conformance reads it off the projected row. A scalar, so the struct copy
+		// keeps it.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 29},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two
