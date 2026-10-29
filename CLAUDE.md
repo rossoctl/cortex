@@ -611,11 +611,30 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   pins to HTTP/1.1 even on the bridge's h2-negotiating client), the origin's 101 is
   hijacked and spliced, and the session records the request row plus a paired 101
   response row carrying both directions' byte counts — the frames themselves are
-  never inspected or buffered. **A 403 with `error.kind: "destination_private"` is
-  the egress guard's answer, not the upstream's** (`listener.egress_guard`, off by
-  default): the destination resolved into loopback, link-local, private or this
-  host's own address space and no permit covered it. The Finisher sees an allow
-  with status 403, like the 426, and `/v1/usage` does not count it as an error.
+  never inspected or buffered.
+  **A 403 with `error.kind: "destination_private"` is the egress guard's
+  answer, not the upstream's** (`listener.egress_guard`, off by default): the
+  destination resolved into loopback, link-local, private or this host's own
+  address space and no permit covered it. The Finisher sees an allow with
+  status 403, like the 426, and `/v1/usage` does not count it as an error.
+  **A 403 `destination_denied` refusal is the egress allow list's answer, not
+  the upstream's** (`listener.egress_allow_hosts`, or `MOCA_EGRESS_ALLOW`;
+  #1483): the destination was not on the deny-by-default list, and the proxy
+  refused it by name — header `X-Moca-Egress-Error`, text/plain body
+  `destination_denied: <host>\n`, the moca egress conformance contract's
+  shape — before the pipeline, before DNS and before any dial. Off-list
+  CONNECT targets, absolute-form hosts, and the target a plugin's redirect
+  moved a request to all land this way, as a `phase: "denied"` row carrying
+  an `egress-allowlist` invocation whose `details.host` names the host; the
+  row's own `host` is the full authority, as every outbound row's is.
+  **A skip_hosts pattern cannot exempt an off-list host:** the allowlist is
+  checked first — it is the outer boundary, and a bypass must not become an
+  egress bypass.
+  **The two 403s are different boundaries and compose** — the allow list
+  judges the NAME the client asked for, before DNS; the egress guard judges
+  the ADDRESS that name resolved to, at the dial. A host can be on the
+  allow list and still be refused `destination_private`, which is why an
+  allow-list entry is not a permit for the guard.
   **A request whose body could not be buffered is the other exception:** it never
   reached the pipeline, so its request row carries no
   parse and no Finisher runs. Over the forward proxy's `maxRequestBodySize` (32 MiB)
@@ -1195,6 +1214,15 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
           - "*.metrics.local"
       ```
       Any change to `listener.skip_hosts` requires a pod restart (same rule as other `listener.*` fields). Do NOT add hosts here that need IBAC / token-exchange policy applied — bypass means bypass.
+
+    - **Egress boundary — `listener.egress_allow_hosts`** (#1483, MOCA MI1 §8.5): the forward proxy's deny-by-default destination allow list. When non-empty, an outbound destination not on the list — a CONNECT target, an absolute-form `http://` host, or the host a plugin's redirect moved a request to — is refused with 403 `destination_denied` naming the host, in the moca egress conformance contract's refusal shape (header `X-Moca-Egress-Error`, text/plain body `destination_denied: <host>\n`), before the pipeline, before DNS resolution and before any dial, so an off-list host is answered by name rather than left to time out. Entries are exact-match `host:port` — no globs, and the shapes that would widen the boundary (portless, wildcard) are startup errors, as is an unbracketed IPv6 literal, which would *empty* it (`2001:db8::1` reads its last colon as the port separator and can never match — write `[2001:db8::1]:443`); a destination naming no port is judged at its scheme's (80 http, 443 otherwise). A destination off the wire is never trusted to parse: a malformed authority is denied by name, never a panic. When the config field is empty, the binary falls back to the `MOCA_EGRESS_ALLOW` env var (comma-separated `host:port`) — the channel the MOCA conformance harness drives the target with. Both empty keeps egress exactly as it was. **The allowlist is checked BEFORE `skip_hosts`** — when on, it is the outer boundary, and a skip pattern cannot exempt an off-list host. Example:
+      ```yaml
+      listener:
+        egress_allow_hosts:
+          - "github-tool-mcp:8080"
+          - "api.anthropic.com:443"
+      ```
+      Env delivery instead: `MOCA_EGRESS_ALLOW=github-tool-mcp:8080,api.anthropic.com:443`. Any change requires a pod restart (same rule as other `listener.*` fields). Each refusal leaves a `phase: "denied"` session row carrying an `egress-allowlist` invocation naming the host. **Scope: the forward proxy only** — "outer boundary" is outer with respect to `skip_hosts`, not with respect to every exit from the pod. **Egress that iptables REDIRECTs to `listener.transparent_proxy_addr` (proxy-sidecar enforce-redirect mode) is not filtered by it** — that listener runs the shared pipeline but dials its recovered destination without consulting the list — and the extproc listener (envoy-sidecar) has no wiring at all: only `cmd/cortex` builds a matcher, onto the forward proxy server. Note the contrast with `skip_hosts`, which the transparent listener also does not consult: there the omission hardens the boundary (a skip cannot self-exempt), here it leaves a way around this one. That matches the issue's scope (MOCA shape A is the proxy-sidecar forward proxy, CONNECT plus absolute-form), but a deployment that also captures traffic by iptables REDIRECT, or runs envoy-sidecar, must hold its egress somewhere else too: deny-by-default here is not deny-by-default for the pod. The sibling `listener.egress_guard` (#1539) is a different boundary and composes — this list judges the **name** before DNS, the guard judges the **address** it resolved to at the dial, so an allow-list entry is not a permit for the guard.
 
     - **Backstop — intent pin in the eviction policy**: this one only applies when `session.max_events` is set, because with no cap there is no FIFO eviction to survive. Where it is set, and even with `skip_hosts` empty, the session store pins the most-recent inbound A2A request event against that eviction. If the buffer overflows, every other event evicts in normal chronological order; the protected intent stays at its original timestamp, leaving a visible time gap in the timeline. Older intents from earlier turns are NOT pinned — only the latest one — so a multi-turn conversation with huge fan-out can't pile up stale intents and starve the buffer. The pin protects against FIFO eviction only: IBAC's `LastIntent()` survives buffer overflow as long as the session is still alive and an inbound A2A request has landed in it, but can still return nil after explicit deletion, eviction once `max_sessions` is exceeded, a configured `session.ttl` elapsing, or before the first inbound request arrives. The pin is defense-in-depth; reach for `skip_hosts` first when the offending traffic is identifiable infrastructure.
 
