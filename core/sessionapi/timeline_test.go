@@ -408,3 +408,32 @@ func TestTimelineIdleHistoryExpires(t *testing.T) {
 	}
 	t.Error("an idle history was kept past its expiry")
 }
+
+// A cached timeline outlives the old one-minute bound while its session records nothing, and an
+// unanswered request still ages out on it as it would on a fresh compute.
+func TestTimelineCacheAgesUnansweredRequestsOnAHit(t *testing.T) {
+	var clock atomic.Int64
+	base := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	clock.Store(base.UnixNano())
+	store := session.New(0, 0, 0)
+	srv := New(":0", store, WithClock(func() time.Time { return time.Unix(0, clock.Load()).UTC() }))
+	ts := httptest.NewServer(srv.server.Handler)
+	t.Cleanup(func() { ts.Close(); store.Close() })
+	store.Append("s1", pipeline.SessionEvent{At: base, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "h", Host: "slow.example"})
+
+	if tl, _ := getTimeline(t, ts.URL, "s1", ""); tl.Hosts[0].Lost {
+		t.Fatal("lost at once; want in flight")
+	}
+	cached := srv.timelines.entries["s1"].tl
+	clock.Add(int64(time.Hour))
+	tl, _ := getTimeline(t, ts.URL, "s1", "")
+	if srv.timelines.entries["s1"].tl != cached {
+		t.Error("an hour on with no new event, the timeline was rebuilt rather than served from the cache")
+	}
+	if !tl.Hosts[0].Lost {
+		t.Error("an hour on, the unanswered request is still in flight; want it aged out on the hit")
+	}
+	if cached.Hosts[0].Lost {
+		t.Error("aging the served copy reached the cached timeline")
+	}
+}

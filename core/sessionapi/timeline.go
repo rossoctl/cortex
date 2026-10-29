@@ -97,14 +97,15 @@ const timelineCacheMax = 32
 // compute reads it from disk.
 const timelinePrefixEvents = 10_000
 
-// timelineStale is how long a cached timeline of an idle session is trusted: Build ages
-// unanswered requests against now, so the same events can draw differently later.
-const timelineStale = time.Minute
-
 // timelinePrefixTTL is how long a held history outlives its read; a var so a test can shorten it.
-var timelinePrefixTTL = timelineStale
+var timelinePrefixTTL = time.Minute
 
-// get returns a private copy, since the caller clips it.
+// get returns a private copy, since the caller clips it, aged against now.
+//
+// A cached timeline is served until the session records a new event, however old it is. The
+// only clock-dependent part of a timeline is which unanswered requests have aged out, and
+// LoseUnanswered redoes that on the copy, so an hour-old entry reads as a fresh Build would.
+// An archived session's newest seq never moves, so its one cold read is its only one.
 func (c *timelineCache) get(s *Server, id string) (*timeline.Timeline, bool) {
 	// The session's newest Seq: memory's when it holds the session, else the archive's,
 	// which for a session only on disk never moves.
@@ -119,8 +120,10 @@ func (c *timelineCache) get(s *Server, id string) (*timeline.Timeline, bool) {
 	e, hit := c.entries[id]
 	epoch := c.epoch
 	c.mu.Unlock()
-	if hit && newest != 0 && e.seq == newest && e.newestAt.Equal(newestAt) && now.Sub(e.at) < timelineStale {
-		return clone(e.tl), true
+	if hit && newest != 0 && e.seq == newest && e.newestAt.Equal(newestAt) {
+		tl := clone(e.tl)
+		tl.LoseUnanswered(now)
+		return tl, true
 	}
 	v, _, _ := c.flight.Do(strconv.FormatUint(epoch, 10)+"/"+id, func() (any, error) {
 		events, truncated, ok := s.wholeSession(id, epoch)
@@ -138,7 +141,10 @@ func (c *timelineCache) get(s *Server, id string) (*timeline.Timeline, bool) {
 	if tl == nil {
 		return nil, false
 	}
-	return clone(tl), true
+	// A request that joined another's compute ages against its own now, not that compute's.
+	cp := clone(tl)
+	cp.LoseUnanswered(now)
+	return cp, true
 }
 
 func (c *timelineCache) put(id string, epoch uint64, e timelineEntry) {
@@ -184,7 +190,7 @@ func (c *timelineCache) archived(s *Server, id string, epoch, cursor uint64, nee
 	if cursor > 1 {
 		c.mu.Lock()
 		p := c.prefixes[id]
-		if p != nil && p.below == cursor && p.need >= need && s.clock().Sub(p.readAt) < timelineStale {
+		if p != nil && p.below == cursor && p.need >= need && s.clock().Sub(p.readAt) < timelinePrefixTTL {
 			c.uses++
 			p.used = c.uses
 		} else {
@@ -246,8 +252,9 @@ func (c *timelineCache) putPrefix(id string, epoch uint64, p *timelinePrefix) {
 	}
 }
 
-// clone copies the span slices Clip rewrites. The spans' time pointers are shared, which
-// is safe: Clip never writes through them. slices.Clone keeps an empty list empty rather
+// clone copies the span slices Clip and LoseUnanswered rewrite. The spans' time pointers are
+// shared, which is safe: neither writes through one, LoseUnanswered only replaces a nil End
+// with a pointer of its own. slices.Clone keeps an empty list empty rather
 // than nil, so it still encodes as [] and not null.
 func clone(tl *timeline.Timeline) *timeline.Timeline {
 	cp := *tl
@@ -256,6 +263,7 @@ func clone(tl *timeline.Timeline) *timeline.Timeline {
 	cp.Tools = slices.Clone(tl.Tools)
 	cp.Returns = slices.Clone(tl.Returns)
 	cp.Hosts = slices.Clone(tl.Hosts)
+	cp.Jobs = slices.Clone(tl.Jobs)
 	return &cp
 }
 

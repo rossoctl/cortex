@@ -456,6 +456,7 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		HTTPMethod:     pctx.Method,
 		HTTPPath:       pctx.Path,
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -492,6 +493,7 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 		HTTPMethod:     pctx.Method,
 		HTTPPath:       pctx.Path,
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),
@@ -669,6 +671,22 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	p := s.OutboundPipeline
 	if direction == "inbound" {
 		p = s.InboundPipeline
+	}
+
+	// Envoy delivering response headers is this listener's headers-arrival
+	// moment — the same point in the exchange where the proxy listeners set
+	// theirs — so ttfb means one thing on a row from any listener (#1251).
+	// Set it, though, only when the row is NOT recorded right here while the
+	// body is still coming: with !p.NeedsBody() the body phase below is never
+	// requested, Envoy relays the body without us, and the row lands at
+	// headers time — so ttfb ≈ duration and duration−ttfb would read as
+	// "body 0ms" for a body this listener never saw, the exact misreading
+	// #1251's split exists to prevent. Absent is the contract's "not
+	// measured", so leave the timestamp zero on that arm. endOfStream means
+	// no body is coming at all, and p.NeedsBody() means the body phase
+	// records later — in both, headers arrival is a real, reportable figure.
+	if p.NeedsBody() || endOfStream {
+		pctx.ResponseHeadersAt = time.Now()
 	}
 
 	// Defer to the body phase — but only when there IS one.

@@ -225,7 +225,7 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 	// a macOS feature — by the same rules resolveBobLaunch applies on macOS, so
 	// the two halves never disagree about which file to write or which
 	// arrangements are too deliberate to write through.
-	shellRC, shellAdvise, shellReadErr := bobShellResolve(home, os.Getenv("SHELL"))
+	shellRC, shellAdvise, shellReadErr := rcResolve(home, os.Getenv("SHELL"))
 	if shellReadErr != nil {
 		// The editor half's rule, and the old shell command's: a caller that
 		// cannot even stat the file has learned nothing it can act on from a
@@ -337,7 +337,7 @@ type bobCommand struct {
 // macOS only, deliberately. ~/.config/IBM Bob/User/settings.json is the VS Code
 // convention on Linux and would be the obvious guess, but it is unverified for
 // this app — and writing a proxy setting into a file nothing reads is a silent
-// no-op that leaves the user no reason to look there. bobShellRCPath makes the
+// no-op that leaves the user no reason to look there. rcPathForShell makes the
 // same call for an unrecognised shell: claim only what you know, and say so
 // otherwise. --settings covers every platform, so nothing is blocked.
 //
@@ -1336,7 +1336,7 @@ func (c bobCommand) enable() int {
 	} else {
 		ide, ideCode = planBobEnable(c.settingsPath, c.cortexCfgPath, c.launch, c.stderr)
 	}
-	var shell bobShellPlan
+	var shell rcPlan
 	shellCode := 0
 	if c.shellAdvise == nil {
 		p, err := bobShellEnablePlan(c.shellRC)
@@ -1469,7 +1469,7 @@ func ideBlock(ide *bobEnablePlan) string {
 // question a re-run is usually asking — is it actually working? — so the probe
 // reports in full; otherwise the half that could not act has said so on stderr,
 // and the shell half's own findings still belong on stdout.
-func (c bobCommand) enableNothing(ide *bobEnablePlan, shell bobShellPlan, ideCode, shellCode int) int {
+func (c bobCommand) enableNothing(ide *bobEnablePlan, shell rcPlan, ideCode, shellCode int) int {
 	if ide != nil && ide.already {
 		fmt.Fprintln(c.stdout, "Already enabled — IBM Bob routes through Cortex.")
 		if ide.blockNote != "" {
@@ -1532,7 +1532,7 @@ func (c bobCommand) applyEnableEditor(p *bobEnablePlan) int {
 // enableReport is the merged post-apply report: a headline that claims only what
 // landed, then one line of next-step advice per face that changed, then the
 // probe's findings and any by-hand advice.
-func (c bobCommand) enableReport(ide *bobEnablePlan, shell bobShellPlan, ideChanges, shellChanges bool, ideTotal, shellTotal int) {
+func (c bobCommand) enableReport(ide *bobEnablePlan, shell rcPlan, ideChanges, shellChanges bool, ideTotal, shellTotal int) {
 	fmt.Fprintln(c.stdout)
 	switch {
 	case ideTotal == 0 && shellTotal == 0 && !shell.leftAlone():
@@ -1766,7 +1766,7 @@ func (c bobCommand) disable() int {
 	} else {
 		ide, ideCode = planBobDisable(c.settingsPath, c.cortexCfgPath, wantProxy, caPath, c.launch, c.yes, c.stderr)
 	}
-	var shell bobShellPlan
+	var shell rcPlan
 	shellCode := 0
 	if c.shellAdvise == nil {
 		p, err := bobShellDisablePlan(c.shellRC)

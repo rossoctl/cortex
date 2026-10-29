@@ -731,7 +731,7 @@ func TestServiceStepUnsupervisedFailureShowsTheLog(t *testing.T) {
 // home, and on Linux its linger caveat.
 func TestServiceStepKeepsServiceInstallsWarnings(t *testing.T) {
 	fakeSupervisor(t)
-	want := "loaded, but `loginctl enable-linger` failed: the service will stop when you log out."
+	want := "loaded, but lingering could not be turned on: Cortex will stop when you log out."
 	if runtimeGOOS() == "darwin" {
 		lh := loginHome()
 		if lh == "" {

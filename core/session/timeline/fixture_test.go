@@ -84,15 +84,23 @@ func TestRealSessionWithBackgroundAgents(t *testing.T) {
 		t.Errorf("lost tools = %v, want 5 hand-backs and 3 Bash", lost)
 	}
 
-	// Five calls failed upstream (502 EOF, 499 the client gave up); none may read as clean.
-	failed := 0
+	// Five calls failed upstream (502 EOF, 499 the client gave up), and one 200 streamed for 40s
+	// and ended with no finish reason, which its agent's next call re-sent unchanged. None may
+	// read as clean.
+	failed, resent := 0, 0
 	for _, tu := range tl.Turns {
 		if tu.Error {
 			failed++
 		}
+		if tu.Resent {
+			resent++
+		}
 	}
-	if failed != 5 {
-		t.Errorf("failed turns = %d, want 5", failed)
+	if failed != 6 {
+		t.Errorf("failed turns = %d, want 6", failed)
+	}
+	if resent == 0 {
+		t.Error("no turn re-sent its predecessor's conversation, yet the cut stream was retried")
 	}
 	if len(tl.Returns) < len(want) {
 		t.Errorf("returns = %d, want at least one per subagent", len(tl.Returns))

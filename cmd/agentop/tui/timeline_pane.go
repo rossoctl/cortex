@@ -32,8 +32,24 @@ const timelineRefresh = time.Second
 // spans in flight grow and the window slides even when nothing new is recorded.
 const timelineIdleRefresh = 10 * time.Second
 
-// timelineReadTimeout bounds one fetch.
-const timelineReadTimeout = 5 * time.Second
+// timelineReadTimeout bounds one refresh. timelineFirstReadTimeout bounds the first fetch of a
+// visit, which for a session only on disk is a cold read of its archive: over a second at normal
+// priority and 5.3s measured at background priority. The proxy finishes that read whether or
+// not the client waits, so a short first deadline gains nothing and turns a slow load into an
+// error.
+const (
+	timelineReadTimeout      = 5 * time.Second
+	timelineFirstReadTimeout = 30 * time.Second
+)
+
+// timelineRetryCap bounds the backoff after a failed fetch.
+const timelineRetryCap = 30 * time.Second
+
+// timelineRetryAfter is the wait before the next fetch after fails consecutive failures:
+// timelineRefresh doubled per failure, capped.
+func timelineRetryAfter(fails int) time.Duration {
+	return min(timelineRefresh<<min(max(fails-1, 0), 5), timelineRetryCap)
+}
 
 // timelineLiveFor is how long after its last recorded event a session still counts as live:
 // its open spans run to now and its windows follow now. Past it, open spans end at the last
@@ -63,7 +79,12 @@ type timelineState struct {
 	loading   bool
 	// stale is set when the stream delivers an event for this session; the next tick refetches.
 	stale bool
-	// cursor is the highlighted cell, -1 for none; scroll is the first agent row shown.
+	// fails counts consecutive failed fetches, and retryAt is when the next may go; see
+	// timelineRetryAfter.
+	fails   int
+	retryAt time.Time
+	// cursor is the highlighted cell, -1 for none. scroll is how many rows are scrolled past:
+	// agent rows first, then host rows, so one pair of keys reaches every row.
 	cursor int
 	scroll int
 	// fetchedAt is when tl arrived.
@@ -107,6 +128,7 @@ func (m *model) openTimeline(session string) tea.Cmd {
 	m.pane = paneTimeline
 	if m.timeline.session != session {
 		m.timeline.tl, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, -1, 0
+		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
 	}
 	m.timeline.session = session
 	return m.resumeTimeline()
@@ -129,8 +151,12 @@ func (m *model) fetchTimeline() tea.Cmd {
 	m.timeline.reqSeq++
 	m.timeline.loading, m.timeline.stale = true, false
 	client, id, req := m.client, m.timeline.session, m.timeline.reqSeq
+	timeout := timelineReadTimeout
+	if m.timeline.tl == nil {
+		timeout = timelineFirstReadTimeout
+	}
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), timelineReadTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		tl, err := client.GetTimeline(ctx, id)
 		return timelineLoadedMsg{tl: tl, req: req, err: err}
@@ -150,9 +176,12 @@ func (m *model) handleTimelineLoaded(msg timelineLoadedMsg) {
 			return
 		}
 		m.timeline.err = msg.err
+		m.timeline.fails++
+		m.timeline.retryAt = m.clock().Add(timelineRetryAfter(m.timeline.fails))
 		return
 	}
 	m.timeline.tl, m.timeline.err, m.timeline.fetchedAt = msg.tl, nil, m.clock()
+	m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
 }
 
 // sessionServed reports a session the proxy lists, so it can be snapshotted and has a timeline.
@@ -171,8 +200,12 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	}
 	t := &m.timeline
 	var fetch tea.Cmd
-	idle := !t.fetchedAt.IsZero() && m.clock().Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
-	if (t.stale || idle) && !t.loading {
+	now := m.clock()
+	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
+	// A failed fetch is retried on its backoff, and holds back the other triggers until then: a
+	// stream event or a live session's idle refresh would otherwise retry a dead proxy every tick.
+	retry := t.err != nil && !errors.Is(t.err, errTimelineUnsupported)
+	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry) && !waiting && !t.loading {
 		fetch = m.fetchTimeline()
 	}
 	return tea.Batch(fetch, timelineTick(msg.gen))
@@ -208,13 +241,14 @@ func (m *model) timelineKey(key string) (tea.Cmd, bool) {
 		m.moveTimelineCursor(1)
 		return nil, true
 	case "up", "k":
-		if t.scroll > 0 {
-			t.scroll--
+		if lay, ok := m.timelineLayoutNow(); ok {
+			// Clamped first: a window change or a resize can leave scroll past what is hidden now.
+			t.scroll = max(min(t.scroll, m.timelineScrollMax(lay))-1, 0)
 		}
 		return nil, true
 	case "down", "j":
-		if lay, ok := m.timelineLayoutNow(); ok && t.scroll < len(lay.agents)-m.timelineAgentRows(lay) {
-			t.scroll++
+		if lay, ok := m.timelineLayoutNow(); ok {
+			t.scroll = min(t.scroll+1, m.timelineScrollMax(lay))
 		}
 		return nil, true
 	case "enter":
@@ -261,7 +295,8 @@ func (m *model) timelineCells() int {
 // timelineRange is the window's [from, to] and the layout's now. For a live session now is the
 // clock, so open spans grow and the window follows it. For one that is not, now is its last
 // recorded event: an open span ends there, and the window ends at the session's last activity,
-// so opening yesterday's session does not show an empty five minutes. A zero from means "all".
+// so opening yesterday's session does not show an empty five minutes. A zero from means "all",
+// whose to is now for a live session and zero, its last activity, for one that is not.
 func (m *model) timelineRange() (from, to, now time.Time, win int) {
 	t := &m.timeline
 	// Rounded to the refresh interval, so the window, and the cached layout built from it,
@@ -272,8 +307,11 @@ func (m *model) timelineRange() (from, to, now time.Time, win int) {
 	}
 	win = t.window(now)
 	w := timelineWindows[win]
-	if w.span == 0 || t.tl == nil {
+	if t.tl == nil || (w.span == 0 && !m.timelineLive()) {
 		return time.Time{}, time.Time{}, now, win
+	}
+	if w.span == 0 {
+		return time.Time{}, now, now, win
 	}
 	end := now
 	if !m.timelineLive() {
@@ -339,8 +377,82 @@ func (m *model) timelineHostRows(lay tlLayout, agentRows int) int {
 	return max(min(len(lay.hosts), m.timelineRowBudget(lay)-agentRows), 0)
 }
 
-// timelineCursorSeq is the event under the cursor: the first tool started there in a visible
-// agent row, else the first host request.
+// timelineScrollMax is how far scroll can go: every agent row hidden, then every host row.
+func (m *model) timelineScrollMax(lay tlLayout) int {
+	agents := m.timelineAgentRows(lay)
+	return len(lay.agents) - agents + len(lay.hosts) - m.timelineHostRows(lay, agents)
+}
+
+// timelineOffsets splits scroll into the first agent row and the first host row shown: the
+// agent rows scroll until the last is in view, then the host rows.
+func (m *model) timelineOffsets(lay tlLayout) (agent, host int) {
+	s := min(m.timeline.scroll, m.timelineScrollMax(lay))
+	agent = min(s, len(lay.agents)-m.timelineAgentRows(lay))
+	return agent, s - agent
+}
+
+func (m *model) visibleAgentRows(lay tlLayout) []tlAgentRow {
+	n := m.timelineAgentRows(lay)
+	s, _ := m.timelineOffsets(lay)
+	return lay.agents[s:min(len(lay.agents), s+n)]
+}
+
+func (m *model) visibleHostRows(lay tlLayout) []tlHostRow {
+	n := m.timelineHostRows(lay, m.timelineAgentRows(lay))
+	_, s := m.timelineOffsets(lay)
+	return lay.hosts[s:min(len(lay.hosts), s+n)]
+}
+
+// scrollHint counts one side's rows scrolled out of view above and below.
+func scrollHint(above, below int, noun string) string {
+	var parts []string
+	if above > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s above", above, noun))
+	}
+	if below > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s below", below, noun))
+	}
+	return "  " + strings.Join(parts, " · ") + "  [↑↓] scroll"
+}
+
+// cellTools are the visible agent rows' tools in one cell: those that started there, then those
+// still running from before it. Agent calls are left out of the second, as they are out of the
+// row's fill: their own span is the few seconds to the async ack, and the child's row carries
+// the work.
+func (m *model) cellTools(lay tlLayout, cell tlAxisCell) (started, running []timeline.Tool) {
+	_, _, now, _ := m.timelineRange()
+	visible := map[string]bool{}
+	for _, r := range m.visibleAgentRows(lay) {
+		visible[r.agent.ID] = true
+	}
+	for _, x := range m.timeline.tl.Tools {
+		switch {
+		case !visible[x.Agent]:
+		case !x.Start.Before(cell.from) && x.Start.Before(cell.to):
+			started = append(started, x)
+		case x.Start.Before(cell.from) && tlEndOr(x.End, now).After(cell.from) && x.Name != "Agent" && x.Name != "Task":
+			running = append(running, x)
+		}
+	}
+	return started, running
+}
+
+// cellHost is the first request in the visible host rows to start in the cell.
+func (m *model) cellHost(lay tlLayout, cell tlAxisCell) (timeline.Host, bool) {
+	visible := map[string]bool{}
+	for _, r := range m.visibleHostRows(lay) {
+		visible[r.host] = true
+	}
+	for _, h := range m.timeline.tl.Hosts {
+		if visible[h.Host] && !h.Start.Before(cell.from) && h.Start.Before(cell.to) {
+			return h, true
+		}
+	}
+	return timeline.Host{}, false
+}
+
+// timelineCursorSeq is the event under the cursor: the first tool the cursor line lists, else
+// the request it names. The same rules as cursorStrip, so ↵ opens what the line shows.
 func (m *model) timelineCursorSeq() (uint64, bool) {
 	lay, ok := m.timelineLayoutNow()
 	c := m.timeline.cursor
@@ -348,25 +460,15 @@ func (m *model) timelineCursorSeq() (uint64, bool) {
 		return 0, false
 	}
 	cell := lay.axis.cells[c]
-	for _, row := range m.visibleAgentRows(lay) {
-		for _, x := range m.timeline.tl.Tools {
-			if x.Agent == row.agent.ID && !x.Start.Before(cell.from) && x.Start.Before(cell.to) {
-				return x.Seq, true
-			}
-		}
+	if started, running := m.cellTools(lay, cell); len(started) > 0 {
+		return started[0].Seq, true
+	} else if len(running) > 0 {
+		return running[0].Seq, true
 	}
-	for _, h := range m.timeline.tl.Hosts {
-		if !isLoopback(h.Host) && !h.Start.Before(cell.from) && h.Start.Before(cell.to) {
-			return h.Seq, true
-		}
+	if h, ok := m.cellHost(lay, cell); ok {
+		return h.Seq, true
 	}
 	return 0, false
-}
-
-func (m *model) visibleAgentRows(lay tlLayout) []tlAgentRow {
-	n := m.timelineAgentRows(lay)
-	s := min(m.timeline.scroll, max(len(lay.agents)-n, 0))
-	return lay.agents[s:min(len(lay.agents), s+n)]
 }
 
 // openEventsAtSeq shows session's Events pane with the cursor on event seq, once the event is
@@ -440,6 +542,22 @@ var (
 	styleTLAgent  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0E7490", Dark: "#67E8F9"})
 )
 
+// gapGlyph draws a collapsed gap's marker in the colour of the state that held most of the
+// stretch it stands for, muted when nothing did. A subagent not alive across the gap has an
+// empty share, so it draws muted too.
+func gapGlyph(s share) string {
+	best, bestF := stNone, 0.0
+	for st := stTool; st < stNone; st++ {
+		if f := s.of(st); f > bestF {
+			best, bestF = st, f
+		}
+	}
+	if best == stNone {
+		return styleMuted.Render("┆")
+	}
+	return lipgloss.NewStyle().Foreground(tlStateColor[best]).Render("┆")
+}
+
 // tlEighths are the lower block elements, by eighths of a cell.
 var tlEighths = []string{" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"}
 
@@ -482,7 +600,12 @@ func (m *model) renderTimeline() string {
 		b.WriteString(styleWarn.Render("  This proxy does not serve /v1/sessions/{id}/timeline — upgrade cortex to see the timeline.") + "\n")
 		return b.String()
 	case t.err != nil && t.tl == nil:
-		b.WriteString(styleError.Render("  "+t.err.Error()) + "\n")
+		// Retried on its backoff, so a slow first read reads as loading, not as a dead end.
+		wait := ""
+		if left := t.retryAt.Sub(m.clock()); left > 0 {
+			wait = fmt.Sprintf(" in %ds", int(left.Round(time.Second).Seconds()))
+		}
+		b.WriteString(styleMuted.Render("  loading… the last try failed, retrying"+wait+": "+t.err.Error()) + "\n")
 		return b.String()
 	case t.tl == nil:
 		b.WriteString(styleMuted.Render("  loading…") + "\n")
@@ -510,26 +633,27 @@ func (m *model) renderTimeline() string {
 	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  calls") + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
+	agentOff, hostOff := m.timelineOffsets(lay)
 	if agentRows == 0 && len(lay.agents) > 0 {
-		b.WriteString(styleMuted.Render(fmt.Sprintf("  %d agents  [↑↓] scroll — make the terminal taller to see them", len(lay.agents))) + "\n")
+		b.WriteString(styleMuted.Render(fmt.Sprintf("  %d agents — make the terminal taller to see them", len(lay.agents))) + "\n")
 	}
 	if len(lay.agents) == 0 {
 		b.WriteString(styleMuted.Render("  no Claude Code agents in this session") + "\n\n")
 	}
 	for i, r := range m.visibleAgentRows(lay) {
 		b.WriteString(m.agentLine(r, lay) + "\n")
-		if more := len(lay.agents) - agentRows; i == agentRows-1 && more > 0 {
-			b.WriteString(styleMuted.Render(fmt.Sprintf("  %d more agents  [↑↓] scroll", more)) + "\n")
+		if below := len(lay.agents) - agentOff - agentRows; i == agentRows-1 && (agentOff > 0 || below > 0) {
+			b.WriteString(styleMuted.Render(scrollHint(agentOff, below, "agents")) + "\n")
 		} else {
 			b.WriteString("\n")
 		}
 	}
 	b.WriteString(styleMuted.Render(strings.Repeat("╌", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
 	hostRows := m.timelineHostRows(lay, agentRows)
-	for i, r := range lay.hosts[:hostRows] {
+	for i, r := range m.visibleHostRows(lay) {
 		b.WriteString(m.hostLine(r, lay) + "\n")
-		if more := len(lay.hosts) - hostRows; i == hostRows-1 && more > 0 {
-			b.WriteString(styleMuted.Render(fmt.Sprintf("  %d more hosts", more)) + "\n")
+		if below := len(lay.hosts) - hostOff - hostRows; i == hostRows-1 && (hostOff > 0 || below > 0) {
+			b.WriteString(styleMuted.Render(scrollHint(hostOff, below, "hosts")) + "\n")
 		} else {
 			b.WriteString("\n")
 		}
@@ -551,7 +675,7 @@ func (m *model) legend() string {
 	}
 	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
 		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ idle   ▁…█ requests in flight")
+		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight")
 }
 
 func (m *model) timelineStatus(lay tlLayout) string {
@@ -592,6 +716,12 @@ func axisLabels(lay tlLayout) string {
 			claim(c-len(label)/2, label)
 		}
 	}
+	// A squeezed live wait is labelled with its length, like a gap, since its cells are not to
+	// scale with the rest.
+	if n := lay.axis.tail; n > 0 {
+		label := "+" + tlDuration(lay.axis.cells[w-1].to.Sub(lay.axis.cells[w-n].from))
+		claim(w-n, label)
+	}
 	format := "15:04"
 	if span := lay.to.Sub(lay.from); span <= 10*time.Minute {
 		format = "15:04:05"
@@ -621,7 +751,8 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		g := " "
 		switch {
 		case lay.axis.cells[c].marker:
-			g = styleMuted.Render("┆")
+			g = gapGlyph(cell)
+		case lay.axis.cells[c].gap:
 		case r.alive[c]:
 			g = shareGlyph(cell)
 		}
@@ -643,6 +774,8 @@ func (m *model) hostLine(r tlHostRow, lay tlLayout) string {
 	for c := range r.peak {
 		g := " "
 		switch {
+		case lay.axis.cells[c].marker && r.err[c]:
+			g = styleError.Render("┆") // a request failed in the stretch cut from the axis
 		case lay.axis.cells[c].marker:
 			g = styleMuted.Render("┆")
 		case lay.axis.cells[c].gap:
@@ -669,26 +802,28 @@ func (m *model) cursorAt(c int, s string) string {
 	return s
 }
 
-// cursorStrip says what happened in the cell under the cursor: every tool that started there,
-// with its duration and preview.
+// cursorStrip says what happened in the cell under the cursor: the visible rows' tools that
+// started there, then those still running from before it, with durations and previews. A cell
+// with no tool names the request ↵ would open.
 func (m *model) cursorStrip(lay tlLayout) string {
 	c := m.timeline.cursor
 	if c < 0 || c >= lay.axis.width() {
-		return styleMuted.Render("▸ [←→] pick a moment: lists the tools that started then, with their durations and commands")
+		return styleMuted.Render("▸ [←→] pick a moment: lists the tools running then, with their durations and commands")
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
+	started, running := m.cellTools(lay, cell)
 	var parts []string
-	for _, x := range m.timeline.tl.Tools {
-		if x.Start.Before(cell.from) || !x.Start.Before(cell.to) {
-			continue
-		}
+	for i, x := range append(started, running...) {
 		dur := "running"
 		switch {
 		case x.Lost:
 			dur = "no result"
 		case x.End != nil:
 			dur = tlDuration(x.End.Sub(x.Start))
+		}
+		if i >= len(started) {
+			dur += " (since " + x.Start.Local().Format("15:04:05") + ")"
 		}
 		p := fmt.Sprintf("%s %s %s", m.shortAgent(x.Agent), x.Name, dur)
 		if x.Preview != "" {
@@ -698,7 +833,10 @@ func (m *model) cursorStrip(lay tlLayout) string {
 		parts = append(parts, sanitizeLabel(p))
 	}
 	if len(parts) == 0 {
-		return styleMuted.Render(head + "no tool started in this cell")
+		if h, ok := m.cellHost(lay, cell); ok {
+			return styleMuted.Render(head + "no tool running; a request to " + sanitizeLabel(h.Host) + "  [enter] events")
+		}
+		return styleMuted.Render(head + "no tool running in this cell")
 	}
 	if len(parts) > 1 {
 		head += fmt.Sprintf("(%d) ", len(parts))

@@ -113,7 +113,7 @@ type bobLaunch struct {
 }
 
 // resolveBobLaunch maps $SHELL and $HOME to a bobLaunch, applying bobshell's rules for
-// which file and how far to follow a link — bobShellResolve itself, so the two halves
+// which file and how far to follow a link — rcResolve itself, so the two halves
 // always pick the same file and refuse the same arrangements.
 func resolveBobLaunch(home, shell string) bobLaunch {
 	l := bobLaunch{
@@ -125,7 +125,7 @@ func resolveBobLaunch(home, shell string) bobLaunch {
 	if !l.macOS {
 		return l
 	}
-	path, advise, readErr := bobShellResolve(home, shell)
+	path, advise, readErr := rcResolve(home, shell)
 	l.rcErr, l.rcReadErr = advise, readErr
 	if advise == nil && readErr == nil {
 		l.rcPath = path

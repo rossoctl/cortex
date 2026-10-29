@@ -585,13 +585,19 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 	if err := os.Unsetenv(bobShellEnvVar); err != nil {
 		t.Fatal(err)
 	}
+	// The same for Pi: its agent directory override would point at a real ~/.pi.
+	t.Setenv(piAgentDirEnv, "")
+	t.Setenv(piShellEnvVar, "")
+	if err := os.Unsetenv(piShellEnvVar); err != nil {
+		t.Fatal(err)
+	}
 
-	rows := make([]configureStatus, 0, 4)
+	rows := make([]configureStatus, 0, 5)
 	for _, fn := range configureStatusFuncs() {
 		rows = append(rows, fn(home))
 	}
-	if len(rows) != 4 {
-		t.Fatalf("got %d rows, want 4 — a failing agent dropped its row", len(rows))
+	if len(rows) != 5 {
+		t.Fatalf("got %d rows, want 5 — a failing agent dropped its row", len(rows))
 	}
 	for _, r := range rows {
 		if r.Agent == "" {
@@ -612,7 +618,7 @@ func TestConfigureStatusTable_OneAgentsMissingConfigDoesNotBreakTheTable(t *test
 	// And it renders, rather than only building.
 	var out bytes.Buffer
 	writeConfigureStatusTable(rows, &out)
-	for _, agent := range []string{"claude-code", "bob", "opencode", "codex"} {
+	for _, agent := range []string{"claude-code", "bob", "opencode", "codex", "pi"} {
 		if !strings.Contains(out.String(), agent) {
 			t.Errorf("table omits %q:\n%s", agent, out.String())
 		}

@@ -381,7 +381,7 @@ back.
   ([#1223](https://github.com/rossoctl/cortex/pull/1223)) — and these count in
   `/v1/usage`'s errors.
 - **`X-Session-Id` is a generic name.** Where it is read, by default on a laptop install,
-  traffic from any client that sends it is grouped under its value, Pi (Inflection AI)
-  and similar frameworks among them.
+  traffic from any client that sends it is grouped under its value, Pi (through the
+  extension `agentop configure pi` installs) and similar frameworks among them.
 - **Rows recorded before this release** keep the raw label `opencode/latest/2.0.21/cli`
   and show under `Other` until they age out.

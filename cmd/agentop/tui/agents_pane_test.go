@@ -365,8 +365,8 @@ func TestRebuildAgentsTable_RendersTheUnpricedAgentAsADash(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("rows = %d, want All agents and 2", len(rows))
 	}
-	// Cost is the last column; see newAgentsTable for why it is the widest.
-	const costCol = 3
+	// Cost is the last column while no session names an agent and no router routes.
+	const costCol = 1
 	if got := rows[2][costCol]; got != emptyCell {
 		t.Errorf("unpriced agent's COST cell = %q, want %q — $0.00 would read as free", got, emptyCell)
 	}
@@ -736,5 +736,20 @@ func TestAgentsPane_FailedRefreshKeepsTheTable(t *testing.T) {
 			t.Errorf("%s: want the table and the error, got:\n%s", label, view)
 		}
 		assertFits(t, m, label)
+	}
+}
+
+// COST is the pane's only windowed column, so its title names the window the rows answer for and
+// follows `w`; the title bar alone was too far from the figure.
+func TestAgentsPane_CostTitleNamesTheWindow(t *testing.T) {
+	m := &model{agentsTbl: newAgentsTable()}
+	m.rebuildAgentsTable()
+	if got := m.agentsTbl.Columns()[1].Title; got != "COST TODAY" {
+		t.Errorf("COST title = %q, want %q", got, "COST TODAY")
+	}
+	m.agentsRowsWindow = spendSpanDefs[span7d].window
+	m.rebuildAgentsTable()
+	if got := m.agentsTbl.Columns()[1].Title; got != "COST 7 DAYS" {
+		t.Errorf("COST title after w = %q, want %q", got, "COST 7 DAYS")
 	}
 }

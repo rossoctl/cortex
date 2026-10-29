@@ -259,6 +259,34 @@ func TestParseUserAgent_Codex(t *testing.T) {
 	}
 }
 
+// Pi's User-Agents. The first was captured from Pi 1.4.0; "pi" alone is its "short"
+// identity mode; the third is what releases before 1.4.0 sent.
+//
+// "pi" is two letters, so the negatives matter as much: the first-token match is exact,
+// so a product that merely starts with "pi" stays unrecognised.
+func TestParseUserAgent_Pi(t *testing.T) {
+	for _, tc := range []struct{ ua, name, version string }{
+		{"pi/1.4.0 (darwin; node/v24.3.0; arm64)", "pi", "1.4.0"},
+		{"pi", "pi", ""},
+		{"pi (darwin 25.6.0; arm64)", "pi", ""},
+		{"pip/24.0 (python 3.12)", "", ""},
+		{"pino/9.0", "", ""},
+		{"pi-hole/6.0", "", ""},
+	} {
+		got := ParseUserAgent(tc.ua)
+		if got == nil {
+			t.Fatalf("ParseUserAgent(%q) = nil, want a client", tc.ua)
+		}
+		if got.Name != tc.name || got.Version != tc.version {
+			t.Errorf("ParseUserAgent(%q) = {Name: %q, Version: %q}, want {%q, %q}",
+				tc.ua, got.Name, got.Version, tc.name, tc.version)
+		}
+	}
+	if got := AgentName(ParseUserAgent("pi/1.4.0 (darwin; node/v24.3.0; arm64)").Label()); got != "pi" {
+		t.Errorf("AgentName(Pi's label) = %q, want pi; router pins and the Agents pane key on it", got)
+	}
+}
+
 // Claude Code's three live User-Agents, and which of them is claimed.
 //
 // THE REFERENCE INTEGRATION, which is why the gap here was the expensive one: claude-code was
@@ -357,6 +385,7 @@ func TestIsKnownAgent(t *testing.T) {
 		{"bob", true},
 		{"opencode", true},
 		{"codex", true},
+		{"pi", true},
 		// A product token is not a canonical name: claude-cli is how Claude Code is RECOGNISED.
 		{"claude-cli", false},
 		// Retired spellings are not canonical names either — but AgentName folds them to

@@ -20,8 +20,10 @@ Usage:
   agentop configure codex enable  [--yes] [--env PATH] [--config PATH]
   agentop configure codex disable [--yes] [--env PATH]
   agentop configure codex status  [--env PATH] [--config PATH]
+  agentop configure pi enable | disable [--yes]
+  agentop configure pi status
 
-"agentop configure status" — with no agent name — answers the question the four
+"agentop configure status" — with no agent name — answers the question the five
 per-agent "status" verbs answer one at a time: which harnesses on this machine are
 wired into Cortex. One row per agent, one verdict each, with the detail that verdict
 rests on. There are four verdicts rather than a yes and a no, because a boolean would
@@ -49,13 +51,16 @@ Agents:
   codex          writes the proxy and CA variables into Codex's own ~/.codex/.env,
                  which Codex loads itself at startup. Run
                  "agentop configure codex --help" for the detail.
+  pi             defines a "pi" shell function in your shell's rc file that runs Pi
+                 through Cortex, and installs a Pi extension that sends its session
+                 id. Run "agentop configure pi --help" for the detail.
 
 One verb for every agent, because "how do I point X at Cortex" is the same question
 whatever X is, and the answer used to be spelled differently per agent: a top-level
 "agentop claude-code" for the one agent with a settings file, and nothing at all for
 the ones without.
 
-Four agents persist, by four different mechanisms. Claude Code reads a settings
+Five agents persist, by four different mechanisms. Claude Code reads a settings
 file, so its configuration goes there — it keeps an "env" block. Bob is two faces of
 one agent and persists twice: the editor is a VS Code fork and reads "http.proxy"
 from its settings.json, and on macOS enable also arranges the bridge-CA trust itself
@@ -67,7 +72,8 @@ goes there, through the opencode CLI. Codex has no
 settings file and no background service, but loads a dotenv file, ~/.codex/.env, on
 its own at startup — confirmed against the real Codex CLI — so its configuration goes
 there, scanning the whole file for an existing definition of each key rather than only
-a block agentop wrote itself.
+a block agentop wrote itself. Pi gets a shell function like Bob's, plus a
+fixed extension file in its agent directory.
 
 "agentop claude-code" is the old spelling of "agentop configure claude-code". It still
 works, and prints a notice pointing here.
@@ -132,6 +138,10 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// Codex has no settings file and no background service, but loads a
 		// dotenv file of its own at startup: see cmd_codex.go.
 		return runCodex(args[1:], stdout, stderr)
+	case "pi":
+		// Pi reads its CA only from the environment it starts with, so it gets a
+		// shell function like bob's, plus an extension: see cmd_pi.go.
+		return runPi(args[1:], stdout, stderr)
 	case "opencode":
 		// OpenCode's background service keeps an environment of its own, which is what
 		// made it configurable at all: see cmd_opencode.go.
@@ -140,7 +150,7 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// The named list is the answer to a typo; the usage block after it is the
 		// answer to "what else can this do", which is what someone who guessed an
 		// agent name wrong most likely wanted. Same pairing as the no-argument case.
-		fmt.Fprintf(stderr, "agentop: unknown agent %q (claude-code, bob, codex, opencode)\n", agent)
+		fmt.Fprintf(stderr, "agentop: unknown agent %q (claude-code, bob, codex, opencode, pi)\n", agent)
 		fmt.Fprint(stderr, configureUsage)
 		return 2
 	}

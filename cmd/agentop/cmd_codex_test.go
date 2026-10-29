@@ -645,7 +645,7 @@ func TestConfigureUsage_CodexPersists(t *testing.T) {
 	prose := strings.Join(strings.Fields(configureUsage), " ")
 	for _, want := range []string{
 		`"agentop configure codex --help"`,
-		"Four agents persist, by four different mechanisms.",
+		"Five agents persist, by four different mechanisms.",
 		"loads a dotenv file, ~/.codex/.env, on its own at startup",
 	} {
 		if !strings.Contains(prose, want) {

@@ -208,6 +208,9 @@ func TestResend_BothAttemptsAreRecordedAndPairByRequestID(t *testing.T) {
 	defer backend.Close()
 
 	_, _, store := postVia(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true}, "exo-free")
+	// Two response rows (the refusal and the answer), the second recorded
+	// after the relay — wait for both rather than racing the recording.
+	waitForResponseEventCount(t, store, 2)
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 4 {
 		t.Fatalf("rows = %+v, want request, refusal, re-sent request, answer", v)
@@ -353,7 +356,9 @@ func TestResend_ASecondRoundReachesTheThirdAttempt(t *testing.T) {
 	}
 	// Request, refusal, request, refusal, request, answer: each attempt paired with
 	// its own answer, as TestResend_BothAttemptsAreRecordedAndPairByRequestID checks
-	// for one round.
+	// for one round. Three response rows, the last recorded after the relay —
+	// wait for all three rather than racing the recording.
+	waitForResponseEventCount(t, store, 3)
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 6 {
 		t.Fatalf("rows = %+v, want three requests and three answers", v)

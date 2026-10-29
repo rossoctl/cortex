@@ -376,6 +376,19 @@ var knownClients = map[string]string{
 	// Codex, so claiming it would file every Rust program using that crate under Codex's
 	// name — the mis-mapping this map's godoc calls worse than no answer. It carries no
 	// inference either.
+	//
+	// Pi (pi.dev, earendil-works/pi): "pi/1.4.0 (darwin; node/v24.3.0; arm64)", captured
+	// 2026-10-28 from Pi 1.4.0 on its /v1/chat/completions requests. Its "short" identity
+	// mode sends a bare "pi", which matches too, with no version. Releases before 1.4.0
+	// sent "pi (<platform> <release>; <arch>)", which also matches, as the bare token.
+	// Its session header is session.SessionIDHeader, sent by the extension that `agentop
+	// configure pi` installs.
+	//
+	// NOT CLAIMED: Pi signed in to an Anthropic subscription sends "claude-cli/<version>"
+	// on that path (pi-ai's anthropic-messages.js), so that traffic files under Claude
+	// Code. Telling the two apart needs a signal other than the User-Agent; see
+	// docs/agents/pi.md.
+	"pi": "pi",
 }
 
 // IsKnownAgent reports whether name is the canonical name of a coding agent ParseUserAgent

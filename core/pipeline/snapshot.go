@@ -184,6 +184,21 @@ func DurationSince(start time.Time) time.Duration {
 	return time.Since(start)
 }
 
+// DurationBetween returns to − from, or 0 when either endpoint is zero.
+// For the optional response-side timestamp (ResponseHeadersAt), whose absence
+// means "no headers ever arrived", the zero guard keeps an unset endpoint from
+// publishing a nonsense figure — a negative span against time.Now() would read
+// as a real duration on the row. The inverse of DurationSince: that one spans
+// start-to-now for a figure read at record time, this one spans two recorded
+// moments, which is what SessionEvent.Ttfb is (StartedAt → ResponseHeadersAt,
+// measured when the row is written long after both).
+func DurationBetween(from, to time.Time) time.Duration {
+	if from.IsZero() || to.IsZero() {
+		return 0
+	}
+	return to.Sub(from)
+}
+
 // DeriveError constructs an EventError from response-side signals.
 // Returns nil for 2xx / no guardrail block / no parser error.
 func DeriveError(pctx *Context) *EventError {

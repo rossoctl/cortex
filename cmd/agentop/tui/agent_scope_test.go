@@ -147,7 +147,7 @@ func TestSessionsPane_ScopedTitleAndTheEmptyScope(t *testing.T) {
 func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	m := &model{agentsTbl: newAgentsTable(), agents: []agentRow{{label: "bob-shell/2.0.5"}, {label: "node"}}}
 	m.rebuildAgentsTable()
-	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(), 0)) {
+	if !sameColumns(m.agentsTbl.Columns(), fitTableColumns(agentsColumns(m.agentsWindowLabel()), 0)) {
 		t.Errorf("no session names an agent and the columns changed: %v", m.agentsTbl.Columns())
 	}
 	m.sessions = sessionsFixture()

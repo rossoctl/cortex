@@ -1589,7 +1589,7 @@ func TestConfigureUsage_OpenCodePersists(t *testing.T) {
 	prose := strings.Join(strings.Fields(configureUsage), " ")
 	for _, want := range []string{
 		`"agentop configure opencode --help"`,
-		"Four agents persist, by four different mechanisms.",
+		"Five agents persist, by four different mechanisms.",
 		"OpenCode's background service keeps an environment of its own, so its configuration goes there, through the opencode CLI.",
 	} {
 		if !strings.Contains(prose, want) {

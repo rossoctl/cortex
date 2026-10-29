@@ -27,7 +27,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`cpex`](#cpex) | APL DSL + named [CPEX](https://github.com/contextforge-org/cpex) 0.3 plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA) over a single chain step. | Opt-in | Outbound | No |
 | [`ibac`](#ibac) | LLM-judge intent-based access control for outbound tool calls. | Alpha | Outbound | No |
 | [`inference-parser`](#inference-parser) | Parses LLM completions into `pctx.Extensions.Inference`. | Alpha | Outbound | No |
-| [`inference-router`](#inference-router) | Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on. | Alpha | Outbound | No |
+| [`inference-router`](#inference-router) | Sends each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on until moved. | Alpha | Outbound | No |
 | [`jwt-validation`](#jwt-validation) | Inbound JWT validation (signature, issuer, audience) against JWKS. | Ready | Inbound | YES |
 | [`lineage-telemetry`](#lineage-telemetry) | Emits two facts-only OTel lineage spans per HTTP exchange, parented across pods through one `tracestate` member. | Alpha | Both | No |
 | [`litellm-budget-track`](#litellm-budget-track) | Accumulates the cost record `inference-parser` settles (authoritative where LiteLLM's cost header is present) and enforces a daily budget limit. Place on whichever chain carries LLM traffic — inbound when fronting the LLM endpoint, outbound when hosting an agent via `agentop exec`. | Alpha | Both | No |
@@ -39,6 +39,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`session-budget`](#session-budget) | Enforces per-session token, call, and duration budgets via Redis. | Alpha | Outbound | No |
 | [`token-broker`](#token-broker) | Exchanges incoming tokens against a configured IdP via a broker service. | Alpha | Outbound | No |
 | [`token-exchange`](#token-exchange) | RFC 8693 outbound token exchange per route. | Ready | Outbound | YES |
+| [`token-exchange-aiac`](#token-exchange-aiac) | Outbound token exchange with no routes: the audience comes from the destination host, and Keycloak decides which hosts are targets. | Alpha | Outbound | No |
 | [`tool-prune`](#tool-prune) | Removes unused tool definitions from inference requests. | Alpha | Outbound | No |
 
 ## `a2a-parser`
@@ -205,6 +206,16 @@ interface each IdP implements, see
 [idp-plugin-contract.md](./idp-plugin-contract.md).
 
 Full reference: [`token-exchange-plugin.md`](token-exchange-plugin.md).
+
+## `token-exchange-aiac`
+
+Outbound token exchange that needs no routes. The audience comes from the
+in-cluster destination host through `audience_template`. Keycloak issuing a
+token means exchange; "Audience not found" means passthrough; any other answer
+means deny. An alternative to [`token-exchange`](#token-exchange), not a
+complement; its reference covers the Keycloak setup it requires.
+
+Full reference: [`token-exchange-aiac-plugin.md`](token-exchange-aiac-plugin.md).
 
 ## `script`
 

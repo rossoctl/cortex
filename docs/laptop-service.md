@@ -37,6 +37,51 @@ agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
 one process; systemd handles it.
 
+## Linux: staying up after you log out
+
+On Linux, Cortex is a systemd **user** unit, which runs under your own systemd
+manager. That manager normally starts at login and stops when your last session ends,
+taking Cortex with it. **Lingering** keeps it running with nobody logged in, and
+starts it at boot. Setup turns it on for you, which on a headless or SSH-only box is
+what keeps Cortex up between logins.
+
+Turning lingering on for yourself needs **polkit**. logind asks polkit whether you
+may, and systemd's own policy says yes, with no password. But that policy is applied
+by `polkitd`, a separate package, and a minimal install can lack it — Debian with
+only the SSH server, for one. Without it logind has no one to ask and refuses, and
+setup says so:
+
+```text
+loaded, but lingering could not be turned on: Cortex will stop when you log out.
+  loginctl enable-linger: Could not enable linger: Access denied
+  polkit is not installed, and logind needs it to let a user turn lingering on.
+```
+
+Cortex is still installed and running; it just stops at your next logout. Either fix
+works, and neither needs Cortex reinstalled:
+
+```sh
+# Install polkit, then turn lingering on for yourself
+sudo apt install polkitd      # Debian and Ubuntu; on Fedora, Arch and others the package is polkit
+loginctl enable-linger
+
+# Or turn it on directly, as root
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Re-running `agentop setup` after installing polkit is not enough: setup finds Cortex
+installed and healthy, changes nothing, and does not retry lingering.
+
+When polkit *is* installed and still refuses, the system's policy has decided users may
+not keep services running, and setup says that instead; only the root fix applies. Any
+other failure, after polkit has said yes, is shown in loginctl's own words, again with
+only the root fix. Check where you stand with
+`loginctl show-user "$(id -un)" --property=Linger`.
+
+Setup records that it turned lingering on, and `agentop uninstall` turns it back off
+only then. Lingering you turned on yourself, by either fix above, is left on when you
+uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
+
 ## Re-running the installer is safe
 
 The one-liner is how you upgrade, so it is meant to be run repeatedly. When nothing has
@@ -119,8 +164,8 @@ and the source session's for a fork, so a subagent or fork is filed under the se
 belongs to, as Claude Code's subagents are. Cortex reads `X-Session-Id` on a laptop
 install: it is in the list the installer writes, and in the built-in default wherever
 every listener binds loopback (`listener.bind_loopback_only`). A cluster deployment's
-default does not read it, because it is a generic name as well, which Pi (Inflection AI)
-and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
+default does not read it, because it is a generic name as well, which Pi (through the
+extension `agentop configure pi` installs) and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
 session's own id, which is not read. Traffic that carries no such header is filed by the
 process that sent it (see below), and where that has no answer falls back to the previous
 behavior — the most recently active session, or the `default` bucket. In practice
@@ -745,7 +790,7 @@ The other reasons you may see, and what each one asks of you:
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
-| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. | check the destination and the network path to it |
+| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
 
 Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
 `program-refused` when the earlier failure it remembers was one. The others are either

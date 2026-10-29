@@ -20,7 +20,7 @@ has a dedicated reference doc there (`docs/<name>-plugin.md`).
 | `a2a-parser` | Parse Agent-to-Agent JSON-RPC traffic into `Extensions.A2A` |
 | `mcp-parser` | Parse Model Context Protocol traffic into `Extensions.MCP` |
 | `inference-parser` | Parse OpenAI chat completions, Anthropic Messages and OpenAI Responses inference traffic into `Extensions.Inference`, and price the finished response |
-| `inference-router` | Send each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on |
+| `inference-router` | Send each coding agent's new sessions to the inference server chosen for it; a session stays on the server it started on until moved |
 | `ibac` | Outbound Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's most recent intent. Catches prompt-injection / data-exfiltration attempts |
 | `opa` | OPA policy evaluation on inbound and outbound requests via bundle download |
 | `tool-prune` | Remove unused tool definitions from the outbound inference manifest |

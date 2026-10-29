@@ -91,6 +91,10 @@ func TestRenderUnit_BothPlatforms(t *testing.T) {
 		if !strings.Contains(u, "<key>ExitTimeOut</key><integer>5</integer>") {
 			t.Error("ExitTimeOut is missing or not 5; a stop relies on launchd's unstated default")
 		}
+		// Background would throttle every request an agent sends through the proxy.
+		if strings.Contains(u, "ProcessType") {
+			t.Error("ProcessType is set; Background confines the proxy to the efficiency cores")
+		}
 	})
 
 	t.Run("linux restarts on failure only", func(t *testing.T) {

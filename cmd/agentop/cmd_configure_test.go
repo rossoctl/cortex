@@ -179,7 +179,7 @@ func TestConfigure_BobShellIsRetiredNotAnAlias(t *testing.T) {
 	if !strings.Contains(errb.String(), "unknown agent \"bobshell\"") {
 		t.Errorf("stderr does not name the spelling as unknown: %q", errb.String())
 	}
-	if !strings.Contains(errb.String(), "(claude-code, bob, codex, opencode)") {
+	if !strings.Contains(errb.String(), "(claude-code, bob, codex, opencode, pi)") {
 		t.Errorf("stderr does not list the current agents: %q", errb.String())
 	}
 }

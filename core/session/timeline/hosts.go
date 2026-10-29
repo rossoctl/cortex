@@ -7,8 +7,9 @@ import (
 )
 
 // buildHosts pairs each outbound request with its response by RequestID. A request with no
-// response is left open, which is honest for one in flight and for one whose stream died.
-func buildHosts(t *Timeline, events []pipeline.SessionEvent, now time.Time) {
+// response is left open, which is honest for one in flight and for one whose stream died, until
+// LoseUnanswered ages it out.
+func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
 	open := map[string]int{}
 	// A tunnel the proxy recorded a close for stayed opaque; a bridged one records none.
 	closed := map[string]bool{}
@@ -79,18 +80,6 @@ func buildHosts(t *Timeline, events []pipeline.SessionEvent, now time.Time) {
 		}
 	}
 	settle(nil)
-	// A request with no response is in flight only while it is recent. Measured against the
-	// later of the session's newest event and now, so a hung request that is itself the
-	// session's last event still ages out.
-	ref := t.End
-	if now.After(ref) {
-		ref = now
-	}
-	for i := range t.Hosts {
-		if h := &t.Hosts[i]; h.End == nil && h.Host != "" && ref.Sub(h.Start) > hostLostAfter {
-			loseHost(h)
-		}
-	}
 	kept := t.Hosts[:0]
 	for _, h := range t.Hosts {
 		if h.Host != "" {

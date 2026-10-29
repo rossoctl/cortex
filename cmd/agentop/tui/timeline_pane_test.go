@@ -26,9 +26,9 @@ func tlPtr(sec float64) *time.Time {
 
 // sampleTimeline is a 30-minute session. The main agent works (model, then Bash), spawns a
 // subagent and waits on it until its result wakes main at 600s, fails a call at 900s and retries
-// at 960s, finishes a reply at 1200s and waits on the user until 1500s. The subagent runs
-// 300-580s: model, then three Reads in one burst. One LLM host carries two overlapping calls, a
-// tunnel goes to github, and one request was refused.
+// it at 960s with the same conversation, finishes a reply at 1200s and waits on the user until
+// 1500s. The subagent runs 300-580s: model, then three Reads in one burst. One LLM host carries
+// two overlapping calls, a tunnel goes to github, and one request was refused.
 func sampleTimeline() *timeline.Timeline {
 	return &timeline.Timeline{
 		ID: "sess-1", LastSeq: 60, Start: tlAt(0), End: tlAt(1800),
@@ -41,7 +41,7 @@ func sampleTimeline() *timeline.Timeline {
 			{Agent: timeline.MainAgent, Start: tlAt(0), End: tlPtr(200), Finish: "tool_use", Seq: 1},
 			{Agent: timeline.MainAgent, Start: tlAt(290), End: tlPtr(300), Finish: "end_turn", Seq: 5},
 			{Agent: timeline.MainAgent, Start: tlAt(600), End: tlPtr(900), Error: true, Seq: 20},
-			{Agent: timeline.MainAgent, Start: tlAt(960), End: tlPtr(1200), Finish: "end_turn", Seq: 30},
+			{Agent: timeline.MainAgent, Start: tlAt(960), End: tlPtr(1200), Finish: "end_turn", Resent: true, Seq: 30},
 			{Agent: timeline.MainAgent, Start: tlAt(1500), End: tlPtr(1800), Finish: "end_turn", Seq: 40},
 			{Agent: "a1", Start: tlAt(300), End: tlPtr(500), Finish: "tool_use", Seq: 7},
 			{Agent: "a1", Start: tlAt(560), End: tlPtr(580), Finish: "end_turn", Seq: 15},
@@ -111,6 +111,19 @@ func TestTimelineLayout_MainRowSharesEachState(t *testing.T) {
 			!near(got.subs, tc.want.subs) || !near(got.user, tc.want.user) {
 			t.Errorf("%s at %vs: %+v, want %+v", tc.name, tc.sec, got, tc.want)
 		}
+	}
+}
+
+// A failed call followed by a new message is not a retry: a refusal the user answered by
+// rephrasing re-sends nothing.
+func TestTimelineLayout_FailedCallThenNewMessageIsNotRetry(t *testing.T) {
+	tl := sampleTimeline()
+	for i := range tl.Turns {
+		tl.Turns[i].Resent = false
+	}
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 60, tlAt(3600))
+	if got := lay.agents[0].cells[cellOf(t, lay, 930)]; got.retry != 0 {
+		t.Errorf("gap after a failed call with no re-send: %+v, want no retry share", got)
 	}
 }
 
@@ -590,7 +603,7 @@ func TestTimelinePane_FitsEverySize(t *testing.T) {
 	m := timelineModel(t, 80, 24)
 	m.timeline.tl = many
 	m.layout()
-	if !strings.Contains(stripANSI(m.View()), "more agents") {
+	if !strings.Contains(stripANSI(m.View()), "agents below") {
 		t.Errorf("at 80x24 the hidden agents are not counted")
 	}
 }
@@ -895,5 +908,384 @@ func TestTimelinePane_FitsWithOneSideEmpty(t *testing.T) {
 			m.layout()
 			assertFits(t, m, name)
 		}
+	}
+}
+
+// [↑↓] is advertised only when some agent rows do not fit.
+func TestTimelineFooter_ScrollHintOnlyWhenRowsAreHidden(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	m.layout()
+	if strings.Contains(m.helpView(), "[↑↓]") {
+		t.Errorf("every agent fits, yet the footer offers [↑↓]: %q", m.helpView())
+	}
+	many := sampleTimeline()
+	for i := 0; i < 20; i++ {
+		id := string(rune('b' + i))
+		many.Agents = append(many.Agents, timeline.Agent{ID: id, Parent: timeline.MainAgent, Label: "subagent " + id})
+	}
+	m.timeline.tl, m.timeline.layoutKey = many, tlLayoutKey{}
+	if !strings.Contains(m.helpView(), "[↑↓] rows") {
+		t.Errorf("rows are hidden, yet the footer does not offer [↑↓]: %q", m.helpView())
+	}
+}
+
+// laterSession is sampleTimeline plus a turn a day after it, so "all" collapses the stretch
+// between them into a gap.
+func laterSession(after timeline.Turn) *timeline.Timeline {
+	tl := sampleTimeline()
+	late := tlAt(1800).Add(26 * time.Hour)
+	lateEnd := late.Add(5 * time.Minute)
+	tl.Turns = append(tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: late, End: &lateEnd, Finish: "end_turn", Seq: 50})
+	tl.End = lateEnd
+	return tl
+}
+
+func gapMarker(t *testing.T, lay tlLayout) int {
+	t.Helper()
+	for c, cell := range lay.axis.cells {
+		if cell.marker {
+			return c
+		}
+	}
+	t.Fatal("no gap on the axis")
+	return -1
+}
+
+// A collapsed gap's marker carries the state that held the stretch: a day after a finished reply
+// is waiting on the user, and the marker is drawn in that colour, not as bare idle.
+func TestTimelineGap_MarkerCarriesItsState(t *testing.T) {
+	forceColor(t)
+	tl := laterSession(timeline.Turn{})
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, tl.End)
+	c := gapMarker(t, lay)
+	if got := lay.agents[0].cells[c]; !near(got.user, 1) {
+		t.Fatalf("gap cell = %+v, want the whole stretch waiting on the user", got)
+	}
+	m := timelineModel(t, 140, 46)
+	user, muted := lipgloss.NewStyle().Foreground(colorTLUser).Render("┆"), styleMuted.Render("┆")
+	if line := m.agentLine(lay.agents[0], lay); !strings.Contains(line, user) {
+		t.Errorf("main row %q does not draw its marker in the waiting-on-you colour", line)
+	}
+	// The subagent was not alive across the gap, so its marker stays muted.
+	if line := m.agentLine(lay.agents[1], lay); !strings.Contains(line, muted) || strings.Contains(line, user) {
+		t.Errorf("subagent row %q, want its marker muted", line)
+	}
+}
+
+// A failed request inside a collapsed gap marks the host's gap marker rather than vanishing.
+func TestTimelineGap_HostErrorInTheGapShows(t *testing.T) {
+	tl := laterSession(timeline.Turn{})
+	at := tlAt(1800).Add(3 * time.Hour)
+	tl.Hosts = append(tl.Hosts, timeline.Host{Host: "llm.example", Kind: timeline.KindLLM, Start: at, End: &at, Status: 502, Error: true, Seq: 45})
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, tl.End)
+	c := gapMarker(t, lay)
+	for _, r := range lay.hosts {
+		if r.host == "llm.example" && !r.err[c] {
+			t.Errorf("the 502 three hours into the gap is not on the gap's marker")
+		}
+	}
+}
+
+// After a call cut mid-stream, the agent is retrying until the last failed request to its model
+// host, then waiting on the user, who had to act; not hours of retrying.
+func TestTimelineWaits_RetryEndsAtTheLastFailureThenWaitsOnYou(t *testing.T) {
+	tl := sampleTimeline()
+	// The 900s turn failed; failed requests to its host follow at 910s and 930s, and the next
+	// call at 960s is a fresh conversation, not a re-send.
+	tl.Turns[3].Resent = false
+	tl.Hosts = append(tl.Hosts,
+		timeline.Host{Host: "llm.example", Kind: timeline.KindLLM, Start: tlAt(600), End: tlPtr(900), Status: 200, Seq: 20},
+		timeline.Host{Host: "llm.example", Kind: timeline.KindTunnel, Start: tlAt(910), End: tlPtr(911), Status: 502, Error: true, Seq: 21},
+		timeline.Host{Host: "llm.example", Kind: timeline.KindTunnel, Start: tlAt(930), End: tlPtr(931), Status: 502, Error: true, Seq: 22})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600)) // 10s cells
+	main := lay.agents[0]
+	if c := main.cells[cellOf(t, lay, 915)]; !near(c.retry, 1) {
+		t.Errorf("between the failures: %+v, want retrying", c)
+	}
+	if c := main.cells[cellOf(t, lay, 945)]; !near(c.user, 1) {
+		t.Errorf("after the last failure: %+v, want waiting on the user", c)
+	}
+}
+
+// A call that re-sent the conversation unchanged makes the whole gap before it retrying.
+func TestTimelineWaits_ResentCallMakesTheGapRetrying(t *testing.T) {
+	tl := sampleTimeline() // the 960s call re-sends the 600s call's conversation
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 950)]; !near(c.retry, 1) {
+		t.Errorf("just before the re-send: %+v, want retrying", c)
+	}
+}
+
+// Time on the main row nothing else explains is waiting on the user; time after a tool that lost
+// its result is not claimed.
+func TestTimelineWaits_MainDefaultsToYouExceptAfterALostTool(t *testing.T) {
+	tl := sampleTimeline()
+	// A main turn that ends on tool_use, whose Bash was lost, then a gap until 1500s.
+	tl.Turns[4] = timeline.Turn{Agent: timeline.MainAgent, Start: tlAt(960), End: tlPtr(1200), Finish: "tool_use", Seq: 30}
+	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "lost", Name: "Bash", Start: tlAt(1200), End: tlPtr(1200), Lost: true, Seq: 31})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1350)]; c.total() != 0 {
+		t.Errorf("after a lost tool: %+v, want unclaimed", c)
+	}
+	tl.Tools = tl.Tools[:len(tl.Tools)-1]
+	lay = buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1350)]; !near(c.user, 1) {
+		t.Errorf("after a tool_use turn with nothing running: %+v, want waiting on the user", c)
+	}
+}
+
+// A background job the main agent left running is waiting on subagents, not on the user.
+func TestTimelineWaits_BackgroundJobIsNotTheUsersTime(t *testing.T) {
+	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
+	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1190), End: tlPtr(1400), Seq: 29}}
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.subs, 1) {
+		t.Errorf("while the job ran: %+v, want waiting on subagents", c)
+	}
+	if c := lay.agents[0].cells[cellOf(t, lay, 1450)]; !near(c.user, 1) {
+		t.Errorf("after the job's notification: %+v, want waiting on the user", c)
+	}
+}
+
+// A first fetch that times out is retried on a backoff and drawn as loading, a refresh never
+// hammers a dead proxy, and an old proxy's 404 is never retried.
+func TestTimelineRefresh_FailedFetchIsRetriedOnABackoff(t *testing.T) {
+	m := timelineModel(t, 120, 40)
+	m.client = deadClient()
+	m.timeline.tl = nil
+	m.timeline.tickGen, m.timeline.reqSeq = 1, 3
+	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: errors.New("context deadline exceeded")})
+	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "retrying in 1s") {
+		t.Errorf("after a failed first fetch: %q, want it shown as retrying", out)
+	}
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if m.timeline.loading {
+		t.Errorf("refetched before the backoff ran out")
+	}
+	at := tlAt(7200).Add(time.Second)
+	m.now = func() time.Time { return at }
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if !m.timeline.loading {
+		t.Fatalf("not refetched after the backoff")
+	}
+	m.handleTimelineLoaded(timelineLoadedMsg{req: m.timeline.reqSeq, err: errors.New("again")})
+	if got := m.timeline.retryAt.Sub(at); got != 2*time.Second {
+		t.Errorf("second backoff = %v, want 2s", got)
+	}
+	if got := timelineRetryAfter(20); got != timelineRetryCap {
+		t.Errorf("backoff after 20 failures = %v, want the cap", got)
+	}
+	m.handleTimelineLoaded(timelineLoadedMsg{req: m.timeline.reqSeq, tl: sampleTimeline()})
+	if m.timeline.fails != 0 || !m.timeline.retryAt.IsZero() {
+		t.Errorf("a good load left the backoff: %d %v", m.timeline.fails, m.timeline.retryAt)
+	}
+
+	// An old proxy is not retried.
+	m = timelineModel(t, 120, 40)
+	m.client = deadClient()
+	m.timeline.tl, m.timeline.err, m.timeline.tickGen = nil, errTimelineUnsupported, 1
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if m.timeline.loading {
+		t.Errorf("an old proxy's 404 was retried")
+	}
+
+	// A live session whose refresh fails waits out its backoff, though its idle refresh is due.
+	m = timelineModel(t, 120, 40)
+	m.client = deadClient()
+	live := tlAt(1800).Add(30 * time.Second)
+	m.now = func() time.Time { return live }
+	m.timeline.fetchedAt, m.timeline.tickGen, m.timeline.reqSeq = live.Add(-timelineIdleRefresh), 1, 3
+	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: errors.New("refused")})
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if m.timeline.loading {
+		t.Errorf("a failing live refresh was retried on the next tick, not after its backoff")
+	}
+}
+
+// The first fetch of a visit gets the long deadline; a refresh the short one.
+func TestTimelineFetch_FirstLoadWaitsLonger(t *testing.T) {
+	if timelineFirstReadTimeout <= timelineReadTimeout {
+		t.Fatalf("first-load deadline %v is not longer than a refresh's %v", timelineFirstReadTimeout, timelineReadTimeout)
+	}
+}
+
+// ↓ scrolls the agent rows until the last is in view, then the host rows, so every host can be
+// reached; the hints count what is above and below, and ↵ only opens what is on screen.
+func TestTimelineKeys_ArrowsReachHiddenHosts(t *testing.T) {
+	m := timelineModel(t, 140, 24)
+	m.timeline.windowIdx = 3
+	tl := sampleTimeline()
+	for i := 0; i < 15; i++ {
+		h := "h" + string(rune('a'+i)) + ".example"
+		tl.Hosts = append(tl.Hosts, timeline.Host{Host: h, Kind: timeline.KindHTTP, Start: tlAt(float64(1000 + i)), End: tlPtr(float64(1000 + i)), Seq: uint64(200 + i)})
+	}
+	m.timeline.tl, m.timeline.layoutKey = tl, tlLayoutKey{}
+	lay, _ := m.timelineLayoutNow()
+	if m.timelineScrollMax(lay) == 0 {
+		t.Fatal("every host fits; the test needs hidden ones")
+	}
+	if out := stripANSI(m.View()); !strings.Contains(out, "hosts below") || strings.Contains(out, "ho.example") {
+		t.Fatalf("before scrolling: want hidden hosts counted and the last not drawn")
+	}
+	for i := 0; i < m.timelineScrollMax(lay)+3; i++ {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "ho.example") {
+		t.Errorf("after scrolling down, the last host is still hidden")
+	}
+	if !strings.Contains(out, "hosts above") || strings.Contains(out, "hosts below") {
+		t.Errorf("at the bottom, the hint does not say the rest are above")
+	}
+	if m.timeline.scroll != m.timelineScrollMax(lay) {
+		t.Errorf("↓ past the end left scroll at %d, want it held at %d", m.timeline.scroll, m.timelineScrollMax(lay))
+	}
+	// A shrink (a window change, a resize) can leave scroll past what is hidden now; one ↑ must
+	// still move the view.
+	m.timeline.scroll = m.timelineScrollMax(lay) + 5
+	m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if m.timeline.scroll != m.timelineScrollMax(lay)-1 {
+		t.Errorf("↑ from past the end moved to %d, want %d", m.timeline.scroll, m.timelineScrollMax(lay)-1)
+	}
+	// llm.example scrolled out of view: ↵ on its cell does not open it.
+	m.timeline.scroll = m.timelineScrollMax(lay)
+	m.timeline.cursor = cellOf(t, lay, 0)
+	for _, r := range m.visibleHostRows(lay) {
+		if r.host == "llm.example" {
+			t.Fatal("llm.example is still on screen")
+		}
+	}
+	if seq, ok := m.timelineCursorSeq(); ok && seq == 1 && len(m.visibleAgentRows(lay)) == 0 {
+		t.Errorf("↵ opened a hidden host's request")
+	}
+}
+
+// A cell a tool was still running through lists that tool as running since its start, and ↵
+// opens it; a tool that started in the cell comes first.
+func TestTimelineStrip_ListsAToolStillRunning(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	lay, _ := m.timelineLayoutNow()
+	m.timeline.cursor = cellOf(t, lay, 250) // main's Bash runs 200-290s
+	strip := stripANSI(m.cursorStrip(lay))
+	if !strings.Contains(strip, "Bash") || !strings.Contains(strip, "since") {
+		t.Errorf("strip = %q, want the running Bash marked since its start", strip)
+	}
+	if seq, ok := m.timelineCursorSeq(); !ok || seq != 2 {
+		t.Errorf("↵ = %d %v, want the running Bash (seq 2)", seq, ok)
+	}
+	// A Read starting in the same cell, while the Bash runs on, is listed first, and ↵ opens it.
+	cell := lay.axis.cells[cellOf(t, lay, 250)]
+	m.timeline.tl.Tools = append(m.timeline.tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "rd", Name: "Read",
+		Start: cell.from.Add(time.Second), End: tlPtr(260), Preview: "/c.go", Seq: 3})
+	m.timeline.layoutKey = tlLayoutKey{}
+	lay, _ = m.timelineLayoutNow()
+	strip = stripANSI(m.cursorStrip(lay))
+	if i, j := strings.Index(strip, "/c.go"), strings.Index(strip, "since"); i < 0 || j < 0 || j < i {
+		t.Errorf("strip = %q, want the Read that started here before the Bash still running", strip)
+	}
+	if seq, ok := m.timelineCursorSeq(); !ok || seq != 3 {
+		t.Errorf("↵ = %d %v, want the Read that started here (seq 3)", seq, ok)
+	}
+}
+
+// A cell with no tool names the request ↵ would open rather than saying nothing happened.
+func TestTimelineStrip_NamesTheRequestWhenNoToolRan(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	lay, _ := m.timelineLayoutNow()
+	m.timeline.cursor = cellOf(t, lay, 5) // main's first model call: no tool yet, one request
+	strip := stripANSI(m.cursorStrip(lay))
+	if !strings.Contains(strip, "llm.example") {
+		t.Errorf("strip = %q, want the request named", strip)
+	}
+	if seq, ok := m.timelineCursorSeq(); !ok || seq != 1 {
+		t.Errorf("↵ = %d %v, want llm.example's request (seq 1)", seq, ok)
+	}
+}
+
+// A live session's "all" runs to now, as its other windows do: the wait after its last reply is
+// drawn as waiting on the user, not cut off at the reply.
+func TestTimelineAll_LiveSessionRunsToNow(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	live := tlAt(1800).Add(10 * time.Minute) // the last reply ended at 1800s; live for 30 minutes
+	m.now = func() time.Time { return live }
+	m.timeline.fetchedAt, m.timeline.windowIdx = live, 3
+	lay, _ := m.timelineLayoutNow()
+	if !lay.to.Equal(live) {
+		t.Fatalf("all ends at %v, want now %v", lay.to.Sub(tlBase), live.Sub(tlBase))
+	}
+	last := lay.agents[0].cells[lay.axis.width()-1]
+	if lay.axis.cells[lay.axis.width()-1].gap || !near(last.user, 1) {
+		t.Errorf("the newest cell = %+v, want waiting on the user", last)
+	}
+}
+
+// A live wait is drawn to scale while short; once it would take more than timelineTailCells, it
+// is squeezed into them and labelled with its length, so the work keeps the width.
+func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
+	for _, tc := range []struct {
+		after  time.Duration
+		capped bool
+	}{{20 * time.Second, false}, {25 * time.Minute, true}} {
+		m := timelineModel(t, 140, 46)
+		live := tlAt(1800).Add(tc.after)
+		m.now = func() time.Time { return live }
+		m.timeline.fetchedAt, m.timeline.windowIdx = live, 3
+		lay, _ := m.timelineLayoutNow()
+		w := lay.axis.width()
+		if !lay.axis.cells[w-1].to.Equal(live) || !near(lay.agents[0].cells[w-1].user, 1) {
+			t.Errorf("%v on: the newest cell does not end at now waiting on the user", tc.after)
+		}
+		tailCells := lay.axis.cellsFrom(tlAt(1800))
+		if tc.capped && (tailCells != timelineTailCells || lay.axis.tail != timelineTailCells) {
+			t.Errorf("%v on: the wait takes %d cells (tail %d), want %d", tc.after, tailCells, lay.axis.tail, timelineTailCells)
+		}
+		if !tc.capped && (tailCells > timelineTailCells || lay.axis.tail != 0) {
+			t.Errorf("%v on: a short wait took %d cells (tail %d), want it drawn to scale", tc.after, tailCells, lay.axis.tail)
+		}
+		if label := axisLabels(lay); tc.capped != strings.Contains(label, "+"+tlDuration(tc.after)) {
+			t.Errorf("%v on: axis %q, want the squeezed wait labelled only when squeezed", tc.after, label)
+		}
+	}
+}
+
+// A question the agent put to the user is the user's time: grey, not amber, and kept out of the
+// row's tool total.
+func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
+	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
+	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1200), End: tlPtr(1500), Seq: 35})
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.user, 1) || c.tool != 0 {
+		t.Errorf("while the question waited: %+v, want waiting on the user", c)
+	}
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if got, want := lay.agents[0].toolTime, without.agents[0].toolTime; got != want {
+		t.Errorf("tool time = %s, want %s: the question is not tool time", got, want)
+	}
+
+	// At "all", a question left overnight collapses like any other wait on the user, so the work
+	// keeps the width; and one still open is the live wait's capped tail.
+	overnight := func(ask bool) *timeline.Timeline {
+		tl := sampleTimeline()
+		if ask {
+			tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), End: tlPtr(1800 + 7*3600), Seq: 45})
+		}
+		tl.Turns = append(tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: tlAt(1800 + 7*3600), End: tlPtr(1800 + 7*3600 + 60), Finish: "end_turn", Seq: 50})
+		tl.End = tlAt(1800 + 7*3600 + 60)
+		return tl
+	}
+	work := func(tl *timeline.Timeline) int {
+		ax := buildTimelineLayout(tl, time.Time{}, time.Time{}, 180, tl.End.Add(time.Hour)).axis
+		return ax.width() - ax.cellsFrom(tlAt(1800))
+	}
+	if got, want := work(overnight(true)), work(overnight(false)); got != want {
+		t.Errorf("at all, the work before an overnight question got %d cells, want %d as before a plain wait", got, want)
+	}
+	open := sampleTimeline()
+	open.Tools = append(open.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), Seq: 45})
+	if ax := buildTimelineLayout(open, time.Time{}, tlAt(1800+7*3600), 180, tlAt(1800+7*3600)).axis; ax.tail != timelineTailCells {
+		t.Errorf("an open question's wait has tail %d, want the capped %d", ax.tail, timelineTailCells)
 	}
 }

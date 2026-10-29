@@ -3,7 +3,7 @@
 Sends a coding agent's new sessions to the inference server chosen for it — a
 LiteLLM gateway or a local model server such as Ollama, with its own URL and key —
 and keeps every session on the
-server it started on, wherever the agent addressed its requests: its provider,
+server it started on until you move it (see **Moving a running session**), wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
 beyond going through the proxy. Routing is opt-in per agent: an agent not listed
 under `agents` is not routed, and its requests go where it sent them, keys untouched. Manage it
@@ -122,7 +122,8 @@ decides:
 - Not routed: `skip/not_routed`, and the request goes where the client sent it, its key
   untouched. Its body changes only for a moved session (see Reasoning).
 - Pinned to a server since removed: `deny/pinned_server_removed`, a 503 asking for
-  a new session. The conversation is never moved to another server.
+  a new session. The router never moves the conversation on its own; a
+  `sessions:` entry can move it.
 - Otherwise the request is redirected to the server, and the key is replaced only
   once the redirect has taken effect, so it goes to the server and nowhere else.
   Every routed request is redirected, even one that already names the server's

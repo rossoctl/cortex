@@ -41,7 +41,7 @@ var allProfiles = []ProfileName{
 //
 //	local     desktop cortex — the three parsers, tool-prune and script
 //	full      authbridge image, Kubernetes proxy-sidecar, release tarballs,
-//	          make dev-install — all fifteen
+//	          make dev-install — all sixteen
 //	lite      authbridge-lite image — sidecar minimum
 //	envoy     authbridge-envoy image
 //	cpex      authbridge-cpex image
@@ -70,8 +70,11 @@ var membership = map[PluginName][]ProfileName{
 	"inferencerouter": {ProfileFull, ProfileFullCpex},
 
 	// The credential and identity plugins lite exists for, plus budget tracking.
-	"jwtvalidation":       {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
-	"tokenexchange":       {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
+	"jwtvalidation": {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
+	"tokenexchange": {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
+	// The route-free alternative to tokenexchange, so it ships wherever that does.
+	// Linked is not active: it changes no traffic until a pipeline names it.
+	"tokenexchangeaiac":   {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
 	"litellm_budgettrack": {ProfileFull, ProfileFullCpex, ProfileLite},
 	"staticinject":        {ProfileFull, ProfileFullCpex, ProfileLite},
 

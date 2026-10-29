@@ -121,6 +121,9 @@ func configureStatusFuncs() []func(home string) configureStatus {
 		func(home string) configureStatus {
 			return codexState(defaultCodexEnvPath(home), filepath.Join(home, cortexCfgRel))
 		},
+		func(home string) configureStatus {
+			return piState(home, os.Getenv("SHELL"))
+		},
 	}
 }
 

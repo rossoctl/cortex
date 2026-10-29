@@ -211,6 +211,7 @@ claude-code   enabled       ~/.claude/settings.json
 bob           uncertain     editor: ~/Library/.../IBM Bob/User does not exist, so IBM Bob has not run here; shell: CORTEX_BOBSHELL is unset in this shell
 opencode      uncertain     opencode not found on PATH or in ~/.opencode/bin
 codex         not enabled   no Cortex values in ~/.codex/.env
+pi            not enabled   extension: missing; shell: no pi function in ~/.zshrc
 
 For the detail on one of them: agentop configure <harness> status
 ```
@@ -579,6 +580,21 @@ applies the change. Everything else — undo by hand, CA trust, the record
 file, verified depth, known issues — is in
 [opencode.md](../../docs/agents/opencode.md).
 
+## Routing Pi through Cortex (`agentop configure pi`)
+
+```sh
+agentop configure pi enable    # a pi shell function, plus Pi's session extension
+agentop configure pi disable   # remove both
+agentop configure pi status    # which of the two is in place
+```
+
+The shell function runs `agentop exec -- pi`, because Pi reads the bridge CA only
+from `NODE_EXTRA_CA_CERTS` at startup. The extension,
+`~/.pi/agent/extensions/cortex-session.ts`, sends Pi's session id as `x-session-id`,
+which Pi does not send on its own. `enable` and `disable` take `[--yes]`. Both
+pieces are fixed text, so a file or block agentop did not write is left alone and
+reported. Everything else is in [pi.md](../../docs/agents/pi.md).
+
 ## Installing a bundled script plugin (`agentop script`)
 
 Cortex ships some [script plugins](../../docs/script-plugin.md#bundled-scripts)
@@ -608,7 +624,8 @@ with its own URL and key, `agentop server`
 chooses which one an agent's **new** sessions use, through the
 [`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
 session stays on the server it started on, including one already running when its
-agent is first routed. Routing is opt-in per agent: until an agent is given
+agent is first routed, until you move it with `agentop server move` or `S` on the
+sessions pane. Routing is opt-in per agent: until an agent is given
 a server, its traffic goes where the agent sends it. Once it is given one, its
 inference goes to that server wherever the agent addressed it — Anthropic,
 OpenCode Zen, Bob's gateway, or another server — so the agent needs no setting of
@@ -666,10 +683,12 @@ refusal is believed for an hour, and a session keeps the model it was given.
   including an agent that has not run yet. **`reset --agent <agent>`** stops
   routing it. Either way a session already running stays where it is: its pin holds
   it, kept in `~/.cortex/plugin-state.json` so a proxy restart forgets none.
+  **`move <session-id> <name>`** moves one running session; `own` sends it back to
+  its agent's own provider.
 - **`remove <name>`** refuses while an agent is routed to the server, and names
   the command that takes the agent off it; it also refuses the last server. A
   session that started on a removed server gets a 503 asking for a new session
-  until the server is added back. So when
+  until the server is added back or the session is moved. So when
   sessions the proxy is running last sent their inference to the server, `remove`
   warns how many before it goes ahead. It leaves
   out the default and `pending:` buckets, which the router never pins.
@@ -730,7 +749,8 @@ so their `--main` and
 `--helper` never come into play; LM Studio with nothing loaded refuses in words the
 router does not read. A prompt larger than the server's window is trimmed by Ollama
 rather than refused, so set its context length above the agent's prompts: Claude
-Code's opening turn can pass 64k tokens, Bob's is around 10k.
+Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
+less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
 
 ## Panes
 
@@ -763,8 +783,8 @@ agentop is for, and the other four are surfaces you visit and leave.
   server each session's inference traffic last went to, which for a session that
   was running when its agent was switched is still the one it started on. A host no
   server has, such as an unrouted agent's own provider, is shown without its port in
-  parentheses, and a session with no inference traffic seen as an em dash. Read-only:
-  no key here moves a session, since that would move a running conversation. On a
+  parentheses, and a session with no inference traffic seen as an em dash. `S` on a
+  session's row moves it; see [`agentop server`](#choosing-an-inference-server-agentop-server). On a
   terminal too narrow for it the column is left out, not squeezed, and so is
   `AGENT`; neither shows until `COST` and `SAVED` do, so widening the window never
   takes one away.
@@ -1264,11 +1284,16 @@ agentop is for, and the other four are surfaces you visit and leave.
 
   An agent cell is a bar of how that cell's time divided, stacked from the
   bottom: amber the agent's tools running, purple its model generating, red
-  retrying after a failed model call, teal waiting on its subagents, grey waiting
-  on you. Blank is idle. Waiting is read from the gaps between an agent's model
-  calls: after a failed call it is retrying; a gap that one of its subagents was
-  running in, or that a subagent's result ended, is waiting on subagents; a gap
-  after a finished reply otherwise is waiting on you, for the main agent only. A
+  retrying after a failed model call, teal waiting on its subagents or its
+  background shell jobs, grey waiting on you, as is an `AskUserQuestion` the
+  agent put to you. Waiting is read from the gaps
+  between an agent's model calls: a gap that one of its subagents or background
+  jobs was running in, or that a subagent's result ended, is waiting on
+  subagents; a gap before a call that re-sent the same conversation is retrying;
+  after a failed call it is retrying until the last failed request to the model
+  host, then waiting on you, since Claude Code shows the error and stops. On the
+  main agent, any other time is waiting on you, except after a tool that lost its
+  result, which is left blank. A subagent's gaps are otherwise blank. A
   subagent's cells are measured against the part of the cell it was alive for, so
   its row is one run from spawn to hand-back. A terminal cell holds two colours,
   so a cell that mixed three states (8% of cells at "all" in real sessions, none
@@ -1281,16 +1306,25 @@ agentop is for, and the other four are surfaces you visit and leave.
   `w` cycles 5m / 1h / 24h / all, offering only the windows shorter than the
   session, so a short session shows "all" alone; the choice is saved, and a saved
   window too long for a session shows "all" without being overwritten. A session
-  is live while its last recorded event is under 30 minutes old: its windows
-  follow now, and a call still in flight grows. Once it is not, an open call ends
-  at the session's last event, the last moment anything was seen, and the window
-  ends at its last activity. "all" squeezes each idle stretch over 30 minutes into a `┆`, and the
-  axis says how long it was. `←`/`→` pick a moment, skipping those stretches, and
-  the line under the chart lists every tool that started then with its duration
-  and its command, path or description; `↵` opens the Events pane on that event.
-  `↑`/`↓` scroll the agent rows when they do not all fit. The pane refreshes at
-  most once a second while the stream delivers that session's events, and every
-  ten seconds while a call is in flight with nothing new recorded.
+  is live while its last recorded event is under 30 minutes old: its windows,
+  "all" included, follow now, and a call still in flight grows. At "all" the
+  wait since its last activity takes at most 6 cells, labelled with its length
+  (`+24m`) once squeezed, so the work keeps the width. Once it is not, an open
+  call ends at the session's last event, the last moment anything was seen, and
+  the window ends at its last activity. "all" squeezes each stretch over 30 minutes with
+  no model call or tool, an `AskUserQuestion` aside, into a `┆`, coloured by the state that held most of it,
+  and the axis says how long it was; a host's `┆` is red when a request failed in
+  it. `←`/`→` pick a moment, skipping those stretches, and the line under the
+  chart lists the visible rows' tools that started then, and after them those
+  still running from earlier ("since 12:41:04"), each with its duration and its
+  command, path or description; a cell with no tool names the request `↵` would
+  open. `↵` opens the Events pane on the first event listed. `↑`/`↓` scroll the
+  agent rows, then the host rows, when they do not all fit; the footer offers
+  them only then. The pane refreshes at most once a second while the stream
+  delivers that session's events, and every ten seconds while a call is in
+  flight with nothing new recorded. A failed fetch is retried after 1s, then
+  2s, 4s … up to 30s, and the first fetch of a visit waits up to 30s, since a
+  session only on disk is read from its archive.
 
   **Claude Code only.** Agents come from the requests the proxy attributed to a
   Claude Code agent, and a tool's end from the first request carrying its
@@ -1427,8 +1461,8 @@ Layered on top of all of them:
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
 | `T` | sessions, events, detail | open the timeline (sessions: the highlighted row; events/detail: the selected session) |
 | `w` | timeline | cycle window: 5m / 1h / 24h / all, only the windows shorter than the session |
-| `←` `→` / `h` `l` | timeline | pick a moment, skipping collapsed idle stretches; the line below lists the tools that started then |
-| `↑` `↓` / `k` `j` | timeline | scroll the agent rows |
+| `←` `→` / `h` `l` | timeline | pick a moment, skipping collapsed stretches; the line below lists the tools running then |
+| `↑` `↓` / `k` `j` | timeline | scroll the agent rows, then the host rows, when they do not all fit |
 | `Enter` | timeline | open the events pane at the cursor's first tool |
 | `Esc` | timeline | back to the pane it was opened from |
 | `$` | every pane except the two pickers, usage and timeline | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. `$` again closes it; `Esc` does not, so it always backs out of the pane in one press. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the timeline, whose `w` is its window. On the agents pane the breakdown — and the band above it, and the title — is scoped to the highlighted row, the same agent `↵` would scope to, read but never committed, and follows the cursor; leaving the pane returns both to the committed scope |
@@ -1444,7 +1478,7 @@ Layered on top of all of them:
 | `Esc` | pipeline | back to the pane `P` was pressed on |
 | `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
-| `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today (`w` moves the window), plus a row of dashes for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
+| `A` | any session-view pane (not the picker) | open the per-agent breakdown — each coding agent's sessions, when it was last seen, and what it has spent today (`w` moves the window), plus a row for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
 | `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
@@ -1490,7 +1524,7 @@ becomes worth showing, so a remembered dismissal would go stale then.
 
 **Agents the proxy does not recognise share one row, `Other`**, listed last. The
 proxy names an agent only from a User-Agent it recognises (`claude-code`, `bob`,
-`opencode`); anything else is reported under its raw
+`opencode`, `codex`, `pi`); anything else is reported under its raw
 User-Agent, and one program can send several — the IBM Bob IDE was three rows before
 it was recognised, and none of them could reach its session ([#1210]). Picking `Other`
 lists every session that names no recognised agent, including the `default` and
@@ -1523,8 +1557,9 @@ old to answer that, agentop narrows the `group=agent` series itself, as the usag
 does. The drawer drops its agent axis and breaks the agent's spend down by model or
 endpoint in every window. It reads `BY NONE` under `Other`, and against an older proxy
 that cannot break the last hour down for one agent. Unscoped, the sessions pane gains an `AGENT` column when
-two agents are listed, and the agents pane a `SESSIONS` count once sessions name
-their agent.
+two agents are listed, and the agents pane `SESSIONS` and `LAST SEEN` once sessions
+name their agent. Those two describe the whole sessions list; `COST <window>` is the
+pane's only windowed column, and `w` moves it.
 
 ### Choosing an agent's server (`S`)
 
@@ -1555,7 +1590,8 @@ went somewhere other than the new choice (for a switch back to its own choice, t
 of the servers), and is left out when there are none. A switch moves none of them:
 the router keeps a running session on the server it started on, across a proxy
 restart too (see [`agentop server`](#choosing-an-inference-server-agentop-server)).
-The sessions table's `SERVER` column shows where each one is.
+The sessions table's `SERVER` column shows where each one is, and `S` on a session's
+row moves that one.
 
 When the switch does not go through, a panel over the pane says so, whole, and where
 it left the config file; `Esc`, `q`, `Ctrl+C` or `↵` closes it. A reload the proxy

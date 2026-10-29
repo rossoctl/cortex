@@ -8,7 +8,7 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Install and run Cortex on a laptop | [root README](../README.md) |
-| Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [any other agent](agents/any-agent.md) |
+| Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
@@ -45,6 +45,7 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 [session-budget](session-budget-plugin.md),
 [token-broker](token-broker-plugin.md),
 [token-exchange](token-exchange-plugin.md),
+[token-exchange-aiac](token-exchange-aiac-plugin.md),
 [tool-prune](tool-prune-plugin.md).
 
 ## Operator reference

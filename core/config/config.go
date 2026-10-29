@@ -533,7 +533,7 @@ func (s SessionConfig) SessionIDHeaders() []string {
 
 // SessionIDHeadersFor is SessionIDHeaders for a deployment that knows whether every listener
 // binds loopback only. On a laptop install (loopbackOnly) the unset default also reads
-// session.SessionIDHeader — X-Session-Id, which OpenCode, Pi and similar frameworks send —
+// session.SessionIDHeader — X-Session-Id, which OpenCode, Pi (with its Cortex extension) and similar frameworks send —
 // and session.CodexSessionHeader, the bare Session-Id Codex sends. Everywhere else the
 // default is SessionIDHeaders' own: both are generic names, and an in-cluster agent that
 // sends one for its own reasons (the IBAC demo's does, with an id it minted) would otherwise

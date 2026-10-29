@@ -1608,3 +1608,43 @@ func TestUninstallFixNeverPrintsARecordedValue(t *testing.T) {
 		}
 	}
 }
+
+// Pi's two pieces are Cortex's routing too: uninstall removes the shell function and
+// the extension enable wrote, and leaves an extension file with other bytes alone.
+func TestUninstallRemovesPisPieces(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t, "--no-modify-path")
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv(piAgentDirEnv, "")
+	rc := filepath.Join(sc.home, ".zshrc")
+	ext := piExtensionPath(sc.home)
+	var out, errb bytes.Buffer
+	if code := runPi([]string{"enable", "--yes"}, &out, &errb); code != 0 {
+		t.Fatalf("fixture: configure pi enable = %d\n%s%s", code, out.String(), errb.String())
+	}
+	code, got := sc.uninstall(t, "--yes")
+	wantLines(t, code, 0, got,
+		markLine("✓", "removed")+"the pi shell function from ~/.zshrc\n",
+		markLine("✓", "removed")+"Pi's session extension from ~/.pi/agent/extensions/"+piExtName+"\n")
+	if strings.Contains(readFile(t, rc), piShellMarkerStart) {
+		t.Errorf("~/.zshrc still defines the pi function:\n%s", readFile(t, rc))
+	}
+	if _, err := os.Stat(ext); !os.IsNotExist(err) {
+		t.Errorf("the extension is still there: %v", err)
+	}
+}
+
+func TestUninstallLeavesAForeignPiExtension(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t, "--no-modify-path")
+	t.Setenv(piAgentDirEnv, "")
+	ext := piExtensionPath(sc.home)
+	writeHomeFile(t, ext, "export default function () {}\n")
+	_, got := sc.uninstall(t, "--yes")
+	if strings.Contains(got, "Pi's session extension") {
+		t.Errorf("uninstall planned a file agentop did not write:\n%s", got)
+	}
+	if readFile(t, ext) != "export default function () {}\n" {
+		t.Error("uninstall changed a file agentop did not write")
+	}
+}

@@ -60,6 +60,14 @@ bob() {
 export ` + bobShellEnvVar + `=1
 ` + bobShellMarkerEnd + "\n"
 
+// rcBlock is one fixed block agentop owns in a shell's rc file: its text and the
+// marker lines that delimit it. name is how messages refer to it ("bobshell", "pi").
+// The plan, apply, disable and advice functions below take one, so the bob shell
+// function and the pi one share every rule about the file instead of copying them.
+type rcBlock struct{ name, start, end, text string }
+
+var bobShellRC = rcBlock{"bobshell", bobShellMarkerStart, bobShellMarkerEnd, bobShellBlock}
+
 // rcFileMode is the permission an rc file gets when enable has to create one.
 // 0644, not 0600: rc files are conventionally world-readable, and silently
 // tightening the mode of a file the user may share across a dotfiles setup is
@@ -76,7 +84,7 @@ const rcFileMode os.FileMode = 0o644
 // likely to surprise them than to help, so we print instead.
 const maxRCSymlinkHops = 1
 
-// bobShellResolve picks the rc file for $SHELL and applies the link rules both
+// rcResolve picks the rc file for $SHELL and applies the link rules both
 // halves of `configure bob` share, so they always pick the same file and refuse
 // the same arrangements.
 //
@@ -94,8 +102,8 @@ const maxRCSymlinkHops = 1
 // limit exists to avoid. The error value is identical in both cases; only the
 // hop count separates them, which is why rcTarget reports hops even alongside
 // an error.
-func bobShellResolve(home, shell string) (path string, advise, readErr error) {
-	path, err := bobShellRCPath(shell, home)
+func rcResolve(home, shell string) (path string, advise, readErr error) {
+	path, err := rcPathForShell(shell, home)
 	if err != nil {
 		return "", err, nil
 	}
@@ -127,7 +135,7 @@ func bobShellResolve(home, shell string) (path string, advise, readErr error) {
 	return target, nil, nil
 }
 
-// bobShellRCPath maps the shell's basename to the rc file to edit.
+// rcPathForShell maps the shell's basename to the rc file to edit.
 //
 // shell and home are parameters rather than read from the environment so the
 // mapping can be tested without a process environment, and so the callers read
@@ -140,7 +148,7 @@ func bobShellResolve(home, shell string) (path string, advise, readErr error) {
 // does at startup, and being wrong about it writes a block into a file nothing
 // reads. An unrecognised shell gets the block printed, which is correct however
 // their startup is arranged.
-func bobShellRCPath(shell, home string) (string, error) {
+func rcPathForShell(shell, home string) (string, error) {
 	if shell == "" {
 		return "", errors.New("$SHELL is not set, so I cannot tell which startup file to edit")
 	}
@@ -204,7 +212,9 @@ func rcTarget(path string) (string, int, error) {
 // bobShellPlan is the shell half's whole answer to "what would change", computed
 // BEFORE anything is written so the merged command can show it under one
 // confirmation.
-type bobShellPlan struct {
+type rcPlan struct {
+	// blk is the block this plan adds or removes.
+	blk rcBlock
 	// path is the rc file, symlink-resolved.
 	path string
 	// write is whether there is a change to make at all.
@@ -229,30 +239,32 @@ type bobShellPlan struct {
 // touch, as opposed to the requested state simply holding already. The merged
 // command's preview and report key on this, not on note alone, because both
 // kinds of note exist and only one of them narrows a headline.
-func (p bobShellPlan) leftAlone() bool {
+func (p rcPlan) leftAlone() bool {
 	return p.note != "" && !p.already
 }
 
-// bobShellEnablePlan computes what enable would do to the rc file: append the
+func bobShellEnablePlan(path string) (rcPlan, error) { return rcEnablePlan(bobShellRC, path) }
+
+// rcEnablePlan computes what enable would do to the rc file: append the
 // block, or nothing. The error is a failure to read the file, which is exit 1 —
 // nothing below can say whether the block is already there.
-func bobShellEnablePlan(path string) (bobShellPlan, error) {
+func rcEnablePlan(blk rcBlock, path string) (rcPlan, error) {
 	content, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return bobShellPlan{}, err
+		return rcPlan{}, err
 	}
 
-	if strings.Contains(string(content), bobShellBlock) {
-		return bobShellPlan{path: path, already: true}, nil
+	if strings.Contains(string(content), blk.text) {
+		return rcPlan{blk: blk, path: path, already: true}, nil
 	}
 	// Our markers are there but the block is not what we write. Hand-edited, or
 	// written by a different version. Appending would leave two competing
 	// definitions with the last one winning, which is worse than declining.
-	if strings.Contains(string(content), bobShellMarkerStart) {
-		return bobShellPlan{path: path, note: fmt.Sprintf(
-			"%s already has a cortex bobshell block, but not one matching what this agentop\n"+
+	if strings.Contains(string(content), blk.start) {
+		return rcPlan{blk: blk, path: path, note: fmt.Sprintf(
+			"%s already has a cortex %s block, but not one matching what this agentop\n"+
 				"  writes. Left alone — remove it by hand and re-run enable, or keep what you have.",
-			path)}, nil
+			path, blk.name)}, nil
 	}
 
 	// A plain append, with no newline fix-up of the user's content: the block opens
@@ -266,51 +278,53 @@ func bobShellEnablePlan(path string) (bobShellPlan, error) {
 	// halves of the merged command write this same file on macOS, and a
 	// whole-file write from this pre-prompt read would drop whatever the other
 	// half wrote since.
-	return bobShellPlan{path: path, write: true}, nil
+	return rcPlan{blk: blk, path: path, write: true}, nil
 }
 
-// bobShellDisablePlan computes what disable would do to the rc file: remove the
+func bobShellDisablePlan(path string) (rcPlan, error) { return rcDisablePlan(bobShellRC, path) }
+
+// rcDisablePlan computes what disable would do to the rc file: remove the
 // block, or nothing. The error is a failure to read the file; a file that does
 // not exist holds nothing of ours, which is the already state — reported, not
 // failed, and not a finding either.
-func bobShellDisablePlan(path string) (bobShellPlan, error) {
+func rcDisablePlan(blk rcBlock, path string) (rcPlan, error) {
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return bobShellPlan{path: path, already: true, note: fmt.Sprintf("Not enabled in %s (no such file). Nothing to do.", path)}, nil
+		return rcPlan{blk: blk, path: path, already: true, note: fmt.Sprintf("Not enabled in %s (no such file). Nothing to do.", path)}, nil
 	}
 	if err != nil {
-		return bobShellPlan{}, err
+		return rcPlan{}, err
 	}
 
 	// Counting rather than testing presence: every count but 1 is a case where
 	// removing one copy would leave the file in a state nobody chose.
-	switch n := strings.Count(string(content), bobShellBlock); {
+	switch n := strings.Count(string(content), blk.text); {
 	case n == 1:
 		// One Replace of the whole block, leading newline included, so it is the
 		// exact inverse of enable's append and the file comes back byte-identical.
 		// The replace itself happens in apply, against the file as it is then —
 		// see bobShellEnablePlan for why.
-		return bobShellPlan{path: path, write: true, remove: true}, nil
+		return rcPlan{blk: blk, path: path, write: true, remove: true}, nil
 	case n > 1:
 		// Removing one of N is a silent half-measure, and removing all N assumes
 		// the extras are ours to delete.
-		return bobShellPlan{path: path, note: fmt.Sprintf(
-			"%s has %d copies of the cortex bobshell block. Left alone — remove them\n"+
+		return rcPlan{blk: blk, path: path, note: fmt.Sprintf(
+			"%s has %d copies of the cortex %s block. Left alone — remove them\n"+
 				"  by hand, between the marker lines:\n\n  %s\n  ...\n  %s",
-			path, n, bobShellMarkerStart, bobShellMarkerEnd)}, nil
-	case strings.Contains(string(content), bobShellMarkerStart):
+			path, n, blk.name, blk.start, blk.end)}, nil
+	case strings.Contains(string(content), blk.start):
 		// The markers are there but the content between them is not ours.
 		// Deleting a hand-edited block is not what "remove exactly what enable
 		// added" means.
-		return bobShellPlan{path: path, note: fmt.Sprintf(
-			"%s has a cortex bobshell block that has been edited since it was written.\n"+
+		return rcPlan{blk: blk, path: path, note: fmt.Sprintf(
+			"%s has a cortex %s block that has been edited since it was written.\n"+
 				"  Left alone — remove it by hand if you want it gone, between the marker lines:\n"+
 				"\n  %s\n  ...\n  %s",
-			path, bobShellMarkerStart, bobShellMarkerEnd)}, nil
+			path, blk.name, blk.start, blk.end)}, nil
 	}
 	// Plain absence, same as no file at all: the requested state holds, so the
 	// note is for the nothing-to-do arm — not a finding (see bobShellPlan.note).
-	return bobShellPlan{path: path, already: true, note: fmt.Sprintf("Not enabled in %s. Nothing to do.", path)}, nil
+	return rcPlan{blk: blk, path: path, already: true, note: fmt.Sprintf("Not enabled in %s. Nothing to do.", path)}, nil
 }
 
 // apply writes the plan's change to the file as it is NOW, not as the plan read
@@ -320,7 +334,7 @@ func bobShellDisablePlan(path string) (bobShellPlan, error) {
 // fresh read keeps both halves' changes and stays the exact inverse of the
 // other verb. Returns 0 or 1; the prompt is the caller's, so a decline never
 // reaches here.
-func (p bobShellPlan) apply(stderr io.Writer) int {
+func (p rcPlan) apply(stderr io.Writer) int {
 	if !p.write {
 		return 0
 	}
@@ -329,9 +343,9 @@ func (p bobShellPlan) apply(stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop: read %s: %v\n", p.path, err)
 		return 1
 	}
-	out := string(content) + bobShellBlock
+	out := string(content) + p.blk.text
 	if p.remove {
-		out = strings.Replace(string(content), bobShellBlock, "", 1)
+		out = strings.Replace(string(content), p.blk.text, "", 1)
 	}
 	if err := writeRCFile(p.path, out); err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
@@ -345,7 +359,13 @@ func (p bobShellPlan) apply(stderr io.Writer) int {
 // plan under its own single prompt — but `agentop uninstall` does, with yes set
 // and the output captured, so the half stays callable on its own terms.
 func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
-	p, err := bobShellDisablePlan(path)
+	return rcDisable(bobShellRC, path, yes, stdout, stderr)
+}
+
+// rcDisable is bobShellDisable for any block: what `agentop uninstall` runs for
+// each shell function it removes.
+func rcDisable(blk rcBlock, path string, yes bool, stdout, stderr io.Writer) int {
+	p, err := rcDisablePlan(blk, path)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: read %s: %v\n", path, err)
 		return 1
@@ -359,13 +379,13 @@ func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 	// agentop's own answers, not the user's refusal. That is exactly the
 	// distinction exitDeclined was added to carry — see its comment in
 	// cmd_claudecode.go.
-	if !yes && !bobShellConfirm(path, "Remove the cortex bobshell block from", stdout) {
+	if !yes && !bobShellConfirm(path, "Remove the cortex "+blk.name+" block from", stdout) {
 		return exitDeclined
 	}
 	if code := p.apply(stderr); code != 0 {
 		return code
 	}
-	fmt.Fprintf(stdout, "Disabled: removed the cortex bobshell block from %s.\n", path)
+	fmt.Fprintf(stdout, "Disabled: removed the cortex %s block from %s.\n", blk.name, path)
 	return 0
 }
 
@@ -403,17 +423,22 @@ var bobShellConfirm = func(path, what string, stdout io.Writer) bool {
 // where names the file in the caller's own words ("the real file", "whichever file
 // your shell reads at startup"), because only the caller knows why it is giving up.
 func bobShellAdviseManual(action, where string, stdout io.Writer) int {
+	return rcAdviseManual(bobShellRC, action, where, stdout)
+}
+
+// rcAdviseManual is bobShellAdviseManual for any block.
+func rcAdviseManual(blk rcBlock, action, where string, stdout io.Writer) int {
 	if action == "disable" {
 		// No block printed: a user removing the integration has the text already —
 		// it is in their file — and printing it again is at best noise and at worst
 		// read as an instruction to add it. The markers are what they need, since
 		// that is what they are searching the file for.
 		fmt.Fprintf(stdout, "To remove it by hand, delete the block between %s\nand %s from %s.\n",
-			bobShellMarkerStart, bobShellMarkerEnd, where)
+			blk.start, blk.end, where)
 		return 0
 	}
 	fmt.Fprintf(stdout, "Add this to %s:\n\n", where)
-	fmt.Fprint(stdout, bobShellBlock)
+	fmt.Fprint(stdout, blk.text)
 	return 0
 }
 

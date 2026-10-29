@@ -43,7 +43,8 @@ const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 // directly from these constants, and a raw map literal does not.
 const BobSessionHeader = "X-Task-Id"
 
-// SessionIDHeader is the generic request header OpenCode, Pi (Inflection AI) and similar
+// SessionIDHeader is the generic request header OpenCode, Pi (pi.dev, through the extension
+// `agentop configure pi` installs; it does not send one by default) and similar
 // frameworks set to name the session a request belongs to. OpenCode (verified on 2.0.21)
 // sends its session's AFFINITY id here — the parent session's id for a subagent, the source
 // session's for a fork, else its own — so a subagent's and a fork's requests join the

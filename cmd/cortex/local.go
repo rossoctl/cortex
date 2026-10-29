@@ -302,7 +302,7 @@ cost_ledger:
 #
 # X-Claude-Code-Session-Id is set by Claude Code on every inference request.
 # X-Task-Id is set by IBM Bob Shell.
-# X-Session-Id is set by OpenCode (its affinity id, so a subagent joins its parent's session), Pi (Inflection AI), and similar frameworks.
+# X-Session-Id is set by OpenCode (its affinity id, so a subagent joins its parent's session), Pi (through the extension "agentop configure pi" installs), and similar frameworks.
 # Session-Id is set by Codex on its inference requests. The BARE name, not the X- one above.
 #   It is last because it is the least namespaced: any client sending one of the names above
 #   still wins its bucket. Only read here, on a loopback-only install, for the reason

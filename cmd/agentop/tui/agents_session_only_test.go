@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -58,28 +59,59 @@ func TestPickerRows_AnAgentWithSessionsButNoSpendHasARow(t *testing.T) {
 	}
 }
 
-// Its row says it has sessions and that the window has nothing for it: SESSIONS counts what the
-// scope lists, and every figure is a dash. "0" requests beside a "—" cost read as a measured zero
-// with an unknown price, where the truth is that this window holds no traffic for it at all.
+// Its row says it has sessions, when it was last seen, and that the window has nothing for it:
+// SESSIONS and LAST SEEN describe what the scope lists, and the window's one figure is a dash.
+// LAST SEEN is what tells "not used today" from "broken".
 func TestRebuildAgentsTable_ASessionOnlyAgentShowsDashesForTheWindow(t *testing.T) {
 	m := morningAfterFixture()
+	// Other's one session, the default bucket, gets an age no named agent shares, so a Other that
+	// matched every session or none would read "just now" or a dash.
+	m.sessions[4].UpdatedAt = time.Now().Add(-5 * time.Hour)
 	m.rebuildAgentsTable()
 	rows := m.agentsTbl.Rows()
-	var oc []string
+	var oc, other []string
 	for _, r := range rows {
-		if r[0] == "opencode" {
+		switch r[0] {
+		case "opencode":
 			oc = r
+		case otherAgents:
+			other = r
 		}
+	}
+	if other == nil || other[2] != "5h ago" {
+		t.Errorf("Other row = %v, want LAST SEEN %q from the session that names no agent", other, "5h ago")
 	}
 	if oc == nil {
 		t.Fatalf("no opencode row in %v", rows)
 	}
-	if want := []string{"opencode", "1", emptyCell, emptyCell, emptyCell}; !slices.Equal(oc, want) {
+	if want := []string{"opencode", "1", "18h ago", emptyCell}; !slices.Equal(oc, want) {
 		t.Errorf("opencode row = %v, want %v", oc, want)
 	}
-	if cc := rows[1]; cc[0] != "claude-code" || cc[2] != "412" || cc[4] != "$113.63" {
+	if cc := rows[1]; cc[0] != "claude-code" || cc[1] != "2" || cc[2] != "just now" || cc[3] != "$113.63" {
 		t.Errorf("claude-code row = %v, want its figures untouched", cc)
 	}
+}
+
+// A session over a day old shows as a date, and a two-digit day is relTime's widest form: at 11
+// columns "Oct 23 14:02" lost its last minute digit.
+func TestRebuildAgentsTable_LastSeenFitsATwoDigitDay(t *testing.T) {
+	m := morningAfterFixture()
+	m.sessions[3].UpdatedAt = time.Date(2025, time.October, 23, 14, 2, 0, 0, time.Local)
+	m.rebuildAgentsTable()
+	for _, r := range m.agentsTbl.Rows() {
+		if r[0] != "bob-shell" {
+			continue
+		}
+		// AGENT, SESSIONS, LAST SEEN: the fixture runs no router, so SERVER is not inserted.
+		if r[2] != "Oct 23 14:02" {
+			t.Fatalf("bob-shell LAST SEEN = %q, want the date form", r[2])
+		}
+		if w, n := sessionsColumnWidth(m.agentsTbl.Columns(), "LAST SEEN"), utf8.RuneCountInString(r[2]); w < n {
+			t.Errorf("LAST SEEN is %d columns for the %d of %q", w, n, r[2])
+		}
+		return
+	}
+	t.Fatalf("no bob-shell row in %v", m.agentsTbl.Rows())
 }
 
 // THE REPORTED DEFECT, driven the way it was met: `A` on the sessions pane, the reply carrying one

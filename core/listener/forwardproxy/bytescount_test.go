@@ -54,6 +54,11 @@ func bytesOf(t *testing.T, plugins []pipeline.Plugin, req *http.Request, upstrea
 	// undrained body would under-report by whatever was still in flight.
 	drainAndClose(t, resp)
 
+	// The row is recorded after the relay (io.Copy or the streaming arms' loop),
+	// which can finish after the client has drained and returned — wait for it
+	// rather than racing the recording.
+	waitForResponseEvent(t, store)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("want a request row and a response row, got %+v", v)
@@ -124,18 +129,18 @@ func TestBytes_PassthroughSSECountsTheFramingToo(t *testing.T) {
 	}
 }
 
-// TestBytes_UnbufferedResponseReportsZeroRatherThanAGuess pins the one arm the
-// counting wrapper cannot reach: a plain response that no plugin asked to buffer
-// and that is not an event stream is relayed by an io.Copy at the bottom of
-// handleHTTP, which runs AFTER the response row has been recorded.
+// TestBytes_UnbufferedResponseReportsTheFullCount pins the arm this file used
+// to excuse: a plain response that no plugin asked to buffer and that is not an
+// event stream is relayed by an io.Copy at the bottom of serveOutbound, which
+// runs AFTER the row used to be recorded — so this arm reported zero. The row is
+// now recorded below that copy, and the count the wrapper finishes during it is
+// the figure the row carries.
 //
-// Zero is the honest answer and the event contract's own: zero means the listener
-// counted nothing, not that the body was empty, and agentop renders it blank. The
-// tempting alternative is Content-Length, which is -1 on anything chunked and
-// deleted outright on every streaming arm — a guess that would be wrong exactly
-// where it mattered. Pinned so that if the ordering here ever changes, it changes
-// deliberately.
-func TestBytes_UnbufferedResponseReportsZeroRatherThanAGuess(t *testing.T) {
+// Still counted at the wire, not guessed from Content-Length, which is -1 on
+// anything chunked and deleted outright on every streaming arm. reverseproxy's
+// unbuffered relay defers its row to the end of its copy the same way
+// (recordOnEOFBody).
+func TestBytes_UnbufferedResponseReportsTheFullCount(t *testing.T) {
 	req, _ := http.NewRequest("GET", "http://placeholder/plain", nil)
 
 	_, respRow := bytesOf(t, []pipeline.Plugin{}, req,
@@ -144,7 +149,8 @@ func TestBytes_UnbufferedResponseReportsZeroRatherThanAGuess(t *testing.T) {
 			fmt.Fprint(w, `{"never":"buffered"}`)
 		})
 
-	if respRow.BytesDown != 0 {
-		t.Errorf("response row ↓%d, want ↓0 — the relay copies after the row is recorded, so any figure here is counted too late to be this row's", respRow.BytesDown)
+	if respRow.BytesDown != int64(len(`{"never":"buffered"}`)) {
+		t.Errorf("response row ↓%d, want ↓%d — the row is recorded after the copy, so the count is complete when the figure is read",
+			respRow.BytesDown, len(`{"never":"buffered"}`))
 	}
 }

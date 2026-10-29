@@ -1274,7 +1274,13 @@ func (m *model) helpView() string {
 	case panePluginDetail:
 		return "[↑↓] scroll  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneTimeline:
-		return "[w] window  [←→] moment  [↑↓] agents  [enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		// [↑↓] only when there are rows to scroll to: a key that does nothing on screen reads as
+		// broken.
+		scroll := ""
+		if lay, ok := m.timelineLayoutNow(); ok && m.timelineScrollMax(lay) > 0 {
+			scroll = "[↑↓] rows  "
+		}
+		return "[w] window  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [s] only appears when there is a session to scope to, so the footer
 		// never advertises a key that would do nothing.

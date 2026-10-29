@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -105,6 +106,10 @@ func renderUnitFor(goos string, p servicePaths) string {
 		// therefore has to land first, and the proxy closes rather than drains so it
 		// is gone long before either. A supervisor that waited 20s made every restart
 		// with a request in flight crash-loop its replacement on the bind.
+		//
+		// No ProcessType: Background confines the job to the efficiency cores, and every
+		// request an agent sends waits on this process. Decoding one 16MB archive segment
+		// took 1.0s at normal priority and 3.9-4.1s under `taskpolicy -b`.
 		return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -125,7 +130,6 @@ func renderUnitFor(goos string, p servicePaths) string {
   <key>AgentopVersion</key><string>` + xmlStr(version) + `</string>
   <key>StandardOutPath</key><string>` + xmlStr(p.logFile) + `</string>
   <key>StandardErrorPath</key><string>` + xmlStr(p.logFile) + `</string>
-  <key>ProcessType</key><string>Background</string>
   <key>ExitTimeOut</key><integer>5</integer>
 </dict>
 </plist>
@@ -246,7 +250,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 		return fmt.Errorf("systemctl --user restart %s: %v: %s", systemdUnit, err, strings.TrimSpace(string(out)))
 	}
 	// Without lingering, a user unit stops at logout — which defeats the point on a
-	// headless or SSH-only box. Best-effort: it needs polkit on some systems.
+	// headless or SSH-only box. Best-effort: an unprivileged user needs polkit for it.
 	//
 	// uid, not $USER: a supervisor environment may not set USER at all, and the uid is
 	// already what every other call here uses. loginctl accepts either.
@@ -257,21 +261,124 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 	// Cortex.
 	uid := strconv.Itoa(os.Getuid())
 	if !lingerEnabled(uid) {
-		if err := exec.Command("loginctl", "enable-linger", uid).Run(); err != nil {
+		if out, err := exec.Command("loginctl", "enable-linger", uid).CombinedOutput(); err != nil {
 			// Not fatal — the unit is loaded and serving — but it does mean the service
-			// stops at logout, so it must not be reported as surviving one. polkit
-			// refuses this on some systems.
-			return errLingerUnavailable
+			// stops at logout, so it must not be reported as surviving one.
+			return lingerFailure(strings.TrimSpace(string(out)), polkitPresent())
 		}
 		_ = os.WriteFile(lingerMarker(p), []byte("enabled by agentop\n"), 0o600) //nolint:errcheck
 	}
 	return nil
 }
 
-// errLingerUnavailable means the unit loaded but will not outlive a logout.
+// errLingerUnavailable means the unit loaded but will not outlive a logout. It is
+// what every linger failure wraps, so callers test for it with errors.Is; the
+// wrapping message is what names the cause.
 var errLingerUnavailable = errors.New(
-	"loaded, but `loginctl enable-linger` failed: the service will stop when you log out. " +
-		"Ask an administrator to run: loginctl enable-linger $USER")
+	"loaded, but lingering could not be turned on: Cortex will stop when you log out")
+
+// lingerFailure explains why `loginctl enable-linger` failed and what fixes it.
+//
+// An unprivileged user cannot turn lingering on alone. logind asks polkit whether
+// org.freedesktop.login1.set-self-linger is allowed, and systemd's policy for it
+// allows anyone, without a password. That policy is read only by polkitd, though,
+// which ships in a package of its own that systemd merely suggests. Without it
+// there is no one to ask, and logind's fallback for this action is to deny, so
+// loginctl prints "Access denied". A minimal Debian install with only the SSH
+// server is that case, so the headless box lingering exists for is where it fails.
+//
+// The two causes need different fixes, so it matters which one this is. With
+// polkitd absent, installing it lets this user turn lingering on by themselves.
+// With it present, the refusal is a local policy decision, and only an
+// administrator can override it. Root never asks polkit, so `sudo loginctl
+// enable-linger` works in either case.
+//
+// The advice runs loginctl directly rather than re-running setup. Lingering is
+// only attempted while loading the unit, and a re-run that finds Cortex installed
+// and healthy loads nothing, so after the polkit install it would change nothing
+// and say all is well.
+//
+// Polkit is blamed only when loginctl says authorization was refused. logind can
+// also fail after polkit has said yes, writing /var/lib/systemd/linger, and then
+// neither polkit fix would help. Any other failure gets loginctl's own words and
+// the root fix alone.
+//
+// detail is loginctl's own output; present is polkitPresent's answer.
+func lingerFailure(detail string, present bool) error {
+	if detail == "" {
+		detail = "no reason given"
+	}
+	admin := "    sudo loginctl enable-linger " + lingerTarget()
+	switch {
+	case !authRefused(detail):
+		return fmt.Errorf("%w.\n"+
+			"  loginctl enable-linger: %s\n"+
+			"  An administrator can turn it on for you:\n"+
+			"%s",
+			errLingerUnavailable, detail, admin)
+	case present:
+		return fmt.Errorf("%w.\n"+
+			"  loginctl enable-linger: %s\n"+
+			"  polkit refused it, so this system's policy does not let users keep their own\n"+
+			"  services running. An administrator can turn it on for you:\n"+
+			"%s",
+			errLingerUnavailable, detail, admin)
+	}
+	return fmt.Errorf("%w.\n"+
+		"  loginctl enable-linger: %s\n"+
+		"  polkit is not installed, and logind needs it to let a user turn lingering on.\n"+
+		"  Install it, then turn lingering on:\n"+
+		"    sudo apt install polkitd    # Debian and Ubuntu; elsewhere the package is polkit\n"+
+		"    loginctl enable-linger\n"+
+		"  or have an administrator turn it on for you:\n"+
+		"%s",
+		errLingerUnavailable, detail, admin)
+}
+
+// authRefused reports whether loginctl's error is logind refusing authorization,
+// rather than failing after it. These are systemd's own fixed strings:
+// bus_error_message prints "Access denied" for org.freedesktop.DBus.Error.AccessDenied,
+// and bus-polkit.c's "Interactive authentication required." is what a non-interactive
+// caller gets when polkit would have prompted. Ubuntu words the latter as "Access
+// denied as the requested operation requires interactive authentication", which the
+// first match covers. A rewording in some later systemd lands in the other branch,
+// whose root fix works whatever the cause.
+func authRefused(detail string) bool {
+	d := strings.ToLower(detail)
+	return strings.Contains(d, "access denied") || strings.Contains(d, "interactive authentication required")
+}
+
+// lingerTarget names the account the administrator fix must enable: the one this
+// process runs as, which loadService passed to loginctl as a uid. A name reads
+// better than a uid to whoever runs the command, but it is looked up from the uid,
+// not taken from $USER, which can name someone else (su without -l keeps it). The
+// uid itself, which loginctl accepts too, when the lookup fails.
+func lingerTarget() string {
+	uid := strconv.Itoa(os.Getuid())
+	if u, err := user.LookupId(uid); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return uid
+}
+
+// polkitPresent reports whether polkitd can answer logind on the system bus:
+// running, or installed so D-Bus starts it on first use. `busctl list` shows both
+// kinds of name, so one call covers them. busctl ships with systemd itself, so it
+// is there wherever loginctl is. An answer that cannot be read counts as present,
+// which leaves the advice pointing at an administrator rather than claiming
+// polkit is missing.
+func polkitPresent() bool {
+	out, err := exec.Command("busctl", "--system", "--no-legend", "--no-pager", "list").Output()
+	if err != nil {
+		return true
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && f[0] == "org.freedesktop.PolicyKit1" {
+			return true
+		}
+	}
+	return false
+}
 
 // lingerMarker records that we enabled lingering, so uninstall undoes only that.
 func lingerMarker(p servicePaths) string {

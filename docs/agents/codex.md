@@ -11,7 +11,7 @@ confirmed against the real Codex CLI (writing a dead proxy address there and run
 fallback transport). There is no settings JSON, so the routing goes into that file
 directly. **Every Codex process reads it once, when it starts** — and that includes
 Codex's own background server, which outlives the windows you type into; see
-[Restart Codex's background app-server](#restart-codexs-background-app-server).
+[Codex's background app-server](#codexs-background-app-server).
 
 ## Enable and revert
 
@@ -82,16 +82,17 @@ comparison is tracked by #1289.
 
 **What `status` says.** It prints the five variables as the file currently holds them, a
 warning if any is defined more than once, then `enabled` if every one matches what `enable`
-would write right now, or `not fully enabled (N of 5 set)` otherwise. It changes nothing.
+would write right now, or `not fully enabled (N of 5 set)` otherwise. Last, whether Codex's
+running background app-server uses Cortex — see below. It changes nothing.
 
 `enable` and `disable` both show what they will change and ask before doing it. `--yes`
 skips the question. If you decline, or there is no terminal to ask on, they change nothing
 and exit 3. `--env PATH` points at a different dotenv file; `--config PATH` reads a
 different Cortex config.
 
-### Restart Codex's background app-server
+### Codex's background app-server
 
-**Enabling Cortex does not reach a Codex that is already running.** Codex runs a
+**The file alone does not reach a Codex that is already running.** Codex runs a
 long-lived background server, its app-server daemon (`codex app-server --managed-daemon`),
 and the `codex` you type into is only a screen that hands it each prompt: the daemon makes
 the model calls. It reads the dotenv file when it starts and never again, and it is shared
@@ -101,22 +102,45 @@ prompts do not, and agentop shows Codex only as a small `pending:codex@…` buck
 **Other**, with no tokens. `disable` has the mirror problem: the daemon keeps routing
 through Cortex, and Codex stops working if Cortex is then stopped.
 
-`enable` and `disable` say so when they find a running daemon, naming its pid and when it
-started. To apply the change, restart it:
+**So `enable` and `disable` restart a running daemon**, once, after writing the file, with
+Codex's own `codex app-server daemon restart`. They say so before asking, naming its pid and
+when it started, and `--yes` skips the question but not that line. Then they check the new
+daemon's environment and say whether it uses Cortex — or, if its proxy is still not what the
+file says, where else it could be coming from. With no daemon running there is nothing to
+restart: the next `codex` starts one that reads the new file. An `enable` that finds nothing
+to change does not restart; it says whether the running daemon uses Cortex, and how to
+restart it if not.
+
+**The auto-updater is restarted too.** An auto-updatable install runs a second background
+process, `codex app-server daemon pid-update-loop`, which also reads the dotenv file only when
+it starts. After installing an update it starts a new daemon, and that daemon inherits the
+updater's environment, but `codex app-server daemon restart` leaves a running updater alone.
+So `enable` and `disable` stop the updater first, and the restart starts a fresh one that has
+read the new file. Comparing `ps` before and after, both processes change. Without this, a
+`disable` came undone at the next Codex update, with the daemon back on Cortex's proxy. If the
+updater will not stop, they name it and the command that replaces it.
+
+**What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
+measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60
+seconds by default, configurable up to 5 minutes — to finish, and saves its threads. The new daemon restores them and
+continues a local turn the grace cut off, saying "Resuming interrupted work". An open
+`codex` window shows that it is reconnecting and rejoins its thread on its own. So a restart
+interrupts Codex rather than ending it, and `enable` or `disable` can take as long as that grace
+when a turn is running.
+
+If the restart fails, the file is still changed and the command still exits 0; it prints the
+error and the command to run yourself:
 
 ```sh
-codex app-server daemon restart    # ends any Codex session running through it
+codex app-server daemon restart
 ```
 
-Then start `codex` again. To confirm the daemon now goes through Cortex, its connections
-should be to `127.0.0.1:47600` rather than to OpenAI:
+To check the daemon by hand, its connections should be to `127.0.0.1:47600` rather than to
+OpenAI:
 
 ```sh
 lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 ```
-
-`agentop` does not restart the daemon itself, because that would end Codex work running in
-any other terminal or editor.
 
 ### Undoing it by hand
 
@@ -455,12 +479,13 @@ Not tested:
 
 ## Known issues
 
-- **A running Codex keeps its old routing until its background server restarts.**
-  `enable` and `disable` change a file Codex's app-server daemon reads only when it
-  starts, so the change does not reach a daemon already running — prompts keep bypassing
-  Cortex after an enable, and keep needing it after a disable. Both commands warn when
-  they find a live daemon; `codex app-server daemon restart` applies the change. See
-  [Restart Codex's background app-server](#restart-codexs-background-app-server).
+- **Changing the routing restarts Codex's background server.** `enable` and `disable`
+  change a file Codex's app-server daemon and auto-updater read only when they start, so
+  they restart both when they are running, which interrupts running Codex turns for up to
+  the daemon's shutdown grace (a minute by default). Changing
+  the file any other way — by hand, or with an agentop older than this — does not reach a
+  running daemon until `codex app-server daemon restart`. See
+  [Codex's background app-server](#codexs-background-app-server).
 - **Cost is blank where no list price reaches the model.** Two cases, and neither is
   Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
   model newer than the pinned commit has no rate there; and `bundled: false` turns the

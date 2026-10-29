@@ -174,7 +174,8 @@ and the model Claude Code asked for when they were others.
 A session is pinned on its conversation's opening turn, so switch **before**
 `/clear` or a new `claude`, not after. Claude Code's request says which turn it
 is: an opening turn carries no assistant reply yet. A conversation Cortex did not
-see begin — one already running when you first route Claude Code — is never moved:
+see begin — one already running when you first route Claude Code — is not moved
+unless you move it (below):
 if the session's history shows which server its conversation's last request
 reached, Cortex keeps it there with that server's key, and otherwise it goes where
 Claude Code sends it, unrouted. Claude Code's one-shot requests (the title, auto

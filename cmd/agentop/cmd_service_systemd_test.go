@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -427,6 +428,145 @@ exit 1
 			t.Error("marker written even though enable-linger failed")
 		}
 	})
+
+	// What a minimal Debian install does: no polkitd, so logind denies the request.
+	// The caveat has to say that, and give both fixes, rather than only "ask an
+	// administrator", which sends an owner of the box to look for someone else.
+	t.Run("enable-linger denied, polkit absent: caveat names polkit and both fixes", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		fakeSystemctl(t, "#!/bin/sh\nexit 0\n")
+		fakeLoginctl(t, `#!/bin/sh
+case "$*" in
+  *show-user*) echo "Linger=no"; exit 0 ;;
+  *enable-linger*) echo "Could not enable linger: Access denied" >&2; exit 1 ;;
+esac
+exit 1
+`)
+		installStub(t, "busctl", "#!/bin/sh\necho 'org.freedesktop.login1  612 systemd-logind root :1.4'\n")
+		err := loadService("linux", p, io.Discard)
+		if !errors.Is(err, errLingerUnavailable) {
+			t.Fatalf("err = %v, want errLingerUnavailable", err)
+		}
+		for _, want := range []string{
+			"Cortex will stop when you log out",
+			"loginctl enable-linger: Could not enable linger: Access denied",
+			"polkit is not installed",
+			"\n    sudo apt install polkitd    # Debian and Ubuntu; elsewhere the package is polkit\n",
+			"\n    loginctl enable-linger\n",
+			"\n    sudo loginctl enable-linger " + lingerTarget(),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("caveat lacks %q:\n%v", want, err)
+			}
+		}
+	})
+
+	t.Run("enable-linger denied, polkit present: caveat names the policy, not a missing package", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		fakeSystemctl(t, "#!/bin/sh\nexit 0\n")
+		fakeLoginctl(t, `#!/bin/sh
+case "$*" in
+  *show-user*) echo "Linger=no"; exit 0 ;;
+  *enable-linger*) echo "Could not enable linger: Access denied" >&2; exit 1 ;;
+esac
+exit 1
+`)
+		installStub(t, "busctl", "#!/bin/sh\necho 'org.freedesktop.PolicyKit1 838 polkitd polkitd :1.17'\n")
+		err := loadService("linux", p, io.Discard)
+		if !errors.Is(err, errLingerUnavailable) {
+			t.Fatalf("err = %v, want errLingerUnavailable", err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "polkit refused it") || strings.Contains(msg, "apt install") {
+			t.Errorf("caveat should blame the policy and not suggest installing polkit:\n%v", err)
+		}
+	})
+}
+
+// lingerFailure picks its advice from loginctl's error as well as from whether
+// polkit is there: polkit is blamed only for a refused authorization.
+func TestLingerFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, detail string
+		present      bool
+		want, reject []string
+	}{
+		{"denied, polkit absent", "Could not enable linger: Access denied", false,
+			[]string{"polkit is not installed", "sudo apt install polkitd"}, []string{"polkit refused it"}},
+		{"denied, polkit present", "Could not enable linger: Access denied", true,
+			[]string{"polkit refused it"}, []string{"polkit is not installed", "apt install"}},
+		// systemd's wording when polkit would have prompted; Ubuntu's is the
+		// "Access denied as the requested operation requires interactive
+		// authentication" form, which the denied case already covers.
+		{"interactive auth required, polkit present", "Could not enable linger: Interactive authentication required.", true,
+			[]string{"polkit refused it"}, []string{"apt install"}},
+		// Authorized, then logind could not write /var/lib/systemd/linger: neither
+		// polkit fix applies, so neither is offered.
+		{"failed after authorization, polkit absent", "Could not enable linger: Read-only file system", false,
+			[]string{"Read-only file system", "An administrator can turn it on for you"},
+			[]string{"polkit is not installed", "polkit refused it", "apt install"}},
+		{"failed after authorization, polkit present", "Could not enable linger: Read-only file system", true,
+			[]string{"Read-only file system"}, []string{"polkit"}},
+		{"no output at all", "", false,
+			[]string{"no reason given"}, []string{"polkit"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := lingerFailure(tc.detail, tc.present)
+			if !errors.Is(err, errLingerUnavailable) {
+				t.Fatalf("err = %v, want errLingerUnavailable", err)
+			}
+			msg := err.Error()
+			// Every branch ends with the root fix, aimed at this account.
+			for _, w := range append(tc.want, "\n    sudo loginctl enable-linger "+lingerTarget()) {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message lacks %q:\n%s", w, msg)
+				}
+			}
+			for _, r := range tc.reject {
+				if strings.Contains(msg, r) {
+					t.Errorf("message should not contain %q:\n%s", r, msg)
+				}
+			}
+		})
+	}
+}
+
+// The administrator fix must name the account loadService enabled — the uid
+// this process runs as — whatever $USER says.
+func TestLingerTargetIgnoresUSER(t *testing.T) {
+	t.Setenv("USER", "someone-else")
+	got := lingerTarget()
+	if got == "someone-else" {
+		t.Fatalf("lingerTarget() = %q: took $USER, not the uid's account", got)
+	}
+	want := strconv.Itoa(os.Getuid())
+	if u, err := user.LookupId(want); err == nil {
+		want = u.Username
+	}
+	if got != want {
+		t.Errorf("lingerTarget() = %q, want %q", got, want)
+	}
+}
+
+func TestPolkitPresent(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"running", "#!/bin/sh\necho 'org.freedesktop.PolicyKit1 838 polkitd polkitd :1.17'\n", true},
+		{"activatable, not yet started", "#!/bin/sh\necho 'org.freedesktop.PolicyKit1 - - - (activatable) - -'\n", true},
+		{"absent", "#!/bin/sh\necho 'org.freedesktop.login1 612 systemd-logind root :1.4'\n", false},
+		// A name that merely contains it is a different service.
+		{"only a longer name", "#!/bin/sh\necho 'org.freedesktop.PolicyKit1.Agent 9 x x :1.9'\n", false},
+		// Cannot tell: counted as present, so the advice falls back to the admin fix.
+		{"busctl fails", "#!/bin/sh\nexit 1\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installStub(t, "busctl", tc.body)
+			if got := polkitPresent(); got != tc.want {
+				t.Errorf("polkitPresent() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestUnloadService_Linux(t *testing.T) {

@@ -377,8 +377,8 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "where one session's time went: each Claude Code agent's model, tools and waits, and its hosts",
 		bindings: []keyBinding{
 			{"w", "cycle window: 5m / 1h / 24h / all, only those shorter than the session"},
-			{"← → / h l", "pick a moment; the line below lists the tools that started then"},
-			{"↑ ↓ / k j", "scroll the agent rows"},
+			{"← → / h l", "pick a moment; the line below lists the tools running then"},
+			{"↑ ↓ / k j", "scroll the agent rows, then the host rows, when they do not all fit"},
 			{"↵", "open the events pane at the cursor's first tool"},
 			{"esc", "back"},
 		},

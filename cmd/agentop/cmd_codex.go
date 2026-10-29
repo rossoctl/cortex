@@ -165,6 +165,15 @@ would quietly beat an earlier definition — including a corporate proxy
 someone set deliberately. The first run copies the original file to .env.bak
 and never overwrites that copy. disable removes only the keys it added.
 
+Codex's background app-server, which makes the model calls for every codex
+window, reads the file only when it starts, and so does its auto-updater. So
+when the app-server is running, enable and disable stop the updater and restart
+the app-server once after their change (codex app-server daemon restart, which
+starts a fresh updater): turns already running get up to its shutdown grace, a
+minute by default, to finish, and open Codex windows reconnect. When it is
+running they say so first and ask (--yes skips the question, not the warning).
+status shows whether the running app-server uses Cortex.
+
 Note: while enabled, Codex needs Cortex running — its requests go to the
 proxy address. "agentop configure codex disable" is the off switch.
 
@@ -554,16 +563,19 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
+	codexHome := filepath.Dir(envPath)
 	if len(pl.changes) == 0 {
 		fmt.Fprintf(stdout, "Already enabled: %s routes Codex through Cortex.\n", envPath)
-		// Said here too: a second enable is what someone runs when Codex does not seem
+		// Checked here too: a second enable is what someone runs when Codex does not seem
 		// to be going through Cortex, and a daemon older than the file is the usual
-		// reason.
-		noteCodexDaemon(envPath, true, stdout)
+		// reason. Reported, not restarted: there was nothing to apply.
+		reportCodexDaemon(codexHome, pl.want["HTTPS_PROXY"], true, false, stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "Sets in %s:\n%s\n", envPath, strings.Join(pl.changes, "\n"))
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak if it already existed.\n\n", envPath)
+	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak if it already existed.\n", envPath)
+	was := noteCodexDaemonRestart(codexHome, stdout)
+	fmt.Fprintln(stdout)
 	if !yes && !codexConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -573,7 +585,7 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 		return 1
 	}
 	fmt.Fprintln(stdout, "Enabled — run `codex` as usual. agentop configure codex disable undoes this.")
-	noteCodexDaemon(envPath, true, stdout)
+	finishCodexChange(codexHome, pl.want["HTTPS_PROXY"], pl.want, true, was, stdout, stderr)
 	return 0
 }
 
@@ -673,7 +685,18 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", envPath)
 		return 0
 	}
-	fmt.Fprintf(stdout, "This will remove from %s: %s\n\n", envPath, strings.Join(pl.present, ", "))
+	fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))
+	codexHome := filepath.Dir(envPath)
+	was := noteCodexDaemonRestart(codexHome, stdout)
+	fmt.Fprintln(stdout)
+	// The proxy the restarted daemon is compared with, read before the file loses it.
+	// Disable has to work when Cortex is gone, so this is what the file held, not
+	// Cortex's config; want is nil for the same reason, and codexIsOurs falls back to
+	// the value's shape.
+	cortexProxy, _ := pl.f.get("HTTPS_PROXY")
+	if cortexProxy == "" {
+		cortexProxy, _ = pl.f.get("https_proxy")
+	}
 	if !yes && !codexConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -687,7 +710,7 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 		fmt.Fprintf(stdout, "\nRestored to the value(s) you had before: %s\n", strings.Join(restored, ", "))
 	}
 	fmt.Fprintf(stdout, "\nDisabled. Codex no longer routes through Cortex.\n")
-	noteCodexDaemon(envPath, false, stdout)
+	finishCodexChange(codexHome, cortexProxy, nil, false, was, stdout, stderr)
 	return 0
 }
 
@@ -740,10 +763,14 @@ func codexStatus(envPath, cortexCfgPath string, stdout io.Writer) int {
 	// codexState — the table's entry point — turns a duplicate into configureUnknown,
 	// spending its single word on the warning this command has already printed on a
 	// line of its own above. See codexState's comment for that split.
-	if codexStateFrom(envPath, f, want).State == configureOn {
+	on := codexStateFrom(envPath, f, want).State == configureOn
+	if on {
 		fmt.Fprintf(stdout, "enabled in %s\n", envPath)
 	} else {
 		fmt.Fprintf(stdout, "not fully enabled in %s (%d of %d set)\n", envPath, set, len(codexKeys))
 	}
+	// The file is what the next daemon reads; the running one may differ, and it is the
+	// one sending Codex's prompts.
+	reportCodexDaemon(filepath.Dir(envPath), want["HTTPS_PROXY"], on, true, stdout)
 	return 0
 }

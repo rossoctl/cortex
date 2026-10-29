@@ -40,7 +40,7 @@ func shellRun(args []string, stdout, stderr io.Writer) int {
 	yes := len(args) > 1 && args[1] == "--yes"
 	home, _ := os.UserHomeDir()
 	shell := os.Getenv("SHELL")
-	rc, advise, readErr := bobShellResolve(home, shell)
+	rc, advise, readErr := rcResolve(home, shell)
 	if readErr != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", readErr)
 		return 1
@@ -102,7 +102,7 @@ func TestBobShellRCPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := "/home/someone"
-			got, err := bobShellRCPath(tc.shell, home)
+			got, err := rcPathForShell(tc.shell, home)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("path = %q, want an error", got)

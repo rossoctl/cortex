@@ -27,6 +27,7 @@ func TestSessionEvent_MarshalJSON_ReadableEnums(t *testing.T) {
 		Direction: Inbound,
 		Phase:     SessionResponse,
 		Duration:  250 * time.Millisecond,
+		Ttfb:      80 * time.Millisecond,
 		Host:      "weather-tool-mcp:9090",
 		A2A:       &A2AExtension{Method: "message/stream"},
 	}
@@ -48,6 +49,12 @@ func TestSessionEvent_MarshalJSON_ReadableEnums(t *testing.T) {
 	if !strings.Contains(s, `"durationMs":250`) {
 		t.Errorf("durationMs missing or wrong: %s", s)
 	}
+	// Ttfb likewise, and separately from Duration — a ttfb serialized in
+	// nanoseconds, or as the same figure as durationMs, would make the
+	// decomposition #1251 added unreadable.
+	if !strings.Contains(s, `"ttfbMs":80`) {
+		t.Errorf("ttfbMs missing or wrong: %s", s)
+	}
 }
 
 // TestSessionEvent_JSONRoundTrip locks in the round-trip contract between
@@ -64,6 +71,7 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 		Direction: Outbound,
 		Phase:     SessionResponse,
 		Duration:  1600 * time.Millisecond,
+		Ttfb:      412 * time.Millisecond,
 		Host:      "api.openai.com",
 		A2A: &A2AExtension{
 			Method: "message/stream", RPCID: "r-1", SessionID: "ctx-1",
@@ -117,7 +125,7 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 
 	for _, field := range []string{
 		"a2a", "mcp", "inference", "auth", "plugins", "identity", "statusCode",
-		"error", "host", "durationMs",
+		"error", "host", "durationMs", "ttfbMs",
 		// The omitempty half of the version-skew contract: a new proxy that
 		// recorded none of these must not emit the keys at all, so a client
 		// predating them sees the same bytes it always did.
@@ -268,10 +276,10 @@ func TestSessionEventWire_HasEveryDomainField(t *testing.T) {
 	domain := reflect.TypeOf(SessionEvent{})
 	wire := reflect.TypeOf(sessionEventWire{})
 
-	// Deliberate renames, kept explicit so the check stays strict. Duration is
-	// milliseconds on the wire, and the DTO field is named for the unit rather than
-	// silently changing what a same-named field means.
-	renamed := map[string]string{"Duration": "DurationMs"}
+	// Deliberate renames, kept explicit so the check stays strict. Duration and
+	// Ttfb are milliseconds on the wire, and the DTO fields are named for the
+	// unit rather than silently changing what a same-named field means.
+	renamed := map[string]string{"Duration": "DurationMs", "Ttfb": "TtfbMs"}
 
 	for i := 0; i < domain.NumField(); i++ {
 		f := domain.Field(i)

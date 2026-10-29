@@ -25,8 +25,8 @@ const uninstallUsage = `agentop uninstall — remove Cortex from this machine, a
 Usage:
   agentop uninstall [--yes] [--purge]
 
-Unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cortex
-routed them; stops and removes the service, or the background proxy; removes the PATH
+Unroutes Claude Code, OpenCode, IBM Bob, and the bob and pi shell functions and
+Pi's session extension where Cortex routed them; stops and removes the service, or the background proxy; removes the PATH
 lines setup added, unless other tools in ~/.local/bin still need them; and
 removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
 stays unless --purge. What to remove is read from disk, not from a record of
@@ -369,7 +369,7 @@ func applyRemovals(env *setupEnv, ui *checklist.UI, removals []removal, sigs <-c
 // and config, as the service paths read the config. A run uses what its plan read.
 func planUninstall(env *setupEnv, opts uninstallOptions) []removal {
 	rs := planUnrouteClaudeCode(env)
-	for _, plan := range []func(*setupEnv) (removal, bool){planUnrouteOpenCode, planUnrouteBob, planRemoveBobShell, planStopService} {
+	for _, plan := range []func(*setupEnv) (removal, bool){planUnrouteOpenCode, planUnrouteBob, planRemoveBobShell, planRemovePiShell, planRemovePiExtension, planStopService} {
 		if r, ok := plan(env); ok {
 			rs = append(rs, r)
 		}
@@ -759,7 +759,37 @@ func planUnrouteBob(env *setupEnv) (removal, bool) {
 // as configure bob's shell half follows it, so the edit lands in a dotfiles repo's copy
 // rather than replacing the link.
 func planRemoveBobShell(env *setupEnv) (removal, bool) {
-	rc, err := bobShellRCPath(env.shell, env.home)
+	return planRemoveRCBlock(env, bobShellRC, "bob shell", "the bob shell function", "agentop configure bob disable")
+}
+
+// planRemovePiShell is planRemoveBobShell for the pi shell function.
+func planRemovePiShell(env *setupEnv) (removal, bool) {
+	return planRemoveRCBlock(env, piShellRC, "pi shell", "the pi shell function", "agentop configure pi disable")
+}
+
+// planRemovePiExtension removes Pi's session extension when it is the file enable
+// writes. A file at that path with other bytes is the user's, so it is not planned.
+func planRemovePiExtension(env *setupEnv) (removal, bool) {
+	path := piExtensionPath(env.home)
+	if st, err := readPiExt(path); err != nil || st != piExtOurs {
+		return removal{}, false
+	}
+	return removal{
+		label: "removed",
+		item:  checklist.Item{Verb: "remove", What: "Pi's session extension", Where: env.tilde(path)},
+		fix:   remedy{agentop: "agentop configure pi disable", byHand: "rm " + env.tilde(path)},
+		run: func(*checklist.Running) (string, []string, error) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return "", []string{env.tilde(path)}, err
+			}
+			return "Pi's session extension from " + env.tilde(path), nil, nil
+		},
+	}, true
+}
+
+// planRemoveRCBlock is planRemoveBobShell's rule for any agentop rc block.
+func planRemoveRCBlock(env *setupEnv, blk rcBlock, label, what, agentopFix string) (removal, bool) {
+	rc, err := rcPathForShell(env.shell, env.home)
 	if err != nil {
 		return removal{}, false
 	}
@@ -768,31 +798,30 @@ func planRemoveBobShell(env *setupEnv) (removal, bool) {
 		return removal{}, false
 	}
 	b, err := os.ReadFile(target) //nolint:gosec // the user's own shell rc file
-	if err != nil || !strings.Contains(string(b), bobShellMarkerStart) {
+	if err != nil || !strings.Contains(string(b), blk.start) {
 		return removal{}, false
 	}
-	if strings.Count(string(b), bobShellBlock) != 1 {
+	byHand := "delete the lines from \"" + blk.start + "\" to \"" + blk.end + "\""
+	if strings.Count(string(b), blk.text) != 1 {
 		return removal{
-			label: "bob shell",
-			item:  checklist.Item{Verb: "leave", What: "the bob shell function", Where: env.tilde(rc) + " (not as enable wrote it)"},
+			label: label,
+			item:  checklist.Item{Verb: "leave", What: what, Where: env.tilde(rc) + " (not as enable wrote it)"},
 			run: func(*checklist.Running) (string, []string, error) {
-				return "the bob shell function in " + env.tilde(rc) + " is not as enable wrote it; left as it is",
-					[]string{"the bob shell function in " + env.tilde(rc) + " — delete the lines from \"" +
-						bobShellMarkerStart + "\" to \"" + bobShellMarkerEnd + "\""}, nil
+				return what + " in " + env.tilde(rc) + " is not as enable wrote it; left as it is",
+					[]string{what + " in " + env.tilde(rc) + " — " + byHand}, nil
 			},
 		}, true
 	}
 	return removal{
 		label: "removed",
-		item:  checklist.Item{Verb: "remove", What: "the bob shell function", Where: env.tilde(rc)},
-		fix: remedy{agentop: "agentop configure bob disable",
-			byHand: "delete the lines from \"" + bobShellMarkerStart + "\" to \"" + bobShellMarkerEnd + "\" in " + env.tilde(rc)},
+		item:  checklist.Item{Verb: "remove", What: what, Where: env.tilde(rc)},
+		fix:   remedy{agentop: agentopFix, byHand: byHand + " in " + env.tilde(rc)},
 		run: func(*checklist.Running) (string, []string, error) {
 			var out, errb bytes.Buffer
-			if bobShellDisable(target, true, &out, &errb) != 0 {
+			if rcDisable(blk, target, true, &out, &errb) != 0 {
 				return "", []string{env.tilde(rc)}, errors.New(lastLineOf(errb.String(), out.String()))
 			}
-			return "the bob shell function from " + env.tilde(rc), nil, nil
+			return what + " from " + env.tilde(rc), nil, nil
 		},
 	}, true
 }
