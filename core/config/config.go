@@ -966,6 +966,23 @@ type ListenerConfig struct {
 	// target with. Both empty means the feature is off and outbound
 	// behavior is unchanged.
 	//
+	// SCOPE — this gates the FORWARD PROXY's paths only, and "outer
+	// boundary" above means outer with respect to skip_hosts, not with
+	// respect to every way a byte can leave the pod. Not covered:
+	//
+	//   - the transparent listener (listener.transparent_proxy_addr):
+	//     HandleTransparentConn runs the shared pipeline but dials the
+	//     recovered destination without consulting this list.
+	//   - the extproc listener (envoy-sidecar mode): no wiring at all —
+	//     only cmd/cortex builds a Matcher, and only onto the forward
+	//     proxy server.
+	//
+	// MOCA shape A is the proxy-sidecar forward proxy and #1483 names
+	// CONNECT plus absolute-form only, so that is the scope this field
+	// claims. A deployment that also redirects traffic transparently, or
+	// runs envoy-sidecar, needs its egress held somewhere else too —
+	// deny-by-default here is not deny-by-default for the pod.
+	//
 	// A listener.* field: changing it requires a restart, like every other
 	// listener knob.
 	EgressAllowHosts []string `yaml:"egress_allow_hosts,omitempty" json:"egress_allow_hosts,omitempty"`
