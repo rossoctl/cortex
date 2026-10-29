@@ -1200,13 +1200,18 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		// Not reachable through net/http's own transport, which gives a 101 a
 		// writable body; a custom RoundTripper could violate it.
-		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", r.Host)
+		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade",
+			// Sanitized: Host is client-controlled, and a control rune forged into
+			// it would forge a log entry — the same finding #1539's lines got.
+			"host", pipeline.SanitizeControlRunes(r.Host))
 		s.failUpgradedWebSocket(w, pctx, record, "101 switching protocols with a non-writable body")
 		return
 	}
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", r.Host, "error", err)
+		// Host sanitized as above; the hijack error is the runtime's own text.
+		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade",
+			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
 		s.failUpgradedWebSocket(w, pctx, record, fmt.Sprintf("hijack failed relaying the upgrade: %v", err))
 		return
 	}
@@ -1235,12 +1240,14 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	resp.Header = w.Header()
 	resp.Body = nil
 	if err := resp.Write(brw); err != nil {
-		slog.Error("forward-proxy: writing the 101 failed", "host", r.Host, "error", err)
+		slog.Error("forward-proxy: writing the 101 failed",
+			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("writing the 101 failed: %v", err))
 		return
 	}
 	if err := brw.Flush(); err != nil {
-		slog.Error("forward-proxy: flushing the 101 failed", "host", r.Host, "error", err)
+		slog.Error("forward-proxy: flushing the 101 failed",
+			"host", pipeline.SanitizeControlRunes(r.Host), "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("flushing the 101 failed: %v", err))
 		return
 	}

@@ -136,7 +136,13 @@ const maxClientLen = 128
 // one on a file that cannot be edited after the fact. Two copies of a five-line rule
 // is the right trade for a durable file; two DIFFERENT rules is not, so a change to
 // either belongs in both.
-func sanitizeUA(s string) string {
+// SanitizeControlRunes is sanitizeUA's rule under its honest name: it applies to any
+// client-controlled string headed for a surface a terminal or a file renders, not only
+// a User-Agent. Exported for the listeners — the forward proxy logs the destination
+// Host on its egress-guard refusal paths, and a newline forged into that header would
+// forge a log entry (#1539's CodeQL finding), which is the same CWE-150 shape the UA
+// path guards against. The substitution, and every rationale below, is unchanged.
+func SanitizeControlRunes(s string) string {
 	if !hasControlRunes(s) {
 		// The overwhelmingly common case, and it must not allocate: this runs on the
 		// request path, twice per turn.
@@ -465,7 +471,7 @@ func ParseUserAgent(ua string) *EventClient {
 	// the same job as neutralising what a terminal would act on. The rule inside sanitizeUA is
 	// shared rather than merely kept identical — every surface calls IsControlRune now — so this
 	// side only has to leave it alone. Byte-length-neutral, so the cap arithmetic is untouched.
-	ua = capUA(sanitizeUA(strings.ReplaceAll(ua, "\t", " ")))
+	ua = capUA(SanitizeControlRunes(strings.ReplaceAll(ua, "\t", " ")))
 	c := &EventClient{Raw: ua}
 	// The product token is the first SPACE-delimited word, so the trailing comment Claude
 	// Code appends — "(external, cli)" — is ignored rather than having to be matched.
