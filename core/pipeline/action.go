@@ -171,6 +171,37 @@ func DenyStatus(status int, code, reason string) Action {
 	}}
 }
 
+// MocaRefusal builds the MOCA egress contract's refusal shape: a Reject
+// whose rendered response is the status, the header
+// "X-Moca-Egress-Error: <code>", Content-Type text/plain, and the body
+// "<code>: <name>\n" — exactly what the moca egress conformance suite's
+// wantRefusal asserts for every refusal family (destination_denied,
+// destination_private, plaintext_credential, conn_cap,
+// upstream_unreachable). name is family-specific: destination_denied names
+// the host, conn_cap the VM, upstream_unreachable the host.
+//
+// "X-Moca-Egress-Error" is that contract's wire identifier, used verbatim
+// for the same reason x-authbridge-* is: another system's harness matches
+// it byte for byte, and a "nicer" spelling here breaks the conformance run.
+//
+// Because the Violation carries a pre-rendered body, Violation.Render emits
+// it unchanged and every listener's WriteRejection delivers the contract
+// shape as-is. Do NOT route one of these through WriteRejectionForRequest
+// on a path where the named refusal IS the answer: the MCP JSON-RPC 200
+// rewrite would hide it behind a protocol frame.
+func MocaRefusal(status int, code, name string) Action {
+	h := http.Header{}
+	h.Set("X-Moca-Egress-Error", code)
+	return Action{Type: Reject, Violation: &Violation{
+		Status:   status,
+		Code:     code,
+		Reason:   name,
+		Headers:  h,
+		Body:     []byte(code + ": " + name + "\n"),
+		BodyType: "text/plain",
+	}}
+}
+
 // DenyWithDetails attaches plugin-arbitrary structured context. The
 // details map surfaces as a "details" object in the default JSON body
 // and is available to clients parsing the error programmatically.

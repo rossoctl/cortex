@@ -928,12 +928,47 @@ type ListenerConfig struct {
 	// consult SkipHosts — that is the hard egress guard and must not
 	// be self-exemptable via the agent's outbound destination.
 	//
+	// When EgressAllowHosts (or MOCA_EGRESS_ALLOW) is non-empty, the
+	// allowlist is checked FIRST and a skip pattern cannot exempt an
+	// off-list host: the allowlist is the outer boundary.
+	//
 	// Match-all patterns ("*", "**", whitespace-only) and patterns
 	// containing ":port" are rejected at startup so a single
 	// misconfigured entry can't silently disable all outbound
 	// enforcement. Mirrors the bypass-pattern guard added to ibac
 	// in #496.
 	SkipHosts []string `yaml:"skip_hosts" json:"skip_hosts"`
+
+	// EgressAllowHosts is the forward proxy's deny-by-default destination
+	// allow list (#1483, MOCA MI1 §8.5): when non-empty, an outbound
+	// destination not on the list is refused with 403 destination_denied
+	// naming the host — header X-Moca-Egress-Error, text/plain body
+	// "destination_denied: <host>\n", the moca egress conformance
+	// contract's refusal shape — before the plugin pipeline, before DNS
+	// resolution and before any dial, so an off-list host is answered by
+	// name rather than left to time out. Applies to CONNECT targets,
+	// absolute-form http:// hosts, and the target a plugin's redirect
+	// moved a request to.
+	//
+	// Entries are "host:port", exact match (no globs — a wildcard in a
+	// security boundary is one typo from "allow everything", so the shapes
+	// that would widen it are rejected at startup). Hosts compare
+	// lowercased without a trailing dot; a destination naming no port
+	// defaults to its scheme's (80 http, 443 otherwise).
+	//
+	// Checked BEFORE skip_hosts: when the list is on it is the outer
+	// boundary, and a skip_hosts entry for an off-list host is refused,
+	// not honored — bypass must not become an egress bypass.
+	//
+	// When this field is empty, the binary falls back to the
+	// MOCA_EGRESS_ALLOW environment variable (comma-separated host:port
+	// entries) — the channel the MOCA conformance harness drives the
+	// target with. Both empty means the feature is off and outbound
+	// behavior is unchanged.
+	//
+	// A listener.* field: changing it requires a restart, like every other
+	// listener knob.
+	EgressAllowHosts []string `yaml:"egress_allow_hosts,omitempty" json:"egress_allow_hosts,omitempty"`
 
 	// DeclineResponsesWebSockets: whether the forward proxy answers a WebSocket
 	// upgrade on an OpenAI Responses API path (one ending /responses, on chatgpt.com

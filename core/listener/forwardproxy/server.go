@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/listener/egressallow"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
@@ -114,6 +115,19 @@ type Server struct {
 	// See core/config/config.go ListenerConfig.SkipHosts for
 	// motivation.
 	SkipHosts *skiphost.Matcher
+
+	// EgressAllow, when non-nil, is the deny-by-default destination allow
+	// list (#1483, MOCA MI1 §8.5): an outbound destination not on the list
+	// is refused with 403 destination_denied naming the host, before the
+	// pipeline and before DNS resolution or any dial — the moca egress
+	// conformance contract's refusal shape (header X-Moca-Egress-Error,
+	// text/plain body "destination_denied: <host>\n"). Applied to CONNECT
+	// targets, absolute-form http:// hosts, and the target a plugin's
+	// redirect moved a request to. Checked BEFORE SkipHosts: when the list
+	// is on it is the outer boundary, and a skip_hosts entry for an off-list
+	// host must not turn a bypass into an egress bypass. nil keeps the
+	// listener's behavior unchanged; see config.ListenerConfig.EgressAllowHosts.
+	EgressAllow *egressallow.Matcher
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
@@ -360,6 +374,29 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 
+	// Egress allow list (#1483), the request-path half: a plain (non-bridged)
+	// absolute-form request is judged on its dial target, r.URL.Host, the same
+	// boundary the CONNECT gate holds — before SkipHosts (the allowlist is the
+	// outer boundary; a skip entry must not turn a bypass into an egress
+	// bypass), before the pipeline, and before the transport resolves or dials
+	// anything. A bridged request is not re-judged here: its destination was
+	// gated at its CONNECT, and the misdirected check above pins its Host to
+	// that same authority. Plain WriteRejection for the same reason as there:
+	// the named 403 is the contract, not something to re-frame for MCP.
+	if !isBridge && s.EgressAllow != nil && r.URL.Host != "" && !s.EgressAllow.Allows(r.URL.Host, r.URL.Scheme) {
+		host := hostOnly(r.URL.Host)
+		action := egressAllowRefusal(pctx, host)
+		chain := s.clientChain(r)
+		sid := s.recordingSessionID("", r.Header, chain)
+		if chain != nil && s.Sessions != nil {
+			defer s.Sessions.TouchProcess(sid, chain)
+		}
+		s.recordOutboundRejectIn(tl, pctx, action, sid)
+		slog.Info("forward-proxy: destination refused by egress allow list", "host", host, "method", r.Method, "path", r.URL.Path)
+		httpx.WriteRejection(w, action)
+		return
+	}
+
 	// Every request that reaches here is re-originated from pctx below, plain or
 	// TLS-bridged, so a plugin may redirect it. The CONNECT and transparent-connection
 	// contexts are never marked: both dial the address the client chose, so a redirect
@@ -538,6 +575,29 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 	// Clear RequestURI — set by the server but must be empty for client requests
 	r.RequestURI = ""
+
+	// Egress allow list, redirect re-check (#1483): a plugin's redirect —
+	// inference-router moves requests between model servers — can change the
+	// dial target after the gate at the top of this function passed it, and
+	// deny-by-default means the DIAL TARGET is what counts, not the host the
+	// client named. An off-list redirect target is refused here, before the
+	// exchange: the request row has already landed above, and this denial row
+	// follows it. Unconditional rather than only-when-redirected, so the
+	// invariant "nothing dials off-list" holds by one check at the dial
+	// rather than by reasoning about every path that can reach it.
+	if s.EgressAllow != nil && !s.EgressAllow.Allows(r.URL.Host, r.URL.Scheme) {
+		host := hostOnly(r.URL.Host)
+		action := egressAllowRefusal(pctx, host)
+		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(sessionID, r.Header, chain))
+		// A delivered answer, not a failed exchange — the 426 rule: the deferred
+		// RunFinish reads zero StatusCode as OutcomeError, and the allowlist
+		// refusing an off-list redirect is the policy working, not a failure.
+		pctx.StatusCode = http.StatusForbidden
+		slog.Info("forward-proxy: destination refused by egress allow list (redirect re-check)",
+			"host", host, "requested", pctx.Host)
+		httpx.WriteRejection(w, action)
+		return
+	}
 
 	client := s.Client
 	if isBridge && s.TLSBridge != nil {
@@ -2067,6 +2127,27 @@ func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, a
 	s.appendOutbound(tl, sid, sessionevent.Deny(pctx, action, pipeline.Outbound))
 }
 
+// egressAllowRefusal builds the destination_denied refusal for an off-list
+// destination and records the deny invocation on pctx. The invocation is
+// what makes the denied-phase session row land at all — recordOutboundRejectIn
+// skips events with no invocations, and a listener gate is not a plugin, so
+// the record is ours to make. Phase is stamped explicitly because the gate
+// runs outside a pipeline pass, where the framework's currentPhase is empty
+// and the row's snapshot filters by it. Details name the host the way the
+// moca conformance suite's audit event reads it ({decision:
+// destination_denied, host, ...}); #1482's JSON audit channel builds on the
+// same row.
+func egressAllowRefusal(pctx *pipeline.Context, host string) pipeline.Action {
+	pctx.Record(pipeline.Invocation{
+		Plugin:  "egress-allowlist",
+		Action:  pipeline.ActionDeny,
+		Phase:   pipeline.InvocationPhaseRequest,
+		Reason:  "destination_denied",
+		Details: map[string]string{"host": host},
+	})
+	return pipeline.MocaRefusal(http.StatusForbidden, "destination_denied", host)
+}
+
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
 // Once the tunnel is open the timeout no longer applies — the agent's TLS
 // handshake and subsequent traffic flow at their own pace.
@@ -2112,6 +2193,33 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// recordTunnelOpened builds its event, so the pin is what keeps the tunnel row
 	// attributed to the agent that opened it.
 	pctx.ResolveClient()
+
+	// Egress allow list (#1483): when on, an off-list CONNECT target is refused
+	// here — before the SkipHosts match, so a skip entry cannot exempt an
+	// off-list host (the allowlist is the outer boundary), and before the
+	// pipeline and the dial, so the destination is neither resolved nor
+	// contacted: the refusal happens at a point Go's resolver has not run
+	// (it runs inside net.DialTimeout, which this return never reaches), which
+	// is the conformance contract's "no DNS, no connect" by construction. The
+	// named 403 is written with plain WriteRejection, never
+	// WriteRejectionForRequest: the egress boundary's answer is the contract,
+	// and the MCP JSON-RPC 200 rewrite would hide it behind a protocol frame.
+	if s.EgressAllow != nil && !s.EgressAllow.Allows(r.Host, "tcp") {
+		host := hostOnly(r.Host)
+		action := egressAllowRefusal(pctx, host)
+		// Session resolution the recordUnbufferedRequest way — pre-pipeline,
+		// from the client's headers and process only — so the denied row lands
+		// in the bucket the request would have recorded under.
+		chain := s.clientChain(r)
+		sid := s.recordingSessionID("", r.Header, chain)
+		if chain != nil && s.Sessions != nil {
+			defer s.Sessions.TouchProcess(sid, chain)
+		}
+		s.recordOutboundReject(pctx, action, sid)
+		slog.Info("forward-proxy: CONNECT destination refused by egress allow list", "host", host)
+		httpx.WriteRejection(w, action)
+		return
+	}
 
 	// SkipHosts short-circuit: open the tunnel without running the
 	// pipeline or recording a session event. The pipeline never ran,
