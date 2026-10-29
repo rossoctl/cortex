@@ -241,7 +241,10 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 			Reason: "plaintext_credential",
 			Details: map[string]string{
 				"scheme": pctx.Scheme,
-				"host":   key,
+				// The resolver key, not the host: under key_by: host it is
+				// pctx.Host (host:port), under key_by: static the configured
+				// key — which is not a host at all.
+				"key": key,
 			},
 		})
 		return pipeline.DenyStatus(403, "plaintext_credential",

@@ -54,10 +54,12 @@ resolved real credential.
 ### Plaintext refusal (`403 plaintext_credential`)
 
 A credential that is about to be injected is never sent over plain
-HTTP: when the request's scheme is `http` and the resolved host has a
-credential, the plugin denies with `403 plaintext_credential` before
-any header is written, so nothing is injected and nothing is sent
-upstream. The code is the MOCA egress contract's identifier verbatim
+HTTP: when the request's scheme is `http` and resolution reached a
+credential — the bearer and placeholder checks above passed — the
+plugin denies with `403 plaintext_credential` before any header is
+written, so nothing is injected and nothing is sent upstream. A
+plaintext request that fails an earlier check keeps that check's 401;
+either way nothing is sent. The code is the MOCA egress contract's identifier verbatim
 (MI1 §8.5) rather than the usual `static-inject.<reason>` form, so the
 conformance suite Cortex shares with `moca-egress` matches it without
 a translation table.
@@ -70,3 +72,15 @@ determine one) is likewise not treated as plaintext. The check runs
 after resolution on purpose: only the resolver knows whether this host
 has a credential, which is why the gate lives in the injector rather
 than in a pre-pipeline check.
+
+One boundary worth naming: the gate judges the scheme the request
+*arrived* with. A `WritesDestination` plugin later in the chain can
+`Redirect` to an `http://` target (an operator-pinned server), and the
+listener applies the redirect after the pipeline has run, headers
+already injected. The shipped inference-router clears that path
+itself, dropping credential-sounding headers and overwriting
+`Authorization` / `X-Api-Key` with the routed server's own key — so
+what can survive is a custom `inject_header` whose name avoids every
+credential word. If static-inject shares a pipeline with a redirecting
+plugin and a plaintext pin, give the injected header a name containing
+one of those words so the router's drop covers it.
