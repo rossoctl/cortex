@@ -904,7 +904,7 @@ func (c *Context) RecordStrippedUpgrade(h http.Header) {
 	if v == "" {
 		return
 	}
-	c.UpgradeStripped = capUA(sanitizeUA(strings.ReplaceAll(v, "\t", " ")))
+	c.UpgradeStripped = capUA(SanitizeControlRunes(strings.ReplaceAll(v, "\t", " ")))
 }
 
 // ResponseBodyMutated is the response-side analogue of BodyMutated, and

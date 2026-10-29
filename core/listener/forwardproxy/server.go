@@ -392,7 +392,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			defer s.Sessions.TouchProcess(sid, chain)
 		}
 		s.recordOutboundRejectIn(tl, pctx, action, sid)
-		slog.Info("forward-proxy: destination refused by egress allow list", "host", host, "method", r.Method, "path", r.URL.Path)
+		// Sanitized: host (the URL authority), Method and Path are all client-controlled,
+		// and a control rune forged into any of them would forge a log entry — the same
+		// CWE-150 shape #1539's egress guard was flagged for.
+		slog.Info("forward-proxy: destination refused by egress allow list",
+			"host", pipeline.SanitizeControlRunes(host),
+			"method", pipeline.SanitizeControlRunes(r.Method),
+			"path", pipeline.SanitizeControlRunes(r.URL.Path))
 		httpx.WriteRejection(w, action)
 		return
 	}
@@ -593,8 +599,11 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// RunFinish reads zero StatusCode as OutcomeError, and the allowlist
 		// refusing an off-list redirect is the policy working, not a failure.
 		pctx.StatusCode = http.StatusForbidden
+		// Sanitized like the gate at the top of this function: both hosts are
+		// client-controlled (pctx.Host is the one the client named, pre-redirect).
 		slog.Info("forward-proxy: destination refused by egress allow list (redirect re-check)",
-			"host", host, "requested", pctx.Host)
+			"host", pipeline.SanitizeControlRunes(host),
+			"requested", pipeline.SanitizeControlRunes(pctx.Host))
 		httpx.WriteRejection(w, action)
 		return
 	}
@@ -2216,7 +2225,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			defer s.Sessions.TouchProcess(sid, chain)
 		}
 		s.recordOutboundReject(pctx, action, sid)
-		slog.Info("forward-proxy: CONNECT destination refused by egress allow list", "host", host)
+		// Sanitized like the serveOutbound refusal: host is client-controlled and
+		// lands in a log file.
+		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",
+			"host", pipeline.SanitizeControlRunes(host))
 		httpx.WriteRejection(w, action)
 		return
 	}
