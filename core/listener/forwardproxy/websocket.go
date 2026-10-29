@@ -58,7 +58,10 @@ const (
 	// conversation, the same body an HTTPS POST would — and maxBodySize for each event
 	// the origin sends back, the SSE path's per-frame cap. A larger message ends the
 	// socket with close code 1009, as the HTTPS path refuses an oversized body with a
-	// 413: relaying it unread would carry a turn no plugin saw and no row records.
+	// 413. From the client that happens before any of it is forwarded, since relaying
+	// it unread would carry a turn no plugin saw and no row records. From the origin
+	// the frames already sent stay sent: relayDown forwards each frame before reading
+	// it, so a too-big answer reaches the client up to the frame that crossed the limit.
 	wsClientMessageLimit = maxRequestBodySize
 	wsServerMessageLimit = maxBodySize
 	// wsFrameLimit is the largest single frame relayed. Raw is buffered whole before
@@ -164,7 +167,7 @@ func pipelineCannotCarry(p *pipeline.Pipeline) string {
 // pctx is the handshake's, after the pipeline ran on it. Its rows are the socket's open
 // (now) and close (when it ends), sharing its RequestID the way an opaque tunnel's do;
 // the turns record their own pairs between them.
-func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc, p *pipeline.Pipeline) {
+func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, tl *tunnelLog, sid string, chain []session.Proc) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
@@ -189,6 +192,12 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 
 	client := s.TLSBridge.Upstream
 	resp, err := client.Do(up)
+	if err == nil {
+		// The origin answered the upgrade, so it was forwarded, whatever it answered:
+		// the request row must not say otherwise. A dial that failed forwarded nothing,
+		// and keeps the marker.
+		pctx.UpgradeStripped = ""
+	}
 	if err != nil {
 		cancel()
 		status, fail := pipeline.ExchangeFailure(r.Context(), err)
@@ -269,7 +278,7 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 	sock := &wsSocket{
 		s: s, r: r, hs: pctx, tl: tl, sid: sid, chain: chain,
 		client: clientConn, clientR: clientBuf.Reader, up: upConn,
-		start: time.Now(), ctxv: ctx, stop: stop, hsp: p,
+		start: time.Now(), ctxv: ctx, stop: stop,
 	}
 	s.recordWebSocketOpen(sock)
 	sock.run()
@@ -340,8 +349,6 @@ type wsSocket struct {
 	// waiting on something (a budget pause, a slow script) is released with it.
 	ctxv context.Context
 	stop context.CancelFunc
-	// hsp is the pipeline the handshake ran on.
-	hsp *pipeline.Pipeline
 
 	// endedBy is the side whose relay stopped first, "client" or "origin", which
 	// decides how a turn still open at that moment is recorded. Set once, by the
@@ -396,14 +403,18 @@ func (ws *wsSocket) run() {
 	<-done
 
 	// Both relays have returned, so nothing else touches the queue: every turn still
-	// in it was sent and never answered in full.
+	// in it was sent and never answered in full. A prewarm in it is left alone: it was
+	// finished when it was sent and has no request row, so ending it here would run
+	// its Finishers twice and record a response row with nothing to pair with.
 	ws.turnMu.Lock()
 	open := ws.turns
 	ws.turns = nil
 	ws.turnMu.Unlock()
 	status, fail := ws.unfinishedTurn()
 	for _, t := range open {
-		ws.endTurn(t, status, fail)
+		if !t.prewarm {
+			ws.endTurn(t, status, fail)
+		}
 	}
 	ws.recordClose()
 	// Released last: endTurn's teardown contexts derive from it.

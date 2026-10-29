@@ -514,7 +514,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
 				return
 			}
-			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain, p)
+			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain)
 			return
 		case config.ResponsesWebSocketsDecline:
 			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)

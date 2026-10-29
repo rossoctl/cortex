@@ -256,8 +256,10 @@ that refuses or rewrites content does so there too. It records no turn: it produ
 output.
 
 A turn over the **32 MiB** an HTTPS request body may be ends the socket with close code
-1009, "message too big" — the WebSocket counterpart of the 413 HTTPS answers. It is never
-relayed unread, since no plugin would see it and no row would record it.
+1009, "message too big" — the WebSocket counterpart of the 413 HTTPS answers — before any
+of it reaches OpenAI, since no plugin would see it and no row would record it. An answer
+from OpenAI over 10 MiB ends the socket the same way; the frames before the limit have
+already reached Codex, since the relay forwards each frame before reading it.
 
 **Pressing Esc mid-answer closes the socket.** Codex drops the turn's stream, which ends
 the WebSocket, and opens a new one for the next prompt. The interrupted turn is recorded

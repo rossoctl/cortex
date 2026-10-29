@@ -54,7 +54,7 @@ type Frame struct {
 	// Forward this, not a re-encoding.
 	Raw []byte
 	// Payload is the unmasked payload, or nil when the frame is over the reader's
-	// limit: such a frame is still relayed whole, but not read.
+	// limit, in which case Truncated is set and Message.Add refuses the message.
 	Payload []byte
 	// Truncated reports that Payload is nil because the frame exceeded the limit.
 	Truncated bool
@@ -66,10 +66,9 @@ func (f *Frame) IsControl() bool { return f.Opcode&0x8 != 0 }
 // Reader reads frames from one direction of a connection.
 type Reader struct {
 	r io.Reader
-	// limit is the largest payload kept for reading. A larger frame is read and
-	// relayed in full but its Payload is dropped, so one huge message costs the
-	// proxy no more than limit bytes of reading memory... beyond the Raw copy the
-	// relay needs anyway.
+	// limit is the largest payload kept for reading. A larger frame is read whole
+	// into Raw, which maxFrame bounds, but its Payload is not kept, and Message.Add
+	// turns it into ErrMessageTooBig, which ends the socket.
 	limit int64
 	// maxFrame bounds Raw: a frame over it is refused, since relaying it would mean
 	// buffering it whole first.

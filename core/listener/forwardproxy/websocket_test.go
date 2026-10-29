@@ -621,8 +621,8 @@ func TestResponsesWebSocket_OriginRefusalIsRelayed(t *testing.T) {
 
 // A client that hangs up mid-turn — Codex does this on Esc, closing the socket rather
 // than interrupting over it — still gets that turn recorded with what had arrived, as a
-// 499 client_canceled the way an HTTPS client hanging up is, not as an upstream
-// failure: the origin did nothing wrong.
+// 200 turn_interrupted the way an HTTPS stream the client leaves keeps its 200, not as an
+// upstream failure: the origin did nothing wrong.
 func TestResponsesWebSocket_ClientHangupFinalizesTheOpenTurn(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
 	// An origin that answers a create with a partial stream and then stalls.
@@ -711,7 +711,8 @@ func TestResponsesWebSocket_OriginDropFinalizesTheOpenTurnAsUpstreamError(t *tes
 // stops first. Here the client sends a close frame, the origin answers with one of its
 // own and drops the connection at once, so the relay reading from the origin is the
 // first to see its connection gone — timing alone would blame the origin. The client
-// sent the first close, so the turn is the client's: 499, with the code it closed with.
+// sent the first close, so the turn is the client's: 200 turn_interrupted, with the code
+// it closed with.
 func TestResponsesWebSocket_FirstCloseFrameDecidesWhoEndedTheTurn(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
 	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

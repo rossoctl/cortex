@@ -3,6 +3,7 @@ package forwardproxy
 import (
 	"bufio"
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -291,4 +292,129 @@ func (r *sessionLenRecorder) lens() []int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]int(nil), r.got...)
+}
+
+// A prewarm still waiting for its answer when the socket closes is not a turn: it was
+// already finished when it was sent. Closing must not finish it again, nor record a
+// response row for a request no row was recorded for (#1467 review, reproduced).
+func TestResponsesWebSocket_UnansweredPrewarmIsNotFinishedTwice(t *testing.T) {
+	count := &finishCounter{}
+	logs := captureLogs(t)
+	h := newWSHarness(t, config.ResponsesWebSocketsParse, count)
+	scriptedOrigin(h, func(read func() *wsframe.Frame, write func(string)) {
+		read() // the prewarm, never answered
+	})
+	c := h.dial(t, nil)
+	c.send(`{"type":"response.create","generate":false,"model":"gpt-6-luna","input":[]}`)
+	// Wait until the origin has the prewarm, so the close lands while it is queued.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		h.origin.mu.Lock()
+		n := len(h.origin.creates)
+		h.origin.mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.close()
+	events := h.events(t, codexSID, true)
+
+	if rows := turnRows(events); len(rows) != 0 {
+		t.Errorf("%d turn response rows for a prewarm that was never answered; want none", len(rows))
+	}
+	// The prewarm is the one POST, finished once, when it was sent. Before the fix the
+	// close finished it again: RunFinish drops a second call with a WARN rather than run
+	// the Finishers twice, so the Finisher count alone cannot see it, but the WARN can.
+	// (The CONNECT tunnel and the handshake finish too, at moments the test does not
+	// control, so they are not counted.)
+	if got := count.n(); got != 1 {
+		t.Errorf("the prewarm's Finisher ran %d times; want 1", got)
+	}
+	if logs.contains("RunFinish called twice") {
+		t.Error("the prewarm was finished twice: RunFinish dropped a second call at close")
+	}
+}
+
+// finishCounter counts Finisher calls for POST requests: a turn, or a prewarm.
+type finishCounter struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (*finishCounter) Name() string { return "finish-counter" }
+func (*finishCounter) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (*finishCounter) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (*finishCounter) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (c *finishCounter) OnFinish(_ context.Context, pctx *pipeline.Context) {
+	if pctx.Method != http.MethodPost {
+		return
+	}
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+}
+func (c *finishCounter) n() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// An origin that refuses the forwarded upgrade still received it, so the request row
+// must not say the upgrade was stripped (#1467 review).
+func TestResponsesWebSocket_OriginRefusalIsNotMarkedStripped(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	h.origin.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+	c := h.dial(t, nil)
+	if c.status != http.StatusForbidden {
+		t.Fatalf("handshake answered %d, want the origin's 403", c.status)
+	}
+	v := h.store.View(codexSID)
+	if v == nil {
+		t.Fatal("no session recorded")
+	}
+	for _, e := range v.Events {
+		if e.Phase == pipeline.SessionRequest && e.UpgradeStripped != "" {
+			t.Errorf("request row carries upgradeStripped=%q; the origin received the upgrade and refused it", e.UpgradeStripped)
+		}
+	}
+}
+
+// logBuffer is a slog destination a test can search.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Contains(b.buf.String(), s)
+}
+
+// captureLogs sends slog's default logger to a buffer for the rest of the test.
+func captureLogs(t *testing.T) *logBuffer {
+	t.Helper()
+	b := &logBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(b, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return b
 }
