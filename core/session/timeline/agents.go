@@ -19,6 +19,12 @@ import (
 // real sessions, and drawing them would bury the turns that matter.
 const progressPrompt = "Describe your most recent action in 3-5 words"
 
+// recapPrompt asks for the summary Claude Code shows when the user comes back to an idle
+// session. The same shape as a progress label: whole context and tool list, told apart only by
+// its last user message. Drawn as a turn it was the agent working while the user was away, and
+// two recaps of an unchanged conversation read as a retry: 74 hours of it on one session.
+const recapPrompt = "The user stepped away and is coming back"
+
 // The two ways a background subagent's result reaches the agent that started it. Both name the
 // subagent by the id Claude Code sends as X-Claude-Code-Agent-Id, the id the proxy records as
 // SessionEvent.Subagent, so a return links to its row without any text matching.
@@ -370,7 +376,7 @@ func isSideCall(inf *pipeline.InferenceExtension) bool {
 	}
 	for i := len(inf.Messages) - 1; i >= 0; i-- {
 		if m := inf.Messages[i]; m.Role != "system" {
-			return strings.Contains(m.Content, progressPrompt)
+			return strings.Contains(m.Content, progressPrompt) || strings.Contains(m.Content, recapPrompt)
 		}
 	}
 	return false

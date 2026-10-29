@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"errors"
+	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
@@ -139,6 +140,18 @@ type Server struct {
 	// for byte.
 	DeclineResponsesWebSockets bool
 
+	// EgressGuard, when non-nil, checks every destination this proxy dials —
+	// CONNECT tunnels, plain and bridged requests, transparent redirects, and
+	// skip_hosts traffic included, because a bypass must not become an SSRF
+	// bypass — against the refusal set in core/listener/egressguard: resolved
+	// once, refused with 403 destination_private when the address is loopback,
+	// link-local, RFC 1918 / unique-local, or one of this host's own addresses
+	// and no permit covers it, and dialed at the checked address so a second
+	// resolution can never re-answer (the DNS-rebinding window). nil keeps the
+	// listener's dial behavior unchanged; see WithEgressGuard and
+	// config.ListenerConfig.EgressGuard.
+	EgressGuard *egressguard.Guard
+
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
 	// nearest ancestor's — before client affinity is consulted; see
@@ -202,10 +215,37 @@ type MTLSOptions struct {
 	Metrics *authtls.Metrics
 }
 
+// Option configures optional forward-proxy behavior in NewServer. Variadic so
+// the core constructor signature — and every existing caller — is unchanged.
+type Option func(*options)
+
+type options struct {
+	egress *egressguard.Guard
+}
+
+// WithEgressGuard arms the SSRF dial guard (#1484): every destination the
+// proxy dials is resolved once, refused with 403 destination_private when it
+// lands in loopback / link-local / private / this host's own address space
+// uncovered by a permit, and dialed at the checked address so DNS rebinding
+// cannot re-answer between the check and the connect. Applies to CONNECT
+// tunnels (Server.EgressGuard, checked in handleConnect and the transparent
+// listener) and to every request the transport dials, mTLS included — under
+// mTLS the check runs before the TCP connect, so the TLS handshake never
+// reaches a refused address. A nil guard is accepted and keeps the dial
+// behavior unchanged.
+func WithEgressGuard(g *egressguard.Guard) Option {
+	return func(o *options) { o.egress = g }
+}
+
 // NewServer creates a forward proxy server with a default HTTP client.
 // When mtls is non-nil, every outbound dial does TLS-or-fail using the
 // local SVID; see MTLSOptions for semantics.
-func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOptions) (*Server, error) {
+func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOptions, opts ...Option) (*Server, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	transport := &http.Transport{
 		// Sane Go defaults for everything except DialContext, which we
 		// customize when mTLS is on.
@@ -232,12 +272,17 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 		if err != nil {
 			return nil, fmt.Errorf("forwardproxy: build client tls config: %w", err)
 		}
-		transport.DialContext = mtlsDialer(tlsCfg, mtls.Metrics).DialContext
+		// The guard sits INSIDE the mTLS dialer: check first, then connect,
+		// then handshake — a refused address never gets a TLS ClientHello.
+		transport.DialContext = mtlsDialer(tlsCfg, mtls.Metrics).withGuard(o.egress).DialContext
+	} else if o.egress != nil {
+		transport.DialContext = o.egress.DialContext
 	}
 
 	return &Server{
 		OutboundPipeline: outbound,
 		Sessions:         sessions,
+		EgressGuard:      o.egress,
 		Client: &http.Client{
 			// No Client.Timeout — Go applies that to the entire
 			// request lifecycle including body read, which kills
@@ -259,6 +304,10 @@ type mtlsDialFunc struct {
 	plain   *net.Dialer
 	tlsCfg  *cryptotls.Config
 	metrics *authtls.Metrics
+	// egress, when non-nil, checks the destination before the plain dial —
+	// the TLS handshake is the step after the connect, so it never reaches an
+	// address the guard refused. nil keeps the unguarded dial.
+	egress *egressguard.Guard
 }
 
 func mtlsDialer(cfg *cryptotls.Config, metrics *authtls.Metrics) *mtlsDialFunc {
@@ -269,8 +318,27 @@ func mtlsDialer(cfg *cryptotls.Config, metrics *authtls.Metrics) *mtlsDialFunc {
 	}
 }
 
+// withGuard returns d with the egress guard set. A nil guard is fine: the
+// dialer then behaves exactly as without it, which is why NewServer can pass
+// o.egress unconditionally under mTLS.
+func (d *mtlsDialFunc) withGuard(g *egressguard.Guard) *mtlsDialFunc {
+	d.egress = g
+	return d
+}
+
 func (d *mtlsDialFunc) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	plain, err := d.plain.DialContext(ctx, network, addr)
+	// SNI below reads the ORIGINAL addr, so the name the request used stays
+	// the handshake's ServerName; only the TCP connect follows the checked
+	// address. A literal destination is its own checked address.
+	dialAddr := addr
+	if d.egress != nil {
+		checked, err := d.egress.CheckAddr(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		dialAddr = checked
+	}
+	plain, err := d.plain.DialContext(ctx, network, dialAddr)
 	if err != nil {
 		// TCP failure — separate bug class from "peer doesn't speak TLS".
 		// Returned as-is so callers see the underlying dial error.
@@ -568,6 +636,33 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
 	}
 	if err != nil {
+		// The egress guard's refusal, BEFORE the generic 502: a destination that
+		// resolved into refused space is a policy answer (403 destination_private),
+		// not a failed exchange. errors.As traverses the *url.Error client.Do wraps
+		// every dial error in; see TransportError's note on that wrapping.
+		var ref *egressguard.Refusal
+		if errors.As(err, &ref) {
+			slog.Debug("forward-proxy: destination refused by egress guard",
+				// Sanitized: Host and Method are client-controlled, and a newline
+				// forged into either would forge a log entry (#1539's CodeQL finding).
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"method", pipeline.SanitizeControlRunes(r.Method), "addr", ref.Addr.String())
+			// The listener's standard rejection shape, code verbatim from the MOCA
+			// egress contract so the shared conformance suite matches.
+			httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
+				fmt.Sprintf("refusing to reach private destination %s (%s)", ref.Host, ref.Addr)))
+			// A delivered answer, not a failed exchange — the 426 rule: the Finisher
+			// reads non-zero StatusCode as an allow, and the guard did what it was
+			// configured to. usage keys off EventError.Kind, which stays set below.
+			pctx.StatusCode = http.StatusForbidden
+			if !skipped {
+				s.recordOutboundResponseEvent(pctx, http.StatusForbidden, &pipeline.EventError{
+					Kind:    pipeline.ErrorKindDestinationPrivate,
+					Message: ref.Error(),
+				})
+			}
+			return
+		}
 		// A 502 with the cause, or a 499 when the client hung up first — which,
 		// with no timeout on this client, is how a hung upstream usually ends.
 		// See pipeline.ExchangeFailure.
@@ -2439,7 +2534,54 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Plain TCP dial. See package-level comment on why mTLS doesn't
 	// apply here. r.Host on a CONNECT carries "host:port" already.
-	upstream, err := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+	//
+	// dialTarget is what actually gets dialed: r.Host itself when the guard is
+	// off, else the address the guard checked — resolved once here, and reused
+	// verbatim by the bridge-fall-open re-dial below, so no second resolution
+	// can ever re-answer between check and connect (the DNS-rebinding window).
+	dialTarget := r.Host
+	if s.EgressGuard != nil {
+		checked, cerr := s.EgressGuard.CheckAddr(r.Context(), "tcp", r.Host)
+		if cerr != nil {
+			var ref *egressguard.Refusal
+			if errors.As(cerr, &ref) {
+				slog.Warn("forward-proxy: CONNECT destination refused by egress guard",
+					// Sanitized like the Debug line in serveOutbound: r.Host is
+					// client-controlled and lands in a log file.
+					"host", pipeline.SanitizeControlRunes(r.Host), "addr", ref.Addr.String())
+				// A policy answer, not a failed exchange. skip_hosts destinations
+				// are refused too — a bypass must not become an SSRF bypass — and
+				// tl's rows are no-ops for them, exactly as the dial failure's are.
+				httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
+					fmt.Sprintf("refusing to reach private destination %s (%s)", ref.Host, ref.Addr)))
+				// The 426 rule again: a delivered 403 the Finisher reads as an
+				// allow, because the guard did what it was configured to.
+				pctx.StatusCode = http.StatusForbidden
+				tl.open(pipeline.TunnelDestPrivate)
+				tl.close(http.StatusForbidden, &pipeline.EventError{
+					Kind:    pipeline.ErrorKindDestinationPrivate,
+					Message: ref.Error(),
+				}, 0, 0)
+				return
+			}
+			// Not a refusal: the name would not resolve. Same shape as a dial
+			// failure — nothing was dialed, and the client gets the 502.
+			// Both values sanitized: the name is client-controlled, and the error
+			// embeds it (net.DNSError quotes the name it failed to resolve).
+			slog.Warn("forward-proxy: CONNECT destination resolution failed",
+				"host", pipeline.SanitizeControlRunes(r.Host),
+				"error", pipeline.SanitizeControlRunes(cerr.Error()))
+			http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+			tl.open(pipeline.TunnelDialFailed)
+			tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
+			return
+		}
+		dialTarget = checked
+		// The audit trail against rebinding: "asked for the name, dialed this
+		// address" — moca's egress conformance reads it off the tunnel open row.
+		pctx.DialedAddr = checked
+	}
+	upstream, err := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 	if err != nil {
 		slog.Warn("forward-proxy: CONNECT upstream dial failed", "host", r.Host, "error", err)
 		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
@@ -2493,8 +2635,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
-			// like any other opaque one.
-			up2, derr := net.DialTimeout("tcp", r.Host, connectDialTimeout)
+			// like any other opaque one. dialTarget, not r.Host: the address was
+			// already checked once, and re-resolving here would reopen the rebinding
+			// window the check closed.
+			up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
 			if derr != nil {
 				// The client already has its 200, so that stays the status, and the
 				// error says why the tunnel died. Closing the client is what makes

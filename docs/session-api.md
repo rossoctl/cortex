@@ -119,22 +119,23 @@ requests the inference parser attributed to a Claude Code agent (`agentRole`),
 and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
 
 - A **turn** is one model call, request to end of response. Claude Code's
-  progress-label calls (the prompt in the last non-system message) and
-  tool-less side calls (titler, classifier) are left out. `error` marks a call
-  that failed: an upstream error, a refusal, the client giving up, a finish of
-  `content_filter`, `failed` or `cancelled`, or a response that ended with no
-  finish reason, which is a stream cut mid-reply. `resent` marks a call that
-  sent its agent's previous call's conversation again unchanged: a retry.
+  progress-label and away-recap calls (the prompt in the last non-system
+  message) and tool-less side calls (titler, classifier) are left out. `error`
+  marks a call that failed: an upstream error, a refusal, the client giving up,
+  a finish of `content_filter`, `failed` or `cancelled`, or a response that
+  ended with no finish reason, which is a stream cut mid-reply. `resent` marks
+  a call that sent its agent's previous call's conversation again unchanged: a
+  retry.
 - A **tool** runs from the response that requested it to the agent's first
   request carrying its result (`inference.toolResults[].toolUseId`). A tool
   Claude Code started while the response was still streaming can have its
-  result recorded first; its end is clamped to its start. A tool whose agent
-  never sent its result ends at the first CONNECT to a model host that failed
-  after it and after the last successful turn of its agent or any agent below
-  it: the agent's attempt to report back, cut off by an outage. A failure the
-  agent recovered from is a blip and ends nothing. Without one the tool has no
-  `end` and is still running. `preview` is up to 80 characters of
-  the command, path or description.
+  result recorded first; its end is clamped to its start. A CONNECT to a model
+  host that could not be dialed, after the tool started and before its result,
+  ends it there unless its agent, or an agent below it, made a successful turn
+  in between: the agent tried to report back and the network was gone, so the
+  result arrived only when it came back, or never. A failure the agent recovered
+  from is a blip and ends nothing. A tool with neither has no `end` and is still
+  running. `preview` is up to 80 characters of the command, path or description.
 - An **agent** links to the `Agent` tool call that started it by the id the
   call's result names (`agentId: …`). A fork's result names none, so a fork
   takes its parent's earliest unmatched spawn. Requests recorded before the
@@ -148,7 +149,7 @@ and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
   acknowledgement, so the job is what shows it still running. A job with no
   `end` is one no notification named: still running, or never reported, as a
   server left running when its agent exited is. A job whose agent was cut off
-  ends where its tools do: at the first failed CONNECT to a model host after the
+  ends where its tools do: at the first failed dial to a model host after the
   agent's last call. Absent when the session started none.
 
 **Hosts** are every outbound request paired with its response, every opaque
@@ -262,7 +263,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   session records the request row plus a **101 response row** paired to it by
   `requestId`, carrying `bytesUp` and `bytesDown` for the whole WebSocket
   session — the one response row besides a tunnel close that carries both —
-  with `durationMs` covering the session and `ttfbMs` the handshake.
+  with `durationMs` covering the session and `ttfbMs` the handshake. A **403**
+  with `error.kind: "destination_private"` is the egress guard's refusal
+  (`listener.egress_guard`): the destination resolved into loopback,
+  link-local, private or this host's own address space and no permit covered
+  it. Also the proxy's own answer rather than the upstream's, and also not
+  counted as an error — the guard did what it was configured to.
 - `ttfbMs` — on a delivered response row, the wall time from request entry to
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
@@ -302,7 +308,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "response"`), carrying the CONNECT's own status, the duration, and the bytes
   each way. It is not the destination's status: that travels inside the
   client's end-to-end TLS. Tunnel rows are kept out of `/v1/usage`: a tunnel's
-  lifetime is not a request latency.
+  lifetime is not a request latency. `tunnelReason: "dest-private"` is the
+  egress guard's refusal: the close row carries 403 and
+  `error.kind: "destination_private"`, and no tunnel was ever opened to the
+  destination — the same refusal a plain request gets, one layer down.
+- `dialAddr` — present on a tunnel's open row when the egress guard is on:
+  the address the guard checked and the proxy dialed, `"ip:port"`. Together
+  with `host` it is the audit trail against DNS rebinding — "asked for the
+  name, dialed this address" — because under the guard the proxy never dials
+  an address it did not check. Absent when the guard is off and on rows that
+  dialed nothing.
 - `httpMethod`, `httpPath` — the HTTP verb and query-stripped,
   percent-decoded path, so a request no parser recognized is still
   identifiable. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath`

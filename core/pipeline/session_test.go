@@ -96,6 +96,7 @@ func TestSessionEvent_JSONRoundTrip(t *testing.T) {
 		// A different id from Subagent's, so the round trip catches Marshal and
 		// Unmarshal disagreeing about which field is which.
 		ParentSubagent: "a0974b0b8591dc76b",
+		DialAddr:       "203.0.113.7:443",
 	}
 
 	first, err := json.Marshal(orig)
@@ -130,7 +131,7 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 		// recorded none of these must not emit the keys at all, so a client
 		// predating them sees the same bytes it always did.
 		"tunnel", "tunnelReason", "httpMethod", "httpPath", "requestedHost",
-		"subagent", "parentSubagent",
+		"subagent", "parentSubagent", "dialAddr",
 	} {
 		if strings.Contains(s, `"`+field+`":`) {
 			t.Errorf("expected %q omitted when zero: %s", field, s)

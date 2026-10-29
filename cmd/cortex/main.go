@@ -54,6 +54,7 @@ import (
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
+	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
@@ -799,6 +800,28 @@ func main() {
 		slog.Info("mTLS disabled (no mtls block in config)")
 	}
 
+	// Egress guard (#1484): when listener.egress_guard arms it, every outbound
+	// dial the forward proxy makes — CONNECT tunnels, plain and bridged
+	// requests, transparent redirects, skip_hosts traffic included, because a
+	// bypass must not become an SSRF bypass — resolves once, refuses loopback,
+	// link-local, private and host-local destinations with 403
+	// destination_private, and dials the checked address. Built before the TLS
+	// bridge below so the re-origination client's dialer is guarded too: the
+	// bridge must not become the path around the guard. Off unless configured
+	// (a sidecar's ordinary upstreams live in exactly the refused space).
+	var egress *egressguard.Guard
+	if cfg.Listener.EgressGuard != nil && cfg.Listener.EgressGuard.Enabled {
+		g, gerr := egressguard.New(cfg.Listener.EgressGuard.PermitCIDRs)
+		if gerr != nil {
+			fatalf("listener.egress_guard: %v", gerr)
+		}
+		egress = g
+		// The "on" announcement is logged down in the forward-role block, not
+		// here: the guard is only ever enforced through the forward proxy, and
+		// a reverse-only deployment must not boot announcing an enforcement no
+		// listener applies.
+	}
+
 	// TLS bridge: when enabled, the forward proxy terminates agent outbound
 	// TLS so the outbound pipeline sees decrypted HTTPS. Constructed
 	// here and set on fpSrv below (mirroring fpSrv.SkipHosts / fpSrv.Shared).
@@ -886,7 +909,15 @@ func main() {
 				fatalf("tls-bridge upstream_ca_bundle read failed: %v", err)
 			}
 		}
-		up, uerr := tlsbridge.NewUpstreamClient(extra, cfg.TLSBridge.UpstreamInsecure)
+		// The bridge's re-origination client dials through the egress guard
+		// when one is armed, so a bridged request is checked exactly like a
+		// plaintext one. No option when the guard is off: nil DialContext is
+		// the transport's default dialer.
+		var upOpts []tlsbridge.UpstreamOption
+		if egress != nil {
+			upOpts = append(upOpts, tlsbridge.WithDialContext(egress.DialContext))
+		}
+		up, uerr := tlsbridge.NewUpstreamClient(extra, cfg.TLSBridge.UpstreamInsecure, upOpts...)
 		if uerr != nil {
 			fatalf("tls-bridge upstream client failed: %v", uerr)
 		}
@@ -966,9 +997,13 @@ func main() {
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
 	if roles[config.RoleForward] {
-		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS)
+		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS, forwardproxy.WithEgressGuard(egress))
 		if ferr != nil {
 			fatalf("creating forward proxy: %v", ferr)
+		}
+		if egress != nil {
+			slog.Info("egress guard on: refusing loopback, link-local, private and host-local destinations",
+				"permit_cidrs", cfg.Listener.EgressGuard.PermitCIDRs)
 		}
 		// SkipHosts: outbound destinations that bypass the pipeline AND
 		// session recording entirely. See ListenerConfig.SkipHosts for the

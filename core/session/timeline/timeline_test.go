@@ -694,6 +694,22 @@ func TestProgressLabelFollowedBySystemMessagesIsNotATurn(t *testing.T) {
 	}
 }
 
+// The away recap Claude Code asks for when the user returns carries the whole context and tool
+// list, like a progress label, and is no more a turn. Two of an unchanged conversation are not a
+// retry.
+func TestAwayRecapIsNotATurn(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "end_turn")
+	recap := append(slices.Clone(h), user("The user stepped away and is coming back. Recap in under 40 words, 1-2 plain sentences."),
+		pipeline.InferenceMessage{Role: "system", Content: "<total_tokens>1 tokens left</total_tokens>"})
+	r.turn("", 3600, 1, recap, nil, "end_turn")
+	r.turn("", 7200, 1, recap, nil, "end_turn")
+	if tl := Build("s", r.events, at(7200)); len(tl.Turns) != 1 {
+		t.Errorf("turns = %+v, want only the real one", tl.Turns)
+	}
+}
+
 // failedConnect records a CONNECT to host that could not be dialed: no inference parse, no agent.
 func (r *rec) failedConnect(host string, sec float64) {
 	id := r.id()
@@ -704,7 +720,7 @@ func (r *rec) failedConnect(host string, sec float64) {
 
 // A tool whose agent never sent its result ends at the agent's first failed attempt to reach
 // the model host, not at the session's last event hours later. A failure to another host is not
-// that attempt, nor is a parsed call that failed.
+// that attempt, nor is a call that reached the proxy and failed.
 func TestStrandedToolEndsAtTheFailedAttemptToReportBack(t *testing.T) {
 	var r rec
 	h := []pipeline.InferenceMessage{user("go")}
@@ -726,21 +742,24 @@ func TestStrandedToolEndsAtTheFailedAttemptToReportBack(t *testing.T) {
 	}
 }
 
-// A tool still running when nothing has failed stays open, and one whose result arrived keeps
-// the result's time even with a failure in between.
-func TestRunningToolIsNotEndedWithoutAFailure(t *testing.T) {
+// A tool still running when nothing has failed stays open. A result that reached the proxy only
+// after a failed dial, when the network came back, ends the tool at the failure: that is when the
+// agent finished and tried to report. An upstream error is not a dial failure and ends nothing.
+func TestToolEndsAtAFailedDialBeforeItsResult(t *testing.T) {
 	var r rec
 	h := []pipeline.InferenceMessage{user("go")}
 	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
-	tl := Build("s", r.events, at(60))
-	if x := findTool(t, tl, "t1"); x.End != nil {
+	if x := findTool(t, Build("s", r.events, at(60)), "t1"); x.End != nil {
 		t.Errorf("t1 = %+v, want it still running", x)
 	}
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example"})
+	r.add(pipeline.SessionEvent{At: at(20), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 502,
+		Error: &pipeline.EventError{Kind: "upstream_error"}})
 	r.failedConnect("llm.example", 30)
-	r.turn("", 40, 1, h, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn")
-	tl = Build("s", r.events, at(60))
-	if x := findTool(t, tl, "t1"); x.End == nil || !x.End.Equal(at(40)) {
-		t.Errorf("t1 = %+v, want it ended by its result at 40s", x)
+	r.turn("", 28800, 1, h, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn") // back online 8h later
+	if x := findTool(t, Build("s", r.events, at(28800)), "t1"); x.End == nil || !x.End.Equal(at(30)) {
+		t.Errorf("t1 = %+v, want it ended at the failed dial at 30s", x)
 	}
 }
 
@@ -792,6 +811,25 @@ func TestStrandedSubagentToolEndsAfterTheMainAgentRecovers(t *testing.T) {
 	tl := Build("s", r.events, at(36000))
 	if x := findTool(t, tl, "t1"); x.End == nil || !x.End.Equal(at(300)) {
 		t.Errorf("t1 = %+v, want it ended at a1's failed report-back (300s)", x)
+	}
+}
+
+// One outage strands two subagents mid-tool. Both results arrive once the network is back, and
+// the first one through is not the other's recovery: each tool ends at the failed dial.
+func TestOneOutageEndsEveryStrandedSiblingsTool(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "sp1", Name: "Agent"}, pipeline.InferenceToolCall{ID: "sp2", Name: "Agent"})
+	r.turn("a1", 2, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.turn("a2", 2, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "Bash"})
+	r.failedConnect("llm.example", 300)
+	r.turn("a2", 28800, 1, h, []pipeline.InferenceToolResult{result("t2", "ok")}, "end_turn")
+	r.turn("a1", 28801, 1, h, []pipeline.InferenceToolResult{result("t1", "ok")}, "end_turn")
+	tl := Build("s", r.events, at(28900))
+	for _, id := range []string{"t1", "t2"} {
+		if x := findTool(t, tl, id); x.End == nil || !x.End.Equal(at(300)) {
+			t.Errorf("%s = %+v, want it ended at the failed dial (300s)", id, x)
+		}
 	}
 }
 
