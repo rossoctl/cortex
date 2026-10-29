@@ -257,7 +257,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "upgrade_declined"` is the forward proxy's own answer to a WebSocket upgrade on
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
   and a client such as Codex reads it as "use HTTPS" and retries at once over
-  HTTPS. It is not counted as an error in `/v1/usage`.
+  HTTPS. It is not counted as an error in `/v1/usage`. A **403** with
+  `error.kind: "destination_private"` is the egress guard's refusal
+  (`listener.egress_guard`): the destination resolved into loopback,
+  link-local, private or this host's own address space and no permit covered
+  it. Also the proxy's own answer rather than the upstream's, and also not
+  counted as an error — the guard did what it was configured to.
 - `ttfbMs` — on a delivered response row, the wall time from request entry to
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
@@ -296,7 +301,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "response"`), carrying the CONNECT's own status, the duration, and the bytes
   each way. It is not the destination's status: that travels inside the
   client's end-to-end TLS. Tunnel rows are kept out of `/v1/usage`: a tunnel's
-  lifetime is not a request latency.
+  lifetime is not a request latency. `tunnelReason: "dest-private"` is the
+  egress guard's refusal: the close row carries 403 and
+  `error.kind: "destination_private"`, and no tunnel was ever opened to the
+  destination — the same refusal a plain request gets, one layer down.
+- `dialAddr` — present on a tunnel's open row when the egress guard is on:
+  the address the guard checked and the proxy dialed, `"ip:port"`. Together
+  with `host` it is the audit trail against DNS rebinding — "asked for the
+  name, dialed this address" — because under the guard the proxy never dials
+  an address it did not check. Absent when the guard is off and on rows that
+  dialed nothing.
 - `httpMethod`, `httpPath` — the HTTP verb and query-stripped,
   percent-decoded path, so a request no parser recognized is still
   identifiable. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath`

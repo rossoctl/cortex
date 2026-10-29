@@ -1,9 +1,7 @@
 package forwardproxy
 
 import (
-	"bufio"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,37 +71,6 @@ func newAllowHarness(t *testing.T, entries ...string) *allowHarness {
 	h.proxy = httptest.NewServer(srv.Handler())
 	t.Cleanup(h.proxy.Close)
 	return h
-}
-
-// connectRaw speaks one CONNECT to the proxy over raw TCP and returns the
-// response's status line plus a reader positioned after the response headers.
-func connectRaw(t *testing.T, proxy *httptest.Server, target string) (string, *bufio.Reader, net.Conn) {
-	t.Helper()
-	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
-	if err != nil {
-		t.Fatalf("dial proxy: %v", err)
-	}
-	if _, err := conn.Write([]byte("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n")); err != nil {
-		t.Fatalf("write CONNECT: %v", err)
-	}
-	br := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, err := br.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
-	for {
-		hdr, herr := br.ReadString('\n')
-		if herr != nil {
-			t.Fatalf("read CONNECT headers: %v", herr)
-		}
-		if hdr == "\r\n" || hdr == "\n" {
-			break
-		}
-	}
-	_ = conn.SetReadDeadline(time.Time{})
-	return line, br, conn
 }
 
 // assertMocaRefusal pins the conformance suite's wantRefusal shape on a

@@ -931,6 +931,54 @@ apply, like every `listener.*` field. The key goes in the runtime config: on a l
 `authbridge-runtime-config` ConfigMap, then a pod restart. See
 [`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for the measured difference.
 
+#### Refusing private destinations (`listener.egress_guard`)
+
+Arms the forward proxy's SSRF dial guard (#1484): every destination the proxy
+dials — CONNECT tunnels, plain and bridged requests, transparent redirects,
+and `skip_hosts` traffic too, because a bypass must not become an SSRF bypass
+— is resolved **once**, refused with **403 `destination_private`** when the
+address is loopback, link-local (including the cloud metadata address
+`169.254.169.254`), RFC 1918 / unique-local space, RFC 6598 CGNAT shared
+space (`100.64.0.0/10`, where Alibaba's metadata service lives), or one of
+this host's own interface addresses — the addresses themselves, not their
+on-link subnets, so a LAN neighbour or a public neighbour on a large on-link
+prefix is not caught by that clause — and then **dialed at the checked
+address**. That last part is the DNS-rebinding defense: the address the guard
+checked and the address the proxy connects to are the same value by
+construction, so a second lookup can never re-answer between check and
+connect. A well-known-prefix NAT64 address (`64:ff9b::/96`) is judged by the
+IPv4 address it embeds, so `[64:ff9b::7f00:1]` is refused as the `127.0.0.1`
+it carries.
+
+```yaml
+listener:
+  egress_guard:
+    enabled: true
+    permit_cidrs: ["127.0.0.1/32"]   # prefixes within the refused space
+```
+
+**Off by default, deliberately.** A sidecar's ordinary upstreams — Keycloak,
+in-cluster services, a laptop's local model — live in exactly the refused
+space, so defaulting this on would break every existing deployment. Enable it
+where the sandbox's egress is meant to be public-only, and list the private
+prefixes still needed in `permit_cidrs`.
+
+`permit_cidrs` covers prefixes within the refused space only. Link-local,
+unspecified, multicast and the AWS IPv6 metadata address (`fd00:ec2::254`)
+are **never** permitted, whatever the list says: `0.0.0.0` reaches loopback
+on every mainstream stack, `169.254.169.254` is the metadata service this
+guard exists among other things to protect — a permit of `0.0.0.0/0` does not
+open it — and `fd00:ec2::254` is that service's IPv6 form, which would
+otherwise sit in the permit-able ULA space.
+
+A refused CONNECT leaves its two tunnel rows with
+`tunnelReason: "dest-private"` and `error.kind: "destination_private"`; a
+refused request leaves an ordinary response row with the same error kind.
+A permitted tunnel's open row carries `dialAddr`, the checked address that
+was dialed — the audit trail that pairs the name the client asked for with
+the address the proxy reached. Restart to apply, like every `listener.*`
+field. See `core/listener/egressguard` for the refusal set's exact rules.
+
 ---
 
 ## 10. Writing a plugin

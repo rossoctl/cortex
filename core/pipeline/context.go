@@ -150,6 +150,15 @@ type Context struct {
 	// an origin quietly serves the un-upgraded request instead.
 	UpgradeStripped string
 
+	// DialedAddr is the address the listener dialed for this request, "ip:port",
+	// set when the egress guard is enabled — the resolved address the guard
+	// checked, which may differ from Host whenever the destination was named.
+	// Read by the recorder onto SessionEvent.DialAddr; moca's egress conformance
+	// pins it as the audit trail against DNS rebinding. Listener-set: a plugin
+	// has no way to write it, for the same reason it has no way to write Host
+	// after the dial.
+	DialedAddr string
+
 	// StartedAt is the wall-clock time this context was constructed by the
 	// listener at the start of a request. Used on the response path to
 	// compute SessionEvent.Duration without walking the event history.
@@ -480,7 +489,7 @@ type Context struct {
 // being parsed ten times; it does not escape.
 //
 // THE COPY IS AN ALLOCATION PER CALL, roughly ten per request, and that is the price of the
-// line above. sanitizeUA's fast path is written not to allocate, which bounds what a hostile
+// line above. SanitizeControlRunes's fast path is written not to allocate, which bounds what a hostile
 // header costs; this one is unconditional and buys the integrity claim instead.
 func (c *Context) ClientInfo() *EventClient {
 	if c.clientParsed {
