@@ -86,9 +86,13 @@ and refusing it would block every request while protecting nothing.
 
 Covering the inbound hop properly would mean teaching the reverse
 proxy to expose its backend scheme; that is not implemented. Until it
-is, an operator running static-inject inbound is responsible for the
-front listener's own transport (`mtls:`, or a trusted network), the
-same as for any other header the reverse proxy forwards.
+is, an operator running static-inject inbound is responsible for
+pointing `reverse_proxy_backend` at an `https://` backend (or one on a
+trusted network). That is the hop the credential actually travels on:
+an inbound static-inject in front of a plaintext backend still injects
+the real key, which then crosses that hop in cleartext. Cortex does
+not refuse an `http://` backend, and `mtls:` on the front listener
+does not change it.
 
 ### Deployments this refuses
 
@@ -99,6 +103,7 @@ anything that was relying on plaintext egress with a credential:
 |---|---|
 | Forward-proxy egress, `http://` target **with** a credential | **Now 403.** The request must move to `https://`, or the host must stop having a credential. |
 | Forward-proxy egress, `http://` target without a credential | Unchanged (401 `unresolved-key`, as before). |
+| Forward-proxy egress, `http://` target with a credential, under `mtls: mode: strict` | **Now 403**, even though the hop is TLS on the wire. Strict mode dials every upstream TLS-or-fail (`mtlsDialer`), but the gate reads the request's scheme, not the dialer, so it cannot see that. Fail-closed, and rare (static-inject plus strict mesh mTLS); move the target to `https://` to inject. |
 | Inbound static-inject, plaintext front, any backend | Unchanged — the gate does not fire inbound (above). |
 
 Known downstream: **MOCA's AB2 leaf smoke** (`deploy/knative/leaf-smoke.sh`,

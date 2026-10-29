@@ -431,7 +431,7 @@ func TestPlaintextGateAllowsHTTPS(t *testing.T) {
 
 // INBOUND + http STILL INJECTS, and this is the test that keeps MOCA's AB1
 // working. On the reverse proxy pctx.Scheme is the scheme the CLIENT used to
-// reach Cortex (requestScheme, reverseproxy/server.go:797) — "http" whenever
+// reach Cortex (requestScheme, reverseproxy/server.go) — "http" whenever
 // the inbound listener is not TLS. The credential leaves on the Cortex→backend
 // hop instead, whose scheme comes from reverse_proxy_backend and cannot be read
 // from here, so an inbound refusal keyed on Scheme judges the wrong hop.

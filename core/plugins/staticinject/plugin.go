@@ -228,7 +228,7 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	//
 	// OUTBOUND ONLY, and the direction is load-bearing rather than a
 	// narrowing for caution's sake. On the reverse proxy pctx.Scheme is
-	// requestScheme(r) (reverseproxy/server.go:797) — the scheme the CLIENT
+	// requestScheme(r) (reverseproxy/server.go) — the scheme the CLIENT
 	// used to reach Cortex, which is "http" whenever the inbound listener is
 	// not TLS. The credential does not travel on that hop; it leaves on the
 	// Cortex→backend hop, whose scheme comes from reverse_proxy_backend and
@@ -243,9 +243,12 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	// through it — reproduced at 403 with zero upstream hits (#1537 review).
 	//
 	// Covering inbound properly would mean teaching the reverse proxy to
-	// expose its backend scheme, which #1481 does not ask for; until then an
-	// inbound plaintext hop is the operator's own listener, under their own
-	// network, rather than the guest-controlled egress this gate is about.
+	// expose its backend scheme, which #1481 does not ask for; until then the
+	// uncovered inbound risk is a reverse_proxy_backend of "http://" — the
+	// real key is injected and crosses THAT hop in cleartext — and pointing
+	// it at https:// (or a trusted network) is the operator's own call, not
+	// the guest-controlled egress this gate is about. The front listener's
+	// transport is not what matters here; the credential never travels on it.
 	//
 	// The check lives in the injector, not in a pre-pipeline gate, because
 	// only the resolver knows whether this host has a credential — a
