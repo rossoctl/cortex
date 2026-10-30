@@ -268,6 +268,13 @@ as Claude Code asked. A file was written and read back on each.
   it did not see begin and sends it where Claude Code sends it, so one routed to
   another server moves back to the server `ANTHROPIC_BASE_URL` names,
   mid-conversation.
+- **A substituted model's name can become the session's model, and fail to
+  restore.** While a conversation runs on a server that substitutes models, the
+  server's responses name the model they served, and Claude Code persists that
+  name as the session's model. Restarting the conversation then cannot restore
+  it — "Session model … could not be restored … using opus instead" — and the
+  conversation falls back to the default model
+  ([#1597](https://github.com/rossoctl/cortex/issues/1597)).
 - **A continued conversation can show twice.** Claude Code sometimes moves a live
   conversation to a new session id. agentop then shows two rows with the same title, and
   the older row keeps the copied title. Cortex does not yet read Claude Code's record of
