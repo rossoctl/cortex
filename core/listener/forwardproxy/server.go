@@ -1779,14 +1779,17 @@ type pluginSession struct {
 // local, which recording reads instead of pctx.
 // trusted is the connection's own answer (trustedSessionOf), resolved by the
 // caller — which also keeps the r.Header read at the CALL SITE rather than in
-// here. That placement is deliberate: moving the read inside this function
-// changed the data-flow shape enough that CodeQL re-reported 28 pre-existing
-// go/clear-text-logging and go/log-injection alerts in untouched plugins
-// (sessionbudget, contextguru, inferencerouter) as new, every one of them
-// sourced to the moved line. They are false positives — a header id passes
-// validHeaderSessionID before anything logs it, and a session id is not a
-// secret — but a red check is a red check, and taking the headers as a
-// parameter restores main's flow shape (#1569 review).
+// here. The headers arrive as a parameter for the same reason trusted does:
+// the caller resolves both once per request, so the pre-hydration refusal
+// paths (attributeForRecording and its call sites) share the caller's values
+// instead of re-deriving them. CodeQL note, so nobody re-litigates the
+// placement: moving the r.Header read inside this function made CodeQL's
+// diff-informed analysis report 28 pre-existing go/clear-text-logging and
+// go/log-injection alerts in untouched plugins (sessionbudget, contextguru,
+// inferencerouter) as new, every one sourced to the moved line. They are
+// false positives — a header id passes validHeaderSessionID before anything
+// logs it, and a session id is not a secret — and taking the read back out
+// did NOT clear them; they need dismissing on the PR (#1569 review).
 func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
 	// The listener's own answer first, and it ends the search: a session
 	// resolved from how the connection arrived is not something the client has
@@ -2540,9 +2543,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// request files under this pin, when it settles. Pinned only now, after the pipeline,
 	// for the reason sessionID is a local; left unpinned where affinity had no answer, for
 	// the reason in tunnelSessionID. See recordTunnelOpened. With process attribution the
-	// pin is the process's answer, which is never empty.
+	// pin is the process's answer, which is never empty. A trusted connection answer is
+	// pinned ahead of both, whatever those knobs say: identity from the connection must
+	// not need session.client_affinity to reach a tunnel's own rows (#1569 review).
 	if !skipped && s.Sessions != nil {
 		switch {
+		case trusted != "":
+			pctx.OutboundSessionID = trusted
 		case chain != nil && s.processesOn():
 			// The client's process is known, so the tunnel's own row goes where that
 			// process's requests go — default included, for a process of no agent.

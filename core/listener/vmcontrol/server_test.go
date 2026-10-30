@@ -3,11 +3,14 @@
 package vmcontrol
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -329,5 +332,33 @@ func TestServerMalformedFrameReply(t *testing.T) {
 	ln, _ := vmSocket(t, "vm-ok.sock")
 	if rep := tc.handover("vm-ok", "sid", ln); !rep.Ok {
 		t.Fatalf("register after malformed frame: %s", rep.Message)
+	}
+}
+
+// TestIsTemporaryAccept: the accept loop must retry what clears on its own and
+// return only what does not. A returned error reaches fatalf, which exits the
+// process and takes every VM's egress with it, so an EMFILE on a proxy holding
+// a listener per VM must not be fatal (#1569 review). It lives in this
+// unix-tagged file because isTemporaryAccept does; an untagged home broke the
+// non-unix test build with `undefined: isTemporaryAccept` (#1569 review).
+func TestIsTemporaryAccept(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"EMFILE: this process is out of fds", syscall.EMFILE, true},
+		{"ENFILE: the system is", syscall.ENFILE, true},
+		{"ECONNABORTED: peer gave up mid-handshake", syscall.ECONNABORTED, true},
+		{"EINTR", syscall.EINTR, true},
+		{"wrapped EMFILE", fmt.Errorf("accept: %w", syscall.EMFILE), true},
+		{"EINVAL is permanent", syscall.EINVAL, false},
+		{"a plain error is permanent", errors.New("boom"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTemporaryAccept(tc.err); got != tc.want {
+				t.Errorf("isTemporaryAccept(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

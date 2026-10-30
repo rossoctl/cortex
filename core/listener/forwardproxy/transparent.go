@@ -263,7 +263,8 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 // row goes to, and returns its bucket; nil when session tracking is off. It is
 // recordTunnelOpened's filing rule on its own, for a bridged tunnel that settles with no
 // request having taken its deferred open (tunnelLog.settleLocked). Of pctx it reads only
-// OutboundSessionID, which the listener pins before bridging and nothing writes after.
+// OutboundSessionID — which the listener pins before bridging and nothing writes after —
+// and SessionSource, to recognize the connection's own trusted answer.
 func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEvent) *session.Bucket {
 	if s.Sessions == nil {
 		return nil
@@ -271,9 +272,11 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	// Without client affinity this reads ActiveSession() at recording time, as it always
 	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
 	// after gating wins; see handleConnect. Process attribution pins it too, with the
-	// client process's answer.
+	// client process's answer, and so does the connection itself: a session resolved from
+	// how the connection arrived is not a knob like affinity, so its pin is honored even
+	// with affinity and process attribution both off (#1569 review).
 	var sid string
-	if s.ClientAffinity || s.processesOn() {
+	if s.ClientAffinity || s.processesOn() || pctx.SessionSource == pipeline.SessionSourceConnection {
 		sid = pctx.OutboundSessionID
 	}
 	if sid == "" {

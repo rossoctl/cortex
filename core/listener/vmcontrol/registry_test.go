@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -646,6 +644,57 @@ func TestRegistry_EgressDeniedCONNECTRowLandsInTheVMSession(t *testing.T) {
 	}
 }
 
+// TestRegistry_OpaqueTunnelRowsLandInTheVMSession: an opaque CONNECT's own rows
+// (open and close) are filed through appendTunnelOpen, which read
+// pctx.OutboundSessionID only under client affinity or process attribution.
+// With both off — newVMEgressStack sets neither — a VM's allowed tunnel fell
+// back to ActiveSession() at recording time, so its rows landed in whatever
+// session was last active, possibly another VM's. Identity from the connection
+// must not depend on session.client_affinity to reach a tunnel's own rows
+// (#1569 review).
+func TestRegistry_OpaqueTunnelRowsLandInTheVMSession(t *testing.T) {
+	reg, _, store, _ := newVMEgressStack(t)
+
+	// Another session is active, as one is on any busy proxy.
+	store.Append("someone-else", pipeline.SessionEvent{
+		At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "other.example", StatusCode: 200,
+	})
+	before := rowsIn(store, "someone-else")
+
+	addr := registerTCPVM(t, reg, "vm-b", "sid-b")
+	origin := echoTCPOrigin(t)
+	c := guest(t, addr)
+	resp := guestConnect(t, c, origin)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status %d", resp.StatusCode)
+	}
+	if _, err := c.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatalf("tunnel echo: %v", err)
+	}
+	_ = c.Close()
+
+	// The close row is recorded after the tunnel ends; poll for both rows.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if rowsIn(store, "sid-b") >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := rowsIn(store, "sid-b"); got != 2 {
+		t.Errorf("the VM's session holds %d tunnel row(s), want the open and the close", got)
+	}
+	if got := rowsIn(store, "someone-else"); got != before {
+		t.Errorf("the unrelated active session gained %d row(s): a VM's tunnel rows landed in another session",
+			got-before)
+	}
+}
+
 // TestRegistry_TrustedSessionSurvivesSessionsDisabled: with session.enabled
 // false the proxy has no store, and the guard that skipped hydration took the
 // VM's identity with it — a registered VM's request reached the pipeline with
@@ -737,31 +786,5 @@ func TestVMBinding_AbortedWindowAnswers503(t *testing.T) {
 	}
 	if evs[0].Decision != DecisionAborted {
 		t.Errorf("decision = %q, want %q", evs[0].Decision, DecisionAborted)
-	}
-}
-
-// TestIsTemporaryAccept: the accept loop must retry what clears on its own and
-// return only what does not. A returned error reaches fatalf, which exits the
-// process and takes every VM's egress with it, so an EMFILE on a proxy holding
-// a listener per VM must not be fatal (#1569 review).
-func TestIsTemporaryAccept(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"EMFILE: this process is out of fds", syscall.EMFILE, true},
-		{"ENFILE: the system is", syscall.ENFILE, true},
-		{"ECONNABORTED: peer gave up mid-handshake", syscall.ECONNABORTED, true},
-		{"EINTR", syscall.EINTR, true},
-		{"wrapped EMFILE", fmt.Errorf("accept: %w", syscall.EMFILE), true},
-		{"EINVAL is permanent", syscall.EINVAL, false},
-		{"a plain error is permanent", errors.New("boom"), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isTemporaryAccept(tc.err); got != tc.want {
-				t.Errorf("isTemporaryAccept(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
 	}
 }
