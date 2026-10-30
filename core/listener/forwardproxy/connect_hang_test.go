@@ -165,6 +165,57 @@ func TestTunnel_ReturnsWhenUpstreamNeverHalfCloses(t *testing.T) {
 	}
 }
 
+// A reply that keeps streaming past halfCloseDrainVar is not truncated: the
+// drain extends while bytes continue flowing and only full-closes once the
+// peer actually goes idle.
+func TestTunnel_ReplyStreamingPastDrainCompletes(t *testing.T) {
+	cl, clPeer := tcpPair(t)
+	up, upPeer := tcpPair(t)
+
+	// Upstream: read to EOF, then drip-feed a reply longer than halfCloseDrainVar.
+	chunks := 6
+	gap := halfCloseDrainVar / 2 // < halfCloseDrainVar, so each gap extends the drain
+	wantTotal := chunks * 5      // "chunk" × 5 bytes
+	upDone := make(chan struct{})
+	go func() {
+		defer close(upDone)
+		_, _ = io.ReadAll(upPeer)
+		for range chunks {
+			if _, err := upPeer.Write([]byte("chunk")); err != nil {
+				return
+			}
+			time.Sleep(gap)
+		}
+		_ = upPeer.Close()
+	}()
+
+	reply := make(chan []byte, 1)
+	go func() {
+		_, _ = clPeer.Write([]byte("hello"))
+		_ = clPeer.(*net.TCPConn).CloseWrite()
+		b, _ := io.ReadAll(clPeer)
+		reply <- b
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		tunnel(cl, up)
+		close(done)
+	}()
+
+	deadline := time.Duration(chunks)*gap + halfCloseDrainVar + 2*time.Second
+	select {
+	case got := <-reply:
+		if len(got) != wantTotal {
+			t.Fatalf("reply = %d bytes, want %d; drain truncated a slow stream", len(got), wantTotal)
+		}
+	case <-time.After(deadline):
+		t.Fatal("tunnel never returned a complete reply")
+	}
+	<-done
+	<-upDone
+}
+
 // tcpPair returns two ends of a localhost TCP connection as *net.TCPConn,
 // so CloseWrite is available on both.
 func tcpPair(t *testing.T) (a, b net.Conn) {

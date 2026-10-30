@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/egressguard"
@@ -399,46 +400,74 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 // survives. Shared by handleConnect and HandleTransparentConn.
 //
 // It returns how many bytes crossed each way — up is client to upstream, down
-// is upstream to client — for the tunnel's close row. The second copy gets
-// halfCloseDrainVar to finish on its own; if it stays blocked, both ends are
-// full-closed to unblock it and the tunnel returns.
+// is upstream to client — for the tunnel's close row. After the first copy
+// returns, the second gets halfCloseDrainVar of idle time before both ends are
+// full-closed, so a reply that keeps streaming extends the wait and finishes
+// without truncation.
 func tunnel(client, upstream net.Conn) (up, down int64) {
+	var upBytes, downBytes atomic.Int64
 	upc := make(chan int64, 1)
 	downc := make(chan int64, 1)
 	go func() {
-		n, _ := io.Copy(upstream, client)
+		n, _ := io.Copy(&countingWriter{w: upstream, n: &upBytes}, client)
 		closeWrite(upstream) // relay the client's half-close; let the reply flow back
 		upc <- n
 	}()
 	go func() {
-		n, _ := io.Copy(client, upstream)
+		n, _ := io.Copy(&countingWriter{w: client, n: &downBytes}, upstream)
 		closeWrite(client)
 		downc <- n
 	}()
-	// First direction to finish starts the drain. If the other never does on
-	// its own — one half EOFed, the other stayed quiet — full-close both so
-	// the tunnel returns and its close row can settle.
 	select {
 	case up = <-upc:
-		select {
-		case down = <-downc:
-		case <-time.After(halfCloseDrainVar):
-			_ = client.Close()
-			_ = upstream.Close()
-			down = <-downc
-		}
+		down = drainTunnel(&downBytes, downc, client, upstream)
 	case down = <-downc:
-		select {
-		case up = <-upc:
-		case <-time.After(halfCloseDrainVar):
-			_ = client.Close()
-			_ = upstream.Close()
-			up = <-upc
-		}
+		up = drainTunnel(&upBytes, upc, client, upstream)
 	}
 	_ = client.Close()
 	_ = upstream.Close()
 	return up, down
+}
+
+// drainTunnel waits for the second copy, extending the wait while bytes keep
+// flowing (seen via n). Idle for halfCloseDrainVar → full-close both ends to
+// unblock the copy, read its total, return.
+func drainTunnel(n *atomic.Int64, done <-chan int64, client, upstream net.Conn) int64 {
+	last := n.Load()
+	tick := time.NewTicker(halfCloseDrainVar / 4)
+	defer tick.Stop()
+	idle := time.Duration(0)
+	for {
+		select {
+		case total := <-done:
+			return total
+		case <-tick.C:
+			now := n.Load()
+			if now != last {
+				last, idle = now, 0
+				continue
+			}
+			idle += halfCloseDrainVar / 4
+			if idle >= halfCloseDrainVar {
+				_ = client.Close()
+				_ = upstream.Close()
+				return <-done
+			}
+		}
+	}
+}
+
+// countingWriter forwards writes to w and records the running byte count in n.
+// Used by tunnel so drainTunnel can see progress mid-copy.
+type countingWriter struct {
+	w io.Writer
+	n *atomic.Int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	m, err := c.w.Write(p)
+	c.n.Add(int64(m))
+	return m, err
 }
 
 // halfCloseDrainVar is how long tunnel waits for the second copy after the
