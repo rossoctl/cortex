@@ -395,8 +395,13 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		// copies — measured at 41% of a live proxy's total allocations. Each
 		// survivor's bytes are kept verbatim; only the separators between them
 		// normalize to ",", which no cache prefix can have relied on anyway —
-		// pruning already rewrote the array.
-		joined := make([]byte, 0, len(body))
+		// pruning already rewrote the array. The buffer is sized for the
+		// array's own raw span: the survivors and their separators fit
+		// inside it, and the cache_control marker one survivor can gain is
+		// smaller than the pruned span that carried it — so it never
+		// regrows, and a body whose messages dwarf its manifest does not
+		// pay for them here.
+		joined := make([]byte, 0, len(tools.Raw))
 		joined = append(joined, '[')
 		for i := range raw {
 			if victimSet[i] {

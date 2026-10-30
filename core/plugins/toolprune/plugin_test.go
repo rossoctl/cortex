@@ -13,6 +13,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/tidwall/gjson"
 )
 
 // anthropicBody is deliberately awkward: unsorted keys, odd indentation, a
@@ -1287,5 +1288,91 @@ func TestPrune_RewriteDoesNotCopyTheBodyPerVictim(t *testing.T) {
 	}
 	if got, want := after.TotalAlloc-before.TotalAlloc, uint64(3*len(body)); got > want {
 		t.Errorf("pruning 9 of 10 tools allocated %d bytes for a %d-byte body (want <= %d): the rewrite copies the body once per victim", got, len(body), want)
+	}
+}
+
+// TestPrune_RewriteAllocationScalesWithTheManifestNotTheBody: the splice buffer
+// used to be sized for the whole body, so a request whose messages dwarf its
+// tool manifest paid a body-sized allocation to rewrite a small array — on real
+// traffic messages run to hundreds of KB against a ~100KB manifest. The buffer
+// must be sized for the array's own raw span (survivors plus separators are a
+// subset of it, so it never regrows). TotalAlloc is a deterministic counter:
+// with a body-sized buffer this fixture allocates 3.01x the body, with the
+// array-sized one 2.01x — the remaining two copies are the rewritten body
+// itself, which one splice cannot avoid.
+func TestPrune_RewriteAllocationScalesWithTheManifestNotTheBody(t *testing.T) {
+	pad := strings.Repeat("x", 3<<20)
+	body := `{"tools":[{"name":"A","x":1},{"name":"B","x":2},{"name":"C","x":3}],` +
+		`"messages":[{"role":"user","content":"` + pad + `"}]}`
+
+	p := configured(t, "C")
+	pctx := inferenceCtx("/v1/messages", body, "A", "B", "C")
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	run(t, p, pctx)
+	runtime.ReadMemStats(&after)
+
+	if !pctx.BodyMutated() {
+		t.Fatal("expected a rewrite")
+	}
+	if got, want := after.TotalAlloc-before.TotalAlloc, uint64(5*len(body)/2); got > want {
+		t.Errorf("pruning one tool from a %d-byte body with a 58-byte manifest allocated %d bytes (want <= %d): the splice buffer is sized for the body, not the manifest", len(body), got, want)
+	}
+}
+
+// TestPrune_PrettyBodySurvivesTheSplice: every other fixture is compact, and a
+// pretty-printed body takes a different path through the splice — each
+// survivor's raw span runs over multiple lines, and a join that mishandles
+// that fails open, silently forwarding the original so pruning stops working
+// for pretty-bodied clients while every compact test stays green. Byte
+// exactness is NOT asserted: the separators between survivors normalize to ","
+// by design, so this pins the semantics — valid JSON, the intended survivors,
+// the cache_control move — not the bytes.
+func TestPrune_PrettyBodySurvivesTheSplice(t *testing.T) {
+	body := `{
+  "model": "m",
+  "tools": [
+    {
+      "name": "Read"
+    },
+    {
+      "name": "Bash"
+    },
+    {
+      "name": "NotebookEdit",
+      "cache_control": {"type": "ephemeral"}
+    }
+  ],
+  "messages": []
+}`
+	p := configured(t, "NotebookEdit")
+	pctx := inferenceCtx("/v1/messages", body, "Read", "Bash", "NotebookEdit")
+	run(t, p, pctx)
+
+	if !pctx.BodyMutated() {
+		t.Fatal("expected a rewrite")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(pctx.Body, &m); err != nil {
+		t.Fatalf("pretty body came out of the splice as invalid JSON: %v\n%s", err, pctx.Body)
+	}
+	got := string(pctx.Body)
+	if strings.Contains(got, "NotebookEdit") {
+		t.Errorf("the pruned tool survived:\n%s", got)
+	}
+	tools := gjson.GetBytes(pctx.Body, "tools").Array()
+	if len(tools) != 2 {
+		t.Fatalf("want 2 surviving tools, got %d:\n%s", len(tools), got)
+	}
+	for i, want := range []string{"Read", "Bash"} {
+		if tools[i].Get("name").String() != want {
+			t.Errorf("survivor %d = %q, want %q:\n%s", i, tools[i].Get("name").String(), want, got)
+		}
+	}
+	// The breakpoint must land on the last survivor, where the cached prefix ends.
+	if !tools[1].Get("cache_control").Exists() {
+		t.Errorf("cache_control was not moved to the last surviving tool:\n%s", got)
 	}
 }
