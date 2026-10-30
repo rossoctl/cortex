@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -264,7 +268,9 @@ func TestLoadService_Linux(t *testing.T) {
 	// gets invoked, in what order, on a run that succeeds. This closes that: the
 	// calls must happen in order, with --user and the exact unit name, not just "some
 	// two calls that happened to both exit 0".
-	t.Run("daemon-reload, enable, then restart, in that order, with the exact unit", func(t *testing.T) {
+	// reset-failed sits right before the restart: it lifts systemd's start limit, so a
+	// reinstall over a unit that crash-looped into start-limit-hit can start it at all.
+	t.Run("daemon-reload, enable, reset-failed, then restart, in that order, with the exact unit", func(t *testing.T) {
 		p := servicePathsFixture(t)
 		logPath, logLine := callLog(t)
 		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\nexit 0\n")
@@ -273,7 +279,8 @@ func TestLoadService_Linux(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		calls := readCallLog(t, logPath)
-		want := []string{"--user daemon-reload", "--user enable cortex.service", "--user restart cortex.service"}
+		want := []string{"--user daemon-reload", "--user enable cortex.service",
+			"--user reset-failed cortex.service", "--user restart cortex.service"}
 		if strings.Join(calls, "|") != strings.Join(want, "|") {
 			t.Errorf("systemctl calls = %v, want %v in that order", calls, want)
 		}
@@ -680,13 +687,17 @@ func TestControlService_Linux(t *testing.T) {
 	// survives a reboot the same way launchd's bootout+disable pairing does; only
 	// restart stays transient. Nothing previously proved the right verb went with
 	// the right action.
+	//
+	// start and restart clear systemd's start limit first, so they can bring back a
+	// unit that crash-looped into start-limit-hit. stop does not: it has no start to
+	// unblock.
 	for _, tc := range []struct {
 		action string
-		want   string
+		want   []string
 	}{
-		{"stop", "--user disable --now cortex.service"},
-		{"start", "--user enable --now cortex.service"},
-		{"restart", "--user restart cortex.service"},
+		{"stop", []string{"--user disable --now cortex.service"}},
+		{"start", []string{"--user reset-failed cortex.service", "--user enable --now cortex.service"}},
+		{"restart", []string{"--user reset-failed cortex.service", "--user restart cortex.service"}},
 	} {
 		t.Run(tc.action+" invokes the right systemctl verb", func(t *testing.T) {
 			logPath, logLine := callLog(t)
@@ -695,8 +706,8 @@ func TestControlService_Linux(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			calls := readCallLog(t, logPath)
-			if len(calls) != 1 || calls[0] != tc.want {
-				t.Errorf("systemctl called with %v, want exactly [%q]", calls, tc.want)
+			if strings.Join(calls, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("systemctl called with %v, want exactly %q", calls, tc.want)
 			}
 		})
 	}
@@ -761,4 +772,141 @@ func TestServiceManagerUsable_Linux(t *testing.T) {
 			t.Errorf("reason = %q, want it to come from systemdUsable, not launchdUsable", why)
 		}
 	})
+}
+
+// systemdUnitState reads `systemctl show`'s KEY=value lines; the values below are
+// the ones a real cortex.service gave in each state on systemd 261.
+func TestSystemdUnitState(t *testing.T) {
+	t.Run("parses every field, with the unit asked for by name", func(t *testing.T) {
+		logPath, logLine := callLog(t)
+		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\n"+`printf 'LoadState=loaded\nActiveState=failed\nSubState=failed\nUnitFileState=enabled\nResult=start-limit-hit\nNRestarts=5\n'
+`)
+		got := systemdUnitState()
+		want := unitState{known: true, load: "loaded", active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}
+		if got != want {
+			t.Errorf("systemdUnitState() = %+v, want %+v", got, want)
+		}
+		calls := readCallLog(t, logPath)
+		if len(calls) != 1 || !strings.HasPrefix(calls[0], "--user show cortex.service ") {
+			t.Errorf("systemctl calls = %v, want one `--user show cortex.service …`", calls)
+		}
+	})
+	t.Run("no systemctl: not known", func(t *testing.T) {
+		noSystemctlOnPath(t)
+		if got := systemdUnitState(); got.known {
+			t.Errorf("systemdUnitState() = %+v, want not known", got)
+		}
+	})
+	t.Run("user manager unreachable: not known", func(t *testing.T) {
+		fakeSystemctl(t, "#!/bin/sh\necho 'Failed to connect to bus' >&2\nexit 1\n")
+		if got := systemdUnitState(); got.known {
+			t.Errorf("systemdUnitState() = %+v, want not known", got)
+		}
+	})
+}
+
+// What status says when its health probe gets no answer, for each state systemd
+// can report. A stop was indistinguishable from a crash before: both printed "NOT
+// answering … will fail" and exited 1.
+func TestReportUnitNotAnswering(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		state    unitState
+		code     int
+		want     []string
+		rejected []string
+	}{
+		{"stopped by service stop",
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "disabled", result: "success"}, 0,
+			[]string{"Cortex is stopped, and stays stopped across logins and reboots", "agentop service start"},
+			[]string{"NOT answering", "NOT running", "Last log lines", "still enabled"}},
+		{"stopped by hand, still enabled",
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "enabled", result: "success"}, 1,
+			[]string{"still enabled, so it starts again", "agentop service start"},
+			[]string{"stays stopped", "NOT answering"}},
+		{"crashed, restart pending",
+			unitState{known: true, load: "loaded", active: "activating", sub: "auto-restart", enabled: "enabled", result: "signal", restarts: 0}, 1,
+			[]string{"exited (signal) and systemd is restarting it (restart 1)", "Last log lines"},
+			[]string{"stopped"}},
+		{"gave up after the start limit",
+			unitState{known: true, load: "loaded", active: "failed", sub: "failed", enabled: "enabled", result: "start-limit-hit", restarts: 5}, 1,
+			[]string{"systemd stopped restarting it (start-limit-hit) after 5 restart(s)", "agentop service restart", "Last log lines"},
+			[]string{"stays stopped"}},
+		{"active but silent",
+			unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, nil},
+		{"still starting",
+			unitState{known: true, load: "loaded", active: "activating", sub: "start", enabled: "enabled", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, nil},
+		{"systemd could not be asked", unitState{}, 1,
+			[]string{"Cortex is NOT answering"}, nil},
+		// A unit file systemd has not loaded: systemd reports it inactive, with no
+		// enablement at all. Not "stopped", not "still enabled": nothing it says
+		// describes this unit.
+		{"unit file not loaded",
+			unitState{known: true, load: "not-found", active: "inactive", sub: "dead", enabled: "", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stopped", "still enabled"}},
+		{"masked",
+			unitState{known: true, load: "masked", active: "inactive", sub: "dead", enabled: "masked", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stopped", "still enabled"}},
+		// Loaded but neither enabled nor disabled, such as "static": no claim about
+		// what happens at the next login.
+		{"stopped, enablement neither enabled nor disabled",
+			unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "static", result: "success"}, 1,
+			[]string{"Cortex is NOT answering"}, []string{"stays stopped", "still enabled"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := servicePathsFixture(t)
+			var out bytes.Buffer
+			if code := reportUnitNotAnswering(p, tc.state, &out); code != tc.code {
+				t.Errorf("exit = %d, want %d", code, tc.code)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("output lacks %q:\n%s", w, out.String())
+				}
+			}
+			for _, r := range tc.rejected {
+				if strings.Contains(out.String(), r) {
+					t.Errorf("output should not contain %q:\n%s", r, out.String())
+				}
+			}
+		})
+	}
+}
+
+// status asks systemd only once the probe has failed, and only on Linux: a healthy
+// Cortex needs no second opinion, and launchd has no such state to read.
+func TestServiceStatusAsksSystemdOnlyWhenSilent(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("status reads systemd only on Linux")
+	}
+	asked := 0
+	saved := unitStateOf
+	unitStateOf = func() unitState {
+		asked++
+		return unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "disabled", result: "success"}
+	}
+	t.Cleanup(func() { unitStateOf = saved })
+
+	p := servicePathsFixture(t)
+	if err := os.WriteFile(p.unitFile, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := serviceStatus(p, &out); code != 0 || !strings.Contains(out.String(), "Cortex is stopped, and stays stopped") {
+		t.Errorf("status = %d:\n%s\nwant 0 and the stopped line", code, out.String())
+	}
+	if asked != 1 {
+		t.Errorf("asked systemd %d times, want 1", asked)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	t.Cleanup(srv.Close)
+	p.healthURL = srv.URL + "/healthz"
+	asked = 0
+	out.Reset()
+	if code := serviceStatus(p, &out); code != 0 || asked != 0 {
+		t.Errorf("healthy: exit %d, asked systemd %d times; want 0 and 0", code, asked)
+	}
 }

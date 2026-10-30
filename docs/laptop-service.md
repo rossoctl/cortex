@@ -587,6 +587,24 @@ agentop service status
 that answered. If it says `Cortex is NOT answering`, the proxy is loaded but not
 serving — check `~/.cortex/proxy.log`.
 
+On Linux, when nothing answers, status asks systemd why, and says which of these it is:
+
+| Status says | What happened | Exit |
+|---|---|---|
+| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
+| `Cortex is stopped, but still enabled` | Stopped some other way, such as `systemctl --user stop`; it starts again at the next login or boot | 1 |
+| `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
+| `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
+
+A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
+script, the exit code alone does not say Cortex is serving: check for
+`Cortex is healthy according to` in the output as well. Before, a stopped Cortex
+exited 1. On macOS it still does.
+
+`service start`, `service restart` and `service install` clear systemd's record of the
+crashes first, so they can start a unit systemd had given up on without waiting out
+its five-minute window.
+
 If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it
 (`config: no config at …` means the file is gone). A proxy that was already running
 rejected that edit and keeps serving the config it last loaded. Status looks for one on

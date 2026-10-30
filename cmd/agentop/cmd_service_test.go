@@ -467,7 +467,17 @@ func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
 // TestServiceStatus_NotAnsweringNamesTheAgentsThatFail: an installed proxy that does not
 // answer its health check fails every agent configured to use it, OpenCode as well as
 // Claude Code.
+//
+// On Linux, status first asks systemd why nothing answers, and this host's systemd
+// knows nothing of the fixture's unit. So the state is pinned to the one this message
+// is for: active, yet silent. Asking the real systemd made the verdict depend on the
+// machine the test ran on (a CI runner reported "stopped, but still enabled").
 func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
+	saved := unitStateOf
+	unitStateOf = func() unitState {
+		return unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}
+	}
+	t.Cleanup(func() { unitStateOf = saved })
 	p := servicePathsFixture(t)
 	if err := os.WriteFile(p.unitFile, []byte("unit"), 0o600); err != nil {
 		t.Fatal(err)

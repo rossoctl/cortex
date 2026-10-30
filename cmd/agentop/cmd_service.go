@@ -704,6 +704,68 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Cortex is healthy according to %s\n", p.healthURL)
 		return 0
 	}
+	if runtime.GOOS == "linux" {
+		return reportUnitNotAnswering(p, unitStateOf(), stdout)
+	}
+	reportNotAnswering(p, stdout)
+	return 1
+}
+
+// unitStateOf is how status reads systemd. A var so a test can hand it a state
+// without a systemd to stop.
+var unitStateOf = systemdUnitState
+
+// reportUnitNotAnswering is status's verdict on Linux when the health probe got no
+// answer. Without asking systemd why, every case read as "NOT answering … Claude
+// Code and OpenCode will fail", exit 1: a `service stop` looked exactly like a
+// crash, and its log tail, the old proxy shutting down cleanly, made that worse.
+//
+// A stopped, disabled unit is the one case that is not a failure, so it alone exits
+// 0. The agents that depend on Cortex fail all the same, so it says so, but as a
+// consequence of the stop rather than as an alarm.
+//
+// Each case names only what systemd reports, never how the unit got there. Stopped
+// and disabled is what `service stop` leaves, but so is a unit file that was never
+// enabled, and systemd cannot tell the two apart. Anything outside these cases (a
+// unit systemd has not loaded, a masked one) gets the general message, rather than
+// a guess.
+func reportUnitNotAnswering(p servicePaths, s unitState, stdout io.Writer) int {
+	switch {
+	case !s.known || s.load != "loaded":
+		reportNotAnswering(p, stdout)
+		return 1
+	case s.active == "inactive" && s.enabled == "disabled":
+		fmt.Fprintf(stdout, "Cortex is stopped, and stays stopped across logins and reboots until you start it.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 0
+	case s.active == "inactive" && (s.enabled == "enabled" || s.enabled == "enabled-runtime"):
+		// Stopped but still enabled, so it comes back at the next login or boot:
+		// `systemctl --user stop` by hand, or a unit that exited cleanly, which the
+		// proxy does not do on its own.
+		fmt.Fprintf(stdout, "Cortex is stopped, but still enabled, so it starts again at the next login or boot.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 1
+	case s.active == "failed":
+		fmt.Fprintf(stdout, "Cortex is NOT running: systemd stopped restarting it (%s) after %d restart(s).\n",
+			s.result, s.restarts)
+		fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Fix the cause in the log, then:\n"+
+			"    agentop service restart\n"+
+			"  Last log lines:\n")
+		for _, line := range lastLines(p.logFile, 5) {
+			fmt.Fprintf(stdout, "    %s\n", line)
+		}
+		return 1
+	case s.active == "activating" && s.sub == "auto-restart":
+		fmt.Fprintf(stdout, "Cortex is NOT running: it exited (%s) and systemd is restarting it (restart %d).\n",
+			s.result, s.restarts+1)
+		fmt.Fprintf(stdout, "  If this repeats, the log says why. Claude Code and OpenCode will fail meanwhile. Last log lines:\n")
+		for _, line := range lastLines(p.logFile, 5) {
+			fmt.Fprintf(stdout, "    %s\n", line)
+		}
+		return 1
+	}
+	// active but silent, or still starting: the case reportNotAnswering was
+	// written for, including a foreign process holding the port.
 	reportNotAnswering(p, stdout)
 	return 1
 }
