@@ -1,6 +1,7 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"io"
 	"net"
 	"strings"
@@ -94,6 +95,73 @@ func TestTunnel_HalfCloseRelaysTheReply(t *testing.T) {
 	}
 	<-done
 	<-upDone
+}
+
+// A wrapped client conn (as the TLS-bridge CONNECT path uses) must still
+// deliver the half-close through tunnel, since peekedConn alone embeds
+// net.Conn and would otherwise miss the CloseWrite type assertion.
+func TestTunnel_HalfCloseThroughPeekedConn(t *testing.T) {
+	cl, clPeer := tcpPair(t)
+	up, upPeer := tcpPair(t)
+
+	upDone := make(chan struct{})
+	go func() {
+		defer close(upDone)
+		_, _ = io.ReadAll(upPeer)
+		_, _ = upPeer.Write([]byte("REPLY"))
+		_ = upPeer.Close()
+	}()
+
+	reply := make(chan []byte, 1)
+	go func() {
+		_, _ = clPeer.Write([]byte("hello"))
+		_ = clPeer.(*net.TCPConn).CloseWrite()
+		b, _ := io.ReadAll(clPeer)
+		reply <- b
+	}()
+
+	wrapped := &peekedConn{Conn: cl, r: bufio.NewReader(cl)}
+	done := make(chan struct{})
+	go func() {
+		tunnel(wrapped, up)
+		close(done)
+	}()
+
+	select {
+	case got := <-reply:
+		if string(got) != "REPLY" {
+			t.Fatalf("reply = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("wrapped client never got the reply")
+	}
+	<-done
+	<-upDone
+}
+
+// If the client half-closes but the upstream never does, tunnel still has to
+// return so the close row can settle. Pre-fix the downstream io.Copy blocked
+// forever; post-fix halfCloseDrainVar bounds the wait.
+func TestTunnel_ReturnsWhenUpstreamNeverHalfCloses(t *testing.T) {
+	cl, clPeer := tcpPair(t)
+	up, _ := tcpPair(t) // upstream peer kept alive by tcpPair's cleanup; never writes EOF
+
+	go func() {
+		_, _ = clPeer.Write([]byte("hello"))
+		_ = clPeer.(*net.TCPConn).CloseWrite()
+	}()
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		tunnel(cl, up)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(halfCloseDrainVar + 2*time.Second):
+		t.Fatalf("tunnel did not return after %v", time.Since(start))
+	}
 }
 
 // tcpPair returns two ends of a localhost TCP connection as *net.TCPConn,

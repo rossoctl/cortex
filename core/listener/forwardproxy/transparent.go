@@ -394,30 +394,58 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 	})
 }
 
-// tunnel bidirectionally copies between two connections until either side
-// closes, then propagates the close to the other so both io.Copy goroutines
-// exit. Close-on-each-side is idempotent on net.Conn. Shared by handleConnect
-// and HandleTransparentConn.
+// tunnel bidirectionally copies between two connections, relaying each
+// direction's EOF as a CloseWrite on the receiving side so a half-close
+// survives. Shared by handleConnect and HandleTransparentConn.
 //
-// It returns how many bytes crossed each way — up is client to upstream, down is
-// upstream to client — for the tunnel's close row. It waits for the other copy to
-// finish before returning, which it did not need to while nothing read its count:
-// closing both ends first is what makes that wait short.
+// It returns how many bytes crossed each way — up is client to upstream, down
+// is upstream to client — for the tunnel's close row. The second copy gets
+// halfCloseDrainVar to finish on its own; if it stays blocked, both ends are
+// full-closed to unblock it and the tunnel returns.
 func tunnel(client, upstream net.Conn) (up, down int64) {
 	upc := make(chan int64, 1)
+	downc := make(chan int64, 1)
 	go func() {
 		n, _ := io.Copy(upstream, client)
 		closeWrite(upstream) // relay the client's half-close; let the reply flow back
 		upc <- n
 	}()
-	down, _ = io.Copy(client, upstream)
-	closeWrite(client)
-	// Full close on both ends once each direction has finished. The copy that
-	// finishes second has nothing left to carry.
+	go func() {
+		n, _ := io.Copy(client, upstream)
+		closeWrite(client)
+		downc <- n
+	}()
+	// First direction to finish starts the drain. If the other never does on
+	// its own — one half EOFed, the other stayed quiet — full-close both so
+	// the tunnel returns and its close row can settle.
+	select {
+	case up = <-upc:
+		select {
+		case down = <-downc:
+		case <-time.After(halfCloseDrainVar):
+			_ = client.Close()
+			_ = upstream.Close()
+			down = <-downc
+		}
+	case down = <-downc:
+		select {
+		case up = <-upc:
+		case <-time.After(halfCloseDrainVar):
+			_ = client.Close()
+			_ = upstream.Close()
+			up = <-upc
+		}
+	}
 	_ = client.Close()
 	_ = upstream.Close()
-	return <-upc, down
+	return up, down
 }
+
+// halfCloseDrainVar is how long tunnel waits for the second copy after the
+// first has returned. Short enough to settle the tunnel's close row promptly,
+// long enough to carry a reply the peer is actively writing. A var so a test
+// can shrink it.
+var halfCloseDrainVar = 2 * time.Second
 
 // closeWrite shuts down c's write side when the underlying conn supports it
 // (TCPConn, UnixConn), so the peer sees EOF on its reads without losing the

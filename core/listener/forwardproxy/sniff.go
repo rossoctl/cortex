@@ -152,6 +152,15 @@ type peekedConn struct {
 
 func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
+// CloseWrite forwards to the embedded conn when it supports half-close, so
+// tunnel's half-close relay works when the client was wrapped for sniffing.
+func (c *peekedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
 // Peek returns the next n buffered bytes without consuming them. Used by the
 // TLS-bridge classify step on the CONNECT and transparent paths.
 func (c *peekedConn) Peek(n int) ([]byte, error) { return c.r.Peek(n) }
