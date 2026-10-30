@@ -26,23 +26,32 @@ type subagentBlock struct {
 	// has not landed contributes nothing yet, like its cells.
 	tokens int
 	cost   float64
+	// msgs is the block's exchange count — the unit the # column numbers member
+	// rows in, so the header's rollup and the last row's number agree.
+	msgs int
 	// anchored is set when the header has been emitted for this rebuild, so the
 	// header lands at the block's FIRST surviving row and never before it.
 	anchored bool
 }
 
 // headerText is the block's collapsible line: the rollup the issue asked for —
-// how many rows, how many tokens, what cost — behind the label. The caller wraps
-// it in a one-cell table.Row (rendered as a section row spanning every column)
-// and hands the SAME string to the search, so what the header displays is what
-// the search matches — the label alone would hide the rollup figures from it.
+// how many messages, how many tokens, what cost — behind the label. The caller
+// wraps it in a one-cell table.Row (rendered as a section row spanning every
+// column) and hands the SAME string to the search, so what the header displays
+// is what the search matches — the label alone would hide the rollup figures
+// from it. The count is in the # column's unit (exchanges, numbered from 1
+// inside the block), so the rollup and the rows it summarizes cannot disagree.
 func (b *subagentBlock) headerText(label string, open bool) string {
 	glyph := "▸"
 	if open {
 		glyph = "▾"
 	}
-	return fmt.Sprintf("%s─ %s · %d rows · %s tok · %s",
-		glyph, label, len(b.rows), humanizeCount(int64(b.tokens)), formatUSDTotal(b.cost))
+	unit := "msgs"
+	if b.msgs == 1 {
+		unit = "msg"
+	}
+	return fmt.Sprintf("%s─ %s · %d %s · %s tok · %s",
+		glyph, label, b.msgs, unit, humanizeCount(int64(b.tokens)), formatUSDTotal(b.cost))
 }
 
 // subagentLabel names a block. The wire carries only the 16-hex id, so a label a

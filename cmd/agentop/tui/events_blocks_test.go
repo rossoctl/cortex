@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,15 +81,17 @@ func TestBlocks_CollapsedByDefaultWithHeaderAtTheAnchor(t *testing.T) {
 	if b := m.headerRows[3]; b == nil || b.id != "a2" {
 		t.Errorf("header at 3 = %v, want a2", m.headerRows[3])
 	}
-	// The header carries the rollup: a1's response holds 900 tokens at $0.10.
+	// The header carries the rollup: a1 holds one exchange (2 rows) whose
+	// response carries 900 tokens at $0.10.
 	h := m.eventsTbl.Rows()[1][0]
-	if !strings.Contains(h, "▸─") || !strings.Contains(h, "2 rows") || !strings.Contains(h, "900 tok") || !strings.Contains(h, "$0.10") {
+	if !strings.Contains(h, "▸─") || !strings.Contains(h, "1 msg") || !strings.Contains(h, "900 tok") || !strings.Contains(h, "$0.10") {
 		t.Errorf("a1 header = %q", h)
 	}
 }
 
-// Enter on a header opens the block: member rows appear in time order, indented
-// via the DIR gutter, and the header's glyph turns over. Enter again closes it.
+// Enter on a header opens the block: member rows appear together under the
+// header (see TestBlocks_ExpandedMembersStayTogether), marked via the DIR
+// gutter, and the header's glyph turns over. Enter again closes it.
 func TestBlocks_EnterToggles(t *testing.T) {
 	m := newBlockModel(t, blockEvents())
 
@@ -124,6 +127,157 @@ func TestBlocks_EnterToggles(t *testing.T) {
 	m.toggleSubagentBlock()
 	if got := len(m.eventsTbl.Rows()); got != 4 {
 		t.Fatalf("re-collapsed: rendered rows = %d, want 4", got)
+	}
+}
+
+// An expanded block's rows render TOGETHER, directly under the header — pulled
+// out of the chronological interleaving with the main conversation. Live traffic
+// interleaves (a subagent's exchange spans several main-conversation turns), and
+// rendering members at their own timestamps scattered the block across the pane,
+// which read as "expanding did nothing" — the header said 56 rows and the rows
+// below it were the main conversation's.
+func TestBlocks_ExpandedMembersStayTogether(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "a1", Subagent: "a1"},
+		// The main conversation's row, chronologically INSIDE a1's exchange.
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "m1"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "a1", Subagent: "a1"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "m2"},
+	}
+	m := newBlockModel(t, events)
+
+	// Collapsed: header anchored at a1's first row, then the main rows.
+	if got := len(m.eventsTbl.Rows()); got != 3 {
+		t.Fatalf("collapsed rows = %d, want 3 (header + m1 + m2)", got)
+	}
+
+	m.eventsTbl.SetCursor(0)
+	if !m.toggleSubagentBlock() {
+		t.Fatal("Enter on the header row did not toggle")
+	}
+
+	// Expanded: header, a1's whole exchange, THEN the main rows — a1's response
+	// must not sit at its chronological slot below m1.
+	want := []string{"a1", "a1", "m1", "m2"}
+	if got := len(m.eventsTbl.Rows()); got != 5 {
+		t.Fatalf("expanded rows = %d, want 5 (header + a1's pair + m1 + m2)", got)
+	}
+	for i, id := range want {
+		// Row 0 is the header, whose visibleRows entry holds no event.
+		if rid := m.visibleRows[i+1].event.RequestID; rid != id {
+			t.Errorf("expanded row %d = %s, want %s", i+1, rid, id)
+		}
+	}
+}
+
+// Two subagents running concurrently, each interleaved with the other and with
+// the main conversation — and a1's traffic resuming long after a2 finished its
+// first exchange. Each block still renders as ONE contiguous segment under its
+// own single header: membership is by subagent id over the whole session, not
+// by time-contiguity, so interleaving cannot split a block into segments or
+// emit a second header for the same agent.
+func TestBlocks_ConcurrentSubagentsEachStayOneSegment(t *testing.T) {
+	req := func(id, sub string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: id, Subagent: sub}
+	}
+	resp := func(id, sub string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: id, Subagent: sub}
+	}
+	events := []pipeline.SessionEvent{
+		req("a1.1", "a1"),
+		req("m1", ""),
+		req("a2.1", "a2"), // a2 starts while a1's first exchange is in flight
+		resp("a1.1", "a1"),
+		resp("a2.1", "a2"),
+		req("m2", ""),
+		resp("m2", ""),
+		req("a2.2", "a2"), // a2 continues after main turns
+		resp("a2.2", "a2"),
+		req("m3", ""),
+		resp("m3", ""),
+		req("a1.2", "a1"), // a1's traffic resumes long after it started
+		resp("a1.2", "a1"),
+		req("m4", ""),
+	}
+	m := newBlockModel(t, events)
+	m.subagentOpen = map[string]bool{"a1": true, "a2": true}
+	m.rebuildEventsTable()
+
+	// Each subagent's rows render in arrival order within its segment.
+	order := map[string][]string{}
+	for _, vr := range m.visibleRows {
+		if vr.event != nil && vr.event.Subagent != "" {
+			order[vr.event.Subagent] = append(order[vr.event.Subagent], vr.event.RequestID)
+		}
+	}
+	if got := order["a1"]; !slices.Equal(got, []string{"a1.1", "a1.1", "a1.2", "a1.2"}) {
+		t.Errorf("a1's segment = %v, want its whole exchange run in order", got)
+	}
+	if got := order["a2"]; !slices.Equal(got, []string{"a2.1", "a2.1", "a2.2", "a2.2"}) {
+		t.Errorf("a2's segment = %v, want its whole exchange run in order", got)
+	}
+	// A subagent's rendered rows must form ONE contiguous run: their positions
+	// span exactly their count. A block split into segments — or a second
+	// header for the same agent — would leave gaps in that span.
+	for _, sub := range []string{"a1", "a2"} {
+		var pos []int
+		for i, vr := range m.visibleRows {
+			if vr.event != nil && vr.event.Subagent == sub {
+				pos = append(pos, i)
+			}
+		}
+		if len(pos) == 0 || pos[len(pos)-1]-pos[0]+1 != len(pos) {
+			t.Errorf("%s's rows at %v, not one contiguous run", sub, pos)
+		}
+	}
+	// Exactly two headers rendered.
+	if headers := len(m.headerRows); headers != 2 {
+		t.Errorf("headers = %d, want 2 (one per subagent, however interleaved)", headers)
+	}
+}
+
+// Member rows number their exchanges from 1 WITHIN the block — the block reads
+// as the subagent's own transcript — while main rows keep the session-wide
+// numbers. A request and its response still share one number, and the block's
+// count agrees with the last number shown inside it.
+func TestBlocks_MembersNumberFromOneInsideTheBlock(t *testing.T) {
+	req := func(id, sub string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: id, Subagent: sub}
+	}
+	resp := func(id, sub string) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: id, Subagent: sub}
+	}
+	events := []pipeline.SessionEvent{
+		req("m1", ""), resp("m1", ""), // session exchange 1
+		req("a1.1", "a1"), resp("a1.1", "a1"), // session 2 — block-local 1
+		req("m2", ""), resp("m2", ""), // session 3
+		req("a1.2", "a1"), resp("a1.2", "a1"), // session 4 — block-local 2
+	}
+	m := newBlockModel(t, events)
+	m.eventsTbl.SetCursor(2) // a1's header: m1's pair, then the header
+	if !m.toggleSubagentBlock() {
+		t.Fatal("Enter on the header row did not toggle")
+	}
+
+	// Rendered: m1 req, m1 resp, header, a1's two exchanges, m2's pair. The
+	// first cell of each EVENT row is the # column; the header row is one cell
+	// of its own, standing in for the position.
+	want := []string{"1", "1", "HEADER", "1", "1", "2", "2", "3", "3"}
+	rows := m.eventsTbl.Rows()
+	if len(rows) != len(want) {
+		t.Fatalf("expanded rows = %d, want %d", len(rows), len(want))
+	}
+	for i, n := range want {
+		if n == "HEADER" {
+			continue // checked below, with the rollup
+		}
+		if got := rows[i][0]; got != n {
+			t.Errorf("row %d # = %q, want %q", i, got, n)
+		}
+	}
+	// The header's rollup counts exchanges, in the same unit the rows show.
+	if h := rows[2][0]; !strings.Contains(h, "2 msgs") {
+		t.Errorf("header = %q, want the exchange count (2 msgs)", h)
 	}
 }
 
@@ -312,8 +466,8 @@ func TestBlocks_RollupFollowsTheInactiveFilter(t *testing.T) {
 			t.Errorf("header for a2 at row %d", i)
 		}
 	}
-	// a1's header counts the rows expanding it would show: the kept exchange, 2.
-	if h := m.eventsTbl.Rows()[1][0]; !strings.Contains(h, "2 rows") {
+	// a1's header counts what expanding it would show: the kept exchange, 1 msg.
+	if h := m.eventsTbl.Rows()[1][0]; !strings.Contains(h, "1 msg") {
 		t.Errorf("a1 header = %q, want the kept exchange counted", h)
 	}
 }

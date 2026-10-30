@@ -51,6 +51,12 @@ type cellContext struct {
 	// ids pairs a request event with its response, computed once per rebuild by
 	// computeEventPairs. Carried here rather than recomputed per cell.
 	ids map[*pipeline.SessionEvent]int
+	// blockIDs renumbers a subagent block's member exchanges from 1 (#1047): the
+	// block reads as the subagent's own transcript, so its first exchange is 1,
+	// not the session-wide number the main conversation's rows keep. Nil unless
+	// blocks were collected this rebuild; a lookup that misses falls through to
+	// ids, which is what a main row always takes.
+	blockIDs map[*pipeline.SessionEvent]int
 	// invs is this row's invocations, computed once in the row loop.
 	//
 	// rebuildEventsTable already needs them for the hideInactive check, and
@@ -239,8 +245,11 @@ const (
 // display order.
 var eventColumns = []eventColumn{
 	{id: colIndex, width: 4, defaultOn: true, keep: keepHigh,
-		desc: "exchange number; a request and its response share one",
+		desc: "exchange number; a request and its response share one, numbered per subagent block",
 		cell: func(c cellContext) string {
+			if id, ok := c.blockIDs[c.row.event]; ok {
+				return strconv.Itoa(id)
+			}
 			if id, ok := c.ids[c.row.event]; ok {
 				return strconv.Itoa(id)
 			}
