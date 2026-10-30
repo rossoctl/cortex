@@ -113,3 +113,44 @@ func TestPluginDepsAllSatisfied_RequiresAnyMisorderOnAlternate(t *testing.T) {
 		t.Fatal("RequiresAny should NOT be satisfied when an alternative is downstream")
 	}
 }
+
+// The #1568 case in the DEPS indicator: a RequiresLater misorder used to
+// render ✓ (and still pass the pre-apply check), while the proxy refused
+// the reload. The verdict now comes from edit.CheckOrder, the same copy
+// of the framework's rules the pre-apply validator runs.
+func TestPluginDepsAllSatisfied_RequiresLaterMet(t *testing.T) {
+	chain := []apiclient.PipelinePlugin{
+		{Name: "litellm-budget-track", Direction: "outbound", Position: 1,
+			RequiresLater: []string{"inference-parser"}},
+		{Name: "inference-parser", Direction: "outbound", Position: 2},
+	}
+	if !pluginDepsAllSatisfied(&chain[0], chain) {
+		t.Fatal("RequiresLater should be satisfied when the target is downstream")
+	}
+	if !pluginHasAnyDeps(&chain[0]) {
+		t.Fatal("RequiresLater alone should mark the plugin as having deps")
+	}
+}
+
+func TestPluginDepsAllSatisfied_RequiresLaterMisordered(t *testing.T) {
+	// The #1568 case: the parser moved above the plugin that reads its
+	// response-phase output.
+	chain := []apiclient.PipelinePlugin{
+		{Name: "inference-parser", Direction: "outbound", Position: 1},
+		{Name: "litellm-budget-track", Direction: "outbound", Position: 2,
+			RequiresLater: []string{"inference-parser"}},
+	}
+	if pluginDepsAllSatisfied(&chain[1], chain) {
+		t.Fatal("RequiresLater should NOT be satisfied when the target is upstream")
+	}
+}
+
+func TestPluginDepsAllSatisfied_RequiresLaterMissing(t *testing.T) {
+	chain := []apiclient.PipelinePlugin{
+		{Name: "litellm-budget-track", Direction: "outbound", Position: 1,
+			RequiresLater: []string{"inference-parser"}},
+	}
+	if pluginDepsAllSatisfied(&chain[0], chain) {
+		t.Fatal("RequiresLater should NOT be satisfied when the target is absent")
+	}
+}

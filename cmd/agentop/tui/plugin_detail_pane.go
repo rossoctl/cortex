@@ -72,6 +72,16 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) 
 			b.WriteString("\n")
 		}
 	}
+	if len(p.RequiresLater) > 0 {
+		fmt.Fprintln(&b)
+		b.WriteString(styleMuted.Render("Requires later:"))
+		b.WriteString("\n")
+		for _, c := range requiresLaterStatus(p, chain) {
+			b.WriteString("  ")
+			b.WriteString(formatDepCheck(c, chain != nil))
+			b.WriteString("\n")
+		}
+	}
 	// Metrics section, for plugins implementing pipeline.MetricsProvider.
 	// Same always-newline treatment as Config below: the header is drawn
 	// whether or not there are rows, so navigating between a plugin that

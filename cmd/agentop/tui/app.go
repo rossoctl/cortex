@@ -1795,7 +1795,23 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Learned from the echo, not assumed: see model.serverProjects.
 		m.serverProjects = msg.projected
 		// Only update if we're still focused on this session.
-		m.events[msg.id] = msg.events
+		//
+		// MERGE, not wholesale replace: events streamed while the snapshot
+		// request was in flight have a higher seq than the snapshot's tail
+		// (the server answers everything it held at request time), and a
+		// plain assignment dropped them until the next manual refresh (#1568).
+		// Only merges when the snapshot's tail carries a seq at all — a proxy
+		// that predates paging sends zero, and unordered ids cannot merge.
+		events := msg.events
+		if held := m.events[msg.id]; len(held) > 0 && len(events) > 0 && events[len(events)-1].Seq > 0 {
+			last := events[len(events)-1].Seq
+			for _, e := range held {
+				if e.Seq > last {
+					events = append(events, e)
+				}
+			}
+		}
+		m.events[msg.id] = events
 		// A wholesale replacement the length check cannot see, so the gauge is re-folded
 		// over what just landed. NOT dropped: msg.events is projected (view=summary
 		// strips the manifest and the message count), so dropping the figure here blanked
@@ -2385,6 +2401,16 @@ func (m *model) watchingSession(id string) bool {
 	return m.selectedSess == id || m.timeline.session == id
 }
 
+// watchingSessionID is the id form of watchingSession: the session whose
+// events are being held open, "" when none is. The opened session wins over
+// the timeline's, matching which one a snapshot refresh is for.
+func (m *model) watchingSessionID() string {
+	if m.selectedSess != "" {
+		return m.selectedSess
+	}
+	return m.timeline.session
+}
+
 // flushSessionsTable re-sorts the session list by recency and rebuilds its table when a streamed
 // event has changed it since the last rebuild. Called from the 1s tick; see sessionsStale.
 func (m *model) flushSessionsTable() {
@@ -2645,10 +2671,10 @@ func (m *model) paneView() string {
 	// so it cannot perturb the pane it sits above.
 	rows := []string{header}
 	// EXACTLY WHAT layout() RESERVED, blank where there is nothing to say. Both reservations are
-	// height-gated and must stay that way — layout() runs only from the WindowSizeMsg handler, so
-	// a content-gated reservation would go stale the moment a poll landed, and stale in the
-	// direction that overflows. So the render fills them rather than the reservation tracking the
-	// render.
+	// height-gated and must stay that way — layout() runs on resizes, drawer toggles and pane
+	// transitions, none of them on a poll's schedule, so a content-gated reservation would go
+	// stale the moment a poll landed, and stale in the direction that overflows. So the render
+	// fills them rather than the reservation tracking the render.
 	//
 	// The case that made this necessary: the renderer can return FEWER lines than the reservation,
 	// which left the strip's row and the drawer's five unfilled and the footer six rows above the

@@ -560,11 +560,13 @@ func (m *model) spendStripVisible() bool {
 // spendStripReservesRow reports whether layout() must hold a row back for the
 // strip. Height ONLY — deliberately blind to the pane.
 //
-// layout() is called from exactly one place, the WindowSizeMsg handler; no pane
-// transition re-runs it. So a reservation that read m.pane would go stale the
-// moment the user moved between a picker and a data pane, and bodyHeight would
-// stay wrong until the next terminal resize — which for a pane the strip DOES
-// draw on means a body one row too tall and a footer pushed off the bottom.
+// There is no setPane choke point to hook: the pane is assigned in twenty-odd
+// places, and layout() runs on resizes, drawer toggles and pane transitions
+// alike — none of them a guaranteed stop on the way between two panes. So a
+// reservation that read m.pane would go stale the moment the user moved
+// between a picker and a data pane, and bodyHeight would stay wrong until the
+// next layout() — which for a pane the strip DOES draw on means a body one row
+// too tall and a footer pushed off the bottom.
 //
 // Being blind to the pane costs the two picker panes one row they could have
 // used. That is the accepted trade: a picker one row short is invisible, an

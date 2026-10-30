@@ -25,12 +25,13 @@ func PluginsCatalog() []CatalogEntry {
 	for i, e := range src {
 		n := e.Capabilities.Normalize()
 		out[i] = CatalogEntry{
-			Name:        e.Name,
-			ReadsBody:   n.ReadsResponseBody,
-			Requires:    n.Requires,
-			RequiresAny: n.RequiresAny,
-			Description: n.Description,
-			Fields:      convertFieldSchemas(e.Fields),
+			Name:          e.Name,
+			ReadsBody:     n.ReadsResponseBody,
+			Requires:      n.Requires,
+			RequiresAny:   n.RequiresAny,
+			RequiresLater: n.RequiresLater,
+			Description:   n.Description,
+			Fields:        convertFieldSchemas(e.Fields),
 		}
 	}
 	return out

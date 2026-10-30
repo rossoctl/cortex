@@ -472,6 +472,17 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "p":
 		m.paused = !m.paused
+		if m.paused {
+			return nil
+		}
+		// Resuming: everything streamed while paused was dropped, so refetch
+		// the watched session's tail rather than let the timeline quietly
+		// stop at the pause point (#1568). snapshotLoadedMsg merges by seq,
+		// so anything the refetch still misses can arrive off the stream
+		// without a duplicate.
+		if id := m.watchingSessionID(); id != "" {
+			return m.snapshotCmd(id)
+		}
 		return nil
 
 	case "s":
@@ -653,10 +664,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			//
 			// The honest consequence: cached-only sessions are never released
 			// while agentop runs, so the cache grows by one entry per restart the
-			// user visited a session across. Measured, that is ~165 bytes per
-			// event and 1000 events per session, so ~161 KB per session and a
-			// few MB for a long debugging afternoon — worth it, given the
-			// alternative is deleting the only copy of what someone is reading.
+			// user visited a session across. There is no per-session event cap
+			// anymore, so the cost of one entry is whatever its interned
+			// snapshot cost — a 23.5MB document decoded to 2.31MB retained on
+			// the benchmark in apiclient/snapshot.go. A few visited sessions is
+			// megabytes; a long debugging afternoon across many restarts can be
+			// more — worth it, given the alternative is deleting the only copy
+			// of what someone is reading.
 			if id != m.selectedSess {
 				for cached := range m.events {
 					if cached != id && live[cached] {
@@ -1385,14 +1399,15 @@ func (m *model) layout() {
 	bodyH -= dividerLines
 	// And one for the spend strip, which View() draws directly under the title.
 	//
-	// BY HEIGHT ALONE, deliberately blind to the pane: layout() is called from exactly one
-	// place, the WindowSizeMsg handler, and no pane transition re-runs it. A reservation
-	// that read m.pane would go stale the moment the user moved between a picker and a data
-	// pane, leaving bodyHeight wrong until the next resize — which on a pane the strip DOES
-	// draw means a body one row too tall and a footer pushed off the bottom. The cost is
-	// that the two picker panes render one row shorter than they need, which is invisible
-	// next to that. See spendStripReservesRow and spendStripVisible for the same asymmetry
-	// stated from the other side.
+	// BY HEIGHT ALONE, deliberately blind to the pane: there is no setPane choke point to
+	// hook (the pane is assigned in twenty-odd places, and layout() runs on resizes, drawer
+	// toggles and pane transitions alike), so a reservation that read m.pane would go stale
+	// the moment the user moved between a picker and a data pane, leaving bodyHeight wrong
+	// until the next layout() — which on a pane the strip DOES draw means a body one row too
+	// tall and a footer pushed off the bottom. The cost is that the two picker panes render
+	// one row shorter than they need, which is invisible next to that. See
+	// spendStripReservesRow and spendStripVisible for the same asymmetry stated from the
+	// other side.
 	if m.spendStripReservesRow() {
 		// spendBandLines, not one row: the band stacks labels over values. paneView fills
 		// exactly this many, and the two must move together — see paneView.

@@ -101,7 +101,7 @@ func spendDrawerLinesFor(width int) int {
 	return left + 2 // the header and the hint line
 }
 
-// spendDrawerAxes are the breakdown axes `g` cycles through.
+// spendDrawerAxes are the breakdown axes `a` cycles through.
 //
 // NO GroupNone in the cycle, unlike the Usage pane's grouping. This drawer's only content
 // IS the breakdown, so "no breakdown" is an empty drawer — a state the user can already
@@ -310,11 +310,11 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 // back.
 //
 // THE FLAG AND THE HEIGHT, deliberately blind to the pane — the same asymmetry
-// spendStripReservesRow has, for the same reason: layout() is called from the WindowSizeMsg
-// handler, and no pane transition re-runs it. There is no setPane choke point to hook (the pane
-// is assigned in twenty-odd places), so a pane-aware reservation would go stale on the next
-// transition — and stale in the dangerous direction, because a drawer that DRAWS against an
-// unreserved body overflows the terminal.
+// spendStripReservesRow has, for the same reason: layout() runs on resizes, drawer
+// toggles and pane transitions alike, and there is no setPane choke point to hook (the
+// pane is assigned in twenty-odd places), so a pane-aware reservation would go stale on
+// the next transition — and stale in the dangerous direction, because a drawer that DRAWS
+// against an unreserved body overflows the terminal.
 //
 // The cost is larger than the strip's: while the drawer is open, a pane that cannot host it
 // renders its reservation shorter than it could. That is a visible loss where the strip's was
