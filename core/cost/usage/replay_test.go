@@ -157,11 +157,17 @@ func TestAbandonReplay_StopsLogging(t *testing.T) {
 }
 
 // A 101 row is excluded on the REPLAY path too, which only holds because
-// ReplayCopy is a whole-struct copy (`c := *e`) and so carries StatusCode. If it
-// ever became a field-by-field copy that forgot the status, the exclusion would
-// silently stop applying to archived WebSocket sessions and their lifetimes would
-// reappear in the latency mean on every restart — see
+// ReplayCopy is a whole-struct copy (`c := *e`) and so carries every field the
+// exclusion reads. There are THREE: StatusCode and Tunnel, and — since the
+// exclusion was scoped to outbound — Direction. If ReplayCopy ever became a
+// field-by-field copy that dropped or mangled any of them, the exclusion would
+// silently stop applying to archived WebSocket sessions and their lifetimes
+// would reappear in the latency mean on every restart — see
 // TestRecord_WebSocket101IsNotARequestLatency for what that costs.
+//
+// The first two are asserted directly below; Direction is covered by the
+// end-to-end half, which is why that half is not redundant: mangling Direction
+// to Inbound moves the mean from 500ms to 300s and fails there.
 func TestReplayCopy_KeepsWhatExcludesA101Row(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	ws := respEvent(now, http.StatusSwitchingProtocols, 10*time.Minute, "", 0)
