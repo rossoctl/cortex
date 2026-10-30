@@ -3,9 +3,9 @@ name: cortex CodeQL config
 queries:
   - uses: security-extended
 
-# Path-scoped query suppressions. Each entry must explain WHY the
-# query doesn't apply — future readers should be able to evaluate
-# whether the suppression is still warranted as code evolves.
+# Query suppressions. Each entry must explain WHY the query doesn't
+# apply — future readers should be able to evaluate whether the
+# suppression is still warranted as code evolves.
 query-filters:
   # go/disabled-certificate-check fires on InsecureSkipVerify: true
   # in core/tlsconfig/client.go. The flag is required: it lets crypto/tls

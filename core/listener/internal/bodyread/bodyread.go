@@ -25,9 +25,9 @@ import (
 // (chunked), where the true size is unknowable here.
 func LogError(listener string, r *http.Request, read int, limit int64, err error) {
 	attrs := []any{
-		"host", r.Host,
+		"host", pipeline.SanitizeLogValue(r.Host),
 		"method", r.Method,
-		"path", r.URL.Path,
+		"path", pipeline.SanitizeLogValue(r.URL.Path),
 		"error", err,
 		"read", read,
 		"limit", limit,

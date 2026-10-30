@@ -954,3 +954,19 @@ func TestFoldAgentNames(t *testing.T) {
 		t.Errorf("FoldAgentNames(nil) = %v, want empty", got)
 	}
 }
+
+// SanitizeLogValue is what every client-controlled host value passes through
+// on its way into slog: control runes — C0, DEL, C1 and CR/LF — become U+FFFD.
+func TestSanitizeLogValue(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"api.example.com", "api.example.com"},
+		{"evil\nhost", "evil�host"},
+		{"evil\rhost", "evil�host"},
+		{"esc[2j", "esc�[2j"},
+		{"c1", "c1�"},
+	} {
+		if got := SanitizeLogValue(tc.in); got != tc.want {
+			t.Errorf("SanitizeLogValue(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
