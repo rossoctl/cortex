@@ -249,14 +249,15 @@ type PipelineView struct {
 // PipelinePlugin describes one plugin's position, direction, and
 // capabilities. Mirrors the server's pipelinePluginView exactly.
 type PipelinePlugin struct {
-	Name        string          `json:"name"`
-	Direction   string          `json:"direction"`
-	Position    int             `json:"position"`
-	ReadsBody   bool            `json:"readsBody"`
-	Requires    []string        `json:"requires,omitempty"`
-	RequiresAny []string        `json:"requiresAny,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Config      json.RawMessage `json:"config,omitempty"`
+	Name          string          `json:"name"`
+	Direction     string          `json:"direction"`
+	Position      int             `json:"position"`
+	ReadsBody     bool            `json:"readsBody"`
+	Requires      []string        `json:"requires,omitempty"`
+	RequiresAny   []string        `json:"requiresAny,omitempty"`
+	RequiresLater []string        `json:"requiresLater,omitempty"`
+	Description   string          `json:"description,omitempty"`
+	Config        json.RawMessage `json:"config,omitempty"`
 	// OnError is the plugin's on_error policy, "" for the default (enforce): the proxy sends
 	// it only when it is not. A plugin under observe runs, but its rejections, body writes and
 	// redirects are dropped — header writes still apply — so in those respects its Config says
@@ -294,13 +295,14 @@ type PluginCatalog struct {
 // Describes a registered plugin's static type-level metadata; the
 // catalog includes plugins not currently in the active pipeline.
 type PluginCatalogEntry struct {
-	Name        string             `json:"name"`
-	Direction   string             `json:"direction,omitempty"`
-	ReadsBody   bool               `json:"readsBody,omitempty"`
-	Requires    []string           `json:"requires,omitempty"`
-	RequiresAny []string           `json:"requiresAny,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Fields      []PluginFieldEntry `json:"fields,omitempty"`
+	Name          string             `json:"name"`
+	Direction     string             `json:"direction,omitempty"`
+	ReadsBody     bool               `json:"readsBody,omitempty"`
+	Requires      []string           `json:"requires,omitempty"`
+	RequiresAny   []string           `json:"requiresAny,omitempty"`
+	RequiresLater []string           `json:"requiresLater,omitempty"`
+	Description   string             `json:"description,omitempty"`
+	Fields        []PluginFieldEntry `json:"fields,omitempty"`
 }
 
 // PluginFieldEntry mirrors sessionapi.FieldSchemaEntry — per-field

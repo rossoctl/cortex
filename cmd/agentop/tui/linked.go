@@ -147,6 +147,21 @@ func eventSession(sessionID string, e *pipeline.SessionEvent) string {
 	return sessionID
 }
 
+// lastOwnSeq is the highest seq among events that sessionID recorded itself, 0
+// when none carries one. The snapshot merge compares the session's own numbering
+// only: mergeLinked interleaves linked-bucket events, numbered in their own
+// bucket's space, so the last event by time is not necessarily the highest own
+// seq — a linked call can postdate the session's own tail.
+func lastOwnSeq(events []pipeline.SessionEvent, sessionID string) uint64 {
+	var last uint64
+	for i := range events {
+		if e := &events[i]; eventSession(sessionID, e) == sessionID && e.Seq > last {
+			last = e.Seq
+		}
+	}
+	return last
+}
+
 // ownOldest is the oldest of held that sessionID recorded itself, nil when none is: paging
 // counts from it, because a linked bucket's events are numbered in their own bucket.
 func ownOldest(held []pipeline.SessionEvent, sessionID string) *pipeline.SessionEvent {
