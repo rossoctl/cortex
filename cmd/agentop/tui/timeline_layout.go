@@ -411,8 +411,8 @@ func (v ivs) cover(lo, hi time.Time) time.Duration {
 
 // waits classifies the gaps between an agent's consecutive turns, and the one after its last.
 //
-//   - Woken by a subagent's result: waiting on its subagents, as is any time one of them or one
-//     of its background jobs was running.
+//   - Woken by a subagent's result: waiting on its subagents, as is any time one of them was
+//     running. A background job is a tool still running, and is drawn as one (see build).
 //   - The next call re-sent the conversation unchanged: retrying, the whole gap.
 //   - After a failed call otherwise: retrying until the last failed request to a model host in
 //     the gap, then waiting on the user, who had to act. Claude Code retries a cut stream for a
@@ -426,11 +426,6 @@ func waits(tl *timeline.Timeline, agent string, children []string, life map[stri
 	for _, k := range children {
 		if l, ok := life[k]; ok {
 			kids = append(kids, l)
-		}
-	}
-	for _, j := range tl.Jobs {
-		if j.Agent == agent {
-			kids = append(kids, [2]time.Time{j.Start, tlEndOr(j.End, now)})
 		}
 	}
 	woke := map[int64]bool{}
@@ -567,10 +562,17 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 
 	build := func(a timeline.Agent, depth int) tlAgentRow {
 		m, t := newIvs(model[a.ID]), newIvs(tool[a.ID])
+		var js [][2]time.Time
+		for _, j := range tl.Jobs {
+			if j.Agent == a.ID {
+				js = append(js, [2]time.Time{j.Start, tlEndOr(j.End, now)})
+			}
+		}
+		jobs := newIvs(js)
 		retry, subs, user := waits(tl, a.ID, children[a.ID], life, now)
 		user = newIvs(append(user, asking[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
-			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
+			modelTime: m.cover(from, to), toolTime: t.cover(from, to) + jobs.cover(from, to), calls: calls[a.ID]}
 		l, known := life[a.ID]
 		// Gap cells are filled too, each with the whole stretch it stands for, so the marker can
 		// say what that stretch was.
@@ -595,7 +597,12 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 				left -= f
 				return f
 			}
-			row.cells[c] = share{tool: take(t), model: take(m), retry: take(retry), subs: take(subs), user: take(user)}
+			// A background job is a tool still running: it takes what the model and the
+			// foreground tools did not, so a job left running through a reply hides no model.
+			s := share{tool: take(t), model: take(m)}
+			s.tool += take(jobs)
+			s.retry, s.subs, s.user = take(retry), take(subs), take(user)
+			row.cells[c] = s
 		}
 		return row
 	}

@@ -21,8 +21,9 @@ import (
 // draws them.
 //
 // An agent cell is a stacked bar of how that cell's time divided: tools running at the
-// baseline, then the model generating, retrying after a failed call, waiting on its subagents,
-// and waiting on the user. A host cell's height is how many requests were in flight at once.
+// baseline (a background job is a tool still running, so it counts here), then the model
+// generating, retrying after a failed call, waiting on its subagents, and waiting on the user.
+// A host cell's height is how many requests were in flight at once.
 
 // timelineRefresh is the most often a live session's timeline is refetched, and how often the
 // layout's "now" moves for one with a call in flight.

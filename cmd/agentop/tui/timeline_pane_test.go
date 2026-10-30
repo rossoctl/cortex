@@ -1052,16 +1052,36 @@ func TestTimelineWaits_MainDefaultsToYouExceptAfterALostTool(t *testing.T) {
 	}
 }
 
-// A background job the main agent left running is waiting on subagents, not on the user.
-func TestTimelineWaits_BackgroundJobIsNotTheUsersTime(t *testing.T) {
+// A background job is a tool still running, and its agent is never waiting on the user while
+// one is: it is drawn as tools, not as waiting on subagents, which has a row to point at.
+func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
 	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1190), End: tlPtr(1400), Seq: 29}}
 	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
-	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.subs, 1) {
-		t.Errorf("while the job ran: %+v, want waiting on subagents", c)
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.tool, 1) {
+		t.Errorf("while the job ran: %+v, want tools", c)
 	}
 	if c := lay.agents[0].cells[cellOf(t, lay, 1450)]; !near(c.user, 1) {
 		t.Errorf("after the job's notification: %+v, want waiting on the user", c)
+	}
+	// It is in the tools total too, as the bar is.
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	if got := lay.agents[0].toolTime - without; got != 210*time.Second {
+		t.Errorf("tools total grew by %v, want the job's 210s", got)
+	}
+}
+
+// A job left running through a reply does not hide the model: the model claims its own time and
+// the job takes what is left.
+func TestTimelineWaits_BackgroundJobDoesNotHideTheModel(t *testing.T) {
+	tl := sampleTimeline() // main's turn 960-1200s, then the user answers at 1500s
+	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1150), End: tlPtr(1300), Seq: 29}}
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1170)]; !near(c.model, 1) || !near(c.tool, 0) {
+		t.Errorf("job through a turn: %+v, want model only", c)
+	}
+	if c := lay.agents[0].cells[cellOf(t, lay, 1250)]; !near(c.tool, 1) {
+		t.Errorf("job after the turn: %+v, want tools", c)
 	}
 }
 
