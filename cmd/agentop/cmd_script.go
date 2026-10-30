@@ -451,17 +451,42 @@ func writeRecord(dir string, rec installRecord) error {
 	return writeAtomic(filepath.Join(dir, scriptRecord), append(b, '\n'), 0o600)
 }
 
-// writeAtomic writes b to path through a temp file whose name a slot ignores.
+// writeAtomic writes b to path through a CreateTemp'd file whose dot-prefixed
+// name a slot ignores, synced before the rename: this also writes the install
+// record, and a crash that empties THAT file wedges both install and remove on
+// a folder neither can make sense of.
 func writeAtomic(path string, b []byte, mode os.FileMode) error {
-	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
-	if err := os.WriteFile(tmp, b, mode); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		os.Remove(tmp)
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 // removeFiles deletes what rec lists, the record, then dir when it is empty.

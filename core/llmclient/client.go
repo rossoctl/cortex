@@ -237,9 +237,16 @@ func New(opts Options) *Client {
 		if timeout <= 0 {
 			timeout = DefaultTimeout
 		}
+		// A cloned transport with a raised idle pool, not the bare default:
+		// DefaultTransport keeps 2 idle connections per host, and the callers
+		// here judge and reflect concurrently through one client — the exact
+		// shape that re-handshakes every request beyond the second.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.MaxIdleConnsPerHost = 100
 		httpClient = &http.Client{
 			Timeout:       timeout,
 			CheckRedirect: SentinelRedirectPolicy(opts.SentinelHeaderName),
+			Transport:     tr,
 		}
 	}
 	return &Client{

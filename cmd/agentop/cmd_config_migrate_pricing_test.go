@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -304,7 +305,9 @@ func TestReplaceConfig_VerifyFailureKeepsTheOriginal(t *testing.T) {
 	if readFile(t, p) != before {
 		t.Error("the file was replaced despite the failed verify")
 	}
-	if _, serr := os.Stat(p + ".tmp"); !os.IsNotExist(serr) {
-		t.Errorf("temp file left behind (stat err %v)", serr)
+	// The temp name is CreateTemp's (".<base>.tmp<random>"), so the check is a
+	// directory glob: a stat of a fixed path+".tmp" sees nothing either way.
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(p), "."+filepath.Base(p)+".tmp*")); len(left) > 0 {
+		t.Errorf("temp file left behind: %v", left)
 	}
 }
