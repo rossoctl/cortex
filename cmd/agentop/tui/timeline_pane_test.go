@@ -1064,10 +1064,11 @@ func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 	if c := lay.agents[0].cells[cellOf(t, lay, 1450)]; !near(c.user, 1) {
 		t.Errorf("after the job's notification: %+v, want waiting on the user", c)
 	}
-	// It is in the tools total too, as the bar is.
+	// It is in the tools total too, by what the bar gives it: the job's first 10s fall inside the
+	// reply that ends at 1200s, so those are the model's, not tools'.
 	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
-	if got := lay.agents[0].toolTime - without; got != 210*time.Second {
-		t.Errorf("tools total grew by %v, want the job's 210s", got)
+	if got := lay.agents[0].toolTime - without; got != 200*time.Second {
+		t.Errorf("tools total grew by %v, want the job's 200s outside the reply", got)
 	}
 }
 
@@ -1082,6 +1083,39 @@ func TestTimelineWaits_BackgroundJobDoesNotHideTheModel(t *testing.T) {
 	}
 	if c := lay.agents[0].cells[cellOf(t, lay, 1250)]; !near(c.tool, 1) {
 		t.Errorf("job after the turn: %+v, want tools", c)
+	}
+	// The tools total counts the time the bar gives the job: its 50s inside the reply is the
+	// model's.
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	if got := lay.agents[0].toolTime - without; got != 100*time.Second {
+		t.Errorf("tools total grew by %v, want the job's 100s outside the reply", got)
+	}
+}
+
+// A collapsed idle stretch is three cells sharing one span, and only the middle one is drawn: a
+// job inside it belongs in the tools total once.
+func TestTimelineWaits_BackgroundJobInACollapsedGapCountedOnce(t *testing.T) {
+	tl := &timeline.Timeline{
+		Start: tlAt(0), End: tlAt(7360),
+		Agents: []timeline.Agent{{ID: timeline.MainAgent, Label: "main"}},
+		Turns: []timeline.Turn{
+			{Agent: timeline.MainAgent, Start: tlAt(10), End: tlPtr(60), Finish: "end_turn", Seq: 1},
+			{Agent: timeline.MainAgent, Start: tlAt(7300), End: tlPtr(7360), Finish: "end_turn", Seq: 40},
+		},
+		Jobs: []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(120), End: tlPtr(5000), Seq: 2}},
+	}
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 40, tlAt(7360))
+	markers := 0
+	for _, c := range lay.axis.cells {
+		if c.marker {
+			markers++
+		}
+	}
+	if markers == 0 {
+		t.Fatalf("axis has no collapsed gap, so this test reads nothing")
+	}
+	if got := lay.agents[0].toolTime; got != 4880*time.Second {
+		t.Errorf("tools total = %v, want the job's 4880s once", got)
 	}
 }
 

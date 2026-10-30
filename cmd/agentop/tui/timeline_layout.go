@@ -572,7 +572,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 		retry, subs, user := waits(tl, a.ID, children[a.ID], life, now)
 		user = newIvs(append(user, asking[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
-			modelTime: m.cover(from, to), toolTime: t.cover(from, to) + jobs.cover(from, to), calls: calls[a.ID]}
+			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
 		l, known := life[a.ID]
 		// Gap cells are filled too, each with the whole stretch it stands for, so the marker can
 		// say what that stretch was.
@@ -600,7 +600,13 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 			// A background job is a tool still running: it takes what the model and the
 			// foreground tools did not, so a job left running through a reply hides no model.
 			s := share{tool: take(t), model: take(m)}
-			s.tool += take(jobs)
+			job := take(jobs)
+			s.tool += job
+			// Only the marker of a collapsed gap is drawn; the cells either side share its span,
+			// so counting them would take the stretch off the column more than once.
+			if !cell.gap || cell.marker {
+				row.toolTime += time.Duration(job * span)
+			}
 			s.retry, s.subs, s.user = take(retry), take(subs), take(user)
 			row.cells[c] = s
 		}
