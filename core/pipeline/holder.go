@@ -64,8 +64,8 @@ func (h *Holder) Run(ctx context.Context, pctx *Context) Action {
 // ForPctx returns the pipeline a pctx-carrying phase should run on: the
 // one pinned by Run when the request started, else the current one (a
 // phase that runs without a preceding Run on this pctx — e.g. a
-// response nobody dispatched a request for — has nothing to stay loyal
-// to).
+// response nobody dispatched a request for — or with no pctx at all has
+// nothing to stay loyal to; a nil pctx is allowed).
 //
 // Listeners must also ask this for every capability probe they make
 // AFTER Run — the streaming and body-buffering decisions on the response
@@ -77,7 +77,7 @@ func (h *Holder) Run(ctx context.Context, pctx *Context) Action {
 // to prevent. Probes before Run (request-time buffering) have no pin to
 // consult and keep reading the current pipeline.
 func (h *Holder) ForPctx(pctx *Context) *Pipeline {
-	if pctx.pinned != nil {
+	if pctx != nil && pctx.pinned != nil {
 		return pctx.pinned
 	}
 	return h.p.Load()

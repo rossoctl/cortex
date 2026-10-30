@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/peerproc"
 )
 
@@ -25,7 +26,7 @@ func TestReserveListeners_TakenPortCarriesTheAddressAndTheCause(t *testing.T) {
 	defer held.Close()
 	addr := held.Addr().String()
 
-	_, err = reserveListeners([]plannedListener{{"forward-proxy", addr}})
+	_, err = reserveListeners([]config.PlannedListener{{Name: "forward-proxy", Addr: addr}})
 	var le *listenError
 	switch {
 	case !errors.As(err, &le):

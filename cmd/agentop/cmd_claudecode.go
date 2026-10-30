@@ -135,10 +135,11 @@ func writeState(path string, st managedState) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	// Atomic, never truncate-in-place: this file is the only copy of what the
+	// user had, and a kill mid-write used to leave it torn — after which the
+	// refusal above blocked every later enable while holding the Prior hostage
+	// (#1565).
+	return writeFileAtomic(path, append(b, '\n'), 0o600)
 }
 
 // managedKeys is exactly what enable writes and disable removes. Nothing else in
@@ -964,22 +965,16 @@ func writeSettings(path string, doc map[string]any) error {
 	// A stale-but-original backup is worth more here than a fresh one of our own
 	// output.
 	if cur, rerr := os.ReadFile(path); rerr == nil { //nolint:gosec // operator-supplied path
-		bak := path + ".bak"
-		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
-			if werr := os.WriteFile(bak, cur, 0o600); werr != nil {
-				return fmt.Errorf("writing backup %s: %w", bak, werr)
-			}
+		if berr := backupOnce(path, cur); berr != nil {
+			return berr
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
+	// Atomic and symlink-resolving: the fixed ".tmp" name renamed over a
+	// symlinked settings file used to replace the link — silently detaching a
+	// dotfiles repo — and a planted symlink AT the tmp name would redirect the
+	// write (#1565).
 	// 0600: this file commonly holds API tokens in the same env block.
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeFileAtomic(path, b, 0o600)
 }
 
 // claudeCodeConfirm prompts before enable or disable writes the settings file. A var

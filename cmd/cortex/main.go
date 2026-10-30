@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -614,7 +615,7 @@ func main() {
 	// a port another proxy holds then stops this one before it has touched their files. See
 	// listeners.go. log.Fatalf rather than fatalf is right here and only here — nothing is open
 	// yet for fatalf to flush.
-	plan, perr := listenerPlan(cfg, localInstall)
+	plan, perr := config.ListenerPlan(cfg, localInstall)
 	if perr != nil {
 		log.Fatalf("%v", perr)
 	}
@@ -636,6 +637,22 @@ func main() {
 
 	inboundH := pipeline.NewHolder(inboundPipeline)
 	outboundH := pipeline.NewHolder(outboundPipeline)
+
+	// The Go runtime's soft memory limit, applied once at boot — memory.* is
+	// refused on reload, so this is the only place it can take effect. The
+	// local-install default is COMPUTED (MemoryLimitBytes), never written into
+	// cfg: the reloader below compares cfg against a fresh disk load on every
+	// reload, so a materialized default would refuse every reload on a local
+	// install. The limit is SOFT: near it the GC trades CPU for memory, and a
+	// live heap that genuinely exceeds it still grows rather than failing
+	// anything. See MemoryConfig for why it exists (#1541: ~1.4GB live carried
+	// 2.9GB of RSS).
+	if limit := cfg.MemoryLimitBytes(localInstall); limit > 0 {
+		debug.SetMemoryLimit(limit)
+		slog.Info("cortex: soft memory limit set",
+			"limitMB", limit>>20,
+			"note", "soft — the GC works harder near it; a live heap over it still grows")
+	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()

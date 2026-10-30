@@ -537,6 +537,12 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.SPIFFE, next.SPIFFE) {
 		diffs = append(diffs, "spiffe.*")
 	}
+	// memory.* too: the soft limit is applied once at boot (debug.SetMemoryLimit
+	// before any listener starts). An accepted-but-unapplied edit here would be
+	// the "worse than a refusal" shape an operator reads as confirmation (#1541).
+	if !reflect.DeepEqual(active.Memory, next.Memory) {
+		diffs = append(diffs, "memory.*")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

@@ -469,7 +469,11 @@ const (
 	TunnelPassthroughHost   TunnelReason = "passthrough-host"
 	// TunnelDialFailed — the proxy could not reach the destination at all, so no
 	// tunnel ever opened. Recorded with a 502 close row carrying the dial error, so
-	// an unreachable destination shows in the timeline instead of leaving no trace.
+	// an unreachable destination shows in the timeline instead of leaving no trace —
+	// except where the TLS bridge is enabled for the connection's port: there the
+	// CONNECT is answered 200 first (a redirect can still send the request to a
+	// live server, #1595), and a bridge that then declines or falls open closes
+	// with that 200 and the dial error.
 	TunnelDialFailed TunnelReason = "dial-failed"
 	// TunnelPassthroughUnknown is the fallback when a lower layer declines to
 	// intercept for a reason this vocabulary does not yet name. It exists so that

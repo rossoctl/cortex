@@ -111,7 +111,6 @@ func ssListenerPID(out, port string) int {
 
 // setupPIDExePath is install.sh's pid_exe_path: /proc's exe link, else lsof's txt
 // entry (the -a matters: without it lsof ORs the filters), else ps's first word.
-// Not cmd_service_platform.go's pidExePath, which falls back to ps's comm instead.
 func setupPIDExePath(pid int) string {
 	if link, err := os.Readlink(filepath.Join(procRoot, strconv.Itoa(pid), "exe")); err == nil {
 		return strings.TrimSuffix(link, " (deleted)")

@@ -192,7 +192,12 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 		// Accept-Encoding intact rather than force needless upstream→client
 		// decompression (matters for a remote backend or large non-streamed
 		// bodies; harmless on a localhost sidecar hop).
-		if inbound.NeedsBody() || inbound.HasStreamingResponders() {
+		// The handler stashed the request's pctx into the request context
+		// just before ServeHTTP, and the clone the stdlib hands the
+		// Director keeps it — so this probe answers for the pipeline the
+		// request ran on, like every post-Run probe (Holder.ForPctx).
+		pctx, _ := req.Context().Value(pctxKey{}).(*pipeline.Context)
+		if pinned := inbound.ForPctx(pctx); pinned.NeedsBody() || pinned.HasStreamingResponders() {
 			req.Header.Del("Accept-Encoding")
 		}
 	}

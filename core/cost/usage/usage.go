@@ -266,8 +266,7 @@ type Counts struct {
 	// adds to a rate table would make one of these disappear, so naming it there would
 	// point at an entry that already exists.
 	IncompleteRequests int64 `json:"incompleteRequests,omitempty"`
-	// PriceableRequests counts the requests that COULD be priced — those carrying a
-	// model and a non-zero token count.
+	// PriceableRequests counts the requests that COULD be priced; see PriceableRequest.
 	//
 	// It exists because Requests is the wrong denominator for coverage. Requests
 	// counts every proxied response, including MCP tool calls and health checks, while
@@ -727,8 +726,8 @@ type eventCost struct {
 	// unlabelledReason for the case where the producer disclosed the caveat and not the
 	// reason.
 	incompleteReason string
-	// priceable is 1 when the request carried a model and tokens, so it belongs in
-	// the coverage denominator whether or not a rate was found.
+	// priceable is 1 when the request belongs in the coverage denominator whether
+	// or not a rate was found.
 	priceable int64
 	// provenance names where the figure came from, so a reported total can say how
 	// much of it is a gateway's own number and how much is modelled from a rate
@@ -1295,7 +1294,11 @@ func (a *Aggregator) evictColdestLocked() {
 }
 
 // countsAsError reports whether e is a failed exchange for Counts.Errors: a status of
-// 400 or more, or a denial.
+// 400 or more, a denial, or an explicit error on the row. The last matters for the one
+// row that keeps a success status on purpose: a streamed response the upstream broke
+// mid-body has no 502 to synthesize — the status is already on the wire — so its row
+// keeps the sent 200 with the failure in Error (#1543). Keying on status alone counted
+// those as healthy, which is what #1543's rows exist to stop.
 //
 // Except a proxy-declined WebSocket upgrade (pipeline.ErrorKindUpgradeDeclined). Its
 // 426 is Cortex telling Codex to use HTTPS, which it then does, once per session: by
@@ -1307,12 +1310,30 @@ func (a *Aggregator) evictColdestLocked() {
 // configured it to, on traffic that was never going to be allowed through — a
 // nonzero "error rate" made of refusals is the policy working, not the proxy
 // failing. The Finisher sees it as an allow for the same reason.
-func countsAsError(e *pipeline.SessionEvent) bool {
+func CountsAsError(e *pipeline.SessionEvent) bool {
 	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
 		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}
-	return e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+}
+
+// PriceableRequest is the ledger's definition of "this request could have been
+// priced" (#1566), matching costOf's arms: the parser recognised
+// the traffic well enough to name a model, and the request either carried
+// usage or was not a failure — a truncated OpenAI-dialect stream succeeds at
+// the HTTP layer but yields no counters, and hiding it from the denominator
+// made coverage read "9/9 priced" while real spend was missing. A FAILED
+// response WITH usage is priceable: the counters exist and the rates apply.
+// Usage is read through pricing.UsageFromInference, as costOf reads it.
+func PriceableRequest(e *pipeline.SessionEvent) bool {
+	if e.Inference == nil || e.Inference.Model == "" {
+		return false
+	}
+	if pricing.UsageFromInference(e.Inference) != (pricing.Usage{}) {
+		return true
+	}
+	return e.StatusCode < 400 && e.Phase != pipeline.SessionDenied
 }
 
 // foldInto accumulates one event into one ring.
@@ -1395,7 +1416,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	if ec.incompleteReason != "" {
 		addLabel(&b.byIncomplete, ringLabel(ec.incompleteReason), Counts{Requests: 1})
 	}
-	if countsAsError(e) {
+	if CountsAsError(e) {
 		one.Errors = 1
 	}
 	b.Counts.Add(one)

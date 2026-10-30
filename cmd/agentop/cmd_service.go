@@ -470,7 +470,7 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return installResult{exit: 1}
 	}
-	if err := os.WriteFile(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
+	if err := writeFileAtomic(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
 		fmt.Fprintf(stderr, "agentop: writing %s: %v\n", p.unitFile, err)
 		return installResult{exit: 1}
 	}

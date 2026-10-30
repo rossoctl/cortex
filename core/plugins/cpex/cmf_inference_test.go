@@ -586,3 +586,34 @@ func TestApplyInferenceRequestMod_NoMessagesFailsClosed(t *testing.T) {
 		t.Fatalf("unchanged: mutated=%v err=%v", mutated, err)
 	}
 }
+
+// The parser records a chat-completions tool result in BOTH places: the role:"tool"
+// message (now carrying its tool_call_id) and inf.ToolResults. The two were disjoint
+// sources when these walkers were written; a result present in both must count once.
+func TestInferenceToCMFParts_ParserShapedToolResultCountsOnce(t *testing.T) {
+	inf := &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
+		{Role: "user", Content: "read .env"},
+		{Role: "tool", Content: "TOKEN=xyz", ToolUseID: "call_1"},
+	}, ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "call_1", Content: "TOKEN=xyz"}}}
+	parts := inferenceToCMFParts(inf)
+	want := []cmfPart{
+		{Kind: cmfPartText, Text: "read .env"},
+		{Kind: cmfPartToolResult, CorrelationID: "call_1", Content: "TOKEN=xyz"},
+	}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts = %+v, want %+v", parts, want)
+	}
+}
+
+func TestInferenceToolResultsCustom_ParserShapedToolResultCountsOnce(t *testing.T) {
+	inf := &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
+		{Role: "tool", Content: "TOKEN=xyz", ToolUseID: "call_1"},
+	}, ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "call_1", Content: "TOKEN=xyz"}}}
+	count, results := inferenceToolResultsCustom(inf)
+	if count != 1 || len(results) != 1 {
+		t.Fatalf("count = %d, results = %+v; want the result once", count, results)
+	}
+	if results["0"].(map[string]any)["tool_use_id"] != "call_1" {
+		t.Fatalf("results = %+v, want the id-carrying copy", results)
+	}
+}

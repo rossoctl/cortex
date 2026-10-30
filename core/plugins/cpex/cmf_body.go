@@ -716,6 +716,9 @@ func inferenceToCMFParts(inf *pipeline.InferenceExtension) []cmfPart {
 	for _, m := range inf.Messages {
 		switch {
 		case m.Content == "":
+		case m.Role == roleTool && m.ToolUseID != "":
+			// A chat-completions result the parser also recorded in ToolResults; the
+			// loop below emits the id-carrying copy, so this one would count twice.
 		case m.Role == roleTool:
 			parts = append(parts, cmfPart{Kind: cmfPartToolResult, Content: m.Content})
 		default:

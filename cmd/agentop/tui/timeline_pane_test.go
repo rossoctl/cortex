@@ -1306,3 +1306,23 @@ func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 		t.Errorf("an open question's wait has tail %d, want the capped %d", ax.tail, timelineTailCells)
 	}
 }
+
+// A cell inside a turn that carries a model names it, so a client running several models
+// side by side (Bob's classifier beside its main turns) reads apart.
+func TestTimelineStrip_NamesTheTurnModel(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	lay, _ := m.timelineLayoutNow()
+	m.timeline.cursor = cellOf(t, lay, 5) // main's first model call: no tool yet
+	for i := range m.timeline.tl.Turns {
+		if tu := &m.timeline.tl.Turns[i]; tu.Agent == timeline.MainAgent && tu.Start.Equal(tlAt(0)) {
+			tu.Model = "premium-ide"
+		}
+	}
+	m.timeline.layoutKey = tlLayoutKey{}
+	lay, _ = m.timelineLayoutNow()
+	strip := stripANSI(m.cursorStrip(lay))
+	if !strings.Contains(strip, "premium-ide") {
+		t.Errorf("strip = %q, want the turn's model named", strip)
+	}
+}

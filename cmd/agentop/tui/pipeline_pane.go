@@ -43,7 +43,7 @@ func (m *model) rebuildPipelineTable() {
 		m.pipelineTbl.SetRows(nil)
 		return
 	}
-	counts := m.countEventsPerPlugin()
+	counts := m.pluginRuns // per-plugin run counts, folded at stream arrival — see model.pluginRuns
 
 	rows := make([]table.Row, 0, len(m.pipeline.Inbound)+len(m.pipeline.Outbound)+1)
 	for _, p := range m.pipeline.Inbound {
@@ -156,28 +156,4 @@ func (m *model) unmetDepsCount() int {
 		}
 	}
 	return n
-}
-
-// countEventsPerPlugin counts how many times each plugin actually ran
-// across all cached events, by walking every event's Invocations list.
-// This includes auth-gate plugins (jwt-validation, token-exchange, ibac)
-// that don't write extension slots — they all show up in Invocations
-// when they ran, so the pipeline view's per-plugin counts match what
-// the events pane shows row-by-row.
-func (m *model) countEventsPerPlugin() map[string]int {
-	counts := map[string]int{}
-	for _, events := range m.events {
-		for _, e := range events {
-			if e.Invocations == nil {
-				continue
-			}
-			for _, inv := range e.Invocations.Inbound {
-				counts[inv.Plugin]++
-			}
-			for _, inv := range e.Invocations.Outbound {
-				counts[inv.Plugin]++
-			}
-		}
-	}
-	return counts
 }

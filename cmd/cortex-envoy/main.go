@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -238,6 +239,17 @@ func main() {
 
 	inboundH := pipeline.NewHolder(inboundPipeline)
 	outboundH := pipeline.NewHolder(outboundPipeline)
+
+	// The Go runtime's soft memory limit, applied once at boot — memory.* is
+	// refused on reload, so this is the only place it can take effect. No
+	// local-install default here: envoy-sidecar is a pod, never a laptop
+	// service, so only an explicit limit_mb applies. See MemoryConfig.
+	if limit := cfg.MemoryLimitBytes(false); limit > 0 {
+		debug.SetMemoryLimit(limit)
+		slog.Info("cortex-envoy: soft memory limit set",
+			"limitMB", limit>>20,
+			"note", "soft — the GC works harder near it; a live heap over it still grows")
+	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()

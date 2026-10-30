@@ -1,6 +1,7 @@
 package reverseproxy
 
 import (
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -148,6 +149,94 @@ func TestReverseProxy_RewritesHostToBackend(t *testing.T) {
 	if gotHost != backendHost {
 		t.Errorf("backend received Host = %q, want %q (backend target host)", gotHost, backendHost)
 	}
+}
+
+// reloadDuringRequestPlugin declares ReadsBody (so the Director must strip
+// Accept-Encoding for the pipeline it runs in) and Stores a body-free
+// pipeline into the holder from OnRequest — a reload landing exactly
+// between Run and the Director, the tightest window a mid-request reload
+// has.
+type reloadDuringRequestPlugin struct {
+	holder *pipeline.Holder
+}
+
+func (p *reloadDuringRequestPlugin) Name() string { return "reload-during-request" }
+func (p *reloadDuringRequestPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{ReadsBody: true}
+}
+func (p *reloadDuringRequestPlugin) OnRequest(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	plain, err := pipeline.New(nil)
+	if err != nil {
+		return pipeline.Action{Type: pipeline.Reject}
+	}
+	p.holder.Store(plain)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *reloadDuringRequestPlugin) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// TestReverseProxy_DirectorProbeFollowsThePin: the Director's
+// Accept-Encoding strip is a post-Run capability probe and must answer
+// for the pipeline the request ran on. Reading the Holder directly made a
+// reload between Run and the Director leave the client's explicit
+// Accept-Encoding in place, which turns off the transport's transparent
+// gzip handling — the pinned pipeline's readers then got a gzipped body,
+// the same silent-skip shape the pin exists to prevent (#1561). The pctx
+// reaches the Director through the request context (pctxKey), the same
+// mechanism modifyResponse reads it by. Observable: with the strip applied
+// the transport decompresses the backend's gzip itself, so the client
+// receives plaintext and no Content-Encoding; without it the client
+// receives the gzip verbatim.
+func TestReverseProxy_DirectorProbeFollowsThePin(t *testing.T) {
+	const payload = "payload"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		gz.Write([]byte(payload))
+		gz.Close()
+	}))
+	defer backend.Close()
+
+	holder := pipeline.NewHolder(mustReversePipeline(t))
+	plug := &reloadDuringRequestPlugin{holder: holder}
+	withReader, err := pipeline.New([]pipeline.Plugin{plug})
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder.Store(withReader)
+
+	srv, err := NewServer(holder, nil, backend.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("GET", proxy.URL+"/api/data", nil)
+	// Explicit, so Go's transport does not do its own transparent gzip
+	// unless the Director strips it — that strip is the behavior under test.
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.Header.Get("Content-Encoding") != "" || string(body) != payload {
+		t.Errorf("client received Content-Encoding = %q, body = %q, want decompressed %q: the pinned pipeline (ReadsBody) is the one the Director must answer for",
+			resp.Header.Get("Content-Encoding"), body, payload)
+	}
+}
+
+func mustReversePipeline(t *testing.T) *pipeline.Pipeline {
+	t.Helper()
+	p, err := pipeline.New(nil)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	return p
 }
 
 // --- Header Propagation Tests ---

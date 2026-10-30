@@ -482,6 +482,10 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 	}
 	m.selectedSess = session
 	m.pane = paneEvents
+	// Leaving the timeline pane: its session is a #1542 retention key, so the
+	// drill-down drops it the same way Esc does — the session stays watched
+	// through selectedSess, which the lines above just set.
+	m.timeline.session = ""
 	m.revealSeq, m.revealSess = seq, session
 	m.rebuildEventsTable()
 	revealed := m.revealPendingSeq()
@@ -833,10 +837,19 @@ func (m *model) cursorStrip(lay tlLayout) string {
 		parts = append(parts, sanitizeLabel(p))
 	}
 	if len(parts) == 0 {
-		if h, ok := m.cellHost(lay, cell); ok {
-			return styleMuted.Render(head + "no tool running; a request to " + sanitizeLabel(h.Host) + "  [enter] events")
+		// The turn covering the cell names its model, so a client running several models side
+		// by side (Bob's classifier beside its main turns) reads apart.
+		suffix := ""
+		for _, tu := range m.timeline.tl.Turns {
+			if tu.Model != "" && !cell.from.Before(tu.Start) && (tu.End == nil || cell.from.Before(*tu.End)) {
+				suffix = " (" + sanitizeLabel(tu.Model) + " turn)"
+				break
+			}
 		}
-		return styleMuted.Render(head + "no tool running in this cell")
+		if h, ok := m.cellHost(lay, cell); ok {
+			return styleMuted.Render(head + "no tool running" + suffix + "; a request to " + sanitizeLabel(h.Host) + "  [enter] events")
+		}
+		return styleMuted.Render(head + "no tool running" + suffix + " in this cell")
 	}
 	if len(parts) > 1 {
 		head += fmt.Sprintf("(%d) ", len(parts))

@@ -147,7 +147,19 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 			Role:         msg.Role,
 			Content:      msg.Content,
 			ContentBytes: msg.ContentBytes,
+			ToolUseID:    msg.ToolCallID,
 		})
+	}
+	// A chat-completions tool result is a "role":"tool" message naming the call it answers
+	// by tool_call_id — the pairing key the timeline's tool spans close on. Anthropic and
+	// the Responses API surface theirs through the same ToolResults field.
+	for _, msg := range req.Messages {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			ext.ToolResults = append(ext.ToolResults, pipeline.InferenceToolResult{
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.Content,
+			})
+		}
 	}
 	for _, tool := range req.Tools {
 		if tool.Function.Name == "" {
@@ -963,12 +975,16 @@ type inferenceMessage struct {
 	Role         string
 	Content      string
 	ContentBytes int
+	// ToolCallID is the tool_call_id of a chat-completions "role":"tool" result message:
+	// the id of the assistant tool_calls entry it answers. Empty on every other role.
+	ToolCallID string
 }
 
 func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCallID string          `json:"tool_call_id"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -976,6 +992,7 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	m.Role = raw.Role
 	m.Content = flattenContent(raw.Content)
 	m.ContentBytes = contentBytes(raw.Content)
+	m.ToolCallID = raw.ToolCallID
 	return nil
 }
 

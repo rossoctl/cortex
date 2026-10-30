@@ -17,12 +17,12 @@ import "math"
 // ledger row was expected. A second bound declared over there would be free to drift from
 // this one; there is only ever one answer to "past which figure is this a bug".
 //
-// WHAT IT DOES NOT BOUND: THE ACCUMULATED SUM. 1,024 requests at this bound wrap
-// usage.Counts.Add to a large negative total, and NO per-request bound can close that — for any
-// bound C the sum wraps after MaxInt64/C requests, so a smaller C buys distance, not closure.
-// Closing it takes a checked accumulate where the sum is kept, which the aggregate PR in this
-// series does. TestNoPerRequestBoundClosesTheAccumulationWrap pins the reasoning; until that PR
-// lands this is an open defect and not history, reachable through a header on a parsed path.
+// WHAT IT DOES NOT BOUND: THE ACCUMULATED SUM. No per-request bound can close
+// that — for any bound C an unchecked sum wraps after MaxInt64/C requests, so a
+// smaller C buys distance, not closure. The accumulation is closed where it is
+// kept: usage.Counts.Add SATURATES, so a forged run of max-bound requests pins
+// the total at the ceiling rather than wrapping it (#1566's comment audit found
+// this paragraph still describing the pre-saturation state as an open defect).
 //
 // EXCLUSIVE: exactly MaxCostMicros is out of range. 2^53 is the first integer whose successor
 // float64 cannot represent, so 2^53+1 rounds back onto it — at that one value an out-of-range
@@ -90,11 +90,11 @@ const MaxPlausibleRequestCostMicros int64 = maxPlausibleTokens * maxPlausibleMic
 // a forged response that cannot move the dollar total past $10,000 could still move the
 // token total by 9.2e18, and a client renders the two side by side.
 //
-// NO IMPORTER ON THIS BRANCH: the consumers are usage.maxPlausibleRequestTokens (#1013 of this
-// stack) and the ledger writer's admission guard (#1014), so a grep at this commit finds only the
-// declaration. Exported anyway because the split put the derivation here and its readers in the
-// next two PRs — and because two literals that must agree is the shape that let config's
-// retention floor drift from the window it protects.
+// The consumers are usage.maxPlausibleRequestTokens and the ledger writer's
+// admission guard — both in this tree. Exported because the derivation lives
+// here while its readers live elsewhere, and because two literals that must
+// agree is the shape that let config's retention floor drift from the window
+// it protects.
 const MaxPlausibleTokens = maxPlausibleTokens
 
 // BundleableRate reports whether a vendor list rate is one the BUNDLED TABLE may carry:
@@ -199,9 +199,8 @@ func MicrosFromUSD(usd float64) (int64, bool) {
 //   - A count above maxPlausibleTokens, on the same reasoning and from the same
 //     wire. THE MODELLED FIGURE WAS THE UNBOUNDED ONE: headerCost refuses a
 //     gateway's figure past MaxPlausibleRequestCostMicros ($10,000), and
-//     the aggregate PR in this series WILL refuse an implausible token report and
-//     count it (usage.plausibleTokenReport, Counts.RefusedTokenRequests — neither
-//     exists at this commit) — while the money derived from those same counts
+//     an implausible token report is refused and counted (usage.plausibleTokenReport,
+//     Counts.RefusedTokenRequests) — while the money derived from those same counts
 //     arrived here and was believed, bounded only by MaxCostMicros, which is
 //     $9 billion. So one response could have its tokens called impossible and its
 //     dollars kept, in the same aggregate, side by side in the same client.

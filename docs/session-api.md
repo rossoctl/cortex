@@ -132,13 +132,19 @@ the whole list.
  "hosts":   [{"host": "api.github.com", "kind": "tunnel", "start": "…", "end": "…", "status": 200, "seq": 7}]}
 ```
 
-**Agents, turns, tools and returns are Claude Code only.** They come from the
-requests the inference parser attributed to a Claude Code agent (`agentRole`),
-and from the agent ids Claude Code sends (`subagent`, `parentSubagent`):
+**Turns and tools are attributed to any known client** (Claude Code, Bob, Codex,
+OpenCode, Pi — the canonical name parsed from the User-Agent); each gets a
+single `main` row, and every model call is a turn, including classifier side
+calls, labeled by `model`. Claude Code additionally gets its subagent tree,
+returns and background jobs — those key on the agent ids and marker strings
+(`agentRole`, `subagent`, `parentSubagent`) no other client sends. Requests
+from unknown clients render as host rows only.
 
-- A **turn** is one model call, request to end of response. Claude Code's
-  progress-label and away-recap calls (the prompt in the last non-system
-  message) and tool-less side calls (titler, classifier) are left out. `error`
+- A **turn** is one model call, request to end of response. Left out:
+  progress-label and away-recap calls (matched by their prompt text in the
+  last non-system message — Claude's own prompt strings, applied to every
+  client), and Claude Code's tool-less side calls (titler, classifier).
+  Another client's side calls are kept, cost and all. `error`
   marks a call that failed: an upstream error, a refusal, the client giving up,
   a finish of `content_filter`, `failed` or `cancelled`, or a response that
   ended with no finish reason, which is a stream cut mid-reply. `resent` marks
