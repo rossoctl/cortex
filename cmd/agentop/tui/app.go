@@ -1800,13 +1800,16 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// request was in flight have a higher seq than the snapshot's tail
 		// (the server answers everything it held at request time), and a
 		// plain assignment dropped them until the next manual refresh (#1568).
-		// Only merges when the snapshot's tail carries a seq at all — a proxy
-		// that predates paging sends zero, and unordered ids cannot merge.
+		// The comparison runs in the session's OWN numbering only —
+		// mergeLinked interleaves linked-bucket events, numbered in their own
+		// bucket's space, and a linked call can postdate the own tail, so the
+		// last element by time is not the highest own seq. A snapshot whose
+		// own events carry no seq at all (a proxy that predates paging) lands
+		// whole.
 		events := msg.events
-		if held := m.events[msg.id]; len(held) > 0 && len(events) > 0 && events[len(events)-1].Seq > 0 {
-			last := events[len(events)-1].Seq
-			for _, e := range held {
-				if e.Seq > last {
+		if last := lastOwnSeq(events, msg.id); last > 0 {
+			for _, e := range m.events[msg.id] {
+				if eventSession(msg.id, &e) == msg.id && e.Seq > last {
 					events = append(events, e)
 				}
 			}

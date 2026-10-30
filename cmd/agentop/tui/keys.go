@@ -479,8 +479,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// the watched session's tail rather than let the timeline quietly
 		// stop at the pause point (#1568). snapshotLoadedMsg merges by seq,
 		// so anything the refetch still misses can arrive off the stream
-		// without a duplicate.
-		if id := m.watchingSessionID(); id != "" {
+		// without a duplicate. NOT while paged back: a snapshot ends the
+		// paging window, so this refetch would jump an operator reading an
+		// old page to the tail — [t] does that on purpose, [p] must not.
+		if id := m.watchingSessionID(); id != "" && !m.pagedBack(id) {
 			return m.snapshotCmd(id)
 		}
 		return nil
