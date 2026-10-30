@@ -1309,12 +1309,13 @@ agentop is for, and the other four are surfaces you visit and leave.
   ```
 
   An agent cell is a bar of how that cell's time divided, stacked from the
-  bottom: amber the agent's tools running, purple its model generating, red
-  retrying after a failed model call, teal waiting on its subagents or its
-  background shell jobs, grey waiting on you, as is an `AskUserQuestion` the
+  bottom: amber the agent's tools running — a background shell job is a tool
+  still running, and counts here — purple its model generating, red
+  retrying after a failed model call, teal waiting on its subagents, grey
+  waiting on you, as is an `AskUserQuestion` the
   agent put to you. Waiting is read from the gaps
-  between an agent's model calls: a gap that one of its subagents or background
-  jobs was running in, or that a subagent's result ended, is waiting on
+  between an agent's model calls: a gap that one of its subagents was running
+  in, or that a subagent's result ended, is waiting on
   subagents; a gap before a call that re-sent the same conversation is retrying;
   after a failed call it is retrying until the last failed request to the model
   host, then waiting on you, since Claude Code shows the error and stops. On the
