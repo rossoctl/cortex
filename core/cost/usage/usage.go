@@ -1071,12 +1071,24 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// exactly one Request whose latency is its whole lifetime.
 	//
 	// Keyed on the status rather than a new event field because 101 IS the
-	// condition — the proxy records this row for no other status, and a 101 that
-	// reached a client always means a spliced upgrade (the relay refuses any other
-	// switched protocol before the hijack). The row keeps its durationMs on the
-	// session timeline, where the WebSocket's lifetime is the feature; only the
-	// aggregation misread it.
-	if e.Tunnel || e.StatusCode == http.StatusSwitchingProtocols {
+	// condition on the forward proxy — it records that status for no other
+	// reason, and a 101 that reached a client always means a spliced upgrade
+	// (the relay refuses any other switched protocol before the hijack). The row
+	// keeps its durationMs on the session timeline, where the WebSocket's
+	// lifetime is the feature; only the aggregation misread it.
+	//
+	// SCOPED TO OUTBOUND, because the status alone does not identify the
+	// condition across listeners. The reverse proxy records a 101 too
+	// (ModifyResponse's StatusSwitchingProtocols arm, Direction: Inbound) and
+	// records it AT HANDSHAKE TIME — ReverseProxy never copies an upgraded body,
+	// so a deferred record would never fire — which makes that row's Duration
+	// the handshake latency, not a session lifetime. It is an ordinary request
+	// with an ordinary latency, and excluding it would change what Requests
+	// means on every inbound listener: the same silent redefinition this comment
+	// warns about, in the other direction. Pinned both ways by
+	// TestRecord_WebSocket101IsNotARequestLatency and
+	// TestRecord_InboundWebSocket101IsStillARequest (#1549 review).
+	if e.Tunnel || (e.Direction == pipeline.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
 		return
 	}
 

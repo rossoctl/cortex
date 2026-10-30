@@ -653,6 +653,38 @@ func TestRecord_WebSocket101IsNotARequestLatency(t *testing.T) {
 	}
 }
 
+// The exclusion above is scoped to OUTBOUND, and this is why. The reverse proxy
+// records a 101 row too (its ModifyResponse's StatusSwitchingProtocols arm,
+// Direction: Inbound) — but it records it AT HANDSHAKE TIME, because
+// ReverseProxy never copies an upgraded body, so that row's Duration is the
+// handshake latency and not the session's lifetime. The lifetime is the only
+// thing the exclusion exists to keep out of the mean.
+//
+// So an inbound 101 is an ordinary request with a sensible latency, and dropping
+// it would silently change what Requests MEANS on every inbound listener — the
+// very thing the exclusion's own comment warns against, in the other direction
+// (#1549 review).
+func TestRecord_InboundWebSocket101IsStillARequest(t *testing.T) {
+	now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+	before := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+
+	// The reverse proxy's 101: inbound, and its duration is the HANDSHAKE, so it
+	// is a normal-looking latency rather than a session lifetime.
+	ws := respEvent(now, http.StatusSwitchingProtocols, 12*time.Millisecond, "", 0)
+	ws.Direction = pipeline.Inbound
+	a.Record("s1", ws)
+	after := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+
+	if got, want := after.Totals.Requests, before.Totals.Requests+1; got != want {
+		t.Errorf("requests = %d, want %d — an inbound 101 is a handshake, and was "+
+			"counted as a request before the outbound exclusion was added", got, want)
+	}
+	if m := weightedLatMean(after); m == 0 {
+		t.Error("inbound 101 contributed no latency; its handshake time is a real request latency")
+	}
+}
+
 // weightedLatMean is the sample-weighted latency mean across a snapshot's buckets,
 // which is how a client showing one window-wide figure has to compute it (see
 // Bucket.LatSamples).

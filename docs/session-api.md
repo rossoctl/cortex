@@ -288,7 +288,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   session moved a host's mean from 500ms to 6.4s in testing), its frames are
   opaque so there is no model, token or cost to attribute, and counting it
   would add one Request whose latency is its whole lifetime. On the timeline
-  the lifetime is the point, so the field stays. A relay that ended in an
+  the lifetime is the point, so the field stays. **That exclusion is outbound
+  only.** The reverse proxy also records a 101, but at *handshake* time
+  (`ReverseProxy` hands off the connection instead of copying a body, so a
+  deferred record would never fire), so its `durationMs` is the handshake
+  latency — an ordinary request figure. An inbound WebSocket handshake is
+  therefore still counted as a Request. A relay that ended in an
   error carries `error.kind: "proxy_error"` on the 101 row, so a session that
   broke mid-stream is distinguishable from one that closed cleanly; an
   ordinary close is not marked. A **403**

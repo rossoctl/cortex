@@ -55,6 +55,31 @@ func (c *notifyConn) Close() error {
 	return c.Conn.Close()
 }
 
+// CloseWrite forwards a half-close to the terminated TLS conn — a close_notify
+// on the wire — so a WebSocket spliced over the bridge sees the origin's close.
+//
+// It has to be written out rather than inherited: notifyConn embeds the net.Conn
+// INTERFACE, so only net.Conn's method set is promoted and CloseWrite is not in
+// it, whatever the concrete type underneath happens to be. The forward proxy's
+// splice probes its conn for `interface{ CloseWrite() error }`, and on the
+// bridged path that probe is this wrapper — it failed, the goroutine forwarded
+// nothing, and an origin that hung up first left the agent waiting on a dead
+// WebSocket while the 101 row (recorded after BOTH directions) never landed.
+// The plain path was unaffected: there the conn is a *net.TCPConn (#1549 review).
+//
+// nil when the wrapped conn cannot half-close, which is the right answer rather
+// than an error: the splice treats a non-nil result as a broken relay and marks
+// the row `proxy_error`, so reporting "could not half-close" here would flag
+// every clean close on such a conn as a failed session. A *tls.Conn — what
+// ServeConn is always given — does implement CloseWrite, so in practice this
+// forwards.
+func (c *notifyConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
 type dummyAddr struct{}
 
 func (dummyAddr) Network() string { return "tcp" }
