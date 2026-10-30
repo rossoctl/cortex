@@ -2790,9 +2790,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		pc := &peekedConn{Conn: clientConn, r: bufio.NewReaderSize(clientConn, sniffBufSize)}
 		clientConn = pc // replay peeked bytes into whichever path runs
 		// A server-first protocol (SSH, SMTP) sends nothing until it reads the
-		// banner, so bound the peek the way sniffHost does. A short or empty
-		// first classifies as not-TLS and the tunnel takes the opaque path.
-		_ = clientConn.SetReadDeadline(time.Now().Add(sniffTimeout))
+		// banner, so bound the peek: a short or empty first classifies as
+		// not-TLS and the tunnel takes the opaque path. Shorter than
+		// sniffHost's 5s because this delay is user-visible — the banner only
+		// flows once this returns.
+		_ = clientConn.SetReadDeadline(time.Now().Add(connectSniffTimeout))
 		first, _ := pc.Peek(5)
 		_ = clientConn.SetReadDeadline(time.Time{})
 		authority := r.Host // CONNECT target is already host:port

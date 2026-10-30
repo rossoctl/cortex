@@ -444,7 +444,8 @@ func tunnel(client, upstream net.Conn) (up, down int64) {
 // halfCloseDrainVar is how long tunnel waits for the second copy after the
 // first has returned. Short enough to settle the tunnel's close row promptly,
 // long enough to carry a reply the peer is actively writing. A var so a test
-// can shrink it.
+// can shrink it; a test that mutates it relies on package tests running
+// sequentially, since tunnel reads it on every teardown.
 var halfCloseDrainVar = 2 * time.Second
 
 // closeWrite shuts down c's write side when the underlying conn supports it

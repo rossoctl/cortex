@@ -42,8 +42,9 @@ func TestHandleConnect_ServerFirstBannerArrivesPromptly(t *testing.T) {
 	}
 	// Pre-fix the sniff peeks the client with no deadline and the client sends
 	// nothing, so the tunnel never starts and the banner never flows. Post-fix
-	// the peek is bound by sniffTimeout, after which the opaque path takes over.
-	_ = raw.SetReadDeadline(time.Now().Add(sniffTimeout + 2*time.Second))
+	// the peek is bound by connectSniffTimeout, after which the opaque path
+	// takes over.
+	_ = raw.SetReadDeadline(time.Now().Add(connectSniffTimeout + 2*time.Second))
 	line, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read banner: %v", err)
