@@ -407,12 +407,25 @@ func tunnel(client, upstream net.Conn) (up, down int64) {
 	upc := make(chan int64, 1)
 	go func() {
 		n, _ := io.Copy(upstream, client)
-		_ = upstream.Close()
-		_ = client.Close()
+		closeWrite(upstream) // relay the client's half-close; let the reply flow back
 		upc <- n
 	}()
 	down, _ = io.Copy(client, upstream)
+	closeWrite(client)
+	// Full close on both ends once each direction has finished. The copy that
+	// finishes second has nothing left to carry.
 	_ = client.Close()
 	_ = upstream.Close()
 	return <-upc, down
+}
+
+// closeWrite shuts down c's write side when the underlying conn supports it
+// (TCPConn, UnixConn), so the peer sees EOF on its reads without losing the
+// other direction. Falls back to a full close for anything that does not.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
 }
