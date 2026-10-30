@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/session"
@@ -35,7 +36,13 @@ func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln 
 		inner: fp.Handler(), sink: sink,
 		ln: newTrackedListener(ln),
 	}
-	b.srv = &http.Server{Handler: b}
+	// ReadHeaderTimeout matches bootstrap's, which every other http.Server in
+	// the binary gets. Without it a guest can open connections and drip headers
+	// forever, each one holding a goroutine and an fd until Unregister — and the
+	// fds are the scarcer half, since one proxy holds a listener per VM plus
+	// their tunnels. Per-VM caps are #1485's; this is the one-line floor (also
+	// gosec G112) and it costs the conformance cases nothing (#1569 review).
+	b.srv = &http.Server{Handler: b, ReadHeaderTimeout: 10 * time.Second}
 	return b
 }
 
@@ -128,7 +135,17 @@ func (b *vmBinding) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	if b.aborted {
 		b.mu.Unlock()
-		return // the binding is gone and the conn with it; no request ran
+		// The binding is gone and no request ran — but a bare return is not how
+		// to say so. net/http would send an empty 200 OK on a connection that is
+		// still open in the window between close() setting aborted and closeAll()
+		// closing the conns, so the guest reads "success" for a request that
+		// never left, and the one-terminal-line-per-request promise has a hole
+		// exactly where the audit matters. 503 with Connection: close says it to
+		// the guest, and the line says it to the operator (#1569 review).
+		w.Header().Set("Connection", "close")
+		http.Error(w, "egress binding closed", http.StatusServiceUnavailable)
+		b.emit(r, http.StatusServiceUnavailable)
+		return
 	}
 	b.live.Add(1)
 	b.mu.Unlock()

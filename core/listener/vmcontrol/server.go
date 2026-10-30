@@ -5,10 +5,12 @@ package vmcontrol
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"slices"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -72,8 +74,25 @@ func NewServer(path string, allowedUIDs []int, h Handler) (*Server, error) {
 	}, nil
 }
 
+// acceptRetryMin and acceptRetryMax bound the backoff for a TEMPORARY accept
+// error, the same 5ms-doubling-to-1s shape net/http.Server.Serve uses.
+const (
+	acceptRetryMin = 5 * time.Millisecond
+	acceptRetryMax = 1 * time.Second
+)
+
 // Serve accepts connections until Close, then returns nil.
+//
+// A TEMPORARY accept error is retried with bounded backoff rather than returned.
+// What makes this load-bearing is what the caller does with a returned error:
+// startVMControl hands it to fatalf, which exits the process — so an EMFILE or
+// ENFILE (plausible on a proxy holding tens of VM listeners plus their tunnels)
+// or an ECONNABORTED would kill Cortex and every VM's egress with it, for a
+// condition that clears on its own. net/http's own accept loop has retried
+// these since forever, for the same reason. Only a permanent error is worth the
+// whole flotilla (#1569 review).
 func (s *Server) Serve() error {
+	var delay time.Duration
 	for {
 		c, err := s.ln.AcceptUnix()
 		if err != nil {
@@ -83,8 +102,24 @@ func (s *Server) Serve() error {
 			if closed || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
+			// net.Error.Temporary() is deprecated and lies about some errors, so
+			// the fd-exhaustion syscall errnos are named explicitly; Temporary()
+			// is still consulted for anything else that self-describes as
+			// transient (ECONNABORTED arrives that way).
+			if isTemporaryAccept(err) {
+				if delay == 0 {
+					delay = acceptRetryMin
+				} else if delay *= 2; delay > acceptRetryMax {
+					delay = acceptRetryMax
+				}
+				slog.Warn("vmcontrol: temporary accept error on the control socket; retrying",
+					"error", err, "retry_in", delay)
+				time.Sleep(delay)
+				continue
+			}
 			return err
 		}
+		delay = 0
 		sc := &serverConn{c: c, vms: map[string]struct{}{}}
 		s.mu.Lock()
 		if s.closed {
@@ -280,4 +315,23 @@ func handlerRefusal(err error) *ControlReply {
 		return refusal(re.Code, re.Message)
 	}
 	return refusal(CodeHandlerError, err.Error())
+}
+
+// isTemporaryAccept reports whether an accept error is worth retrying.
+//
+// EMFILE/ENFILE are the ones that matter here — the process or the system is out
+// of descriptors, which a proxy holding a listener per VM plus their tunnels can
+// reach, and which clears as soon as something closes. ECONNABORTED is the peer
+// giving up mid-handshake. Anything else that still implements the deprecated
+// Temporary() and says yes is taken at its word; everything else is permanent.
+func isTemporaryAccept(err error) bool {
+	if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EINTR) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return ne.Temporary() //nolint:staticcheck // SA1019: no replacement for the accept-retry decision; the errnos above carry the cases that matter.
+	}
+	return false
 }

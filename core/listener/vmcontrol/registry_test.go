@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,9 +12,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/listener/egressallow"
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -532,4 +535,233 @@ func (s *syncBuffer) bytes() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]byte(nil), s.b...)
+}
+
+// newVMEgressStackWithAllow is newVMEgressStack with a deny-by-default egress
+// allow list armed, for the refusal paths that record BEFORE hydration.
+func newVMEgressStackWithAllow(t *testing.T, entries ...string) (*Registry, *captureSink, *session.Store) {
+	t.Helper()
+	store := session.New(5*time.Minute, 100, 0)
+	t.Cleanup(store.Close)
+	p, err := pipeline.New([]pipeline.Plugin{&sessionProbe{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow, err := egressallow.New(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := &forwardproxy.Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader, session.SessionIDHeader},
+		TrustedSessionID: SessionIDFromRequest,
+		EgressAllow:      allow,
+	}
+	sink := &captureSink{}
+	return NewRegistry(fp, sink), sink, store
+}
+
+// rowsIn is how many session rows a bucket holds.
+func rowsIn(store *session.Store, sid string) int {
+	if v := store.View(sid); v != nil {
+		return len(v.Events)
+	}
+	return 0
+}
+
+// TestRegistry_EgressDeniedRowLandsInTheVMSession: a VM request refused by the
+// egress allow list is refused BEFORE hydration, so nothing on that path used to
+// consult TrustedSessionID — the denied row went to ActiveSession() (possibly
+// another VM's) or to `default`.
+//
+// That is the headline guarantee inverted on exactly the event you most want
+// attributed correctly: "identity from the connection wins over every header-
+// and process-derived id" has to hold for refusals too, not only for requests
+// that reach the pipeline. Measured before the fix: sid-a rows=0, the unrelated
+// active session rows=2 (#1569 review).
+func TestRegistry_EgressDeniedRowLandsInTheVMSession(t *testing.T) {
+	reg, _, store := newVMEgressStackWithAllow(t, "allowed.example:80")
+
+	// Another session is active, as one is on any busy proxy.
+	store.Append("someone-else", pipeline.SessionEvent{
+		At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "other.example", StatusCode: 200,
+	})
+	before := rowsIn(store, "someone-else")
+
+	addr := registerTCPVM(t, reg, "vm-a", "sid-a")
+	c := guest(t, addr)
+	defer func() { _ = c.Close() }()
+	fmt.Fprint(c, "GET http://denied.example:80/x HTTP/1.1\r\nHost: denied.example\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+
+	if got := rowsIn(store, "sid-a"); got == 0 {
+		t.Error("the VM's session holds no row for its own denied egress; the refusal was filed elsewhere")
+	}
+	if got := rowsIn(store, "someone-else"); got != before {
+		t.Errorf("the unrelated active session gained %d row(s): a VM's denial landed in another session",
+			got-before)
+	}
+	if got := rowsIn(store, session.DefaultSessionID); got != 0 {
+		t.Errorf("default bucket holds %d row(s); the VM's identity was known", got)
+	}
+}
+
+// TestRegistry_EgressDeniedCONNECTRowLandsInTheVMSession is the same hole on the
+// CONNECT path, which refuses before hydration at its own call site.
+func TestRegistry_EgressDeniedCONNECTRowLandsInTheVMSession(t *testing.T) {
+	reg, _, store := newVMEgressStackWithAllow(t, "allowed.example:443")
+	store.Append("someone-else", pipeline.SessionEvent{
+		At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "other.example", StatusCode: 200,
+	})
+	before := rowsIn(store, "someone-else")
+
+	addr := registerTCPVM(t, reg, "vm-b", "sid-b")
+	c := guest(t, addr)
+	defer func() { _ = c.Close() }()
+	fmt.Fprint(c, "CONNECT denied.example:443 HTTP/1.1\r\nHost: denied.example:443\r\n\r\n")
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if !strings.Contains(line, "403") {
+		t.Fatalf("CONNECT = %q, want 403", line)
+	}
+
+	if got := rowsIn(store, "sid-b"); got == 0 {
+		t.Error("the VM's session holds no row for its own denied CONNECT")
+	}
+	if got := rowsIn(store, "someone-else"); got != before {
+		t.Errorf("the unrelated active session gained %d row(s)", got-before)
+	}
+}
+
+// TestRegistry_TrustedSessionSurvivesSessionsDisabled: with session.enabled
+// false the proxy has no store, and the guard that skipped hydration took the
+// VM's identity with it — a registered VM's request reached the pipeline with
+// pctx.Session nil even though sessionViewFor builds an ID-only view without a
+// store. A MOCA deployment that turned the store off would quietly lose every
+// VM's identity, which is the one thing the control channel exists to carry
+// (#1569 review).
+func TestRegistry_TrustedSessionSurvivesSessionsDisabled(t *testing.T) {
+	probe := &sessionProbe{}
+	p, err := pipeline.New([]pipeline.Plugin{probe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	fp := &forwardproxy.Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         nil, // session.enabled: false
+		Client:           http.DefaultClient,
+		TrustedSessionID: SessionIDFromRequest,
+	}
+	reg := NewRegistry(fp, &captureSink{})
+	addr := registerTCPVM(t, reg, "vm-c", "sid-c")
+
+	c := guest(t, addr)
+	defer func() { _ = c.Close() }()
+	fmt.Fprintf(c, "GET %s/x HTTP/1.1\r\nHost: %s\r\n\r\n",
+		upstream.URL, strings.TrimPrefix(upstream.URL, "http://"))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	probe.mu.Lock()
+	ids := append([]string(nil), probe.ids...)
+	probe.mu.Unlock()
+	if len(ids) == 0 {
+		t.Fatal("the pipeline never ran for the VM's request")
+	}
+	if ids[0] != "sid-c" {
+		t.Errorf("plugin saw session %q, want sid-c — the trusted id costs no store and must survive session.enabled: false", ids[0])
+	}
+}
+
+// TestVMBinding_AbortedWindowAnswers503: between close() setting aborted and
+// closeAll() closing the conns, a request that reaches ServeHTTP used to return
+// without writing anything — so net/http sent an empty 200 OK on a still-open
+// connection and no audit line was emitted. The guest read "success" for a
+// request that never left, and the one-terminal-line-per-request promise had a
+// hole exactly where the audit matters (#1569 review).
+func TestVMBinding_AbortedWindowAnswers503(t *testing.T) {
+	p, err := pipeline.New([]pipeline.Plugin{&sessionProbe{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := &forwardproxy.Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Client:           http.DefaultClient,
+		TrustedSessionID: SessionIDFromRequest,
+	}
+	sink := &captureSink{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln)
+
+	// Enter the window: aborted set, connections not yet closed.
+	b.close()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://denied.example/x", nil)
+	b.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 — an empty 200 tells the guest its request succeeded", rec.Code)
+	}
+	if got := rec.Header().Get("Connection"); got != "close" {
+		t.Errorf("Connection = %q, want close", got)
+	}
+	evs := sink.forVM("vm-d")
+	if len(evs) != 1 {
+		t.Fatalf("audit lines = %d, want exactly 1 — one terminal line per request", len(evs))
+	}
+	if evs[0].Decision != DecisionAborted {
+		t.Errorf("decision = %q, want %q", evs[0].Decision, DecisionAborted)
+	}
+}
+
+// TestIsTemporaryAccept: the accept loop must retry what clears on its own and
+// return only what does not. A returned error reaches fatalf, which exits the
+// process and takes every VM's egress with it, so an EMFILE on a proxy holding
+// a listener per VM must not be fatal (#1569 review).
+func TestIsTemporaryAccept(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"EMFILE: this process is out of fds", syscall.EMFILE, true},
+		{"ENFILE: the system is", syscall.ENFILE, true},
+		{"ECONNABORTED: peer gave up mid-handshake", syscall.ECONNABORTED, true},
+		{"EINTR", syscall.EINTR, true},
+		{"wrapped EMFILE", fmt.Errorf("accept: %w", syscall.EMFILE), true},
+		{"EINVAL is permanent", syscall.EINVAL, false},
+		{"a plain error is permanent", errors.New("boom"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTemporaryAccept(tc.err); got != tc.want {
+				t.Errorf("isTemporaryAccept(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
 }

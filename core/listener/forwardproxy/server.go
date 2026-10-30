@@ -462,6 +462,19 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// — and silent on the day one does, which is why it is pinned rather than watched.
 	pctx.ResolveClient()
 
+	// The connection's own answer to "which session", resolved HERE rather than at
+	// hydration, because a request can be refused before it ever reaches hydration
+	// — an off-list egress destination, a body too large to buffer, a bridged
+	// request whose Host is not its tunnel's. Each of those records a row, and a
+	// row filed by header/process/ActiveSession() for a VM whose identity the
+	// connection already settled lands in another VM's session or in `default`:
+	// the denied-egress event you most want attributed correctly, attributed to
+	// someone else. Resolving once up here and threading it into every recording
+	// site is what makes "identity from the connection wins over every header- and
+	// process-derived id" true for refusals too, not just for requests that make
+	// it to the pipeline (#1569 review).
+	trusted := s.trustedSessionOf(r)
+
 	// A bridged request is dialed to the tunnel's authority, so policy must judge that
 	// host. The client chose both the CONNECT target and the Host header, and a Host
 	// naming anywhere else would have every host-keyed plugin, skip_hosts included,
@@ -490,7 +503,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		host := hostOnly(r.URL.Host)
 		action := egressAllowRefusal(pctx, host)
 		chain := s.clientChain(r)
-		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID("", r.Header, chain))
+		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(trusted, r.Header, chain))
 		// Sanitized: host (the URL authority), Method and Path are all client-controlled,
 		// and a control rune forged into any of them would forge a log entry — the same
 		// CWE-150 shape #1539's egress guard was flagged for.
@@ -579,9 +592,15 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// its paired response — which resolveOutboundSessionID's own contract forbids,
 	// and which would fail invisibly. The listener's answer wins; the pin is
 	// assigned from this local after the pipeline has run.
+	// The store's absence gates the header/process resolution, not the trusted
+	// answer: that one costs no store (sessionViewFor falls back to an ID-only
+	// view) and is the VM's identity, which plugins must see whether or not
+	// anyone is recording events. Throwing it away under `session.enabled:
+	// false` would quietly un-identify every VM in a MOCA deployment that turned
+	// the store off (#1569 review).
 	var sessionID string
-	if !skipped && s.Sessions != nil {
-		sessionID = s.hydrateSession(pctx, r, chain)
+	if !skipped && (s.Sessions != nil || trusted != "") {
+		sessionID = s.hydrateSession(pctx, trusted, r.Header, chain)
 	}
 
 	if !skipped {
@@ -1216,7 +1235,7 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	}
 	pctx.Host = r.URL.Host
 	chain := s.clientChain(r)
-	sid := s.attributeForRecording(pctx, r.Header, chain)
+	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
 		defer s.touch(sid, chain)
@@ -1438,10 +1457,38 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, 
 	return s.resolveOutboundSessionID(clientHeaders, chain)
 }
 
+// trustedSessionOf is the listener's own answer to "which session is this request
+// on", from how the connection arrived (vmcontrol installs the hook; the socket
+// that accepted the connection names the VM). Empty when no hook is installed, or
+// when it does not recognise this request — a transparently redirected connection
+// has no request at all.
+//
+// Separate from hydrateSession so the pre-pipeline refusal paths can ask the same
+// question: those never reach hydration, and a refusal filed under a header- or
+// process-derived id defeats the point of deriving identity from the connection.
+func (s *Server) trustedSessionOf(r *http.Request) string {
+	if s.TrustedSessionID == nil || r == nil {
+		return ""
+	}
+	return s.TrustedSessionID(r)
+}
+
 // attributeForRecording resolves a request that never reached hydration — refused before the
 // pipeline, or unreadable — pins its attribution on pctx so its rows carry the process, and
-// returns the bucket they go in: the attribution's, else ActiveSession(), else default.
-func (s *Server) attributeForRecording(pctx *pipeline.Context, clientHeaders http.Header, chain []attribution.Proc) string {
+// returns the bucket they go in: the trusted sid, else the attribution's, else
+// ActiveSession(), else default.
+//
+// A trusted sid SHORT-CIRCUITS, and pins attribution EMPTY rather than skipping the
+// pin: SetAttribution is write-once and AttributedProc() is recorded straight into
+// SessionEvent.Proc, so claiming the slot with nothing is what stops a VM's refusal
+// row from being stamped with the host process that merely happens to own the
+// control socket — the same reasoning hydrateSession's trusted branch gives, applied
+// to the paths that never get there (#1569 review).
+func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
+	if trusted != "" {
+		pctx.SetAttribution("", "", "")
+		return trusted
+	}
 	at := s.attribute(clientHeaders, chain)
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
 	if sid := at.RecordID(); sid != "" {
@@ -1638,7 +1685,7 @@ func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, 
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.attributeForRecording(pctx, r.Header, chain)
+	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain)
 	pctx.OutboundSessionID = sid
 	if chain != nil {
 		defer s.touch(sid, chain)
@@ -1730,7 +1777,17 @@ type pluginSession struct {
 // hydrateSession resolves the plugin session for a request and, when there is one,
 // sets pctx.Session and how it was resolved. It returns the id for the caller's
 // local, which recording reads instead of pctx.
-func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain []attribution.Proc) string {
+// trusted is the connection's own answer (trustedSessionOf), resolved by the
+// caller — which also keeps the r.Header read at the CALL SITE rather than in
+// here. That placement is deliberate: moving the read inside this function
+// changed the data-flow shape enough that CodeQL re-reported 28 pre-existing
+// go/clear-text-logging and go/log-injection alerts in untouched plugins
+// (sessionbudget, contextguru, inferencerouter) as new, every one of them
+// sourced to the moved line. They are false positives — a header id passes
+// validHeaderSessionID before anything logs it, and a session id is not a
+// secret — but a red check is a red check, and taking the headers as a
+// parameter restores main's flow shape (#1569 review).
+func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
 	// The listener's own answer first, and it ends the search: a session
 	// resolved from how the connection arrived is not something the client has
 	// any say in, and letting a header or a process chain override it would
@@ -1746,18 +1803,12 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, r *http.Request, chain [
 	// attributeForRecording from filling a VM's row in with a host process
 	// that merely happens to own the control socket. The VM's identity is the
 	// session id itself, which the connection already settled.
-	if s.TrustedSessionID != nil && r != nil {
-		if sid := s.TrustedSessionID(r); sid != "" {
-			pctx.Session = s.sessionViewFor(sid)
-			pctx.SessionSource = pipeline.SessionSourceConnection
-			pctx.SessionHeader = ""
-			pctx.SetAttribution("", "", "")
-			return sid
-		}
-	}
-	var clientHeaders http.Header
-	if r != nil {
-		clientHeaders = r.Header
+	if trusted != "" {
+		pctx.Session = s.sessionViewFor(trusted)
+		pctx.SessionSource = pipeline.SessionSourceConnection
+		pctx.SessionHeader = ""
+		pctx.SetAttribution("", "", "")
+		return trusted
 	}
 	at := s.attribute(clientHeaders, chain)
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
@@ -2390,6 +2441,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// attributed to the agent that opened it.
 	pctx.ResolveClient()
 
+	// The connection's own answer, resolved once for this CONNECT — the egress
+	// refusal below is recorded before hydration, so it needs the same trusted
+	// sid the hydrated path gets (see serveOutbound's, same reasoning).
+	trusted := s.trustedSessionOf(r)
+
 	// Egress allow list (#1483): when on, an off-list CONNECT target is refused
 	// here — before the SkipHosts match, so a skip entry cannot exempt an
 	// off-list host (the allowlist is the outer boundary), and before the
@@ -2404,10 +2460,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		host := hostOnly(r.Host)
 		action := egressAllowRefusal(pctx, host)
 		// Session resolution the recordUnbufferedRequest way — pre-pipeline,
-		// from the client's headers and process only — so the denied row lands
-		// in the bucket the request would have recorded under.
+		// from the connection's own answer first, then the client's headers and
+		// process — so the denied row lands in the bucket the request would have
+		// recorded under. The trusted sid has to come first here for the same
+		// reason it does on the plain path: this CONNECT is refused before
+		// hydration, and a VM's denied row filed by header or process lands in
+		// another VM's session (#1569 review).
 		chain := s.clientChain(r)
-		s.recordOutboundReject(pctx, action, s.recordingSessionID("", r.Header, chain))
+		s.recordOutboundReject(pctx, action, s.recordingSessionID(trusted, r.Header, chain))
 		// Sanitized like the serveOutbound refusal: host is client-controlled and
 		// lands in a log file.
 		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",
@@ -2452,8 +2512,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// announces its session on CONNECT is honored; most do not, and those
 		// fall through to ActiveSession() exactly as before.
 		chain = s.clientChain(r)
-		if s.Sessions != nil {
-			sessionID = s.hydrateSession(pctx, r, chain)
+		// Same widening as the request path: the trusted answer needs no store,
+		// and a VM's tunnel must carry its identity even with the store off.
+		if s.Sessions != nil || trusted != "" {
+			sessionID = s.hydrateSession(pctx, trusted, r.Header, chain)
 		}
 
 		// Run the outbound pipeline. Plugins that policy on host/identity

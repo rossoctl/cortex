@@ -118,7 +118,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// would reopen the same flip window the other paths were fixed for, reduced to
 	// ActiveSession@T0 versus ActiveSession@T1. resolvePluginSessionID with nil
 	// headers is that same resolver with nothing to read a header from.
-	sessionID := s.hydrateSession(pctx, nil, nil)
+	sessionID := s.hydrateSession(pctx, "", nil, nil)
 
 	// Gate on host/identity before opening the tunnel — identical to the
 	// CONNECT path. Parsers see no body and degrade gracefully.

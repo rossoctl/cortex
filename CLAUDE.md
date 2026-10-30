@@ -505,6 +505,19 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   its guest merely names. The wrapper also strips `X-Moca-*`,
   `Proxy-Authorization` and every session-id header from guest requests, so
   nothing client-asserted reaches the pipeline or the upstream.
+  **The rule covers refusals, not only requests that reach the pipeline**, and
+  that took a second pass to get right: a request turned away *before*
+  hydration — an off-list egress destination on either the plain or CONNECT
+  path, a body too large to buffer, a bridged request whose `Host` is not its
+  tunnel's — records a row too, and those paths originally resolved by
+  header/process/`ActiveSession()`, filing a VM's denied-egress row in another
+  VM's session or in `default`. The connection's answer is now resolved once
+  per request (`trustedSessionOf`) and threaded into every pre-pipeline
+  recording site, with attribution pinned empty there as hydration does it, so
+  no VM's row is stamped with the host process that owns the control socket.
+  **It also survives `session.enabled: false`**: the trusted id needs no store
+  (`sessionViewFor` falls back to an ID-only view), so turning the store off
+  stops recording without un-identifying the VMs.
 - A Register carrying a non-empty **grant** is refused with `bad_request`
   (single-tenant slice); tenancy is decided once at boot by `MOCA_TENANCY`.
 - **Unregister closes the listener and every live connection — hijacked
@@ -519,7 +532,19 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   request on stdout, in moca's `Event` shape (`vm_id`, `sid`, `host`,
   `method`, `path`, `status`, `decision` of `tunnel`/`forward`/`aborted`,
   `via: "moca-egress"`). `sub`, `dial_addr`, `credential`, byte counts and the
-  journald/async seam are #1482's.
+  journald/async seam are #1482's. A request that arrives inside the
+  **aborted window** — after Unregister set the flag, before it closed the
+  conns — is answered `503` with `Connection: close` and emits its own
+  `aborted` line, rather than returning silently and letting `net/http` send
+  an empty `200` the guest would read as success.
+- **A temporary accept error on the control socket is retried**, 5ms doubling
+  to 1s, as `net/http`'s own accept loop does. Only a permanent error comes
+  back from `Serve` — and it must, because `startVMControl` hands that to
+  `fatalf`: an `EMFILE` on a proxy holding a listener per VM plus their
+  tunnels would otherwise exit the process and take every VM's egress with it.
+  Each per-VM `http.Server` also carries bootstrap's `ReadHeaderTimeout`
+  (10s), so a guest cannot hold a goroutine and an fd open by dripping
+  headers; per-VM caps are #1485's.
 - Local test runs: the macOS seatbelt sandbox refuses `AF_UNIX` binds, so
   `server_test.go` skips there (CI's Linux runners run it); the registry and
   wire tests run everywhere, with the registry tests driving the real
