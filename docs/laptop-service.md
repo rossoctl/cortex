@@ -481,6 +481,24 @@ by a fingerprint of the block — never the reasoning itself. It holds no prompt
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
 
+## The `memory:` configuration
+
+The Go runtime sizes its heap to roughly twice the live heap by default, and
+reading sessions leaves the memory the encoder expanded from the store's
+sharing as idle RSS — together those carried a live heap of ~1.4GB as 2.9GB of
+resident memory. `memory.limit_mb` applies the Go runtime's soft memory limit
+at startup; a local install defaults it to **2048**.
+
+| Field | Default (local) | Meaning |
+|---|---|---|
+| `limit_mb` | 2048 | Soft limit in MB. Zero disables it. |
+
+The limit is **soft**: near it the garbage collector runs more often (a little
+CPU for the memory), and if the sessions genuinely need more than the limit the
+process keeps allocating and growing exactly as it would without one — nothing
+fails, nothing crashes. Setting it too low costs speed, not availability. Set
+it explicitly to change the default; `agentop service restart` applies it.
+
 ## The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees
@@ -796,7 +814,7 @@ The other reasons you may see, and what each one asks of you:
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
-| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
+| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout. Without the TLS bridge the CONNECT is answered `502` and no tunnel opened. With the bridge on (this install's default) the CONNECT is answered `200` first, because a redirect can still send the request to a live server; when nothing rescued it, the close row carries that `200` with the dial error in `error`. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
 
 Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
 `program-refused` when the earlier failure it remembers was one. The others are either

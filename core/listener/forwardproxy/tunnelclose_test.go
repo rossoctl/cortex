@@ -655,7 +655,7 @@ func TestBridgeServe_HandshakeFailureRecordsItsClose(t *testing.T) {
 	s, store, authority := bridgeForRejectTest(t)
 	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: authority}, false)
 
-	if !s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl) {
+	if !s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl, false) {
 		t.Fatal("bridgeServe returned false; the connection is dead post-forge")
 	}
 

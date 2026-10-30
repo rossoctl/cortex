@@ -65,11 +65,12 @@ type tokenExchangeConfig struct {
 	KeycloakRealm string `json:"keycloak_realm" description:"DEPRECATED: use provider_realm + provider=keycloak instead. Keycloak realm name."`
 
 	// DefaultPolicy is applied when a request's host matches no route:
-	// "passthrough" (default) forwards the request unchanged;
-	// "exchange" attempts a client-credentials exchange with an empty
-	// audience (usually fails — kept for rare use cases where the IdP
-	// allows it).
-	DefaultPolicy string `json:"default_policy" description:"Behavior when host matches no route: passthrough forwards unchanged, exchange attempts empty-audience client-credentials." default:"passthrough" enum:"passthrough,exchange"`
+	// "passthrough" (default) forwards the request unchanged; "exchange"
+	// still needs a resolved audience (a matching route or
+	// audience_from_host) — an exchange with no audience returns a token
+	// valid for every audience the caller holds, so it is refused with
+	// 503 no_audience.
+	DefaultPolicy string `json:"default_policy" description:"Behavior when host matches no route: passthrough forwards unchanged, exchange needs a resolved audience (audience_from_host) or is refused 503 no_audience." default:"passthrough" enum:"passthrough,exchange"`
 
 	// NoTokenPolicy controls how the plugin handles outbound requests
 	// that arrive without a bearer token: "client-credentials" does an

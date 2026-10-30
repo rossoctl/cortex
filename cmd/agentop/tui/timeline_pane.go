@@ -482,6 +482,10 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 	}
 	m.selectedSess = session
 	m.pane = paneEvents
+	// Leaving the timeline pane: its session is a #1542 retention key, so the
+	// drill-down drops it the same way Esc does — the session stays watched
+	// through selectedSess, which the lines above just set.
+	m.timeline.session = ""
 	m.revealSeq, m.revealSess = seq, session
 	m.rebuildEventsTable()
 	revealed := m.revealPendingSeq()

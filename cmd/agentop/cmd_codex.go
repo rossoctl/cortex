@@ -463,22 +463,13 @@ func (f *codexEnvFile) reindex() {
 // not only a cosmetic one.
 func (f *codexEnvFile) write(path string) error {
 	if cur, rerr := os.ReadFile(path); rerr == nil { //nolint:gosec // operator-supplied path
-		bak := path + ".bak"
-		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
-			if werr := os.WriteFile(bak, cur, 0o600); werr != nil {
-				return fmt.Errorf("writing backup %s: %w", bak, werr)
-			}
+		if berr := backupOnce(path, cur); berr != nil {
+			return berr
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b := []byte(strings.Join(f.lines, "\n") + "\n")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// Atomic and symlink-resolving; see writeSettings for why the fixed ".tmp"
+	// name had to go (#1565).
+	return writeFileAtomic(path, []byte(strings.Join(f.lines, "\n")+"\n"), 0o600)
 }
 
 // codexPlan is what enable would change, worked out without touching anything.

@@ -943,3 +943,28 @@ func TestValidateReloadable_RefusesTLSBridgeAndSPIFFEEdits(t *testing.T) {
 		t.Errorf("nil tls_bridge and spiffe in both was refused: %v", err)
 	}
 }
+
+// memory.* is boot-only: the soft limit is applied once at startup, so an
+// accepted edit would be the "worse than a refusal" shape — ReloadsOK up,
+// /config serving the new value, the runtime keeping the boot limit.
+func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
+	active := &config.Config{}
+	next := &config.Config{Memory: &config.MemoryConfig{LimitMB: 1024}}
+	if err := validateReloadable(active, next); err == nil {
+		t.Fatal("adding a memory block was accepted")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("memory.*")) {
+		t.Errorf("error doesn't mention memory.*: %v", err)
+	}
+
+	active = &config.Config{Memory: &config.MemoryConfig{LimitMB: 1024}}
+	next = &config.Config{Memory: &config.MemoryConfig{LimitMB: 2048}}
+	if err := validateReloadable(active, next); err == nil {
+		t.Fatal("changing the limit was accepted")
+	}
+
+	active = &config.Config{Memory: &config.MemoryConfig{LimitMB: 1024}}
+	next = &config.Config{Memory: &config.MemoryConfig{LimitMB: 1024}}
+	if err := validateReloadable(active, next); err != nil {
+		t.Errorf("unchanged memory block was refused: %v", err)
+	}
+}

@@ -453,6 +453,10 @@ func (m *model) rebuildSessionsTable() {
 // current list omits, sorted so the picker does not reshuffle under the cursor
 // on each refresh. Empty caches are skipped: a row advertising zero events
 // helps nobody, and snapshotLoadedMsg can create the key with an empty slice.
+// Since #1542 the only way events are held is opening (or watching) a session,
+// so a session the user never opened no longer appears here once the server
+// drops it — the archive's ?archived=true list is where such sessions surface
+// now, which is why that is a fine trade.
 func (m *model) cachedOnlySessionIDs() []string {
 	live := make(map[string]bool, len(m.sessions))
 	for _, s := range m.sessions {

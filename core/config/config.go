@@ -45,6 +45,9 @@ type Config struct {
 	// TLSBridge, when non-nil and Enabled, terminates agent outbound TLS so the
 	// outbound pipeline sees decrypted HTTPS. See docs/.../tlsbridge-design.md.
 	TLSBridge *TLSBridgeConfig `yaml:"tls_bridge,omitempty" json:"tls_bridge,omitempty"`
+	// Memory, when set, applies a Go runtime soft memory limit
+	// (debug.SetMemoryLimit) at boot. See MemoryConfig.
+	Memory *MemoryConfig `yaml:"memory,omitempty" json:"memory,omitempty"`
 	// Pricing configures model rates for the whole process — one section rather
 	// than a knob per plugin, so cost is consistent wherever it is reported.
 	//
@@ -224,6 +227,54 @@ func (c *CostLedgerConfig) Validate() error {
 			minCostLedgerRetentionDays, c.RetentionDays)
 	}
 	return nil
+}
+
+// MemoryConfig applies a Go runtime soft memory limit at boot. The limit is
+// SOFT by the runtime's contract: near it the GC runs more often (trading CPU
+// for memory — that is where the savings come from), and a live heap that
+// genuinely exceeds it is allowed to grow past it rather than fail any
+// allocation. The failure mode of setting it too low is slowness near the
+// limit, never a crash. It counts Go-managed memory (heap, stacks, runtime
+// structures); cgo allocations, the CPEX build's FFI included, sit outside it.
+//
+// It exists because nothing in cmd/ or core/ bounded the runtime's appetite:
+// with GOGC at its default the heap is sized to ~2x live, and session-API
+// reads leave the memory they expand from the store's sharing as idle RSS —
+// measured, a live heap of ~1.4GB carried 2.9GB of RSS (#1541). A limit caps
+// both.
+//
+// Boot-only, like mtls: apply it where the process starts, not per reload.
+type MemoryConfig struct {
+	// LimitMB is the soft limit in megabytes. Zero disables the limit (an
+	// explicitly-set zero is kept as "off"); the block absent entirely leaves
+	// the defaulting to the binary — cmd/cortex applies
+	// DefaultLocalMemoryLimitMB for a local install, none anywhere else.
+	LimitMB int `yaml:"limit_mb" json:"limit_mb"`
+}
+
+// DefaultLocalMemoryLimitMB is the soft memory limit a local install uses
+// when the config carries no memory block. The default must be COMPUTED
+// (MemoryLimitBytes), never written into a stored *Config: the reloader
+// compares the active config against a fresh disk load on every reload, so a
+// boot-time cfg.Memory assignment would refuse every reload on a local
+// install. Same shape as ArchiveRunsOnLocalInstall — a method, not state.
+const DefaultLocalMemoryLimitMB = 2048
+
+// MemoryLimitBytes reports the configured soft limit in bytes, or 0 for off.
+// A nil memory block on a local install defaults to
+// DefaultLocalMemoryLimitMB; anywhere else it is off. localInstall is a
+// parameter because the binary, not the file, knows it.
+func (c *Config) MemoryLimitBytes(localInstall bool) int64 {
+	if c.Memory != nil {
+		if c.Memory.LimitMB <= 0 {
+			return 0
+		}
+		return int64(c.Memory.LimitMB) << 20
+	}
+	if localInstall {
+		return int64(DefaultLocalMemoryLimitMB) << 20
+	}
+	return 0
 }
 
 // TLSBridgeConfig configures the outbound TLS bridge (TLS termination of

@@ -584,9 +584,10 @@ func (m *model) selectedEventRow() (eventRow, bool) {
 // buildEventRows turns the chronological event slice into display rows, one
 // per network message. The only folding is the TLS-bridge CONNECT pair: a
 // tunnel-open event (opaque, host:port) immediately followed by the decrypted
-// inner request for the same host is rendered as a single row keyed on the
-// inner request, with the tunnel attached for the detail pane. A non-bridged
-// (passthrough) tunnel has no inner request following it, so it stands as its
+// inner row for the same host — a request, or a denial when a plugin rejected
+// it before any request row — is rendered as a single row keyed on the
+// inner row, with the tunnel attached for the detail pane. A non-bridged
+// (passthrough) tunnel has no inner row following it, so it stands as its
 // own row — it IS the whole message.
 func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 	closed := closedTunnels(events)
@@ -654,19 +655,33 @@ func closedTunnels(events []pipeline.SessionEvent) map[string]bool {
 // host-part (port-insensitive) handles both the standard-443 case (inner host
 // = "example.com") and the non-standard case (inner host = "example.com:8443").
 //
+// A redirected inner request also folds: a plugin (inference-router) may have
+// moved it to another host after decryption, so inner.Host is the dial target
+// and the host the client named — the CONNECT's target — is RequestedHost.
+//
 // Two guards keep unrelated events from folding:
-//   - inner must be another outbound REQUEST, never a response, so a plain
-//     request→response exchange isn't mistaken for a bridged pair.
+//   - inner must be another outbound REQUEST or DENIAL, never a response, so a
+//     plain request→response exchange isn't mistaken for a bridged pair. A
+//     denial folds too: the proxy defers a bridged open and records it with
+//     whichever row comes first, and a pipeline plugin's Reject can land
+//     first.
 //   - inner must NOT itself be a tunnel-open (Tunnel marker). Two back-to-back
 //     passthrough CONNECTs to the same host (common with connection pooling)
 //     would otherwise fold — hiding one real message and mislabeling the other.
 func isBridgedInner(tunnel, inner *pipeline.SessionEvent) bool {
+	if inner.Direction != pipeline.Outbound ||
+		(inner.Phase != pipeline.SessionRequest && inner.Phase != pipeline.SessionDenied) ||
+		isTunnelOpen(inner) {
+		return false
+	}
 	host := hostOnly(inner.Host)
-	return inner.Direction == pipeline.Outbound &&
-		inner.Phase == pipeline.SessionRequest &&
-		!isTunnelOpen(inner) &&
-		host != "" &&
-		host == hostOnly(tunnel.Host)
+	if host != "" && host == hostOnly(tunnel.Host) {
+		return true
+	}
+	// RequestedHost is present only when a redirect moved the request, so this
+	// arm cannot fold an unredirected request onto someone else's tunnel.
+	return inner.RequestedHost != "" &&
+		hostOnly(inner.RequestedHost) == hostOnly(tunnel.Host)
 }
 
 // hostOnly returns the host portion of a "host:port" string, or the input
