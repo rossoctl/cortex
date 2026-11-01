@@ -17,7 +17,8 @@
 #   - kubectl, kind, podman/docker, python3 + PyYAML
 
 .PHONY: help build-images build-agentop load-images deploy \
-        patch-config demo-ibac show-result undeploy \
+        patch-config demo-ibac show-result undeploy restart \
+        chat chat-unprotected \
         logs-agent logs-evil preflight wait-pods
 
 # `make` with no target prints help — easier discoverability than the
@@ -27,9 +28,11 @@
 help:  ## Show this menu (default)
 	@printf "\nIBAC demo — operator-injected agent in rossoctl's team1 namespace.\n\n"
 	@printf "Typical run:\n"
-	@printf "  \033[1mmake demo-ibac\033[0m\n"
-	@printf "  ... chat with email-agent in the rossoctl UI ...\n"
-	@printf "  \033[1mmake show-result\033[0m\n"
+	@printf "  \033[1mmake demo-ibac\033[0m          deploy both agents\n"
+	@printf "  \033[1mmake show-result\033[0m        agentop (run it in two terminals, one per agent)\n"
+	@printf "  \033[1mmake chat\033[0m               the attack, IBAC on: blocked\n"
+	@printf "  \033[1mmake chat-unprotected\033[0m   the attack, IBAC off: inbox exfiltrated\n"
+	@printf "  \033[1mmake logs-evil\033[0m          what reached the attacker\n"
 	@printf "  \033[1mmake undeploy\033[0m\n\n"
 	@printf "Targets:\n"
 	@awk 'BEGIN { FS = ":.*## " } \
@@ -47,6 +50,8 @@ KIND_CLUSTER_NAME ?= rossoctl
 KIND_NODE         ?= $(KIND_CLUSTER_NAME)-control-plane
 NAMESPACE         ?= team1
 AGENT_NAME        ?= email-agent
+# The unprotected twin: same agent and sidecar, never patched with IBAC.
+TWIN_NAME         := email-agent-unprotected
 
 # Container runtime auto-detect.
 CONTAINER_RUNTIME ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
@@ -160,9 +165,10 @@ deploy:  ## Apply manifests; rollout-restart only if load-images actually loaded
 	kubectl apply -f k8s/email-server.yaml
 	kubectl apply -f k8s/evil-server.yaml
 	kubectl apply -f k8s/agent.yaml
+	kubectl apply -f k8s/agent-unprotected.yaml
 	@if [ -f $(LOAD_MARKER) ]; then \
 	  echo "[*] Image content changed — rolling restart"; \
-	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent; \
+	  kubectl -n $(NAMESPACE) rollout restart deploy/ibac-email-server deploy/ibac-evil-server deploy/email-agent deploy/$(TWIN_NAME); \
 	  rm -f $(LOAD_MARKER); \
 	else \
 	  echo "[*] No image changes this run — skip rollout restart."; \
@@ -173,61 +179,75 @@ wait-pods:  ## Wait for pods + operator-rendered authbridge ConfigMap
 	@echo "[*] Waiting for ibac-email-server and ibac-evil-server ..."
 	kubectl -n $(NAMESPACE) wait --for=condition=Available --timeout=120s \
 	  deploy/ibac-email-server deploy/ibac-evil-server
-	@echo "[*] Waiting for the operator to admit the agent pod and create the authbridge ConfigMap ..."
-	@for i in $$(seq 1 60); do \
-	  if kubectl -n $(NAMESPACE) get configmap authbridge-config-$(AGENT_NAME) >/dev/null 2>&1; then \
-	    echo "    ✓ authbridge-config-$(AGENT_NAME) present"; \
-	    break; \
-	  fi; \
-	  sleep 2; \
+	@echo "[*] Waiting for the operator to admit the agent pods and create their authbridge ConfigMaps ..."
+	@for agent in $(AGENT_NAME) $(TWIN_NAME); do \
+	  kubectl -n $(NAMESPACE) rollout status deploy/$$agent --timeout=180s || exit 1; \
+	  for i in $$(seq 1 60); do \
+	    if kubectl -n $(NAMESPACE) get configmap authbridge-config-$$agent >/dev/null 2>&1; then \
+	      echo "    ✓ authbridge-config-$$agent present"; \
+	      break; \
+	    fi; \
+	    sleep 2; \
+	  done; \
+	  kubectl -n $(NAMESPACE) get configmap authbridge-config-$$agent >/dev/null 2>&1 || { \
+	    echo "ERROR: operator did not create authbridge-config-$$agent within 120s"; \
+	    echo "       Check the agent pod state:"; \
+	    kubectl -n $(NAMESPACE) get pods -l app.kubernetes.io/name=$$agent; \
+	    exit 1; \
+	  }; \
 	done
-	@kubectl -n $(NAMESPACE) get configmap authbridge-config-$(AGENT_NAME) >/dev/null 2>&1 || { \
-	  echo "ERROR: operator did not create authbridge-config-$(AGENT_NAME) within 120s"; \
-	  echo "       Check the agent pod state:"; \
-	  kubectl -n $(NAMESPACE) get pods -l app.kubernetes.io/name=$(AGENT_NAME); \
-	  exit 1; \
-	}
 
-patch-config:  ## Add a2a-parser + ibac to the rendered authbridge ConfigMap (and wait for hot-reload)
+# The operator re-renders authbridge-config-<agent> every time it admits the
+# agent's pod, so this must run after the last pod (re)start — `make restart`
+# does both. The twin gets the same parsers without ibac, so agentop shows
+# the two agents' traffic the same way and they differ only where IBAC acts.
+patch-config:  ## Add the IBAC pipeline to email-agent and the parsers alone to the twin (waits for hot-reload)
 	bash scripts/patch-ibac-config.sh $(NAMESPACE) $(AGENT_NAME)
+	bash scripts/patch-ibac-config.sh $(NAMESPACE) $(TWIN_NAME) k8s/parsers-patch.yaml
+
+restart:  ## Restart both agents, then re-patch (after a cluster restart, or when a sidecar hangs)
+	kubectl -n $(NAMESPACE) rollout restart deploy/$(AGENT_NAME) deploy/$(TWIN_NAME)
+	$(MAKE) wait-pods patch-config
+
+# ---------- Chat ----------
+
+chat:  ## Send "Summarize my emails." to email-agent (IBAC blocks the exfiltration)
+	bash scripts/chat.sh $(NAMESPACE) $(AGENT_NAME) with-ibac-$$(date +%H%M%S)
+
+chat-unprotected:  ## Send the same message to email-agent-unprotected (the inbox reaches ibac-evil-server)
+	bash scripts/chat.sh $(NAMESPACE) $(TWIN_NAME) no-ibac-$$(date +%H%M%S)
 
 # ---------- Top-level demo + result rendering ----------
 
-demo-ibac: preflight build-images load-images deploy patch-config  ## Build, load, deploy the demo end-to-end and print next-steps banner
+demo-ibac: preflight build-images load-images deploy patch-config  ## Build, load, deploy both agents end to end and print the walkthrough
 	@echo
-	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║ ✅ IBAC demo agent ready                                 ║"
-	@echo "║                                                          ║"
-	@echo "║ Open the rossoctl UI:                                     ║"
-	@echo "║   http://rossoctl-ui.localtest.me:8080                    ║"
-	@echo "║                                                          ║"
-	@echo "║ Pick email-agent from the Agents list, then chat:        ║"
-	@echo "║                                                          ║"
-	@echo "║   \"Summarize my emails.\"                                 ║"
-	@echo "║                                                          ║"
-	@echo "║ The agent will attempt the email-poison attack and IBAC  ║"
-	@echo "║ will block the exfiltration. The chat response relays    ║"
-	@echo "║ the platform's verbatim 403 body — including the LLM     ║"
-	@echo "║ judge's reasoning — without any agent-fabricated framing.║"
-	@echo "║                                                          ║"
-	@echo "║ Then run:                                                ║"
-	@echo "║                                                          ║"
-	@echo "║   make show-result                                       ║"
-	@echo "║                                                          ║"
-	@echo "║ to see the pipeline-level forensic.                      ║"
-	@echo "╚══════════════════════════════════════════════════════════╝"
+	@echo "✅ IBAC demo ready: email-agent (IBAC on) and email-agent-unprotected (IBAC off)."
+	@echo
+	@echo "  1. Terminal A:  make show-result   → team1 → email-agent-…"
+	@echo "     Terminal B:  make show-result   → team1 → email-agent-unprotected-…"
+	@echo "  2. Terminal C:  make chat              # blocked: 'Tool call blocked by platform'"
+	@echo "                  make chat-unprotected  # an ordinary summary"
+	@echo "  3. In A and B, Enter on the new session (with-ibac-… / no-ibac-…):"
+	@echo "     the ibac-evil-server row is 'deny ibac 403' in A, '— 200' in B."
+	@echo "  4. make logs-evil   # the inbox, staging password included, from B only"
+	@echo
+	@echo "Walkthrough and troubleshooting: README.md"
 
-show-result: build-agentop  ## Launch agentop against the agent's session API (interactive TUI)
+show-result: build-agentop  ## Launch agentop on the cluster: pick team1, then an agent pod
 	bash scripts/launch-agentop.sh $(NAMESPACE) $(AGENT_NAME)
 
 # ---------- Cleanup ----------
 
 undeploy:  ## Remove demo resources from team1 (rossoctl install untouched)
+	-kubectl -n $(NAMESPACE) delete pod ibac-chat --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/agent.yaml --ignore-not-found
+	-kubectl -n $(NAMESPACE) delete -f k8s/agent-unprotected.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/email-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete -f k8s/evil-server.yaml --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(AGENT_NAME) --ignore-not-found
 	-kubectl -n $(NAMESPACE) delete secret -l rossoctl.io/client-name=$(AGENT_NAME) --ignore-not-found
+	-kubectl -n $(NAMESPACE) delete configmap authbridge-config-$(TWIN_NAME) --ignore-not-found
+	-kubectl -n $(NAMESPACE) delete secret -l rossoctl.io/client-name=$(TWIN_NAME) --ignore-not-found
 	@rm -rf $(STAMP_DIR)
 	@echo "[*] Demo resources removed from $(NAMESPACE)."
 	@echo "    The rossoctl install + the namespace itself are untouched."
@@ -240,5 +260,5 @@ logs-agent:  ## Tail agent + authbridge sidecar logs
 	@echo "--- authbridge ---"
 	kubectl -n $(NAMESPACE) logs deploy/$(AGENT_NAME) -c authbridge-proxy --tail=100
 
-logs-evil:  ## Tail evil-server logs (empty when IBAC is working)
+logs-evil:  ## Tail evil-server logs (empty after email-agent; the inbox after email-agent-unprotected)
 	kubectl -n $(NAMESPACE) logs deploy/ibac-evil-server --tail=50

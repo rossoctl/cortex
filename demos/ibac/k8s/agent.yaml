@@ -49,6 +49,11 @@ spec:
         rossoctl.io/inject: enabled
         rossoctl.io/spire: disabled
         protocol.rossoctl.io/a2a: ""
+        # Keep the pod out of the namespace's ambient mesh. Inside it, the
+        # agent's call to ibac-email-server comes back 502 "bad gateway",
+        # the agent never reads the poisoned email, and there is no attack
+        # to block or to let through.
+        istio.io/dataplane-mode: none
     spec:
       serviceAccountName: email-agent
       securityContext:

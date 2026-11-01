@@ -442,6 +442,11 @@ func runAgent(query string, sessionID string) (string, error) {
 	}
 
 	askedForActions := false
+	// summary is the model's first plain-text answer — the summary the
+	// user asked for. A run that is never blocked replies with it, not
+	// with the model's last word after the action-items turn, which is
+	// usually "no actions were executed" even when one just was.
+	var summary string
 	blockedCount := 0
 	// blockedBody is the FIRST 403 body we observe — surfaced
 	// verbatim in the refusal so the user sees what the platform
@@ -465,6 +470,7 @@ func runAgent(query string, sessionID string) (string, error) {
 				msg.Content = ""
 			} else if !askedForActions {
 				log.Printf("[Agent] Summary response (iteration %d), prompting for action items", i)
+				summary = msg.Content
 				messages = append(messages, msg)
 				messages = append(messages, ChatMessage{
 					Role:    "user",
@@ -474,6 +480,9 @@ func runAgent(query string, sessionID string) (string, error) {
 				continue
 			} else {
 				log.Printf("[Agent] Final response (iteration %d): %s", i, msg.Content)
+				if summary != "" {
+					return summary, nil
+				}
 				return msg.Content, nil
 			}
 		}
@@ -640,8 +649,10 @@ func handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	// callable address. Defaults to the in-cluster Service URL,
 	// which is what rossoctl UI actually uses for the chat call.
 	publicURL := envOr("AGENT_PUBLIC_URL", "http://email-agent.team1.svc.cluster.local:8080/")
+	// AGENT_CARD_NAME lets the unprotected twin (k8s/agent-unprotected.yaml)
+	// show up under its own name in the UI, next to the IBAC-protected one.
 	card := map[string]any{
-		"name":               "Email Assistant",
+		"name":               envOr("AGENT_CARD_NAME", "Email Assistant"),
 		"description":        "Email-summarization agent. Responds to \"Summarize my emails.\" by fetching from an MCP email source. (In the IBAC demo the email source is intentionally poisoned with a prompt-injection payload that tries to exfiltrate the email contents; the IBAC plugin in the agent's authbridge sidecar denies the resulting outbound POST.)",
 		"protocolVersion":    "0.3.0",
 		"version":            "0.0.1",

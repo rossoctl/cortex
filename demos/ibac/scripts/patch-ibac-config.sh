@@ -2,7 +2,13 @@
 # Patch the operator-rendered authbridge ConfigMap to add the IBAC
 # pipeline (a2a-parser inbound + mcp-parser + ibac outbound).
 #
-# Usage: patch-ibac-config.sh <namespace> <agent-name>
+# Usage: patch-ibac-config.sh <namespace> <agent-name> [patch-file]
+#
+# patch-file defaults to k8s/ibac-patch.yaml; the unprotected twin is
+# patched with k8s/parsers-patch.yaml (the parsers, no ibac).
+#
+# The operator re-renders the ConfigMap whenever it admits the agent's
+# pod, which drops these additions: re-run after every pod restart.
 #
 # The rossoctl operator creates `authbridge-config-<agent>` when the
 # agent's pod is admitted (server-side apply, line 682 of pod_mutator.go).
@@ -28,7 +34,7 @@ NAMESPACE=${1:-team1}
 AGENT_NAME=${2:-email-agent}
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 DEMO_DIR=$(dirname "$SCRIPT_DIR")
-PATCH_FILE="$DEMO_DIR/k8s/ibac-patch.yaml"
+PATCH_FILE=${3:-$DEMO_DIR/k8s/ibac-patch.yaml}
 CM_NAME="authbridge-config-$AGENT_NAME"
 
 if ! python3 -c 'import yaml' 2>/dev/null; then
@@ -57,7 +63,7 @@ fi
 # Implemented as a separate .py file rather than an inline heredoc
 # because heredoc + piped stdin clash — python3 with `<<EOF` reads
 # its script from the heredoc, which silently drops the kubectl pipe.
-echo "[*] Merging IBAC additions into $CM_NAME ..."
+echo "[*] Merging $(basename "$PATCH_FILE") into $CM_NAME ..."
 CURRENT_YAML=$(
   kubectl -n "$NAMESPACE" get configmap "$CM_NAME" \
       -o jsonpath='{.data.config\.yaml}'
@@ -79,7 +85,7 @@ fi
 # swap event that will never fire — kubectl apply is a no-op, kubelet
 # has nothing to sync, the reloader sees no fs event.
 if [[ "$CURRENT_YAML" == "$MERGED_YAML" ]]; then
-  echo "[*] $CM_NAME already contains IBAC config — nothing to patch."
+  echo "[*] $CM_NAME already contains $(basename "$PATCH_FILE") — nothing to patch."
   echo "[*] Active plugins:"
   printf '%s' "$CURRENT_YAML" | python3 -c '
 import yaml, sys
