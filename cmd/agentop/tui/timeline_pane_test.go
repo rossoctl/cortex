@@ -1052,16 +1052,70 @@ func TestTimelineWaits_MainDefaultsToYouExceptAfterALostTool(t *testing.T) {
 	}
 }
 
-// A background job the main agent left running is waiting on subagents, not on the user.
-func TestTimelineWaits_BackgroundJobIsNotTheUsersTime(t *testing.T) {
+// A background job is a tool still running, and its agent is never waiting on the user while
+// one is: it is drawn as tools, not as waiting on subagents, which has a row to point at.
+func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
 	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1190), End: tlPtr(1400), Seq: 29}}
 	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
-	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.subs, 1) {
-		t.Errorf("while the job ran: %+v, want waiting on subagents", c)
+	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.tool, 1) {
+		t.Errorf("while the job ran: %+v, want tools", c)
 	}
 	if c := lay.agents[0].cells[cellOf(t, lay, 1450)]; !near(c.user, 1) {
 		t.Errorf("after the job's notification: %+v, want waiting on the user", c)
+	}
+	// It is in the tools total too, by what the bar gives it: the job's first 10s fall inside the
+	// reply that ends at 1200s, so those are the model's, not tools'.
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	if got := lay.agents[0].toolTime - without; got != 200*time.Second {
+		t.Errorf("tools total grew by %v, want the job's 200s outside the reply", got)
+	}
+}
+
+// A job left running through a reply does not hide the model: the model claims its own time and
+// the job takes what is left.
+func TestTimelineWaits_BackgroundJobDoesNotHideTheModel(t *testing.T) {
+	tl := sampleTimeline() // main's turn 960-1200s, then the user answers at 1500s
+	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1150), End: tlPtr(1300), Seq: 29}}
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	if c := lay.agents[0].cells[cellOf(t, lay, 1170)]; !near(c.model, 1) || !near(c.tool, 0) {
+		t.Errorf("job through a turn: %+v, want model only", c)
+	}
+	if c := lay.agents[0].cells[cellOf(t, lay, 1250)]; !near(c.tool, 1) {
+		t.Errorf("job after the turn: %+v, want tools", c)
+	}
+	// The tools total counts the time the bar gives the job: its 50s inside the reply is the
+	// model's.
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	if got := lay.agents[0].toolTime - without; got != 100*time.Second {
+		t.Errorf("tools total grew by %v, want the job's 100s outside the reply", got)
+	}
+}
+
+// A collapsed idle stretch is three cells sharing one span, and only the middle one is drawn: a
+// job inside it belongs in the tools total once.
+func TestTimelineWaits_BackgroundJobInACollapsedGapCountedOnce(t *testing.T) {
+	tl := &timeline.Timeline{
+		Start: tlAt(0), End: tlAt(7360),
+		Agents: []timeline.Agent{{ID: timeline.MainAgent, Label: "main"}},
+		Turns: []timeline.Turn{
+			{Agent: timeline.MainAgent, Start: tlAt(10), End: tlPtr(60), Finish: "end_turn", Seq: 1},
+			{Agent: timeline.MainAgent, Start: tlAt(7300), End: tlPtr(7360), Finish: "end_turn", Seq: 40},
+		},
+		Jobs: []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(120), End: tlPtr(5000), Seq: 2}},
+	}
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 40, tlAt(7360))
+	markers := 0
+	for _, c := range lay.axis.cells {
+		if c.marker {
+			markers++
+		}
+	}
+	if markers == 0 {
+		t.Fatalf("axis has no collapsed gap, so this test reads nothing")
+	}
+	if got := lay.agents[0].toolTime; got != 4880*time.Second {
+		t.Errorf("tools total = %v, want the job's 4880s once", got)
 	}
 }
 
