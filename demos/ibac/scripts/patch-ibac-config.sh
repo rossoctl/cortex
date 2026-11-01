@@ -1,6 +1,7 @@
 #!/bin/bash
-# Patch the operator-rendered authbridge ConfigMap to add the IBAC
-# pipeline (a2a-parser inbound + mcp-parser + ibac outbound).
+# Patch the operator-rendered authbridge ConfigMap to add the plugins
+# in [patch-file] (by default the IBAC pipeline: a2a-parser inbound,
+# inference-parser + mcp-parser + ibac outbound).
 #
 # Usage: patch-ibac-config.sh <namespace> <agent-name> [patch-file]
 #
@@ -16,7 +17,7 @@
 # `token-exchange` outbound. This script:
 #
 #   1. Extracts the operator's config.yaml from the ConfigMap
-#   2. Reads our additions from k8s/ibac-patch.yaml
+#   2. Reads our additions from the patch file
 #   3. Merges them via python3 + PyYAML (PyYAML is widely available;
 #      we error out with an actionable hint if it's missing)
 #   4. Replaces the ConfigMap's data.config.yaml with the merged version

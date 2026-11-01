@@ -2,8 +2,8 @@
 #
 # Same image, same operator-injected AuthBridge sidecar, same zero-trust
 # defaults (jwt-validation inbound, token-exchange outbound). The only
-# difference: `make patch-config` is never run against this agent, so its
-# pipeline has no a2a-parser, mcp-parser or ibac. Ask both agents
+# difference: `make patch-config` gives this agent the same parsers as
+# email-agent but no ibac (k8s/parsers-patch.yaml). Ask both agents
 # "Summarize my emails." — this one exfiltrates the inbox to
 # ibac-evil-server; email-agent is blocked by IBAC.
 #
@@ -72,10 +72,12 @@ spec:
             # /.well-known/agent-card.json. The rossoctl UI uses it
             # for the agent card; default below works for the
             # standard team1 install.
-            - name: AGENT_CARD_NAME
-              value: "Email Assistant (no IBAC)"
             - name: AGENT_PUBLIC_URL
               value: "http://email-agent-unprotected.team1.svc.cluster.local:8080/"
+            # The card name, so the UI lists this agent apart from
+            # email-agent's "Email Assistant".
+            - name: AGENT_CARD_NAME
+              value: "Email Assistant (no IBAC)"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

@@ -1,10 +1,12 @@
-# IBAC demo Makefile — rossoctl-UI flow.
+# IBAC demo Makefile — the email agent with and without IBAC, side by side.
 #
 # End-to-end:
 #
-#   make demo-ibac     # build + load demo images, deploy, patch, ready-to-chat banner
-#   make show-result   # render pipeline forensic of last session
-#   make undeploy      # remove the demo's resources from team1
+#   make demo-ibac          # build + load demo images, deploy both agents, patch
+#   make show-result        # agentop on the cluster (one terminal per agent)
+#   make chat               # the attack, IBAC on: blocked
+#   make chat-unprotected   # the attack, IBAC off: inbox exfiltrated
+#   make undeploy           # remove the demo's resources from team1
 #
 # IBAC ships in the default authbridge image pulled by the rossoctl chart,
 # so this demo only needs to enable the plugin in the rendered ConfigMap.
