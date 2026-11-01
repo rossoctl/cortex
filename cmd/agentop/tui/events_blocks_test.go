@@ -281,6 +281,37 @@ func TestBlocks_MembersNumberFromOneInsideTheBlock(t *testing.T) {
 	}
 }
 
+// Two of one subagent's exchanges that overlap (A starts, B starts, A ends, B
+// ends) keep their pairing: each row carries its own exchange's block-local
+// number, not the count of exchanges seen before it.
+func TestBlocks_OverlappingExchangesKeepTheirNumbers(t *testing.T) {
+	ev := func(id string, phase pipeline.SessionPhase) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id, Subagent: "a1"}
+	}
+	events := []pipeline.SessionEvent{
+		ev("a1.1", pipeline.SessionRequest), ev("a1.2", pipeline.SessionRequest),
+		ev("a1.1", pipeline.SessionResponse), ev("a1.2", pipeline.SessionResponse),
+	}
+	m := newBlockModel(t, events)
+	m.subagentOpen = map[string]bool{"a1": true}
+	m.rebuildEventsTable()
+
+	rows := m.eventsTbl.Rows()
+	if len(rows) != 5 {
+		t.Fatalf("expanded rows = %d, want 5 (header + 4)", len(rows))
+	}
+	var got []string
+	for _, r := range rows[1:] {
+		got = append(got, r[0])
+	}
+	if want := []string{"1", "2", "1", "2"}; !slices.Equal(got, want) {
+		t.Errorf("# cells = %v, want %v", got, want)
+	}
+	if h := rows[0][0]; !strings.Contains(h, "2 msgs") {
+		t.Errorf("header = %q, want 2 msgs", h)
+	}
+}
+
 // Enter on a message row is still the detail drill-down; only headers toggle.
 func TestBlocks_EnterOnAMessageOpensDetail(t *testing.T) {
 	m := newBlockModel(t, blockEvents())

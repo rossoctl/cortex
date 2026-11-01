@@ -201,15 +201,17 @@ func (m *model) rebuildEventsTable() {
 		if blockIDs == nil {
 			blockIDs = make(map[*pipeline.SessionEvent]int)
 		}
-		seen := make(map[int]bool, len(b.rows))
+		local := make(map[int]int, len(b.rows))
 		for _, j := range b.rows {
 			e := ctxs[j].row.event
-			if !seen[ids[e]] {
-				seen[ids[e]] = true
+			n, ok := local[ids[e]]
+			if !ok {
+				n = len(local) + 1
+				local[ids[e]] = n
 			}
-			blockIDs[e] = len(seen)
+			blockIDs[e] = n
 		}
-		b.msgs = len(seen)
+		b.msgs = len(local)
 	}
 	for i := range ctxs {
 		ctxs[i].blockIDs = blockIDs
