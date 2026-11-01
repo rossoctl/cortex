@@ -4,7 +4,7 @@
 # Since agentop now ships with a built-in Namespaces → Pods picker that
 # spawns its own kubectl port-forward, this script is a thin wrapper
 # that just verifies prerequisites and runs the binary. The picker
-# discovers the agent automatically; the user picks team1/email-agent.
+# discovers the agents automatically; the user picks team1, then a pod.
 
 set -euo pipefail
 
@@ -31,4 +31,6 @@ if ! kubectl -n "$NAMESPACE" get deploy "$AGENT_NAME" >/dev/null 2>&1; then
 fi
 
 # 3. Run agentop. The picker handles port-forward setup + teardown.
-"$AGENTOP_BIN"
+#    --kubernetes: without it, a Cortex installed on this machine answers
+#    first and agentop shows the laptop's sessions instead of the cluster's.
+"$AGENTOP_BIN" observe --kubernetes
