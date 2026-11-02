@@ -273,7 +273,7 @@ func TestDetailFolds_BackFromAPluginRedrawsTheEvent(t *testing.T) {
 	if !strings.Contains(detailScreen(m), "▌         \"content\": \"this turn's input\"") {
 		t.Errorf("the cursor line is not on screen:\n%s", detailScreen(m))
 	}
-	for _, k := range []tea.KeyMsg{keyRune('f'), keyRune('b'), {Type: tea.KeyPgDown}} {
+	for _, k := range []tea.KeyMsg{keyRune('G'), keyRune('f'), keyRune('b'), {Type: tea.KeyPgDown}} {
 		m.Update(k)
 	}
 }
