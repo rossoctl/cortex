@@ -282,8 +282,10 @@ func TestSaveUserConfig_LeavesNoTempFile(t *testing.T) {
 	if err := saveUserConfig(path, tui.UserSettings{Usage: tui.UsageSettings{Metric: "x"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("tempfile survived the save (stat err = %v)", err)
+	// The temp name is CreateTemp's (".<base>.<random>.tmp"), so the check is a
+	// directory glob: a stat of a fixed path+".tmp" sees nothing either way.
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")); len(left) > 0 {
+		t.Errorf("tempfile survived the save: %v", left)
 	}
 }
 

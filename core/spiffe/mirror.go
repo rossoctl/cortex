@@ -39,6 +39,14 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		cleanup()
 		return fmt.Errorf("atomicWrite: chmod %s: %w", tmpName, err)
 	}
+	// Sync before the rename, so a crash never leaves an empty SVID file for
+	// an external reader; the next rotation would fix it, but need not be
+	// the one that has to.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("atomicWrite: sync %s: %w", tmpName, err)
+	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
 		return fmt.Errorf("atomicWrite: close %s: %w", tmpName, err)

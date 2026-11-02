@@ -139,6 +139,11 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 	if _, err = writeAll(f, fileHeader); err == nil {
 		_, err = writeAll(f, body)
 	}
+	// Sync before the rename, so a crash cannot leave the renamed settings
+	// file empty and the next start reporting a malformed config.
+	if err == nil {
+		err = f.Sync()
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
