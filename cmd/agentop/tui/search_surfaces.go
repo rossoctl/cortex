@@ -189,7 +189,14 @@ func (s detailSurface) reveal(row int) {
 	s.docSurface.reveal(row)
 }
 
+func (s detailSurface) spot() searchSpot {
+	sp := s.docSurface.spot()
+	sp.path = s.m.detailCursorPath
+	return sp
+}
+
 func (s detailSurface) restore(sp searchSpot) {
+	s.m.detailCursorPath = sp.path
 	s.doc.clearCurrent()
 	s.redraw()
 	s.vp.SetYOffset(sp.yOffset)

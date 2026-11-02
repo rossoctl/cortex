@@ -595,6 +595,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			} else {
 				m.pane = paneSessions
 			}
+			// A plugin opened from here drew into detailDoc and detailVp, which the event
+			// detail pane shares.
+			if m.pane == paneDetail && m.detailEvent != nil {
+				m.showDetail(m.detailRow, false)
+				m.moveDetailCursor(m.detailDoc.cursor)
+			}
 		case paneDetail:
 			m.pane = paneEvents
 		case paneEvents:

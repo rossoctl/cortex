@@ -49,12 +49,15 @@ func newSearchInput() textinput.Model {
 // chronological table, the predicate rebuildEventsTable tail-follows on. That cursor's place
 // is "the newest row" rather than the event that was newest at `/` — events keep streaming
 // while the prompt is open, and putting it back on that event would stop it following them.
+//
+// path is the event detail pane's cursor node.
 type searchSpot struct {
 	row     int
 	sess    string
 	event   eventKey
 	tail    bool
 	yOffset int
+	path    string
 }
 
 // searchSurface is how the search reaches a pane. A line is a table row, or a drawn line of

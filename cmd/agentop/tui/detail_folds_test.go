@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -238,5 +239,83 @@ func TestFatTurn_AllOpenShowsTheBigMessage(t *testing.T) {
 	m.renderDetail()
 	if n := len(m.detailLines); n < 1595 {
 		t.Fatalf("the big message did not open: %d lines", n)
+	}
+}
+
+// The plugin detail pane draws into the event detail pane's document. `P` from the event
+// detail, a plugin, then esc twice lands back on the event, which must draw itself again.
+func TestDetailFolds_BackFromAPluginRedrawsTheEvent(t *testing.T) {
+	m := openTurnDetail(t)
+	m.client = deadClient()
+	m.detailVp.Height = 4
+	cursorTo(t, m, "this turn's input")
+	m.pipeline = &apiclient.PipelineView{Outbound: []apiclient.PipelinePlugin{*prunePluginWithTools(0)}}
+	m.handleKey(keyRune('P'))
+	rows := m.pipelineTbl.Rows()
+	for i := range rows {
+		if !isDividerRow(rows, i) {
+			setCursorVisible(&m.pipelineTbl, i)
+			break
+		}
+	}
+	press(m, tea.KeyEnter)
+	if m.pane != panePluginDetail {
+		t.Fatalf("setup: Enter on the pipeline left pane %v", m.pane)
+	}
+	press(m, tea.KeyEsc)
+	press(m, tea.KeyEsc)
+	if m.pane != paneDetail {
+		t.Fatalf("esc from the pipeline left pane %v, want detail", m.pane)
+	}
+	if strings.Contains(detailScreen(m), "Plugin:") {
+		t.Errorf("the event detail pane shows the plugin:\n%s", detailScreen(m))
+	}
+	if !strings.Contains(detailScreen(m), "▌         \"content\": \"this turn's input\"") {
+		t.Errorf("the cursor line is not on screen:\n%s", detailScreen(m))
+	}
+	for _, k := range []tea.KeyMsg{keyRune('f'), keyRune('b'), {Type: tea.KeyPgDown}} {
+		m.Update(k)
+	}
+}
+
+// Esc on the search prompt puts the cursor back where it was at `/`, as it does the scroll.
+func TestDetailFolds_EscOnTheSearchPutsTheCursorBack(t *testing.T) {
+	for _, q := range []string{"/old-needle", "/no-such-text"} {
+		m := openTurnDetail(t)
+		cursorTo(t, m, `"model"`)
+		path := m.detailCursorPath
+		typeKeys(m, q)
+		press(m, tea.KeyEsc)
+		if m.detailCursorPath != path {
+			t.Errorf("%s then esc: cursor on %q, want %q", q, m.detailCursorPath, path)
+		}
+		if l := stripANSI(m.detailLines[m.detailDoc.cursor].text); !strings.Contains(l, `"model"`) {
+			t.Errorf("%s then esc: cursor line %q", q, l)
+		}
+	}
+}
+
+// The keys the viewport scrolled the pane with before it had a cursor move the cursor now.
+func TestDetailFolds_ViewportScrollKeysMoveTheCursor(t *testing.T) {
+	m := openTurnDetail(t)
+	cursorTo(t, m, "earlier message")
+	press(m, tea.KeyEnter)
+	cursorTo(t, m, "▸ user")
+	press(m, tea.KeyEnter)
+	m.detailVp.Height = 4
+	for _, c := range []struct {
+		key  tea.KeyMsg
+		down bool
+	}{
+		{tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}, true},
+		{keyRune('d'), true},
+		{tea.KeyMsg{Type: tea.KeyCtrlD}, true},
+		{tea.KeyMsg{Type: tea.KeyCtrlU}, false},
+	} {
+		before := m.detailDoc.cursor
+		m.Update(c.key)
+		if moved := m.detailDoc.cursor - before; (c.down && moved <= 0) || (!c.down && moved >= 0) {
+			t.Errorf("%q moved the cursor by %d", c.key.String(), moved)
+		}
 	}
 }

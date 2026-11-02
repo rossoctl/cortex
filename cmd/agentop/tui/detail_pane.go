@@ -169,7 +169,7 @@ func (m *model) toggleDetailFold() {
 // detailCursorKey moves the event detail pane's cursor for a motion key, and reports whether
 // msg was one.
 func (m *model) detailCursorKey(msg string) bool {
-	i, page := m.detailDoc.cursor, max(m.detailVp.Height-1, 1)
+	i, page, half := m.detailDoc.cursor, max(m.detailVp.Height-1, 1), max(m.detailVp.Height/2, 1)
 	switch msg {
 	case "up", "k":
 		i--
@@ -177,8 +177,12 @@ func (m *model) detailCursorKey(msg string) bool {
 		i++
 	case "pgup", "b":
 		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] - page)
-	case "pgdown", "pgdn", "f":
+	case "pgdown", "pgdn", "f", " ":
 		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + page)
+	case "ctrl+u":
+		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] - half)
+	case "d", "ctrl+d":
+		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + half)
 	case "g":
 		i = 0
 	case "G":
