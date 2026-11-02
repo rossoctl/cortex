@@ -62,9 +62,8 @@ type foldState struct {
 	all   bool
 }
 
-// foldChoice is Enter on a fold. An open holds. A close holds while query, the search in force
-// when the reader closed the fold, is the search in force or there is none: a new search opens
-// the closed folds that hold its matches, and no other.
+// foldChoice is Enter on a fold. An open holds. A close holds while query is the search in force
+// or there is none: a new search opens the closed folds that hold its matches, and no other.
 type foldChoice struct {
 	open  bool
 	query string
