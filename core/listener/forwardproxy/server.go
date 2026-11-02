@@ -513,8 +513,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// and a control rune forged into any of them would forge a log entry — the same
 		// CWE-150 shape #1539's egress guard was flagged for.
 		slog.Info("forward-proxy: destination refused by egress allow list",
-			"host", host,
-			"method", pipeline.SanitizeControlRunes(r.Method),
+			"host", pipeline.SanitizeLogValue(host),
+			"method", pipeline.SanitizeLogValue(r.Method),
 			"path", pipeline.SanitizeLogValue(r.URL.Path))
 		httpx.WriteRejection(w, action)
 		return
@@ -745,7 +745,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// Sanitized like the gate at the top of this function: both hosts are
 		// client-controlled (pctx.Host is the one the client named, pre-redirect).
 		slog.Info("forward-proxy: destination refused by egress allow list (redirect re-check)",
-			"host", host,
+			"host", pipeline.SanitizeLogValue(host),
 			"requested", pipeline.SanitizeLogValue(pctx.Host))
 		httpx.WriteRejection(w, action)
 		return
@@ -1158,13 +1158,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false
 		}
 		resp, err := s.TLSBridge.Upstream.Do(req)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 		}
@@ -1214,7 +1214,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		// HERE, because the connection is gone by the time anyone reads the log and no
 		// later process listing can attribute it.
 		args := []any{
-			"host", host,
+			"host", pipeline.SanitizeLogValue(host),
 			"reason", reason,
 			"client", clientAddr(client),
 			"error", err,
@@ -3011,7 +3011,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Sanitized like the serveOutbound refusal: host is client-controlled and
 		// lands in a log file.
 		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",
-			"host", host)
+			"host", pipeline.SanitizeLogValue(host))
 		httpx.WriteRejection(w, action)
 		return
 	}
