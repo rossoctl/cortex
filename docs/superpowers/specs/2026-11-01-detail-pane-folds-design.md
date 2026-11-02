@@ -62,8 +62,9 @@ A new file `cmd/agentop/tui/detail_tree.go` replaces the string builder in
 - **Control characters are escaped before display.** Today `strconv.Quote`
   escapes them, and a block must not lose that. A tool result can carry
   ANSI escape sequences, and a raw one would reach the terminal. Newline
-  splits lines. Tab becomes spaces. Every other control rune (C0, DEL, C1)
-  renders as its `\x..` / `\u....` escape in the punct style.
+  splits lines. Tab becomes four spaces. Every other rune that
+  `unicode.IsPrint` rejects renders as its `\u....` escape, as
+  `strconv.Quote` writes it.
 - **Clip.** A string with more than 5 lines or more than 1 KB shows its
   first 5 lines, cut to 1 KB, then one fold-head line:
   `… 1,590 more lines · 147 KB ▸`. Opening it shows the whole string.
@@ -99,7 +100,7 @@ message with role `assistant`.
   open, with no group.
 
 Inside the group, each message renders closed as one line:
-`▸ user · 147 KB · <first line of content, cut to the width>`.
+`▸ user · 147 KB · <first line of content, cut to 60 characters>`.
 An open message renders its fields, with its content clipped by section 2.
 
 This rule needs no other event. An agent loop sends the model's last reply,
@@ -112,7 +113,7 @@ the turn. Compaction and interleaved subagents do not change it.
   changed. A path not in the map uses its default.
 - Kept when `showDetail` re-renders for a resize, a search prompt, or the
   arrival of the full event (`applyDetailEvent`).
-- Cleared when the pane opens a different event (session or seq differs).
+- Cleared each time the pane is opened from Events.
 
 ### 6. Cursor
 
