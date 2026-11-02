@@ -493,8 +493,14 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	restartWait := 2*restartSec + 10*time.Second
 	limitWait := 2*time.Duration(burst)*restartSec + 10*time.Second
 
-	// A crash: the unit's own RestartSec brings it back.
-	pid := currentMainPID(systemdUnit)
+	// A crash: the unit's own RestartSec brings it back. The pid comes from
+	// unitMainPID, which never returns one below 1: kill(2) reads 0 as this
+	// process's own group, which holds `go test` too, so a failed read here would
+	// kill the run, skip every Cleanup and leave a real cortex.service enabled.
+	pid, ok := unitMainPID(t, systemdUnit, 5*time.Second)
+	if !ok {
+		t.Fatalf("no MainPID to kill; systemd says %+v", unit())
+	}
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 %d: %v", pid, err)
 	}

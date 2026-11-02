@@ -745,9 +745,15 @@ func reportUnitNotAnswering(p servicePaths, s unitState, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Cortex is stopped, but still enabled, so it starts again at the next login or boot.\n"+
 			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
 		return 1
+	// The two crash states name a foreign process holding the forward port, as
+	// reportNotAnswering does, and before the consequence (#1122). On Linux this
+	// is where that case lands: cortex exits 3 when it cannot bind, and
+	// Restart=on-failure loops it through auto-restart into failed. It never
+	// stays active long enough to reach the default branch below.
 	case s.active == "failed":
 		fmt.Fprintf(stdout, "Cortex is NOT running: systemd stopped restarting it (%s) after %d restart(s).\n",
 			s.result, s.restarts)
+		printHolderLines(p, stdout)
 		fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Fix the cause in the log, then:\n"+
 			"    agentop service restart\n"+
 			"  Last log lines:\n")
@@ -758,14 +764,15 @@ func reportUnitNotAnswering(p servicePaths, s unitState, stdout io.Writer) int {
 	case s.active == "activating" && s.sub == "auto-restart":
 		fmt.Fprintf(stdout, "Cortex is NOT running: it exited (%s) and systemd is restarting it (restart %d).\n",
 			s.result, s.restarts+1)
+		printHolderLines(p, stdout)
 		fmt.Fprintf(stdout, "  If this repeats, the log says why. Claude Code and OpenCode will fail meanwhile. Last log lines:\n")
 		for _, line := range lastLines(p.logFile, 5) {
 			fmt.Fprintf(stdout, "    %s\n", line)
 		}
 		return 1
 	}
-	// active but silent, or still starting: the case reportNotAnswering was
-	// written for, including a foreign process holding the port.
+	// Active but silent, or still starting. A foreign holder can show here too,
+	// but only in the moment between cortex starting and its bind failing.
 	reportNotAnswering(p, stdout)
 	return 1
 }
@@ -813,12 +820,19 @@ func proxyServing(p servicePaths) bool {
 // cause of this silence that no amount of restarting fixes (#1122).
 func reportNotAnswering(p servicePaths, stdout io.Writer) {
 	fmt.Fprintf(stdout, "Cortex is NOT answering %s\n", p.healthURL)
-	for _, line := range foreignHolderLines(p) {
-		fmt.Fprintf(stdout, "  %s\n", line)
-	}
+	printHolderLines(p, stdout)
 	fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Last log lines:\n")
 	for _, line := range lastLines(p.logFile, 5) {
 		fmt.Fprintf(stdout, "    %s\n", line)
+	}
+}
+
+// printHolderLines writes foreignHolderLines under a status headline, indented as
+// its detail. Every verdict that can follow a bind failure calls it, so none of
+// them drops the holder.
+func printHolderLines(p servicePaths, stdout io.Writer) {
+	for _, line := range foreignHolderLines(p) {
+		fmt.Fprintf(stdout, "  %s\n", line)
 	}
 }
 

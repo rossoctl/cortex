@@ -875,6 +875,66 @@ func TestReportUnitNotAnswering(t *testing.T) {
 	}
 }
 
+// A foreign process holding the forward port is named in every verdict that can
+// follow a failed bind, and named before the consequence, as #1122 asked. On
+// Linux cortex exits 3 when it cannot bind, and Restart=on-failure loops it
+// through auto-restart into failed, so those two branches are where this case
+// actually shows up. The table above uses a fixture with no forward address, so
+// no case in it could name a holder; that is why dropping the line passed.
+func TestReportUnitNotAnsweringNamesTheHolder(t *testing.T) {
+	const holder = "127.0.0.1:47600 is held by /usr/bin/python3 (pid 31337), not this Cortex"
+	for _, tc := range []struct {
+		name        string
+		state       unitState
+		consequence string // the line the holder must come before
+	}{
+		{"crashed, restart pending",
+			unitState{known: true, load: "loaded", active: "activating", sub: "auto-restart", enabled: "enabled", result: "exit-code", restarts: 3},
+			"If this repeats, the log says why."},
+		{"gave up after the start limit",
+			unitState{known: true, load: "loaded", active: "failed", sub: "failed", enabled: "enabled", result: "exit-code", restarts: 5},
+			"Fix the cause in the log, then:"},
+		{"active but silent",
+			unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"},
+			"will fail while this is true"},
+		{"systemd could not be asked", unitState{},
+			"will fail while this is true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := servicePathsFixture(t)
+			p.forwardAddr = "127.0.0.1:47600"
+			holderOnPort(t, "47600", 31337, "/usr/bin/python3")
+			var out bytes.Buffer
+			reportUnitNotAnswering(p, tc.state, &out)
+			s := out.String()
+			at, after := strings.Index(s, holder), strings.Index(s, tc.consequence)
+			switch {
+			case at < 0:
+				t.Errorf("the holder is not named:\n%s", s)
+			case after < 0:
+				t.Errorf("the consequence line is gone:\n%s", s)
+			case at > after:
+				t.Errorf("the holder is named after the consequence, not before it:\n%s", s)
+			}
+			if !strings.Contains(s, "kill 31337") {
+				t.Errorf("no remedy names the holder's pid:\n%s", s)
+			}
+		})
+	}
+
+	// A stopped Cortex is not failing to bind, so nothing is said about the port.
+	t.Run("stopped: nothing about the port", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		p.forwardAddr = "127.0.0.1:47600"
+		holderOnPort(t, "47600", 31337, "/usr/bin/python3")
+		var out bytes.Buffer
+		reportUnitNotAnswering(p, unitState{known: true, load: "loaded", active: "inactive", sub: "dead", enabled: "disabled", result: "success"}, &out)
+		if strings.Contains(out.String(), "is held by") {
+			t.Errorf("a stopped Cortex names a port holder:\n%s", out.String())
+		}
+	})
+}
+
 // status asks systemd only once the probe has failed, and only on Linux: a healthy
 // Cortex needs no second opinion, and launchd has no such state to read.
 func TestServiceStatusAsksSystemdOnlyWhenSilent(t *testing.T) {
