@@ -1,6 +1,7 @@
 package session
 
 import (
+	"maps"
 	"slices"
 	"time"
 
@@ -134,3 +135,6 @@ func procsList(procs map[string]ProcSpan) []string {
 	slices.Sort(out)
 	return out
 }
+
+// ProcSpans is a copy of the span of each process in Procs, nil when none named the session.
+func (s SessionSummary) ProcSpans() map[string]ProcSpan { return maps.Clone(s.procSpans) }

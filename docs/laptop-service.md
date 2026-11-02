@@ -197,8 +197,12 @@ Some limitations worth knowing:
   header under the session of that process or of its nearest ancestor that named one —
   so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
   in the agent's session, including opaque tunnels that cannot be decrypted. A process of
-  no agent (your own terminal's `curl`) lands in `default` while any agent has named a
-  session in the last five minutes, and otherwise in the most recently active session. An
+  no agent (your own terminal's `curl`, an IDE's update check) lands in `default`, even
+  while no agent is talking. Before, it went to the most recently active session once no
+  agent had named a session for five minutes. So an idle laptop filed every background
+  poll under the last session to speak. Which process named which session survives a
+  restart through the session archive. So a process that keeps running, such as Bob's
+  plugin host, keeps its session before it sends its session header again. An
   agent talking to its own service on this machine — OpenCode's TUI and its background
   service — is forwarded without being recorded when the service runs the agent's own
   executable and is either the agent's direct child or has named a session. OpenCode

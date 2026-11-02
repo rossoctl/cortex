@@ -2,6 +2,8 @@ package attribution
 
 import (
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/session"
@@ -23,8 +25,9 @@ import (
 //  3. Named sessions, none of them live now: "", so resolution falls back.
 //  4. Bound earlier: that session.
 //
-// No agent anywhere in the chain is the default bucket while some process has named a
-// session within ambiguityWindow, and "" otherwise.
+// No agent anywhere in the chain is the default bucket. It used to be that only while some
+// process had named a session within ambiguityWindow, and "" — the store's ActiveSession() —
+// otherwise, which filed an idle laptop's background polls under the last session to speak.
 
 // procState is what the attributor knows about one process.
 type procState struct {
@@ -51,8 +54,8 @@ const (
 	procIdleTTL = 24 * time.Hour
 )
 
-// ambiguityWindow is how recently a known agent must have sent traffic to count toward the
-// ambiguous answers. Expiry cannot serve: session.ttl defaults to never.
+// ambiguityWindow is how recently a known agent must have sent traffic to count toward client
+// affinity's ambiguous answer. Expiry cannot serve: session.ttl defaults to never.
 const ambiguityWindow = 5 * time.Minute
 
 // pendingRef is a pending answer: the agent whose process has named no session, and that
@@ -66,7 +69,6 @@ func (a *Attributor) claimProcessLocked(sessionID, agent string, chain []Proc, n
 	if len(sessionID) > session.MaxSessionIDLen {
 		sessionID = sessionID[:session.MaxSessionIDLen]
 	}
-	a.lastProcClaim = now
 	self := a.procLocked(chain[0], now)
 	// A process that names a session is never a tool bound to another's.
 	self.bound = ""
@@ -154,10 +156,7 @@ func (a *Attributor) sessionForProcessLocked(chain []Proc, agent string, now tim
 			st.bound = ""
 		}
 	}
-	if !a.lastProcClaim.IsZero() && now.Sub(a.lastProcClaim) <= ambiguityWindow {
-		return session.DefaultSessionID, nil
-	}
-	return "", nil
+	return session.DefaultSessionID, nil
 }
 
 // chainSessionLocked is the live session the topmost process above chain[0] named, "" when
@@ -301,4 +300,41 @@ func (a *Attributor) newestClaimLocked(st *procState, now time.Time) string {
 		}
 	}
 	return best
+}
+
+// Restore puts back a claim the proxy held before a restart: proc, as Proc.Key, named
+// sessionID through its own header, last at `at`. The claims live only in memory, so without
+// it a process that keeps running across a restart is no session's until it sends its header
+// again, and its header-less calls meanwhile go to default. A proc that does not parse is
+// skipped. Call it before the proxy serves.
+//
+// shortcut: on Linux, Start comes from btime, which moves when the wall clock steps between
+// two runs. Then no restored key matches a live process, and that process gets no restored
+// claim. Upgrade if Linux laptops report it.
+func (a *Attributor) Restore(sessionID, proc string, at time.Time) {
+	pid, start, ok := strings.Cut(proc, ".")
+	if !ok || sessionID == "" {
+		return
+	}
+	p, perr := strconv.ParseInt(pid, 10, 32)
+	s, serr := strconv.ParseInt(start, 10, 64)
+	if perr != nil || serr != nil {
+		return
+	}
+	if len(sessionID) > session.MaxSessionIDLen {
+		sessionID = sessionID[:session.MaxSessionIDLen]
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.procLocked(Proc{PID: int32(p), Start: s}, at)
+	if st.claims == nil {
+		st.claims = make(map[string]time.Time, 1)
+	}
+	if at.After(st.claims[sessionID]) {
+		st.claims[sessionID] = at
+	}
+	st.claimed = true
+	if t, seen := a.seen[sessionID]; !seen || at.After(t) {
+		a.seeLocked(sessionID, at)
+	}
 }
