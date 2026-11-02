@@ -116,7 +116,7 @@ plugin detail has no gutter), `TestFatTurn_AllOpenShowsTheBigMessage`,
 - [x] Benchmarks: default render 0.07 ms; 147 KB message open: render 6.1 ms, cursor move 3.2 ms. Target was < 20 ms
 - [x] Live check: a real 670 KB request from the laptop proxy draws 108 lines. 288 earlier messages, 96 tool results and 26 tools each show as one line; this turn's messages are open
 
-### Task 4: Commit and PR — not started
+### Task 4: Commit and PR — done
 
-- [ ] Commit the code in one commit, `git commit -s`, with the `Assisted-By` trailer
-- [ ] Push `feat/detail-folds` and open the PR, title `Feat: Fold long fields in the agentop detail pane`
+- [x] Commit the code in one commit, `git commit -s`, with the `Assisted-By` trailer
+- [x] Push `feat/detail-folds` and open the PR, title `Feat: Fold long fields in the agentop detail pane`
