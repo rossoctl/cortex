@@ -113,8 +113,6 @@ the turn. Compaction and interleaved subagents do not change it.
 - Kept when `showDetail` re-renders for a resize, a search prompt, or the
   arrival of the full event (`applyDetailEvent`).
 - Cleared when the pane opens a different event (session or seq differs).
-- `+` sets every fold open. `-` sets every fold closed. Both write the map,
-  so a later resize keeps them.
 
 ### 6. Cursor
 
@@ -130,20 +128,21 @@ width is the viewport width minus the gutter.
 
 ### 7. Keys (event detail pane only)
 
+**Enter is the only new key.** Every other key keeps the meaning it has
+today.
+
 | Key | Action |
 |---|---|
-| ↑↓ / j k | move the cursor one line |
-| PgUp/PgDn, b / f, g, G | move the cursor one page, to the top, to the bottom |
-| Enter / → / l | open the fold at the cursor. No effect on a line that is not a closed fold head |
-| ← / h | close the nearest open fold that holds the cursor, and move the cursor to its head. When no fold holds it (a top-level field such as `host`): back to Events, as today. Inside `inference`, ← therefore closes a fold before it leaves, as in a tree view. esc always leaves |
-| `+` / `-` | open all / close all |
-| esc | back to Events, as today |
-| `y`, `u`, `T`, `/`, `n`, `N` | as today |
+| Enter | on a fold head: open the fold, or close it when it is open. On any other line: nothing |
+| ↑↓ / j k, PgUp/PgDn, b / f, g, G | as today, but they move the cursor, and the view follows it |
+| ← / h / esc, `y`, `u`, `T`, `/`, `n`, `N` | as today |
 
-`panePluginDetail` keeps today's scroll keys. Where `keys.go` handles
-`paneDetail, panePluginDetail` in one case, the case is split.
+`keys.go` handles `"enter", "right", "l"` in one case. Enter on
+`paneDetail` gets its own arm, so → and l keep doing what they do today.
+`panePluginDetail` has no cursor and keeps today's scroll keys.
 
-Help overlay (`help_overlay.go`) and footer (`footer.go`) list the new keys.
+Help overlay (`help_overlay.go`) and footer (`footer.go`) add one hint:
+`[↵] fold`.
 
 ### 8. Search
 
@@ -190,7 +189,8 @@ completion. The tree must not bring that back.
 - Messages: a group before the last assistant message, no group on a first
   turn, a last message that is itself `assistant`.
 - Folds kept on resize and on the full-event fetch. Cleared on a new event.
-- Keys: each row of the section 7 table, including ← with no fold above it.
+- Keys: Enter opens and closes a fold head, and does nothing on other
+  lines. → and l do what they did before.
 - Plugin detail: scroll keys unchanged, real newlines.
 - Search: a match inside a closed group, a closed tool and a clipped string
   renders, and `n` lands the cursor on it. Clearing the query closes them.
