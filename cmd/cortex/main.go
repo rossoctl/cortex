@@ -1123,6 +1123,12 @@ func main() {
 					}
 				}
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
+				// The claims live in memory only. Without the archive's copy, a process that
+				// keeps running across a restart sends its header-less calls to default until
+				// it names its session again (Bob's plugin host: hours).
+				if sessArchive != nil {
+					fpSrv.RestoreClaims(sessArchive.Summaries())
+				}
 			}
 		}
 		// The VM control channel serves each handed-over listener through this

@@ -2,6 +2,8 @@ package attribution
 
 import (
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/session"
@@ -298,4 +300,37 @@ func (a *Attributor) newestClaimLocked(st *procState, now time.Time) string {
 		}
 	}
 	return best
+}
+
+// Restore puts back a claim the proxy held before a restart: proc, as Proc.Key, named
+// sessionID through its own header, last at `at`. The claims live only in memory, so without
+// it a process that keeps running across a restart is no session's until it sends its header
+// again, and its header-less calls meanwhile go to default. A proc that does not parse is
+// skipped. Call it before the proxy serves.
+func (a *Attributor) Restore(sessionID, proc string, at time.Time) {
+	pid, start, ok := strings.Cut(proc, ".")
+	if !ok || sessionID == "" {
+		return
+	}
+	p, perr := strconv.ParseInt(pid, 10, 32)
+	s, serr := strconv.ParseInt(start, 10, 64)
+	if perr != nil || serr != nil {
+		return
+	}
+	if len(sessionID) > session.MaxSessionIDLen {
+		sessionID = sessionID[:session.MaxSessionIDLen]
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.procLocked(Proc{PID: int32(p), Start: s}, at)
+	if st.claims == nil {
+		st.claims = make(map[string]time.Time, 1)
+	}
+	if at.After(st.claims[sessionID]) {
+		st.claims[sessionID] = at
+	}
+	st.claimed = true
+	if t, seen := a.seen[sessionID]; !seen || at.After(t) {
+		a.seeLocked(sessionID, at)
+	}
 }

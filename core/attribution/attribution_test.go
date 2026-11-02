@@ -395,3 +395,22 @@ func TestSeenTable_PruneFreesTheOldestQuarter(t *testing.T) {
 		t.Error("the newest id was pruned")
 	}
 }
+
+// A restart forgets every claim. Restore puts back the ones the archive kept, so a process
+// that named a session before the restart still answers with it, before it names it again.
+func TestRestore_KeepsAClaimAcrossARestart(t *testing.T) {
+	a, _ := newTest()
+	plugin := pchain(66433, 66308)
+	if got := a.Resolve(nil, plugin).Session; got != session.DefaultSessionID {
+		t.Fatalf("before Restore: %q, want default", got)
+	}
+	a.Restore("s1", plugin[0].Key(), time.Unix(1_699_999_000, 0))
+	a.Restore("s2", "not-a-proc", time.Unix(1_699_999_000, 0))
+	got := a.Resolve(nil, plugin)
+	if got.Session != "s1" || got.Source != pipeline.SessionSourceProcess {
+		t.Errorf("after Restore: %+v, want s1 by process", got)
+	}
+	if !a.IsAgentProcess(plugin[0]) {
+		t.Error("a restored claimer is not an agent process")
+	}
+}
