@@ -64,7 +64,7 @@ type foldState struct {
 
 // foldChoice is Enter on a fold. An open holds. A close holds while query, the search in force
 // when the reader closed the fold, is the search in force or there is none: a new search opens
-// the folds that hold its matches.
+// the closed folds that hold its matches, and no other.
 type foldChoice struct {
 	open  bool
 	query string
@@ -292,7 +292,7 @@ func (r *renderer) isOpen(n *node) bool {
 	if r.fs.all || !n.fold {
 		return true
 	}
-	if c, ok := r.fs.open[n.path]; ok && (c.open || r.fs.query == "" || c.query == r.fs.query) {
+	if c, ok := r.fs.open[n.path]; ok && (c.open || r.fs.query == "" || c.query == r.fs.query || !r.hasMatch(n)) {
 		return c.open
 	}
 	if r.fs.query != "" && r.hasMatch(n) {
@@ -439,8 +439,8 @@ func clip(s string) (shown string, lines, rest int) {
 // A key that itself holds "." or "[" reads as two segments. Only the cursor uses this, to find
 // the fold its line went into, and a wrong guess puts the cursor one fold higher.
 func parentPath(p string) string {
-	if strings.HasSuffix(p, "]") {
-		return p[:strings.LastIndexByte(p, '[')]
+	if i := strings.LastIndexByte(p, '['); i >= 0 && strings.HasSuffix(p, "]") {
+		return p[:i]
 	}
 	if i := strings.LastIndexByte(p, '.'); i >= 0 {
 		return p[:i]

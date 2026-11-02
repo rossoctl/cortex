@@ -181,6 +181,19 @@ func TestRenderTree_QueryOpensTheFoldHoldingAMatch(t *testing.T) {
 	}
 }
 
+// A new query opens a fold the reader closed only when the fold holds a match.
+func TestRenderTree_NewQueryKeepsAClosedFoldWithNoMatch(t *testing.T) {
+	data := `{"a":{"x":"needle"},"b":{"y":"other"}}`
+	closed := map[string]foldChoice{"a": {}, "b": {}}
+	got := treeText(t, data, foldState{query: "needle", open: closed})
+	if lineWith(got, `"x": "needle"`) < 0 {
+		t.Errorf("a closed fold that holds the match did not open: %q", got)
+	}
+	if lineWith(got, `"y": "other"`) >= 0 {
+		t.Errorf("a closed fold with no match opened: %q", got)
+	}
+}
+
 func TestRenderTree_LabelsAreEscaped(t *testing.T) {
 	data, _ := json.Marshal(map[string]any{"inference": map[string]any{"messages": []any{
 		map[string]any{"role": "user", "content": "\x1b[2Jboom"},
@@ -219,6 +232,8 @@ func TestParentPath(t *testing.T) {
 		"inference.messages[<3]":            "inference.messages",
 		"inference":                         "",
 		"":                                  "",
+		"a]":                                "",
+		"mcp.params.a]":                     "mcp.params",
 	} {
 		if got := parentPath(in); got != want {
 			t.Errorf("parentPath(%q) = %q, want %q", in, got, want)
