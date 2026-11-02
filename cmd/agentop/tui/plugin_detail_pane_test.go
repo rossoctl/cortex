@@ -383,8 +383,11 @@ func TestEventDetail_ReRenderKeepsScrollPosition(t *testing.T) {
 	}
 	m.showDetail(er, true)
 	m.pane = paneDetail
-	for i := 0; i < 5; i++ {
-		m.detailVp.ScrollDown(1)
+	for m.detailVp.YOffset < 5 && m.detailDoc.cursor < len(m.detailLines)-1 {
+		m.handleKey(keyRune('j'))
+	}
+	for first, _ := m.detailDoc.rowsOf(m.detailDoc.cursor - 1); first >= m.detailVp.YOffset; first, _ = m.detailDoc.rowsOf(m.detailDoc.cursor - 1) {
+		m.handleKey(keyRune('k'))
 	}
 	want := m.detailVp.YOffset
 	if want == 0 {

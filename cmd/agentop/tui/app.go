@@ -719,13 +719,14 @@ type model struct {
 	detailPlugin *apiclient.PipelinePlugin
 	// The event detail pane as a tree — see detail_tree.go. detailHead is the header blocks
 	// drawn above it, detailLines what the last render drew, detailFolds the folds the reader
-	// opened or closed, and detailCursorPath the node the cursor is on, so a re-render can put
-	// it back.
+	// opened or closed, and detailCursorPath the node the cursor is on and detailCursorOff its
+	// line within that node, so a re-render can put it back.
 	detailTree       *node
 	detailHead       []string
 	detailLines      []treeLine
 	detailFolds      map[string]foldChoice
 	detailCursorPath string
+	detailCursorOff  int
 	searchInput      textinput.Model
 
 	// visibleRows holds the eventRow for each rendered row in eventsTbl —

@@ -58,6 +58,7 @@ type searchSpot struct {
 	tail    bool
 	yOffset int
 	path    string
+	off     int
 }
 
 // searchSurface is how the search reaches a pane. A line is a table row, or a drawn line of

@@ -430,3 +430,68 @@ func TestDetailFolds_ChangedSearchLetsTheSameSearchOpenAFold(t *testing.T) {
 		t.Errorf("Esc on the prompt opened a fold the reader closed:\n%s", detailScreen(m))
 	}
 }
+
+// blockEvent is turnEvent with this turn's input a 200-line message of lines that wrap below
+// 100 columns, line 150 holding a needle.
+func blockEvent() pipeline.SessionEvent {
+	ev := turnEvent()
+	lines := make([]string, 200)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d %s", i, strings.Repeat("x", 80))
+	}
+	lines[150] += " zzneedle"
+	ev.Inference.Messages[3].Content = strings.Join(lines, "\n")
+	return ev
+}
+
+// cursorLine is the cursor's line, and whether any of its rows is on screen.
+func cursorLine(m *model) (string, bool) {
+	first, last := m.detailDoc.rowsOf(m.detailDoc.cursor)
+	top := m.detailVp.YOffset
+	return stripANSI(m.detailLines[m.detailDoc.cursor].text), last >= top && first < top+m.detailVp.Height
+}
+
+// A re-render puts the cursor back on the line it was on, not on the first line of its node,
+// and that line is on screen, so the next motion key moves on from it.
+func TestDetailFolds_ReRenderKeepsTheCursorLine(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		to   string // the line the cursor is moved to
+		act  func(m *model)
+	}{
+		{"search commit", "zzneedle", func(m *model) { typeKeys(m, "/zzneedle"); press(m, tea.KeyEnter) }},
+		{"search esc", "line 120", func(m *model) { typeKeys(m, "/zz"); press(m, tea.KeyEsc) }},
+		{"resize", "line 120", func(m *model) { m.Update(tea.WindowSizeMsg{Width: 150, Height: 30}) }},
+		{"narrowing resize", "line 120", func(m *model) { m.Update(tea.WindowSizeMsg{Width: 60, Height: 24}) }},
+		{"full event", "line 120", func(m *model) {
+			full := blockEvent()
+			m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s", seq: 7, event: &full})
+		}},
+		{"root close", "G", func(m *model) { typeKeys(m, "/zz"); press(m, tea.KeyEsc) }},
+		{"container close", `],`, func(m *model) { typeKeys(m, "/zz"); press(m, tea.KeyEsc) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m := openTurnDetail(t)
+			m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+			ev := blockEvent()
+			m.events["s"] = []pipeline.SessionEvent{ev}
+			m.showDetail(eventRow{event: &ev}, true)
+			cursorTo(t, m, "line 0 ")
+			press(m, tea.KeyEnter) // open the block
+			if c.to == "G" {
+				m.Update(keyRune('G'))
+			} else {
+				cursorTo(t, m, c.to)
+			}
+			want, _ := cursorLine(m)
+			c.act(m)
+			if got, seen := cursorLine(m); got != want || !seen {
+				t.Fatalf("cursor on %q (on screen %v), want %q", got, seen, want)
+			}
+			m.Update(keyRune('k'))
+			if _, seen := cursorLine(m); !seen {
+				t.Errorf("k left the cursor off screen")
+			}
+		})
+	}
+}
