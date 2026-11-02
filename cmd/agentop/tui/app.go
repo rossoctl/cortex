@@ -724,7 +724,7 @@ type model struct {
 	detailTree       *node
 	detailHead       []string
 	detailLines      []treeLine
-	detailFolds      map[string]bool
+	detailFolds      map[string]foldChoice
 	detailCursorPath string
 	searchInput      textinput.Model
 

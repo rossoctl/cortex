@@ -80,7 +80,7 @@ func TestRenderTree_ClipsAtFiveLines(t *testing.T) {
 	if lineWith(got, "    5") < 0 || lineWith(got, "… 5 more lines") < 0 {
 		t.Errorf("want lines 1-5 and a '… 5 more lines' head: %q", got)
 	}
-	open := treeText(t, string(data), foldState{open: map[string]bool{"s": true}})
+	open := treeText(t, string(data), foldState{open: map[string]foldChoice{"s": {open: true}}})
 	if lineWith(open, "    10") < 0 || lineWith(open, "more") >= 0 {
 		t.Errorf("an open string must show every line and no more-line: %q", open)
 	}
@@ -125,7 +125,7 @@ func TestRenderTree_DefaultFolds(t *testing.T) {
 			t.Errorf("want %q open (small or not a default fold): %q", open, got)
 		}
 	}
-	tools := treeText(t, data, foldState{open: map[string]bool{"inference.tools": true}})
+	tools := treeText(t, data, foldState{open: map[string]foldChoice{"inference.tools": {open: true}}})
 	if lineWith(tools, "▸ Read · ") < 0 || lineWith(tools, "reads") >= 0 {
 		t.Errorf("an opened tool list shows each tool closed: %q", tools)
 	}
@@ -148,7 +148,7 @@ func TestRenderTree_EarlierMessagesGroup(t *testing.T) {
 			t.Errorf("want %s open after the group: %q", want, got)
 		}
 	}
-	open := treeText(t, data, foldState{open: map[string]bool{"inference.messages[<3]": true}})
+	open := treeText(t, data, foldState{open: map[string]foldChoice{"inference.messages[<3]": {open: true}}})
 	if lineWith(open, "▸ user · ") < 0 || lineWith(open, "▸ assistant · ") < 0 {
 		t.Errorf("an open group shows each message closed, with its role: %q", open)
 	}
@@ -168,14 +168,14 @@ func TestRenderTree_LastMessageIsAssistant(t *testing.T) {
 	}
 }
 
-// A search opens every fold that holds a match. A fold the reader closed stays closed.
+// A search opens every fold that holds a match.
 func TestRenderTree_QueryOpensTheFoldHoldingAMatch(t *testing.T) {
 	data := `{"inference":{"tools":[{"name":"Read","description":"has a needle"}]}}`
 	got := treeText(t, data, foldState{query: "needle"})
 	if lineWith(got, "needle") < 0 {
 		t.Errorf("the match is not rendered: %q", got)
 	}
-	closed := treeText(t, data, foldState{query: "needle", open: map[string]bool{"inference.tools": false}})
+	closed := treeText(t, data, foldState{query: "needle", open: map[string]foldChoice{"inference.tools": {query: "needle"}}})
 	if lineWith(closed, "needle") >= 0 {
 		t.Errorf("a fold the reader closed opened for a search: %q", closed)
 	}
@@ -186,7 +186,7 @@ func TestRenderTree_LabelsAreEscaped(t *testing.T) {
 		map[string]any{"role": "user", "content": "\x1b[2Jboom"},
 		map[string]any{"role": "assistant", "content": "a"},
 	}}})
-	open := treeText(t, string(data), foldState{open: map[string]bool{"inference.messages[<1]": true}})
+	open := treeText(t, string(data), foldState{open: map[string]foldChoice{"inference.messages[<1]": {open: true}}})
 	out := strings.Join(open, "\n")
 	if strings.Contains(out, "\x1b") {
 		t.Errorf("a raw ESC reached a label: %q", out)

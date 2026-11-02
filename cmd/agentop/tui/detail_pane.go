@@ -124,6 +124,8 @@ func (m *model) cursorLineFor(path string) int {
 
 // moveDetailCursor puts the cursor on line i, clamped, and scrolls only as far as it takes
 // to keep the line's rows on screen. Drawing is only the gutter: the tree is not rebuilt.
+// A line taller than the view shows its top when the view moves down to it, and its bottom
+// when the view moves up to it. A line that fills the view does not move it.
 func (m *model) moveDetailCursor(i int) {
 	if len(m.detailLines) == 0 {
 		return
@@ -131,10 +133,11 @@ func (m *model) moveDetailCursor(i int) {
 	i = m.setDetailCursor(i)
 	m.detailVp.SetContent(m.detailDoc.render(m.searchQuery(paneDetail)))
 	first, last := m.detailDoc.rowsOf(i)
+	top, bottom := m.detailVp.YOffset, m.detailVp.YOffset+m.detailVp.Height-1
 	switch {
-	case first < m.detailVp.YOffset:
-		m.detailVp.SetYOffset(first)
-	case last >= m.detailVp.YOffset+m.detailVp.Height:
+	case first < top && last < bottom:
+		m.detailVp.SetYOffset(max(first, last-m.detailVp.Height+1))
+	case last > bottom && first > top:
 		m.detailVp.SetYOffset(min(first, last-m.detailVp.Height+1))
 	}
 }
@@ -158,39 +161,56 @@ func (m *model) toggleDetailFold() {
 	}
 	l := m.detailLines[i]
 	if m.detailFolds == nil {
-		m.detailFolds = map[string]bool{}
+		m.detailFolds = map[string]foldChoice{}
 	}
-	m.detailFolds[l.path] = !l.open
+	m.detailFolds[l.path] = foldChoice{open: !l.open, query: m.searchQuery(paneDetail)}
 	m.detailCursorPath = l.path
 	m.renderDetail()
 	m.moveDetailCursor(m.cursorLineFor(l.path))
 }
 
 // detailCursorKey moves the event detail pane's cursor for a motion key, and reports whether
-// msg was one.
+// msg was one. On a line taller than the view, a key scrolls through the line's rows first,
+// and moves the cursor off the line when its end in that direction is on screen.
 func (m *model) detailCursorKey(msg string) bool {
 	i, page, half := m.detailDoc.cursor, max(m.detailVp.Height-1, 1), max(m.detailVp.Height/2, 1)
+	var step int
 	switch msg {
 	case "up", "k":
-		i--
+		step = -1
 	case "down", "j":
-		i++
+		step = 1
 	case "pgup", "b":
-		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] - page)
+		step = -page
 	case "pgdown", "pgdn", "f", " ":
-		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + page)
+		step = page
 	case "ctrl+u":
-		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] - half)
+		step = -half
 	case "d", "ctrl+d":
-		i = m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + half)
+		step = half
 	case "g":
-		i = 0
+		m.moveDetailCursor(0)
+		return true
 	case "G":
-		i = len(m.detailLines) - 1
+		m.moveDetailCursor(len(m.detailLines) - 1)
+		return true
 	default:
 		return false
 	}
-	m.moveDetailCursor(i)
+	first, last := m.detailDoc.rowsOf(i)
+	top, tall := m.detailVp.YOffset, last-first >= m.detailVp.Height
+	switch {
+	case tall && step > 0 && last >= top+m.detailVp.Height:
+		m.detailVp.SetYOffset(min(max(top+step, first), last-m.detailVp.Height+1))
+	case tall && step < 0 && first < top:
+		m.detailVp.SetYOffset(max(min(top+step, last-m.detailVp.Height+1), first))
+	case step == 1 || step == -1:
+		m.moveDetailCursor(i + step)
+	case step > 0:
+		m.moveDetailCursor(max(m.detailDoc.lineAtRow(m.detailDoc.firsts[i]+step), i+1))
+	default:
+		m.moveDetailCursor(m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + step))
+	}
 	return true
 }
 

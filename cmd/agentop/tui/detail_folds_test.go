@@ -217,7 +217,7 @@ func BenchmarkRenderDetailAllOpen(b *testing.B) {
 	e := fatTurn()
 	m := &model{detailVp: newDetailViewportForBench()}
 	m.showDetail(eventRow{event: &e}, true)
-	m.detailFolds = map[string]bool{"inference.messages[<19]": true, "inference.messages[<19][1]": true, "inference.messages[<19][1].content": true}
+	m.detailFolds = map[string]foldChoice{"inference.messages[<19]": {open: true}, "inference.messages[<19][1]": {open: true}, "inference.messages[<19][1].content": {open: true}}
 	m.renderDetail()
 	b.Run("render", func(b *testing.B) {
 		for b.Loop() {
@@ -235,7 +235,7 @@ func TestFatTurn_AllOpenShowsTheBigMessage(t *testing.T) {
 	e := fatTurn()
 	m := &model{detailVp: newDetailViewportForBench()}
 	m.showDetail(eventRow{event: &e}, true)
-	m.detailFolds = map[string]bool{"inference.messages[<19]": true, "inference.messages[<19][1]": true, "inference.messages[<19][1].content": true}
+	m.detailFolds = map[string]foldChoice{"inference.messages[<19]": {open: true}, "inference.messages[<19][1]": {open: true}, "inference.messages[<19][1].content": {open: true}}
 	m.renderDetail()
 	if n := len(m.detailLines); n < 1595 {
 		t.Fatalf("the big message did not open: %d lines", n)
@@ -317,5 +317,77 @@ func TestDetailFolds_ViewportScrollKeysMoveTheCursor(t *testing.T) {
 		if moved := m.detailDoc.cursor - before; (c.down && moved <= 0) || (!c.down && moved >= 0) {
 			t.Errorf("%q moved the cursor by %d", c.key.String(), moved)
 		}
+	}
+}
+
+// A line that wraps to more rows than the view holds: each motion key shows every row of the
+// document on the way through, down from the top and up from the bottom.
+func TestDetailFolds_MotionKeysReachEveryRowOfATallLine(t *testing.T) {
+	words := make([]string, 600)
+	for i := range words {
+		words[i] = "filler"
+	}
+	ev := turnEvent()
+	ev.Inference.Messages[3].Content = strings.Join(words, " ")
+	for _, c := range []struct {
+		start string
+		key   tea.KeyMsg
+	}{
+		{"g", keyRune('j')},
+		{"g", tea.KeyMsg{Type: tea.KeyPgDown}},
+		{"g", keyRune('d')},
+		{"G", keyRune('k')},
+		{"G", tea.KeyMsg{Type: tea.KeyPgUp}},
+		{"G", tea.KeyMsg{Type: tea.KeyCtrlU}},
+	} {
+		m := openTurnDetail(t)
+		m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		m.events["s"] = []pipeline.SessionEvent{ev}
+		m.showDetail(eventRow{event: &ev}, true)
+		cursorTo(t, m, "filler filler")
+		press(m, tea.KeyEnter) // open the clipped string
+		if m.detailDoc.rows() <= 2*m.detailVp.Height {
+			t.Fatalf("setup: %d rows on a view of %d", m.detailDoc.rows(), m.detailVp.Height)
+		}
+		m.Update(keyRune([]rune(c.start)[0]))
+		seen := make([]bool, m.detailDoc.rows())
+		for range m.detailDoc.rows() {
+			for r := m.detailVp.YOffset; r < min(m.detailVp.YOffset+m.detailVp.Height, len(seen)); r++ {
+				seen[r] = true
+			}
+			m.Update(c.key)
+		}
+		for r, ok := range seen {
+			if !ok {
+				t.Errorf("%s then %q: row %d of %d never came on screen", c.start, c.key.String(), r, len(seen))
+				break
+			}
+		}
+	}
+}
+
+// A fold the reader closed is open for a new query that matches inside it, as a fold nobody
+// touched is. A fold the reader closes while that query is set stays closed.
+func TestDetailFolds_ANewQueryOpensAFoldTheReaderClosed(t *testing.T) {
+	m := openTurnDetail(t)
+	toggle := func(sub string) {
+		m.Update(keyRune('g'))
+		cursorTo(t, m, sub)
+		press(m, tea.KeyEnter)
+	}
+	for _, head := range []string{`"tools"`, "earlier message"} {
+		toggle(head) // open
+		toggle(head) // close
+	}
+	for _, q := range []string{"reads a file", "old-needle"} {
+		typeKeys(m, "/"+q)
+		press(m, tea.KeyEnter)
+		if len(m.surface(paneDetail).matchLines()) == 0 {
+			t.Errorf("/%s: %s", q, m.searchStatus(paneDetail))
+		}
+	}
+	toggle("earlier message")
+	if strings.Contains(detailScreen(m), "old-needle") {
+		t.Errorf("Enter did not close a fold the query opened:\n%s", detailScreen(m))
 	}
 }

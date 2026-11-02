@@ -52,14 +52,22 @@ type node struct {
 	label   string // a closed head's text, when it is not the count and the size
 }
 
-// foldState is what decides which folds render open. open holds the reader's own choices,
-// which win over everything. A fold the reader has not touched opens when query matches
-// inside it, and otherwise takes its default. all opens everything and draws no fold
-// markers: the plugin detail pane, and ColorizeJSON's callers.
+// foldState is what decides which folds render open. open holds the reader's own choices.
+// Otherwise a fold opens when query matches inside it, and takes its default when it does
+// not. all opens everything and draws no fold markers: the plugin detail pane, and
+// ColorizeJSON's callers.
 type foldState struct {
-	open  map[string]bool
+	open  map[string]foldChoice
 	query string
 	all   bool
+}
+
+// foldChoice is Enter on a fold. An open holds. A close holds while query, the search in force
+// when the reader closed the fold, is the search in force or there is none: a new search opens
+// the folds that hold its matches.
+type foldChoice struct {
+	open  bool
+	query string
 }
 
 // treeLine is one rendered line. path is the node the line belongs to. head says Enter on
@@ -284,8 +292,8 @@ func (r *renderer) isOpen(n *node) bool {
 	if r.fs.all || !n.fold {
 		return true
 	}
-	if v, ok := r.fs.open[n.path]; ok {
-		return v
+	if c, ok := r.fs.open[n.path]; ok && (c.open || r.fs.query == "" || c.query == r.fs.query) {
+		return c.open
 	}
 	if r.fs.query != "" && r.hasMatch(n) {
 		return true
