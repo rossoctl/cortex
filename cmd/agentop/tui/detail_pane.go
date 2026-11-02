@@ -169,6 +169,15 @@ func (m *model) toggleDetailFold() {
 	m.moveDetailCursor(m.cursorLineFor(l.path))
 }
 
+// clearFoldQueries is a cleared search on the event detail pane: a fold the reader closed
+// under it is closed as if under no search, so a later search opens it when it holds a match.
+func (m *model) clearFoldQueries() {
+	for p, c := range m.detailFolds {
+		c.query = ""
+		m.detailFolds[p] = c
+	}
+}
+
 // detailCursorKey moves the event detail pane's cursor for a motion key, and reports whether
 // msg was one. On a line taller than the view, a key scrolls through the line's rows first,
 // and moves the cursor off the line when its end in that direction is on screen.
