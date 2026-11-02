@@ -503,6 +503,8 @@ func TestConfigure_Validation(t *testing.T) {
 		{"negative ttl rejected", `{"redis_url":"redis://localhost","max_tokens":100,"session_ttl_seconds":-1}`, true},
 		{"misspelled key rejected", `{"redis_url":"redis://localhost","max_token":100,"max_calls":5}`, true},
 		{"trailing content rejected", `{"redis_url":"redis://localhost","max_tokens":100} {}`, true},
+		{"trailing bracket rejected", `{"redis_url":"redis://localhost","max_tokens":100}}`, true},
+		{"trailing whitespace accepted", "{\"redis_url\":\"redis://localhost\",\"max_tokens\":100}\n", false},
 		{"unknown redis_unavailable rejected", `{"redis_url":"redis://localhost","max_tokens":100,"redis_unavailable":"retry"}`, true},
 		{"invalid pause_timeout rejected outside pause mode", `{"redis_url":"redis://localhost","max_tokens":100,"pause_timeout":"nope"}`, true},
 	}

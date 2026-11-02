@@ -150,8 +150,8 @@ func (p *SessionBudget) Configure(raw json.RawMessage) error {
 			return fmt.Errorf("session-budget config: %w", err)
 		}
 		// Decode stops at the first JSON value; json.Unmarshal, which this
-		// replaced, rejected anything after it.
-		if dec.More() {
+		// replaced, rejected anything after it, stray brackets included.
+		if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return fmt.Errorf("session-budget config: unexpected trailing content after the config object")
 		}
 	}
