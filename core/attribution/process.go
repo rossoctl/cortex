@@ -307,6 +307,10 @@ func (a *Attributor) newestClaimLocked(st *procState, now time.Time) string {
 // it a process that keeps running across a restart is no session's until it sends its header
 // again, and its header-less calls meanwhile go to default. A proc that does not parse is
 // skipped. Call it before the proxy serves.
+//
+// shortcut: on Linux, Start comes from btime, which moves when the wall clock steps between
+// two runs. Then no restored key matches a live process, and that process gets no restored
+// claim. Upgrade if Linux laptops report it.
 func (a *Attributor) Restore(sessionID, proc string, at time.Time) {
 	pid, start, ok := strings.Cut(proc, ".")
 	if !ok || sessionID == "" {
