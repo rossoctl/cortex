@@ -39,6 +39,16 @@ concluded the TUI was all agentop did — `agentop service` least visible of
 all, and that is what you need when Cortex is not running. Run
 `agentop --help` for the full list.
 
+To profile the viewer itself, set `AGENTOP_PPROF_ADDR` to a loopback address
+before starting it — `AGENTOP_PPROF_ADDR=127.0.0.1:47603 agentop observe` —
+and read the result with
+`go tool pprof http://127.0.0.1:47603/debug/pprof/heap`. Off unless set: the
+profiles expose the process's internals, and the viewer's heap holds the
+session content it is displaying. Requests carrying a browser `Origin`, or a
+`Host` other than `localhost` / `127.0.0.1` / `::1`, are refused — and so is a
+bind that does not land on loopback (`:47603`, `0.0.0.0:47603`), since those
+guards stop browsers, not a curl that names a loopback `Host`.
+
 You'll see a Namespaces pane listing each namespace that contains an
 AuthBridge agent. Enter drills into the Pods pane for that namespace;
 Enter on a pod starts a `kubectl port-forward` automatically and drops
@@ -1123,6 +1133,18 @@ agentop is for, and the other four are surfaces you visit and leave.
   the same as a body of zero bytes: a body no plugin asked to buffer is relayed
   unmeasured and reads exactly as a body-less GET does.
 
+  A session with subagent traffic groups each subagent's rows under a
+  collapsible header at the subagent's first row: `▸─ <label> · N rows · tokens
+  · cost`, where the label is the subagent's description from Claude Code's own
+  records when the harvest can name it and the raw agent id otherwise. Blocks
+  are collapsed by default — the point is that an agent's fan-out stops drowning
+  the conversation — and `Enter` on the header opens it, showing its rows in
+  time order with a `│` gutter in the DIR column; `Enter` again closes it. The
+  main conversation's rows stay top-level between them, so the interleaving
+  stays honest. Blocks exist only while the table is chronological: a sort ranks
+  rows, and grouping would contradict the ranking. A search opens every block,
+  so a match inside a collapsed one is findable.
+
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
 
@@ -1287,12 +1309,13 @@ agentop is for, and the other four are surfaces you visit and leave.
   ```
 
   An agent cell is a bar of how that cell's time divided, stacked from the
-  bottom: amber the agent's tools running, purple its model generating, red
-  retrying after a failed model call, teal waiting on its subagents or its
-  background shell jobs, grey waiting on you, as is an `AskUserQuestion` the
+  bottom: amber the agent's tools running — a background shell job is a tool
+  still running, and counts here — purple its model generating, red
+  retrying after a failed model call, teal waiting on its subagents, grey
+  waiting on you, as is an `AskUserQuestion` the
   agent put to you. Waiting is read from the gaps
-  between an agent's model calls: a gap that one of its subagents or background
-  jobs was running in, or that a subagent's result ended, is waiting on
+  between an agent's model calls: a gap that one of its subagents was running
+  in, or that a subagent's result ended, is waiting on
   subagents; a gap before a call that re-sent the same conversation is retrying;
   after a failed call it is retrying until the last failed request to the model
   host, then waiting on you, since Claude Code shows the error and stops. On the
@@ -1447,7 +1470,7 @@ Layered on top of all of them:
 | `Enter` | pods | port-forward + connect |
 | `Esc` | pods | back to namespaces |
 | `r` | namespaces, pods | reload agent list from cluster |
-| `Enter` / `→` / `l` | sessions, events | drill into selection |
+| `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
 | `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved |

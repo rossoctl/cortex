@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
@@ -112,14 +113,13 @@ func validateListeners(cfg *Config) error {
 			return fmt.Errorf("listener.inbound_interception: %q is not valid (use %q or %q)",
 				cfg.Listener.InboundInterception, InboundInterceptionReverseProxy, InboundInterceptionTransparent)
 		}
-		if v := cfg.Listener.LegacyDeclineResponsesWebSockets; v != nil {
-			want := ResponsesWebSocketsDecline
-			if !*v {
-				want = ResponsesWebSocketsForward
+		if v := cfg.Listener.DeclineResponsesWebSockets; v != nil {
+			if cfg.Listener.ResponsesWebSockets != "" {
+				return fmt.Errorf("listener.decline_responses_websockets and listener.responses_websockets are both set; " +
+					"remove decline_responses_websockets, which responses_websockets replaced")
 			}
-			return fmt.Errorf("listener.decline_responses_websockets was replaced by listener.responses_websockets; "+
-				"for decline_responses_websockets: %t use responses_websockets: %s (the default is %s)",
-				*v, want, ResponsesWebSocketsParse)
+			slog.Warn("listener.decline_responses_websockets is deprecated; use listener.responses_websockets",
+				"decline_responses_websockets", *v, "responses_websockets", cfg.Listener.ResponsesWebSocketsMode())
 		}
 		switch cfg.Listener.ResponsesWebSockets {
 		case "", ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward:

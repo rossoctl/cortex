@@ -867,6 +867,8 @@ curl http://localhost:9093/config               # now-active config
 | `session.*` (TTL, MaxEvents, MaxSessions, ID headers) | ❌ | Every consumer reads the block once at startup — `session.New(...)` in each `cmd` main, `forwardproxy.Server.SessionIDHeaders` assigned before `ListenAndServe`. There is no live object to reach; refuse reload |
 | `cost_ledger.*` (`enabled`, `dir`, `retention_days`) | ❌ | The ledger is a `*ledger.Writer` opened once at startup and handed to the session store as a `Recorder`. Refuse reload |
 | `mtls.*` (the block's presence and `mode`, the only field it carries) | ❌ | The inbound TLS listener and, under `strict`, the forward proxy's mTLS dialer are built once at startup, and the outbound chain is built for `forwardproxy.Support` of that state; refuse reload. Legacy `cert_file` / `key_file` / `bundle_file` keys are dropped at load, so an edit to them is neither applied nor refused |
+| `tls_bridge.*` (mode, ca_dir, passthrough_hosts, ports, …) | ❌ | The bridge engine is built once at boot in each `cmd` main and nothing re-reads the block; refuse reload. An accepted-but-ineffective edit here is the dangerous shape: an operator adding a host to `passthrough_hosts` reads the successful reload as confirmation it stopped being intercepted |
+| `spiffe.*` (socket, mirror settings, …) | ❌ | The in-process Provider is constructed once at boot and handed to plugins through `Deps` at build time; refuse reload |
 
 **Why `session.*` and `cost_ledger.*` are refused rather than "reloaded but ineffective".**
 Both used to be accepted: the reload succeeded, `ReloadsOK` incremented,
@@ -905,6 +907,52 @@ or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
 guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
 
+#### Forwarding WebSocket upgrades
+
+Every WebSocket upgrade the forward proxy does not decline is forwarded (#1488), plain
+and TLS-bridged alike. `Upgrade` is hop-by-hop, which is why it is stripped from
+ordinary requests — but an upgrade exchange makes the proxy an endpoint of the hop
+instead of a reader between two: everything after the 101 is opaque to it, so the
+header must cross or the origin never sees an upgrade request at all. The forwarded
+pair is normalized to `Connection: Upgrade` / `Upgrade: websocket` (the one protocol
+forwarded, mirroring `httputil.ReverseProxy`), which also pins the exchange to
+HTTP/1.1 — net/http does that by itself (`Request.requiresHTTP1`), so the bridge's
+h2-negotiating upstream client needs no HTTP/1.1-only twin for upgrades. An upgrade
+GET on a bridged tunnel is held to the CONNECT-host check like any bridged request
+(421 otherwise); on a bridged tunnel the splice is doubled, agent↔bridge and
+bridge↔origin.
+
+**What counts as an upgrade is both headers, on both sides, and neither check is a
+formality** — because the proxy *writes* the normalized pair, a predicate that is too
+loose does not merely miss a forward, it manufactures one:
+
+- **The request** needs `Connection: upgrade` as well as `Upgrade: websocket` (RFC
+  9110 §7.8: a recipient ignores `Upgrade` unless `Connection` lists it — the same
+  test `Request.requiresHTTP1` and ReverseProxy's `upgradeType` make). A bare
+  `Upgrade: websocket` with no `Connection` token takes the ordinary path and is
+  stripped. Honouring it would have the proxy forge a handshake the client never
+  sent and splice the origin's 101 onto a connection whose client is waiting for an
+  ordinary HTTP response — an opaque byte pipe no plugin inspects, from a request
+  that was not an upgrade.
+- **The response** must switch to the protocol that was asked for. A 101 only says
+  "switching"; its own `Upgrade` header says to what. An origin answering `101
+  Upgrade: h2c` to a WebSocket handshake is refused with 502 *before* the hijack —
+  while a status is still writable — rather than spliced, matching
+  `handleUpgradeResponse`, which rejects a `resUpType`/`reqUpType` mismatch.
+
+The 101 is hijacked and spliced onto the client's connection
+(`relayUpgradedWebSocket`, modelled on ReverseProxy's `handleUpgradeResponse`), and
+the session records the request row plus a paired 101 response row carrying both
+directions' byte counts, recorded after both splice directions end — `durationMs`
+covers the whole WebSocket session, `ttfbMs` the handshake. The frames after the 101
+are relayed byte for byte and never inspected or buffered, so no response plugin runs
+on a 101 and a body parser sees only the upgrade GET. A non-101 answer (an origin
+serving the bare GET, refusing the upgrade) takes the ordinary response path.
+
+Out of scope: WebSocket over HTTP/2 downstream (RFC 8441 Extended CONNECT) — a client
+that wants h2 websockets through the proxy gets its fallback path, same as before
+forwarding existed.
+
 #### Responses API WebSockets (`listener.responses_websockets`)
 
 What the forward proxy does with a WebSocket upgrade on OpenAI's Responses API — a
@@ -920,13 +968,15 @@ listener:
 |---|---|
 | `parse` | The socket is carried: the handshake is completed with the origin, frames are relayed unchanged, and every turn on it — a `response.create` message and the event messages answering it — runs the outbound pipeline as the equivalent HTTPS request and SSE stream would. Each turn records a request/response pair, is priced, and finishes; the socket records an open and a close with `tunnelReason: "websocket"`. A plugin rejecting a turn keeps it from the origin and answers the client with a Responses `error` event; a request-body writer's rewrite is what the origin receives. `permessage-deflate` is stripped from the handshake so frames stay readable. A socket that cannot be carried — not decrypted by the TLS bridge, or a pipeline with a `WritesResponseBody` or `WritesDestination` plugin (inference-router: a turn on a socket already connected to OpenAI cannot be sent elsewhere) — is declined as below, and a reload that adds such a plugin ends an open socket at its next turn with close code 1013 so Codex reconnects and is declined. A message over the HTTPS limits (32 MiB from the client, 10 MB per event from the origin) ends the socket with 1009. Each turn and the handshake run on the pipeline they began on. An HTTP/2 client never reaches the handler: Go's HTTP/2 server refuses a request carrying `Upgrade` with a 400. |
 | `decline` | Answered **426 Upgrade Required** by the proxy, contacting no origin. Codex reads that as "use HTTP" and switches to HTTPS at once. Recorded as `error.kind: "upgrade_declined"`, which `/v1/usage` does not count as an error. |
-| `forward` | The behaviour before either existed: forwarded with `Upgrade` stripped (it is hop-by-hop), so the origin sees a bare `GET`, which OpenAI's endpoint answers 405. Codex retries a 405 five times over about six seconds before falling back to HTTPS. |
+| `forward` | Forwarded and spliced like every other WebSocket (the section above): the socket works, but its frames are opaque, so no turn on it is parsed, priced or recorded — only the handshake's request row and the 101 row recorded when the socket ends. |
 
-Every other WebSocket is forwarded with `Upgrade` stripped whatever this says,
-including one to another host serving the same API (a LiteLLM gateway, OpenCode Zen, a
-local server): what a 426 means, and what the socket carries, is only known for Codex
-against OpenAI, and another client might stop where today it falls back. A misspelt
-mode is refused at startup. Restart to apply, like every `listener.*` field. The
+Every other WebSocket is forwarded and spliced whatever this says, including one to
+another host serving the same API (a LiteLLM gateway, OpenCode Zen, a local server): what
+a 426 means, and what the socket carries, is only known for Codex against OpenAI, and
+another client might stop where today it falls back. A misspelt mode is refused at
+startup. v0.9.4's boolean, `decline_responses_websockets`, is still read when this key is
+unset — `true` as `decline`, `false` as `forward` — with a startup warning naming this
+key; setting both is refused. Restart to apply, like every `listener.*` field. The
 key goes in the runtime config: on a laptop, `~/.cortex/config.yaml`, then `agentop service
 restart`; in a cluster, the `authbridge-runtime-config` ConfigMap, then a pod restart. See
 [`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for what Codex shows and the

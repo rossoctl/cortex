@@ -351,9 +351,11 @@ func (p *CPEX) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.
 // CPEX, short-circuit on the first deny.
 //
 // Skip rules (Continue without invoking CPEX):
-//   - manager is nil / ready is false — pipeline misconfigured;
-//     defensive no-op (Pipeline.Build should have already failed).
-//   - len(hooks) == 0 — operator left this phase empty.
+//   - manager is nil — pipeline misconfigured; defensive no-op
+//     (Pipeline.Build should have already failed).
+//   - len(hooks) == 0 — operator left this phase empty. Checked before
+//     the ready gate so a no-hooks plugin stays a no-op even when the
+//     engine is down.
 //   - path or host matches the bypass lists.
 //   - manager.HasHook(hook) is false — operator listed a hook in
 //     config but no sub-plugin is wired for it on the CPEX side.
@@ -365,11 +367,38 @@ func (p *CPEX) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.
 //   - FailOpen=true  → Observe + Continue, error logged.
 //   - FailOpen=false → DenyAndRecord with code "cpex.error".
 func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []string) pipeline.Action {
-	if p.manager == nil || !p.ready.Load() {
+	if p.manager == nil {
+		// Never configured — Pipeline.Build should have refused this
+		// config already; a defensive no-op.
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	if len(hooks) == 0 {
+		// Before the ready check: a no-hooks plugin is a valid steady
+		// state (see applyDefaults), in the pipeline for its other
+		// features, so an engine that is down must not deny traffic the
+		// operator configured no hook to judge.
 		return pipeline.Action{Type: pipeline.Continue}
+	}
+	if !p.ready.Load() {
+		// Not ready is reachable, not hypothetical: Shutdown clears
+		// ready, and the reloader stops the old pipeline 30s after a
+		// swap — a stream that started before the swap and answers
+		// later runs here with the manager torn down. Continuing
+		// silently skipped redaction and deny for the rest of that
+		// stream, so follow the same fail_open policy as every other
+		// CPEX failure instead of inventing an unconditional allow.
+		if p.cfg.FailOpen {
+			slog.Warn("cpex: not ready (init incomplete or shutdown); allowing per fail_open=true")
+			pctx.Observe("cpex not ready (fail_open)")
+			return pipeline.Action{Type: pipeline.Continue}
+		}
+		slog.Error("cpex: not ready (init incomplete or shutdown); denying per fail_open=false")
+		return denyWithStatus(pctx, http.StatusBadGateway,
+			"cpex not ready",
+			"cpex.not_ready",
+			"cpex policy engine unavailable",
+			nil,
+		)
 	}
 
 	// strict_hosts wins over both bypass lists: a strict destination's

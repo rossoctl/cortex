@@ -28,7 +28,7 @@ func doDelete(t *testing.T, base, id string) (int, []byte) {
 
 // The per-session route changes state on the same unauthenticated API as DELETE /v1/sessions,
 // so a page the user visits can reach it the same ways: each of the four guards is pinned again.
-// The Host variants are loopbackHost's, already pinned in clear_test.go.
+// The Host variants are httpx.LoopbackHost's, already pinned in clear_test.go.
 func TestHandleDelete_Guards(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

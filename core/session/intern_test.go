@@ -221,10 +221,11 @@ func TestAppend_DoesNotShareAcrossSessions(t *testing.T) {
 // Short strings skip the table: a role or a finish reason costs less to duplicate than
 // to hash, and the savings are in bodies.
 func TestIntern_SkipsShortStrings(t *testing.T) {
-	var in Interner
+	var in Interner // the zero value is ready to use
+	st := in.stateFor("")
 	next := map[string]string{}
 	short := strings.Repeat("x", InternMinLen-1)
-	if got := in.intern(short, next); backing(got) != backing(short) {
+	if got := st.intern(short, next); backing(got) != backing(short) {
 		t.Error("a short string was interned")
 	}
 	if len(next) != 0 {
@@ -232,7 +233,7 @@ func TestIntern_SkipsShortStrings(t *testing.T) {
 	}
 
 	long := strings.Repeat("y", InternMinLen)
-	in.intern(long, next)
+	st.intern(long, next)
 	if len(next) != 1 {
 		t.Errorf("table holds %d entries after one long string, want 1", len(next))
 	}
@@ -285,8 +286,18 @@ func TestIntern_TableHoldsTheLastEventsStrings(t *testing.T) {
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if got, want := len(s.sessions["s1"].intern.prev), 30; got != want {
-		t.Errorf("table holds %d entries after 30 turns, want %d (the last event's messages)", got, want)
+	// One conversation: one state, holding the last event's 30 message contents.
+	total := 0
+	for _, st := range s.sessions["s1"].intern.convs {
+		total += len(st.strings)
+	}
+	// 30 message contents + the role: roles intern since #1541 (15 million
+	// "user"/"assistant" strings on one measured 30-day archive).
+	if got, want := total, 31; got != want {
+		t.Errorf("tables hold %d entries after 30 turns, want %d (the last event's messages + the role)", got, want)
+	}
+	if got, want := len(s.sessions["s1"].intern.convs), 1; got != want {
+		t.Errorf("%d conversation states for a single-conversation session, want %d", got, want)
 	}
 }
 
@@ -585,14 +596,17 @@ func TestIntern_TableKeysAreTheStringsTheEventsReference(t *testing.T) {
 	for _, e := range s.View("s1").Events {
 		for i := range e.Inference.Messages {
 			stored[backing(e.Inference.Messages[i].Content)] = true
+			stored[backing(e.Inference.Messages[i].Role)] = true
 		}
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for key := range s.sessions["s1"].intern.prev {
-		if !stored[backing(key)] {
-			t.Errorf("table key %q is a copy no event references — it pins a duplicate", trunc(key))
+	for _, st := range s.sessions["s1"].intern.convs {
+		for key := range st.strings {
+			if !stored[backing(key)] {
+				t.Errorf("table key %q is a copy no event references — it pins a duplicate", trunc(key))
+			}
 		}
 	}
 }

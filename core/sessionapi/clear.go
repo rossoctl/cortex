@@ -3,10 +3,10 @@ package sessionapi
 import (
 	"encoding/json"
 	"log/slog"
-	"net"
 	"net/http"
-	"strings"
 	"time"
+
+	"github.com/rossoctl/cortex/core/listener/httpx"
 )
 
 // clearWait bounds how long an erase — DELETE /v1/sessions or DELETE /v1/sessions/{id} — waits
@@ -142,7 +142,7 @@ func (s *Server) logClearRefusal(reason, remote string) {
 // route pattern answers anything else with 405.
 func (s *Server) clearRefusal(r *http.Request) string {
 	switch {
-	case !loopbackHost(r.Host):
+	case !httpx.LoopbackHost(r.Host):
 		return "erasing is accepted only for a loopback Host (localhost, 127.0.0.1 or [::1])"
 	case r.Header.Get("Origin") != "":
 		return "erasing is refused from a browser: the request carries an Origin header"
@@ -150,21 +150,4 @@ func (s *Server) clearRefusal(r *http.Request) string {
 		return "this Cortex does not accept an erase: it is not bound to loopback only (listener.bind_loopback_only)"
 	}
 	return ""
-}
-
-// loopbackHost reports whether a Host header names this machine's loopback: exactly localhost,
-// 127.0.0.1 or ::1, with or without a port. Not 127.0.0.0/8 as a whole and not anything ending
-// in localhost — the point is to refuse a name an attacker controls, and a short list cannot be
-// matched by one.
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
 }

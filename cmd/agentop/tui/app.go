@@ -562,9 +562,21 @@ type model struct {
 	// an operator watching the pane.
 	untitledCounted map[string]bool
 	eventCt         uint64 // monotonic counter
-	lastTick        time.Time
-	lastCt          uint64
-	rate            float64
+	// pluginRuns is the pipeline pane's EVENTS column and the plugin-detail
+	// pane's Activity line: how many times each plugin ran, counted once at
+	// stream arrival for EVERY session — watched or not — since #1542 stopped
+	// un-watched events being retained. Counting at arrival rather than walking
+	// m.events is what keeps the pane alive with nothing open, and it cannot
+	// double-count the way a walk-plus-counter would (a snapshot of an
+	// un-watched session re-delivers events the counter already saw). The cost:
+	// a snapshot's history contributes nothing, so the figures describe live
+	// traffic since attach, not "events in cached sessions". A ledger, not
+	// content: kept across a clear (like the cost ledger), reset only by
+	// backToPodsPane, beside eventCt — a different pod is a different pipeline.
+	pluginRuns map[string]int
+	lastTick   time.Time
+	lastCt     uint64
+	rate       float64
 
 	// Connection status.
 	connState connStateInfo
@@ -711,8 +723,26 @@ type model struct {
 	// one per network message. Populated by rebuildEventsTable so
 	// selectedEvent / selectedEventRow can return the message the cursor is
 	// on (and any folded tunnel) without re-walking the cache. Reset on
-	// every rebuild.
+	// every rebuild. A subagent block's HEADER row contributes an empty
+	// eventRow here (it has no event of its own); headerRows says which
+	// rendered rows those are.
 	visibleRows []eventRow
+
+	// subagentBlocks is the events pane's per-agent grouping of the session
+	// being viewed (#1047): one block per subagent id named by a row, nil
+	// while a sort ranks the rows (grouping would contradict the ranking) or
+	// when no row names one. Rebuilt on every rebuild; the collapse state
+	// lives in subagentOpen, not here.
+	subagentBlocks map[string]*subagentBlock
+	// subagentOpen is the subagent ids whose blocks are expanded. Absent =
+	// collapsed, which is the default. Kept across rebuilds so a live tail
+	// does not re-collapse a block the operator opened; cleared when another
+	// session is opened, since ids are per-session.
+	subagentOpen map[string]bool
+	// headerRows maps a rendered-row index to the block whose header row sits
+	// there, so Enter can tell a header from a message without a second walk.
+	// Rebuilt on every rebuild.
+	headerRows map[int]*subagentBlock
 
 	// selectedEventKey pins the events-pane cursor to an event across
 	// rebuilds (see eventKey). Zero value = unpinned.
@@ -1053,6 +1083,9 @@ func (m *model) backToPodsPane() {
 	// flight against the old pod is dropped rather than applied.
 	m.spend.invalidate()
 	m.eventCt = 0
+	// Same reason as eventCt: the new pod's pipeline must not inherit the old
+	// pod's plugin-run counts.
+	m.pluginRuns = nil
 	m.lastCt = 0
 	m.rate = 0
 	m.pipeline = nil
@@ -1747,18 +1780,41 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// recent 1000 on the claim that it "matches the server's default cap" — the
 		// server's was 500, so the two never matched, and neither trims now.
 		//
-		// Which leaves m.events unbounded in BOTH dimensions, and worth stating because
-		// it is a laptop's memory: nothing caps depth now that the per-session 1000 is
-		// gone, and entries are only ever released wholesale — on a pod or endpoint
-		// switch (backToPodsPane resets the whole map) or an explicit operator prune — while
-		// cachedOnlySessionIDs deliberately keeps sessions the server has stopped
-		// listing. agentop holds the same full prompt and completion strings the proxy
-		// does, so resident size tracks the traffic it has watched.
+		// Which leaves the WATCHED session's depth unbounded, and worth stating
+		// because it is a laptop's memory: nothing caps depth now that the
+		// per-session 1000 is gone, and entries are only ever released wholesale —
+		// on a pod or endpoint switch (backToPodsPane resets the whole map), an
+		// explicit operator prune, or opening a different session — while
+		// cachedOnlySessionIDs deliberately keeps opened sessions the server has
+		// stopped listing. The WIDTH is bounded since #1542: streamed events are
+		// retained only for the session being watched (watchingSession), so an
+		// idle agentop stops growing and resident size tracks the session on
+		// screen rather than all traffic. agentop holds the same full prompt and
+		// completion strings the proxy does, for that one session.
 		//
 		// Learned from the echo, not assumed: see model.serverProjects.
 		m.serverProjects = msg.projected
 		// Only update if we're still focused on this session.
-		m.events[msg.id] = msg.events
+		//
+		// MERGE, not wholesale replace: events streamed while the snapshot
+		// request was in flight have a higher seq than the snapshot's tail
+		// (the server answers everything it held at request time), and a
+		// plain assignment dropped them until the next manual refresh (#1568).
+		// The comparison runs in the session's OWN numbering only —
+		// mergeLinked interleaves linked-bucket events, numbered in their own
+		// bucket's space, and a linked call can postdate the own tail, so the
+		// last element by time is not the highest own seq. A snapshot whose
+		// own events carry no seq at all (a proxy that predates paging) lands
+		// whole.
+		events := msg.events
+		if last := lastOwnSeq(events, msg.id); last > 0 {
+			for _, e := range m.events[msg.id] {
+				if eventSession(msg.id, &e) == msg.id && e.Seq > last {
+					events = append(events, e)
+				}
+			}
+		}
+		m.events[msg.id] = events
 		// A wholesale replacement the length check cannot see, so the gauge is re-folded
 		// over what just landed. NOT dropped: msg.events is projected (view=summary
 		// strips the manifest and the message count), so dropping the figure here blanked
@@ -2255,12 +2311,38 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 	e := *ev.Event
 	m.eventCt++
-	// Counted above but NOT appended when this session's timeline has been paged off its
-	// tail: a streamed event belongs at the end, and the end is not what is on screen, so
-	// appending would put a live event directly after one from the middle of the session
-	// and present the two as consecutive. The rate counter still moves because the traffic
-	// is real; [t] returns to the tail and picks these up in the refetch.
-	if !m.pagedBack(e.SessionID) {
+	// The pipeline pane's per-plugin counts, folded here for every arrival —
+	// watched or not, appended or dropped — so the pane stays alive with nothing
+	// open. See model.pluginRuns for why this is not a walk of m.events.
+	if e.Invocations != nil {
+		if m.pluginRuns == nil {
+			m.pluginRuns = map[string]int{}
+		}
+		for _, inv := range e.Invocations.Inbound {
+			m.pluginRuns[inv.Plugin]++
+		}
+		for _, inv := range e.Invocations.Outbound {
+			m.pluginRuns[inv.Plugin]++
+		}
+	}
+	// Counted above but NOT appended for either of two reasons:
+	//
+	// PAGED BACK — this session's timeline has been paged off its tail: a streamed
+	// event belongs at the end, and the end is not what is on screen, so appending
+	// would put a live event directly after one from the middle of the session and
+	// present the two as consecutive. The rate counter still moves because the
+	// traffic is real; [t] returns to the tail and picks these up in the refetch.
+	//
+	// NOT WATCHED (#1542) — the session is neither the one the user opened
+	// (selectedSess — pane-agnostic, so walking events → sessions → events does
+	// not punch a gap in the live tail) nor the timeline's. Retaining every
+	// session's stream was the 18 MB/min idle growth: streamed events are never
+	// interned (a live request event carries the whole conversation, 275–537 KB)
+	// and nothing released them. Everything the off-screen readers need still
+	// happens below — UpdatedAt, the summary stub, sessionsStale, the plugin
+	// counts above — and opening a session fetches a fresh interned snapshot,
+	// so nothing visible is lost but one round-trip on open.
+	if !m.pagedBack(e.SessionID) && m.watchingSession(e.SessionID) {
 		buf := append(m.events[e.SessionID], e)
 		m.events[e.SessionID] = buf
 	}
@@ -2309,6 +2391,27 @@ stale:
 		// bound it. Left alone because no session anyone has today is near it.
 		m.rebuildEventsTable()
 	}
+}
+
+// watchingSession reports whether agentop is holding this session's events
+// open: the one the user opened (selectedSess, which survives pane switches —
+// only opening another session or erasing clears it) or the timeline's
+// (openTimeline does not set selectedSess; leaving the timeline pane clears
+// it, so a session glanced at once does not keep its stream for the rest of
+// the run). This is the retention predicate for streamed events (#1542):
+// everything else arrives, updates its summary, and is dropped.
+func (m *model) watchingSession(id string) bool {
+	return m.selectedSess == id || m.timeline.session == id
+}
+
+// watchingSessionID is the id form of watchingSession: the session whose
+// events are being held open, "" when none is. The opened session wins over
+// the timeline's, matching which one a snapshot refresh is for.
+func (m *model) watchingSessionID() string {
+	if m.selectedSess != "" {
+		return m.selectedSess
+	}
+	return m.timeline.session
 }
 
 // flushSessionsTable re-sorts the session list by recency and rebuilds its table when a streamed
@@ -2571,10 +2674,10 @@ func (m *model) paneView() string {
 	// so it cannot perturb the pane it sits above.
 	rows := []string{header}
 	// EXACTLY WHAT layout() RESERVED, blank where there is nothing to say. Both reservations are
-	// height-gated and must stay that way — layout() runs only from the WindowSizeMsg handler, so
-	// a content-gated reservation would go stale the moment a poll landed, and stale in the
-	// direction that overflows. So the render fills them rather than the reservation tracking the
-	// render.
+	// height-gated and must stay that way — layout() runs on resizes, drawer toggles and pane
+	// transitions, none of them on a poll's schedule, so a content-gated reservation would go
+	// stale the moment a poll landed, and stale in the direction that overflows. So the render
+	// fills them rather than the reservation tracking the render.
 	//
 	// The case that made this necessary: the renderer can return FEWER lines than the reservation,
 	// which left the strip's row and the drawer's five unfilled and the footer six rows above the

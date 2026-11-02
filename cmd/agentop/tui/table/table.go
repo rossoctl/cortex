@@ -557,7 +557,18 @@ func (m Model) headersView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, s...)
 }
 
+// renderRow draws one row. A row of EXACTLY ONE CELL is a section row: it renders as
+// one line spanning every column, not as one cell squeezed into the first column's
+// width — the shape the events pane's subagent block headers need, where the label is
+// longer than any single column. Fewer cells than columns is already harmless
+// elsewhere; this pins the one-cell case to a meaning rather than leaving it a
+// truncated first cell. No caller rendered a one-cell row before this (the pipeline
+// pane's "── (app) ──" divider carries a cell per column), so the convention changes
+// nothing that existed.
 func (m *Model) renderRow(r int) string {
+	if len(m.rows[r]) == 1 {
+		return m.renderSectionRow(r)
+	}
 	texts := make([]string, len(m.rows[r]))
 	var spans [][]find.Range
 	if r < len(m.hits) && m.hits[r] {
@@ -600,6 +611,38 @@ func (m *Model) renderRow(r int) string {
 		s = append(s, m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, sp, row, match))))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, s...)
+}
+
+// renderSectionRow draws a one-cell row across the whole table width, in the same
+// row/cursor/match styles a data row gets. The line is the sum of the column widths
+// — without each cell's padding, which a spanning line has no use for, so it sits a
+// few columns short of a full data row's right edge and reads as its own kind of row.
+func (m *Model) renderSectionRow(r int) string {
+	total := 0
+	for _, col := range m.cols {
+		if col.Width > 0 {
+			total += col.Width
+		}
+	}
+	text := runewidth.Truncate(m.rows[r][0], total, "…")
+	var spans []find.Range
+	lit := false
+	if r < len(m.hits) && m.hits[r] {
+		spans = m.cellSpans(r, 0, text)
+		lit = len(spans) > 0
+	}
+
+	row, match := lipgloss.NewStyle(), m.styles.Match
+	switch {
+	case r == m.cursor:
+		row, match = m.styles.Selected, m.styles.CurrentMatch
+	case spans != nil && !lit:
+		row = m.styles.Marked
+	}
+	match = match.Inherit(row)
+
+	filled := runewidth.FillRight(text, total)
+	return m.styles.Cell.Inherit(row).Render(paint(filled, spans, row, match))
 }
 
 func clamp(v, low, high int) int {

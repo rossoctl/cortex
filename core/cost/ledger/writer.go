@@ -378,7 +378,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	//
 	// IT CANNOT MOVE THE COVERAGE RATIO, which is what the guard is really protecting. A
 	// row admitted on this clause alone sets neither PricedRequests nor PriceableRequests —
-	// the model-and-tokens test below fails on a nil extension and the priced branch is not
+	// usage.PriceableRequest fails on a nil extension and the priced branch is not
 	// taken — so priced-versus-priceable is untouched and the "1/10 priced forever" failure
 	// stays closed. What it adds is one Requests, for a request that really happened.
 	avoidedCost := hasCost && ev.TotalAvoidedMicros() > 0
@@ -511,12 +511,20 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	if c := pricing.UnitOf(w.rates, e.Host, model); c != "" {
 		r.Currency = rowLabel(c)
 	}
-	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
+	// The error rule is the ring's own function and the priceable rule matches
+	// the ring's costOf (#1566): the writer's private copies had drifted — any 4xx counted as an
+	// error where the ring excludes the egress refusals that are policy
+	// working, and "priceable" required a non-zero token count where the ring
+	// counts a successful model-bearing response with no usage as an unpriced
+	// GAP, so a truncated OpenAI stream read "9/9 priced" on today while the
+	// 1h window named the gap.
+	if usage.CountsAsError(e) {
 		r.Errors = 1
 	}
-	// Priceable: carried a model and a non-zero token count. The denominator for
-	// coverage — Requests is the wrong one, since only inference can be priced.
-	if r.Model != "" && r.Tokens > 0 {
+	// Priceable: the parser named a model and the request was not a usage-free
+	// failure. The denominator for coverage — Requests is the wrong one, since
+	// only inference can be priced.
+	if usage.PriceableRequest(e) {
 		r.PriceableRequests = 1
 	}
 	// The figure core/cost/settle settled. Record, not Decode: an unpriced record
@@ -553,10 +561,9 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 			r.CostMicros = ev.Micros()
 			r.PricedRequests = 1
 			// PRICED IMPLIES PRICEABLE, and it has to be said here because the test above
-			// does not cover this case. A response carrying the gateway's own cost header
-			// but no parsed token counts — a body-less response, which the proxy charges —
-			// has Tokens == 0, so the model-and-tokens test leaves PriceableRequests at 0
-			// while this branch sets PricedRequests to 1.
+			// does not cover every case. A response carrying the gateway's own cost header
+			// but no inference extension, or a failed one with no usage, leaves
+			// PriceableRequests at 0 while this branch sets PricedRequests to 1.
 			//
 			// That inverts the subset: every consumer computes coverage as
 			// priceable-minus-priced (see agentop's `cost` command and its spend strip), and
@@ -926,10 +933,9 @@ func (w *Writer) logDrops() {
 // writer, not about anybody's read: it happened once, no later read can rediscover it, and
 // every reader of this ledger is equally short because of it.
 //
-// No non-test caller today, and it stays exported anyway: it is the completeness signal the
-// package doc and Window's contract both cite, and the /v1/usage response has a Degraded
-// field already carrying the two READ-side counts beside it (see Caveats). This is the
-// write-side one that belongs there next, which is a sessionapi change rather than a reason
+// Called by sessionapi's /v1/usage handler, which surfaces it beside the
+// read-side Caveats. It stays exported for out-of-tree readers of the ledger
+// too, who need the same completeness signal.
 // to withdraw the number.
 func (w *Writer) Dropped() int64 { return w.dropped.Load() }
 

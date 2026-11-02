@@ -49,10 +49,11 @@ var ErrJudgeUncertain = fmt.Errorf("%w: judge produced unparseable output", llmc
 // routed back through the authbridge listener. That structurally
 // prevents the reentrancy that would otherwise occur (IBAC's judge call
 // triggering IBAC's OnRequest in a loop). Defense-in-depth: every
-// outbound judge request also carries `X-IBAC-Judge: 1`, which the
-// plugin's OnRequest checks at the very top and short-circuits on. So
-// even if a misconfiguration ever sent the judge call back through the
-// proxy, IBAC would skip itself.
+// outbound judge request also carries `X-IBAC-Judge: <sentinel>`, a
+// per-process random value the plugin's OnRequest checks at the very
+// top and short-circuits on. So even if a misconfiguration ever sent
+// the judge call back through the proxy, IBAC would skip itself — while
+// a caller setting the header to a guessed value skips nothing.
 type httpJudge struct {
 	client       *llmclient.Client
 	systemPrompt string
@@ -73,6 +74,7 @@ func newHTTPJudge(
 	timeout time.Duration,
 	maxTokens int,
 	jsonMode bool,
+	sentinel string,
 ) *httpJudge {
 	if systemPrompt == "" {
 		systemPrompt = defaultSystemPrompt
@@ -84,6 +86,7 @@ func newHTTPJudge(
 			Bearer:             bearer,
 			Timeout:            timeout,
 			SentinelHeaderName: "X-IBAC-Judge",
+			SentinelValue:      sentinel,
 		}),
 		systemPrompt: systemPrompt,
 		maxTokens:    maxTokens,

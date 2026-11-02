@@ -477,6 +477,13 @@ func runObserve(args []string) int {
 	// then opening the viewer anyway.
 	fs.Parse(args) //nolint:errcheck // ExitOnError never returns
 
+	// AGENTOP_PPROF_ADDR, when set, serves Go's pprof endpoints for the
+	// viewer's lifetime. Started and announced here, before tea.NewProgram
+	// takes the alt screen and stderr stops reaching the user.
+	if stop := maybeServePprof(); stop != nil {
+		defer stop()
+	}
+
 	// Best-effort sweep of edit-tempfiles older than 24h. Tempfiles are
 	// intentionally left in place on every exit path (success / abort /
 	// crash) so a user can recover an in-progress edit; the sweep keeps

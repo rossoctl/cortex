@@ -27,6 +27,10 @@ const (
 	// (or a server-first protocol) can't pin a goroutine. Only relevant on the
 	// sniffed ports, where the client speaks first, so it is rarely hit.
 	sniffTimeout = 5 * time.Second
+	// connectSniffTimeout bounds the TLS-bridge classify peek on a CONNECT
+	// tunnel. The banner of a server-first protocol only flows after this
+	// returns, so it is shorter than sniffTimeout to keep the delay unnoticeable.
+	connectSniffTimeout = 500 * time.Millisecond
 )
 
 // errSniffDone aborts the throwaway TLS handshake once we have the SNI.
@@ -151,6 +155,15 @@ type peekedConn struct {
 }
 
 func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite forwards to the embedded conn when it supports half-close, so
+// tunnel's half-close relay works when the client was wrapped for sniffing.
+func (c *peekedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
+}
 
 // Peek returns the next n buffered bytes without consuming them. Used by the
 // TLS-bridge classify step on the CONNECT and transparent paths.

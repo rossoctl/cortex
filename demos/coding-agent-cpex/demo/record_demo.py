@@ -153,7 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--check", action="store_true", help="fail on drift between steps, walkthrough and scenarios")
     mode.add_argument("--record", action="store_true", help="check, then record the walkthrough")
     ap.add_argument("--pace", default="2", help="seconds between scenarios while recording (default 2)")
-    ap.add_argument("--out", type=Path, default=DEMO_DIR / "demo" / "coding-agent-demo", help="output path, no extension")
+    ap.add_argument(
+        "--out", type=Path, default=DEMO_DIR / "demo" / "coding-agent-demo", help="output path, no extension"
+    )
     args = ap.parse_args(argv)
 
     problems = check()

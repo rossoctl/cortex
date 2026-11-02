@@ -145,6 +145,7 @@ func TestPlaceholderSwap_EndToEnd(t *testing.T) {
 	txCfg := []byte(`{
 	  "token_url":"` + exchangeSrv.URL + `",
 	  "default_policy":"exchange",
+	  "routes":{"rules":[{"host":"127.0.0.1","target_audience":"upstream"}]},
 	  "resolve_placeholders":true,
 	  "identity":{"type":"client-secret","client_id":"agent","client_secret":"secret"}
 	}`)

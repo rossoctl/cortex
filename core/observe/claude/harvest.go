@@ -482,10 +482,58 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 				AgentConfigDir: configDir,
 				LogFile:        path,
 				LogModTime:     st.ModTime(),
+				// The subagents' labels live in a sibling DIRECTORY of the transcript
+				// (<id>/subagents), whose mtime the skip above knows nothing about. That
+				// is fine, because a session only gains a subagent by appending the Agent
+				// tool call that spawned it to the transcript — which moves the
+				// transcript's mtime and re-parses the session, meta files and all. A
+				// skipped session keeps the Subagents its `since` entry already carried.
+				Subagents: readSubagents(filepath.Join(projDir, id, "subagents")),
 			}
 		}
 	}
 	return out, partial, skipped, nil
+}
+
+// readSubagents reads one session's subagents/agent-<id>.meta.json files into a map keyed
+// by the bare id. Nil when the directory is missing or holds nothing harvestable — a
+// session that never spawned a subagent, which is most of them, must not carry an empty
+// map the JSON would then spell out.
+//
+// Best-effort per file, for the same reason titleFromTranscript is: one unparseable meta
+// file must not cost the other labels. The transcripts sitting beside the meta files are
+// deliberately not read — see SessionMetadata.Subagents.
+func readSubagents(dir string) map[string]SubagentInfo {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out map[string]SubagentInfo
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".meta.json") {
+			continue
+		}
+		// The subagent transcripts share the agent- prefix (agent-<id>.jsonl), so the
+		// suffix is what says which kind of file this is.
+		id := strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".meta.json")
+		if id == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name)) //nolint:gosec // operator-supplied transcript dir
+		if err != nil {
+			continue
+		}
+		var info SubagentInfo
+		if json.Unmarshal(data, &info) != nil {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]SubagentInfo)
+		}
+		out[id] = info
+	}
+	return out
 }
 
 // harvestedAt reports the transcript mtime m was harvested at, for the incremental skip.

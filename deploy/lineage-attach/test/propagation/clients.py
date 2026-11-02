@@ -2,6 +2,7 @@
 echoed. With INBOUND_TRACEPARENT set the call runs inside a span continued
 from it, so `carried` can check the trace id survives. Usage: clients.py <row>
 Imports stay inside each function: a probe image carries one library."""
+
 import os
 import sys
 

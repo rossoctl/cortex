@@ -1,0 +1,16 @@
+# Pipeline patch for the unprotected twin (email-agent-unprotected).
+#
+# The same parsers k8s/ibac-patch.yaml adds to email-agent, without ibac.
+# They change nothing about what the twin does; they make agentop label
+# its rows (message/send, tools/call, the model) and file each chat under
+# its own session, so the two agents' timelines line up row for row and
+# differ only where IBAC acts.
+#
+# Applied by `make patch-config` through scripts/patch-ibac-config.sh.
+
+inbound_prepend:
+  - name: a2a-parser
+
+outbound_append:
+  - name: inference-parser
+  - name: mcp-parser

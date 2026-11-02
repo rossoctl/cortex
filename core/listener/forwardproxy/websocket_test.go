@@ -3,10 +3,8 @@ package forwardproxy
 import (
 	"bufio"
 	"context"
-	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -99,11 +97,6 @@ func (o *wsOrigin) originPort() string {
 
 // authority is how a request addresses the origin: wsHost at its port.
 func (o *wsOrigin) authority() string { return net.JoinHostPort(wsHost, o.originPort()) }
-
-func wsAccept(key string) string {
-	h := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	return base64.StdEncoding.EncodeToString(h[:])
-}
 
 func (o *wsOrigin) serve(conn net.Conn, br *bufio.Reader) {
 	fr := wsframe.NewReader(br, 64<<20, 64<<20)
@@ -220,10 +213,14 @@ func newWSHarness(t *testing.T, mode string, plugins ...pipeline.Plugin) *wsHarn
 		// Codex's session header, as a laptop install reads it.
 		SessionIDHeaders:    []string{session.CodexSessionHeader},
 		ResponsesWebSockets: mode,
-		dialTunnel: func(string, time.Duration) (net.Conn, error) {
-			return net.DialTimeout("tcp", originAddr, 5*time.Second)
-		},
 	}
+	// The CONNECT's own dial goes to the local origin too. dialTCP is package state,
+	// which is safe because no test in this package runs in parallel.
+	inner := dialTCP
+	dialTCP = func(network, _ string, _ time.Duration) (net.Conn, error) {
+		return inner(network, originAddr, 5*time.Second)
+	}
+	t.Cleanup(func() { dialTCP = inner })
 	h.proxy = httptest.NewServer(srv.Handler())
 	t.Cleanup(h.proxy.Close)
 	return h
@@ -554,10 +551,10 @@ func TestResponsesWebSocket_UncarriableSocketIsDeclined(t *testing.T) {
 	}
 }
 
-// The same handshake to a host that is not OpenAI's is neither carried nor declined:
-// it is forwarded with Upgrade stripped, as every WebSocket was, and gets its origin's
-// own answer. What a 426 means is only known for Codex against OpenAI.
-func TestResponsesWebSocket_OtherHostsAreForwardedAsBefore(t *testing.T) {
+// A Responses-shaped WebSocket on any host but OpenAI's is not this file's: it is
+// forwarded with its upgrade and the 101 spliced, as #1549 forwards every WebSocket,
+// whatever the mode.
+func TestResponsesWebSocket_OtherHostsAreForwardedLikeAnyWebSocket(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	t.Cleanup(store.Close)
 	var reached atomic.Int32
@@ -591,11 +588,41 @@ func TestResponsesWebSocket_OtherHostsAreForwardedAsBefore(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	// The origin declines with its own 405, which is relayed: not a 426 from the proxy.
 	if resp.StatusCode != http.StatusMethodNotAllowed || reached.Load() != 1 {
 		t.Errorf("status %d, origin reached %d times; want the origin's own 405", resp.StatusCode, reached.Load())
 	}
-	if got, _ := sawUpgrade.Load().(string); got != "" {
-		t.Errorf("origin received Upgrade %q; it must still be stripped", got)
+	if got, _ := sawUpgrade.Load().(string); got != "websocket" {
+		t.Errorf("origin received Upgrade %q; want websocket, forwarded", got)
+	}
+}
+
+// Forward mode hands Codex's socket across as #1549 hands any WebSocket: the origin
+// gets the upgrade and the client its 101, and the socket works. Nothing is parsed,
+// so no turn records a row.
+func TestResponsesWebSocket_ForwardModeReachesTheOriginAsAnUpgrade(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsForward)
+	c := h.dial(t, nil)
+	if c.status != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake answered %d (%s), want the origin's 101", c.status, c.body)
+	}
+	c.send(responseCreate("hello"))
+	c.readUntil("response.completed")
+	c.close()
+
+	h.origin.mu.Lock()
+	creates := len(h.origin.creates)
+	h.origin.mu.Unlock()
+	if creates != 1 {
+		t.Errorf("origin saw %d response.create messages, want 1", creates)
+	}
+	for _, e := range h.events(t, codexSID, false) {
+		if e.HTTPMethod == http.MethodPost {
+			t.Errorf("a forwarded socket recorded a turn row (%v %s); its frames are opaque", e.Phase, e.HTTPPath)
+		}
+		if e.TunnelReason == pipeline.TunnelWebSocket {
+			t.Errorf("a forwarded socket recorded a carried socket's %v row", e.Phase)
+		}
 	}
 }
 

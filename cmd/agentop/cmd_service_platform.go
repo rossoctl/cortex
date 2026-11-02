@@ -423,62 +423,38 @@ func unloadService(goos string, p servicePaths) error {
 	return nil
 }
 
-// runningPID returns the pid from a pidfile only when it is alive AND is one of
-// ours — see isProxyComm. Same narrow check install.sh's proxy_running uses.
+// runningPID returns the pid from a pidfile only when the probe says the proxy
+// is running. Built on setup_probe's proxyRunning — the set install.sh uses —
+// so the service path and the setup path can no longer disagree about whether
+// the proxy is running (#1565): the private copy here returned 0 whenever ps
+// failed, while setup's deliberately sandbox-blind check reported the proxy
+// running, and a hand-started proxy the install path then failed to see and
+// stop crash-looped the supervised copy against the port.
+//
+// The trade-off that blindness buys, stated so no one "fixes" it back: when ps
+// cannot see the process (seatbelt sandboxes, hidepid), the pidfile is trusted
+// as-is, exactly as install.sh trusts it. That means a stale pidfile naming a
+// recycled pid can be signalled here — the price of never failing to stop a
+// proxy ps is merely blind to. Tighten both call sites together or neither.
 func runningPID(pidFile string) int {
-	pid := livePID(pidFile)
-	if pid == 0 {
-		return 0
+	if pid, ok := proxyRunning(pidFile); ok {
+		return pid
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || !isProxyComm(string(out)) {
-		return 0 // pid recycled onto something else
-	}
-	return pid
+	return 0
 }
 
-func livePID(pidFile string) int {
-	b, err := os.ReadFile(pidFile) //nolint:gosec // operator-supplied path
-	if err != nil {
-		return 0
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return 0
-	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		return 0
-	}
-	return pid
-}
-
+// adoptablePID is runningPID plus the pre-rename proxy: a live pidfile process
+// whose executable is v0.7.0's authbridge-proxy, which an upgrade adopts
+// rather than fight for the port. preRenameProxyRunning is setup_probe's
+// version of the same check.
 func adoptablePID(p servicePaths) int {
 	if pid := runningPID(p.pidFile); pid > 0 {
 		return pid
 	}
-	pid := livePID(p.pidFile)
-	if pid == 0 {
-		return 0
+	if pid, ok := preRenameProxyRunning(filepath.Dir(p.binary), p.pidFile); ok {
+		return pid
 	}
-	exe := pidExePath(pid)
-	if exe == "" || !samePath(exe, filepath.Join(filepath.Dir(p.binary), "authbridge-proxy")) {
-		return 0
-	}
-	return pid
-}
-
-func pidExePath(pid int) string {
-	if exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return strings.TrimSuffix(exe, " (deleted)")
-	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil {
-		return ""
-	}
-	if comm := strings.TrimSpace(string(out)); filepath.IsAbs(comm) {
-		return comm
-	}
-	return ""
+	return 0
 }
 
 // samePath reports whether a and b name one file: equal as text, or equal once
@@ -508,16 +484,6 @@ func resolvePath(p string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, base), nil
-}
-
-// isProxyComm reports whether a `ps -o comm=` value names our proxy: its basename is
-// exactly "cortex". Not a substring, because macOS reports the full path and "cortex"
-// is also the repo's name, the product's, and ~/.cortex — a substring would claim a
-// process run from any checkout of this repo, and install stops what runningPID
-// returns. Linux reports the kernel's comm field instead, the basename capped at 15
-// characters, which "cortex" fits whole.
-func isProxyComm(comm string) bool {
-	return filepath.Base(strings.TrimSpace(comm)) == "cortex"
 }
 
 // stopPID asks politely, then waits. A proxy from before restarts stopped draining
@@ -791,14 +757,8 @@ func writeProxyStamp(p servicePaths) {
 	if h == "" || p.stampFile == "" {
 		return
 	}
-	tmp := p.stampFile + ".tmp"
-	if err := os.WriteFile(tmp, []byte(h+"\n"), 0o600); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort
-		return
-	}
-	if err := os.Rename(tmp, p.stampFile); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort
-	}
+	// Best effort by design — see the doc comment above.
+	_ = writeFileAtomic(p.stampFile, []byte(h+"\n"), 0o600)
 }
 
 // readProxyStamp returns the recorded hash, or "" when there is none to read.

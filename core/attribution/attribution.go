@@ -111,9 +111,8 @@ type Attributor struct {
 	cfg Config
 
 	mu sync.Mutex
-	// procs and lastProcClaim serve process attribution; see process.go.
-	procs         map[procKey]*procState
-	lastProcClaim time.Time
+	// procs serves process attribution; see process.go.
+	procs map[procKey]*procState
 	// owners is client affinity's: the agent whose header first named each session.
 	owners map[string]string
 	// seen is when each session id was last claimed or recorded. It is attribution's own
@@ -232,7 +231,7 @@ func (a *Attributor) Record(sessionID string, _ *pipeline.SessionEvent) {
 func (a *Attributor) Cleared() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.procs, a.lastProcClaim, a.owners, a.seen = nil, time.Time{}, nil, nil
+	a.procs, a.owners, a.seen = nil, nil, nil
 }
 
 // Deleted implements session.Deleter.

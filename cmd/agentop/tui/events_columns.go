@@ -51,6 +51,12 @@ type cellContext struct {
 	// ids pairs a request event with its response, computed once per rebuild by
 	// computeEventPairs. Carried here rather than recomputed per cell.
 	ids map[*pipeline.SessionEvent]int
+	// blockIDs renumbers a subagent block's member exchanges from 1 (#1047): the
+	// block reads as the subagent's own transcript, so its first exchange is 1,
+	// not the session-wide number the main conversation's rows keep. Nil unless
+	// blocks were collected this rebuild; a lookup that misses falls through to
+	// ids, which is what a main row always takes.
+	blockIDs map[*pipeline.SessionEvent]int
 	// invs is this row's invocations, computed once in the row loop.
 	//
 	// rebuildEventsTable already needs them for the hideInactive check, and
@@ -239,8 +245,11 @@ const (
 // display order.
 var eventColumns = []eventColumn{
 	{id: colIndex, width: 4, defaultOn: true, keep: keepHigh,
-		desc: "exchange number; a request and its response share one",
+		desc: "exchange number; a request and its response share one, numbered per subagent block",
 		cell: func(c cellContext) string {
+			if id, ok := c.blockIDs[c.row.event]; ok {
+				return strconv.Itoa(id)
+			}
 			if id, ok := c.ids[c.row.event]; ok {
 				return strconv.Itoa(id)
 			}
@@ -256,8 +265,23 @@ var eventColumns = []eventColumn{
 		cell:    func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.At.UnixNano()) }},
 	{id: colDir, width: 4, defaultOn: true, keep: keepLow,
-		desc:    "in = toward your agent, out = toward an upstream",
-		cell:    func(c cellContext) string { return shortDirection(c.row.event.Direction) },
+		desc: "in = toward your agent, out = toward an upstream; │ marks a subagent's row",
+		// "│" prefixes a subagent's row while its block is expanded (#1047) — the
+		// indent that says which rows are inside the block. It lives in THIS column
+		// because it is the first with a spare character ("out" is three of four),
+		// so the gutter costs no width and no refit. Only while blocks are active:
+		// under a sort the rows render flat (see rebuildEventsTable), and the
+		// subagent id still names the row in the detail pane. A search for "out"
+		// still matches, the gutter being a prefix.
+		cell: func(c cellContext) string {
+			d := shortDirection(c.row.event.Direction)
+			if c.row.event.Subagent != "" && c.m.subagentBlocks != nil {
+				return "│" + d
+			}
+			return d
+		},
+		// The bare direction, not the guttered cell: a sort groups like with like,
+		// and the gutter is not a value.
 		sortKey: func(c cellContext) sortValue { return strKey(shortDirection(c.row.event.Direction)) }},
 	// 6 is the heading with a sort glyph; no value is wider than "resp". It was 7 for
 	// the bracket glyphs that used to prefix the phase ("└│ resp").

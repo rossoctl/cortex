@@ -90,8 +90,8 @@ def test_empty_response_retry_recovers_after_two_failures():
 def test_empty_response_retry_reraises_unrelated_valueerror():
     """A ValueError with a different message must NOT be swallowed by the wrapper."""
     import asyncio
-    import pytest
 
+    import pytest
     from sparc_service.providers import _patch_empty_response_retry
 
     class FakeClient:

@@ -17,11 +17,11 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// A WebSocket upgrade on a Responses API path is answered 426 by the proxy, because
-// the origin's own answer to the stripped request is a 405 that Codex retries for
-// about six seconds before falling back to HTTPS. See declineResponsesWebSocket. With
-// listener.responses_websockets: forward the request is forwarded as before;
-// upgradestripped_test.go covers that side, and websocket_test.go covers parse.
+// Under listener.responses_websockets: decline, a WebSocket upgrade on a Responses API
+// path is answered 426 by the proxy, which Codex reads as "use HTTPS" and follows at
+// once. See declineResponsesWebSocket. Under forward the upgrade is forwarded and
+// spliced like any WebSocket (#1488); upgradestripped_test.go and websocket_test.go
+// cover that side, and websocket_test.go covers parse.
 
 // declineHarness is a forward proxy in front of an origin that counts what reaches it.
 type declineHarness struct {
@@ -147,9 +147,9 @@ func TestForwardProxy_ResponsesWebSocketIsDeclinedWith426(t *testing.T) {
 	}
 }
 
-// Forward mode restores the forwarding exactly: the origin is reached and its own 405
-// is what the client gets — the behaviour before the decline existed.
-func TestForwardProxy_ForwardMode_ForwardsTheUpgradeAsBefore(t *testing.T) {
+// Forward mode leaves the upgrade to the origin: it is reached, and an origin that
+// declines the upgrade with its own 405 is what the client gets, not a 426.
+func TestForwardProxy_ForwardMode_LeavesTheUpgradeToTheOrigin(t *testing.T) {
 	h := newDeclineHarnessWith(t, config.ResponsesWebSocketsForward)
 	resp, body := h.do(t, http.MethodGet, "/backend-api/codex/responses", websocketHeaders())
 
@@ -218,7 +218,7 @@ func TestForwardProxy_OnlyResponsesWebSocketsAreDeclined(t *testing.T) {
 	}
 }
 
-// OpenAI's own hosts are declined; any other host keeps the strip and its origin's
+// OpenAI's own hosts are declined; any other host is forwarded and gets its origin's
 // answer, since what a 426 means is only known for Codex against OpenAI.
 func TestForwardProxy_OnlyOpenAIHostsAreDeclined(t *testing.T) {
 	cases := []struct {
@@ -281,7 +281,9 @@ func TestForwardProxy_WebSocketTokenMatchesCaseInsensitively(t *testing.T) {
 }
 
 // Upgrade is a comma-separated list (RFC 9110 §7.8), possibly repeated, and websocket
-// anywhere in it is a WebSocket request.
+// anywhere in it is a WebSocket request. Every case here carries the Connection:
+// upgrade token the same section requires alongside it — see the Connection table
+// below for what happens without it.
 func TestUpgradesToWebSocket_ReadsTheTokenList(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -300,12 +302,49 @@ func TestUpgradesToWebSocket_ReadsTheTokenList(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := http.Header{}
+			h := http.Header{"Connection": []string{"Upgrade"}}
 			for _, v := range tc.values {
 				h.Add("Upgrade", v)
 			}
 			if got := upgradesToWebSocket(h); got != tc.want {
 				t.Errorf("upgradesToWebSocket(%q) = %v, want %v", tc.values, got, tc.want)
+			}
+		})
+	}
+}
+
+// RFC 9110 §7.8: Upgrade is only an upgrade request when Connection lists the
+// upgrade token, and a recipient ignores Upgrade otherwise — the check net/http's
+// own upgradeType makes before ReverseProxy honours one.
+//
+// Not a formality here: stripForUpstream SETS the normalized Connection/Upgrade
+// pair whenever the request is treated as an upgrade, so honouring a bare Upgrade
+// would have this proxy synthesize a handshake the client never sent, and splice
+// the origin's 101 onto a connection whose client is waiting for an ordinary
+// response (#1549 review).
+func TestUpgradesToWebSocket_RequiresTheConnectionToken(t *testing.T) {
+	cases := []struct {
+		name       string
+		connection []string
+		want       bool
+	}{
+		{"absent", nil, false},
+		{"keep-alive only", []string{"keep-alive"}, false},
+		{"close", []string{"close"}, false},
+		{"upgrade", []string{"upgrade"}, true},
+		{"capitalised", []string{"Upgrade"}, true},
+		{"in a list", []string{"keep-alive, Upgrade"}, true},
+		{"in a repeated header", []string{"keep-alive", "upgrade"}, true},
+		{"a longer token", []string{"upgrades"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{"Upgrade": []string{"websocket"}}
+			for _, v := range tc.connection {
+				h.Add("Connection", v)
+			}
+			if got := upgradesToWebSocket(h); got != tc.want {
+				t.Errorf("upgradesToWebSocket(Connection=%q) = %v, want %v", tc.connection, got, tc.want)
 			}
 		})
 	}

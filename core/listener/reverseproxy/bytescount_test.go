@@ -60,6 +60,11 @@ func bytesOf(t *testing.T, plugins []pipeline.Plugin, method, path, reqBody stri
 	}
 	resp.Body.Close()
 
+	// Waited rather than read: the unbuffered relay defers its response row to
+	// the end of ReverseProxy's copy (recordOnEOFBody), which can finish after
+	// the body was drained here.
+	waitForResponseEvent(t, store, session.DefaultSessionID)
+
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
 		t.Fatalf("want a request row and a response row, got %+v", v)

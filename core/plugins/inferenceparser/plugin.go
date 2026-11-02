@@ -147,7 +147,19 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 			Role:         msg.Role,
 			Content:      msg.Content,
 			ContentBytes: msg.ContentBytes,
+			ToolUseID:    msg.ToolCallID,
 		})
+	}
+	// A chat-completions tool result is a "role":"tool" message naming the call it answers
+	// by tool_call_id — the pairing key the timeline's tool spans close on. Anthropic and
+	// the Responses API surface theirs through the same ToolResults field.
+	for _, msg := range req.Messages {
+		if msg.Role == "tool" && msg.ToolCallID != "" {
+			ext.ToolResults = append(ext.ToolResults, pipeline.InferenceToolResult{
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.Content,
+			})
+		}
 	}
 	for _, tool := range req.Tools {
 		if tool.Function.Name == "" {
@@ -573,7 +585,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 // parses nothing, and feeding a bare payload to the SSE reader parses nothing — each of
 // them silently, which is why the shapes are told apart here instead.
 func carriesSSEFraming(frame []byte) bool {
-	frame = normalizeSSE(frame)
+	frame = parsercommon.NormalizeSSE(frame)
 	if bytes.HasPrefix(bytes.TrimLeft(frame, " \t\r\n"), []byte("data:")) {
 		return true
 	}
@@ -605,44 +617,6 @@ func markStreamedResponse(body []byte, ext *pipeline.InferenceExtension) {
 	if ext != nil && carriesSSEFraming(body) {
 		ext.StreamedResponse = true
 	}
-}
-
-// normalizeSSE puts a buffered SSE body into the one shape the parsers below read: no leading
-// byte-order mark, and LF line endings.
-//
-// BOTH HALVES ARE WIRE-LEGAL AND BOTH WERE MISSED. The event-stream format allows CRLF, LF or
-// CR as the line terminator and requires a decoder to strip one leading BOM — while detection
-// looked for "data:" after trimming " \t\r\n" (which does not include a BOM) or for a literal
-// "\ndata:" (which a CR-only stream never contains), and the parsers split on LF alone. So a
-// BOM-prefixed body, or a CR-only body whose first field is not `data:`, fell through to the
-// JSON arm: unmarshalling failed, usage stayed unset, and the request kept only whatever a cost
-// header happened to say. With no cost header there was nothing left to settle from.
-//
-// USED BY DETECTION AND PARSING, deliberately the same function. Fixing only the detector would
-// route such a body to a parser that still cannot read it, which trades a silent miss for a
-// silent empty parse.
-//
-// Allocation-free for the overwhelming majority: a body with no BOM and no CR is returned as
-// it came.
-func normalizeSSE(body []byte) []byte {
-	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
-	if !bytes.ContainsRune(body, '\r') {
-		return body
-	}
-	// WHAT IS LOAD-BEARING HERE, MEASURED RATHER THAN ASSUMED. The BOM strip and the CR-only
-	// replacement are: a CR-only body is ONE line to bytes.Split(body, "\n"), so every `data:`
-	// prefix check misses it and the usage is lost, and a leading BOM defeats the same check on the
-	// first line. Both have rows in sse_shapes_test.go that fail without them.
-	//
-	// THE CRLF-FIRST ORDERING IS NOT. Both parsers are line-based and TrimSpace each line, so a
-	// trailing \r is already handled — dropping this replacement entirely, leaving CR->LF alone,
-	// changes no observable behaviour in either dialect (mutation-tested). It stays as defence in
-	// depth for a future consumer that splits on a blank line rather than scanning lines, where
-	// CRLF collapsed by CR->LF alone WOULD become a blank line between every field; the PR body's
-	// claim that CRLF was a fix is wrong, and the CRLF rows in the tests are exercise rather than
-	// discrimination.
-	out := bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n"))
-	return bytes.ReplaceAll(out, []byte("\r"), []byte("\n"))
 }
 
 // foldResponseFrame folds one streamed frame into the running state via the dialect the
@@ -776,7 +750,7 @@ func parseInferenceJSON(body []byte, ext *pipeline.InferenceExtension) {
 func parseInferenceSSE(body []byte, ext *pipeline.InferenceExtension) {
 	markStreamedResponse(body, ext)
 	state := &inferenceStreamState{}
-	for _, line := range bytes.Split(normalizeSSE(body), []byte("\n")) {
+	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
@@ -963,12 +937,16 @@ type inferenceMessage struct {
 	Role         string
 	Content      string
 	ContentBytes int
+	// ToolCallID is the tool_call_id of a chat-completions "role":"tool" result message:
+	// the id of the assistant tool_calls entry it answers. Empty on every other role.
+	ToolCallID string
 }
 
 func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCallID string          `json:"tool_call_id"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -976,6 +954,7 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	m.Role = raw.Role
 	m.Content = flattenContent(raw.Content)
 	m.ContentBytes = contentBytes(raw.Content)
+	m.ToolCallID = raw.ToolCallID
 	return nil
 }
 

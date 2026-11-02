@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -41,7 +40,7 @@ _live_only = pytest.mark.skipif(
 
 # Load credentials from /root/.env if present
 _env_file = Path("/root/.env")
-if _env_file.exists():
+if os.access(_env_file, os.R_OK):  # unreadable as non-root (CI runners): the tests skip then
     for line in _env_file.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -168,8 +167,9 @@ PROMPT = [
 
 def _schema_to_pydantic(schema: dict):
     """Reproduce ALTK's json_schema_to_pydantic_model conversion."""
-    from pydantic import BaseModel, Field, create_model
-    from typing import Optional, Any
+    from typing import Any
+
+    from pydantic import Field, create_model
 
     type_mapping = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
     fields = {}

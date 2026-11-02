@@ -963,11 +963,8 @@ func bobWriteKeys(path string, edits []bobEdit) error {
 		// Back the file up ONCE and never overwrite it, matching writeSettings: a
 		// second enable, or an enable/disable pair, must not replace the pristine
 		// pre-Cortex file with one agentop already edited.
-		bak := path + ".bak"
-		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
-			if werr := os.WriteFile(bak, src, 0o600); werr != nil {
-				return fmt.Errorf("writing backup %s: %w", bak, werr)
-			}
+		if berr := backupOnce(path, src); berr != nil {
+			return berr
 		}
 	}
 
@@ -992,15 +989,10 @@ func bobWriteKeys(path string, edits []bobEdit) error {
 		return fmt.Errorf("%s: edit would produce invalid JSON (%w); file left unchanged", path, jerr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
+	// Atomic and symlink-resolving; see writeSettings for why the fixed ".tmp"
+	// name had to go (#1565).
 	// 0600: this file commonly holds API tokens in the same block.
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeFileAtomic(path, out, 0o600)
 }
 
 // bobBackupNote describes what this particular write will and will not preserve, in

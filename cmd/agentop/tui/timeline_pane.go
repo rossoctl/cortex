@@ -21,8 +21,9 @@ import (
 // draws them.
 //
 // An agent cell is a stacked bar of how that cell's time divided: tools running at the
-// baseline, then the model generating, retrying after a failed call, waiting on its subagents,
-// and waiting on the user. A host cell's height is how many requests were in flight at once.
+// baseline (a background job is a tool still running, so it counts here), then the model
+// generating, retrying after a failed call, waiting on its subagents, and waiting on the user.
+// A host cell's height is how many requests were in flight at once.
 
 // timelineRefresh is the most often a live session's timeline is refetched, and how often the
 // layout's "now" moves for one with a call in flight.
@@ -482,6 +483,10 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 	}
 	m.selectedSess = session
 	m.pane = paneEvents
+	// Leaving the timeline pane: its session is a #1542 retention key, so the
+	// drill-down drops it the same way Esc does — the session stays watched
+	// through selectedSess, which the lines above just set.
+	m.timeline.session = ""
 	m.revealSeq, m.revealSess = seq, session
 	m.rebuildEventsTable()
 	revealed := m.revealPendingSeq()
@@ -499,6 +504,22 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 func (m *model) revealPendingSeq() bool {
 	if m.revealSeq == 0 || m.revealSess != m.selectedSess {
 		return false
+	}
+	// An event inside a COLLAPSED subagent block is not among visibleRows, so the
+	// loop below could not land on it and the reveal would wait forever. The
+	// Timeline draws a lane per subagent, so Enter there names subagent rows as
+	// readily as the conversation's — open the block that holds the target and
+	// rebuild, then land as usual.
+	for _, ev := range m.events[m.selectedSess] {
+		if ev.Seq != m.revealSeq || ev.Subagent == "" || m.blockOpen(ev.Subagent, false) {
+			continue
+		}
+		if m.subagentOpen == nil {
+			m.subagentOpen = make(map[string]bool)
+		}
+		m.subagentOpen[ev.Subagent] = true
+		m.rebuildEventsTable()
+		break
 	}
 	for i, r := range m.visibleRows {
 		if r.event != nil && r.event.Seq == m.revealSeq && eventSession(m.selectedSess, r.event) == m.selectedSess {
@@ -833,10 +854,19 @@ func (m *model) cursorStrip(lay tlLayout) string {
 		parts = append(parts, sanitizeLabel(p))
 	}
 	if len(parts) == 0 {
-		if h, ok := m.cellHost(lay, cell); ok {
-			return styleMuted.Render(head + "no tool running; a request to " + sanitizeLabel(h.Host) + "  [enter] events")
+		// The turn covering the cell names its model, so a client running several models side
+		// by side (Bob's classifier beside its main turns) reads apart.
+		suffix := ""
+		for _, tu := range m.timeline.tl.Turns {
+			if tu.Model != "" && !cell.from.Before(tu.Start) && (tu.End == nil || cell.from.Before(*tu.End)) {
+				suffix = " (" + sanitizeLabel(tu.Model) + " turn)"
+				break
+			}
 		}
-		return styleMuted.Render(head + "no tool running in this cell")
+		if h, ok := m.cellHost(lay, cell); ok {
+			return styleMuted.Render(head + "no tool running" + suffix + "; a request to " + sanitizeLabel(h.Host) + "  [enter] events")
+		}
+		return styleMuted.Render(head + "no tool running" + suffix + " in this cell")
 	}
 	if len(parts) > 1 {
 		head += fmt.Sprintf("(%d) ", len(parts))

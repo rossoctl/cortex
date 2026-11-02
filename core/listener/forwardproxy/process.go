@@ -13,6 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/peerproc"
+	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
@@ -249,4 +250,19 @@ func (s *Server) noteSelfTraffic(exe string, dest netip.AddrPort, pid int32) {
 			"exe", exe, "service", dest.String(), "service_pid", pid)
 	}
 	slog.Debug("forward-proxy: agent self-traffic forwarded without recording", "exe", exe, "service", dest.String(), "service_pid", pid)
+}
+
+// RestoreClaims puts back the process claims in sums, the session archive's summaries, so a
+// process that named a session before a restart still answers with it before it names it
+// again. A no-op unless process attribution is on. Call it before the proxy serves.
+func (s *Server) RestoreClaims(sums []session.SessionSummary) {
+	if !s.processesOn() {
+		return
+	}
+	a := s.attributor()
+	for _, sum := range sums {
+		for p, sp := range sum.ProcSpans() {
+			a.Restore(sum.ID, p, sp.Last)
+		}
+	}
 }

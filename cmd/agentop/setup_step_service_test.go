@@ -300,7 +300,9 @@ func TestServiceStepPreflight(t *testing.T) {
 		moveForwardPort(t, env, "127.0.0.1:47700")
 		strangerOn(t, "47700")
 		_, prob := serviceStep{}.plan(env)
-		if prob == nil || !strings.HasPrefix(prob.reason, "127.0.0.1:47700 is held by /usr/bin/python3 (pid 31337)") {
+		// The message names the listener since #1545 — the preflight checks
+		// every port the config binds, so which one matters.
+		if prob == nil || !strings.HasPrefix(prob.reason, "the forward-proxy port 127.0.0.1:47700 is held by /usr/bin/python3 (pid 31337)") {
 			t.Errorf("moved-port problem = %+v", prob)
 		}
 	})
@@ -316,7 +318,7 @@ exit 0
 `)
 		fakeProc(t, 31337, "")
 		_, prob := serviceStep{}.plan(env)
-		if prob == nil || prob.reason != "127.0.0.1:47600 is held by ~/tools/squid (pid 31337), not this Cortex" {
+		if prob == nil || prob.reason != "the forward-proxy port 127.0.0.1:47600 is held by ~/tools/squid (pid 31337), not this Cortex" {
 			t.Errorf("problem = %+v", prob)
 		}
 	})

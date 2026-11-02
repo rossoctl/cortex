@@ -167,7 +167,7 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 		}
 		st.prev = msgs
 
-		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq}
+		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model}
 		if c.resp == nil {
 			t.Turns = append(t.Turns, turn)
 			continue
@@ -356,8 +356,10 @@ func pairCalls(events []pipeline.SessionEvent) []call {
 	return calls
 }
 
-// agentOf names the agent that sent a request. Only Claude Code's requests are attributed:
-// AgentRole is set by its cc_is_subagent marker, and Subagent by its agent id header.
+// agentOf names the agent that sent a request. Claude Code's requests carry their own
+// markers: AgentRole from its cc_is_subagent header, Subagent from its agent id header.
+// Every other known client gets the single main row — nothing on the wire says which of
+// its calls belong together beyond that.
 func agentOf(e *pipeline.SessionEvent) (string, bool) {
 	switch {
 	case e.Subagent != "":
@@ -366,12 +368,20 @@ func agentOf(e *pipeline.SessionEvent) (string, bool) {
 		return UnseparatedAgent, true
 	case e.Inference.AgentRole == pipeline.AgentRoleMain:
 		return MainAgent, true
+	case e.Client != nil && pipeline.IsKnownAgent(e.Client.Name):
+		return MainAgent, true
 	}
 	return "", false
 }
 
+// isSideCall drops a call that is not an agent's work. The no-tools rule is Claude Code only
+// (AgentRole set): it holds because Claude always sends a manifest on real turns, while another
+// client's tool-less calls (Bob's security classifier) are real turns with real cost. The prompt
+// literals run for every client: they match Claude's own progress and recap prompt text, which
+// no other client sends, and a recap storm reads as turns on any session that carries one —
+// including pre-marker Claude Code traffic, attributed by client name alone.
 func isSideCall(inf *pipeline.InferenceExtension) bool {
-	if len(inf.Tools) == 0 && inf.ToolCount == 0 {
+	if inf.AgentRole != "" && len(inf.Tools) == 0 && inf.ToolCount == 0 {
 		return true
 	}
 	for i := len(inf.Messages) - 1; i >= 0; i-- {

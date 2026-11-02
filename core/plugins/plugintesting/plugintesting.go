@@ -36,9 +36,11 @@ type JWTValidationStub struct {
 }
 
 // NewJWTValidation wraps a pre-built auth handler as a pipeline
-// plugin equivalent to jwt-validation. audienceFromHost=true
-// mirrors the production audience_mode:per-host path, deriving the
-// expected audience from pctx.Host at request time.
+// plugin equivalent to jwt-validation. audienceFromHost=true derives
+// the expected audience from pctx.Host at request time — no longer a
+// production path (jwt-validation's audience_mode:per-host was
+// removed as forgeable), retained to pin the auth-layer deriver
+// itself.
 func NewJWTValidation(a *auth.Auth, audienceFromHost bool) *JWTValidationStub {
 	return &JWTValidationStub{inner: a, audienceFromHost: audienceFromHost}
 }

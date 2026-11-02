@@ -197,8 +197,12 @@ Some limitations worth knowing:
   header under the session of that process or of its nearest ancestor that named one —
   so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
   in the agent's session, including opaque tunnels that cannot be decrypted. A process of
-  no agent (your own terminal's `curl`) lands in `default` while any agent has named a
-  session in the last five minutes, and otherwise in the most recently active session. An
+  no agent (your own terminal's `curl`, an IDE's update check) lands in `default`, even
+  while no agent is talking. Before, it went to the most recently active session once no
+  agent had named a session for five minutes. So an idle laptop filed every background
+  poll under the last session to speak. Which process named which session survives a
+  restart through the session archive. So a process that keeps running, such as Bob's
+  plugin host, keeps its session before it sends its session header again. An
   agent talking to its own service on this machine — OpenCode's TUI and its background
   service — is forwarded without being recorded when the service runs the agent's own
   executable and is either the agent's direct child or has named a session. OpenCode
@@ -481,6 +485,24 @@ by a fingerprint of the block — never the reasoning itself. It holds no prompt
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
 
+## The `memory:` configuration
+
+The Go runtime sizes its heap to roughly twice the live heap by default, and
+reading sessions leaves the memory the encoder expanded from the store's
+sharing as idle RSS — together those carried a live heap of ~1.4GB as 2.9GB of
+resident memory. `memory.limit_mb` applies the Go runtime's soft memory limit
+at startup; a local install defaults it to **2048**.
+
+| Field | Default (local) | Meaning |
+|---|---|---|
+| `limit_mb` | 2048 | Soft limit in MB. Zero disables it. |
+
+The limit is **soft**: near it the garbage collector runs more often (a little
+CPU for the memory), and if the sessions genuinely need more than the limit the
+process keeps allocating and growing exactly as it would without one — nothing
+fails, nothing crashes. Setting it too low costs speed, not availability. Set
+it explicitly to change the default; `agentop service restart` applies it.
+
 ## The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees
@@ -502,6 +524,12 @@ effect only after `agentop service restart`. Note the reload does not *refuse*
 the edit — `/reload/status` reports a successful reload and `/config` serves
 the new values while the running bridge keeps its startup settings. Restart to
 apply.
+
+With `mode: enabled`, the session API's bind is pinned to loopback whatever
+`listener.session_api_addr` says (an explicit `0.0.0.0:9094` becomes
+`127.0.0.1:9094`): under the bridge it serves **decrypted** request and
+response bodies, and it is unauthenticated. `kubectl port-forward` and
+agentop still reach it through the pod's loopback.
 
 ## `agentop: command not found`
 
@@ -790,7 +818,7 @@ The other reasons you may see, and what each one asks of you:
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
-| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
+| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout. Without the TLS bridge the CONNECT is answered `502` and no tunnel opened. With the bridge on (this install's default) the CONNECT is answered `200` first, because a redirect can still send the request to a live server; when nothing rescued it, the close row carries that `200` with the dial error in `error`. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
 
 Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
 `program-refused` when the earlier failure it remembers was one. The others are either
@@ -803,6 +831,21 @@ also keeps them as a list, which `agentop doctor` prints and the stats listener 
 ```sh
 curl -s http://127.0.0.1:47602/tls-bridge/unread
 ```
+
+The stats port also serves Go's pprof profiles under `/debug/pprof/` — this answers
+"what is the proxy holding in memory", which `ps` RSS cannot (freed pages the kernel
+has not reclaimed still count as resident on macOS):
+
+```sh
+curl -s --noproxy '*' http://127.0.0.1:47602/debug/pprof/heap -o /tmp/heap.pb.gz
+go tool pprof -top -inuse_space /tmp/heap.pb.gz
+```
+
+`go tool pprof` cannot read the profile from a pipe, so the two-step form it is. The
+`--noproxy '*'` matters on this machine: the shell's proxy env points at cortex itself.
+The profiles expose stack traces and argv rather than object contents, but are served
+only when `listener.bind_loopback_only` is true (the local install's default), and the
+endpoints refuse a non-loopback Host or any browser Origin.
 
 `programs` has one entry per program Cortex is not reading: `program` and `agent` (the
 executables), `reason`, `connections` (how many of the program's connections Cortex has

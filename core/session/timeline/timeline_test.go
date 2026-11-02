@@ -851,3 +851,107 @@ func TestLostTurnIsNotASuccess(t *testing.T) {
 		t.Errorf("sp = %+v, want it ended at the first failure (300s)", x)
 	}
 }
+
+// bobTurn records a chat-completions call from a known non-Claude client: no Subagent, no
+// AgentRole, attributed only by Client.
+func (r *rec) bobTurn(model string, start, dur float64, msgs []pipeline.InferenceMessage, results []pipeline.InferenceToolResult, calls ...pipeline.InferenceToolCall) {
+	id := r.id()
+	client := &pipeline.EventClient{Name: "bob"}
+	r.add(pipeline.SessionEvent{At: at(start), Phase: pipeline.SessionRequest, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+		Inference: &pipeline.InferenceExtension{Model: model, Messages: msgs, ToolResults: results}})
+	r.add(pipeline.SessionEvent{At: at(start + dur), Phase: pipeline.SessionResponse, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+		StatusCode: 200, Duration: time.Duration(dur * float64(time.Second)),
+		Inference: &pipeline.InferenceExtension{Model: model, FinishReason: "stop", ToolCalls: calls}})
+}
+
+// A known client that sends no Claude markers still gets turns, all on the single main row —
+// including its tool-less side calls, which are real model spend, labeled by model.
+func TestKnownNonClaudeClientGetsTurnsOnMainRow(t *testing.T) {
+	var r rec
+	r.bobTurn("premium-ide", 0, 10, []pipeline.InferenceMessage{user("hi")}, nil)
+	r.bobTurn("security", 12, 2, []pipeline.InferenceMessage{user("check")}, nil) // side call: no tools
+	tl := Build("s", r.events, at(30))
+	if len(tl.Turns) != 2 {
+		t.Fatalf("Turns = %d, want 2 (side calls of a non-Claude client are turns)", len(tl.Turns))
+	}
+	for _, tu := range tl.Turns {
+		if tu.Agent != MainAgent {
+			t.Fatalf("turn agent = %q, want %q", tu.Agent, MainAgent)
+		}
+	}
+	if tl.Turns[0].Model != "premium-ide" || tl.Turns[1].Model != "security" {
+		t.Fatalf("models = %q, %q; want premium-ide, security", tl.Turns[0].Model, tl.Turns[1].Model)
+	}
+	if len(tl.Agents) != 1 || tl.Agents[0].ID != MainAgent {
+		t.Fatalf("Agents = %+v, want one main row", tl.Agents)
+	}
+}
+
+// Unknown and pre-capture clients get no turns: the timeline must not claim agency where
+// there is none, and a nil Client must not panic.
+func TestUnknownClientGetsNoTurns(t *testing.T) {
+	var r rec
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example",
+		Client:    &pipeline.EventClient{Name: ""},
+		Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{user("hi")}, Tools: tools}})
+	r.add(pipeline.SessionEvent{At: at(5), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 200})
+	if tl := Build("s", r.events, at(10)); len(tl.Turns) != 0 {
+		t.Fatalf("Turns = %d, want 0 for an unknown client", len(tl.Turns))
+	}
+	var r2 rec
+	id2 := r2.id()
+	r2.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id2, Host: "llm.example",
+		Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{user("hi")}, Tools: tools}})
+	if tl := Build("s2", r2.events, at(10)); len(tl.Turns) != 0 {
+		t.Fatalf("Turns = %d, want 0 for a nil Client", len(tl.Turns))
+	}
+}
+
+// A Bob-shaped session end to end: the tool call closes on the tool_call_id result, and the
+// Claude-Code marker machinery (returns, jobs) stays empty because Bob sends none of it.
+func TestBobSessionToolsCloseAndReturnsStayEmpty(t *testing.T) {
+	var r rec
+	r.bobTurn("premium-ide", 0, 10, []pipeline.InferenceMessage{user("list files")},
+		nil, pipeline.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`})
+	// The next request carries the tool result by tool_call_id (the parser's parse shape).
+	r.bobTurn("premium-ide", 12, 8, []pipeline.InferenceMessage{user("list files")},
+		[]pipeline.InferenceToolResult{result("call_1", "file_a\nfile_b")})
+	tl := Build("s", r.events, at(30))
+	tool := findTool(t, tl, "call_1")
+	if tool.Name != "read_dir" {
+		t.Fatalf("tool name = %q", tool.Name)
+	}
+	if tool.End == nil || tool.Lost {
+		t.Fatalf("tool = %+v, want closed by the tool_call_id result", tool)
+	}
+	if want := at(12); !tool.End.Equal(want) {
+		t.Fatalf("tool end = %v, want the result-bearing request at %v", tool.End, want)
+	}
+	if len(tl.Returns) != 0 || len(tl.Jobs) != 0 {
+		t.Fatalf("Returns = %+v, Jobs = %+v; both are Claude Code markers Bob never sends", tl.Returns, tl.Jobs)
+	}
+}
+
+// A pre-marker Claude Code call (AgentRole empty, attributed by its client name) still drops
+// its recap: the prompt literals are Claude's own prompt text, so they run for every client,
+// while the no-tools rule stays Claude Code only.
+func TestPreMarkerRecapIsNotATurn(t *testing.T) {
+	var r rec
+	client := &pipeline.EventClient{Name: "claude-code"}
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example", Client: client,
+		Inference: &pipeline.InferenceExtension{Tools: tools, Messages: []pipeline.InferenceMessage{
+			user("The user stepped away and is coming back. Recap in under 40 words.")}}})
+	r.add(pipeline.SessionEvent{At: at(1), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", Client: client,
+		StatusCode: 200, Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}})
+	id = r.id()
+	r.add(pipeline.SessionEvent{At: at(2), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example", Client: client,
+		Inference: &pipeline.InferenceExtension{Tools: tools, Messages: []pipeline.InferenceMessage{user("go")}}})
+	r.add(pipeline.SessionEvent{At: at(3), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", Client: client,
+		StatusCode: 200, Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}})
+	tl := Build("s", r.events, at(4))
+	if len(tl.Turns) != 1 || !tl.Turns[0].Start.Equal(at(2)) {
+		t.Errorf("turns = %+v, want only the real call at 2s", tl.Turns)
+	}
+}

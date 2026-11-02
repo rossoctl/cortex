@@ -80,9 +80,8 @@ still omit `audience`, `audience_file`, and `allowed_audiences` entirely
 
 **Session / log migration:** jwt-validation deny-path `Details` used a
 single key `expected_audience` (string). It now emits
-`expected_audiences` (comma-joined list of configured inbound audiences)
-and `expected_audience_host` (per-host derived audience, may
-be empty). Update saved queries and dashboards that filtered on the old
+`expected_audiences` (comma-joined list of configured inbound audiences).
+Update saved queries and dashboards that filtered on the old
 key.
 
 ### `jwt-validation`: `placeholder_mode` / `placeholder_ttl` (optional, off by default)
@@ -606,8 +605,7 @@ already know these; agentop filters match substring on both key and
 value):
 
 - Auth gates (jwt-validation): `expected_issuer`, `expected_audiences`
-  (comma-joined configured inbound audiences), `expected_audience_host`
-  (per-host derived audience, may be empty), `token_subject`,
+  (comma-joined configured inbound audiences), `token_subject`,
   `token_audience`, `token_scopes`.
 - Outbound routers (token-exchange): `route_matched` (`"true"`/`"false"`),
   `route_host`, `target_audience`, `requested_scopes`, `cache_hit`.
@@ -1341,7 +1339,7 @@ What `llmclient` gives you:
 - An OpenAI-compatible chat-completions client (`Client.Call`, `Client.CallRaw`).
 - Generic JSON-from-prose extraction (`ExtractJSON[T]`, `CallStructured[T]`) that handles models which wrap JSON in code fences or prose.
 - A two-bucket error model that maps cleanly to `403` (LLM responded but unparseable — wraps `ErrUncertain`) vs `503` (LLM unreachable — does not wrap `ErrUncertain`).
-- A reentrancy sentinel (`Options.SentinelHeaderName`) for breaking loops when the LLM call would otherwise pass back through the plugin's own pipeline.
+- A reentrancy sentinel (`Options.SentinelHeaderName` + `Options.SentinelValue` from `NewSentinelValue`) for breaking loops when the LLM call would otherwise pass back through the plugin's own pipeline. Compare against the exact value — outbound headers are the agent's own request, so a caller who can set headers must not be able to switch the plugin off. The default client also strips the sentinel from cross-origin redirects (`SentinelRedirectPolicy`); a custom `Options.HTTPClient` replaces that policy and must install it itself.
 
 Plugins keep ownership of:
 

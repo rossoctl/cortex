@@ -24,71 +24,34 @@ import (
 // kernel accepts connections on a bound socket nobody is serving yet, so a client that
 // arrives during those seconds is answered late instead of refused.
 
-// plannedListener is one socket main serves: name is how main asks for it and how an
-// error names it, addr is as configured.
-type plannedListener struct {
-	name, addr string
-}
-
-// listenerPlan lists every socket main serves, under the same conditions it serves them.
-// reservedListeners.take and claimed make a disagreement fatal at boot, in either direction.
-func listenerPlan(cfg *config.Config, local bool) ([]plannedListener, error) {
-	var plan []plannedListener
-	roles := cfg.Listener.ActiveRoles()
-	if roles[config.RoleReverse] {
-		switch {
-		case !cfg.Listener.InboundTransparent():
-			plan = append(plan, plannedListener{"reverse-proxy", cfg.Listener.ReverseProxyAddr})
-		case local:
-			// No iptables on a local install to REDIRECT to it; main says so and skips it.
-		case cfg.Listener.TransparentInboundAddr == "":
-			// The bind used to refuse this; net.Listen would take "" as a random port.
-			return nil, fmt.Errorf("transparent-inbound: transparent_inbound_addr is empty but inbound_interception is transparent")
-		default:
-			plan = append(plan, plannedListener{"transparent-inbound", cfg.Listener.TransparentInboundAddr})
-		}
-	}
-	if roles[config.RoleForward] {
-		plan = append(plan, plannedListener{"forward-proxy", cfg.Listener.ForwardProxyAddr})
-		if !local && cfg.Listener.TransparentProxyAddr != "" {
-			plan = append(plan, plannedListener{"transparent-proxy", cfg.Listener.TransparentProxyAddr})
-		}
-	}
-	plan = append(plan, plannedListener{"stats", cfg.Stats.StatsAddress})
-	if cfg.Session.SessionEnabled() && cfg.Listener.SessionAPIAddr != "" {
-		plan = append(plan, plannedListener{"session-api", cfg.Listener.SessionAPIAddr})
-	}
-	plan = append(plan, plannedListener{"health", cfg.Listener.HealthAddr})
-	return plan, nil
-}
-
 // reservedListeners holds the bound sockets until the servers that serve them start.
 type reservedListeners map[string]net.Listener
 
 // reserveListeners binds every planned socket, or none: on a failure it closes what it
-// bound and names the socket that could not be. The failure is a *listenError, which keeps
-// the same message and additionally carries the address, so the caller can classify a
-// taken port and say who holds it — see portconflict.go.
-func reserveListeners(plan []plannedListener) (reservedListeners, error) {
+// bound and names the socket that could not be. The plan is config.ListenerPlan's; the
+// failure is a *listenError, which keeps the same message and additionally carries the
+// address, so the caller can classify a taken port and say who holds it — see
+// portconflict.go.
+func reserveListeners(plan []config.PlannedListener) (reservedListeners, error) {
 	r := make(reservedListeners, len(plan))
 	for _, p := range plan {
-		ln, err := net.Listen("tcp", p.addr)
+		ln, err := net.Listen("tcp", p.Addr)
 		if err != nil {
 			r.closeAll()
-			return nil, &listenError{name: p.name, addr: p.addr, err: err}
+			return nil, &listenError{name: p.Name, addr: p.Addr, err: err}
 		}
-		r[p.name] = ln
+		r[p.Name] = ln
 	}
 	return r, nil
 }
 
 // take hands a reserved socket to the server that serves it. A name the plan did not
-// reserve is a disagreement with listenerPlan and fatal: binding it here instead would put
+// reserve is a disagreement with the listener plan and fatal: binding it here instead would put
 // it after the data again.
 func (r reservedListeners) take(name string) net.Listener {
 	ln, ok := r[name]
 	if !ok {
-		fatalf("internal: the %s listener was not reserved; listenerPlan and main disagree", name)
+		fatalf("internal: the %s listener was not reserved; the listener plan and main disagree", name)
 	}
 	delete(r, name)
 	return ln
@@ -111,7 +74,7 @@ func (r reservedListeners) claimed() error {
 		left = append(left, name)
 	}
 	sort.Strings(left)
-	return fmt.Errorf("internal: reserved but never served: %s; listenerPlan and main disagree", strings.Join(left, ", "))
+	return fmt.Errorf("internal: reserved but never served: %s; the listener plan and main disagree", strings.Join(left, ", "))
 }
 
 func (r reservedListeners) closeAll() {

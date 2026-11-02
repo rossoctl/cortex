@@ -211,8 +211,9 @@ func spendBandCells(s spendSummary, width int) []bandCell {
 
 // renderSpendBand is the band as PLAIN TEXT: one line, no escape sequences.
 //
-// This is what the width arithmetic and every assertion run over, which is why it is the form the
-// renderer publishes. renderSpendBandStyled is the same line dressed for the screen.
+// This is what the width arithmetic and every assertion run over — a TEST-facing form,
+// not a production one: paneView calls only renderSpendBandStyled, which is this same
+// line dressed for the screen.
 //
 // Returns a slice rather than a string so it keeps paneView's shape — spendBandLines rows in, the
 // same number out — and so growing the band back to two rows would not change the signature again.

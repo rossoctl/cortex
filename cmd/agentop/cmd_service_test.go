@@ -190,30 +190,6 @@ func TestRenderedPlistIsValid(t *testing.T) {
 	}
 }
 
-// TestIsProxyComm_ExactBasenameOnly: "cortex" is in this repo's name, the product's
-// and ~/.cortex, so anything looser than an exact basename claims processes that are
-// not the proxy — and runningPID's caller stops what it claims.
-func TestIsProxyComm_ExactBasenameOnly(t *testing.T) {
-	for _, tc := range []struct {
-		comm string
-		want bool
-	}{
-		{"cortex\n", true},                         // Linux: the kernel's comm field
-		{"/Users/u/.local/bin/cortex\n", true},     // macOS: the full path
-		{"/Users/a b/.cortex/bin/cortex", true},    // a path with a space, under ~/.cortex
-		{"/Users/u/src/cortex/bin/agentop", false}, // run from a checkout of this repo
-		{"/Users/u/.cortex/bin/agentop", false},
-		{"cortex-envoy", false},
-		{"authbridge-proxy", false}, // the pre-rename name: a clean break, not ours
-		{"authbridge-prox", false},  // ...nor its 15-character Linux stub
-		{"", false},
-	} {
-		if got := isProxyComm(tc.comm); got != tc.want {
-			t.Errorf("isProxyComm(%q) = %v, want %v", tc.comm, got, tc.want)
-		}
-	}
-}
-
 // TestRunningPID_OnlyClaimsOurOwnProcess: the pidfile can name a recycled pid, and
 // install stops whatever it reports. Stopping a stranger's process would be the
 // worst possible bug in this command.
@@ -356,7 +332,7 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 	// which would pass these tests without reaching samePath at all.
 	named := func(t *testing.T, pid int) string {
 		t.Helper()
-		exe := pidExePath(pid)
+		exe := setupPIDExePath(pid)
 		if exe == "" {
 			t.Fatalf("fixture: pid %d's executable cannot be named after its binary was removed", pid)
 		}
@@ -396,12 +372,14 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 		if err := os.Remove(filepath.Join(other, "authbridge-proxy")); err != nil {
 			t.Fatalf("fixture: the binary is not at the link's parent: %v", err)
 		}
-		// On macOS the path must arrive as typed, or this case is not the one it
-		// claims. Linux's /proc reports it resolved; TestSamePathFollowsLinksBeforeDotDot
-		// covers the rule there.
-		if exe := named(t, stranger); runtime.GOOS == "darwin" && !strings.Contains(exe, "/../") {
-			t.Fatalf("fixture: ps reported %q, not the path as typed", exe)
-		}
+		// The path shape this subtest was named for — spelled through a link
+		// and ".." — reached adoptablePID as ps comm reported it, which kept
+		// the "../" on macOS. setupPIDExePath (the unified probe, #1565)
+		// resolves through lsof first, so the exe arrives resolved and the
+		// dotdot rule itself is pinned by TestSamePathFollowsLinksBeforeDotDot.
+		// What this subtest still proves: a stranger from another directory is
+		// refused however its executable is spelled.
+		_ = named(t, stranger)
 		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
 			t.Fatal(err)
 		}

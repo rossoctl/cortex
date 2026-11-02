@@ -54,7 +54,7 @@ type fileSnapshot struct {
 	existed bool
 	data    []byte
 	mode    os.FileMode
-	link    string // set when path was a symlink; data and mode are then unused
+	link    string // set when path was a symlink; data and mode then carry the target's bytes, when it had any
 }
 
 // snapshotFile returns the zero snapshot with any error, never a partly filled
@@ -72,7 +72,18 @@ func snapshotFile(path string) (fileSnapshot, error) {
 		if err != nil {
 			return fileSnapshot{}, err
 		}
-		return fileSnapshot{path: path, existed: true, link: link}, nil
+		s := fileSnapshot{path: path, existed: true, link: link}
+		// Writes follow the link since #1565, so the link alone is no longer
+		// the whole state: capture the target's bytes and mode too, or undo
+		// cannot put them back. A dangling link has nothing to capture.
+		if tfi, err := os.Stat(path); err == nil && tfi.Mode().IsRegular() { //nolint:gosec // a path setup is about to change
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fileSnapshot{}, err
+			}
+			s.data, s.mode = data, tfi.Mode().Perm()
+		}
+		return s, nil
 	}
 	if !fi.Mode().IsRegular() {
 		return fileSnapshot{}, fmt.Errorf("%s is not a regular file", path)
@@ -89,7 +100,16 @@ func (s fileSnapshot) restore() error {
 	case !s.existed:
 		return removeIfExists(s.path)
 	case s.link != "":
-		return symlinkAtomic(s.link, s.path)
+		// Re-assert the link first — the write, or another tool, may have
+		// replaced it with a regular file — then put the target's bytes back
+		// through it.
+		if err := symlinkAtomic(s.link, s.path); err != nil {
+			return err
+		}
+		if s.data == nil {
+			return nil
+		}
+		return writeFileAtomic(s.path, s.data, s.mode)
 	default:
 		return writeFileAtomic(s.path, s.data, s.mode)
 	}
@@ -99,7 +119,7 @@ func (s fileSnapshot) restore() error {
 // sibling over it, so path is never absent in between as it would be with a
 // remove and then a link.
 func symlinkAtomic(target, path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	tmp := path + ".agentop-setup-link-" + rand.Text()
@@ -113,12 +133,26 @@ func symlinkAtomic(target, path string) error {
 	return nil
 }
 
-// writeFileAtomic replaces path through a temp sibling and a rename, so nothing
-// ever reads a half-written file, and sets mode explicitly rather than leaving it
-// to the umask.
+// writeFileAtomic writes data to path through a temp file and a rename, so a
+// crash mid-write leaves the previous contents intact (#1565: os.WriteFile
+// truncates first, and a kill in that window used to leave the ownership
+// record torn — after which readState refused it and every later enable was
+// blocked). A SYMLINKED path is resolved first, so the write lands at the
+// link's target and the link survives: a ~/.claude/settings.json managed into
+// a dotfiles repo keeps tracking (renaming over a symlink replaces the link).
+// A DANGLING link is replaced rather than followed — EvalSymlinks cannot
+// resolve it — and setup's snapshot/undo restores the link on rollback.
+// The temp file is CreateTemp'd beside the target — never a fixed name, which
+// an attacker-planted symlink at path+".tmp" would redirect.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0700, not 0755: these are the user's private dotdirs (~/.cortex, ~/.claude,
+	// ~/.codex), which hold settings, logs and pidfiles, and this may be the
+	// write that first creates one.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, ".agentop-setup-*")
@@ -153,6 +187,30 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	ok = true
+	return nil
+}
+
+// backupOnce writes path's current contents to path+".bak" only if no backup
+// exists yet. Overwriting on every call meant a second enable, or an
+// enable/disable pair, replaced the pristine pre-Cortex file with one already
+// edited — losing the only copy of settings the user actually wrote, on files
+// that commonly hold API tokens. A stale-but-original backup is worth more
+// than a fresh one of our own output. cur is the bytes the caller already
+// read; absent callers pass nil and are skipped. The backup is itself written
+// atomically and behind an Lstat: a torn .bak would corrupt the pristine copy
+// forever (write-once means never rewritten), and os.Stat FOLLOWS a link, so a
+// planted symlink at the .bak name pointing nowhere used to pass the
+// IsNotExist check and steer the backup's contents to a chosen path.
+func backupOnce(path string, cur []byte) error {
+	if cur == nil {
+		return nil
+	}
+	bak := path + ".bak"
+	if _, serr := os.Lstat(bak); os.IsNotExist(serr) {
+		if werr := writeFileAtomic(bak, cur, 0o600); werr != nil {
+			return fmt.Errorf("writing backup %s: %w", bak, werr)
+		}
+	}
 	return nil
 }
 

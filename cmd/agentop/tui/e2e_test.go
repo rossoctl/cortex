@@ -59,6 +59,11 @@ func TestE2E_ModelReceivesStreamEvents(t *testing.T) {
 		A2A:       &pipeline.A2AExtension{Method: "message/send", SessionID: "test-ctx"},
 	})
 
+	// Watch the session the event will land in: since #1542 a streamed event
+	// is retained only for the session being watched, and this model has
+	// opened nothing. Standing in for the user's Enter.
+	mdl.selectedSess = "test-ctx"
+
 	// Read one message off the stream — must be either the "open" status
 	// or the event. Pump until we see the event.
 	deadline := time.After(2 * time.Second)

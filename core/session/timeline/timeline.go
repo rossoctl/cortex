@@ -86,6 +86,9 @@ type Turn struct {
 	// retry, so the time before it went to retrying rather than to the user, who added nothing.
 	Resent bool   `json:"resent,omitempty"`
 	Seq    uint64 `json:"seq"`
+	// Model is the model the call asked for, so a client that runs several models side by
+	// side (Bob's premium-ide turns beside its security classifier) reads apart.
+	Model string `json:"model,omitempty"`
 }
 
 // Tool is one tool call: from the response that requested it to the agent's first request

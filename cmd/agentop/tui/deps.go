@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/edit"
 )
 
 // depCheck describes whether one declared dependency is satisfied by
@@ -33,88 +34,78 @@ func sameDirectionChain(p *apiclient.PipelinePlugin, view *apiclient.PipelineVie
 	return nil
 }
 
-// requiresStatus returns one depCheck per entry in p.Requires.
-// Satisfied iff the named plugin is present at a strictly-lower
-// position. (RequiresAny semantics differ; see requiresAnyStatus.)
-func requiresStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) []depCheck {
-	out := make([]depCheck, 0, len(p.Requires))
-	for _, name := range p.Requires {
+// depPositions maps each plugin name to its first 1-based position in
+// chain — the same earliest-occurrence-wins rule the framework's
+// validateRelationships uses.
+func depPositions(chain []apiclient.PipelinePlugin) map[string]int {
+	positions := make(map[string]int, len(chain))
+	for _, q := range chain {
+		if _, seen := positions[q.Name]; !seen {
+			positions[q.Name] = q.Position
+		}
+	}
+	return positions
+}
+
+// positionStatus returns one depCheck per entry in names. Satisfied iff
+// the named plugin is present strictly before (or, for RequiresLater,
+// strictly after) p. One helper for all three declarations — Requires,
+// RequiresAny and RequiresLater render per-row through it; the verdict
+// itself is edit.CheckOrder's, not a reimplementation.
+func positionStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin, names []string, higher bool) []depCheck {
+	out := make([]depCheck, 0, len(names))
+	for _, name := range names {
 		c := depCheck{Name: name}
 		for _, q := range chain {
-			if q.Name == name && q.Position < p.Position {
+			if q.Name != name {
+				continue
+			}
+			if (!higher && q.Position < p.Position) || (higher && q.Position > p.Position) {
 				c.Satisfied = true
 				c.UpstreamPosition = q.Position
-				break
 			}
+			break
 		}
 		out = append(out, c)
 	}
 	return out
 }
 
-// requiresAnyOK matches the framework's validateRelationships rule
-// exactly: at least one named plugin must be present upstream, AND
-// every name that IS present must be earlier (a downstream presence
-// is a misorder). Earlier this returned true on at-least-one-upstream
-// without checking the misorder condition, which let the Pipeline
-// pane's DEPS column show ✓ for chains the framework would reject.
-func requiresAnyOK(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) bool {
-	if len(p.RequiresAny) == 0 {
-		return true
-	}
-	anyUpstream := false
-	for _, name := range p.RequiresAny {
-		for _, q := range chain {
-			if q.Name != name {
-				continue
-			}
-			if q.Position < p.Position {
-				anyUpstream = true
-			} else if q.Position > p.Position {
-				// Present-but-downstream violates the ordering rule.
-				return false
-			}
-			break
-		}
-	}
-	return anyUpstream
+// requiresStatus returns one depCheck per entry in p.Requires.
+func requiresStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) []depCheck {
+	return positionStatus(p, chain, p.Requires, false)
 }
 
 // requiresAnyStatus returns one depCheck per entry in p.RequiresAny.
 // Satisfied means "present at lower position." Used by the detail
 // pane to show which alternatives currently satisfy the OR-group.
 func requiresAnyStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) []depCheck {
-	out := make([]depCheck, 0, len(p.RequiresAny))
-	for _, name := range p.RequiresAny {
-		c := depCheck{Name: name}
-		for _, q := range chain {
-			if q.Name == name && q.Position < p.Position {
-				c.Satisfied = true
-				c.UpstreamPosition = q.Position
-				break
-			}
-		}
-		out = append(out, c)
-	}
-	return out
+	return positionStatus(p, chain, p.RequiresAny, false)
 }
 
-// pluginDepsAllSatisfied returns true iff Requires and RequiresAny are
-// all OK for p in chain. Drives the Pipeline pane's per-row ✓/✗ indicator.
+// requiresLaterStatus returns one depCheck per entry in p.RequiresLater.
+// Satisfied means "present at higher position" — the response pass walks
+// the chain in reverse, so a RequiresLater dependency sits downstream.
+func requiresLaterStatus(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) []depCheck {
+	return positionStatus(p, chain, p.RequiresLater, true)
+}
+
+// pluginDepsAllSatisfied returns true iff Requires, RequiresAny and
+// RequiresLater are all OK for p in chain. Drives the Pipeline pane's
+// per-row ✓/✗ indicator. The verdict is edit.CheckOrder's — the same
+// copy of the framework's validateRelationships rules the pre-apply
+// validator runs, so the indicator cannot show ✓ for a chain the proxy
+// would refuse to reload (#1568: it did, for RequiresLater).
 func pluginDepsAllSatisfied(p *apiclient.PipelinePlugin, chain []apiclient.PipelinePlugin) bool {
-	for _, c := range requiresStatus(p, chain) {
-		if !c.Satisfied {
-			return false
-		}
-	}
-	return requiresAnyOK(p, chain)
+	return len(edit.CheckOrder(p.Name, p.Position, depPositions(chain),
+		p.Requires, p.RequiresAny, p.RequiresLater)) == 0
 }
 
 // pluginHasAnyDeps reports whether p declares any dependency that the
 // indicator can render. Plugins without any declarations get a blank
 // indicator (no false-positive ✓).
 func pluginHasAnyDeps(p *apiclient.PipelinePlugin) bool {
-	return len(p.Requires) > 0 || len(p.RequiresAny) > 0
+	return len(p.Requires) > 0 || len(p.RequiresAny) > 0 || len(p.RequiresLater) > 0
 }
 
 // formatDepCheck returns a one-line description of a dependency check.
@@ -133,6 +124,9 @@ func formatDepCheck(c depCheck, withStatus bool) string {
 		return styleOK.Render("✓ ") + c.Name +
 			styleHint.Render("  — absent (soft)")
 	}
+	// Not "NOT in this chain": a ✗ also covers the misorder case, where the
+	// name IS present but on the wrong side of p (Requires wants it earlier,
+	// RequiresLater later).
 	return styleError.Render("✗ ") + c.Name +
-		styleHint.Render("  — NOT in this chain")
+		styleHint.Render("  — not satisfied in this chain")
 }

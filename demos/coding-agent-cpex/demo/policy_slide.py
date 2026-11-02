@@ -75,7 +75,12 @@ SLIDES: dict[str, tuple[str, list[tuple[str, str, str, str]], str]] = {
     "04-tainted-session-deny": (
         "reading a secret marks the session",
         [
-            (POLICY, "llm-taint", "every model call", "A secret in what the agent read marks the session; the turn goes on."),
+            (
+                POLICY,
+                "llm-taint",
+                "every model call",
+                "A secret in what the agent read marks the session; the turn goes on.",
+            ),
             (POLICY, "session-tainted", "every outgoing request", "A marked session sends nothing out."),
         ],
         "",
@@ -114,7 +119,12 @@ SLIDES: dict[str, tuple[str, list[tuple[str, str, str, str]], str]] = {
         "no credential for a refused report",
         [
             (POLICY, "body-checks", "every outgoing request", "The body must be readable, and must not hold a secret."),
-            (POLICY, "project-authz", "every outgoing request", "Reports go only to projects the developer works on: A."),
+            (
+                POLICY,
+                "project-authz",
+                "every outgoing request",
+                "Reports go only to projects the developer works on: A.",
+            ),
         ],
         "Vault is asked only once every rule allowed, so a refused report never "
         "reaches it. If Vault does not answer, the report is refused.",
@@ -139,10 +149,13 @@ SUMMARY = (
     "",
 )
 FINDINGS = [
-    "The agent's commands can reach the network only through Cortex. Requests to hosts that aren't approved are refused.",
-    "Requests to an approved host are still checked. Cortex refuses a report that contains a secret, that it can't inspect, or that goes to a project the developer isn't on.",
+    "The agent's commands can reach the network only through Cortex. "
+    "Requests to hosts that aren't approved are refused.",
+    "Requests to an approved host are still checked. Cortex refuses a report that contains a secret, "
+    "that it can't inspect, or that goes to a project the developer isn't on.",
     "Once the agent reads a secret, that session can't send anything else out. Other sessions are unaffected.",
-    "Cortex also checks the commands the model suggests, and blocks one that would leak the secret before the agent runs it.",
+    "Cortex also checks the commands the model suggests, "
+    "and blocks one that would leak the secret before the agent runs it.",
 ]
 
 INTRO = ("policy", [], f"The rules from {POLICY} that apply to each step appear here.")
@@ -279,7 +292,11 @@ def badge(verdict: tuple[str, str, str] | None, width: int) -> list[str]:
     if kind != "allow":
         head += f"  {fg}{code}{RESET}"
     meaning = "Every rule passed." if kind == "allow" else CODE_PLAIN.get(code, "")
-    return [head, f"  {BOLD}{clip(meaning, width - 2)}{RESET}", f"{DIM}  {clip('request: ' + label, width - 2)}{RESET}" if label else ""]
+    return [
+        head,
+        f"  {BOLD}{clip(meaning, width - 2)}{RESET}",
+        f"{DIM}  {clip('request: ' + label, width - 2)}{RESET}" if label else "",
+    ]
 
 
 def render(scenario: str, width: int, demo_dir: Path = DEMO_DIR, verdict: str | None = None) -> str:

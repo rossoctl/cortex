@@ -504,12 +504,31 @@ func (a *Archive) write(id string, e *pipeline.SessionEvent) {
 	s.meta.Summary.Add(id, e)
 	s.meta.UpdatedAt, s.lastWrite, s.metaDirty = now, now, true
 	a.publish(s)
+	// Rotate on size, not only on idleness: a session busy all day kept ONE
+	// segment growing without limit (idleClose never fires, planPrune never
+	// deletes an open segment, and maxBytes could stay exceeded), and because
+	// Page and Event decode a segment from its first event, every backward
+	// page through a 20k-event segment decompressed most of it (#1566).
+	// After the append, so the event that crosses the cap is IN the segment
+	// being closed — no event is ever lost or duplicated by a rotation.
+	if info := s.w.info(); info.Events >= maxSegmentEvents || info.Bytes >= maxSegmentBytes {
+		a.closeWriter(s)
+	}
 	// A session's session.json exists from its first event, so a crash before the first
 	// metaEvery still leaves a directory reconcile can read.
 	if fresh {
 		a.writeMeta(s)
 	}
 }
+
+// maxSegmentEvents and maxSegmentBytes cap one segment's size. Events is the
+// binding cap on a chatty session (a 500-event page is the read unit, so
+// 10k events bounds a full Earlier sweep to two segments); bytes is the
+// backstop for large events.
+const (
+	maxSegmentEvents = 10_000
+	maxSegmentBytes  = 128 << 20
+)
 
 // makeRoomForWriter closes the least recently written segment when the cap is reached.
 func (a *Archive) makeRoomForWriter() {

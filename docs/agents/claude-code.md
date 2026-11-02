@@ -110,8 +110,12 @@ teammate's, also carry `X-Claude-Code-Agent-Id`, which Cortex records on the eve
 teammate's rows carry it too but are not tagged as a subagent's, because Claude Code writes
 the marker only for subagents; the tag, not this id, is what says a row is a subagent's.
 An agent that another agent started also carries `X-Claude-Code-Parent-Agent-Id`, recorded
-as `parentSubagent`; one the conversation started has none. Listing subagents separately in
-agentop is
+as `parentSubagent`; one the conversation started has none. In agentop's events pane each
+subagent's rows group under a collapsible header — the subagent's description from its
+`meta.json`, which `agentop observe` harvests alongside the session titles, or its raw id
+when nothing names it — so the fan-out can be collapsed to one line and opened to
+troubleshoot a slow or costly subagent; see the
+[events pane](../../cmd/agentop/README.md#panes). That closes
 [#1047](https://github.com/rossoctl/cortex/issues/1047).
 
 **Typed inference.** Requests to a path ending in `/v1/messages` are parsed as the

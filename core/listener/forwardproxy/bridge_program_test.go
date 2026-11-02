@@ -239,7 +239,7 @@ func TestBridgeProgram_AStaleProcessDoesNotStopItsProgram(t *testing.T) {
 	for range 2 {
 		tl := discardTunnel()
 		tl.program = &staleProg
-		sc.server.bridgeServe(rejectingClient(t), sc.target, hostOnly(sc.target), tl)
+		sc.server.bridgeServe(rejectingClient(t), sc.target, hostOnly(sc.target), tl, false)
 	}
 	if sc.engine.Programs.Contains(claude) {
 		t.Fatal("the stale process's refusals were recorded against its program, which a fresh claude shares")
@@ -267,7 +267,7 @@ func TestBridgeServe_RecordsANamedProgramsRefusalAgainstTheProgram(t *testing.T)
 	tl := discardTunnel()
 	tl.program = &prog
 
-	s.bridgeServe(rejectingClient(t), authority, host, tl)
+	s.bridgeServe(rejectingClient(t), authority, host, tl, false)
 	if !s.TLSBridge.Programs.Contains(prog.Key()) {
 		t.Error("the refusal was not recorded against the program")
 	}
@@ -287,7 +287,7 @@ func TestBridgeServe_RecordsAStaleProcesssRefusalAgainstTheProcess(t *testing.T)
 	tl := discardTunnel()
 	tl.program = &prog
 
-	s.bridgeServe(rejectingClient(t), authority, host, tl)
+	s.bridgeServe(rejectingClient(t), authority, host, tl, false)
 	if !s.TLSBridge.Programs.Contains(prog.ProcessKey()) {
 		t.Error("a process older than the CA did not have its refusal recorded against the process")
 	}
@@ -321,7 +321,7 @@ func TestBridgeServe_WithoutEvidenceOfStalenessRecordsAgainstTheProgram(t *testi
 			tl := discardTunnel()
 			tl.program = &prog
 
-			s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl)
+			s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl, false)
 			if !s.TLSBridge.Programs.Contains(prog.Key()) {
 				t.Error("the refusal was not recorded against the program")
 			}
@@ -346,7 +346,7 @@ func TestBridgeServe_RejectionLogNamesTheAgent(t *testing.T) {
 		logbuf.Reset()
 		tl := discardTunnel()
 		tl.program = &prog
-		s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl)
+		s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), tl, false)
 		got := logbuf.String()
 		if !strings.Contains(got, "program="+exePython) {
 			t.Fatalf("the rejection line does not name the program:\n%s", got)
@@ -367,7 +367,7 @@ func TestBridgeServe_UnnamedTunnelRecordsAgainstTheHost(t *testing.T) {
 	s.TLSBridge.Programs = tlsbridge.NewProgramSkipSet()
 	host := hostOnly(authority)
 
-	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel())
+	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel(), false)
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("an unnamed tunnel's refusal was not recorded against the host")
 	}
@@ -381,7 +381,7 @@ func TestBridgeServe_ProgramWithoutProgramMemoryFallsBackToTheHost(t *testing.T)
 	tl := discardTunnel()
 	tl.program = &tlsbridge.Program{Exe: exeHelm}
 
-	s.bridgeServe(rejectingClient(t), authority, host, tl)
+	s.bridgeServe(rejectingClient(t), authority, host, tl, false)
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("with no program memory the refusal was not recorded against the host")
 	}
@@ -400,7 +400,7 @@ func TestBridgeServe_ASuccessClearsTheProgramsEntry(t *testing.T) {
 	tl.program = &prog
 
 	// bridgeServe blocks serving the decrypted connection, so run it and wait.
-	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, tl)
+	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, tl, false)
 	eventually(t, func() bool {
 		return !s.TLSBridge.Programs.Contains(prog.Key()) && !s.TLSBridge.Programs.Contains(prog.ProcessKey())
 	}, "a completed handshake to clear the program's entry and the process's")

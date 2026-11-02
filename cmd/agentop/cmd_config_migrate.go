@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/config"
@@ -224,22 +225,40 @@ func loadCandidate(updated string) (cfg *config.Config, loaded bool, err error) 
 // unparseable config would take the proxy down on next start, so the original
 // survives any failure.
 func replaceConfig(path, updated string, verify func(*config.Config) error) error {
-	tmp := path + ".tmp"
-	if werr := os.WriteFile(tmp, []byte(updated), 0o600); werr != nil {
+	// CreateTemp, not path+".tmp": a fixed name is a symlink an attacker can
+	// plant, and the file being replaced is the one the proxy boots from.
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+	if _, werr := tmp.WriteString(updated); werr != nil {
+		_ = tmp.Close()
 		return werr
 	}
-	cfg, verr := config.Load(tmp)
+	// Sync before the rename: a crash after it must not leave the config the
+	// proxy boots from empty.
+	if serr := tmp.Sync(); serr != nil {
+		_ = tmp.Close()
+		return serr
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		return cerr
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	cfg, verr := config.Load(tmpName)
 	if verr != nil {
-		_ = os.Remove(tmp)
 		return fmt.Errorf("the migrated config would not parse (%w); left %s alone", verr, path)
 	}
 	if verify != nil {
 		if verr := verify(cfg); verr != nil {
-			_ = os.Remove(tmp)
 			return fmt.Errorf("%w; left %s alone", verr, path)
 		}
 	}
-	return os.Rename(tmp, path)
+	return os.Rename(tmpName, path)
 }
 
 // insertListenerKeys adds keys to the listener block, matching whatever

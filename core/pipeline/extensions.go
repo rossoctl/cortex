@@ -321,6 +321,13 @@ type InferenceMessage struct {
 	// same content — tens of percent apart on a deeply nested tool result.
 	// Comparable across messages from one client; not across clients.
 	ContentBytes int `json:"contentBytes,omitempty"`
+
+	// ToolUseID is the tool_call_id of a chat-completions "role":"tool" result message:
+	// the id of the assistant tool_calls entry it answers. The parser also records the
+	// result in InferenceExtension.ToolResults, so a consumer walking both must skip the
+	// message half of a pair this id names — the result would otherwise count twice.
+	// Empty on every other message.
+	ToolUseID string `json:"toolUseId,omitempty"`
 }
 
 // RawJSON is a JSON value held exactly as it arrived, rather than decoded into Go values.

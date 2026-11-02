@@ -320,8 +320,12 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 // extractStreamResponse handles message/stream SSE responses (the
 // buffered path). For each "data:" line it extracts a single event
 // and folds it into the extension via extractStreamEvent.
+//
+// parsercommon.NormalizeSSE first: a leading BOM or CR-only line endings are
+// wire-legal SSE, and a raw LF split reads such a body as one unparseable
+// line — leaving the extension empty and the exchange unclassified (#1567).
 func extractStreamResponse(body []byte, ext *pipeline.A2AExtension) {
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
@@ -399,7 +403,8 @@ func extractSessionID(body []byte) string {
 		return sid
 	}
 	// SSE format: scan "data:" lines for the first event that carries a session ID.
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	// Normalized for the same reason as extractStreamResponse above.
+	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue

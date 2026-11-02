@@ -171,13 +171,15 @@ func TestResolve_ASharedServiceAnswersWithItsNewestSession(t *testing.T) {
 	}
 }
 
-// A process of no agent is no agent's: default while an agent is active, and nothing — so
-// the store's ActiveSession() answers — once none has spoken for the ambiguity window.
+// A process of no agent is no agent's: default, whether or not an agent has spoken lately.
+// It used to lapse to "" — the store's ActiveSession() — once no agent had named a session
+// for the ambiguity window, and then an idle laptop filed every background poll (an IDE's
+// update check, a token refresh) under whichever session had spoken last, all night.
 func TestResolve_AProcessOfNoAgent(t *testing.T) {
 	a, clk := newTest()
 	tool := pchain(700, 60)
-	if got := a.Resolve(nil, tool); got.Session != "" || got.RecordID() != "" {
-		t.Fatalf("no agent yet: %+v, want nothing", got)
+	if got := a.Resolve(nil, tool); got.Session != session.DefaultSessionID || got.PluginID() != "" {
+		t.Fatalf("no agent yet: %+v, want default, which plugins never hear", got)
 	}
 	a.Resolve(req(claudeUA, "s1"), pchain(100, 50))
 	record(a, clk, "s1")
@@ -185,9 +187,9 @@ func TestResolve_AProcessOfNoAgent(t *testing.T) {
 	if got.Session != session.DefaultSessionID || got.PluginID() != "" || got.RecordID() != session.DefaultSessionID {
 		t.Errorf("an agent is active: %+v, want default, which plugins never hear", got)
 	}
-	clk.advance(ambiguityWindow + time.Second)
-	if got := a.Resolve(nil, pchain(701, 60)).Session; got != "" {
-		t.Errorf("no agent for longer than the window: %q, want \"\"", got)
+	clk.advance(10 * time.Minute)
+	if got := a.Resolve(nil, pchain(701, 60)); got.RecordID() != session.DefaultSessionID {
+		t.Errorf("no agent has spoken for 10 minutes: %+v, want default, not the last session", got)
 	}
 }
 
@@ -287,8 +289,8 @@ func TestCleared_ForgetsEveryClaim(t *testing.T) {
 	a.Resolve(req(claudeUA, "s1"), pchain(100))
 	record(a, clk, "s1")
 	a.Cleared()
-	if got := a.Resolve(nil, pchain(300, 100)).Session; got != "" {
-		t.Errorf("after Cleared: %q, want nothing", got)
+	if got := a.Resolve(nil, pchain(300, 100)).Session; got != session.DefaultSessionID {
+		t.Errorf("after Cleared: %q, want default: its parent no longer names s1", got)
 	}
 	if a.IsAgentProcess(pchain(100)[0]) || len(a.ProcessHints(8)) != 0 {
 		t.Error("after Cleared the process table still names an agent")
@@ -391,5 +393,24 @@ func TestSeenTable_PruneFreesTheOldestQuarter(t *testing.T) {
 	}
 	if _, ok := a.seen[fmt.Sprintf("s%d", maxSeen-1)]; !ok {
 		t.Error("the newest id was pruned")
+	}
+}
+
+// A restart forgets every claim. Restore puts back the ones the archive kept, so a process
+// that named a session before the restart still answers with it, before it names it again.
+func TestRestore_KeepsAClaimAcrossARestart(t *testing.T) {
+	a, _ := newTest()
+	plugin := pchain(66433, 66308)
+	if got := a.Resolve(nil, plugin).Session; got != session.DefaultSessionID {
+		t.Fatalf("before Restore: %q, want default", got)
+	}
+	a.Restore("s1", plugin[0].Key(), time.Unix(1_699_999_000, 0))
+	a.Restore("s2", "not-a-proc", time.Unix(1_699_999_000, 0))
+	got := a.Resolve(nil, plugin)
+	if got.Session != "s1" || got.Source != pipeline.SessionSourceProcess {
+		t.Errorf("after Restore: %+v, want s1 by process", got)
+	}
+	if !a.IsAgentProcess(plugin[0]) {
+		t.Error("a restored claimer is not an agent process")
 	}
 }

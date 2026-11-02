@@ -890,3 +890,27 @@ func TestForwardProxy_StripsCortexAttributionHeaders(t *testing.T) {
 		t.Errorf("the row carries proc %q from the forged header; no lookup ran", e.Proc)
 	}
 }
+
+// After a restart the proxy has forgotten which process named which session. RestoreClaims
+// puts back what the archive kept, so a process that named a session before the restart —
+// Bob's plugin host, which sends its session header only on inference — still files its
+// header-less calls there, not in default.
+func TestRestoreClaims_AClaimSurvivesARestart(t *testing.T) {
+	procs := newFakeProcs(fproc(66433, 66308, "/bob/plugin"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	before := session.New(0, 0, 0)
+	defer before.Close()
+	ev := pipeline.SessionEvent{At: time.Unix(1_700_000_000, 0), Direction: pipeline.Outbound,
+		Phase: pipeline.SessionRequest, Proc: attribution.Proc{PID: 66433, Start: time.Unix(66433, 0).UnixNano()}.Key(),
+		SessionHeader: session.ClaudeCodeSessionHeader}
+	before.Append("bob1", ev)
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) { s.RestoreClaims(before.ListSessions()) })
+
+	sendAs(t, procs.clientFor(proxyURL, 66433), backendURL+"/identity/token", "ibm-node-sdk-core/5.4.22", "", "")
+
+	if got := strings.Join(recordedPaths(store, "bob1"), ","); got != "/identity/token" {
+		t.Errorf("bob1 = %q, want the restored claimer's header-less call; default = %v",
+			got, recordedPaths(store, session.DefaultSessionID))
+	}
+}

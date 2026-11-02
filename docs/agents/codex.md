@@ -319,14 +319,14 @@ timeline then shows a 426 with `error.kind: "upgrade_declined"`, and Codex print
 harmless `failed to connect to websocket: HTTP error: 426 Upgrade Required` line before
 carrying on over HTTPS.
 
-Before either, the proxy forwarded the handshake with `Upgrade` stripped — it is a
-hop-by-hop header — and chatgpt.com answered the bare `GET` with **405**. Codex treats a
-405 as transient: it retried five times on a doubling backoff, printing `Reconnecting…
-n/5`, before falling back. Measured on Codex 0.163.0, a one-word `codex exec` turn took a
-median **11.0s** that way, against **~3s** with the socket carried or declined. There is
-no supported Codex setting to skip the WebSocket attempt: the built-in `openai` provider
-hardcodes `supports_websockets = true`, and Codex refuses a config that overrides a
-built-in provider.
+Before Cortex handled the socket at all, the proxy forwarded the handshake with `Upgrade`
+stripped — it is a hop-by-hop header — and chatgpt.com answered the bare `GET` with
+**405**. Codex treats a 405 as transient: it retried five times on a doubling backoff,
+printing `Reconnecting… n/5`, before falling back. Measured on Codex 0.163.0, a one-word
+`codex exec` turn took a median **11.0s** that way, against **~3s** with the socket carried
+or declined. There is no supported Codex setting to skip the WebSocket attempt: the
+built-in `openai` provider hardcodes `supports_websockets = true`, and Codex refuses a
+config that overrides a built-in provider.
 
 The behaviour is Cortex's setting, not Codex's, and the default is `parse`, so there is
 nothing to configure. To change it, add the key to the `listener:` block that is already
@@ -338,10 +338,16 @@ listener:
   responses_websockets: decline   # parse (default) | decline | forward
 ```
 
-`decline` keeps Codex on HTTPS with no delay; `forward` brings back the 405 and its
-retries. Then restart the proxy with `agentop service restart`. Unlike most of that file, a
-`listener:` edit is not picked up live, and the restart briefly disconnects every agent
-routed through Cortex.
+`decline` keeps Codex on HTTPS with no delay. `forward` hands the socket across the way
+Cortex forwards every other WebSocket: it works, but its frames are opaque, so no turn on
+it is parsed, priced or recorded — the timeline shows only the handshake and a 101 when
+the socket ends. Then restart the proxy with `agentop service restart`. Unlike most of
+that file, a `listener:` edit is not picked up live, and the restart briefly disconnects
+every agent routed through Cortex.
+
+The setting was a boolean, `decline_responses_websockets`, in v0.9.4. A config that still
+sets it keeps working — `true` is `decline` and `false` is `forward` — and Cortex logs a
+warning at startup naming the key to use instead. Setting both is refused.
 
 **Tokens always; cost on a laptop once the price list downloads, or wherever you
 configure a rate.** Token counts come from the Responses

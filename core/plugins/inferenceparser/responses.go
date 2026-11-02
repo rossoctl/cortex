@@ -563,7 +563,7 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 func parseResponsesSSE(body []byte, ext *pipeline.InferenceExtension) {
 	markStreamedResponse(body, ext)
 	state := &inferenceStreamState{}
-	for _, line := range bytes.Split(normalizeSSE(body), []byte("\n")) {
+	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue

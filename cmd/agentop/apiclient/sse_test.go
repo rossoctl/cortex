@@ -3,8 +3,10 @@ package apiclient
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -218,5 +220,118 @@ func TestBackoffSchedule_CapsAt30s(t *testing.T) {
 		if got := backoffSchedule(attempt); got != want {
 			t.Errorf("backoffSchedule(%d) = %v, want %v", attempt, got, want)
 		}
+	}
+}
+
+// Backoff counts consecutive FAILED connects, not a lifetime of disconnects
+// (#1568): once a connection reaches "open", the counter resets, so five
+// disconnects spread over a day each wait 1s instead of the capped 30s.
+func TestStream_BackoffResetsAfterOpen(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		// Every connection opens, then closes — each is a successful open
+		// followed by a disconnect.
+		<-time.After(50 * time.Millisecond)
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch := c.Stream(ctx, "")
+
+	reconnects := 0
+	deadline := time.After(5 * time.Second)
+	for reconnects < 3 {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed after %d reconnects", reconnects)
+			}
+			if msg.Status.Phase == "reconnecting" {
+				reconnects++
+				if msg.Status.Attempt != 1 {
+					t.Fatalf("reconnect #%d carried attempt %d, want 1 — backoff did not reset after a successful open",
+						reconnects, msg.Status.Attempt)
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timeout after %d reconnects", reconnects)
+		}
+	}
+}
+
+// A frame larger than the reader's cap must cost one frame, not the
+// connection (#1568): the old bufio.Scanner died with ErrTooLong past 4 MiB
+// — a size real events reach, since the server marshals full inference
+// bodies — and everything published during the reconnect gap was lost.
+// Here the oversized frame is 5 MiB (over the old limit, under the new cap)
+// and the events on either side of it must both arrive.
+func TestStream_SkipsOversizedFrame(t *testing.T) {
+	valid := "event: session-event\ndata: {\"sessionId\":\"s1\",\"at\":\"2026-01-01T00:00:00Z\",\"direction\":\"inbound\",\"phase\":\"request\"}\n\n"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, valid)
+		flusher.Flush()
+		fmt.Fprintf(w, "data: %s\n\n", strings.Repeat("x", 5*1024*1024))
+		flusher.Flush()
+		fmt.Fprint(w, valid)
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ch := c.Stream(ctx, "")
+
+	var gotEvents int
+	deadline := time.After(3 * time.Second)
+	for gotEvents < 2 {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatalf("channel closed after %d events — the oversized frame killed the connection", gotEvents)
+			}
+			if msg.Event != nil {
+				gotEvents++
+			}
+		case <-deadline:
+			t.Fatalf("timeout after %d events; the oversized frame killed the connection", gotEvents)
+		}
+	}
+}
+
+// lineScan's contract, at a cap small enough to exercise directly: a line
+// within the cap passes through untouched, a longer one comes back
+// truncated with the reader positioned at the NEXT line.
+func TestLineScan_TruncatesInsteadOfFailing(t *testing.T) {
+	ls := newLineScan(strings.NewReader("short\n"+strings.Repeat("y", 64)+"\nalso short\n"), 16)
+
+	line, trunc, err := ls.next()
+	if err != nil || trunc || line != "short" {
+		t.Fatalf("first line = %q trunc=%v err=%v, want \"short\" untouched", line, trunc, err)
+	}
+	line, trunc, err = ls.next()
+	if err != nil {
+		t.Fatalf("oversized line errored: %v — the reader must survive it", err)
+	}
+	if !trunc {
+		t.Fatal("64-byte line at a 16-byte cap must report truncated")
+	}
+	if len(line) != 16 {
+		t.Fatalf("truncated line kept %d bytes, want the 16-byte cap", len(line))
+	}
+	line, trunc, err = ls.next()
+	if err != nil || trunc || line != "also short" {
+		t.Fatalf("line after the oversized one = %q trunc=%v err=%v, want \"also short\" — reader position was lost", line, trunc, err)
+	}
+	if _, _, err = ls.next(); err != io.EOF {
+		t.Fatalf("exhausted reader returned %v, want io.EOF", err)
 	}
 }

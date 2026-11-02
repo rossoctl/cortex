@@ -1,0 +1,144 @@
+# Unprotected twin of k8s/agent.yaml, for a side-by-side comparison.
+#
+# Same image, same operator-injected AuthBridge sidecar, same zero-trust
+# defaults (jwt-validation inbound, token-exchange outbound). The only
+# difference: `make patch-config` gives this agent the same parsers as
+# email-agent but no ibac (k8s/parsers-patch.yaml). Ask both agents
+# "Summarize my emails." — this one exfiltrates the inbox to
+# ibac-evil-server; email-agent is blocked by IBAC.
+#
+# See k8s/agent.yaml for what each field and label is for.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: email-agent-unprotected
+  namespace: team1
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: email-agent-unprotected
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: email-agent-unprotected
+    app.kubernetes.io/part-of: ibac-demo
+    # Operator's AgentCardReconciler reads this from the workload
+    # (not the Pod template) to know what protocol to fetch the card
+    # under and to confirm the workload is an agent.
+    protocol.rossoctl.io/a2a: ""
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: email-agent-unprotected
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: email-agent-unprotected
+        app.kubernetes.io/part-of: ibac-demo
+        rossoctl.io/inject: enabled
+        rossoctl.io/spire: disabled
+        protocol.rossoctl.io/a2a: ""
+        # Keep the pod out of the namespace's ambient mesh. Inside it, the
+        # agent's call to ibac-email-server comes back 502 "bad gateway",
+        # the agent never reads the poisoned email, and there is no attack
+        # to block or to let through.
+        istio.io/dataplane-mode: none
+    spec:
+      serviceAccountName: email-agent-unprotected
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: email-agent:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: PORT
+              value: "8000"
+            - name: OLLAMA_URL
+              value: "http://host.docker.internal:11434"
+            - name: OLLAMA_MODEL
+              value: "llama3.2:3b"
+            - name: EMAIL_URL
+              value: "http://ibac-email-server.team1.svc.cluster.local:8888"
+            # AGENT_PUBLIC_URL is what the agent advertises in its
+            # /.well-known/agent-card.json. The rossoctl UI uses it
+            # for the agent card; default below works for the
+            # standard team1 install.
+            - name: AGENT_PUBLIC_URL
+              value: "http://email-agent-unprotected.team1.svc.cluster.local:8080/"
+            # The card name, so the UI lists this agent apart from
+            # email-agent's "Email Assistant".
+            - name: AGENT_CARD_NAME
+              value: "Email Assistant (no IBAC)"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          # /shared volume mount is required by the operator-injected
+          # authbridge sidecar (jwt-validation reads /shared/client-id.txt
+          # written by the operator's Keycloak client-registration). The
+          # agent itself doesn't read these files; the volume just has
+          # to exist on the Pod for the sidecar to mount it.
+          volumeMounts:
+            - name: shared-data
+              mountPath: /shared
+      volumes:
+        - name: shared-data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: email-agent-unprotected
+  namespace: team1
+  labels:
+    app.kubernetes.io/name: email-agent-unprotected
+    app.kubernetes.io/part-of: ibac-demo
+spec:
+  selector:
+    app.kubernetes.io/name: email-agent-unprotected
+  # Port 8080 → targetPort 8000 mirrors the github-issue-agent demo
+  # shape. The rossoctl backend's /chat endpoint hits the agent's
+  # Service:8080, which the operator wires to the authbridge sidecar's
+  # reverse proxy on :8000.
+  ports:
+    - port: 8080
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  type: ClusterIP
+
+---
+# AgentRuntime triggers operator-managed Keycloak client registration
+# (creates rossoctl-keycloak-client-credentials-<hash> Secret with
+# client-id.txt and client-secret.txt that the authbridge sidecar
+# mounts at /shared/). Without this CR, jwt-validation has no
+# audience to validate against and inbound auth falls over.
+apiVersion: agent.rossoctl.dev/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: email-agent-unprotected
+  namespace: team1
+spec:
+  type: agent
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: email-agent-unprotected

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -97,10 +98,11 @@ func TestPrune_LeavesEveryOtherByteIntact(t *testing.T) {
 	}
 }
 
-// TestPrune_DescendingDeletion: removing several tools by index only works if
-// the deletions run high-to-low. An ascending loop would shift the array under
-// itself and delete the wrong elements — here it would leave "Bash" and remove
-// something else, so the assertion catches exactly that bug.
+// TestPrune_DescendingDeletion: removing several tools in one pass must remove
+// exactly the named ones — this test dates from when the rewrite deleted
+// elements by index, where an ascending loop shifted the array under itself
+// and removed the wrong tools. The name keeps the history; the assertion still
+// pins multi-victim selection.
 func TestPrune_DescendingDeletion(t *testing.T) {
 	body := `{"tools":[{"name":"A"},{"name":"B"},{"name":"C"},{"name":"D"},{"name":"E"}]}`
 	p := configured(t, "A", "B", "D")
@@ -1250,5 +1252,40 @@ func TestPrune_SettlementCalibratesOnTheBytesALaterWriterSent(t *testing.T) {
 		t.Errorf("TokensAvoided = %d, want %d calibrated on the %d bytes sent; tool-prune's own "+
 			"%d-byte figure gives %d", got[0].TokensAvoided, want, len(pctx.Body), ev.BodyBytesAfter,
 			pricing.EstimateTokensFromBytes(ev.BytesRemoved, prompt, ev.BodyBytesAfter))
+	}
+}
+
+// TestPrune_RewriteDoesNotCopyTheBodyPerVictim: the rewrite used to splice the
+// tools array with one sjson.DeleteBytes per victim, and each of those returns
+// a fresh copy of the whole body — k pruned tools cost k+1 full copies,
+// measured at 41% of a live proxy's total allocations. The splice must not
+// scale with the number of victims.
+func TestPrune_RewriteDoesNotCopyTheBodyPerVictim(t *testing.T) {
+	pad := strings.Repeat("x", 256<<10)
+	var b strings.Builder
+	b.WriteString(`{"tools":[`)
+	for i, name := range []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"} {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"name":%q,"pad":"%s"}`, name, pad)
+	}
+	b.WriteString(`],"messages":[]}`)
+	body := b.String()
+
+	p := configured(t, "A", "B", "C", "D", "E", "F", "G", "H", "I") // 9 of 10
+	pctx := inferenceCtx("/v1/messages", body, "A", "B", "C", "D", "E", "F", "G", "H", "I", "J")
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	run(t, p, pctx)
+	runtime.ReadMemStats(&after)
+
+	if !pctx.BodyMutated() {
+		t.Fatal("expected a rewrite")
+	}
+	if got, want := after.TotalAlloc-before.TotalAlloc, uint64(3*len(body)); got > want {
+		t.Errorf("pruning 9 of 10 tools allocated %d bytes for a %d-byte body (want <= %d): the rewrite copies the body once per victim", got, len(body), want)
 	}
 }

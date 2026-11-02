@@ -98,9 +98,12 @@ What IBAC does **not** catch (out of scope):
 `OnRequest` runs in the following sequence. Each step can short-circuit;
 they're ordered cheapest-first:
 
-1. **Reentrancy guard.** If the request carries `X-IBAC-Judge: 1`, return
-   `Continue` immediately. This breaks loops if the judge call ever passes
-   back through the proxy due to misconfiguration.
+1. **Reentrancy guard.** If the request carries `X-IBAC-Judge` with the
+   plugin's own per-process secret value, return `Continue` immediately.
+   This breaks loops if the judge call ever passes back through the proxy
+   due to misconfiguration. The value is random per process, not a
+   constant: outbound headers are the agent's own request, and a caller
+   who can set headers must not be able to switch IBAC off.
 2. **Path bypass.** If the request path matches one of `bypass_paths`,
    record `skip/path_bypass` and `Continue`. Defaults cover `/.well-known/*`,
    `/healthz`, `/readyz`, `/livez`.
@@ -307,15 +310,18 @@ plugin. Two mechanisms guarantee this, in order of importance:
    `core/llmclient` package's `*http.Client`, which does NOT route
    through the proxy listener. Structurally, the call cannot reach
    IBAC again.
-2. **`X-IBAC-Judge: 1` sentinel header.** Every outgoing judge request
-   carries this header, and `OnRequest` short-circuits on it at the
-   top. This is defense-in-depth: even if a future misconfiguration
-   ever sent the judge call back through the proxy, IBAC would skip
-   itself rather than enter a loop.
+2. **`X-IBAC-Judge` sentinel header.** Every outgoing judge request
+   carries this header with a per-process random value, and
+   `OnRequest` short-circuits on that exact value at the top. This is
+   defense-in-depth: even if a future misconfiguration ever sent the
+   judge call back through the proxy, IBAC would skip itself rather
+   than enter a loop — while a caller guessing the header name skips
+   nothing.
 
-The header is set automatically by `llmclient.New(Options{
-SentinelHeaderName: "X-IBAC-Judge"})` — see
-[`core/llmclient/`](../core/llmclient/) for the helper.
+The header and value are set by `llmclient.New(Options{
+SentinelHeaderName: "X-IBAC-Judge", SentinelValue: ...})` — see
+[`core/llmclient/`](../core/llmclient/) for the helper
+(`llmclient.NewSentinelValue`).
 
 ## Limitations & Non-Goals
 

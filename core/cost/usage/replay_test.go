@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -152,5 +153,47 @@ func TestAbandonReplay_StopsLogging(t *testing.T) {
 	live.Cleared()
 	if live.replaying || live.replayOps != nil {
 		t.Fatalf("after AbandonReplay: replaying=%v, %d ops logged", live.replaying, len(live.replayOps))
+	}
+}
+
+// A 101 row is excluded on the REPLAY path too, which only holds because
+// ReplayCopy is a whole-struct copy (`c := *e`) and so carries every field the
+// exclusion reads. There are THREE: StatusCode and Tunnel, and — since the
+// exclusion was scoped to outbound — Direction. If ReplayCopy ever became a
+// field-by-field copy that dropped or mangled any of them, the exclusion would
+// silently stop applying to archived WebSocket sessions and their lifetimes
+// would reappear in the latency mean on every restart — see
+// TestRecord_WebSocket101IsNotARequestLatency for what that costs.
+//
+// The first two are asserted directly below; Direction is covered by the
+// end-to-end half, which is why that half is not redundant: mangling Direction
+// to Inbound moves the mean from 500ms to 300s and fails there.
+func TestReplayCopy_KeepsWhatExcludesA101Row(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	ws := respEvent(now, http.StatusSwitchingProtocols, 10*time.Minute, "", 0)
+	if c := ReplayCopy(ws); c.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("ReplayCopy dropped StatusCode (%d); the 101 exclusion in Record keys on it",
+			c.StatusCode)
+	}
+	tun := respEvent(now, 200, 4*time.Minute, "", 0)
+	tun.Tunnel = true
+	if c := ReplayCopy(tun); !c.Tunnel {
+		t.Fatal("ReplayCopy dropped Tunnel; the tunnel exclusion in Record keys on it")
+	}
+
+	// And end to end through the ring: a replayed 101 changes nothing.
+	a := New(WithClock(func() time.Time { return now }))
+	a.Record("s1", respEvent(now, 200, 500*time.Millisecond, "", 0))
+	before := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+	c := ReplayCopy(ws)
+	a.Record("s1", &c)
+	after := a.Snapshot(time.Minute, BucketWidth, "", GroupNone)
+	if after.Totals.Requests != before.Totals.Requests {
+		t.Errorf("requests = %d, want %d — a replayed 101 must not count either",
+			after.Totals.Requests, before.Totals.Requests)
+	}
+	if weightedLatMean(after) != weightedLatMean(before) {
+		t.Errorf("latency mean moved %.1f -> %.1f on replay",
+			weightedLatMean(before), weightedLatMean(after))
 	}
 }

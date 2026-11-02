@@ -128,7 +128,7 @@ func TestShowPluginDetailRendersUnmetRequires(t *testing.T) {
 	if !strings.Contains(view, "missing-dep") {
 		t.Fatalf("Requires should name missing-dep:\n%s", view)
 	}
-	if !strings.Contains(view, "NOT in this chain") {
+	if !strings.Contains(view, "not satisfied in this chain") {
 		t.Fatalf("Requires should call out the missing dep:\n%s", view)
 	}
 }

@@ -27,7 +27,7 @@ import (
 // lists without satisfaction status.
 func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) {
 	m.detailPlugin = p
-	counts := m.countEventsPerPlugin()
+	counts := m.pluginRuns // per-plugin run counts, folded at stream arrival — see model.pluginRuns
 	chain := sameDirectionChain(p, m.pipeline)
 
 	var b strings.Builder
@@ -48,7 +48,7 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) 
 	}
 	fmt.Fprintf(&b, "%s %s\n", styleMuted.Render("Body:     "), body)
 	if p.Position > 0 {
-		fmt.Fprintf(&b, "%s %d events in cached sessions\n", styleMuted.Render("Activity: "), counts[p.Name])
+		fmt.Fprintf(&b, "%s %d events streamed since attach\n", styleMuted.Render("Activity: "), counts[p.Name])
 	}
 
 	// Dependency sections. Render only when the plugin declares them.
@@ -67,6 +67,16 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) 
 		b.WriteString(styleMuted.Render("Requires any of:"))
 		b.WriteString("\n")
 		for _, c := range requiresAnyStatus(p, chain) {
+			b.WriteString("  ")
+			b.WriteString(formatDepCheck(c, chain != nil))
+			b.WriteString("\n")
+		}
+	}
+	if len(p.RequiresLater) > 0 {
+		fmt.Fprintln(&b)
+		b.WriteString(styleMuted.Render("Requires later:"))
+		b.WriteString("\n")
+		for _, c := range requiresLaterStatus(p, chain) {
 			b.WriteString("  ")
 			b.WriteString(formatDepCheck(c, chain != nil))
 			b.WriteString("\n")

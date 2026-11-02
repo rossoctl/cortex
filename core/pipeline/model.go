@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unsafe"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -115,7 +116,12 @@ func requestModel(body []byte) (string, error) {
 	}
 	var model gjson.Result
 	exact, anyCase := 0, 0
-	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+	// Zero-copy: ParseBytes is Parse(string(body)) — a full copy of every routed
+	// request just to scan its top-level keys. The alias is safe because gjson
+	// never writes the string it parses, the body is not written concurrently on
+	// the request path, and nothing that outlives the scan points into it: the
+	// only string that escapes, below, is cloned.
+	gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body))).ForEach(func(key, value gjson.Result) bool {
 		if key.Type != gjson.String || !strings.EqualFold(key.String(), "model") {
 			return true
 		}
@@ -136,5 +142,8 @@ func requestModel(body []byte) (string, error) {
 	case model.String() == "":
 		return "", errors.New(`pipeline: the request body's "model" is empty, so it names no model to change`)
 	}
-	return model.String(), nil
+	// Cloned off gjson's parse copy of the body: Result.String() is a substring
+	// of that copy, and a stored name (RequestedModel, invocation details) would
+	// pin the whole body.
+	return strings.Clone(model.String()), nil
 }

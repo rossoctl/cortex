@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,7 @@ import (
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
+	"github.com/rossoctl/cortex/core/listener/egressallow"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
@@ -273,6 +275,34 @@ func startedFromLocalInstall(configPath string) bool {
 func ledgerDefaultOnValue(cfg *config.Config, configPath string) bool {
 	on, _ := ledgerDefaultOn(cfg, configPath)
 	return on
+}
+
+// envEgressAllow is the MOCA egress contract's delivery channel: the
+// conformance harness arms the target's allow list by setting it, with no
+// config file involved. The name is that contract's, used verbatim.
+const envEgressAllow = "MOCA_EGRESS_ALLOW"
+
+// resolveEgressAllow picks the egress allow list's source: the config
+// field when it names entries, else MOCA_EGRESS_ALLOW (comma-separated
+// host:port) when that is set, else nothing — the feature off. Config
+// wins over the env var so an operator who sets both gets one answer,
+// and getenv is a parameter so tests drive it without touching the
+// process environment.
+func resolveEgressAllow(configured []string, getenv func(string) string) []string {
+	if len(configured) > 0 {
+		return configured
+	}
+	raw := strings.TrimSpace(getenv(envEgressAllow))
+	if raw == "" {
+		return nil
+	}
+	var entries []string
+	for _, e := range strings.Split(raw, ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			entries = append(entries, e)
+		}
+	}
+	return entries
 }
 
 // closeLedgerOnFatal hands the ledger's open minute back before a fatal exit. Set once, when the
@@ -585,7 +615,7 @@ func main() {
 	// a port another proxy holds then stops this one before it has touched their files. See
 	// listeners.go. log.Fatalf rather than fatalf is right here and only here — nothing is open
 	// yet for fatalf to flush.
-	plan, perr := listenerPlan(cfg, localInstall)
+	plan, perr := config.ListenerPlan(cfg, localInstall)
 	if perr != nil {
 		log.Fatalf("%v", perr)
 	}
@@ -607,6 +637,22 @@ func main() {
 
 	inboundH := pipeline.NewHolder(inboundPipeline)
 	outboundH := pipeline.NewHolder(outboundPipeline)
+
+	// The Go runtime's soft memory limit, applied once at boot — memory.* is
+	// refused on reload, so this is the only place it can take effect. The
+	// local-install default is COMPUTED (MemoryLimitBytes), never written into
+	// cfg: the reloader below compares cfg against a fresh disk load on every
+	// reload, so a materialized default would refuse every reload on a local
+	// install. The limit is SOFT: near it the GC trades CPU for memory, and a
+	// live heap that genuinely exceeds it still grows rather than failing
+	// anything. See MemoryConfig for why it exists (#1541: ~1.4GB live carried
+	// 2.9GB of RSS).
+	if limit := cfg.MemoryLimitBytes(localInstall); limit > 0 {
+		debug.SetMemoryLimit(limit)
+		slog.Info("cortex: soft memory limit set",
+			"limitMB", limit>>20,
+			"note", "soft — the GC works harder near it; a live heap over it still grows")
+	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
@@ -996,6 +1042,13 @@ func main() {
 	// The transparent (enforce-redirect) listener rides with the forward proxy;
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
+	// The MOCA SBX VM control channel (env-only, #1477): nil unless
+	// MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn, closed on shutdown.
+	var vmCtrl vmControlServer
+	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
+	if ctrlErr != nil {
+		fatalf("vm control: %v", ctrlErr)
+	}
 	if roles[config.RoleForward] {
 		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS, forwardproxy.WithEgressGuard(egress))
 		if ferr != nil {
@@ -1014,6 +1067,21 @@ func main() {
 			fatalf("listener.skip_hosts: %v", serr)
 		}
 		fpSrv.SkipHosts = skipHosts
+		// Egress allow list (#1483): deny-by-default destinations for the
+		// forward proxy — off-list CONNECT targets and absolute-form hosts
+		// are refused with 403 destination_denied before any resolve or
+		// dial. Config first; MOCA_EGRESS_ALLOW is the fallback channel
+		// because it is the one the MOCA conformance harness drives the
+		// target with. Both empty keeps egress exactly as it was.
+		if entries := resolveEgressAllow(cfg.Listener.EgressAllowHosts, os.Getenv); len(entries) > 0 {
+			allow, aerr := egressallow.New(entries)
+			if aerr != nil {
+				fatalf("listener.egress_allow_hosts: %v", aerr)
+			}
+			fpSrv.EgressAllow = allow
+			slog.Info("egress allow list on: off-list destinations refused with 403 destination_denied",
+				"entries", len(entries))
+		}
 		fpSrv.TLSBridge = bridge
 		fpSrv.Shared = sharedStore
 		// A Responses API WebSocket — Codex's transport — is carried and parsed turn by
@@ -1055,8 +1123,29 @@ func main() {
 					}
 				}
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
+				// The claims live in memory only. Without the archive's copy, a process that
+				// keeps running across a restart sends its header-less calls to default until
+				// it names its session again (Bob's plugin host: hours).
+				if sessArchive != nil {
+					fpSrv.RestoreClaims(sessArchive.Summaries())
+				}
 			}
 		}
+		// The VM control channel serves each handed-over listener through this
+		// same forward proxy — one pipeline, one session store, identity from
+		// the connection — so it starts only where the forward role does.
+		//
+		// BEFORE the listeners below start serving. startVMControl assigns
+		// fpSrv.TrustedSessionID and fpSrv.AdoptBridgedRequest, which nothing
+		// locks; ServeHTTPServer hands its already-bound listener to a serving
+		// goroutine at once, so registering first would leave a window where a
+		// request reads those fields while this writes them — a data race, and
+		// one whose losing side resolves a VM's session from the guest's own
+		// headers. Both hooks are set before any request can reach them.
+		if ctrlCfg.Socket != "" {
+			vmCtrl = startVMControl(ctrlCfg, fpSrv)
+		}
+
 		httpServers = append(httpServers, bootstrap.ServeHTTPServer("forward-proxy", fpSrv.Handler(),
 			listeners.take("forward-proxy"), bootstrap.WithConnContext(fpSrv.ConnContext)))
 
@@ -1070,6 +1159,9 @@ func main() {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
 		}
 	}
+	if ctrlCfg.Socket != "" && vmCtrl == nil {
+		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
+	}
 
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
 
@@ -1082,6 +1174,10 @@ func main() {
 	if bridge != nil {
 		statOpts = append(statOpts, observe.WithTLSBridgeUnread(bridge.UnreadHandler()))
 	}
+	// pprof exposes the process's internals (allocation stack traces, argv,
+	// caller-started CPU/trace profiling), so it rides the same loopback-only
+	// gate as the session API's clear.
+	statOpts = append(statOpts, observe.WithPprof(cfg.Listener.BindLoopbackOnly))
 	statSrv := bootstrap.ServeStatServer(rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(),
 		listeners.take("stats"), statOpts...)
 
@@ -1155,6 +1251,12 @@ func main() {
 		if transparentLn != nil {
 			_ = transparentLn.Close()
 		}
+		// Before the pipelines stop: closing unregisters every VM, closing its
+		// connections and emitting their aborted audit lines, and the requests
+		// it wakes still need a running pipeline to finish against.
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
+		}
 		statSrv.Shutdown(shutdownCtx)
 		healthSrv.Shutdown(shutdownCtx)
 		if sessionAPISrv != nil {
@@ -1168,6 +1270,9 @@ func main() {
 		}
 		if transparentLn != nil {
 			_ = transparentLn.Close()
+		}
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
 		}
 		_ = statSrv.Close()
 		_ = healthSrv.Close()

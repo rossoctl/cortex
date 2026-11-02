@@ -9,8 +9,8 @@ interface each IdP implements, see
 - `provider` (string) — IdP selector for endpoint derivation and client auth: `keycloak`, `generic`.
 - `provider_url` / `provider_realm` (string) — IdP base URL and realm/tenant, meaning varies by provider.
 - `keycloak_url` / `keycloak_realm` (string) — deprecated aliases for `provider_url`/`provider_realm` with `provider=keycloak`.
-- `default_policy` (string) — behavior when no route matches: `passthrough` (default) or `exchange` (empty-audience client-credentials) for hosts explicitly configured in `authproxy-routes`.
-- `no_token_policy` (string) — behavior for outbound requests with no bearer token: `client-credentials`, `allow`, or `deny` (default).
+- `default_policy` (string) — behavior when no route matches: `passthrough` (default) or `exchange`. With `exchange`, an unrouted host still needs a resolved audience (from `audience_from_host` or a matching route): an exchange with no audience returns a token valid for **every** audience the caller holds, so it is refused with 503 `no_audience` rather than sent.
+- `no_token_policy` (string) — behavior for outbound requests with no bearer token: `client-credentials`, `allow`, or `deny` (default). `client-credentials` with no resolved audience is refused the same way.
 - `identity.type` (string) — `spiffe` (JWT-SVID assertion) or `client-secret`; required.
 - `identity.client_id` / `identity.client_id_file` — OAuth client ID, inline or from file (default `/shared/client-id.txt`).
 - `identity.client_secret` / `identity.client_secret_file` — client secret, inline or from file (default `/shared/client-secret.txt`).

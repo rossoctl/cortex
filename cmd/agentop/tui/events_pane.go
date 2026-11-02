@@ -167,6 +167,55 @@ func (m *model) rebuildEventsTable() {
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
+
+	// Subagent blocks (#1047), only while CHRONOLOGICAL: under a sort the row
+	// order is a ranking, and pulling a subagent's rows under a header would
+	// contradict the very thing the operator sorted to see. Collected over the
+	// same population the row loop renders — the inactive filter is applied
+	// identically, via the same predicate — so a header's rollup counts the rows
+	// expanding it would show.
+	//
+	// headerRows is rebuilt with them; subagentOpen (the operator's collapses)
+	// is cleared when the session under the table changed, since a subagent id
+	// belongs to the session that spawned it.
+	m.headerRows = nil
+	if m.eventsBuiltFor != m.selectedSess {
+		m.subagentOpen = nil
+	}
+	if m.sortCol == "" {
+		m.subagentBlocks = m.collectSubagentBlocks(ctxs, partner)
+	} else {
+		m.subagentBlocks = nil
+	}
+	// Member rows number their exchanges WITHIN their block, from 1 (#1047): the
+	// block is read as the subagent's own transcript, so its first exchange is 1
+	// — the session-wide number the main rows keep would start a block at 94 and
+	// say nothing about how much the subagent itself did. The session-wide ids
+	// still decide what an exchange IS (a request and its response share one
+	// number there, and therefore here); only the counting restarts per block.
+	// Assigned into ctxs here, after the blocks exist and before any cell
+	// renders — the # column is not a measured one, so measureColumns above never
+	// read it.
+	var blockIDs map[*pipeline.SessionEvent]int
+	for _, b := range m.subagentBlocks {
+		if blockIDs == nil {
+			blockIDs = make(map[*pipeline.SessionEvent]int)
+		}
+		local := make(map[int]int, len(b.rows))
+		for _, j := range b.rows {
+			e := ctxs[j].row.event
+			n, ok := local[ids[e]]
+			if !ok {
+				n = len(local) + 1
+				local[ids[e]] = n
+			}
+			blockIDs[e] = n
+		}
+		b.msgs = len(local)
+	}
+	for i := range ctxs {
+		ctxs[i].blockIDs = blockIDs
+	}
 	// keys is the sort value for each row that survived the filters, parallel to
 	// rows and m.visibleRows. Collected inside the loop because the sortKey funcs
 	// take the same cellContext the cells do — including the chronological index the
@@ -190,31 +239,12 @@ func (m *model) rebuildEventsTable() {
 	if q != "" {
 		droppedCols = droppedColumns(selectedColumns(m.eventColumns), cols)
 	}
-	for j, cc := range ctxs {
-		// hideInactive (the `s` toggle) is off by default — every message is
-		// shown, including passthrough/skip-only ones, per "I should see all
-		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
-		// partner is shown is shown too, or a routed request refused for its model —
-		// no plugin acts on the 403 — would look as if it never got an answer.
-		if m.hideInactive && eventInactive(cc.invs) && !partnerActive(ctxs, partner, j) {
-			m.hiddenInactive++
-			continue
-		}
-
-		// Cells come from the selected columns, in their order — see
-		// events_columns.go. Previously this was a positional table.Row literal
-		// parallel to a []table.Column slice, so inserting a column meant editing
-		// both in step and a mismatch shifted every later cell under the wrong
-		// heading.
-		//
-		// PHASE carries no bracket glyphs. They were box-drawing corners (┌/│/└)
-		// meant to visually connect a request to its response, and they could only
-		// ever be correct for exchanges that NEST. Concurrent requests cross
-		// instead: A starts, B starts, A ends, B ends — for which a tree has no
-		// notation, so both rows claimed to contain each other and the output was
-		// actively misleading. The # column pairs exchanges exactly (by the
-		// proxy-stamped RequestID), which is what the glyphs approximated.
+	// renderEventRow appends one event's cells to every parallel structure the
+	// pane keeps — the table's rows, visibleRows, and the search rows — so the
+	// two places a row can render from (its own loop turn, or its block's
+	// expansion below) cannot drift apart.
+	renderEventRow := func(j int) {
+		cc := ctxs[j]
 		row := make(table.Row, 0, len(cols))
 		for _, c := range cols {
 			// A measured column's cell was evaluated for this row by measureColumns,
@@ -234,6 +264,61 @@ func (m *model) rebuildEventsTable() {
 		if q != "" {
 			full = append(full, eventSearchRow(cols, droppedCols, cc))
 		}
+	}
+	for j, cc := range ctxs {
+		// hideInactive (the `s` toggle) is off by default — every message is
+		// shown, including passthrough/skip-only ones, per "I should see all
+		// network messages". Turning it on focuses the timeline on plugin
+		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
+		// partner is shown is shown too, or a routed request refused for its model —
+		// no plugin acts on the 403 — would look as if it never got an answer.
+		// The predicate is rowInactiveHidden, shared with collectSubagentBlocks
+		// so the two filter the same rows.
+		if m.rowInactiveHidden(ctxs, partner, j) {
+			m.hiddenInactive++
+			continue
+		}
+
+		// Subagent blocks: a row naming an agent joins that agent's block, whose
+		// header sits at the block's first surviving row. Collapsed (the default,
+		// and always while no search is live) the row is not rendered at all — the
+		// header's rollup is what a collapsed block says. Expanded, the block's
+		// rows render TOGETHER, directly under the header, pulled out of the
+		// chronological interleaving with the main conversation — at their own
+		// timestamps they scatter across the pane (a subagent's exchange spans
+		// several main-conversation turns), and the rows under the header are the
+		// main conversation's, which reads as the expansion doing nothing. The
+		// timestamp and # columns still carry where each row sat. m.visibleRows
+		// keeps an empty eventRow for the header so it stays parallel to the
+		// rendered rows; headerRows is what says a rendered row is a header.
+		if b := m.subagentBlocks[cc.row.event.Subagent]; b != nil {
+			if !b.anchored {
+				b.anchored = true
+				text := b.headerText(m.subagentLabel(b.id), m.blockOpen(b.id, q != ""))
+				rows = append(rows, table.Row{text})
+				m.visibleRows = append(m.visibleRows, eventRow{})
+				if m.headerRows == nil {
+					m.headerRows = make(map[int]*subagentBlock)
+				}
+				m.headerRows[len(rows)-1] = b
+				if q != "" {
+					full = append(full, table.SearchRow{Cells: []string{text}})
+				}
+				if m.blockOpen(b.id, q != "") {
+					// b.rows holds exactly the member rows that survived the
+					// inactive filter, in arrival order — the same population the
+					// loop below renders — so nothing is double-counted or skipped.
+					for _, mj := range b.rows {
+						renderEventRow(mj)
+					}
+				}
+			}
+			// The member's cells went out with its block's header — or nowhere,
+			// while the block is collapsed. Either way not here.
+			continue
+		}
+
+		renderEventRow(j)
 		// Keyed from the SAME cellContext that just rendered the row, so the value
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
@@ -244,6 +329,10 @@ func (m *model) rebuildEventsTable() {
 		// the same thing in `partner` as it does here. The sort never reads it as a
 		// position in `keys` — only compares two of them — so the filter's gaps are
 		// harmless.
+		//
+		// Member rows take the block branch above and never reach this — safe
+		// because blocks exist only while no sort is active (see the collection
+		// above), so a row the sort needs cannot be skipped by a block.
 		if sortCol != nil {
 			keys = append(keys, rowKey{val: sortCol.sortKey(cc), exchange: j})
 		}
@@ -584,9 +673,10 @@ func (m *model) selectedEventRow() (eventRow, bool) {
 // buildEventRows turns the chronological event slice into display rows, one
 // per network message. The only folding is the TLS-bridge CONNECT pair: a
 // tunnel-open event (opaque, host:port) immediately followed by the decrypted
-// inner request for the same host is rendered as a single row keyed on the
-// inner request, with the tunnel attached for the detail pane. A non-bridged
-// (passthrough) tunnel has no inner request following it, so it stands as its
+// inner row for the same host — a request, or a denial when a plugin rejected
+// it before any request row — is rendered as a single row keyed on the
+// inner row, with the tunnel attached for the detail pane. A non-bridged
+// (passthrough) tunnel has no inner row following it, so it stands as its
 // own row — it IS the whole message.
 func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 	closed := closedTunnels(events)
@@ -654,19 +744,33 @@ func closedTunnels(events []pipeline.SessionEvent) map[string]bool {
 // host-part (port-insensitive) handles both the standard-443 case (inner host
 // = "example.com") and the non-standard case (inner host = "example.com:8443").
 //
+// A redirected inner request also folds: a plugin (inference-router) may have
+// moved it to another host after decryption, so inner.Host is the dial target
+// and the host the client named — the CONNECT's target — is RequestedHost.
+//
 // Two guards keep unrelated events from folding:
-//   - inner must be another outbound REQUEST, never a response, so a plain
-//     request→response exchange isn't mistaken for a bridged pair.
+//   - inner must be another outbound REQUEST or DENIAL, never a response, so a
+//     plain request→response exchange isn't mistaken for a bridged pair. A
+//     denial folds too: the proxy defers a bridged open and records it with
+//     whichever row comes first, and a pipeline plugin's Reject can land
+//     first.
 //   - inner must NOT itself be a tunnel-open (Tunnel marker). Two back-to-back
 //     passthrough CONNECTs to the same host (common with connection pooling)
 //     would otherwise fold — hiding one real message and mislabeling the other.
 func isBridgedInner(tunnel, inner *pipeline.SessionEvent) bool {
+	if inner.Direction != pipeline.Outbound ||
+		(inner.Phase != pipeline.SessionRequest && inner.Phase != pipeline.SessionDenied) ||
+		isTunnelOpen(inner) {
+		return false
+	}
 	host := hostOnly(inner.Host)
-	return inner.Direction == pipeline.Outbound &&
-		inner.Phase == pipeline.SessionRequest &&
-		!isTunnelOpen(inner) &&
-		host != "" &&
-		host == hostOnly(tunnel.Host)
+	if host != "" && host == hostOnly(tunnel.Host) {
+		return true
+	}
+	// RequestedHost is present only when a redirect moved the request, so this
+	// arm cannot fold an unredirected request onto someone else's tunnel.
+	return inner.RequestedHost != "" &&
+		hostOnly(inner.RequestedHost) == hostOnly(tunnel.Host)
 }
 
 // hostOnly returns the host portion of a "host:port" string, or the input

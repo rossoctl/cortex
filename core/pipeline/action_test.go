@@ -217,3 +217,47 @@ func TestRateLimited(t *testing.T) {
 		t.Errorf("default code = %q", a.Violation.Code)
 	}
 }
+
+// TestMocaRefusal pins the MOCA egress contract's refusal shape byte for
+// byte: status, X-Moca-Egress-Error, text/plain, and the body
+// "<code>: <name>\n" — what the moca egress conformance suite's wantRefusal
+// asserts for every refusal family. A change to any of the four breaks the
+// conformance run, so this test is the in-tree stand-in for it.
+func TestMocaRefusal(t *testing.T) {
+	a := MocaRefusal(403, "destination_denied", "off.test")
+	status, h, body := a.Violation.Render()
+	if status != 403 {
+		t.Errorf("status = %d, want 403", status)
+	}
+	if got := h.Get("X-Moca-Egress-Error"); got != "destination_denied" {
+		t.Errorf("X-Moca-Egress-Error = %q, want destination_denied", got)
+	}
+	if got := h.Get("Content-Type"); got != "text/plain" {
+		t.Errorf("Content-Type = %q, want text/plain", got)
+	}
+	if want := "destination_denied: off.test\n"; string(body) != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+	if a.Type != Reject {
+		t.Errorf("Type = %v, want Reject", a.Type)
+	}
+	// Render must not mutate the receiver's headers — the same action is
+	// rendered once for the client and possibly read again for a row.
+	if a.Violation.Headers.Get("Content-Type") != "" {
+		t.Error("Render leaked a Content-Type into the action's own headers")
+	}
+
+	// The body is client-visible reflection of a client-named destination, so
+	// a hostile "host" carrying HTML metacharacters is escaped, not echoed: the
+	// refusal names the destination without becoming a rendering surface. For
+	// every legitimate host — the conformance suite's included — EscapeString
+	// is the identity, which is why the case above pins exact bytes.
+	hostile := MocaRefusal(403, "destination_denied", `<script>x</script>`)
+	_, _, hbody := hostile.Violation.Render()
+	if want := "destination_denied: &lt;script&gt;x&lt;/script&gt;\n"; string(hbody) != want {
+		t.Errorf("body = %q, want %q — HTML metacharacters must not reach the body raw", hbody, want)
+	}
+	if hostile.Violation.Reason != `<script>x</script>` {
+		t.Error("Reason must stay raw — it never reaches the wire body and is read as data")
+	}
+}

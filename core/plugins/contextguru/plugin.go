@@ -140,6 +140,7 @@ type ContextGuru struct {
 	cfg      contextGuruConfig
 	pipe     *cgcomponents.Pipeline
 	store    cgstore.Store
+	sentinel string // unguessable value carried by our own LLM calls
 	static   cgcomponents.Model
 	modelTO  time.Duration
 	modelMax int
@@ -188,6 +189,10 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	}
 	p.pipe = pipe
 	p.store = cfg.NewStore()
+	// Per-process random value, not a constant: outbound headers are the
+	// agent's own request, and a caller who can set headers must not be able
+	// to switch context-guru off by setting them.
+	p.sentinel = llmclient.NewSentinelValue()
 
 	// Model timeouts / caps (shared by static + incoming clients).
 	p.modelTO = defaultModelTimeout
@@ -216,6 +221,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					Bearer:             m.APIKey,
 					Timeout:            p.modelTO,
 					SentinelHeaderName: sentinelHeader,
+					SentinelValue:      p.sentinel,
 				}),
 				maxTokens: p.modelMax,
 			}
@@ -230,7 +236,10 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
 	cont := pipeline.Action{Type: pipeline.Continue}
 	// The plugin's own LLM calls carry the sentinel; never recurse into them.
-	if pctx.Headers != nil && pctx.Headers.Get(sentinelHeader) != "" {
+	// Equality with the per-process secret, not mere presence: a caller
+	// setting the header to any guessed value skips nothing.
+	if pctx.Headers != nil && pctx.Headers.Get(sentinelHeader) == p.sentinel {
+		pctx.Skip("self_call")
 		return cont
 	}
 	if p.pipe == nil || len(pctx.Body) == 0 || !p.gated(pctx.Path) {
@@ -322,6 +331,7 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			Bearer:             bearer,
 			Timeout:            p.modelTO,
 			SentinelHeaderName: sentinelHeader,
+			SentinelValue:      p.sentinel,
 		}),
 		maxTokens: p.modelMax,
 	}

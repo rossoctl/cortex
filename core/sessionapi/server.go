@@ -88,13 +88,18 @@ type Server struct {
 // that documents bodyAccess as deprecated, so there's no compat cost to
 // emit the right name from day one.
 type CatalogEntry struct {
-	Name        string             `json:"name"`
-	Direction   string             `json:"direction,omitempty"`
-	ReadsBody   bool               `json:"readsBody,omitempty"`
-	Requires    []string           `json:"requires,omitempty"`
-	RequiresAny []string           `json:"requiresAny,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Fields      []FieldSchemaEntry `json:"fields,omitempty"`
+	Name        string   `json:"name"`
+	Direction   string   `json:"direction,omitempty"`
+	ReadsBody   bool     `json:"readsBody,omitempty"`
+	Requires    []string `json:"requires,omitempty"`
+	RequiresAny []string `json:"requiresAny,omitempty"`
+	// RequiresLater is the mirror of Requires for the response pass, which
+	// walks the chain in reverse: the named plugin must sit at a HIGHER
+	// position. Carried on the wire so agentop's pre-apply check and DEPS
+	// indicator can enforce the same rule the framework does.
+	RequiresLater []string           `json:"requiresLater,omitempty"`
+	Description   string             `json:"description,omitempty"`
+	Fields        []FieldSchemaEntry `json:"fields,omitempty"`
 }
 
 // FieldSchemaEntry is the wire shape for one config field's schema
@@ -287,14 +292,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 // compute the "deps satisfied" indicator on the Pipeline pane without
 // needing a separate /v1/plugins call.
 type pipelinePluginView struct {
-	Name        string          `json:"name"`
-	Direction   string          `json:"direction"`
-	Position    int             `json:"position"` // 1-based order within its direction
-	ReadsBody   bool            `json:"readsBody"`
-	Requires    []string        `json:"requires,omitempty"`
-	RequiresAny []string        `json:"requiresAny,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Config      json.RawMessage `json:"config,omitempty"`
+	Name          string          `json:"name"`
+	Direction     string          `json:"direction"`
+	Position      int             `json:"position"` // 1-based order within its direction
+	ReadsBody     bool            `json:"readsBody"`
+	Requires      []string        `json:"requires,omitempty"`
+	RequiresAny   []string        `json:"requiresAny,omitempty"`
+	RequiresLater []string        `json:"requiresLater,omitempty"`
+	Description   string          `json:"description,omitempty"`
+	Config        json.RawMessage `json:"config,omitempty"`
 	// OnError is the plugin's on_error policy, present only when it is not the default
 	// (enforce), so in practice only "observe": an off plugin is not built into the
 	// pipeline, and is not listed here at all. A reader needs it because a plugin under
@@ -363,13 +369,14 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 	for i, pl := range plugins {
 		caps := pl.Capabilities().Normalize()
 		view := pipelinePluginView{
-			Name:        pl.Name(),
-			Direction:   direction,
-			Position:    i + 1,
-			ReadsBody:   caps.ReadsResponseBody,
-			Requires:    caps.Requires,
-			RequiresAny: caps.RequiresAny,
-			Description: caps.Description,
+			Name:          pl.Name(),
+			Direction:     direction,
+			Position:      i + 1,
+			ReadsBody:     caps.ReadsResponseBody,
+			Requires:      caps.Requires,
+			RequiresAny:   caps.RequiresAny,
+			RequiresLater: caps.RequiresLater,
+			Description:   caps.Description,
 		}
 		if policy := p.PolicyAt(i); policy != pipeline.ErrorPolicyEnforce {
 			view.OnError = policy

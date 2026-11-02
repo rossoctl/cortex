@@ -343,12 +343,29 @@ func TestCheckAddr_ZoneKeptOnTheDialedAddress(t *testing.T) {
 // The same hole through the full CheckAddr path, for the ranges a zone never
 // moved: a zoned loopback and link-local stay refused. Pins that stripping the
 // zone for the check did not loosen anything that was already closed.
+//
+// The two NAT64 rows are the ones a zone DID move, and they are here because
+// the stripping and the NAT64 decode are one fix rather than two:
+// nat64Prefix.Contains is false for a zoned address, so before the zone was
+// stripped the embedded-v4 check never ran on one. Measured against the code
+// with only the decode's input reverted to the zoned address:
+// [64:ff9b::7f00:1%eth0] and [64:ff9b::a9fe:a9fe%eth0] were both ALLOWED —
+// loopback and the cloud metadata service, the latter never-permitted — while
+// their unzoned forms were refused. Every other test in egressguard and
+// forwardproxy stayed green, so without these two rows the decode's input is
+// unpinned and a later edit could silently reopen it (#1539 review).
 func TestCheckAddr_ZonedV6StillRefused(t *testing.T) {
 	g, err := New(nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	for _, addr := range []string{"[::1%lo0]:443", "[fe80::1%eth0]:443"} {
+	for _, addr := range []string{
+		"[::1%lo0]:443",
+		"[fe80::1%eth0]:443",
+		// NAT64 well-known prefix, zoned: judged by the IPv4 each embeds.
+		"[64:ff9b::7f00:1%eth0]:80",    // 127.0.0.1 — loopback
+		"[64:ff9b::a9fe:a9fe%eth0]:80", // 169.254.169.254 — metadata, never-permitted
+	} {
 		if _, cerr := g.CheckAddr(context.Background(), "tcp", addr); cerr == nil {
 			t.Errorf("CheckAddr(%s) = nil, want a refusal", addr)
 		}

@@ -13,7 +13,12 @@ type entry struct {
 	expiresAt time.Time
 }
 
-// Cache is a thread-safe token cache keyed by SHA-256 hash of (subjectToken, audience).
+// Cache is a thread-safe token cache keyed by SHA-256 hash of
+// (subjectToken, audience, scopes, tokenEndpoint). Scopes and the token
+// endpoint are part of the key because two routes can share an audience
+// while differing in either: a token minted with admin scopes for one
+// route must not be served to the other, and two realms' tokens for the
+// same audience are not interchangeable.
 type Cache struct {
 	mu      sync.RWMutex
 	entries map[string]entry
@@ -43,11 +48,12 @@ func New(opts ...Option) *Cache {
 	return c
 }
 
-// Get returns a cached token for the given subject token and audience.
-// Returns ("", false) if not found or expired. Expired entries are left
-// for eviction during Set() to avoid write-lock contention on reads.
-func (c *Cache) Get(subjectToken, audience string) (string, bool) {
-	key := cacheKey(subjectToken, audience)
+// Get returns a cached token for the given subject token, audience,
+// scopes and token endpoint. Returns ("", false) if not found or
+// expired. Expired entries are left for eviction during Set() to avoid
+// write-lock contention on reads.
+func (c *Cache) Get(subjectToken, audience, scopes, tokenEndpoint string) (string, bool) {
+	key := cacheKey(subjectToken, audience, scopes, tokenEndpoint)
 	c.mu.RLock()
 	e, ok := c.entries[key]
 	c.mu.RUnlock()
@@ -59,11 +65,11 @@ func (c *Cache) Get(subjectToken, audience string) (string, bool) {
 
 // Set stores a token with the given TTL. A buffer of 30 seconds is subtracted
 // from the TTL to ensure tokens are refreshed before they expire.
-func (c *Cache) Set(subjectToken, audience, token string, ttl time.Duration) {
+func (c *Cache) Set(subjectToken, audience, scopes, tokenEndpoint, token string, ttl time.Duration) {
 	if ttl <= 30*time.Second {
 		return // too short to cache
 	}
-	key := cacheKey(subjectToken, audience)
+	key := cacheKey(subjectToken, audience, scopes, tokenEndpoint)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.maxSize {
@@ -104,10 +110,14 @@ func (c *Cache) evictExpired() {
 	}
 }
 
-func cacheKey(subjectToken, audience string) string {
+func cacheKey(subjectToken, audience, scopes, tokenEndpoint string) string {
 	h := sha256.New()
 	h.Write([]byte(subjectToken))
 	h.Write([]byte{0}) // separator
 	h.Write([]byte(audience))
+	h.Write([]byte{0}) // separator
+	h.Write([]byte(scopes))
+	h.Write([]byte{0}) // separator
+	h.Write([]byte(tokenEndpoint))
 	return hex.EncodeToString(h.Sum(nil))
 }

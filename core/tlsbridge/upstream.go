@@ -33,6 +33,13 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 // re-origination does NOT verify the origin cert — for internal/self-signed
 // upstreams (e.g. a private LiteLLM endpoint). Prefer extraRootsPEM
 // (upstream_ca_bundle) over insecure whenever the origin CA is available.
+//
+// WebSocket upgrades need no client of their own, tempting as one pinned to
+// HTTP/1.1 looks: net/http already pins a request carrying "Connection:
+// upgrade" and "Upgrade: websocket" to HTTP/1.1 (Request.requiresHTTP1) — the
+// exact pair forwardproxy's stripForUpstream normalizes a forwarded upgrade to
+// — so this client carries one as HTTP/1.1 even against an origin it would
+// otherwise negotiate h2 with.
 func NewUpstreamClient(extraRootsPEM []byte, insecure bool, opts ...UpstreamOption) (*http.Client, error) {
 	var o upstreamOptions
 	for _, opt := range opts {
@@ -50,9 +57,12 @@ func NewUpstreamClient(extraRootsPEM []byte, insecure bool, opts ...UpstreamOpti
 	}
 	return &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig:       &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, //nolint:gosec // opt-in via upstream_insecure for internal/self-signed upstreams
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
+			TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, //nolint:gosec // opt-in via upstream_insecure for internal/self-signed upstreams
+			ForceAttemptHTTP2: true,
+			MaxIdleConns:      100,
+			// Go's default is 2, which churns connections when more than two
+			// callers share an h1-only upstream (LiteLLM, Keycloak).
+			MaxIdleConnsPerHost:   100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,

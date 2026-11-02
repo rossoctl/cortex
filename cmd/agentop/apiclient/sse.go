@@ -72,12 +72,20 @@ func (c *Client) Stream(ctx context.Context, sessionFilter string) <-chan Stream
 func (c *Client) streamLoop(ctx context.Context, filter string, out chan<- StreamEvent) {
 	defer close(out)
 
+	// attempt is consecutive FAILED connects, not a lifetime counter: it
+	// resets once a connection reaches "open", so five disconnects spread
+	// over a day (laptop sleep, proxy restart) each wait 1s, not the capped
+	// 30s — and the banner's attempt number describes the current outage
+	// rather than the process's age (#1568).
 	attempt := 0
 	for {
-		err := c.streamOnce(ctx, filter, out)
+		opened, err := c.streamOnce(ctx, filter, out)
 		if ctx.Err() != nil {
 			// Caller cancelled — terminal state is the channel close on defer.
 			return
+		}
+		if opened {
+			attempt = 0
 		}
 		attempt++
 		wait := backoffSchedule(attempt)
@@ -92,15 +100,17 @@ func (c *Client) streamLoop(ctx context.Context, filter string, out chan<- Strea
 
 // streamOnce opens a single SSE connection and pumps events to out until
 // either the server closes, ctx is cancelled, or a transport error occurs.
-// Returns nil only if the server closed cleanly.
-func (c *Client) streamOnce(ctx context.Context, filter string, out chan<- StreamEvent) error {
+// opened reports whether the connection got as far as the "open" status —
+// the caller resets its backoff on it. Returns a nil error only on a clean
+// server close.
+func (c *Client) streamOnce(ctx context.Context, filter string, out chan<- StreamEvent) (opened bool, err error) {
 	u := c.endpoint + "/v1/events"
 	if filter != "" {
 		u += "?session=" + filter
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -108,31 +118,47 @@ func (c *Client) streamOnce(ctx context.Context, filter string, out chan<- Strea
 	// pool survives across reconnects.
 	resp, err := c.httpStream.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("stream: unexpected status %d", resp.StatusCode)
+		return false, fmt.Errorf("stream: unexpected status %d", resp.StatusCode)
 	}
 	sendStatus(out, StreamStatus{Phase: "open"})
 
-	return parseSSE(ctx, resp.Body, out)
+	return true, parseSSE(ctx, resp.Body, out)
 }
+
+// maxSSELine bounds how much of one SSE line parseSSE keeps. NOT a wire
+// limit: the server has no cap on event size (full inference bodies,
+// against a proxy that accepts 32 MiB request bodies), so no fixed bound
+// covers every legitimate event. A line longer than this marks its frame
+// as oversized, and the frame is skipped — the connection survives.
+const maxSSELine = 32 * 1024 * 1024
 
 // parseSSE reads SSE frames line-by-line. A frame is a run of lines ending
 // in a blank line. Lines starting with ':' are comments (our heartbeats).
 // We only care about frames with a `data:` line containing a JSON-encoded
 // SessionEvent; other line types are tolerated but ignored.
 func parseSSE(ctx context.Context, r io.Reader, out chan<- StreamEvent) error {
-	scanner := bufio.NewScanner(r)
-	// Some events (e.g. full LLM completion bodies) can be many KB. Raise the
-	// line buffer well above the default 64 KB to match the server's cap.
-	scanner.Buffer(make([]byte, 0, 16*1024), 4*1024*1024)
+	lines := newLineScan(r, maxSSELine)
 
 	var dataBuf strings.Builder
+	// oversized marks the frame in progress as unparseable — one of its
+	// lines was truncated at the cap. The frame is dropped at its blank
+	// line and the stream keeps reading; before this, a bufio.Scanner
+	// ErrTooLong killed the connection, and every event published during
+	// the reconnect gap was lost (#1568).
+	oversized := false
 
 	flush := func() {
 		defer dataBuf.Reset()
+		bad := oversized
+		oversized = false
+		if bad {
+			slog.Debug("apiclient: skipping oversized SSE frame", "bytes", dataBuf.Len())
+			return
+		}
 		if dataBuf.Len() == 0 {
 			return
 		}
@@ -156,14 +182,26 @@ func parseSSE(ctx context.Context, r io.Reader, out chan<- StreamEvent) error {
 		}
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, truncated, err := lines.next()
+		if err != nil {
+			// Drain trailing frame if the stream ended mid-record (rare;
+			// usual case is a clean "\n\n" before EOF).
+			flush()
+			if errors.Is(err, io.EOF) {
+				return io.EOF
+			}
+			return err
+		}
 		switch {
 		case line == "":
 			flush()
 		case strings.HasPrefix(line, ":"):
 			// Comment / heartbeat — ignore.
 		case strings.HasPrefix(line, "data:"):
+			if truncated {
+				oversized = true
+			}
 			val := strings.TrimPrefix(line, "data:")
 			val = strings.TrimPrefix(val, " ")
 			if dataBuf.Len() > 0 {
@@ -177,13 +215,62 @@ func parseSSE(ctx context.Context, r io.Reader, out chan<- StreamEvent) error {
 			return ctx.Err()
 		}
 	}
-	// Drain trailing frame if the stream ended mid-record (rare; usual case
-	// is a clean "\n\n" before EOF).
-	flush()
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+}
+
+// lineScan is bufio.Scanner's line loop with one difference that matters
+// here: a line longer than max does not fail the reader. The line comes
+// back truncated (at most max bytes, truncated=true) and the reader is
+// positioned at the next line, so one huge frame costs one frame instead
+// of the connection.
+type lineScan struct {
+	br  *bufio.Reader
+	max int
+}
+
+func newLineScan(r io.Reader, max int) *lineScan {
+	return &lineScan{br: bufio.NewReaderSize(r, 16*1024), max: max}
+}
+
+// next returns the next line without its terminator. truncated reports
+// that the line exceeded the cap and was cut. A terminal error is returned
+// with whatever remained buffered; io.EOF means clean end of stream.
+func (s *lineScan) next() (line string, truncated bool, err error) {
+	var buf []byte
+	for {
+		frag, rerr := s.br.ReadSlice('\n')
+		switch rerr {
+		case nil:
+			frag = frag[:len(frag)-1] // drop the '\n'
+		case bufio.ErrBufferFull:
+			// Line longer than the read buffer: keep accumulating if within
+			// the cap, otherwise discard the overflow and remember it.
+			if len(buf)+len(frag) > s.max {
+				if len(buf) < s.max {
+					buf = append(buf, frag[:s.max-len(buf)]...)
+				}
+				truncated = true
+			} else {
+				buf = append(buf, frag...)
+			}
+			continue
+		case io.EOF:
+			if len(frag) == 0 && len(buf) == 0 {
+				return "", false, io.EOF
+			}
+			// Final line without a trailing newline.
+		default:
+			return string(buf), truncated, rerr
+		}
+		if len(buf)+len(frag) > s.max {
+			if len(buf) < s.max {
+				buf = append(buf, frag[:s.max-len(buf)]...)
+			}
+			truncated = true
+		} else {
+			buf = append(buf, frag...)
+		}
+		return string(buf), truncated, nil
 	}
-	return io.EOF
 }
 
 func sendStatus(out chan<- StreamEvent, s StreamStatus) {

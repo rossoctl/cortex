@@ -187,7 +187,9 @@ func TestHarvest_IncrementalParsesWhatItCannotValidate(t *testing.T) {
 				t.Fatal(err)
 			}
 			seed := map[string]SessionMetadata{}
-			if tc.entry != (SessionMetadata{}) {
+			// Not != (SessionMetadata{}): the Subagents map makes the struct
+			// non-comparable, and the cases only ever populate these two fields.
+			if tc.entry.Title != "" || tc.entry.LogFile != "" {
 				seed["s1"] = tc.entry
 			}
 			if err := SaveMetadata(path, seed); err != nil {
@@ -2958,5 +2960,54 @@ func TestSaveMetadata_AFailedWriteKeepsTheOldFile(t *testing.T) {
 		if strings.HasSuffix(e.Name(), ".tmp") {
 			t.Errorf("temp file %s was left behind", e.Name())
 		}
+	}
+}
+
+// A session's subagent labels are harvested from its subagents/agent-<id>.meta.json files,
+// keyed by the bare id — the same id the proxy records on a subagent's rows. The transcripts
+// beside them are not read, a missing subagents directory costs nothing, and one bad meta
+// file costs only its own label.
+func TestHarvest_ReadsSubagentMetaFiles(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "s1.jsonl", `{"type":"ai-title","aiTitle":"t"}`)
+	subs := filepath.Join(proj, "s1", "subagents")
+	writeSessionTranscript(t, subs, "agent-a0974b0b8591dc76b.meta.json",
+		`{"agentType":"general-purpose","description":"PR review (execution-first)"}`)
+	writeSessionTranscript(t, subs, "agent-bad.meta.json", `{"agentType":`) // malformed JSON
+	writeSessionTranscript(t, subs, "agent-a2172bb34d27cb12.jsonl", `{}`)   // a transcript, not a meta file
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := readMetadataFile(t, res.Path)["s1"].Subagents
+	if len(got) != 1 {
+		t.Fatalf("Subagents = %v, want exactly the one parseable meta file", got)
+	}
+	info, ok := got["a0974b0b8591dc76b"]
+	if !ok {
+		t.Fatalf("keyed by the bare id; got %v", got)
+	}
+	if info.AgentType != "general-purpose" || info.Description != "PR review (execution-first)" {
+		t.Errorf("info = %+v", info)
+	}
+}
+
+// A session with no subagents carries no Subagents map at all, so the JSON spells nothing
+// out for the sessions that have none — which is most of them.
+func TestHarvest_SessionWithoutSubagentsHasNoMap(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "s1.jsonl", `{"type":"ai-title","aiTitle":"t"}`)
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readMetadataFile(t, res.Path)["s1"].Subagents; got != nil {
+		t.Errorf("Subagents = %v, want nil", got)
 	}
 }

@@ -475,7 +475,10 @@ func parseMCPResponse(body []byte) (jsonRPCResponse, bool) {
 	if json.Unmarshal(body, &rpc) == nil && (rpc.Result != nil || rpc.Error != nil) {
 		return rpc, true
 	}
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	// Normalized before the LF split: a leading BOM or CR-only line endings are
+	// wire-legal SSE, and a raw split reads such a body as one unparseable line —
+	// leaving the extension empty and the exchange unclassified (#1567).
+	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue

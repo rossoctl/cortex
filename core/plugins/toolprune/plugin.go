@@ -390,22 +390,39 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 				break
 			}
 		}
-		if orphanedCacheControl.Exists() && lastSurvivor >= 0 &&
-			!gjson.GetBytes(body, fmt.Sprintf("tools.%d.cache_control", lastSurvivor)).Exists() {
-			if out, err = sjson.SetRawBytes(out,
-				fmt.Sprintf("tools.%d.cache_control", lastSurvivor),
-				[]byte(orphanedCacheControl.Raw)); err != nil {
-				slog.Warn("tool-prune: could not preserve cache_control, forwarding original", "err", err)
-				return action
+		// One splice, not one per victim: sjson.DeleteBytes returns a fresh copy
+		// of the whole body on every call, so k victims used to cost k+1 full
+		// copies — measured at 41% of a live proxy's total allocations. Each
+		// survivor's bytes are kept verbatim; only the separators between them
+		// normalize to ",", which no cache prefix can have relied on anyway —
+		// pruning already rewrote the array.
+		joined := make([]byte, 0, len(body))
+		joined = append(joined, '[')
+		for i := range raw {
+			if victimSet[i] {
+				continue
 			}
-			slog.Debug("tool-prune: moved cache_control to the last surviving tool", "index", lastSurvivor)
+			if len(joined) > 1 {
+				joined = append(joined, ',')
+			}
+			survivor := raw[i].Raw
+			if i == lastSurvivor && orphanedCacheControl.Exists() &&
+				!gjson.GetBytes(body, fmt.Sprintf("tools.%d.cache_control", i)).Exists() {
+				patched, err := sjson.SetRawBytes([]byte(survivor), "cache_control", []byte(orphanedCacheControl.Raw))
+				if err != nil {
+					slog.Warn("tool-prune: could not preserve cache_control, forwarding original", "err", err)
+					return action
+				}
+				survivor = string(patched)
+				slog.Debug("tool-prune: moved cache_control to the last surviving tool", "index", i)
+			}
+			joined = append(joined, survivor...)
 		}
-		// Descending, so an earlier deletion never shifts a later index.
-		for i := len(victims) - 1; i >= 0; i-- {
-			if out, err = sjson.DeleteBytes(out, fmt.Sprintf("tools.%d", victims[i])); err != nil {
-				slog.Warn("tool-prune: delete failed, forwarding original", "index", victims[i], "err", err)
-				return action
-			}
+		joined = append(joined, ']')
+		var err error
+		if out, err = sjson.SetRawBytes(out, "tools", joined); err != nil {
+			slog.Warn("tool-prune: rewrite of the tools array failed, forwarding original", "err", err)
+			return action
 		}
 	}
 	if len(out) >= len(body) {

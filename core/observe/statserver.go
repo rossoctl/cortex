@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/listener/httpx/pprofx"
 	"github.com/rossoctl/cortex/core/redact"
 )
 
@@ -38,6 +41,7 @@ type statServerOpts struct {
 	reloadStatus    http.Handler
 	pricingTable    http.Handler
 	tlsBridgeUnread http.Handler
+	pprof           bool
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
@@ -64,6 +68,23 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 	return func(o *statServerOpts) { o.tlsBridgeUnread = h }
 }
 
+// WithPprof mounts Go's net/http/pprof handlers under /debug/pprof/. Off unless
+// asked for: the profiles expose the process's internals — allocation stack
+// traces, argv (cmdline), and a caller's ability to start CPU profiling and
+// tracing — so the host enables it only where the stats port is loopback-only
+// (cmd/cortex reads listener.bind_loopback_only, the same gate as the session
+// API's clear). The handlers also refuse a non-loopback Host and any request
+// carrying Origin, the erase guards' browser defenses — pprofx.RegisterPprof's,
+// the one guarded pprof surface shared with the agentop viewer.
+//
+// Side effect of the import: net/http/pprof's init registers /debug/pprof/* on
+// http.DefaultServeMux in every binary linking pprofx. Nothing in this tree
+// serves that mux — an http.Server built with a nil Handler would, and would
+// expose these ungated, so none may be.
+func WithPprof(enabled bool) Option {
+	return func(o *statServerOpts) { o.pprof = enabled }
+}
+
 // NewStatServer builds the stat HTTP server. configProvider is
 // invoked per /config request and statsProvider per /stats request,
 // so both reflect current state rather than a snapshot captured at
@@ -87,22 +108,27 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 	if o.tlsBridgeUnread != nil {
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
+	if o.pprof {
+		// /debug/pprof/block and /mutex stay empty without these: the handlers
+		// exist, but the runtime records nothing unless asked. Both cost only
+		// when the event they measure happens — a blocked goroutine or a contended
+		// mutex — so they ride the same gate as the handlers rather than running
+		// on deployments where pprof is off.
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+		pprofx.RegisterPprof(mux)
+	}
 
+	indexPage := statServerIndex
+	if o.pprof {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}",
+			`<li><a href="/debug/pprof/">Go pprof profiles</a></li>`, 1)
+	} else {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}", "", 1)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `
-<!DOCTYPE html>
-<html>
-  <body>
-    <ul>
-    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
-    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
-    <li><a href="/reload/status">Config reload status</a></li>
-    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
-    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
-    </ul>
-  </body>
-</html>`)
+		fmt.Fprint(w, indexPage)
 	})
 
 	return &StatServer{
@@ -165,3 +191,18 @@ func (s *StatServer) Shutdown(ctx context.Context) error {
 func (s *StatServer) Close() error {
 	return s.server.Close()
 }
+
+// statServerIndex is the / body, with {{pprof}} a slot WithPprof fills.
+const statServerIndex = `<!DOCTYPE html>
+<html>
+  <body>
+    <ul>
+    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
+    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
+    <li><a href="/reload/status">Config reload status</a></li>
+    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
+    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
+    {{pprof}}
+    </ul>
+  </body>
+</html>`

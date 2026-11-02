@@ -50,7 +50,8 @@ func TestReverseProxyRecordsMethodAndPath(t *testing.T) {
 
 	// The response row lands when ReverseProxy finishes relaying the body, which can be
 	// after the client has its response: wait for it rather than race it.
-	waitForResponseEvent(t, store)
+	waitForResponseEvent(t, store, session.DefaultSessionID)
+
 	v := store.View(session.DefaultSessionID)
 
 	// Both the request and the response event must carry the pair; a response

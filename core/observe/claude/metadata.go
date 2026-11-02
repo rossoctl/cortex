@@ -91,6 +91,25 @@ type SessionMetadata struct {
 	// which is why the rule that matters is stated on the READING side: harvestedAt treats
 	// the zero value as "cannot tell" and re-parses.
 	LogModTime time.Time `json:"logModTime"`
+	// Subagents are the subagents Claude Code spawned in this session, keyed by the
+	// id it uses everywhere (the X-Claude-Code-Agent-Id a request carries, and the
+	// <id> in subagents/agent-<id>.meta.json). Read from those meta.json files, not
+	// the subagent transcripts beside them: a label is what the pane wants, and the
+	// transcript holds none that the meta file lacks.
+	//
+	// Like every field but LogModTime, optional — a session with no subagents, or
+	// harvested before this field existed, has none, and a consumer falls back to
+	// the raw id (which is what a non-Claude-Code agent or an agent-team teammate
+	// renders anyway, having no meta.json to join to).
+	Subagents map[string]SubagentInfo `json:"subagents,omitempty"`
+}
+
+// SubagentInfo is one harvested subagent: what Claude Code's own record of it says
+// that the wire does not carry. Every field optional, for the same reason as
+// SessionMetadata's — this is another agent's on-disk layout, not a contract.
+type SubagentInfo struct {
+	AgentType   string `json:"agentType,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // SessionMetadataRel is the harvested metadata file, relative to the user's home.

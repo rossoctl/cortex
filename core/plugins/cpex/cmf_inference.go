@@ -408,7 +408,10 @@ func inferenceToolResultsCustom(inf *pipeline.InferenceExtension) (count int, re
 		count++
 	}
 	for _, m := range inf.Messages {
-		if m.Role == roleTool {
+		// A chat-completions result the parser also recorded in ToolResults (named by its
+		// ToolUseID) is added by the loop below; adding the message copy too would count it
+		// twice in the policy input.
+		if m.Role == roleTool && m.ToolUseID == "" {
 			add("", m.Content, false)
 		}
 	}

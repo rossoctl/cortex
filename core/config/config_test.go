@@ -971,23 +971,17 @@ func TestForceLocalhost(t *testing.T) {
 	}
 }
 
-// With the bridge enabled, Load() restricts the session API to loopback so
-// other pods can't scrape decrypted bodies.
+// With the bridge enabled, the session API is restricted to loopback so
+// other pods can't scrape decrypted bodies. The rule lives in ApplyPreset
+// (it must run after the ":9094" default; see TestTLSBridge_SessionAPILoopback
+// WhenAddrUnset), so this test drives Load + ApplyPreset like the binaries do.
 func TestLoad_TLSBridgeHardensSessionAPI(t *testing.T) {
-	y := []byte("mode: proxy-sidecar\n" +
-		"listener:\n" +
-		"  session_api_addr: \":9094\"\n" +
-		"tls_bridge:\n" +
-		"  mode: enabled\n" +
+	cfg := loadFrom(t, "mode: proxy-sidecar\n"+
+		"listener:\n"+
+		"  session_api_addr: \":9094\"\n"+
+		"tls_bridge:\n"+
+		"  mode: enabled\n"+
 		"  ca_dir: /etc/authbridge/tls-bridge-ca\n")
-	p := filepath.Join(t.TempDir(), "cfg.yaml")
-	if err := os.WriteFile(p, y, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
 	if cfg.Listener.SessionAPIAddr != "127.0.0.1:9094" {
 		t.Errorf("session_api_addr = %q, want 127.0.0.1:9094 (bridge on => loopback)", cfg.Listener.SessionAPIAddr)
 	}
@@ -1094,28 +1088,45 @@ func TestValidate_ResponsesWebSockets(t *testing.T) {
 	}
 }
 
-// The boolean responses_websockets replaced is refused with the mode that matches it
-// named, not ignored: someone who set it false to forward the upgrade would otherwise get
-// parse with no word said.
-func TestLoad_RemovedDeclineKeyIsRefusedWithItsReplacement(t *testing.T) {
+// v0.9.4 shipped decline_responses_websockets, so a config that still sets it keeps
+// working as it did: true declines, and false forwards, which under #1488 is a real
+// forward. Only setting it beside responses_websockets is refused, since the two can
+// disagree and neither should silently win.
+func TestLoad_DeprecatedDeclineKeyStillApplies(t *testing.T) {
 	for _, tc := range []struct {
-		value, want string
+		body, want string
 	}{
-		{"false", "responses_websockets: " + ResponsesWebSocketsForward},
-		{"true", "responses_websockets: " + ResponsesWebSocketsDecline},
+		{"  decline_responses_websockets: true\n", ResponsesWebSocketsDecline},
+		{"  decline_responses_websockets: false\n", ResponsesWebSocketsForward},
 	} {
 		path := filepath.Join(t.TempDir(), "c.yaml")
-		body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  decline_responses_websockets: " + tc.value + "\n"
+		body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n" + tc.body
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := Load(path)
-		if err == nil {
-			err = validateListeners(cfg)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("decline_responses_websockets: %s: err = %v, want one naming %q", tc.value, err, tc.want)
+		if err := validateListeners(cfg); err != nil {
+			t.Errorf("%q: unexpected error %v", tc.body, err)
 		}
+		if got := cfg.Listener.ResponsesWebSocketsMode(); got != tc.want {
+			t.Errorf("%q: ResponsesWebSocketsMode() = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  decline_responses_websockets: true\n  responses_websockets: parse\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err == nil {
+		err = validateListeners(cfg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "both set") {
+		t.Errorf("both keys set: err = %v, want a refusal naming both", err)
 	}
 }
 
@@ -1179,5 +1190,29 @@ pipeline:
 	}
 	if !cfg.Session.ClientAffinityEnabled() {
 		t.Error("a config with no session block loads with client affinity off, want on")
+	}
+}
+
+// MemoryLimitBytes: nil block and explicit zero are off; a positive limit
+// converts to bytes. The local-install default is COMPUTED here, never
+// written into the stored config: the reloader compares the active config
+// against a fresh disk load on every reload, so a boot-time cfg.Memory
+// assignment would refuse every reload on a local install.
+func TestMemoryLimitBytes(t *testing.T) {
+	if got := (&Config{}).MemoryLimitBytes(false); got != 0 {
+		t.Errorf("nil memory block off a local install: limit = %d, want 0", got)
+	}
+	c := &Config{}
+	if got := c.MemoryLimitBytes(true); got != DefaultLocalMemoryLimitMB<<20 {
+		t.Errorf("nil memory block on a local install: limit = %d, want the %dMB default", got, DefaultLocalMemoryLimitMB)
+	}
+	if c.Memory != nil {
+		t.Error("computing the local default mutated the stored config — a reload would refuse it")
+	}
+	if got := (&Config{Memory: &MemoryConfig{}}).MemoryLimitBytes(true); got != 0 {
+		t.Errorf("empty memory block on a local install: limit = %d, want 0 (explicit zero is off)", got)
+	}
+	if got := (&Config{Memory: &MemoryConfig{LimitMB: 1024}}).MemoryLimitBytes(false); got != 1024<<20 {
+		t.Errorf("limit 1024MB = %d bytes, want %d", got, 1024<<20)
 	}
 }

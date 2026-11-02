@@ -221,13 +221,15 @@ func TestConfigure_RejectsUnknownFields(t *testing.T) {
 
 // Defense-in-depth: if our own judge call ever loops back through the
 // pipeline (operator misconfig sending the judge endpoint via the
-// proxy), IBAC must skip itself.
+// proxy), IBAC must skip itself. The sentinel is the plugin's own
+// per-process secret — a caller setting the header to any guessable
+// value must NOT skip.
 func TestOnRequest_ReentrancyHeader(t *testing.T) {
 	fj := &fakeJudge{verdict: "deny", reason: "would block"}
 	p := newConfiguredIBAC(t, fj)
 
 	pctx := makePCtx(t)
-	pctx.Headers.Set("X-IBAC-Judge", "1")
+	pctx.Headers.Set("X-IBAC-Judge", p.sentinel)
 	action := invokeOnRequest(p, pctx)
 
 	if action.Type != pipeline.Continue {
@@ -235,6 +237,16 @@ func TestOnRequest_ReentrancyHeader(t *testing.T) {
 	}
 	if fj.calls != 0 {
 		t.Errorf("judge invoked %d times during reentrancy guard; want 0", fj.calls)
+	}
+
+	// A forged constant value — the pre-secret wire value — must be
+	// judged like any other request: outbound headers are the agent's
+	// own, and prompt injection is IBAC's stated threat.
+	forged := makePCtx(t)
+	forged.Headers.Set("X-IBAC-Judge", "1")
+	action = invokeOnRequest(p, forged)
+	if action.Type == pipeline.Continue && fj.calls == 0 {
+		t.Error("forged sentinel value \"1\" skipped the judge; only the plugin's own secret may")
 	}
 }
 

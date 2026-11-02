@@ -29,7 +29,9 @@ type Proc struct {
 	// Start is when the process started. PIDs are reused, so PID and Start together
 	// name one process for its whole lifetime. Start is comparable between lookups made
 	// through one Resolver; on Linux it is derived from a boot time read once in New, so
-	// it must not be compared across Resolvers or persisted.
+	// it must not be compared across Resolvers or persisted. attribution.Attributor.Restore
+	// compares a persisted Start with a live one anyway: after a clock step its claims do
+	// not match, and it accepts that.
 	Start time.Time
 	// Exe is the absolute, symlink-resolved path of the process's executable, or "" when
 	// it is not known: the caller may not read it.

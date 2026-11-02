@@ -289,7 +289,9 @@ func runningConfig(base string) (*config.Config, error) {
 	if uerr := json.Unmarshal(body, &cfg); uerr != nil {
 		return nil, fmt.Errorf("%s did not return a Cortex config: %w", cfgURL, uerr)
 	}
-	// /config redacts values whose keys end in secret/password/token/key/credential.
+	// /config redacts values whose keys end in secret/password/token/key/
+	// credential (and the "mappings" host→credential block), exempting the
+	// non-secret token forms: *_tokens counts and *_per_token rates.
 	// Nothing exec reads is redacted — forward_proxy_addr, tls_bridge.mode and
 	// tls_bridge.ca_dir all survive — but an empty proxy address would otherwise
 	// surface as a confusing downstream error, so it is named here.

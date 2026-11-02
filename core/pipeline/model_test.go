@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -250,4 +251,58 @@ func TestSetRequestModel_RefusedOutsideOnRequest(t *testing.T) {
 		}
 		assertNothingChanged(t, pctx, body, "claude-opus-5-5")
 	})
+}
+
+// TestRequestModelDoesNotPinTheBody is the memory regression for the way
+// requestModel reads the name: gjson parses a copy of the whole body, and its
+// Result.String() is a substring of that copy, so a stored model name pinned
+// the entire body — one full request copy per inference request, invisible to
+// the interner, measured at 95MB on a live proxy. The name must come back
+// standalone.
+func TestRequestModelDoesNotPinTheBody(t *testing.T) {
+	const padMiB = 4
+	pad := strings.Repeat("x", padMiB<<20)
+	var names []string
+	for range 10 {
+		name, err := requestModel([]byte(`{"model":"claude-opus-5-5","pad":"` + pad + `"}`))
+		if err != nil {
+			t.Fatalf("requestModel: %v", err)
+		}
+		names = append(names, name)
+	}
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	// 10 bodies x 4MiB = 40MiB pinned under the bug; live heap must stay well
+	// under that even with noise from the rest of the package's tests.
+	if got := ms.HeapAlloc; got > 20<<20 {
+		t.Errorf("heap = %dMiB after keeping 10 model names from %dMiB bodies; the names pin the parsed copies", got>>20, padMiB)
+	}
+	if names[0] != "claude-opus-5-5" {
+		t.Errorf("name = %q", names[0])
+	}
+}
+
+// TestRequestModelDoesNotCopyTheBody is the allocation regression for the same
+// scan: ParseBytes is Parse(string(body)), so reading the top-level keys used to
+// copy the whole body once per routed request — ~1GB/hour of churn on a live
+// proxy, third behind tool-prune's copies. The scan now runs over an alias of
+// the body, so one call on a 4MiB body must allocate well under the body's size.
+func TestRequestModelDoesNotCopyTheBody(t *testing.T) {
+	pad := strings.Repeat("x", 4<<20)
+	body := []byte(`{"model":"claude-opus-5-5","pad":"` + pad + `"}`)
+	if _, err := requestModel(body); err != nil { // warm: page in gjson's code
+		t.Fatalf("requestModel: %v", err)
+	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := requestModel(body); err != nil {
+		t.Fatalf("requestModel: %v", err)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 64<<10 {
+		t.Errorf("requestModel on a %dMiB body allocated %dKiB; the scan copies the body", len(body)>>20, got>>10)
+	}
 }

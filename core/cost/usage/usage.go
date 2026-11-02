@@ -16,6 +16,7 @@ package usage
 import (
 	"math"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,8 +266,7 @@ type Counts struct {
 	// adds to a rate table would make one of these disappear, so naming it there would
 	// point at an entry that already exists.
 	IncompleteRequests int64 `json:"incompleteRequests,omitempty"`
-	// PriceableRequests counts the requests that COULD be priced — those carrying a
-	// model and a non-zero token count.
+	// PriceableRequests counts the requests that COULD be priced; see PriceableRequest.
 	//
 	// It exists because Requests is the wrong denominator for coverage. Requests
 	// counts every proxied response, including MCP tool calls and health checks, while
@@ -726,8 +726,8 @@ type eventCost struct {
 	// unlabelledReason for the case where the producer disclosed the caveat and not the
 	// reason.
 	incompleteReason string
-	// priceable is 1 when the request carried a model and tokens, so it belongs in
-	// the coverage denominator whether or not a rate was found.
+	// priceable is 1 when the request belongs in the coverage denominator whether
+	// or not a rate was found.
 	priceable int64
 	// provenance names where the figure came from, so a reported total can say how
 	// much of it is a gateway's own number and how much is modelled from a rate
@@ -1057,7 +1057,37 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// were opaque, so there is no model, token or cost to attribute. Counting it would
 	// also quietly change what Requests means for every reader of /v1/usage. A bridged
 	// tunnel's decrypted requests are ordinary events and are counted as usual.
-	if e.Tunnel {
+	//
+	// A FORWARDED WEBSOCKET'S 101 ROW IS THE SAME SHAPE, and is excluded for the
+	// same three reasons (#1488, #1549 review). It is recorded after both splice
+	// directions end, so its Duration is the WebSocket SESSION's lifetime, not a
+	// request latency: measured, one 10-minute WS session against a host with a
+	// hundred 500ms requests moved that host's latency mean from 500ms to 6.4s
+	// (TestRecord_WebSocket101IsNotARequestLatency). Its bytes are opaque frames
+	// with no model, token or cost to attribute. And counting it would make
+	// Requests mean something new, inconsistently: the upgrade GET's own request
+	// row is already not counted (Invocations nil), so one WebSocket would add
+	// exactly one Request whose latency is its whole lifetime.
+	//
+	// Keyed on the status rather than a new event field because 101 IS the
+	// condition on the forward proxy — it records that status for no other
+	// reason, and a 101 that reached a client always means a spliced upgrade
+	// (the relay refuses any other switched protocol before the hijack). The row
+	// keeps its durationMs on the session timeline, where the WebSocket's
+	// lifetime is the feature; only the aggregation misread it.
+	//
+	// SCOPED TO OUTBOUND, because the status alone does not identify the
+	// condition across listeners. The reverse proxy records a 101 too
+	// (ModifyResponse's StatusSwitchingProtocols arm, Direction: Inbound) and
+	// records it AT HANDSHAKE TIME — ReverseProxy never copies an upgraded body,
+	// so a deferred record would never fire — which makes that row's Duration
+	// the handshake latency, not a session lifetime. It is an ordinary request
+	// with an ordinary latency, and excluding it would change what Requests
+	// means on every inbound listener: the same silent redefinition this comment
+	// warns about, in the other direction. Pinned both ways by
+	// TestRecord_WebSocket101IsNotARequestLatency and
+	// TestRecord_InboundWebSocket101IsStillARequest (#1549 review).
+	if e.Tunnel || (e.Direction == pipeline.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
 		return
 	}
 
@@ -1264,7 +1294,11 @@ func (a *Aggregator) evictColdestLocked() {
 }
 
 // countsAsError reports whether e is a failed exchange for Counts.Errors: a status of
-// 400 or more, or a denial.
+// 400 or more, a denial, or an explicit error on the row. The last matters for the one
+// row that keeps a success status on purpose: a streamed response the upstream broke
+// mid-body has no 502 to synthesize — the status is already on the wire — so its row
+// keeps the sent 200 with the failure in Error (#1543). Keying on status alone counted
+// those as healthy, which is what #1543's rows exist to stop.
 //
 // Except a proxy-declined WebSocket upgrade (pipeline.ErrorKindUpgradeDeclined). Its
 // 426 is Cortex telling Codex to use HTTPS, which it then does, once per session: by
@@ -1276,13 +1310,31 @@ func (a *Aggregator) evictColdestLocked() {
 // configured it to, on traffic that was never going to be allowed through — a
 // nonzero "error rate" made of refusals is the policy working, not the proxy
 // failing. The Finisher sees it as an allow for the same reason.
-func countsAsError(e *pipeline.SessionEvent) bool {
+func CountsAsError(e *pipeline.SessionEvent) bool {
 	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
 		e.Error.Kind == pipeline.ErrorKindTurnInterrupted ||
 		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}
-	return e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+}
+
+// PriceableRequest is the ledger's definition of "this request could have been
+// priced" (#1566), matching costOf's arms: the parser recognised
+// the traffic well enough to name a model, and the request either carried
+// usage or was not a failure — a truncated OpenAI-dialect stream succeeds at
+// the HTTP layer but yields no counters, and hiding it from the denominator
+// made coverage read "9/9 priced" while real spend was missing. A FAILED
+// response WITH usage is priceable: the counters exist and the rates apply.
+// Usage is read through pricing.UsageFromInference, as costOf reads it.
+func PriceableRequest(e *pipeline.SessionEvent) bool {
+	if e.Inference == nil || e.Inference.Model == "" {
+		return false
+	}
+	if pricing.UsageFromInference(e.Inference) != (pricing.Usage{}) {
+		return true
+	}
+	return e.StatusCode < 400 && e.Phase != pipeline.SessionDenied
 }
 
 // foldInto accumulates one event into one ring.
@@ -1365,7 +1417,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	if ec.incompleteReason != "" {
 		addLabel(&b.byIncomplete, ringLabel(ec.incompleteReason), Counts{Requests: 1})
 	}
-	if countsAsError(e) {
+	if CountsAsError(e) {
 		one.Errors = 1
 	}
 	b.Counts.Add(one)

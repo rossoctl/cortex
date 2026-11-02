@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"time"
 )
@@ -168,6 +169,46 @@ func Deny(code, reason string) Action {
 func DenyStatus(status int, code, reason string) Action {
 	return Action{Type: Reject, Violation: &Violation{
 		Code: code, Reason: reason, Status: status,
+	}}
+}
+
+// MocaRefusal builds the MOCA egress contract's refusal shape: a Reject
+// whose rendered response is the status, the header
+// "X-Moca-Egress-Error: <code>", Content-Type text/plain, and the body
+// "<code>: <name>\n" — exactly what the moca egress conformance suite's
+// wantRefusal asserts for every refusal family (destination_denied,
+// destination_private, plaintext_credential, conn_cap,
+// upstream_unreachable). name is family-specific: destination_denied names
+// the host, conn_cap the VM, upstream_unreachable the host.
+//
+// "X-Moca-Egress-Error" is that contract's wire identifier, used verbatim
+// for the same reason x-authbridge-* is: another system's harness matches
+// it byte for byte, and a "nicer" spelling here breaks the conformance run.
+//
+// Because the Violation carries a pre-rendered body, Violation.Render emits
+// it unchanged and every listener's WriteRejection delivers the contract
+// shape as-is. Do NOT route one of these through WriteRejectionForRequest
+// on a path where the named refusal IS the answer: the MCP JSON-RPC 200
+// rewrite would hide it behind a protocol frame.
+//
+// name is HTML-escaped into the body. Every name the contract defines — a
+// host, a VM id — is drawn from a character set EscapeString never touches,
+// so the conformance bytes are identical for every legitimate input; the
+// escape only bites on a hostile "host" carrying HTML metacharacters, which
+// no valid destination can. The body is client-visible reflection, so it
+// gets the same neutralisation any reflected value owes (CodeQL's reflected-
+// XSS query, the high-severity alert this keeps closed), and the refusal's
+// header stays the raw code, which is a constant of the contract.
+func MocaRefusal(status int, code, name string) Action {
+	h := http.Header{}
+	h.Set("X-Moca-Egress-Error", code)
+	return Action{Type: Reject, Violation: &Violation{
+		Status:   status,
+		Code:     code,
+		Reason:   name,
+		Headers:  h,
+		Body:     []byte(code + ": " + html.EscapeString(name) + "\n"),
+		BodyType: "text/plain",
 	}}
 }
 

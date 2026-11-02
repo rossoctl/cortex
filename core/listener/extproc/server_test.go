@@ -243,7 +243,7 @@ func TestExtProc_Outbound_Exchange(t *testing.T) {
 	}))
 	defer exchangeSrv.Close()
 
-	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	router, _ := routing.NewRouter("exchange", []routing.Route{{Host: "target-svc", Audience: "target-aud"}})
 	exchanger := exchange.NewClient(exchangeSrv.URL, &exchange.ClientSecretAuth{
 		ClientID: "agent", ClientSecret: "secret",
 	})
@@ -313,7 +313,7 @@ func TestExtProc_Outbound_Passthrough(t *testing.T) {
 }
 
 func TestExtProc_Outbound_Deny(t *testing.T) {
-	router, _ := routing.NewRouter("exchange", []routing.Route{})
+	router, _ := routing.NewRouter("exchange", []routing.Route{{Host: "target-svc", Audience: "target-aud"}})
 	a := auth.New(auth.Config{
 		Router:        router,
 		NoTokenPolicy: auth.NoTokenPolicyDeny,

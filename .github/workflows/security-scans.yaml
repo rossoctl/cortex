@@ -15,6 +15,11 @@ name: Security Scans
 on:
   pull_request:
     branches: [main]
+    # Markdown cannot trip CodeQL, Trivy or Hadolint; docs-only PRs skip them.
+    # Footgun: a filtered-out run reports "Expected" forever if this workflow is
+    # ever added to branch protection as a required check.
+    paths-ignore:
+      - "**.md"
 
 permissions: {}
 

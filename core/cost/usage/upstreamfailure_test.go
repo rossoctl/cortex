@@ -93,3 +93,28 @@ func TestRecord_ClientHangupStaysOutOf5xx(t *testing.T) {
 type errRefused struct{}
 
 func (errRefused) Error() string { return "dial tcp 127.0.0.1:1: connect: connection refused" }
+
+// TestRecord_TruncatedStreamCountsAsError is the usage half of #1543: a
+// streamed response the upstream broke mid-body keeps its sent 200 — the
+// status is already on the wire — with the failure in Error. countsAsError
+// keyed on status alone, so those rows folded in as healthy 200s; this pins
+// that the row's explicit error is what the Errors count reads.
+func TestRecord_TruncatedStreamCountsAsError(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+	a.Record("s1", reqEvent(now, "req-1"))
+	stream := respEvent(now, http.StatusOK, 900*time.Millisecond, "", 0)
+	stream.RequestID = "req-1"
+	stream.Error = &pipeline.EventError{Kind: "upstream_error", Code: "200", Message: "unexpected EOF"}
+	a.Record("s1", stream)
+
+	b := a.Snapshot(time.Minute, BucketWidth, "", GroupStatus).Buckets[0]
+	if b.Requests != 1 || b.Errors != 1 {
+		t.Errorf("requests/errors = %d/%d, want 1/1 — a truncated stream must raise the error rate, not fold in as a healthy 200", b.Requests, b.Errors)
+	}
+	// The status label keeps the sent 200 — that is the row's contract — so
+	// the 5xx series stays clean; the error count is where the break shows.
+	if got := b.Series["200"]; got.Requests != 1 {
+		t.Errorf("series[200].requests = %d, want 1", got.Requests)
+	}
+}

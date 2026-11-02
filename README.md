@@ -107,6 +107,10 @@ The same binary runs as a Kubernetes sidecar: a verifiable identity per workload
 right credentials for each downstream call (**AuthBridge**), guardrails, egress control
 and spend caps. Start with [Running Cortex in Kubernetes](./docs/kubernetes.md).
 
+The same binary also runs on a remote machine — a VM, a home server, a pod — with
+`agentop` connecting over an encrypted tunnel. See
+[Running Cortex on a remote machine](./docs/remote.md).
+
 ## Learn more
 
 [All docs](./docs/README.md) · [agentop reference](./cmd/agentop/README.md) ·

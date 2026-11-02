@@ -72,7 +72,64 @@ func ValidatePipeline(subtree []byte, catalog []apiclient.PluginCatalogEntry) []
 	return errs
 }
 
-// validateChain runs the Requires/RequiresAny/unknown-name checks for one direction.
+// CheckOrder reports every dependency-ordering violation for the plugin
+// named name sitting at 1-based position pos, against positions (plugin
+// name → first 1-based position in the same chain). It is agentop's one
+// copy of the framework's validateRelationships ordering rules — the
+// pre-apply validator below and the TUI's DEPS indicator both call it, so
+// the two can no longer drift apart the way they did over RequiresLater
+// (#1568). Each returned string is operator-facing.
+//
+// Rules, mirroring core/plugins/registry.go:
+//   - Requires: every named plugin at a strictly-lower position.
+//   - RequiresLater: every named plugin at a strictly-higher position
+//     (the response pass walks the chain in reverse).
+//   - RequiresAny: at least one named plugin at a lower position, and
+//     every named plugin that IS present at a lower position.
+func CheckOrder(name string, pos int, positions map[string]int, requires, requiresAny, requiresLater []string) []string {
+	var problems []string
+	for _, req := range requires {
+		rp, present := positions[req]
+		switch {
+		case !present:
+			problems = append(problems, fmt.Sprintf("Requires %q, but it is not in this chain", req))
+		case rp >= pos:
+			problems = append(problems, fmt.Sprintf("Requires %q upstream, but it is at position %d (must be < %d)",
+				req, rp, pos))
+		}
+	}
+	for _, req := range requiresLater {
+		rp, present := positions[req]
+		switch {
+		case !present:
+			problems = append(problems, fmt.Sprintf("RequiresLater %q, but it is not in this chain", req))
+		case rp <= pos:
+			problems = append(problems, fmt.Sprintf("RequiresLater %q downstream (it reads what %q publishes while folding response frames, and the response pass runs in reverse), but it is at position %d (must be > %d)",
+				req, req, rp, pos))
+		}
+	}
+	if len(requiresAny) > 0 {
+		anyUpstream := false
+		for _, opt := range requiresAny {
+			rp, present := positions[opt]
+			if !present {
+				continue
+			}
+			if rp < pos {
+				anyUpstream = true
+			} else {
+				problems = append(problems, fmt.Sprintf("RequiresAny lists %q which is at position %d (must be < %d)",
+					opt, rp, pos))
+			}
+		}
+		if !anyUpstream {
+			problems = append(problems, fmt.Sprintf("RequiresAny %v: none present upstream in this chain", requiresAny))
+		}
+	}
+	return problems
+}
+
+// validateChain runs the Requires/RequiresAny/RequiresLater/unknown-name checks for one direction.
 func validateChain(direction string, chain pipelineChain, byName map[string]apiclient.PluginCatalogEntry) []ValidationError {
 	var errs []ValidationError
 	// Track positions of each name for ordering checks. Using lowest
@@ -102,61 +159,16 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 			continue
 		}
 
-		// Requires: every name MUST appear at strictly-lower position.
-		for _, req := range entry.Requires {
-			rp, present := positions[req]
-			if !present {
-				errs = append(errs, ValidationError{
-					Direction:  direction,
-					PluginName: p.Name,
-					Position:   pos,
-					Message: fmt.Sprintf("Requires %q, but it is not in the %s chain",
-						req, direction),
-				})
-				continue
-			}
-			if rp >= pos {
-				errs = append(errs, ValidationError{
-					Direction:  direction,
-					PluginName: p.Name,
-					Position:   pos,
-					Message: fmt.Sprintf("Requires %q upstream, but it is at position %d (must be < %d)",
-						req, rp, pos),
-				})
-			}
-		}
-
-		// RequiresAny: at least one of the listed names must appear at
-		// lower position. Each named one that IS present must be earlier.
-		if len(entry.RequiresAny) > 0 {
-			anyOK := false
-			for _, opt := range entry.RequiresAny {
-				rp, present := positions[opt]
-				if !present {
-					continue
-				}
-				if rp < pos {
-					anyOK = true
-				}
-				if rp >= pos {
-					errs = append(errs, ValidationError{
-						Direction:  direction,
-						PluginName: p.Name,
-						Position:   pos,
-						Message: fmt.Sprintf("RequiresAny lists %q which is at position %d (must be < %d)",
-							opt, rp, pos),
-					})
-				}
-			}
-			if !anyOK {
-				errs = append(errs, ValidationError{
-					Direction:  direction,
-					PluginName: p.Name,
-					Position:   pos,
-					Message: fmt.Sprintf("RequiresAny %v: none present upstream in %s chain",
-						entry.RequiresAny, direction),
-				})
-			}
+		// Requires / RequiresAny / RequiresLater ordering — CheckOrder, the
+		// one copy of the framework's rules shared with the TUI's DEPS
+		// indicator. Messages name the chain direction here only.
+		for _, problem := range CheckOrder(p.Name, pos, positions, entry.Requires, entry.RequiresAny, entry.RequiresLater) {
+			errs = append(errs, ValidationError{
+				Direction:  direction,
+				PluginName: p.Name,
+				Position:   pos,
+				Message:    fmt.Sprintf("%s (%s chain)", problem, direction),
+			})
 		}
 
 	}

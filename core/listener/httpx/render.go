@@ -1,6 +1,6 @@
-// Package httpx contains HTTP-listener helpers shared between the
-// forwardproxy and reverseproxy listeners. extproc speaks gRPC and
-// doesn't use this package.
+// Package httpx contains the HTTP helpers shared across this repo's servers:
+// the forward, reverse and ext_proc listeners, the stats and session APIs,
+// and the agentop viewer's pprof surface.
 package httpx
 
 import (

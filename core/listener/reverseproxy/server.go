@@ -15,7 +15,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -192,7 +191,12 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 		// Accept-Encoding intact rather than force needless upstream→client
 		// decompression (matters for a remote backend or large non-streamed
 		// bodies; harmless on a localhost sidecar hop).
-		if inbound.NeedsBody() || inbound.HasStreamingResponders() {
+		// The handler stashed the request's pctx into the request context
+		// just before ServeHTTP, and the clone the stdlib hands the
+		// Director keeps it — so this probe answers for the pipeline the
+		// request ran on, like every post-Run probe (Holder.ForPctx).
+		pctx, _ := req.Context().Value(pctxKey{}).(*pipeline.Context)
+		if pinned := inbound.ForPctx(pctx); pinned.NeedsBody() || pinned.HasStreamingResponders() {
 			req.Header.Del("Accept-Encoding")
 		}
 	}
@@ -405,10 +409,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// the backend and clear Content-Encoding (same rationale as the
 	// response path — plugin may have decompressed).
 	if pctx.BodyMutated() {
-		r.Body = io.NopCloser(bytes.NewReader(pctx.Body))
-		r.ContentLength = int64(len(pctx.Body))
-		r.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.Body)))
-		r.Header.Del("Content-Encoding")
+		httpx.SetRequestBody(r, pctx.Body)
 	}
 
 	// Propagate every header mutation the inbound pipeline made to the forwarded
@@ -417,27 +418,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Authorization used to be forwarded, silently dropping any other injected header
 	// (e.g. static-inject's x-api-key). Content-Length / Content-Encoding are managed
 	// by the body-rewrite block above and the transport, so leave them untouched.
-	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
-	}
-	for k := range r.Header {
-		if skip(k) {
-			continue
-		}
-		if _, ok := pctx.Headers[k]; !ok {
-			r.Header.Del(k) // plugin removed it
-		}
-	}
-	for k, vv := range pctx.Headers {
-		if skip(k) {
-			continue
-		}
-		if len(vv) == 0 {
-			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
-			continue
-		}
-		r.Header[k] = append([]string(nil), vv...) // set / overwrite
-	}
+	httpx.SyncRequestHeaders(r, pctx.Headers)
 
 	// Record the inbound request event whenever there is something
 	// observable: an A2A conversation, plugin invocations, or plugin-public
@@ -485,6 +466,12 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if pctx == nil {
 		return nil
 	}
+	// Every capability probe below answers for the pipeline this request
+	// ran on, not whatever a mid-request reload left in the Holder: the
+	// buffering and streaming decisions must match the pipeline the
+	// response phases dispatch on, or a reload mid-request silently skips
+	// the pinned plugins (Holder.ForPctx).
+	pinned := s.InboundPipeline.ForPctx(pctx)
 
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
@@ -524,10 +511,10 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// WritesResponseBody is incompatible with streaming (we can't rewrite a
 	// body we've already started forwarding) — fall back to buffered
 	// with a warning.
-	if isEventStream(resp.Header.Get("Content-Type")) &&
-		s.InboundPipeline.HasStreamingResponders() &&
+	if httpx.IsEventStream(resp.Header.Get("Content-Type")) &&
+		pinned.HasStreamingResponders() &&
 		resp.Body != nil {
-		if s.InboundPipeline.WritesResponseBody() {
+		if pinned.WritesResponseBody() {
 			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pctx.Host)
 		} else {
 			s.installStreamingResponseBody(resp, pctx)
@@ -540,7 +527,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		}
 	}
 
-	if s.InboundPipeline.NeedsBody() && resp.Body != nil {
+	if pinned.NeedsBody() && resp.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 		if err != nil {
 			// Wrapped so errorHandler keeps the backend's own status.
@@ -589,7 +576,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// Streaming-aware plugins use a single code path for both shapes:
 	// for buffered application/json we deliver the body as one
 	// last=true frame so plugins can finalize via OnResponseFrame.
-	if s.InboundPipeline.HasStreamingResponders() && resp.Body != nil {
+	if pinned.HasStreamingResponders() && resp.Body != nil {
 		// Its own budget, per the rule above: the settle does not inherit what the phase spent.
 		finalCtx, cancelFinal := httpx.TeardownContext(resp.Request.Context())
 		defer cancelFinal()
@@ -682,7 +669,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// (protocol mismatch, failed hijack) nothing would ever fire the deferred
 	// record. The row is the 101 itself, and ErrorHandler must not add a second
 	// one after it.
-	if !s.InboundPipeline.NeedsBody() && resp.Body != nil &&
+	if !pinned.NeedsBody() && resp.Body != nil &&
 		resp.StatusCode != http.StatusSwitchingProtocols {
 		resp.Body = &recordOnEOFBody{inner: resp.Body, onClose: record}
 		return nil
@@ -1039,19 +1026,6 @@ func (b *streamingResponseBody) Close() error {
 		b.onClose(b.statusCode)
 	}
 	return b.upstream.Close()
-}
-
-// isEventStream reports whether a Content-Type header value names the
-// SSE media type. Tolerates parameters and ASCII case differences.
-// Mirrors the forwardproxy helper of the same name.
-func isEventStream(contentType string) bool {
-	if contentType == "" {
-		return false
-	}
-	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-		contentType = contentType[:idx]
-	}
-	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }
 
 // inboundSessionID returns the bucket ID for an inbound event. Mirrors

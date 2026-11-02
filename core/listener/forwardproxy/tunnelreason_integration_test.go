@@ -142,7 +142,7 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 
 	client := rejectingClient(t)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
-	if handled := s.bridgeServe(client, authority, hostOnly(authority), s.newTunnelLog(pctx, false)); !handled {
+	if handled := s.bridgeServe(client, authority, hostOnly(authority), s.newTunnelLog(pctx, false), false); !handled {
 		t.Fatal("bridgeServe returned false; the connection is dead post-forge and must be reported handled")
 	}
 
@@ -188,7 +188,7 @@ func TestClientRejectedCA_SkipsHostAfterwards(t *testing.T) {
 	if s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("host skipped before any failure")
 	}
-	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel())
+	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel(), false)
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("host not skipped after a rejected forge; the client's retry would fail again")
 	}
@@ -207,7 +207,7 @@ func TestClientHungUp_GetsNoRestartAdvice(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
-	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), s.newTunnelLog(pctx, false))
+	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), s.newTunnelLog(pctx, false), false)
 
 	got := logbuf.String()
 	if !strings.Contains(got, string(pipeline.TunnelClientHungUp)) {
@@ -397,7 +397,7 @@ func TestHangUpAlsoSeedsTheSkip(t *testing.T) {
 	host := hostOnly(authority)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
 
-	s.bridgeServe(hangUpClient(t), authority, host, s.newTunnelLog(pctx, false))
+	s.bridgeServe(hangUpClient(t), authority, host, s.newTunnelLog(pctx, false), false)
 
 	// The first failure reports what actually happened, not a CA rejection.
 	opens, _ := tunnelRows(store, session.DefaultSessionID)
@@ -474,14 +474,14 @@ func TestOneStaleClientDoesNotSuppressAHealthyOne(t *testing.T) {
 	host := hostOnly(authority)
 
 	// 1. The stale client rejects our leaf; the host is skipped for everyone.
-	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel())
+	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel(), false)
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("a rejected forge did not skip the host")
 	}
 
 	// 2. The healthy client bridges. bridgeServe blocks serving the decrypted
 	//    connection, so run it and wait for the skip to clear.
-	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, discardTunnel())
+	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, discardTunnel(), false)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -521,7 +521,7 @@ func TestClientRejectedCA_NamesTheCAItself(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), discardTunnel())
+	s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), discardTunnel(), false)
 
 	got := logbuf.String()
 	if !strings.Contains(got, "ca_fingerprint=") {
@@ -596,7 +596,7 @@ func TestClientHungUp_GetsNoCAIdentity(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), discardTunnel())
+	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), discardTunnel(), false)
 
 	if got := logbuf.String(); strings.Contains(got, "ca_fingerprint=") || strings.Contains(got, "ca_file=") {
 		t.Errorf("a hang-up was given CA identity it cannot justify:\n%s", got)

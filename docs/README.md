@@ -10,6 +10,7 @@ holds the repo-level pieces; this file is the index.
 | Install and run Cortex on a laptop | [root README](../README.md) |
 | Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
+| Run Cortex on a remote machine and connect from anywhere | [`remote.md`](remote.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |

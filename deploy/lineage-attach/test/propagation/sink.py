@@ -1,4 +1,5 @@
 """Header-echo sink: answers every GET with the trace headers it received."""
+
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 

@@ -151,7 +151,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				slog.Warn("ext_proc: a plugin rejected during teardown, after the response was delivered",
 					"plugin", pctx.RejectingPlugin(), "code", violationCode(action))
 			}
-			if p.HasStreamingResponders() {
+			if p.ForPctx(pctx).HasStreamingResponders() {
 				// DETACHED FROM THE STREAM'S CONTEXT, which is the difference between this flush
 				// working and only appearing to: ctx is stream.Context(), and the case this block
 				// exists for — a hangup, a filter timeout, a shutdown — is exactly when it is
@@ -195,6 +195,18 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		case *extprocv3.ProcessingRequest_RequestHeaders:
 			headers := r.RequestHeaders.Headers
 			direction := getHeader(headers, "x-authbridge-direction")
+
+			// The Envoy inbound listener APPENDS x-authbridge-direction (Lua
+			// headers():add), so a client that already sent one leaves two
+			// entries — theirs first, which getHeader returns, letting a forged
+			// "outbound" skip the inbound chain (jwt-validation) entirely. A
+			// request Envoy marked carries exactly one entry; more than that
+			// is a forgery, and there is no chain it can be safely routed to.
+			if countHeader(headers, "x-authbridge-direction") > 1 {
+				slog.Warn("ext_proc: rejecting request with duplicate x-authbridge-direction entries")
+				resp = immediateResponse(http.StatusBadRequest, "duplicate x-authbridge-direction header")
+				break
+			}
 
 			p := s.OutboundPipeline
 			if direction == "inbound" {
@@ -672,6 +684,12 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	if direction == "inbound" {
 		p = s.InboundPipeline
 	}
+	// The pipeline this response answers for: the one the request's Run
+	// pinned, not whatever a mid-request reload left in the Holder. The
+	// body-mode request to Envoy and the streaming decisions below must
+	// match the pipeline the phases dispatch on, or the pinned plugins
+	// silently miss the body/frames (Holder.ForPctx).
+	pinned := p.ForPctx(pctx)
 
 	// Envoy delivering response headers is this listener's headers-arrival
 	// moment — the same point in the exchange where the proxy listeners set
@@ -685,7 +703,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// measured", so leave the timestamp zero on that arm. endOfStream means
 	// no body is coming at all, and p.NeedsBody() means the body phase
 	// records later — in both, headers arrival is a real, reportable figure.
-	if p.NeedsBody() || endOfStream {
+	if pinned.NeedsBody() || endOfStream {
 		pctx.ResponseHeadersAt = time.Now()
 	}
 
@@ -701,7 +719,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// The early return itself stays: when a body IS coming, this phase must not run the pipeline,
 	// because the body phase runs the whole buffered dispatch — terminal frame included — and
 	// running both charges twice. requestHasBody makes the same distinction on the request side.
-	if p.NeedsBody() && !endOfStream {
+	if pinned.NeedsBody() && !endOfStream {
 		return &extprocv3.ProcessingResponse{
 			Response: &extprocv3.ProcessingResponse_ResponseHeaders{
 				ResponseHeaders: &extprocv3.HeadersResponse{},
@@ -721,7 +739,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// StreamingResponder plugins can finalize (and emit no_response_body
 	// Skip rows for pairing). Mirrors the buffered-body path's single
 	// last=true dispatch.
-	if p.HasStreamingResponders() {
+	if pinned.HasStreamingResponders() {
 		if frameAction := p.RunResponseFrame(ctx, pctx, nil, true); frameAction.Type == pipeline.Reject {
 			return rejectFromAction(frameAction)
 		}
@@ -894,7 +912,7 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	// unparseable halves — and on the Anthropic dialect the event at risk is message_delta, so
 	// what goes missing is the OUTPUT tally while the response still settles at the prompt-only
 	// floor.
-	if isEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
+	if httpx.IsEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
 		// BOUNDED LIKE THE OTHER ARM. The carry itself is capped at one frame's worth, but the join
 		// below is carry + THIS MESSAGE, and nothing else caps the message: the maxBodySize check in
 		// Process covers the REQUEST body only. appendBoundedBody puts both under the same ceiling
@@ -920,6 +938,10 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	if direction == "inbound" {
 		p = s.InboundPipeline
 	}
+	// The pipeline this response's phases dispatch on is the one the
+	// request's Run pinned; the frame decision below must answer for the
+	// same one (Holder.ForPctx).
+	pinned := p.ForPctx(pctx)
 
 	// ONCE PER RESPONSE, ON THE LAST MESSAGE — not once per ResponseBody message.
 	//
@@ -952,7 +974,7 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	// buffered them at this point), re-parse with sseframe so each
 	// event arrives as its own frame; otherwise dispatch the whole
 	// body as one last=true frame.
-	if p.HasStreamingResponders() {
+	if pinned.HasStreamingResponders() {
 		if frameAction := dispatchBufferedFrames(ctx, p, pctx, endOfStream); frameAction.Type == pipeline.Reject {
 			return rejectFromAction(frameAction)
 		}
@@ -1099,9 +1121,9 @@ func withHeaderMutation(resp *extprocv3.ProcessingResponse, pctx *pipeline.Conte
 // there it names the service being called (pipeline.SessionEvent.Host).
 // The inbound handlers deliberately leave pctx.Host empty: the inbound
 // authority is caller-controlled and pctx.Host feeds enforcement decisions
-// (ibac's host-bypass skip, opa's policy input, per-host JWT audiences),
-// so a spoofed Host header must not reach them. See cpex's outbound-only
-// host-bypass guard for the same rule stated plugin-side.
+// (ibac's host-bypass skip, opa's policy input), so a spoofed Host header
+// must not reach them. See cpex's outbound-only host-bypass guard for the
+// same rule stated plugin-side.
 func authorityOf(headers *corev3.HeaderMap) string {
 	if a := getHeader(headers, ":authority"); a != "" {
 		return a
@@ -1333,6 +1355,19 @@ func getHeader(headers *corev3.HeaderMap, key string) string {
 	return ""
 }
 
+func countHeader(headers *corev3.HeaderMap, key string) int {
+	if headers == nil {
+		return 0
+	}
+	n := 0
+	for _, h := range headers.Headers {
+		if strings.EqualFold(h.Key, key) {
+			n++
+		}
+	}
+	return n
+}
+
 // dispatchBufferedFrames feeds the response body to StreamingResponder plugins via
 // RunResponseFrame, mirroring the proxy listeners' single-dispatch contract: application/json
 // arrives as one last=true frame, text/event-stream is re-parsed with sseframe so each event is
@@ -1361,7 +1396,7 @@ func getHeader(headers *corev3.HeaderMap, key string) string {
 // counts of every event that DID complete were dispatched when their message arrived, and the
 // terminal marker below is what turns them into a settled figure.
 func dispatchTerminalFrame(ctx context.Context, p *pipeline.Holder, pctx *pipeline.Context) {
-	if isEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
+	if httpx.IsEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
 		_ = p.RunResponseFrame(ctx, pctx, nil, true)
 		return
 	}
@@ -1370,7 +1405,7 @@ func dispatchTerminalFrame(ctx context.Context, p *pipeline.Holder, pctx *pipeli
 
 func dispatchBufferedFrames(ctx context.Context, p *pipeline.Holder, pctx *pipeline.Context, last bool) pipeline.Action {
 	contentType := pctx.ResponseHeaders.Get("Content-Type")
-	if isEventStream(contentType) && len(pctx.ResponseBody) > 0 {
+	if httpx.IsEventStream(contentType) && len(pctx.ResponseBody) > 0 {
 		// PARSE ONLY WHAT IS COMPLETE, AND KEEP THE REST FOR THE NEXT MESSAGE. sseframe
 		// delivers an unterminated trailing event at EOF — correct for a stream that really
 		// ended, wrong for one that merely ran out of THIS chunk — so a straddling event would
@@ -1412,17 +1447,4 @@ func dispatchBufferedFrames(ctx context.Context, p *pipeline.Holder, pctx *pipel
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	return p.RunResponseFrame(ctx, pctx, pctx.ResponseBody, true)
-}
-
-// isEventStream reports whether a Content-Type header value names the
-// SSE media type. Tolerates parameters and ASCII case differences.
-// Mirrors the helpers in forwardproxy/reverseproxy.
-func isEventStream(contentType string) bool {
-	if contentType == "" {
-		return false
-	}
-	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-		contentType = contentType[:idx]
-	}
-	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }

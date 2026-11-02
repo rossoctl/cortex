@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -185,5 +186,55 @@ func TestResizeAndRows_KeepTheCursorOnScreen(t *testing.T) {
 	for _, n := range []int{30, 12, 5, 0} {
 		tb.SetRows(rows(n))
 		checkScreen(t, tb, fmt.Sprintf("rows shrank to %d", n))
+	}
+}
+
+// A one-cell row renders as one line spanning every column — the section-row shape the
+// events pane's subagent block headers use. A label longer than the first column's width
+// must survive whole, which is the whole point of the convention: squeezed into column
+// one it would read "▸ PR…".
+func TestSectionRowSpansTheColumns(t *testing.T) {
+	tb := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "row", Width: 6},
+			{Title: "col", Width: 40},
+		}),
+		table.WithRows([]table.Row{
+			{"1", "a"},
+			{"▸ PR review (execution-first) · 14 rows"},
+			{"2", "b"},
+		}),
+		table.WithFocused(true),
+	)
+	tb.SetHeight(10)
+	v := tb.View()
+	if !strings.Contains(v, "▸ PR review (execution-first) · 14 rows") {
+		t.Errorf("section row truncated or missing:\n%s", v)
+	}
+	// The cursor can land on it, and it renders selected rather than vanishing.
+	tb.SetCursor(1)
+	if v := tb.View(); !strings.Contains(v, "▸ PR review (execution-first) · 14 rows") {
+		t.Errorf("section row missing under the cursor:\n%s", v)
+	}
+}
+
+// A section row is searchable like any other row: a hit marks it, and one that does not
+// match still renders while the search is live.
+func TestSectionRowSearches(t *testing.T) {
+	tb := table.New(
+		table.WithColumns([]table.Column{{Title: "row", Width: 6}, {Title: "col", Width: 10}}),
+		table.WithRows([]table.Row{
+			{"1", "a"},
+			{"▸ PR review (execution-first)"},
+		}),
+		table.WithFocused(true),
+	)
+	tb.SetHeight(10)
+	tb.SetSearch("execution", []table.SearchRow{
+		{Cells: []string{"", ""}},
+		{Cells: []string{"▸ PR review (execution-first)"}},
+	})
+	if got := tb.Matches(); !slices.Equal(got, []int{1}) {
+		t.Errorf("matches = %v, want [1]", got)
 	}
 }

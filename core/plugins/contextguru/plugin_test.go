@@ -122,17 +122,30 @@ func TestOnRequest_CompactsLargeToolOutput(t *testing.T) {
 // TestOnRequest_SentinelHeader_ShortCircuits covers the one safety-critical
 // branch: the plugin's own extract:code LLM call carries the sentinel, and if it
 // ever transits this forward proxy OnRequest must bail before touching the body —
-// otherwise the compaction call recurses into itself.
+// otherwise the compaction call recurses into itself. The sentinel is the
+// plugin's own per-process secret: outbound headers are the agent's own
+// request, and a caller setting the header to a guessable value must NOT skip.
 func TestOnRequest_SentinelHeader_ShortCircuits(t *testing.T) {
 	p := configured(t, collapseEngine)
 	body := chatBody(bigToolOutput())
 	pctx := inferencePctx("/v1/chat/completions", body)
-	pctx.Headers.Set(sentinelHeader, "1")
+	pctx.Headers.Set(sentinelHeader, p.sentinel)
 	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
 		t.Fatalf("expected Continue, got %v", act.Type)
 	}
 	if pctx.BodyMutated() {
 		t.Fatal("sentinel header must short-circuit before any compaction")
+	}
+
+	// A forged constant value — the pre-secret wire value — must be compacted
+	// like any other request.
+	forged := inferencePctx("/v1/chat/completions", body)
+	forged.Headers.Set(sentinelHeader, "1")
+	if act := invokeReq(p, forged); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !forged.BodyMutated() {
+		t.Fatal("forged sentinel value \"1\" skipped compaction; only the plugin's own secret may")
 	}
 }
 
