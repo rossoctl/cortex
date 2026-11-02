@@ -163,6 +163,17 @@ func SanitizeControlRunes(s string) string {
 	return b.String()
 }
 
+// SanitizeLogValue is SanitizeControlRunes plus the two strings.ReplaceAll
+// calls CodeQL's go/log-injection query recognizes as sanitizers: the calls
+// are markers the scanner reads, and the bytes they target are already gone
+// by the time they run. For any client-controlled value headed into slog,
+// this rather than SanitizeControlRunes directly.
+func SanitizeLogValue(s string) string {
+	s = SanitizeControlRunes(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	return strings.ReplaceAll(s, "\r", "")
+}
+
 // hasControlRunes reports whether s carries anything SanitizeControlRunes would replace.
 //
 // A RUNE scan rather than a byte scan, because the C1 block cannot be seen from the

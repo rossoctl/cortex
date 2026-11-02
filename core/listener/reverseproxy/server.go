@@ -334,7 +334,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if s.transparentInbound {
 		if _, ok := transparentproxy.OrigDstFromContext(r.Context()); !ok {
 			slog.Warn("reverse-proxy: rejecting request with no recovered destination",
-				"remote", r.RemoteAddr, "host", r.Host, "path", r.URL.Path)
+				"remote", r.RemoteAddr, "host", pipeline.SanitizeLogValue(r.Host), "path", pipeline.SanitizeLogValue(r.URL.Path))
 			http.Error(w, "no original destination recovered", http.StatusBadGateway)
 			return
 		}
@@ -395,7 +395,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		pctx.Body = body
-		slog.Debug("reverse-proxy: buffered request body", "host", r.Host, "bodyLen", len(body))
+		slog.Debug("reverse-proxy: buffered request body", "host", pipeline.SanitizeLogValue(r.Host), "bodyLen", len(body))
 	}
 
 	action := s.InboundPipeline.Run(r.Context(), pctx)
@@ -515,7 +515,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		pinned.HasStreamingResponders() &&
 		resp.Body != nil {
 		if pinned.WritesResponseBody() {
-			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pctx.Host)
+			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pipeline.SanitizeLogValue(pctx.Host))
 		} else {
 			s.installStreamingResponseBody(resp, pctx)
 			// Strip Content-Length — the framing reader doesn't know
@@ -707,7 +707,7 @@ func (s *Server) errorHandler(w http.ResponseWriter, r *http.Request, err error)
 		// that is handleUpgradeResponse failing a 101 (a protocol mismatch, a
 		// failed hijack), and a second row would break the one-response-per-
 		// request pairing /v1/usage counts on.
-		slog.Warn("reverse-proxy: backend upgrade failed", "host", r.Host, "status", pctx.StatusCode, "error", err)
+		slog.Warn("reverse-proxy: backend upgrade failed", "host", pipeline.SanitizeLogValue(r.Host), "status", pctx.StatusCode, "error", err)
 		return
 	}
 
@@ -725,7 +725,7 @@ func (s *Server) errorHandler(w http.ResponseWriter, r *http.Request, err error)
 		status, fail = pipeline.ExchangeFailure(r.Context(), err)
 	}
 	if r.Context().Err() == nil {
-		slog.Warn("reverse-proxy: backend request failed", "host", r.Host, "method", r.Method, "kind", fail.Kind, "error", fail.Message)
+		slog.Warn("reverse-proxy: backend request failed", "host", pipeline.SanitizeLogValue(r.Host), "method", r.Method, "kind", fail.Kind, "error", fail.Message)
 	}
 	if pctx == nil {
 		return

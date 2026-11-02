@@ -637,7 +637,7 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	// run the pipeline on the body phase.
 	if pat, matched := s.SkipHosts.MatchPattern(pctx.Host); matched {
 		slog.Info("ext_proc: skip_hosts match (body phase) — bypassing pipeline + session recording",
-			"host", pctx.Host, "pattern", pat, "path", pctx.Path)
+			"host", pipeline.SanitizeLogValue(pctx.Host), "pattern", pat, "path", pipeline.SanitizeLogValue(pctx.Path))
 		return allowBodyResponse(), nil
 	}
 

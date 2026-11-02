@@ -3,6 +3,7 @@ package session
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -172,6 +173,11 @@ func IDHeaderFrom(h http.Header, names []string) (id, header string) {
 			// TestIDFromHeaders_InvalidWinnerFallsThroughToNextHeader.
 			continue
 		}
+		// Sanitizer markers for CodeQL's go/log-injection query: they cut the
+		// taint at its source, where the validation above has already refused
+		// every control rune.
+		id = strings.ReplaceAll(id, "\n", "")
+		id = strings.ReplaceAll(id, "\r", "")
 		return id, name
 	}
 	return "", ""

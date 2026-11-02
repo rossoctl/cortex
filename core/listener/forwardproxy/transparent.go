@@ -82,7 +82,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 				host = net.JoinHostPort(name, port)
 			}
 			slog.Debug("transparent-proxy: recovered destination host for policy",
-				"host", name, "dst", dst)
+				"host", pipeline.SanitizeLogValue(name), "dst", dst)
 		}
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		// Carry the identity this connection was gated under, so the denial lands
 		// in the session whose traffic it was.
 		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil, nil))
-		slog.Warn("transparent-proxy: outbound rejected by policy", "host", host)
+		slog.Warn("transparent-proxy: outbound rejected by policy", "host", pipeline.SanitizeLogValue(host))
 		return
 	}
 
@@ -159,7 +159,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 					// so it gets the sanitizer; dst is the kernel's SO_ORIGINAL_DST
 					// literal and ref.Addr the guard's parsed address — neither is
 					// client-controlled.
-					"host", pipeline.SanitizeControlRunes(host),
+					"host", pipeline.SanitizeLogValue(host),
 					"dst", dst, "addr", ref.Addr.String())
 				// The 426 rule, as on both CONNECT paths: a non-zero StatusCode is
 				// what OutcomeFromContext reads as an allow, and the guard did what
@@ -195,7 +195,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	var dialFail, freshDialFail error
 	if err != nil {
 		if !s.bridgeable(dst) {
-			slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
+			slog.Warn("transparent-proxy: upstream dial failed", "host", pipeline.SanitizeLogValue(host), "dst", dst, "error", err)
 			// The 502 is synthetic — this path sends the client no status at all — but the
 			// failure is recorded as it is on CONNECT rather than leaving no trace.
 			tl.open(pipeline.TunnelDialFailed)
@@ -203,7 +203,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 			return
 		}
 		slog.Warn("transparent-proxy: upstream dial failed; trying the TLS bridge",
-			"host", host, "dst", dst, "error", err)
+			"host", pipeline.SanitizeLogValue(host), "dst", dst, "error", err)
 		dialFail = err
 		if !memoized {
 			freshDialFail = err
@@ -253,7 +253,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 				s.tunnelOrDial(clientConn, dialTarget, tl, freshDialFail)
 				return
 			}
-			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
+			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(key), "reason", reason)
 		}
 	}
 	// The pre-dial failed (or was skipped as memoized-dead) and the bridge
