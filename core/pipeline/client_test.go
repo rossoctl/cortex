@@ -960,10 +960,10 @@ func TestFoldAgentNames(t *testing.T) {
 func TestSanitizeLogValue(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"api.example.com", "api.example.com"},
-		{"evil\nhost", "evil�host"},
-		{"evil\rhost", "evil�host"},
-		{"esc[2j", "esc�[2j"},
-		{"c1", "c1�"},
+		{"evil\nhost", "evil\uFFFDhost"},
+		{"evil\rhost", "evil\uFFFDhost"},
+		{"esc\x1b[2J", "esc\uFFFD[2J"},
+		{"c1\u009b", "c1\uFFFD"},
 	} {
 		if got := SanitizeLogValue(tc.in); got != tc.want {
 			t.Errorf("SanitizeLogValue(%q) = %q, want %q", tc.in, got, tc.want)

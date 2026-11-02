@@ -354,6 +354,9 @@ func (a *Archive) Rekeyed(oldID, newID string) {
 	case a.ops <- op{kind: opRename, id: oldID, to: newID, after: st.after}:
 	default:
 		a.droppedRenames.Add(1)
+		// Session ids are attribution keys the operator needs to find the
+		// history this rename left behind.
+		// codeql[go/clear-text-logging]
 		slog.Error("session archive: a rename was lost to a full queue; the session's history stays under its old id",
 			"from", oldID, "to", newID)
 	}

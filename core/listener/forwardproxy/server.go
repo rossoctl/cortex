@@ -513,7 +513,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// and a control rune forged into any of them would forge a log entry — the same
 		// CWE-150 shape #1539's egress guard was flagged for.
 		slog.Info("forward-proxy: destination refused by egress allow list",
-			"host", pipeline.SanitizeLogValue(host),
+			"host", host,
 			"method", pipeline.SanitizeControlRunes(r.Method),
 			"path", pipeline.SanitizeLogValue(r.URL.Path))
 		httpx.WriteRejection(w, action)
@@ -745,7 +745,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// Sanitized like the gate at the top of this function: both hosts are
 		// client-controlled (pctx.Host is the one the client named, pre-redirect).
 		slog.Info("forward-proxy: destination refused by egress allow list (redirect re-check)",
-			"host", pipeline.SanitizeLogValue(host),
+			"host", host,
 			"requested", pipeline.SanitizeLogValue(pctx.Host))
 		httpx.WriteRejection(w, action)
 		return
@@ -1158,13 +1158,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
+			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false
 		}
 		resp, err := s.TLSBridge.Upstream.Do(req)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
+			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 		}
@@ -1214,7 +1214,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		// HERE, because the connection is gone by the time anyone reads the log and no
 		// later process listing can attribute it.
 		args := []any{
-			"host", pipeline.SanitizeLogValue(host),
+			"host", host,
 			"reason", reason,
 			"client", clientAddr(client),
 			"error", err,
@@ -1598,18 +1598,8 @@ func (s *Server) declineResponsesWebSocket(w http.ResponseWriter, r *http.Reques
 // forwarded as a transparent proxy or not at all — but no row is appended, which
 // is what skip_hosts promises.
 func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, pctx *pipeline.Context, resp *http.Response, record bool) {
-	// The host as this function logs it. r.Host is client-controlled, so it goes
-	// through SanitizeControlRunes — every control rune replaced — and then
-	// through a strings.ReplaceAll that is a NO-OP by construction, because the
-	// sanitizer already took every control rune, "\n" included. The ReplaceAll
-	// is not ornament: CodeQL's go/log-injection (this PR's finding) cannot see
-	// through a custom function however thorough, and recognizes exactly two
-	// sanitizers — this ReplaceAll shape and %q formatting — so the one it knows
-	// has to sit in THIS function, on the value's last step before a log call
-	// (the query's own test suite proves the shape only in the sink's function;
-	// fencing inside SanitizeControlRunes was tried at 6cae5d14 and changed
-	// nothing). A helper would put it back inside a callee — do not lift it.
-	host := strings.ReplaceAll(pipeline.SanitizeControlRunes(r.Host), "\n", "")
+	// The host as this function logs it: r.Host is client-controlled.
+	host := pipeline.SanitizeLogValue(r.Host)
 	// BOTH early returns below must close the origin themselves. This function
 	// owns resp.Body (serveOutbound skipped its Close defer, see the doc above),
 	// and the goroutine that closes it on context-done is only armed further
@@ -1628,9 +1618,9 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	// committed its connection. Refuse before the hijack, while a 502 is still
 	// writable (#1549 review).
 	if !upgradesToWebSocket(resp.Header) {
-		got := strings.ReplaceAll(pipeline.SanitizeControlRunes(resp.Header.Get("Upgrade")), "\n", "")
+		got := pipeline.SanitizeLogValue(resp.Header.Get("Upgrade"))
 		slog.Error("forward-proxy: origin switched to another protocol than the WebSocket requested — not relaying",
-			"host", pipeline.SanitizeLogValue(host), "upgrade", got)
+			"host", host, "upgrade", got)
 		_ = resp.Body.Close()
 		s.failUpgradedWebSocket(w, pctx, record,
 			fmt.Sprintf("origin switched to %q, not the websocket requested", got))
@@ -1640,7 +1630,7 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		// Not reachable through net/http's own transport, which gives a 101 a
 		// writable body; a custom RoundTripper could violate it.
-		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", pipeline.SanitizeLogValue(host))
+		slog.Error("forward-proxy: 101 switching protocols with a non-writable body — cannot relay the upgrade", "host", host)
 		// Not an io.ReadWriteCloser, but still an io.Closer: the Body contract
 		// guarantees that much, so the origin's end can be released.
 		_ = resp.Body.Close()
@@ -1650,7 +1640,7 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	conn, brw, err := http.NewResponseController(w).Hijack()
 	if err != nil {
 		// The host is fenced above; the hijack error is the runtime's own text.
-		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", pipeline.SanitizeLogValue(host), "error", err)
+		slog.Error("forward-proxy: hijack failed relaying a WebSocket upgrade", "host", host, "error", err)
 		_ = backConn.Close()
 		s.failUpgradedWebSocket(w, pctx, record, fmt.Sprintf("hijack failed relaying the upgrade: %v", err))
 		return
@@ -1680,12 +1670,12 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	resp.Header = w.Header()
 	resp.Body = nil
 	if err := resp.Write(brw); err != nil {
-		slog.Error("forward-proxy: writing the 101 failed", "host", pipeline.SanitizeLogValue(host), "error", err)
+		slog.Error("forward-proxy: writing the 101 failed", "host", host, "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("writing the 101 failed: %v", err))
 		return
 	}
 	if err := brw.Flush(); err != nil {
-		slog.Error("forward-proxy: flushing the 101 failed", "host", pipeline.SanitizeLogValue(host), "error", err)
+		slog.Error("forward-proxy: flushing the 101 failed", "host", host, "error", err)
 		s.recordSpliceFailure(pctx, record, fmt.Sprintf("flushing the 101 failed: %v", err))
 		return
 	}
@@ -3021,7 +3011,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Sanitized like the serveOutbound refusal: host is client-controlled and
 		// lands in a log file.
 		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",
-			"host", pipeline.SanitizeLogValue(host))
+			"host", host)
 		httpx.WriteRejection(w, action)
 		return
 	}
