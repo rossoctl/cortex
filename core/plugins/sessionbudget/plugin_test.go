@@ -501,6 +501,10 @@ func TestConfigure_Validation(t *testing.T) {
 		{"ttl below max_duration rejected", `{"redis_url":"redis://localhost","max_duration_seconds":3600,"session_ttl_seconds":300}`, true},
 		{"ttl equal to max_duration accepted", `{"redis_url":"redis://localhost","max_duration_seconds":3600,"session_ttl_seconds":3600}`, false},
 		{"negative ttl rejected", `{"redis_url":"redis://localhost","max_tokens":100,"session_ttl_seconds":-1}`, true},
+		{"misspelled key rejected", `{"redis_url":"redis://localhost","max_token":100,"max_calls":5}`, true},
+		{"trailing content rejected", `{"redis_url":"redis://localhost","max_tokens":100} {}`, true},
+		{"unknown redis_unavailable rejected", `{"redis_url":"redis://localhost","max_tokens":100,"redis_unavailable":"retry"}`, true},
+		{"invalid pause_timeout rejected outside pause mode", `{"redis_url":"redis://localhost","max_tokens":100,"pause_timeout":"nope"}`, true},
 	}
 
 	for _, tt := range tests {
@@ -511,6 +515,75 @@ func TestConfigure_Validation(t *testing.T) {
 				t.Errorf("Configure() error = %v, wantErr = %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// An explicit zero or empty string takes the same default as an absent key,
+// including on_exceed, which a struct-marshalled config sends as "".
+func TestConfigure_ExplicitZeroTakesDefault(t *testing.T) {
+	p := New()
+	raw := `{"redis_url":"redis://localhost","max_calls":5,"on_exceed":"","session_ttl_seconds":0,"refresh_interval":"","redis_unavailable":"","pause_timeout":"","pause_timeout_action":"","pause_grace_period":""}`
+	if err := p.Configure(json.RawMessage(raw)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	want := config{
+		RedisURL:           "redis://localhost",
+		MaxCalls:           5,
+		OnExceed:           "deny",
+		PauseTimeout:       "30s",
+		PauseTimeoutAction: "deny",
+		PauseGracePeriod:   "5m",
+		SessionTTLSeconds:  7200,
+		RefreshInterval:    "5s",
+		RedisUnavailable:   "fail_open",
+	}
+	if p.cfg != want {
+		t.Errorf("cfg = %+v\nwant  %+v", p.cfg, want)
+	}
+	if p.pauseTimeout != 30*time.Second || p.gracePeriod != 5*time.Minute {
+		t.Errorf("pauseTimeout = %v, gracePeriod = %v; want 30s, 5m", p.pauseTimeout, p.gracePeriod)
+	}
+}
+
+// Every default the schema advertises is the one Configure applies.
+func TestConfigure_DefaultTagsMatchAppliedDefaults(t *testing.T) {
+	p := New()
+	if err := p.Configure(json.RawMessage(`{"redis_url":"redis://localhost","max_calls":5}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	applied, err := json.Marshal(p.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(applied, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range pipeline.SchemaOf(config{}) {
+		if f.Default == "" {
+			continue
+		}
+		if s := fmt.Sprint(got[f.Name]); s != f.Default {
+			t.Errorf("%s: default tag %q, applied %q", f.Name, f.Default, s)
+		}
+	}
+}
+
+// A rejected Configure leaves the previous config in place, so a bad
+// hot-reload cannot half-apply.
+func TestConfigure_RejectedReloadKeepsPreviousConfig(t *testing.T) {
+	p := New()
+	good := `{"redis_url":"redis://localhost","max_calls":5,"on_exceed":"pause","pause_webhook":"http://x","pause_timeout":"7s"}`
+	if err := p.Configure(json.RawMessage(good)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	before := p.cfg
+	bad := `{"redis_url":"redis://other","max_calls":1,"on_exceed":"pause","pause_webhook":"http://x","pause_timeout":"-1s"}`
+	if err := p.Configure(json.RawMessage(bad)); err == nil {
+		t.Fatal("Configure accepted a negative pause_timeout")
+	}
+	if p.cfg != before || p.pauseTimeout != 7*time.Second {
+		t.Errorf("rejected config was applied: cfg = %+v, pauseTimeout = %v", p.cfg, p.pauseTimeout)
 	}
 }
 

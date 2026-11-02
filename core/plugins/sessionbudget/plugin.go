@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -141,77 +142,104 @@ func (p *SessionBudget) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *SessionBudget) Configure(raw json.RawMessage) error {
-	p.cfg = config{
-		OnExceed:          "deny",
-		SessionTTLSeconds: 7200,
-		RefreshInterval:   "5s",
-		RedisUnavailable:  "fail_open",
+	var c config
+	if len(raw) > 0 {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&c); err != nil {
+			return fmt.Errorf("session-budget config: %w", err)
+		}
+		// Decode stops at the first JSON value; json.Unmarshal, which this
+		// replaced, rejected anything after it.
+		if dec.More() {
+			return fmt.Errorf("session-budget config: unexpected trailing content after the config object")
+		}
 	}
-	if err := json.Unmarshal(raw, &p.cfg); err != nil {
-		return fmt.Errorf("session-budget config: %w", err)
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return fmt.Errorf("session-budget: %w", err)
 	}
-	if p.cfg.RedisURL == "" {
-		return fmt.Errorf("session-budget: redis_url is required")
+	p.cfg = c
+	// validate has already parsed both durations.
+	p.pauseTimeout, _ = time.ParseDuration(c.PauseTimeout)
+	p.gracePeriod, _ = time.ParseDuration(c.PauseGracePeriod)
+	return nil
+}
+
+// applyDefaults fills every unset field, so an explicit zero or empty string
+// means the default too.
+func (c *config) applyDefaults() {
+	if c.OnExceed == "" {
+		c.OnExceed = "deny"
 	}
-	if p.cfg.MaxTokens <= 0 && p.cfg.MaxCalls <= 0 && p.cfg.MaxDurationSeconds <= 0 &&
-		p.cfg.MaxInputTokens <= 0 && p.cfg.MaxCacheReadTokens <= 0 && p.cfg.MaxCacheWriteTokens <= 0 &&
-		p.cfg.MaxOutputTokens <= 0 && p.cfg.MaxReasoningTokens <= 0 {
-		return fmt.Errorf("session-budget: at least one limit (max_tokens, max_input_tokens, max_cache_read_tokens, max_cache_write_tokens, max_output_tokens, max_reasoning_tokens, max_calls, max_duration_seconds) must be > 0")
+	if c.PauseTimeout == "" {
+		c.PauseTimeout = "30s"
 	}
-	if p.cfg.SessionTTLSeconds < 0 {
-		return fmt.Errorf("session-budget: session_ttl_seconds must be > 0 (got %d)", p.cfg.SessionTTLSeconds)
+	if c.PauseTimeoutAction == "" {
+		c.PauseTimeoutAction = "deny"
 	}
-	if p.cfg.SessionTTLSeconds == 0 {
-		// Explicit 0 (or unset via struct-marshal) — restore default.
-		p.cfg.SessionTTLSeconds = 7200
+	if c.PauseGracePeriod == "" {
+		c.PauseGracePeriod = "5m"
 	}
-	if p.cfg.MaxDurationSeconds > 0 && int64(p.cfg.SessionTTLSeconds) < p.cfg.MaxDurationSeconds {
-		return fmt.Errorf("session-budget: session_ttl_seconds (%d) must be >= max_duration_seconds (%d); Redis would expire counters mid-session and reopen enforcement gaps",
-			p.cfg.SessionTTLSeconds, p.cfg.MaxDurationSeconds)
+	if c.SessionTTLSeconds == 0 {
+		c.SessionTTLSeconds = 7200
 	}
-	switch p.cfg.OnExceed {
+	if c.RefreshInterval == "" {
+		c.RefreshInterval = "5s"
+	}
+	if c.RedisUnavailable == "" {
+		c.RedisUnavailable = "fail_open"
+	}
+}
+
+func (c *config) validate() error {
+	if c.RedisURL == "" {
+		return errors.New("redis_url is required")
+	}
+	if c.MaxTokens <= 0 && c.MaxCalls <= 0 && c.MaxDurationSeconds <= 0 &&
+		c.MaxInputTokens <= 0 && c.MaxCacheReadTokens <= 0 && c.MaxCacheWriteTokens <= 0 &&
+		c.MaxOutputTokens <= 0 && c.MaxReasoningTokens <= 0 {
+		return errors.New("at least one limit (max_tokens, max_input_tokens, max_cache_read_tokens, max_cache_write_tokens, max_output_tokens, max_reasoning_tokens, max_calls, max_duration_seconds) must be > 0")
+	}
+	if c.SessionTTLSeconds < 0 {
+		return fmt.Errorf("session_ttl_seconds must be > 0 (got %d)", c.SessionTTLSeconds)
+	}
+	if c.MaxDurationSeconds > 0 && int64(c.SessionTTLSeconds) < c.MaxDurationSeconds {
+		return fmt.Errorf("session_ttl_seconds (%d) must be >= max_duration_seconds (%d); Redis would expire counters mid-session and reopen enforcement gaps",
+			c.SessionTTLSeconds, c.MaxDurationSeconds)
+	}
+	switch c.OnExceed {
 	case "deny", "observe", "pause":
 	default:
-		return fmt.Errorf("session-budget: on_exceed must be \"deny\", \"observe\", or \"pause\" (got %q)", p.cfg.OnExceed)
+		return fmt.Errorf("on_exceed must be \"deny\", \"observe\", or \"pause\" (got %q)", c.OnExceed)
 	}
-	if p.cfg.OnExceed == "pause" {
-		if p.cfg.PauseWebhook == "" {
-			return fmt.Errorf("session-budget: pause_webhook is required when on_exceed=\"pause\"")
-		}
-		if p.cfg.PauseTimeout == "" {
-			p.cfg.PauseTimeout = "30s"
-		}
-		if d, err := time.ParseDuration(p.cfg.PauseTimeout); err != nil {
-			return fmt.Errorf("session-budget: invalid pause_timeout %q: %w", p.cfg.PauseTimeout, err)
-		} else if d <= 0 {
-			return fmt.Errorf("session-budget: pause_timeout must be > 0 (got %q)", p.cfg.PauseTimeout)
-		} else {
-			p.pauseTimeout = d
-		}
-		if p.cfg.PauseTimeoutAction == "" {
-			p.cfg.PauseTimeoutAction = "deny"
-		}
-		if p.cfg.PauseTimeoutAction != "deny" && p.cfg.PauseTimeoutAction != "allow" {
-			return fmt.Errorf("session-budget: pause_timeout_action must be \"deny\" or \"allow\" (got %q)", p.cfg.PauseTimeoutAction)
-		}
-		if p.cfg.PauseGracePeriod == "" {
-			p.cfg.PauseGracePeriod = "5m"
-		}
-		if d, err := time.ParseDuration(p.cfg.PauseGracePeriod); err != nil {
-			return fmt.Errorf("session-budget: invalid pause_grace_period %q: %w", p.cfg.PauseGracePeriod, err)
-		} else if d < 0 {
-			return fmt.Errorf("session-budget: pause_grace_period must be >= 0 (got %q); use \"0s\" to fire the webhook on every breach", p.cfg.PauseGracePeriod)
-		} else {
-			p.gracePeriod = d
-		}
+	if c.OnExceed == "pause" && c.PauseWebhook == "" {
+		return errors.New("pause_webhook is required when on_exceed=\"pause\"")
 	}
-	if d, err := time.ParseDuration(p.cfg.RefreshInterval); err != nil {
-		return fmt.Errorf("session-budget: invalid refresh_interval %q: %w", p.cfg.RefreshInterval, err)
+	if d, err := time.ParseDuration(c.PauseTimeout); err != nil {
+		return fmt.Errorf("invalid pause_timeout %q: %w", c.PauseTimeout, err)
 	} else if d <= 0 {
-		return fmt.Errorf("session-budget: refresh_interval must be > 0 (got %q)", p.cfg.RefreshInterval)
+		return fmt.Errorf("pause_timeout must be > 0 (got %q)", c.PauseTimeout)
 	}
-	if p.cfg.RedisUnavailable == "fail_closed" {
-		return fmt.Errorf("session-budget: redis_unavailable=fail_closed is not yet implemented; use fail_open")
+	if c.PauseTimeoutAction != "deny" && c.PauseTimeoutAction != "allow" {
+		return fmt.Errorf("pause_timeout_action must be \"deny\" or \"allow\" (got %q)", c.PauseTimeoutAction)
+	}
+	if d, err := time.ParseDuration(c.PauseGracePeriod); err != nil {
+		return fmt.Errorf("invalid pause_grace_period %q: %w", c.PauseGracePeriod, err)
+	} else if d < 0 {
+		return fmt.Errorf("pause_grace_period must be >= 0 (got %q); use \"0s\" to fire the webhook on every breach", c.PauseGracePeriod)
+	}
+	if d, err := time.ParseDuration(c.RefreshInterval); err != nil {
+		return fmt.Errorf("invalid refresh_interval %q: %w", c.RefreshInterval, err)
+	} else if d <= 0 {
+		return fmt.Errorf("refresh_interval must be > 0 (got %q)", c.RefreshInterval)
+	}
+	switch c.RedisUnavailable {
+	case "fail_open":
+	case "fail_closed":
+		return errors.New("redis_unavailable=fail_closed is not yet implemented; use fail_open")
+	default:
+		return fmt.Errorf("redis_unavailable must be \"fail_open\" (got %q)", c.RedisUnavailable)
 	}
 	return nil
 }
