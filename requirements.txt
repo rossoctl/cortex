@@ -4,6 +4,6 @@ PyYAML>=6.0.3
 langgraph==1.2.16
 langchain-core==1.7.0
 langchain-openai==1.7.2
-pydantic==2.14.1
+pydantic==2.14.2
 
 python-dotenv>=1.2.4
