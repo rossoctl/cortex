@@ -54,6 +54,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -227,6 +228,21 @@ type Client struct {
 	http               *http.Client
 }
 
+// sharedTransport is the one transport every default client uses, so clients
+// built per request (context-guru's incoming model) pool their connections
+// together. It is DefaultTransport cloned with a 100-connection idle pool per
+// host, sized for callers that judge and reflect concurrently; a program that
+// installed its own RoundTripper as DefaultTransport gets that one as-is.
+var sharedTransport = sync.OnceValue(func() http.RoundTripper {
+	t, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+	tr := t.Clone()
+	tr.MaxIdleConnsPerHost = 100
+	return tr
+})
+
 // New constructs a Client. The Endpoint is normalized
 // (trailing slashes stripped); empty Endpoint or Model is permitted
 // at construction but will cause Call/CallRaw to fail.
@@ -237,16 +253,10 @@ func New(opts Options) *Client {
 		if timeout <= 0 {
 			timeout = DefaultTimeout
 		}
-		// A cloned transport with a raised idle pool, not the bare default:
-		// DefaultTransport keeps 2 idle connections per host, and the callers
-		// here judge and reflect concurrently through one client — the exact
-		// shape that re-handshakes every request beyond the second.
-		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.MaxIdleConnsPerHost = 100
 		httpClient = &http.Client{
 			Timeout:       timeout,
 			CheckRedirect: SentinelRedirectPolicy(opts.SentinelHeaderName),
-			Transport:     tr,
+			Transport:     sharedTransport(),
 		}
 	}
 	return &Client{

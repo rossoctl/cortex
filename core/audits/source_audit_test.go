@@ -412,12 +412,16 @@ func exprSource(fset *token.FileSet, e ast.Expr) string {
 	return strings.Join(strings.Fields(buf.String()), " ")
 }
 
-// assertNoStaleEntries fails for allowlist entries that matched nothing: an
-// entry for code that no longer exists reads as coverage nothing checks.
+// assertNoStaleEntries fails for allowlist entries that matched nothing — an
+// entry for code that no longer exists reads as coverage nothing checks — and
+// for entries without a reason.
 func assertNoStaleEntries(t *testing.T, table string, allowlist map[string]string, seen map[string]bool) {
 	t.Helper()
 	var stale []string
-	for key := range allowlist {
+	for key, reason := range allowlist {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("%s has %q without a reason", table, key)
+		}
 		if !seen[key] {
 			stale = append(stale, key)
 		}

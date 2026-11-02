@@ -418,6 +418,7 @@ func writeFiles(dir string, e catalog.CatalogEntry, old installRecord) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	syncDir(filepath.Dir(dir))
 	for n := range old.Files {
 		if _, shipped := e.Files[n]; !shipped && filepath.Base(n) == n {
 			if err := os.Remove(filepath.Join(dir, n)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -486,7 +487,17 @@ func writeAtomic(path string, b []byte, mode os.FileMode) error {
 		return err
 	}
 	ok = true
+	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// syncDir makes dir's entries durable, best-effort: the write it follows has
+// already taken effect, so a refusal here is no failure to report.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 }
 
 // removeFiles deletes what rec lists, the record, then dir when it is empty.
