@@ -25,7 +25,9 @@ func (m *model) surface(t paneID) searchSurface {
 		return tableSurface{m, t, &m.namespacesTbl}
 	case panePods:
 		return tableSurface{m, t, &m.podsTbl}
-	case paneDetail, panePluginDetail:
+	case paneDetail:
+		return detailSurface{docSurface{m, t, &m.detailVp, &m.detailDoc}}
+	case panePluginDetail:
 		return docSurface{m, t, &m.detailVp, &m.detailDoc}
 	case targetHelp:
 		return docSurface{m, t, &m.helpVp, &m.helpDoc}
@@ -173,6 +175,25 @@ func (s docSurface) restore(sp searchSpot) {
 }
 
 func (s docSurface) redraw() { s.vp.SetContent(s.doc.render(s.m.searchQuery(s.t))) }
+
+// detailSurface is the event detail pane. A query opens the folds that hold its matches, so a
+// redraw renders the tree again. It does not scroll: the reader stays where they were. n and N
+// put the cursor on the match's line, and scroll to the match's row, which on a long string is
+// not the line's first.
+type detailSurface struct{ docSurface }
+
+func (s detailSurface) redraw() { s.m.renderDetail() }
+
+func (s detailSurface) reveal(row int) {
+	s.m.setDetailCursor(s.doc.lineAtRow(row))
+	s.docSurface.reveal(row)
+}
+
+func (s detailSurface) restore(sp searchSpot) {
+	s.doc.clearCurrent()
+	s.redraw()
+	s.vp.SetYOffset(sp.yOffset)
+}
 
 // usageSurface is the usage pane: drawn to fit, so it never scrolls, and its place is only
 // which matching line is current.

@@ -717,7 +717,16 @@ type model struct {
 	// the detail pane on resize without re-deriving the tunnel fold.
 	detailRow    eventRow
 	detailPlugin *apiclient.PipelinePlugin
-	searchInput  textinput.Model
+	// The event detail pane as a tree — see detail_tree.go. detailHead is the header blocks
+	// drawn above it, detailLines what the last render drew, detailFolds the folds the reader
+	// opened or closed, and detailCursorPath the node the cursor is on, so a re-render can put
+	// it back.
+	detailTree       *node
+	detailHead       []string
+	detailLines      []treeLine
+	detailFolds      map[string]bool
+	detailCursorPath string
+	searchInput      textinput.Model
 
 	// visibleRows holds the eventRow for each rendered row in eventsTbl —
 	// one per network message. Populated by rebuildEventsTable so
