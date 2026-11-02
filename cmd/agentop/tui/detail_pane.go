@@ -169,8 +169,9 @@ func (m *model) toggleDetailFold() {
 	m.moveDetailCursor(m.cursorLineFor(l.path))
 }
 
-// clearFoldQueries is a cleared search on the event detail pane: a fold the reader closed
-// under it is closed as if under no search, so a later search opens it when it holds a match.
+// clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
+// under the old one is closed as if under no search, so a later search opens it when it holds
+// a match.
 func (m *model) clearFoldQueries() {
 	for p, c := range m.detailFolds {
 		c.query = ""

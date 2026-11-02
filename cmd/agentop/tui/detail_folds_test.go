@@ -392,10 +392,10 @@ func TestDetailFolds_ANewQueryOpensAFoldTheReaderClosed(t *testing.T) {
 	}
 }
 
-// A close made under a search that the reader then cleared holds as a close made with no
-// search: the same search again opens the fold, because the fold holds its match. Esc on the
-// prompt puts the search back, and the close with it.
-func TestDetailFolds_ClearedSearchLetsTheSameSearchOpenAFold(t *testing.T) {
+// A close made under a search that the reader then changed or cleared holds as a close made
+// with no search: the same search again opens the fold, because the fold holds its match. Esc
+// on the prompt puts the search back, and the close with it.
+func TestDetailFolds_ChangedSearchLetsTheSameSearchOpenAFold(t *testing.T) {
 	closeUnder := func(q string) *model {
 		m := openTurnDetail(t)
 		typeKeys(m, "/"+q)
@@ -412,6 +412,15 @@ func TestDetailFolds_ClearedSearchLetsTheSameSearchOpenAFold(t *testing.T) {
 	press(m, tea.KeyEnter)
 	if len(m.surface(paneDetail).matchLines()) == 0 {
 		t.Errorf("the same search after a clear: %s", m.searchStatus(paneDetail))
+	}
+
+	m = closeUnder("reads a file")
+	typeKeys(m, "/old-needle")
+	press(m, tea.KeyEnter)
+	typeKeys(m, "/reads a file")
+	press(m, tea.KeyEnter)
+	if len(m.surface(paneDetail).matchLines()) == 0 {
+		t.Errorf("the same search after another search: %s", m.searchStatus(paneDetail))
 	}
 
 	m = closeUnder("reads a file")

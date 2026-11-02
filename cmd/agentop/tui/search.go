@@ -157,10 +157,10 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		if m.search == nil {
 			m.search = make(map[paneID]string)
 		}
-		m.search[t] = m.searchInput.Value()
-		if t == paneDetail && m.search[t] == "" {
+		if t == paneDetail && m.searchInput.Value() != m.search[t] {
 			m.clearFoldQueries()
 		}
+		m.search[t] = m.searchInput.Value()
 		m.closeSearch()
 		return nil
 	case "esc":
