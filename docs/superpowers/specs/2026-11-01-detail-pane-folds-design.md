@@ -70,8 +70,14 @@ A new file `cmd/agentop/tui/detail_tree.go` replaces the string builder in
 
 ### 3. Default folds
 
-A fold is open or closed by default. The reader's choices override the
-defaults (section 5).
+A fold is a node that can open and close:
+
+- every object or array that has children, except the root;
+- the earlier-messages group (section 4);
+- a clipped string (section 2).
+
+A scalar and a short string are not folds. A fold is open or closed by
+default. The reader's choices override the defaults (section 5).
 
 | Node | Default |
 |---|---|
@@ -129,7 +135,7 @@ width is the viewport width minus the gutter.
 | ↑↓ / j k | move the cursor one line |
 | PgUp/PgDn, b / f, g, G | move the cursor one page, to the top, to the bottom |
 | Enter / → / l | open the fold at the cursor. No effect on a line that is not a closed fold head |
-| ← / h | close the nearest open fold that holds the cursor, and move the cursor to its head. When no fold holds it: back to Events, as today |
+| ← / h | close the nearest open fold that holds the cursor, and move the cursor to its head. When no fold holds it (a top-level field such as `host`): back to Events, as today. Inside `inference`, ← therefore closes a fold before it leaves, as in a tree view. esc always leaves |
 | `+` / `-` | open all / close all |
 | esc | back to Events, as today |
 | `y`, `u`, `T`, `/`, `n`, `N` | as today |
