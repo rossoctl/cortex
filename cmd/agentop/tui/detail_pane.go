@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/cost/event"
@@ -39,29 +40,37 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	e := r.event
 	m.detailRow = r
 	m.detailEvent = e
-	var lines []string
+	// The header blocks first, each followed by a blank line, in the order they have always
+	// had: TLS, what plugins rewrote, then the folded tunnel. Lines like the JSON below them,
+	// so a search reads them too.
+	m.detailHead = nil
+	m.detailTree = nil
 	if data, err := json.Marshal(e); err != nil {
-		lines = []string{"error marshaling event: " + err.Error()}
+		m.detailHead = []string{"error marshaling event: " + err.Error()}
 	} else {
-		// The header blocks first, each followed by a blank line, in the order they have
-		// always had: TLS, what plugins rewrote, then the folded tunnel. Lines like the JSON
-		// below them, so a search reads them too.
 		var tunnel string
 		if r.tunnel != nil {
 			tunnel = tunnelHeader(r.tunnel)
 		}
 		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), timingHeader(e), tunnel} {
 			if h != "" {
-				lines = append(lines, strings.Split(h, "\n")...)
-				lines = append(lines, "")
+				m.detailHead = append(m.detailHead, strings.Split(h, "\n")...)
+				m.detailHead = append(m.detailHead, "")
 			}
 		}
-		lines = append(lines, strings.Split(ColorizeJSONBytes(filterForDetail(data, e.Phase)), "\n")...)
+		filtered := filterForDetail(data, e.Phase)
+		if root, err := treeFromJSON(filtered); err == nil {
+			m.detailTree = root
+		} else {
+			m.detailHead = append(m.detailHead, ColorizeJSONBytes(filtered))
+		}
 	}
-	// Wrapped to the viewport, on spaces and hyphens with a hard break for a long token, by
-	// the document: it has to match before the wrap and place each match after it.
-	m.detailDoc.setLines(lines, m.detailVp.Width)
-	m.detailVp.SetContent(m.detailDoc.render(m.searchQuery(paneDetail)))
+	if resetScroll {
+		// A new event: the folds the reader opened were for the last one.
+		m.detailFolds = nil
+		m.detailCursorPath, m.detailCursorOff = "", 0
+	}
+	m.renderDetail()
 	if resetScroll {
 		m.detailVp.GotoTop()
 		return
@@ -73,6 +82,166 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	// with dead space beneath it. SetYOffset is the clamping setter; a no-op when the
 	// offset is already in range. Same three lines as syncHelpViewport.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
+	m.scrollToDetailCursor()
+}
+
+// renderDetail draws the event detail pane from the tree showDetail built, with the folds the
+// reader chose and the search query in force, and puts the cursor back on its node.
+func (m *model) renderDetail() {
+	q := m.searchQuery(paneDetail)
+	m.detailLines = m.detailLines[:0]
+	for _, h := range m.detailHead {
+		for _, l := range strings.Split(h, "\n") {
+			m.detailLines = append(m.detailLines, treeLine{text: l})
+		}
+	}
+	if m.detailTree != nil {
+		m.detailLines = append(m.detailLines, renderTree(m.detailTree, foldState{open: m.detailFolds, query: q})...)
+	}
+	texts := make([]string, len(m.detailLines))
+	for i, l := range m.detailLines {
+		texts[i] = l.text
+	}
+	m.detailDoc.gutter = true
+	m.detailDoc.cursor = m.cursorLineFor(m.detailCursorPath, m.detailCursorOff)
+	m.detailDoc.setLines(texts, m.detailVp.Width)
+	m.detailVp.SetContent(m.detailDoc.render(q))
+}
+
+// cursorLineFor is the line the cursor goes back to after a re-render: line off of the node at
+// path, else that node's last line, else the first line of the nearest node above it still
+// drawn. The header lines and the root are the node "".
+func (m *model) cursorLineFor(path string, off int) int {
+	for p := path; ; p = parentPath(p) {
+		first, last := -1, -1
+		for i, l := range m.detailLines {
+			if l.path == p {
+				if first < 0 {
+					first = i
+				}
+				last = i
+			}
+		}
+		switch {
+		case first < 0 && p != "":
+			continue
+		case first < 0:
+			return 0
+		case p != path || off == 0:
+			return first
+		case first+off < len(m.detailLines) && m.detailLines[first+off].path == p:
+			return first + off
+		}
+		return last
+	}
+}
+
+// moveDetailCursor puts the cursor on line i, clamped, and scrolls only as far as it takes
+// to keep the line's rows on screen. Drawing is only the gutter: the tree is not rebuilt.
+// A line taller than the view shows its top when the view moves down to it, and its bottom
+// when the view moves up to it. A line that fills the view does not move it.
+func (m *model) moveDetailCursor(i int) {
+	if len(m.detailLines) == 0 {
+		return
+	}
+	m.setDetailCursor(i)
+	m.detailVp.SetContent(m.detailDoc.render(m.searchQuery(paneDetail)))
+	m.scrollToDetailCursor()
+}
+
+// scrollToDetailCursor scrolls only as far as it takes to keep the cursor line's rows on screen.
+func (m *model) scrollToDetailCursor() {
+	first, last := m.detailDoc.rowsOf(m.detailDoc.cursor)
+	top, bottom := m.detailVp.YOffset, m.detailVp.YOffset+m.detailVp.Height-1
+	switch {
+	case first < top && last < bottom:
+		m.detailVp.SetYOffset(max(first, last-m.detailVp.Height+1))
+	case last > bottom && first > top:
+		m.detailVp.SetYOffset(min(first, last-m.detailVp.Height+1))
+	}
+}
+
+// setDetailCursor puts the cursor on line i, clamped, without drawing, and returns the line.
+func (m *model) setDetailCursor(i int) int {
+	i = min(max(i, 0), max(len(m.detailLines)-1, 0))
+	m.detailDoc.cursor = i
+	if i < len(m.detailLines) {
+		p := m.detailLines[i].path
+		m.detailCursorPath, m.detailCursorOff = p, i-slices.IndexFunc(m.detailLines, func(l treeLine) bool { return l.path == p })
+	}
+	return i
+}
+
+// toggleDetailFold is Enter on the event detail pane: it opens or closes the fold whose head
+// is under the cursor, and does nothing on any other line.
+func (m *model) toggleDetailFold() {
+	i := m.detailDoc.cursor
+	if i < 0 || i >= len(m.detailLines) || !m.detailLines[i].head {
+		return
+	}
+	l := m.detailLines[i]
+	if m.detailFolds == nil {
+		m.detailFolds = map[string]foldChoice{}
+	}
+	m.detailFolds[l.path] = foldChoice{open: !l.open, query: m.searchQuery(paneDetail)}
+	m.detailCursorPath, m.detailCursorOff = l.path, 0
+	m.renderDetail()
+	m.moveDetailCursor(m.cursorLineFor(l.path, 0))
+}
+
+// clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
+// under the old one is closed as if under no search, so a later search opens it when it holds
+// a match.
+func (m *model) clearFoldQueries() {
+	for p, c := range m.detailFolds {
+		c.query = ""
+		m.detailFolds[p] = c
+	}
+}
+
+// detailCursorKey moves the event detail pane's cursor for a motion key, and reports whether
+// msg was one. On a line taller than the view, a key scrolls through the line's rows first,
+// and moves the cursor off the line when its end in that direction is on screen.
+func (m *model) detailCursorKey(msg string) bool {
+	i, page, half := m.detailDoc.cursor, max(m.detailVp.Height-1, 1), max(m.detailVp.Height/2, 1)
+	var step int
+	switch msg {
+	case "up", "k":
+		step = -1
+	case "down", "j":
+		step = 1
+	case "pgup", "b":
+		step = -page
+	case "pgdown", "pgdn", "f", " ":
+		step = page
+	case "ctrl+u":
+		step = -half
+	case "d", "ctrl+d":
+		step = half
+	case "g":
+		m.moveDetailCursor(0)
+		return true
+	case "G":
+		m.moveDetailCursor(len(m.detailLines) - 1)
+		return true
+	default:
+		return false
+	}
+	first, last := m.detailDoc.rowsOf(i)
+	top, tall := m.detailVp.YOffset, last-first >= m.detailVp.Height
+	switch {
+	case tall && step > 0 && last >= top+m.detailVp.Height:
+		m.detailVp.SetYOffset(min(max(top+step, first), last-m.detailVp.Height+1))
+	case tall && step < 0 && first < top:
+		m.detailVp.SetYOffset(max(min(top+step, last-m.detailVp.Height+1), first))
+	case step == 1 || step == -1:
+		m.moveDetailCursor(i + step)
+	case step > 0:
+		m.moveDetailCursor(max(m.detailDoc.lineAtRow(m.detailDoc.firsts[i]+step), i+1))
+	default:
+		m.moveDetailCursor(m.detailDoc.lineAtRow(m.detailDoc.firsts[i] + step))
+	}
+	return true
 }
 
 // timingHeader decomposes a response row's duration the way #1251 asked for:

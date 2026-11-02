@@ -338,7 +338,8 @@ var paneKeys = map[paneID]keyGroup{
 		title:   "EVENT DETAIL (this pane)",
 		purpose: "one event in full, as the proxy recorded it",
 		bindings: []keyBinding{
-			{"↑↓", "scroll"},
+			{"↑↓", "move the cursor"},
+			{"↵", "open or close the fold at the cursor"},
 			{"y", "yank event JSON to ~/.cortex/agentop-events"},
 			{"esc / ← / h", "back to events"},
 		},

@@ -115,11 +115,11 @@ func TestCapture_EveryBeatShowsWhatTheStoryboardClaims(t *testing.T) {
 		t.Error("detail pane should open on a request carrying the conversation")
 	}
 
-	c.Press("f", "f")
+	c.Press("/", "tools", "enter")
 	manifest := ansi.Strip(c.Screen())
-	for _, want := range []string{`"tools"`, `"parameters"`} {
+	for _, want := range []string{`▾ "tools": [`, "Bash ·"} {
 		if !strings.Contains(manifest, want) {
-			t.Errorf("two pages down should reach the tool manifest; missing %q", want)
+			t.Errorf("a search for tools should open the tool manifest; missing %q", want)
 		}
 	}
 }

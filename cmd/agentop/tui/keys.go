@@ -595,6 +595,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			} else {
 				m.pane = paneSessions
 			}
+			// A plugin opened from here drew into detailDoc and detailVp, which the event
+			// detail pane shares.
+			if m.pane == paneDetail && m.detailEvent != nil {
+				m.showDetail(m.detailRow, false)
+				m.moveDetailCursor(m.detailDoc.cursor)
+			}
 		case paneDetail:
 			m.pane = paneEvents
 		case paneEvents:
@@ -713,6 +719,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
+		case paneDetail:
+			// Enter is the only fold key, so → and l stay as they were: nothing.
+			if msg.String() == "enter" {
+				m.toggleDetailFold()
+			}
+			return nil
 		case paneEvents:
 			// Enter on a subagent block's header collapses/expands it, the tree
 			// convention; on a message it stays the detail drill-down. One key,
@@ -989,7 +1001,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
 		m.selectedEventKey = keyOf(m.selectedEvent())
 		return cmd
-	case paneDetail, panePluginDetail:
+	case paneDetail:
+		m.detailCursorKey(msg.String())
+		return nil
+	case panePluginDetail:
 		var cmd tea.Cmd
 		m.detailVp, cmd = m.detailVp.Update(msg)
 		return cmd
@@ -1048,7 +1063,9 @@ func (m *model) goTop() {
 		m.setOpenAtOldest(true)
 	case panePipeline:
 		setCursorVisible(&m.pipelineTbl, 0)
-	case paneDetail, panePluginDetail:
+	case paneDetail:
+		m.detailCursorKey("g")
+	case panePluginDetail:
 		m.detailVp.GotoTop()
 	}
 }
@@ -1067,7 +1084,9 @@ func (m *model) goBottom() {
 		setCursorVisible(&m.pipelineTbl, len(m.pipelineTbl.Rows())-1)
 	case paneCatalog:
 		setCursorVisible(&m.catalogTbl, len(m.catalogTbl.Rows())-1)
-	case paneDetail, panePluginDetail:
+	case paneDetail:
+		m.detailCursorKey("G")
+	case panePluginDetail:
 		m.detailVp.GotoBottom()
 	}
 }
@@ -1101,7 +1120,9 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 		page(&m.pipelineTbl)
 	case paneCatalog:
 		page(&m.catalogTbl)
-	case paneDetail, panePluginDetail:
+	case paneDetail:
+		m.detailCursorKey(msg.String())
+	case panePluginDetail:
 		var cmd tea.Cmd
 		m.detailVp, cmd = m.detailVp.Update(msg)
 		return cmd
@@ -1283,7 +1304,7 @@ func (m *model) helpView() string {
 		}
 		return base + "  [?] keys  [q] quit"
 	case paneDetail:
-		return "[↑↓] scroll  [y] yank  [u] usage  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		return "[↑↓] move  [↵] fold  [y] yank  [u] usage  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		// ONE SPELLING NOW, where there used to be two. The picker/bypass split
 		// existed only because esc meant different things in the two modes — "back

@@ -109,6 +109,7 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) 
 		b.WriteString("\n")
 	}
 
+	m.detailDoc.gutter = false // only the event detail pane has a cursor
 	m.detailDoc.setLines(strings.Split(b.String(), "\n"), 0)
 	m.detailVp.SetContent(m.detailDoc.render(m.searchQuery(panePluginDetail)))
 	if resetScroll {

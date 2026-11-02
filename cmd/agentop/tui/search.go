@@ -49,12 +49,16 @@ func newSearchInput() textinput.Model {
 // chronological table, the predicate rebuildEventsTable tail-follows on. That cursor's place
 // is "the newest row" rather than the event that was newest at `/` — events keep streaming
 // while the prompt is open, and putting it back on that event would stop it following them.
+//
+// path is the event detail pane's cursor node.
 type searchSpot struct {
 	row     int
 	sess    string
 	event   eventKey
 	tail    bool
 	yOffset int
+	path    string
+	off     int
 }
 
 // searchSurface is how the search reaches a pane. A line is a table row, or a drawn line of
@@ -153,6 +157,9 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if m.search == nil {
 			m.search = make(map[paneID]string)
+		}
+		if t == paneDetail && m.searchInput.Value() != m.search[t] {
+			m.clearFoldQueries()
 		}
 		m.search[t] = m.searchInput.Value()
 		m.closeSearch()

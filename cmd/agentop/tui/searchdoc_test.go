@@ -129,3 +129,34 @@ func TestSearchDoc_RenderIsLinearInALongLine(t *testing.T) {
 		t.Errorf("4x the line took %.1fx the time (%v → %v): render is not linear", growth, small, large)
 	}
 }
+
+// The gutter takes two columns from the wrap and marks every row of the cursor's line.
+func TestSearchDoc_GutterMarksTheCursorLine(t *testing.T) {
+	d := searchDoc{gutter: true, cursor: 1}
+	d.setLines([]string{"a", "the quick brown fox", "c"}, 12)
+	got := strings.Split(ansi.Strip(d.render("")), "\n")
+	want := []string{"  a", "▌ the quick", "▌ brown fox", "  c"}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if f, l := d.rowsOf(1); f != 1 || l != 2 {
+		t.Errorf("rowsOf(1) = %d,%d, want 1,2", f, l)
+	}
+	if f, l := d.rowsOf(2); f != 3 || l != 3 {
+		t.Errorf("rowsOf(2) = %d,%d, want 3,3", f, l)
+	}
+	for row, want := range []int{0, 1, 1, 2} {
+		if got := d.lineAtRow(row); got != want {
+			t.Errorf("lineAtRow(%d) = %d, want %d", row, got, want)
+		}
+	}
+}
+
+// A terminal narrower than the gutter must still wrap to a positive width.
+func TestSearchDoc_GutterOnANarrowTerminal(t *testing.T) {
+	d := searchDoc{gutter: true}
+	d.setLines([]string{"abc"}, 2)
+	if out := ansi.Strip(d.render("")); !strings.Contains(out, "a") || !strings.Contains(out, "c") {
+		t.Errorf("the line was lost at width 2: %q", out)
+	}
+}

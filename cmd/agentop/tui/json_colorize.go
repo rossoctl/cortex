@@ -2,8 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -26,13 +24,15 @@ var (
 )
 
 // ColorizeJSON takes a Go value (typically something decoded from json) and
-// returns an indented, colorized string. For inputs that are already raw
-// bytes, round-trip through json.Unmarshal to normalize key order and
-// whitespace before styling.
+// returns an indented, colorized string, every fold open. A multi-line string
+// renders as an indented block rather than one quoted line — see detail_tree.go.
 func ColorizeJSON(v any) string {
-	var b strings.Builder
-	writeJSONValue(&b, v, 0)
-	return b.String()
+	lines := renderTree(buildTree(v, "", "", false), foldState{all: true})
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = l.text
+	}
+	return strings.Join(out, "\n")
 }
 
 // ColorizeJSONBytes parses data then colorizes. Falls back to a muted raw
@@ -45,87 +45,6 @@ func ColorizeJSONBytes(data []byte) string {
 		return styleJSONPunct.Render(string(data))
 	}
 	return ColorizeJSON(v)
-}
-
-func writeJSONValue(b *strings.Builder, v any, indent int) {
-	switch x := v.(type) {
-	case nil:
-		b.WriteString(styleJSONNull.Render("null"))
-	case bool:
-		b.WriteString(styleJSONBool.Render(strconv.FormatBool(x)))
-	case json.Number:
-		b.WriteString(styleJSONNumber.Render(string(x)))
-	case float64:
-		b.WriteString(styleJSONNumber.Render(strconv.FormatFloat(x, 'g', -1, 64)))
-	case int, int64, int32:
-		b.WriteString(styleJSONNumber.Render(strconv.FormatInt(toInt64(x), 10)))
-	case string:
-		b.WriteString(styleJSONString.Render(strconv.Quote(x)))
-	case []any:
-		writeJSONArray(b, x, indent)
-	case map[string]any:
-		writeJSONObject(b, x, indent)
-	default:
-		// Fallback: marshal with stdlib and emit muted.
-		raw, err := json.Marshal(x)
-		if err != nil {
-			b.WriteString(styleJSONPunct.Render("<unrenderable>"))
-			return
-		}
-		b.WriteString(styleJSONPunct.Render(string(raw)))
-	}
-}
-
-func writeJSONObject(b *strings.Builder, m map[string]any, indent int) {
-	if len(m) == 0 {
-		b.WriteString(styleJSONPunct.Render("{}"))
-		return
-	}
-	b.WriteString(styleJSONPunct.Render("{"))
-	b.WriteByte('\n')
-
-	// Sort keys for deterministic output.
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	pad := strings.Repeat("  ", indent+1)
-	closePad := strings.Repeat("  ", indent)
-	for i, k := range keys {
-		b.WriteString(pad)
-		b.WriteString(styleJSONKey.Render(strconv.Quote(k)))
-		b.WriteString(styleJSONPunct.Render(": "))
-		writeJSONValue(b, m[k], indent+1)
-		if i < len(keys)-1 {
-			b.WriteString(styleJSONPunct.Render(","))
-		}
-		b.WriteByte('\n')
-	}
-	b.WriteString(closePad)
-	b.WriteString(styleJSONPunct.Render("}"))
-}
-
-func writeJSONArray(b *strings.Builder, a []any, indent int) {
-	if len(a) == 0 {
-		b.WriteString(styleJSONPunct.Render("[]"))
-		return
-	}
-	b.WriteString(styleJSONPunct.Render("["))
-	b.WriteByte('\n')
-	pad := strings.Repeat("  ", indent+1)
-	closePad := strings.Repeat("  ", indent)
-	for i, v := range a {
-		b.WriteString(pad)
-		writeJSONValue(b, v, indent+1)
-		if i < len(a)-1 {
-			b.WriteString(styleJSONPunct.Render(","))
-		}
-		b.WriteByte('\n')
-	}
-	b.WriteString(closePad)
-	b.WriteString(styleJSONPunct.Render("]"))
 }
 
 func toInt64(v any) int64 {

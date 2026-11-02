@@ -31,7 +31,17 @@ type searchDoc struct {
 	// a document with no current row.
 	cur    int
 	hasCur bool
+	// gutter draws a two-column cursor gutter left of every row, with line cursor's rows
+	// marked. The event detail pane sets it; the plugin detail and help panes do not.
+	gutter bool
+	cursor int
+	// firsts is the drawn row each line starts on, from the last render.
+	firsts   []int
+	lastRows int
 }
+
+// gutterWidth is the columns the cursor gutter takes from the wrap width.
+const gutterWidth = 2
 
 // setLines replaces the text. The current row is kept only when the text and the wrap width
 // are what they were: layout() redraws the detail on every prompt open and close, and that is
@@ -50,18 +60,23 @@ func (d *searchDoc) currentRow() (int, bool) { return d.cur, d.hasCur }
 // render draws the document with q's matches highlighted — the current row's in
 // styleCurrentMatch — wrapped to d.wrap (0: as drawn), and records the rows they start on.
 func (d *searchDoc) render(q string) string {
-	d.matches = nil
+	d.matches, d.firsts = nil, d.firsts[:0]
+	wrap := d.wrap
+	if d.gutter && wrap > 0 {
+		wrap = max(wrap-gutterWidth, 1)
+	}
 	var b strings.Builder
 	row := 0
 	for i, line := range d.lines {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
+		d.firsts = append(d.firsts, row)
 		plain := ansi.Strip(line)
 		ranges := find.Ranges(plain, q)
 		starts := []int{0}
-		if d.wrap > 0 && len(ranges) > 0 {
-			starts = rowStarts(plain, strings.Split(ansi.Wrap(plain, d.wrap, " -"), "\n"))
+		if wrap > 0 && len(ranges) > 0 {
+			starts = rowStarts(plain, strings.Split(ansi.Wrap(plain, wrap, " -"), "\n"))
 		}
 		spans := make([]find.Styled, len(ranges))
 		for k, r := range ranges {
@@ -76,14 +91,43 @@ func (d *searchDoc) render(q string) string {
 			spans[k] = find.Styled{Range: r, Style: style}
 		}
 		out := find.Highlight(line, spans)
-		if d.wrap > 0 {
-			out = ansi.Wrap(out, d.wrap, " -")
+		if wrap > 0 {
+			out = ansi.Wrap(out, wrap, " -")
+		}
+		if d.gutter {
+			mark := "  "
+			if i == d.cursor {
+				mark = styleDetailCursor.Render("▌") + " "
+			}
+			out = mark + strings.ReplaceAll(out, "\n", "\n"+mark)
 		}
 		b.WriteString(out)
 		row += strings.Count(out, "\n") + 1
 	}
+	d.lastRows = row
 	return b.String()
 }
+
+// rowsOf is the first and last drawn row of line i, from the last render.
+func (d *searchDoc) rowsOf(i int) (first, last int) {
+	if i < 0 || i >= len(d.firsts) {
+		return 0, 0
+	}
+	last = d.rows() - 1
+	if i+1 < len(d.firsts) {
+		last = d.firsts[i+1] - 1
+	}
+	return d.firsts[i], last
+}
+
+// lineAtRow is the line drawn on row, from the last render.
+func (d *searchDoc) lineAtRow(row int) int {
+	i, _ := slices.BinarySearch(d.firsts, row+1)
+	return max(i-1, 0)
+}
+
+// rows is how many rows the last render drew.
+func (d *searchDoc) rows() int { return d.lastRows }
 
 // rowStarts is the column of plain at which each of its wrapped rows begins. ansi.Wrap drops
 // a space it breaks at and keeps one it does not, so each row is looked for where the last one
