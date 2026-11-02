@@ -222,10 +222,10 @@ acts:
       - label: detail
         keys: ["up", "enter"]
         hold: 4s
-      # Two pages down lands on the boundary where the conversation ends and
-      # "tools": [ begins — the manifest this agent re-sends on every turn.
+      # A search for "tools" opens the folded tool manifest, the list this agent
+      # re-sends on every turn.
       - label: manifest
-        keys: ["f", "f"]
+        keys: ["/", "tools", "enter"]
         hold: 4s
       - label: back
         keys: ["esc", "esc"]
