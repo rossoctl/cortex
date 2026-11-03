@@ -12,17 +12,33 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// A clamped total is a floor, so the AGENTS cell marks it the way the sessions pane does.
+// A clamped total is a floor, so the AGENTS cell marks it the way the sessions pane does. The
+// cell must fit the column with its marker, because the table cuts a wider cell at the end.
 func TestAgentCostCellIn_MarksAClampedTotal(t *testing.T) {
-	c := usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: math.MaxInt64, Saturated: true}
-	got := agentCostCellIn(c, nil, agentsCostWidth)
-	if !strings.HasSuffix(got, partialMarker) {
-		t.Errorf("agentCostCellIn(saturated) = %q, want a %q suffix: a clamped total must not read as exact", got, partialMarker)
-	}
-	unclamped := c
-	unclamped.Saturated = false
-	if got := agentCostCellIn(unclamped, nil, agentsCostWidth); strings.HasSuffix(got, partialMarker) {
-		t.Errorf("agentCostCellIn(not saturated) = %q, want no %q suffix", got, partialMarker)
+	for _, tc := range []struct {
+		micros    int64
+		saturated bool
+		units     []string
+	}{
+		{math.MaxInt64, true, nil},
+		{math.MaxInt64, true, []string{"Bobcoins"}},
+		{12_345_678, true, nil},
+		{1_000_000_000_000_000, false, nil},
+		{1_000_000_000_000_000, false, []string{"Bobcoins"}},
+		{12_345_678, false, nil},
+	} {
+		c := usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: tc.micros, Saturated: tc.saturated}
+		got := agentCostCellIn(c, tc.units, agentsCostWidth)
+		if got == emptyCell {
+			t.Errorf("agentCostCellIn(%d, %v) = %q, want a figure", tc.micros, tc.units, got)
+		}
+		if w := lipgloss.Width(got); w > agentsCostWidth {
+			t.Errorf("agentCostCellIn(%d, %v) = %q, %d columns, want <= %d", tc.micros, tc.units, got, w, agentsCostWidth)
+		}
+		if strings.HasSuffix(got, partialMarker) != tc.saturated {
+			t.Errorf("agentCostCellIn(%d, saturated=%v, %v) = %q, want the %q suffix only when saturated",
+				tc.micros, tc.saturated, tc.units, got, partialMarker)
+		}
 	}
 }
 
