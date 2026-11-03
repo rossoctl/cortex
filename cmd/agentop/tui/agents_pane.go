@@ -402,7 +402,7 @@ func (m *model) rebuildAgentsTable() {
 // can be priced at a rate of zero. Reading the money field instead would collapse "priced, and
 // it cost nothing" into "not priced".
 func agentCostCell(c usage.Counts) string {
-	if c.PricedRequests == 0 {
+	if c.PricedRequests == 0 || negativeCost(c.CostMicros) {
 		return emptyCell
 	}
 	// formatUSDTotalMicros, not %.2f over micros/1e6: it does the rounding on the integer, so
@@ -425,6 +425,13 @@ func agentCostCellIn(c usage.Counts, units []string, budget int) string {
 	unit, ok := money.WindowUnit(units)
 	if !ok {
 		return money.Mixed
+	}
+	// A clamped total is a floor: partialMarker says so, as in sessionMoneyCellIn.
+	if c.Saturated {
+		if out := money.Relabel(cell, unit, budget-len(partialMarker)); out != "" {
+			return out + partialMarker
+		}
+		return emptyCell
 	}
 	if out := money.Relabel(cell, unit, budget); out != "" {
 		return out

@@ -75,7 +75,7 @@ type cellContext struct {
 	// width is the declared width of the column being filled, set per column in
 	// the row loop.
 	//
-	// PLUGIN and HOST previously hardcoded 18 and 20 in their truncStr calls,
+	// PLUGIN and HOST previously hardcoded 18 and 20 in their truncation calls,
 	// duplicating the width two lines above them — the same drift actionColWidth and
 	// methodColWidth were named to prevent, in the one file whose premise is that a
 	// column is a single definition. Reading it from here means changing a width
@@ -303,7 +303,7 @@ var eventColumns = []eventColumn{
 		desc: "which plugin acted; blank when none did",
 		cell: func(c cellContext) string {
 			p := c.plugin
-			return truncStr(p, c.width)
+			return trunc(p, c.width)
 		},
 		full:    func(c cellContext) string { return c.plugin },
 		sortKey: func(c cellContext) sortValue { return strKey(c.plugin) }},
@@ -386,7 +386,7 @@ var eventColumns = []eventColumn{
 	// to be declared but never visible.
 	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
 		desc: "host the message was sent to",
-		cell: func(c cellContext) string { return truncStr(c.row.event.Host, c.width) },
+		cell: func(c cellContext) string { return trunc(c.row.event.Host, c.width) },
 		full: func(c cellContext) string { return c.row.event.Host },
 		// hostOnly, so "api.example.com:443" and "api.example.com" sort together
 		// rather than the port deciding. Full host, not the truncated cell, for the

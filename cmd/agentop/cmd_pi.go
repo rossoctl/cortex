@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -142,50 +141,18 @@ type piCommand struct {
 }
 
 func runPi(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, piUsage)
-		return 2
+	a, code, done := parseAgentArgs("pi", piUsage, args, stdout, stderr, nil)
+	if done {
+		return code
 	}
-	action := args[0]
-	switch action {
-	case "-h", "--help", "help":
-		fmt.Fprint(stdout, piUsage)
-		return 0
-	case "enable", "disable", "status":
-	default:
-		fmt.Fprintf(stderr, "agentop: unknown pi action %q (enable, disable, status)\n", action)
-		return 2
-	}
-	fs := flag.NewFlagSet("configure pi "+action, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {}
-	var yesFlag *bool
-	if action != "status" {
-		yesFlag = fs.Bool("yes", false, "do not prompt for confirmation")
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, piUsage)
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "agentop: pi %s takes no arguments (got %q)\n", action, fs.Arg(0))
-		return 2
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
-		return 1
-	}
+	action, home := a.action, a.home
 	if action == "status" {
 		s := piState(home, os.Getenv("SHELL"))
 		fmt.Fprintf(stdout, "%s: %s\n", s.State, s.Detail)
 		return 0
 	}
 	c := piCommand{home: home, shell: os.Getenv("SHELL"), ext: piExtensionPath(home),
-		yes: yesFlag != nil && *yesFlag, stdout: stdout, stderr: stderr}
+		yes: a.yes, stdout: stdout, stderr: stderr}
 	var readErr error
 	c.rc, c.advise, readErr = rcResolve(home, c.shell)
 	if readErr != nil {

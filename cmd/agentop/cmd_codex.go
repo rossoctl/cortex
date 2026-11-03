@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -187,53 +186,15 @@ Flags:
 `
 
 func runCodex(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, codexUsage)
-		return 2
+	var envPath, cortexCfgPath *string
+	a, code, done := parseAgentArgs("codex", codexUsage, args, stdout, stderr, func(fs *flag.FlagSet) {
+		envPath = fs.String("env", "", "Codex's dotenv file")
+		cortexCfgPath = fs.String("config", "", "Cortex config file")
+	})
+	if done {
+		return code
 	}
-	action := args[0]
-	// Help before the verb check, and the verb before anything touches the
-	// machine: the same order runClaudeCode and runOpenCode use, for their
-	// reasons.
-	switch action {
-	case "-h", "--help", "help":
-		fmt.Fprint(stdout, codexUsage)
-		return 0
-	case "enable", "disable", "status":
-	default:
-		fmt.Fprintf(stderr, "agentop: unknown codex action %q (enable, disable, status)\n", action)
-		return 2
-	}
-
-	fs := flag.NewFlagSet("configure codex "+action, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {}
-	envPath := fs.String("env", "", "Codex's dotenv file")
-	cortexCfgPath := fs.String("config", "", "Cortex config file")
-	// Not for status, which changes nothing: accepting --yes there would be a
-	// flag that parses and does nothing, same reasoning as runOpenCode's.
-	var yesFlag *bool
-	if action != "status" {
-		yesFlag = fs.Bool("yes", false, "do not prompt for confirmation")
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, codexUsage)
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "agentop: codex %s takes no arguments (got %q)\n", action, fs.Arg(0))
-		return 2
-	}
-	yes := yesFlag != nil && *yesFlag
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
-		return 1
-	}
+	action, yes, home := a.action, a.yes, a.home
 	if *envPath == "" {
 		*envPath = defaultCodexEnvPath(home)
 	}

@@ -480,9 +480,8 @@ func formatSpendAge(d time.Duration) string {
 // Width arithmetic is lipgloss.Width throughout, never len() and never a rune
 // count. footer.go:88-92 records the bug that costs: a budget computed in display
 // columns and then sliced by rune index overflowed on any wide character,
-// rendering 55 columns for a 40-column budget. The package's trunc and truncStr
-// helpers are both display-cell-unaware for the same reason, so neither is usable
-// here.
+// rendering 55 columns for a 40-column budget. trunc is not used here: it clips,
+// and a clipped figure is a wrong figure.
 //
 // Linear rather than a binary search over n: the list is at most five figures
 // long, and the loop is the specification — "the widest prefix that fits".

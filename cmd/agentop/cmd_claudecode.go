@@ -224,42 +224,15 @@ Flags:
 `
 
 func runClaudeCode(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, claudeCodeUsage)
-		return 2
+	var settingsPath, cortexCfg *string
+	a, code, done := parseAgentArgs("claude-code", claudeCodeUsage, args, stdout, stderr, func(fs *flag.FlagSet) {
+		settingsPath = fs.String("settings", "", "Claude Code settings file")
+		cortexCfg = fs.String("config", "", "Cortex config file")
+	})
+	if done {
+		return code
 	}
-	action := args[0]
-	// `agentop claude-code --help` used to be read as an action name and fall through to
-	// the unknown-action branch below, which sends someone looking for the command
-	// list to the one place that refuses to print it. Same fix, and same reason, as
-	// `agentop service --help`.
-	//
-	// Answered before the flag set is built rather than through fs.Usage: --help asks
-	// for the whole command's usage, and a flag set named "claude-code --help" would
-	// print only the flags of an action that does not exist.
-	//
-	// Explicit help goes to stdout with exit 0; a missing or bad action keeps going to
-	// stderr with exit 2. That split is what makes `--help` pipeable.
-	switch action {
-	case "-h", "--help", "help":
-		fmt.Fprint(stdout, claudeCodeUsage)
-		return 0
-	}
-
-	fs := flag.NewFlagSet("claude-code "+action, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	yes := fs.Bool("yes", false, "do not prompt for confirmation")
-	settingsPath := fs.String("settings", "", "Claude Code settings file")
-	cortexCfg := fs.String("config", "", "Cortex config file")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
-		return 1
-	}
+	action, yes, home := a.action, a.yes, a.home
 	if *settingsPath == "" {
 		*settingsPath = filepath.Join(home, settingsRel)
 	}
@@ -270,14 +243,11 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 
 	switch action {
 	case "enable":
-		return claudeCodeEnable2(*settingsPath, *cortexCfg, statePath, *yes, stdout, stderr)
+		return claudeCodeEnable2(*settingsPath, *cortexCfg, statePath, yes, stdout, stderr)
 	case "disable":
-		return claudeCodeDisable2(*settingsPath, statePath, *yes, stdout, stderr)
-	case "status":
-		return claudeCodeStatus(*settingsPath, stdout)
+		return claudeCodeDisable2(*settingsPath, statePath, yes, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "agentop: unknown claude-code action %q (enable, disable, status)\n", action)
-		return 2
+		return claudeCodeStatus(*settingsPath, stdout)
 	}
 }
 

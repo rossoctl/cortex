@@ -627,8 +627,10 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 }
 
 // isLoopback reports a host on this machine: the proxy's own ports and local tools, not egress.
+// By address, not by prefix, so localhost.example.com stays egress. The trim is for a bare
+// "[::1]", which HostKey leaves once it drops ":443".
 func isLoopback(host string) bool {
-	return strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "[::1]")
+	return isLoopbackHost(strings.Trim(hostOnly(host), "[]"))
 }
 
 // tlHostRows draws each host's requests in flight per cell, by one sweep over its request
