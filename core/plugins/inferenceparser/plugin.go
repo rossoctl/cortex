@@ -962,10 +962,10 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 		Content    json.RawMessage `json:"content"`
 		ToolCallID string          `json:"tool_call_id"`
 		ToolCalls  []struct {
-			ID       string `json:"id"`
+			ID       json.RawMessage `json:"id"`
 			Function struct {
-				Name      string `json:"name"`
-				Arguments string `json:"arguments"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			} `json:"function"`
 		} `json:"tool_calls"`
 	}
@@ -979,9 +979,9 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	names := make([]string, len(raw.ToolCalls))
 	ids := make([]string, len(raw.ToolCalls))
 	for i, c := range raw.ToolCalls {
-		names[i], ids[i] = c.Function.Name, c.ID
+		names[i], ids[i] = c.Function.Name, rawText(c.ID)
 		m.ToolCalls = append(m.ToolCalls, pipeline.InferenceToolCall{
-			ID: c.ID, Name: c.Function.Name, Arguments: c.Function.Arguments,
+			ID: ids[i], Name: c.Function.Name, Arguments: rawText(c.Function.Arguments),
 		})
 	}
 	m.ToolCallNames, m.ToolUseIDs = strings.Join(names, ", "), strings.Join(ids, ", ")
@@ -1004,6 +1004,19 @@ func contentBytes(raw json.RawMessage) int {
 		return 0
 	}
 	return len(raw)
+}
+
+// rawText is a JSON string's value, or the raw JSON text of any other value, so a field read
+// only for display cannot fail the decode of the request around it. "" when absent or null.
+func rawText(raw json.RawMessage) string {
+	if !jsonPresent(raw) {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
 }
 
 // flattenContent returns the text representation of an OpenAI content value.

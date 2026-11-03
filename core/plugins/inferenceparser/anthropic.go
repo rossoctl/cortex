@@ -94,7 +94,7 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 	var blocks []struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
-		ID        string          `json:"id"`
+		ID        json.RawMessage `json:"id"`
 		Name      string          `json:"name"`
 		Input     json.RawMessage `json:"input"`
 		ToolUseID string          `json:"tool_use_id"`
@@ -122,7 +122,7 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 				ToolUseID: b.ToolUseID, Content: flattenContent(b.Content), IsError: b.IsError,
 			})
 		case "tool_use":
-			calls = append(calls, pipeline.InferenceToolCall{ID: b.ID, Name: b.Name, Arguments: string(b.Input)})
+			calls = append(calls, pipeline.InferenceToolCall{ID: rawText(b.ID), Name: b.Name, Arguments: string(b.Input)})
 		}
 	}
 	return text.String(), results, calls
