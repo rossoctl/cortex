@@ -52,10 +52,13 @@ func (s *CostSum) Add(micros int64) {
 // breakdown accounted for.
 //
 // math.MinInt64 has no positive counterpart, so Add(-micros) would add it. Subtracting it
-// clamps to the ceiling with the flag set, because the true answer is out of range in that
-// direction whatever s holds.
+// is s + 2^63: exact for a negative s, and clamped to the ceiling otherwise.
 func (s *CostSum) Sub(micros int64) {
 	if micros == math.MinInt64 {
+		if s.Micros < 0 {
+			s.Micros = s.Micros + math.MaxInt64 + 1
+			return
+		}
 		s.Micros, s.Saturated = math.MaxInt64, true
 		return
 	}

@@ -784,9 +784,11 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// reproduces. prune floors its own reference day at the newest day file, so an idle ledger
 	// keeps its last retainDays files however old they are — while this figure is measured from
 	// the clock. Both then hold: days are reported outside retention AND their spend is in the
-	// sum. Measured in cost/ledger's TestSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal: 21 days reported, ten of them present, every one of those in the total. So this
-	// line is a CEILING on what is absent, and saying "is outside" overstated it in the
-	// direction that makes an operator distrust a figure that was right.
+	// sum. Measured in cost/ledger's
+	// TestSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal: 21 days reported, ten of
+	// them present, every one of those in the total. So this line is a CEILING on what is
+	// absent, and saying "is outside" overstated it in the direction that makes an operator
+	// distrust a figure that was right.
 	//
 	// "MAY NOT COVER" rather than "may be missing", because "missing" is one of the three
 	// words this line is already forbidden — see the test below: it asserts spend EXISTED on

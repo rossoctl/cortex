@@ -66,6 +66,15 @@ func TestCostSum_SubClampsBothWays(t *testing.T) {
 		t.Errorf("1000 - MinInt64 = %+v, want MaxInt64 and Saturated", up)
 	}
 
+	// For a negative receiver the same subtraction fits.
+	for _, start := range []int64{-2, -1, math.MinInt64} {
+		fits := CostSum{Micros: start}
+		fits.Sub(math.MinInt64)
+		if want := start + math.MaxInt64 + 1; fits.Micros != want || fits.Saturated {
+			t.Errorf("%d - MinInt64 = %+v, want %d and not Saturated", start, fits, want)
+		}
+	}
+
 	var exact CostSum
 	exact.Add(1_000)
 	exact.Sub(250)

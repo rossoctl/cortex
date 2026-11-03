@@ -2,11 +2,15 @@ package ledger
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
+
+var errDurationWindow = errors.New("costledger: a snapshot needs a symbolic window (today, 7d, month)")
 
 // Snapshot is the ledger's answer to a /v1/usage window: every row in spec's window,
 // narrowed to agent's rows when agent is set, folded into ONE bucket spanning the window.
@@ -22,7 +26,12 @@ import (
 // UnpricedBy and PricedBy are left unset. A row carries only its own labels, so it cannot
 // say which requests of its endpoint-and-model pair went unpriced; the gap stays visible
 // as Totals.PricedRequests against Totals.PriceableRequests.
+//
+// spec must be symbolic: a duration window is the ring's, and carries no From or To.
 func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Group, agent string) (usage.Snapshot, error) {
+	if !spec.Symbolic() {
+		return usage.Snapshot{}, errDurationWindow
+	}
 	rows, caveats, err := w.Window(ctx, spec.From, spec.To)
 	if err != nil {
 		return usage.Snapshot{}, err
@@ -53,16 +62,16 @@ func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Grou
 	}
 	if !caveats.Clean() {
 		slog.Warn("costledger: cost ledger read was incomplete — the total is short",
-			"window", spec.Label, "skippedLines", caveats.SkippedLines,
+			"window", pipeline.SanitizeLogValue(spec.Label), "skippedLines", caveats.SkippedLines,
 			"truncatedDays", caveats.TruncatedDays,
 			"unreadableDays", caveats.UnreadableDays)
 	}
 	// Once per increase: the count is monotonic, so Swap returns the last value warned about.
 	if prev := w.loggedReadDrops.Swap(dropped); dropped > prev {
-		slog.Warn("costledger: the writer has lost rows; every total from it is short",
+		slog.Warn("costledger: the writer has lost rows; a total covering them is short",
 			"droppedRowsTotal", dropped, "newlyDropped", dropped-prev,
 			"cause", "an append failed, or the queue filled while the filesystem stalled",
-			"effect", "reported cost is a floor; the figure is disclosed on every response as degraded.droppedRowsTotal")
+			"effect", "a total covering them is a floor; the count is disclosed on every response as degraded.droppedRowsTotal")
 	}
 	snap := usage.Snapshot{
 		Window:        spec.Label,

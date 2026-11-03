@@ -61,6 +61,19 @@ func TestSnapshot_ShapeAgentAndGroupInEffect(t *testing.T) {
 	}
 }
 
+// A duration window carries no From or To, so it is refused rather than served as an empty total.
+func TestSnapshot_RefusesADurationWindow(t *testing.T) {
+	w := newTestWriter(t, t.TempDir(), func() time.Time { return at })
+	recordCostedMinute(t, w, at, "opus", 0.25)
+	spec, err := usage.ParseWindowSpec("1h", at)
+	if err != nil {
+		t.Fatalf("ParseWindowSpec: %v", err)
+	}
+	if _, err := w.Snapshot(context.Background(), spec, usage.GroupNone, ""); err == nil {
+		t.Error("Snapshot served a duration window")
+	}
+}
+
 // The coverage figure is measured at spec.To, the window's own instant. A hand-built spec puts the
 // ledger's clock and the window's end on different days, which a request through time.Now() cannot.
 func TestSnapshot_CarriesTheCoverageShortfallMeasuredAtTheWindowsOwnInstant(t *testing.T) {

@@ -553,8 +553,8 @@ func (g Group) Reconcilable() bool {
 // error return: an error would need every caller to hold a logger (this package has none) and
 // would let a caller drop the signal again.
 //
-// IT TAKES An event.CostSum RATHER THAN AN int64 so a clamped residual cannot arrive looking like an
-// exact one. Accumulated with a bare `+=`, a wrap produces a NEGATIVE figure, which the
+// IT TAKES AN event.CostSum RATHER THAN AN int64 so a clamped residual cannot arrive looking
+// like an exact one. Accumulated with a bare `+=`, a wrap produces a NEGATIVE figure, which the
 // second case below then publishes as SeriesOvershootMicros — so correct-but-saturated data
 // fabricates a defect report while the real residual is lost. A parameter that carries its
 // own saturation flag is what stops the two conditions being confused; an int64 plus a bool a
