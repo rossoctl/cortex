@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -41,7 +41,7 @@ import (
 //	            response echoes it in "agent". A window served from the ring keeps its
 //	            group for a recognised agent (pipeline.IsKnownAgent) with no session;
 //	            any other is served with group none, and "group" says which. Refused
-//	            past usage.MaxLabelLen.
+//	            past event.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -230,7 +230,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		// file per day in the window — up to eight for window=7d, against a path an
 		// operator configured and possibly a slow mount — and without this every abandoned
 		// request kept reading to the end for nobody. See ledger.Query.
-		snap, err = s.ledgerSnapshotFor(r.Context(), spec, group, agent)
+		snap, err = s.ledger.Snapshot(r.Context(), spec, group, agent)
 		if err != nil {
 			// A read failure is not a client error and must not look like one.
 			//
@@ -266,7 +266,7 @@ var errSessionIDTooLong = usageError{"session id too long"}
 
 // maxAgentLabelLen bounds agent=, which is caller-supplied; an agent label is at most a truncated
 // User-Agent.
-const maxAgentLabelLen = usage.MaxLabelLen
+const maxAgentLabelLen = event.MaxLabelLen
 
 var errAgentLabelTooLong = usageError{"agent label too long"}
 
@@ -289,188 +289,6 @@ var errSessionWithSymbolicWindow = usageError{
 	"session= cannot be combined with a symbolic window (today, 7d, month); " +
 		"the durable cost ledger holds no session ids — ask for a duration window such as 1h or 6h"}
 
-// ledgerSnapshot builds a Snapshot from persisted rows.
-//
-// ONE bucket spanning the whole window, not a series at the requested resolution.
-// The ledger exists to answer "what did today cost", and a client wanting a shaped
-// chart asks for a ring window instead — synthesising per-minute buckets from disk
-// for a 7-day span would read millions of rows to draw a chart nothing requests.
-// BucketSeconds reports the real span so a client cannot mistake it for a fine
-// series.
-//
-// Reads through ledger.Window, never Query: the ledger's day files hold only
-// CLOSED minutes, so the minute currently accumulating is in the writer's memory
-// and Query alone would omit it. That omission is not small in the case this
-// endpoint exists for — a session whose whole conversation fit inside one minute has
-// nothing on disk at all, and the response would have said priced:false over real
-// spend. Window composes the two halves and guarantees no minute is in both; see its
-// doc.
-//
-// Takes no session id: handleUsage rejects that combination before reaching here,
-// for the reason recorded at the guard.
-//
-// Takes the REQUEST's context, so the day-file walk stops when the caller does. Threaded
-// rather than context.Background() because this is the only work this endpoint does that
-// is neither bounded nor in memory.
-//
-// UnpricedBy and PricedBy are deliberately absent. Provenance IS in the row key, so
-// PricedBy is reconstructible and a later change can add it; UnpricedBy needs the
-// endpoint-and-model pair of the requests that could NOT be priced, which a row
-// carrying only its own labels cannot distinguish from a priced one of the same
-// pair. Emitting one map and not the other would read as "no pricing gaps here",
-// which is a claim the rows do not support — the gap is still visible, in
-// Totals.PricedRequests against Totals.PriceableRequests.
-func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usage.Group) (usage.Snapshot, error) {
-	return s.ledgerSnapshotFor(ctx, spec, group, "")
-}
-
-// ledgerSnapshotFor is ledgerSnapshot narrowed to one agent's rows when agent is set.
-func (s *Server) ledgerSnapshotFor(ctx context.Context, spec usage.Spec, group usage.Group, agent string) (usage.Snapshot, error) {
-	rows, caveats, err := s.ledger.Window(ctx, spec.From, spec.To)
-	if err != nil {
-		return usage.Snapshot{}, err
-	}
-	if agent != "" {
-		rows = ledger.FilterAgent(rows, agent)
-	}
-	// HOW MUCH OF THE WINDOW THE CONFIGURATION CANNOT REACH, computed here rather than in the
-	// ledger because it is a fact about the REQUEST measured against the ledger's horizon, and
-	// the ledger does not know what was asked for. See usage.Snapshot.DaysOutsideRetention for
-	// why this is coverage rather than damage.
-	//
-	// MEASURED AGAINST THE WINDOW'S OWN INSTANT, not a second reading of the clock.
-	// RetentionCutoff() would call time.Now() again, and the two sides of this comparison are only
-	// sound if no day boundary fell between the two reads — a margin that is exactly zero in the
-	// default configuration, so a month-to-date request crossing local midnight reported a
-	// complete total as one day short. spec.To is the instant ParseWindowSpec built this window
-	// from, and this path is symbolic-only, so it is always set: the Window call above already
-	// depends on it.
-	outside := daysOutsideRetention(spec.From, s.ledger.RetentionCutoffAt(spec.To))
-	// THE GROUPING THIS SOURCE CAN APPLY, which is not always the one that was asked for,
-	// and the response says which it was.
-	//
-	// A ledger row is (endpoint, model, agent, provenance) per minute, so group=session,
-	// group=status and group=plugin have no column to key on here — while the ring, which
-	// serves the same axes over a duration window, answers all three. Echoing the
-	// requested group over an empty series made those two states indistinguishable from
-	// the response: a client asking for status got group:"status" with series:null and no
-	// way to tell "this source cannot break down by status" from "there was no traffic".
-	// Worse, Fold used to publish a residual for them, so the response also claimed 100%
-	// of its own total was unaccounted for. See ledger.Groupable.
-	//
-	// Reported as the grouping IN EFFECT rather than refused with a 400, because a
-	// rejection would have to be conditional on a ledger being wired up at all — the same
-	// request is served from the ring in Kubernetes, where it is answerable — and an API
-	// whose validity depends on the deployment is one a client cannot code against. That
-	// is the argument the session= guard above makes in the other direction, and it is
-	// load-bearing in both.
-	applied := group
-	if !ledger.Groupable(group) {
-		applied = usage.GroupNone
-	}
-	totals, series, ungroupedCost, ungroupedAvoided := ledger.Fold(rows, applied)
-	// WHICH UNITS THE TOTAL SPANS, computed from the same rows Fold just summed so the two cannot
-	// describe different traffic.
-	currencies := ledger.CurrenciesIn(rows)
-	// Carried onto the totals BEFORE the snapshot is built, not left to
-	// SetUngroupedCost's own assignment below. This response's single bucket is a copy of
-	// totals, so setting the flag afterwards would mark Totals as a bound while the bucket
-	// holding the same figure claimed to be exact — and a client charting the bucket would
-	// never see it. The ring's Snapshot has the opposite shape (many buckets, one
-	// cross-bucket residual), which is why the setter flags Totals there and this flags
-	// both here.
-	// Either residual having clamped makes every money figure in this response a bound, so
-	// both are consulted: the flag means "read them all as bounds", and checking only one
-	// would let a clamped avoided residual arrive beside a total claiming exactness.
-	if ungroupedCost.Saturated || ungroupedAvoided.Saturated {
-		totals.Saturated = true
-	}
-	// FROM THE READ THAT PRODUCED THEM, which is why they come back from Window rather
-	// than off the ledger. They used to be two atomics on the Writer, sampled here right
-	// after Window returned — so any other /v1/usage request landing between those two
-	// calls handed this response its caveats. Measured: a reader of a day file holding one
-	// undecodable line reported SkippedLines 0, while a reader of a CLEAN day reported 1.
-	// A chart polling this endpoint is exactly the traffic that produces it.
-	//
-	// Surfaced here because the ledger having the numbers is not the same as a client
-	// being able to see them. Until this, a day that lost lines produced a response
-	// byte-identical to a clean one — a short total under priced:true — so the skip that
-	// saved the rest of the day was invisible to everyone downstream of it.
-	// THE WRITER'S OWN LOSSES COUNT TOO, and they are not in Caveats: Caveats describes what this
-	// READ could not decode, while a dropped row never reached the file for any read to find. So a day
-	// that lost a minute to ENOSPC or to a full queue under a stalled filesystem served a short total
-	// under priced:true with nothing set — the silence this object exists to end, on the half that was
-	// never wired up. Writer.Dropped's own doc named this as the change that belonged next.
-	dropped := s.ledger.Dropped()
-
-	var degraded *usage.Degraded
-	if !caveats.Clean() || dropped > 0 {
-		// EVERY FIELD Clean() TESTS, or the disclosure is emptier than the fault. Clean() is
-		// `c == Caveats{}` over all three counters while this copied only two, so a read whose
-		// only fault was an unopenable day file produced `"degraded":{}` — the caveat raised
-		// and nothing in it. TestLedgerSnapshot_EveryCaveatFieldReachesTheWire keeps the two
-		// structs in step by counting fields, because adding a fourth counter to Caveats would
-		// otherwise reintroduce exactly this.
-		degraded = degradedFrom(caveats)
-		degraded.DroppedRowsTotal = dropped
-	}
-	// THE READ-SIDE WARNING IS PER READ; THE WRITE-SIDE ONE IS PER CHANGE. Logging both together made
-	// one dropped row at 03:00 print "cost ledger read was incomplete" on every request for the life of
-	// the process — around 86,000 lines a day at a chart's poll rate, on an endpoint anyone who can
-	// reach the port can drive, and saying the READ was incomplete when the read was clean. The total
-	// being short is true; the claim about this read is not.
-	if !caveats.Clean() {
-		// At Warn, and on every such read: a client may not render the field, and an operator with a
-		// corrupt day file wants to hear about it once per read rather than never.
-		slog.Warn("sessionapi: cost ledger read was incomplete — the total is short",
-			"window", spec.Label, "skippedLines", caveats.SkippedLines,
-			"truncatedDays", caveats.TruncatedDays,
-			"unreadableDays", caveats.UnreadableDays)
-	}
-	// Monotonic, so Swap gives the previous high-water mark and only an INCREASE logs. A race between
-	// two reads lets exactly one of them log, which is the property that matters.
-	if prev := s.loggedDropped.Swap(dropped); dropped > prev {
-		slog.Warn("sessionapi: the cost ledger writer has lost rows; every total from it is short",
-			"droppedRowsTotal", dropped, "newlyDropped", dropped-prev,
-			"cause", "an append failed, or the queue filled while the filesystem stalled",
-			"effect", "reported cost is a floor; the figure is disclosed on every response as degraded.droppedRowsTotal")
-	}
-	snap := usage.Snapshot{
-		Window:        spec.Label,
-		BucketSeconds: bucketSecondsFor(spec.From, spec.To),
-		// The grouping SERVED, on the same rule as Window above: a response says what it
-		// actually did, and a client that asked for something else learns so by comparing.
-		Group:    applied,
-		Buckets:  []usage.Bucket{{At: spec.From, Counts: totals, Series: series}},
-		Totals:   totals,
-		Degraded: degraded,
-		// Same rule as Aggregator.Snapshot: an inexact figure is still a figure, so a
-		// window whose every request was a truncated stream reports priced:true over a
-		// real total and discloses the caveat in Totals.IncompleteRequests. Withholding
-		// the figure would render "cost unavailable" over dollars that are known.
-		Priced:               totals.PricedRequests > 0,
-		DaysOutsideRetention: outside,
-	}
-	// The dollars the breakdown above does not account for — a gateway-priced response the
-	// inference parser could not read is stored with no model, so it counts toward Totals
-	// and cannot be a group=model key. Set through the setter so a window with nothing to
-	// disclose serialises no field at all, exactly like Degraded; see
-	// usage.Snapshot.UngroupedCostMicros for what a client does with it.
-	snap.SetUngroupedCost(ungroupedCost)
-	// Set beside the residual because both are claims ABOUT the totals rather than parts of them,
-	// and both are what let a client refuse to present a figure it cannot justify.
-	snap.Currencies = currencies
-	// Per series too, for the drawer's axes, keyed by the grouping in effect.
-	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied, series)
-	snap.Agent = agent
-	// And the same for the saving, which is MORE likely to be unattributable than the cost:
-	// Writer.Record admits a row whose only figure is an applied saving even when the
-	// response carried no inference extension, so under group=model that row has no label at
-	// all. See usage.Snapshot.UngroupedAvoidedMicros.
-	snap.SetUngroupedAvoided(ungroupedAvoided)
-	return snap, nil
-}
-
 // writeUsageError returns 400 with the validation message. Every message it can
 // carry is a fixed string authored in this package or in core/cost/usage: none
 // interpolates query input. That is a requirement, not an accident — this
@@ -485,83 +303,6 @@ func writeUsageError(w http.ResponseWriter, err error) {
 	}{Error: err.Error()}); encErr != nil {
 		slog.Debug("sessionapi: usage error encode failed", "error", encErr)
 	}
-}
-
-// daysOutsideRetention is how many whole days of a window start before a retention cutoff.
-//
-// Zero when the window fits, which is the normal case and says nothing. Counted in DAYS because
-// that is the unit the ledger stores and prunes in: a window reaching back part of a day past the
-// cutoff has one date it cannot cover, not a fraction of one.
-//
-// BOTH ARGUMENTS IDENTIFY A DATE AND NEITHER IS A BOUND, which is where two defects lived.
-// cutoff comes from cost/ledger's retentionCutoff, and a ledger day is carried at NOON —
-// ledger.dayOf's doc forbids reading it as the day's first instant — while from is a local
-// MIDNIGHT, from usage.StartOfLocalDay or StartOfLocalMonth. Comparing them as instants made a
-// month-to-date request report one day short of ITSELF: from sits twelve hours before the cutoff
-// of the very date it starts on, so "from is earlier" was true and a floor turned it into 1. With
-// retention_days defaulting to 31, deliberately equal to the longest month, that stamped the
-// partial marker on a complete and correct total every 31-day month, and on the 9th of any month
-// at the 9-day minimum.
-//
-// So both sides are reduced to DATES and differenced as dates. NEVER Truncate(24*time.Hour),
-// which truncates on the absolute UTC-epoch axis rather than to a local date: east of Greenwich a
-// local midnight and a local noon belong to different UTC dates, so the difference gained a day
-// in Berlin and Tokyo while UTC, New_York and Auckland answered correctly. Neither a
-// fixed-offset test zone nor a single-zone one can see that.
-func daysOutsideRetention(from, cutoff time.Time) int64 {
-	// The LEDGER's zone decides the grid: retention is counted in the ledger's own day files, so
-	// the question is which of its dates the window reaches past, not which of the caller's.
-	d := utcNoonOfDate(cutoff).Sub(utcNoonOfDate(from.In(cutoff.Location())))
-	if n := int64(d / (24 * time.Hour)); n > 0 {
-		return n
-	}
-	return 0
-}
-
-// utcNoonOfDate re-anchors a timestamp's calendar date at noon UTC, so two dates can be
-// differenced as dates.
-//
-// NOON, and in UTC, for the same reason cost/ledger carries its days at noon: UTC has no
-// transitions, so the gap between two of these is always an exact multiple of 24 hours and the
-// division below cannot be off by one — where a local date's length is 22, 23, 24 or 25 hours and
-// subtracting local midnights drifts by the offset change.
-func utcNoonOfDate(t time.Time) time.Time {
-	y, m, d := t.Date()
-	return time.Date(y, m, d, 12, 0, 0, 0, time.UTC)
-}
-
-// degradedFrom is the whole of the Caveats-to-wire conversion, in one place so a field cannot be
-// added on one side and forgotten on the other.
-//
-// Extracted rather than left inline because that is what makes it testable: the defect it replaces
-// was a literal that copied two of three counters, which no test of the handler could see — a
-// response saying "degraded" with an empty object looks like a client-side rendering problem, not a
-// producer dropping a number. TestDegradedFrom_CarriesEveryCaveatField compares the two structs
-// field by field through reflection, so a fourth counter fails here rather than shipping silently.
-func degradedFrom(c ledger.Caveats) *usage.Degraded {
-	return &usage.Degraded{
-		SkippedLines:   c.SkippedLines,
-		TruncatedDays:  c.TruncatedDays,
-		UnreadableDays: c.UnreadableDays,
-	}
-}
-
-// bucketSecondsFor is the length of a ledger window's single bucket, floored at one second.
-//
-// A ledger window returns ONE bucket spanning the whole window, so this is the window's own length —
-// and truncating that to an int makes it ZERO in the first second of the local day, once a day, for
-// every polling client. And `bucketSeconds` has NO omitempty — I claimed it did, twice, in the commit
-// that added this floor — so a zero is serialised as `"bucketSeconds":0` for every client to divide
-// by. That makes this floor the only defence rather than the second one, which is a reason to keep it
-// rather than a reason to relax it.
-//
-// A separate function so the boundary is testable: the handler reads time.Now() directly, so there is
-// no seam through which a test could stand at midnight.
-func bucketSecondsFor(from, to time.Time) int {
-	if s := int(to.Sub(from).Seconds()); s > 1 {
-		return s
-	}
-	return 1
 }
 
 // servedSpan is how much of a symbolic window the RING can answer: the shorter of the window itself

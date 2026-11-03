@@ -110,8 +110,8 @@ func TestRunCost_DisclosesAWindowPastRetention(t *testing.T) {
 	}
 	// AND IT IS HEDGED, which is the other half of the same rule. "any spend on them is outside
 	// the total" was the wording, and it is false whenever prune has floored its window at the
-	// newest day file: those days are reported outside AND summed. See sessionapi's
-	// TestLedgerSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal, which reproduces it.
+	// newest day file: those days are reported outside AND summed. See cost/ledger's
+	// TestSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal, which reproduces it.
 	for _, overclaim := range []string{"is outside the total", "are outside the total"} {
 		if strings.Contains(strings.ToLower(got), overclaim) {
 			t.Errorf("output says %q, which is certain about a total it cannot inspect:\n%s",

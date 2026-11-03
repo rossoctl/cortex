@@ -15,7 +15,6 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -70,7 +69,7 @@ type entry struct {
 	// loop; this was parsing. ledger.Writer.Record hoists its own phase guard above
 	// event.Record for exactly this reason.
 	//
-	// usage.CostSum, not two int64s: it saturates rather than wrapping AND records that it
+	// event.CostSum, not two int64s: it saturates rather than wrapping AND records that it
 	// did, so a clamped lifetime total arrives labelled instead of as a plausible
 	// ~$9.2 trillion. It is the one saturating money accumulator in this codebase; a local
 	// copy here would be a second implementation of that rule with the label dropped.
@@ -81,8 +80,8 @@ type entry struct {
 	// the COST column scoped exactly like the TOKENS column beside it, which is the claim
 	// SessionSummary.CostMicros makes. ListSessions adds the history before this entry on top
 	// where a PriorKeeper has it (withPriorLocked); these running totals stay the entry's own.
-	cost    usage.CostSum
-	avoided usage.CostSum
+	cost    event.CostSum
+	avoided event.CostSum
 	// units counts the priced events behind cost by the unit they were priced in, "" for USD.
 	// Maintained with cost, on append and on trim, and read by SessionSummary.Currencies — a
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
@@ -592,7 +591,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 		// this adds to the critical section is integer subtraction — see entry.money for
 		// what the first version did instead.
 		//
-		// Sub, not Add(-x): see usage.CostSum.Sub for the math.MinInt64 case it exists for.
+		// Sub, not Add(-x): see event.CostSum.Sub for the math.MinInt64 case it exists for.
 		for i, m := range sess.money {
 			if p.keeps(i) {
 				continue
@@ -880,7 +879,7 @@ type SessionSummary struct {
 	// running agentop — an agent that routes through the proxy without writing Claude Code
 	// transcripts is the case that motivated it. Do not assume a change here is invisible.
 	Title string `json:"title,omitempty"`
-	// Agent is the client this session belongs to, as usage.AgentLabel names it, which is the
+	// Agent is the client this session belongs to, as event.AgentLabel names it, which is the
 	// label agent= matches: the affinity owner's when one claimed the session, else the first
 	// recognised agent's, else — #1214 — the first UNRECOGNISED client's, which is its raw
 	// User-Agent folded by pipeline.AgentName. Absent for the default and pending buckets, which
@@ -1209,7 +1208,7 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 // only as good as the full recomputation it claims to equal, and
 // TestAppend_RunningTotalsMatchAFullRecomputation asserts exactly that after appends, trims
 // and evictions. Deleting it would leave the increments with nothing to check them against.
-func sumCost(events []pipeline.SessionEvent) (cost, avoided usage.CostSum) {
+func sumCost(events []pipeline.SessionEvent) (cost, avoided event.CostSum) {
 	for i := range events {
 		m := moneyOf(&events[i])
 		cost.Add(m.cost)

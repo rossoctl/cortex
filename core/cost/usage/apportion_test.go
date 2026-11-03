@@ -130,9 +130,7 @@ func TestApportionReasoning_RefusesRatherThanReturningZero(t *testing.T) {
 		}, 100},
 		// NEGATIVE, which returned (-595103, true) before the guard: the ratio goes
 		// negative, the upper clamp does not fire, and the truncation escape does not
-		// either. plausibleTokenReport screens negatives at ingest, but this is exported
-		// and addSat's argument in this package applies — "unreachable today" is how the
-		// wrap arrived.
+		// either. plausibleTokenReport screens negatives at ingest, but this is exported.
 		{"negative reasoning count", func(c *Counts) { c.ReasoningTokens = -948 }, 1_000_000},
 		{"negative output count", func(c *Counts) { c.OutputTokens = -1593 }, 1_000_000},
 		{"negative output money", func(c *Counts) {}, -1_000_000},

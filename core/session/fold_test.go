@@ -201,7 +201,7 @@ func TestSummaryFold_PromptContextResumesFromJSON(t *testing.T) {
 // fold (Summary, withPriorLocked's agentOfLocked, Add's dedup, a re-Marshal) reads f.agents,
 // so folding HERE is what keeps a resumed session on today's row instead of serving the
 // retired spelling beside it. The labels are what applyAgent computed when they were written
-// (usage.AgentLabel is AgentName-folded at append), so folding again is idempotent for every
+// (event.AgentLabel is AgentName-folded at append), so folding again is idempotent for every
 // current spelling and changes only the retired ones.
 func TestSummaryFold_UnmarshalFoldsRetiredAgentSpellings(t *testing.T) {
 	// The JSON a pre-rename Cortex persisted: both of Bob's faces under the names they

@@ -70,11 +70,6 @@ type Server struct {
 	lastRefusalLog atomic.Int64
 	// loopbackOnly wraps every route in httpx.LoopbackOnly. See WithLoopbackOnly.
 	loopbackOnly bool
-	// loggedDropped is the highest writer-drop total this server has already logged, so the write-side
-	// warning fires on a CHANGE rather than on every request. See the usage handler: the drop count is
-	// process-cumulative, so logging it per read turned one lost row into a warning on every poll for
-	// the life of the process.
-	loggedDropped atomic.Int64
 	// now resolves /v1/usage's symbolic windows (window=today, window=month). nil means
 	// time.Now. It must read the same clock as the ledger and the aggregator behind it, or
 	// "today" is cut at one instant and filled from another — which is why a caller pinning

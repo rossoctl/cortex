@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -1189,7 +1190,7 @@ func axisHintOf(axis usage.Group, axes []usage.Group) string {
 // that cost the same must not swap places between polls, which would make the drawer flicker
 // under a reader who is trying to compare rows.
 //
-// MONEY THROUGH usage.CostSum, not a raw `+=`. The figures these rows display come from
+// MONEY THROUGH event.CostSum, not a raw `+=`. The figures these rows display come from
 // Counts.Add, which saturates; ranking them with a raw accumulator let the two disagree, and
 // disagree in the one direction that loses a row. A series summing past MaxInt64 across
 // buckets wraps NEGATIVE, ranks below a ten-micro series, and foldTailSeries then folds the
@@ -1198,11 +1199,11 @@ func axisHintOf(axis usage.Group, axes []usage.Group) string {
 // anybody will hit; it is the drawer being the one money surface in the package that added
 // its own way, and the fix is the idiom already here.
 func rankSeriesByCost(buckets []usage.Bucket) []seriesKey {
-	totals := map[string]*usage.CostSum{}
+	totals := map[string]*event.CostSum{}
 	for _, b := range buckets {
 		for label, c := range b.Series {
 			if totals[label] == nil {
-				totals[label] = &usage.CostSum{}
+				totals[label] = &event.CostSum{}
 			}
 			totals[label].Add(c.CostMicros)
 		}

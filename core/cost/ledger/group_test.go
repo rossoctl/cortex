@@ -58,7 +58,7 @@ func TestGroupable_MatchesWhatLabelForCanActuallyProduce(t *testing.T) {
 // A residual is a statement about a breakdown that ALMOST accounts for the total. Where
 // there is no breakdown at all there is nothing for it to be a residual OF, and the
 // honest number is not 100% — it is no number, with the grouping the source could apply
-// reported instead. See Groupable and sessionapi's ledgerSnapshot.
+// reported instead. See Groupable and Writer.Snapshot.
 func TestFold_AnAxisNoLedgerRowCarriesReportsNoResidualAtAll(t *testing.T) {
 	rows := []Row{fullRow(), fullRow()}
 	for _, g := range []usage.Group{usage.GroupSession, usage.GroupStatus, usage.GroupPlugin} {

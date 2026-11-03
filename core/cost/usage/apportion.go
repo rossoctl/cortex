@@ -110,11 +110,9 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 // must not yield a child figure above its parent, though the counts themselves are left
 // as reported — see Counts.ReasoningTokens.
 func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
-	// Guarded HERE and not left to plausibleTokenReport's ingest screen, which is the
-	// defence addSat refuses for itself in this package: "unreachable today" is how the
-	// wrap arrived, and a figure guarded on one side invites a reader to conclude the
-	// other was ruled out. Nothing below catches a negative — the clamp is upper-only and
-	// the truncation escape tests for zero.
+	// Guarded HERE as well as by plausibleTokenReport's ingest screen, because this is
+	// exported and event.AddSat guards both directions for the same reason. Nothing below
+	// catches a negative — the clamp is upper-only and the truncation escape tests for zero.
 	if c.ReasoningTokens <= 0 {
 		return 0, false
 	}

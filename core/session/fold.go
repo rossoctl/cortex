@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -64,14 +64,14 @@ func applyTitle(rank int, title string, candRank int, candText string) (int, str
 // `agent=` query could reach it.
 //
 // A CLIENT THAT CAN NAME NOTHING STILL RECORDS NOTHING, which is what keeps `agent` omitempty
-// honest: usage.AgentLabel answers pipeline.UnknownClientLabel ("unknown") for an event that
+// honest: event.AgentLabel answers pipeline.UnknownClientLabel ("unknown") for an event that
 // carried no User-Agent at all, and that is a RESERVED BUCKET rather than an agent name — see
 // EventClient.Label. Putting it in this slice would render untagged traffic as a program that
 // spent money, on exactly the field a client reads to attribute a session.
 //
 // THE LABEL IS CLIENT-ASSERTED AND SPOOFABLE, and it reaches this slice already bounded:
-// usage.AgentLabel is ringLabel(AgentName(c.Label())), which sanitises every control, bidi and
-// zero-width rune and caps at usage.MaxLabelLen (96) bytes on a rune boundary — the same
+// event.AgentLabel folds the version away, sanitizes every control, bidi and zero-width rune
+// and caps at event.MaxLabelLen (96) bytes on a rune boundary — the same
 // treatment the usage ring's byAgent keys and the ledger's rows get, which is what makes a
 // session's `agent` and its `group=agent` row the same string. Nothing new is invented here, and
 // nothing here may be read as a trusted identity; see EventClient's godoc.
@@ -80,8 +80,8 @@ func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.
 		return agents
 	}
 	// THE DEDUP RUNS BEFORE THE LABEL IS COMPUTED, on the one path where it can. This is
-	// the per-event append path under the store's write lock, and usage.AgentLabel is
-	// ringLabel(AgentName(Label())) — a regexp match, a whole-string rune scan and a cap.
+	// the per-event append path under the store's write lock, and event.AgentLabel is
+	// a regexp match, a whole-string rune scan and a cap.
 	// In the steady state for every recognised agent the slice already holds its entry, so
 	// computing the label first paid all of that on every event only to discard it at
 	// agentLabelIn: measured 385ns/op and 2 allocs against 8.3ns/op and 0 this way.
@@ -94,11 +94,11 @@ func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.
 		if agentLabelIn(agents, agentName) != "" {
 			return agents
 		}
-		return append(agents, sessionAgent{name: agentName, label: usage.AgentLabel(c), known: true})
+		return append(agents, sessionAgent{name: agentName, label: event.AgentLabel(c), known: true})
 	}
 	// Keyed by the label, since there is no canonical name. "unknown" means the event
 	// carried no User-Agent — nothing to attribute, so nothing recorded.
-	label := usage.AgentLabel(c)
+	label := event.AgentLabel(c)
 	if label == "" || label == pipeline.UnknownClientLabel {
 		return agents
 	}
@@ -167,8 +167,8 @@ func inferenceHostOf(e *pipeline.SessionEvent) string {
 type SummaryFold struct {
 	events    int
 	tokens    int
-	cost      usage.CostSum
-	avoided   usage.CostSum
+	cost      event.CostSum
+	avoided   event.CostSum
 	units     map[string]int
 	titleRank int
 	title     string
@@ -334,8 +334,8 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 	*f = SummaryFold{
 		events:          j.EventCount,
 		tokens:          j.TotalTokens,
-		cost:            usage.CostSum{Micros: j.CostMicros, Saturated: j.CostSaturated},
-		avoided:         usage.CostSum{Micros: j.AvoidedMicros, Saturated: j.AvoidedSaturated},
+		cost:            event.CostSum{Micros: j.CostMicros, Saturated: j.CostSaturated},
+		avoided:         event.CostSum{Micros: j.AvoidedMicros, Saturated: j.AvoidedSaturated},
 		units:           j.Units,
 		titleRank:       rankNone,
 		title:           j.Title,

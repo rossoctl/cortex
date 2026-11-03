@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -1072,7 +1073,7 @@ func TestFold_GroupingsTheLedgerCannotAnswerReturnNoSeries(t *testing.T) {
 		// A residual is a statement about a breakdown that ALMOST accounts for the total.
 		// Where the source can produce no breakdown at all there is nothing for it to be a
 		// residual of, and the honest response says which grouping was actually applied
-		// instead — see Groupable and sessionapi's ledgerSnapshot.
+		// instead — see Groupable and Writer.Snapshot.
 		if ungrouped.Micros != 0 {
 			t.Errorf("group=%s ungrouped cost = %d over a total of %d, want 0: the ledger cannot "+
 				"group by this axis at all, which is not the same claim as a breakdown that fell "+
@@ -1178,7 +1179,7 @@ func TestFold_ASaturatedResidualIsABoundNotAFabricatedOvershoot(t *testing.T) {
 	}
 	if !ungrouped.Saturated {
 		t.Error("residual clamped without saying so — the clamp is only honest while the flag " +
-			"travels with it, which is the whole argument for usage.CostSum being a type")
+			"travels with it, which is the whole argument for event.CostSum being a type")
 	}
 
 	// End to end through the setter, because "does not wrap" is not the claim that matters to
@@ -1258,7 +1259,7 @@ func TestFold_GroupAgentFoldsAnAgentsVersions(t *testing.T) {
 func TestLedgerAndRingAgreeOnAVersionedAgent(t *testing.T) {
 	c := &pipeline.EventClient{Name: "claude-code", Version: "2.1.285"}
 	ledgerKey, _ := labelFor(Row{Agent: agentLabel(c)}, usage.GroupAgent)
-	if ringKey := usage.AgentLabel(c); ledgerKey != ringKey {
+	if ringKey := event.AgentLabel(c); ledgerKey != ringKey {
 		t.Errorf("ledger key %q != ring key %q", ledgerKey, ringKey)
 	}
 }
