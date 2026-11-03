@@ -441,7 +441,11 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	}
 	if inf, ok := m["inference"].(map[string]any); ok {
 		restoreReportedZeroSplits(inf)
-		m["inference"] = filterFields(inf, keep)
+		inf = filterFields(inf, keep)
+		if phase != pipeline.SessionResponse {
+			nestToolBlocks(inf)
+		}
+		m["inference"] = inf
 	}
 	if mcp, ok := m["mcp"].(map[string]any); ok {
 		m["mcp"] = filterFields(mcp, mcpKeep)
@@ -480,7 +484,7 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 var (
 	inferenceReqKeys = []string{
 		"model", "requestedModel", "messages", "temperature", "maxTokens", "topP",
-		"stream", "tools", "toolChoice", "toolResults",
+		"stream", "tools", "toolChoice", "toolResults", "historyToolCalls",
 	}
 	// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
 	// of the generated tokens the model spent reasoning, billed at the output rate.
@@ -537,6 +541,70 @@ func restoreReportedZeroSplits(inf map[string]any) {
 	}
 	if uint8(bits)&usage.KindReasoning != 0 {
 		inf["reasoningTokens"] = 0
+	}
+}
+
+// nestToolBlocks moves each history tool call and tool result under the message that
+// carried it, named by the message's toolUseIds, so a turn reads as "called Bash with this
+// command" and "got this back" in place. The parser keeps both out of the message on purpose
+// (no plugin may read tool output as conversation); the view puts them back together. An
+// entry no message names stays in its top-level list, and a list left empty is dropped.
+func nestToolBlocks(inf map[string]any) {
+	msgs, _ := inf["messages"].([]any)
+	// Each top-level list, the key that holds its id, the key it takes under a message
+	// ("toolCalls" reads as what the message asked for, as on a response row), and which
+	// messages it goes under: the same id names the call on the assistant message and the
+	// result on the message after it.
+	for _, l := range [...]struct {
+		from, id, to string
+		assistant    bool
+	}{
+		{"historyToolCalls", "id", "toolCalls", true},
+		{"toolResults", "toolUseId", "toolResults", false},
+	} {
+		entries, _ := inf[l.from].([]any)
+		byID := map[string]int{}
+		for i, e := range entries {
+			obj, _ := e.(map[string]any)
+			if id, _ := obj[l.id].(string); id != "" {
+				if _, dup := byID[id]; !dup {
+					byID[id] = i
+				}
+			}
+		}
+		nested := make([]bool, len(entries))
+		for _, raw := range msgs {
+			msg, _ := raw.(map[string]any)
+			ids, _ := msg["toolUseIds"].(string)
+			if ids == "" || (msg["role"] == "assistant") != l.assistant {
+				continue
+			}
+			for _, id := range strings.Split(ids, ", ") {
+				if i, ok := byID[id]; ok && !nested[i] {
+					got, _ := msg[l.to].([]any)
+					msg[l.to] = append(got, entries[i])
+					nested[i] = true
+				}
+			}
+		}
+		var rest []any
+		for i, e := range entries {
+			if !nested[i] {
+				rest = append(rest, e)
+			}
+		}
+		if len(rest) == 0 {
+			delete(inf, l.from)
+		} else {
+			inf[l.from] = rest
+		}
+	}
+	// The ids did their job: each one is on the entry it names, under its message, or on an
+	// entry still in its top-level list.
+	for _, raw := range msgs {
+		if msg, ok := raw.(map[string]any); ok {
+			delete(msg, "toolUseIds")
+		}
 	}
 }
 

@@ -45,6 +45,7 @@ func fullEvent() pipeline.SessionEvent {
 			// rather than the ~163x it measures against a live proxy.
 			Messages:         bigConversation(24, 8192),
 			ToolResults:      []pipeline.InferenceToolResult{{ToolUseID: "toolu_1", Content: strings.Repeat("r", 4096)}},
+			HistoryToolCalls: []pipeline.InferenceToolCall{{ID: "toolu_1", Name: "Bash", Arguments: strings.Repeat("a", 1024)}},
 			Tools:            []pipeline.InferenceTool{{Name: "search"}},
 			AgentRole:        pipeline.AgentRoleMain,
 			Completion:       strings.Repeat("y", 2048),
@@ -112,6 +113,10 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	// re-sends all of them — and only the detail pane reads them.
 	if got.Inference.ToolResults != nil {
 		t.Error("Inference.ToolResults survived")
+	}
+	// The calls those results answer, re-sent the same way.
+	if got.Inference.HistoryToolCalls != nil {
+		t.Error("Inference.HistoryToolCalls survived")
 	}
 	// …but their LENGTHS are stated in their place. A third category beside dropped and kept:
 	// derived from a payload that goes, and the only thing left that says what it was.
@@ -400,7 +405,8 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 27 since ToolResults, which is DETAIL data: dropped, asserted above.
 		// 28 since ServedModel, kept as RequestedModel is: agentop's detail pane draws its
 		// model: line from the projected event. A capped scalar; asserted above.
-		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 28},
+		// 29 since HistoryToolCalls, DETAIL data like ToolResults: dropped, asserted above.
+		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 29},
 		{"A2AExtension", reflect.TypeOf(pipeline.A2AExtension{}), 11},
 		{"MCPExtension", reflect.TypeOf(pipeline.MCPExtension{}), 6},
 	} {

@@ -186,6 +186,17 @@ type InferenceExtension struct {
 	// where this parser cannot keep it out.
 	ToolResults []InferenceToolResult `json:"toolResults,omitempty"`
 
+	// HistoryToolCalls are the tool calls an earlier assistant turn made, as the client sends
+	// them back in this request: Anthropic tool_use blocks and chat-completions tool_calls,
+	// with their ids and arguments. InferenceMessage.ToolUseIDs says which message made each.
+	//
+	// NOT ToolCalls, which is the response side: the calls the model asks for NOW. OPA, SPARC,
+	// CPEX and lineage read ToolCalls that way, so history in it would be judged as a new call.
+	// For the session store and its readers only, under the same rule as ToolResults: no
+	// plugin reads it. Without it the arguments are only on an earlier response, which
+	// view=summary strips, so a request's detail could name a call but not show it.
+	HistoryToolCalls []InferenceToolCall `json:"historyToolCalls,omitempty"`
+
 	// MessageCount and ToolCount are how many Messages and Tools this event HAD, for readers of
 	// a copy that no longer carries them. Set only by sessionapi.summarizeEvent, immediately
 	// before it nils both slices; zero everywhere else, including on every event the store keeps.
@@ -342,8 +353,19 @@ type InferenceMessage struct {
 	// so without this a turn that only called tools read as empty. The join is unambiguous
 	// because both APIs restrict a tool name to letters, digits, "_" and "-". A string rather
 	// than a slice keeps this struct comparable, which core/session's interner relies on.
-	// Names only: the calls' ids and arguments are on the earlier response's ToolCalls.
+	// Names only: the ids are ToolUseIDs and the arguments InferenceExtension.HistoryToolCalls.
 	ToolCallNames string `json:"toolCallNames,omitempty"`
+
+	// ToolUseIDs are the ids of the tool blocks this message carries, joined by ", " in
+	// block order: an assistant message's tool calls (Anthropic tool_use, chat-completions
+	// tool_calls) and a user message's tool results (Anthropic tool_result). They key into
+	// InferenceExtension.HistoryToolCalls and ToolResults, which hold the calls and results
+	// themselves, so a reader can show each one under the message that sent it. A string for
+	// the reason ToolCallNames is one. Anthropic restricts an id to letters, digits, "_" and
+	// "-"; a chat-completions id that contains ", " splits wrongly, which costs only the
+	// display. Empty on a message with no tool block, and on a
+	// chat-completions "role":"tool" message, whose one id is ToolUseID.
+	ToolUseIDs string `json:"toolUseIds,omitempty"`
 }
 
 // RawJSON is a JSON value held exactly as it arrived, rather than decoded into Go values.

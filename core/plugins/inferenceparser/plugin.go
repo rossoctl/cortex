@@ -149,7 +149,9 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 			ContentBytes:  msg.ContentBytes,
 			ToolUseID:     msg.ToolCallID,
 			ToolCallNames: msg.ToolCallNames,
+			ToolUseIDs:    msg.ToolUseIDs,
 		})
+		ext.HistoryToolCalls = append(ext.HistoryToolCalls, msg.ToolCalls...)
 	}
 	// A chat-completions tool result is a "role":"tool" message naming the call it answers
 	// by tool_call_id — the pairing key the timeline's tool spans close on. Anthropic and
@@ -946,8 +948,12 @@ type inferenceMessage struct {
 	// ToolCallID is the tool_call_id of a chat-completions "role":"tool" result message:
 	// the id of the assistant tool_calls entry it answers. Empty on every other role.
 	ToolCallID string
-	// ToolCallNames names an assistant message's tool_calls, joined by ", ".
+	// ToolCallNames names an assistant message's tool_calls, joined by ", ", and
+	// ToolUseIDs gives their ids the same way. ToolCalls are the calls themselves, for
+	// InferenceExtension.HistoryToolCalls.
 	ToolCallNames string
+	ToolUseIDs    string
+	ToolCalls     []pipeline.InferenceToolCall
 }
 
 func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
@@ -956,8 +962,10 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 		Content    json.RawMessage `json:"content"`
 		ToolCallID string          `json:"tool_call_id"`
 		ToolCalls  []struct {
+			ID       string `json:"id"`
 			Function struct {
-				Name string `json:"name"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
 			} `json:"function"`
 		} `json:"tool_calls"`
 	}
@@ -969,10 +977,14 @@ func (m *inferenceMessage) UnmarshalJSON(data []byte) error {
 	m.ContentBytes = contentBytes(raw.Content)
 	m.ToolCallID = raw.ToolCallID
 	names := make([]string, len(raw.ToolCalls))
+	ids := make([]string, len(raw.ToolCalls))
 	for i, c := range raw.ToolCalls {
-		names[i] = c.Function.Name
+		names[i], ids[i] = c.Function.Name, c.ID
+		m.ToolCalls = append(m.ToolCalls, pipeline.InferenceToolCall{
+			ID: c.ID, Name: c.Function.Name, Arguments: c.Function.Arguments,
+		})
 	}
-	m.ToolCallNames = strings.Join(names, ", ")
+	m.ToolCallNames, m.ToolUseIDs = strings.Join(names, ", "), strings.Join(ids, ", ")
 	return nil
 }
 

@@ -1,6 +1,10 @@
 package inferenceparser
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+)
 
 // A chat-completions tool result is a "role":"tool" message naming the call it answers by
 // tool_call_id. Those ids are the pairing key the timeline's tool spans close on, so they
@@ -26,6 +30,13 @@ func TestChatCompletionsToolResultsCarryTheCallID(t *testing.T) {
 	}
 	if got := ext.Messages[1].ToolCallNames; got != "read_dir" {
 		t.Fatalf("assistant ToolCallNames = %q, want read_dir", got)
+	}
+	if got := ext.Messages[1].ToolUseIDs; got != "call_1" {
+		t.Fatalf("assistant ToolUseIDs = %q, want call_1", got)
+	}
+	want := pipeline.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
+	if len(ext.HistoryToolCalls) != 1 || ext.HistoryToolCalls[0] != want {
+		t.Fatalf("HistoryToolCalls = %+v, want [%+v]", ext.HistoryToolCalls, want)
 	}
 	var toolMsg bool
 	for _, m := range ext.Messages {

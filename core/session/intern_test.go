@@ -474,6 +474,43 @@ func TestAppend_SharesRepeatedToolResults(t *testing.T) {
 	}
 }
 
+// The calls those results answer are re-sent the same way, and their arguments share too.
+func TestAppend_SharesRepeatedHistoryToolCalls(t *testing.T) {
+	s := New(0, 0, 100)
+	defer s.Close()
+
+	calls := func() []pipeline.InferenceToolCall {
+		return []pipeline.InferenceToolCall{
+			{ID: "toolu_1", Name: "Bash", Arguments: `{"command":"` + strings.Repeat("ls -la /tmp ", 8) + `"}`},
+		}
+	}
+	const turns = 3
+	for i := 0; i < turns; i++ {
+		s.Append("s1", pipeline.SessionEvent{
+			Inference: &pipeline.InferenceExtension{Model: "m", HistoryToolCalls: calls()},
+		})
+		// A tunnel row between turns must not reset the sharing.
+		s.Append("s1", pipeline.SessionEvent{Tunnel: true})
+	}
+
+	v := s.View("s1")
+	var infs []*pipeline.InferenceExtension
+	for i := range v.Events {
+		if v.Events[i].Inference != nil {
+			infs = append(infs, v.Events[i].Inference)
+		}
+	}
+	first := backing(infs[0].HistoryToolCalls[0].Arguments)
+	for i, inf := range infs {
+		if backing(inf.HistoryToolCalls[0].Arguments) != first {
+			t.Errorf("event %d holds its own copy of the call's arguments", i)
+		}
+	}
+	if got, want := infs[turns-1].HistoryToolCalls[0], calls()[0]; got != want {
+		t.Errorf("history tool call changed: %+v", got)
+	}
+}
+
 // Both phases of one request alias the same ToolResults array, as they do Messages and
 // Tools, so interning must rewrite a copy — never the caller's array.
 func TestAppend_DoesNotMutateTheCallersToolResults(t *testing.T) {
