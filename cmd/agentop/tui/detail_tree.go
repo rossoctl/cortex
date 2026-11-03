@@ -213,6 +213,8 @@ func groupEarlier(msgs *node) {
 		e.label = escapeText(e.str("role")) + " · " + formatBytes(int64(e.size))
 		if first := labelLine(e.str("content")); first != "" {
 			e.label += " · " + first
+		} else if names := labelLine(e.str("toolCallNames")); names != "" {
+			e.label += " · " + names
 		}
 		g.kids = append(g.kids, e)
 		g.size += e.size

@@ -328,6 +328,14 @@ type InferenceMessage struct {
 	// message half of a pair this id names — the result would otherwise count twice.
 	// Empty on every other message.
 	ToolUseID string `json:"toolUseId,omitempty"`
+
+	// ToolCallNames names the tools an assistant message called, joined by ", " in call
+	// order: Anthropic tool_use blocks, chat-completions tool_calls. Content keeps only text,
+	// so without this a turn that only called tools read as empty. The join is unambiguous
+	// because both APIs restrict a tool name to letters, digits, "_" and "-". A string rather
+	// than a slice keeps this struct comparable, which core/session's interner relies on.
+	// Names only: the calls' ids and arguments are on the earlier response's ToolCalls.
+	ToolCallNames string `json:"toolCallNames,omitempty"`
 }
 
 // RawJSON is a JSON value held exactly as it arrived, rather than decoded into Go values.

@@ -255,10 +255,10 @@ func (st *convState) intern(s string, next map[string]string) string {
 
 // internID is intern without the length floor, for identifiers that repeat
 // exactly as message content does while being far shorter than InternMinLen.
-// ToolUseID and the message Role are the two today: a "toolu_…" id is ~20
-// bytes and a role ~5, but a client re-sends every earlier tool result and
-// message on every request, so both duplicate as hard as the conversation
-// does — the Role duplication alone was ~15 million strings on one measured
+// ToolUseID, the message Role and its ToolCallNames are the three today: a
+// "toolu_…" id is ~20 bytes and a role ~5, but a client re-sends every earlier
+// tool result and message on every request, so they duplicate as hard as the
+// conversation does — the Role duplication alone was ~15 million strings on one measured
 // 30-day archive (#1541). Only the empty string is beneath sharing, because
 // it is the one value every absent id shares for no reason.
 //
@@ -395,6 +395,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		// the arriving one, so a miss cannot pin a duplicate no event holds.
 		st.intern(st.msgs[k].Content, next)
 		st.internID(st.msgs[k].Role, next)
+		st.internID(st.msgs[k].ToolCallNames, next)
 		k++
 	}
 	if k == len(msgs) {
@@ -408,6 +409,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		for i := range tail {
 			tail[i] = msgs[k+i]
 			tail[i].Role = st.internID(tail[i].Role, next)
+			tail[i].ToolCallNames = st.internID(tail[i].ToolCallNames, next)
 			tail[i].Content = st.intern(tail[i].Content, next)
 		}
 		st.msgs = append(st.msgs, tail...)
@@ -421,6 +423,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 	for i := k; i < len(msgs); i++ {
 		out[i] = msgs[i]
 		out[i].Role = st.internID(out[i].Role, next)
+		out[i].ToolCallNames = st.internID(out[i].ToolCallNames, next)
 		out[i].Content = st.intern(out[i].Content, next)
 	}
 	st.msgs = out

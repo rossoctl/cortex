@@ -56,6 +56,21 @@ func cursorTo(t *testing.T, m *model, sub string) {
 	t.Fatalf("no line holds %q", sub)
 }
 
+// An earlier assistant turn that only called tools has no content; its label names the tools.
+func TestDetailFolds_EarlierToolOnlyTurnShowsToolNames(t *testing.T) {
+	m := newSearchEventsModel(t, "h")
+	ev := turnEvent()
+	ev.Inference.Messages[1] = pipeline.InferenceMessage{Role: "assistant", ContentBytes: 90, ToolCallNames: "Read, Bash"}
+	m.events["s"] = []pipeline.SessionEvent{ev}
+	m.rebuildEventsTable()
+	setCursorVisible(&m.eventsTbl, 0)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+	press(m, tea.KeyEnter)
+	cursorTo(t, m, "earlier message")
+	press(m, tea.KeyEnter)
+	cursorTo(t, m, "Read, Bash")
+}
+
 func TestDetailFolds_EnterOpensAndClosesTheFoldAtTheCursor(t *testing.T) {
 	m := openTurnDetail(t)
 	if strings.Contains(detailScreen(m), "old-needle") {
