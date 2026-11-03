@@ -990,6 +990,13 @@ type ListenerConfig struct {
 	// in #496.
 	SkipHosts []string `yaml:"skip_hosts" json:"skip_hosts"`
 
+	// ResponsesWebSockets is what the forward proxy does with a WebSocket upgrade on
+	// an OpenAI Responses API path (a GET with Upgrade: websocket on a path ending
+	// /responses — Codex's transport): one of the ResponsesWebSockets* values below.
+	// Empty means the default, ResponsesWebSocketsParse. See
+	// ResponsesWebSocketsMode.
+	ResponsesWebSockets string `yaml:"responses_websockets,omitempty" json:"responses_websockets,omitempty"`
+
 	// EgressAllowHosts is the forward proxy's deny-by-default destination
 	// allow list (#1483, MOCA MI1 §8.5): when non-empty, an outbound
 	// destination not on the list is refused with 403 destination_denied
@@ -1043,14 +1050,13 @@ type ListenerConfig struct {
 	// listener knob.
 	EgressAllowHosts []string `yaml:"egress_allow_hosts,omitempty" json:"egress_allow_hosts,omitempty"`
 
-	// DeclineResponsesWebSockets: whether the forward proxy answers a WebSocket
-	// upgrade on an OpenAI Responses API path (one ending /responses, on chatgpt.com
-	// or api.openai.com) with 426 itself, instead of forwarding the upgrade. nil
-	// means unset, and the default is on; explicit false forwards it. See
-	// DeclinesResponsesWebSockets for why on is the default.
+	// DeclineResponsesWebSockets is the boolean responses_websockets replaced. v0.9.4
+	// shipped it, so a config that sets it keeps working: when responses_websockets is
+	// unset, true reads as decline and false as forward — under #1488 a forwarded
+	// upgrade is a real one, which is what false asked for — and Validate warns,
+	// naming the new key. Setting both is refused, since they can disagree.
 	//
-	// A pointer for the reason SessionConfig.Enabled is one: with a plain bool,
-	// "unset" and "false" are the same value, and the default could not be on.
+	// Deprecated: use ResponsesWebSockets.
 	DeclineResponsesWebSockets *bool `yaml:"decline_responses_websockets,omitempty" json:"decline_responses_websockets,omitempty"`
 
 	// EgressGuard arms the SSRF dial guard on the forward proxy's every
@@ -1078,7 +1084,7 @@ type ListenerConfig struct {
 	// protect.
 	//
 	// A pointer so "absent" (off) stays distinguishable from an explicit
-	// enabled: false, mirroring DeclineResponsesWebSockets. Listener.* field:
+	// enabled: false, as SessionConfig.Enabled is. Listener.* field:
 	// changing it requires a restart, like every other listener knob.
 	EgressGuard *EgressGuardConfig `yaml:"egress_guard,omitempty" json:"egress_guard,omitempty"`
 }
@@ -1097,19 +1103,47 @@ type EgressGuardConfig struct {
 	PermitCIDRs []string `yaml:"permit_cidrs,omitempty" json:"permit_cidrs,omitempty"`
 }
 
-// DeclinesResponsesWebSockets reports whether the forward proxy answers a WebSocket
-// upgrade on a Responses API path with 426 rather than forwarding it.
+// Valid ListenerConfig.ResponsesWebSockets values.
+const (
+	// ResponsesWebSocketsParse carries the WebSocket and parses every turn on it the
+	// way an HTTPS Responses request is parsed. Where the proxy cannot do that — the
+	// request was not decrypted, or a plugin rewrites response bodies or redirects
+	// requests — it falls back to ResponsesWebSocketsDecline for that socket.
+	ResponsesWebSocketsParse = "parse"
+	// ResponsesWebSocketsDecline answers the upgrade with 426 Upgrade Required and
+	// contacts no origin; Codex reads that as "use HTTPS" and switches at once.
+	ResponsesWebSocketsDecline = "decline"
+	// ResponsesWebSocketsForward forwards the upgrade and splices the origin's 101, as
+	// the proxy does for every other WebSocket (#1488). The socket works, but its
+	// frames are opaque: no turn is parsed, priced or recorded, only the handshake's
+	// request row and a 101 row when the socket ends.
+	ResponsesWebSocketsForward = "forward"
+)
+
+// ResponsesWebSocketsMode is ListenerConfig.ResponsesWebSockets with the default
+// applied: parse, in every deployment.
 //
-// On unless set false, in every deployment. The proxy CAN forward a WebSocket (it
-// does for every other host, #1488), but a Responses session on one is opaque to
-// every parser — no token counts, no cost — so the 426 keeps Codex on HTTPS where
-// its traffic stays observable. That, and history: before forwarding existed the
-// stripped handshake drew a 405 that Codex retried for about six seconds before
-// falling back to HTTPS, while it reads a 426 as "use HTTP" and falls back at once.
-// False is the escape hatch for a client that reads 426 some other way — or wants
-// the WebSocket for real.
-func (l ListenerConfig) DeclinesResponsesWebSockets() bool {
-	return l.DeclineResponsesWebSockets == nil || *l.DeclineResponsesWebSockets
+// Parse is the default because it is the transport Codex asks for and the one it
+// performs best on: one socket for a whole session, with later turns sending only new
+// input instead of the whole conversation. Every turn on it is still parsed — model,
+// tokens, cost, tool calls — so carrying it costs Cortex no visibility, and where it
+// cannot be carried the socket is declined rather than broken. Decline and forward are
+// the escape hatches: decline keeps Codex on HTTPS without delay, and forward hands the
+// socket across as every other WebSocket is, working but opaque.
+//
+// A config that still sets the deprecated decline_responses_websockets, and not this
+// key, gets the mode that boolean meant (see DeclineResponsesWebSockets).
+func (l ListenerConfig) ResponsesWebSocketsMode() string {
+	if l.ResponsesWebSockets != "" {
+		return l.ResponsesWebSockets
+	}
+	if d := l.DeclineResponsesWebSockets; d != nil {
+		if *d {
+			return ResponsesWebSocketsDecline
+		}
+		return ResponsesWebSocketsForward
+	}
+	return ResponsesWebSocketsParse
 }
 
 // Proxy roles selectable via ListenerConfig.Roles in proxy-sidecar mode.

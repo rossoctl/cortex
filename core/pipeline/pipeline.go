@@ -457,6 +457,19 @@ func (p *Pipeline) WritesRequestBody() bool {
 	return false
 }
 
+// WritesDestination returns true if any plugin in the pipeline declares
+// WritesDestination: it may send a request somewhere other than where the client
+// addressed it. A carried WebSocket is already connected to its origin, so the
+// forward proxy declines one when this is true and the turns go over HTTPS instead.
+func (p *Pipeline) WritesDestination() bool {
+	for _, plugin := range p.plugins {
+		if plugin.Capabilities().Normalize().WritesDestination {
+			return true
+		}
+	}
+	return false
+}
+
 // WritesResponseBody returns true if any plugin in the pipeline declares
 // WritesResponseBody. This is the SSE streaming predicate: a response
 // mutator needs the whole response to rewrite it, so listeners fall back

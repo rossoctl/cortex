@@ -953,31 +953,34 @@ Out of scope: WebSocket over HTTP/2 downstream (RFC 8441 Extended CONNECT) — a
 that wants h2 websockets through the proxy gets its fallback path, same as before
 forwarding existed.
 
-#### Declining Responses API WebSockets (`listener.decline_responses_websockets`)
+#### Responses API WebSockets (`listener.responses_websockets`)
 
-The forward proxy answers a WebSocket upgrade on OpenAI's Responses API — a `GET` with
-`Upgrade: websocket` on a path ending `/responses`, to `chatgpt.com` or `api.openai.com`
-— with **426 Upgrade Required** itself, and forwards nothing. On by default in every
-deployment.
+What the forward proxy does with a WebSocket upgrade on OpenAI's Responses API — a
+`GET` with `Upgrade: websocket` on a path ending `/responses`, to `chatgpt.com` or
+`api.openai.com` — which is Codex's preferred transport:
 
 ```yaml
 listener:
-  decline_responses_websockets: false   # forward the upgrade for real
+  responses_websockets: parse   # parse (default) | decline | forward
 ```
 
-The decline is a steer, not a capability gap: a forwarded Responses WebSocket works
-(the section above), but its frames are opaque to every plugin, so a Codex session
-moved onto one stops being parseable — no token counts, no cost. A 426 sends Codex
-straight to HTTPS, where its traffic stays observable; before forwarding existed the
-calculation was harsher still, because the stripped handshake drew a 405 that Codex
-retried for ~6s. `false` forwards the upgrade for real instead. The scope is exact —
-OpenAI's own hosts only — because what a 426 means is only known for Codex against
-OpenAI, and another client (or another host serving the same API: a LiteLLM gateway,
-OpenCode Zen, a local server) is forwarded whatever this says. Restart to
-apply, like every `listener.*` field. The key goes in the runtime config: on a laptop,
-`~/.cortex/config.yaml`, then `agentop service restart`; in a cluster, the
-`authbridge-runtime-config` ConfigMap, then a pod restart. See
-[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for the measured difference.
+| Mode | What happens |
+|---|---|
+| `parse` | The socket is carried: the handshake is completed with the origin, frames are relayed unchanged, and every turn on it — a `response.create` message and the event messages answering it — runs the outbound pipeline as the equivalent HTTPS request and SSE stream would. Each turn records a request/response pair, is priced, and finishes; the socket records an open and a close with `tunnelReason: "websocket"`. A plugin rejecting a turn keeps it from the origin and answers the client with a Responses `error` event; a request-body writer's rewrite is what the origin receives. `permessage-deflate` is stripped from the handshake so frames stay readable. A socket that cannot be carried — not decrypted by the TLS bridge, or a pipeline with a `WritesResponseBody` or `WritesDestination` plugin (inference-router: a turn on a socket already connected to OpenAI cannot be sent elsewhere) — is declined as below, and a reload that adds such a plugin ends an open socket at its next turn with close code 1013 so Codex reconnects and is declined. A message over the HTTPS limits (32 MiB from the client, 10 MB per event from the origin) ends the socket with 1009. Each turn and the handshake run on the pipeline they began on. An HTTP/2 client never reaches the handler: Go's HTTP/2 server refuses a request carrying `Upgrade` with a 400. |
+| `decline` | Answered **426 Upgrade Required** by the proxy, contacting no origin. Codex reads that as "use HTTP" and switches to HTTPS at once. Recorded as `error.kind: "upgrade_declined"`, which `/v1/usage` does not count as an error. |
+| `forward` | Forwarded and spliced like every other WebSocket (the section above): the socket works, but its frames are opaque, so no turn on it is parsed, priced or recorded — only the handshake's request row and the 101 row recorded when the socket ends. |
+
+Every other WebSocket is forwarded and spliced whatever this says, including one to
+another host serving the same API (a LiteLLM gateway, OpenCode Zen, a local server): what
+a 426 means, and what the socket carries, is only known for Codex against OpenAI, and
+another client might stop where today it falls back. A misspelt mode is refused at
+startup. v0.9.4's boolean, `decline_responses_websockets`, is still read when this key is
+unset — `true` as `decline`, `false` as `forward` — with a startup warning naming this
+key; setting both is refused. Restart to apply, like every `listener.*` field. The
+key goes in the runtime config: on a laptop, `~/.cortex/config.yaml`, then `agentop service
+restart`; in a cluster, the `authbridge-runtime-config` ConfigMap, then a pod restart. See
+[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for what Codex shows and the
+measured difference.
 
 #### Refusing private destinations (`listener.egress_guard`)
 

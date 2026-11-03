@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
@@ -111,6 +112,21 @@ func validateListeners(cfg *Config) error {
 		default:
 			return fmt.Errorf("listener.inbound_interception: %q is not valid (use %q or %q)",
 				cfg.Listener.InboundInterception, InboundInterceptionReverseProxy, InboundInterceptionTransparent)
+		}
+		if v := cfg.Listener.DeclineResponsesWebSockets; v != nil {
+			if cfg.Listener.ResponsesWebSockets != "" {
+				return fmt.Errorf("listener.decline_responses_websockets and listener.responses_websockets are both set; " +
+					"remove decline_responses_websockets, which responses_websockets replaced")
+			}
+			slog.Warn("listener.decline_responses_websockets is deprecated; use listener.responses_websockets",
+				"decline_responses_websockets", *v, "responses_websockets", cfg.Listener.ResponsesWebSocketsMode())
+		}
+		switch cfg.Listener.ResponsesWebSockets {
+		case "", ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward:
+			// valid
+		default:
+			return fmt.Errorf("listener.responses_websockets: %q is not valid (use %q, %q or %q)",
+				cfg.Listener.ResponsesWebSockets, ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward)
 		}
 		roles := cfg.Listener.ActiveRoles()
 		if cfg.Listener.InboundTransparent() && !roles[RoleReverse] {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1037,19 +1038,21 @@ func TestSessionConfig_ClientAffinity(t *testing.T) {
 	}
 }
 
-// TestListenerConfig_DeclineResponsesWebSockets pins the default (on) and the key that
-// turns it off. Unset must mean on with or without a listener block: every laptop config
-// already on disk predates the key, and the built-in one is never regenerated.
-func TestListenerConfig_DeclineResponsesWebSockets(t *testing.T) {
+// TestListenerConfig_ResponsesWebSockets pins the default (parse) and every value an
+// operator can write. Unset must mean parse with or without a listener block: every
+// laptop config already on disk predates the key, and the built-in one is never
+// regenerated.
+func TestListenerConfig_ResponsesWebSockets(t *testing.T) {
 	tests := []struct {
 		name string
 		yaml string
-		want bool
+		want string
 	}{
-		{"no listener block", "mode: proxy-sidecar\n", true},
-		{"listener block without the key", "listener:\n  roles: [forward]\n", true},
-		{"explicit true", "listener:\n  decline_responses_websockets: true\n", true},
-		{"explicit false", "listener:\n  decline_responses_websockets: false\n", false},
+		{"no listener block", "mode: proxy-sidecar\n", ResponsesWebSocketsParse},
+		{"listener block without the key", "listener:\n  roles: [forward]\n", ResponsesWebSocketsParse},
+		{"parse", "listener:\n  responses_websockets: parse\n", ResponsesWebSocketsParse},
+		{"decline", "listener:\n  responses_websockets: decline\n", ResponsesWebSocketsDecline},
+		{"forward", "listener:\n  responses_websockets: forward\n", ResponsesWebSocketsForward},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1057,10 +1060,73 @@ func TestListenerConfig_DeclineResponsesWebSockets(t *testing.T) {
 			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.Listener.DeclinesResponsesWebSockets(); got != tt.want {
-				t.Errorf("DeclinesResponsesWebSockets() = %v, want %v", got, tt.want)
+			if got := cfg.Listener.ResponsesWebSocketsMode(); got != tt.want {
+				t.Errorf("ResponsesWebSocketsMode() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// A misspelt mode is refused at startup rather than read as the default: an operator
+// who wrote "declined" asked for something, and silently parsing would ignore them.
+func TestValidate_ResponsesWebSockets(t *testing.T) {
+	for _, v := range []string{"", ResponsesWebSocketsParse, ResponsesWebSocketsDecline, ResponsesWebSocketsForward} {
+		cfg := &Config{Mode: ModeProxySidecar, Listener: ListenerConfig{
+			Roles:               []string{RoleForward},
+			ResponsesWebSockets: v,
+		}}
+		if err := validateListeners(cfg); err != nil {
+			t.Errorf("%q: unexpected error %v", v, err)
+		}
+	}
+	cfg := &Config{Mode: ModeProxySidecar, Listener: ListenerConfig{
+		Roles:               []string{RoleForward},
+		ResponsesWebSockets: "declined",
+	}}
+	if err := validateListeners(cfg); err == nil || !strings.Contains(err.Error(), "responses_websockets") {
+		t.Errorf("a misspelt mode: err = %v, want one naming listener.responses_websockets", err)
+	}
+}
+
+// v0.9.4 shipped decline_responses_websockets, so a config that still sets it keeps
+// working as it did: true declines, and false forwards, which under #1488 is a real
+// forward. Only setting it beside responses_websockets is refused, since the two can
+// disagree and neither should silently win.
+func TestLoad_DeprecatedDeclineKeyStillApplies(t *testing.T) {
+	for _, tc := range []struct {
+		body, want string
+	}{
+		{"  decline_responses_websockets: true\n", ResponsesWebSocketsDecline},
+		{"  decline_responses_websockets: false\n", ResponsesWebSocketsForward},
+	} {
+		path := filepath.Join(t.TempDir(), "c.yaml")
+		body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n" + tc.body
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateListeners(cfg); err != nil {
+			t.Errorf("%q: unexpected error %v", tc.body, err)
+		}
+		if got := cfg.Listener.ResponsesWebSocketsMode(); got != tc.want {
+			t.Errorf("%q: ResponsesWebSocketsMode() = %q, want %q", tc.body, got, tc.want)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	body := "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  decline_responses_websockets: true\n  responses_websockets: parse\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err == nil {
+		err = validateListeners(cfg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "both set") {
+		t.Errorf("both keys set: err = %v, want a refusal naming both", err)
 	}
 }
 

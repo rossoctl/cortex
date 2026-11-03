@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -137,9 +138,9 @@ func TestStripForUpstream_ForwardedWebSocketIsNormalized(t *testing.T) {
 // leaves the row this test reads. The 101 itself has its own end-to-end test in
 // websocketupgrade_test.go.
 //
-// WITH THE DECLINE OFF, as before: on a Responses path a WebSocket is otherwise
-// answered 426 before anything is forwarded (upgradedeclined_test.go), so the
-// origin would see nothing and the forwarding checks below would pass without
+// IN FORWARD MODE: on a Responses path a WebSocket is otherwise carried or answered
+// 426 before anything is forwarded (websocket_test.go, upgradedeclined_test.go), so
+// the origin would see nothing and the forwarding checks below would pass without
 // testing them at all. That is why it also asserts the origin was reached.
 func TestForwardProxy_EndToEnd_ForwardsTheWebSocketUpgrade(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
@@ -165,10 +166,10 @@ func TestForwardProxy_EndToEnd_ForwardsTheWebSocketUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{
-		OutboundPipeline:           pipeline.NewHolder(p),
-		Sessions:                   store,
-		Client:                     http.DefaultClient,
-		DeclineResponsesWebSockets: false,
+		OutboundPipeline:    pipeline.NewHolder(p),
+		Sessions:            store,
+		Client:              http.DefaultClient,
+		ResponsesWebSockets: config.ResponsesWebSocketsForward,
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()

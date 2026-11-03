@@ -24,6 +24,7 @@ import (
 
 	"errors"
 	"github.com/rossoctl/cortex/core/attribution"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/egressallow"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/httpx"
@@ -148,12 +149,14 @@ type Server struct {
 	// ClientAffinity; false keeps today's resolution byte for byte.
 	ClientAffinity bool
 
-	// DeclineResponsesWebSockets answers a WebSocket upgrade on a Responses API path
-	// with 426 instead of forwarding it with Upgrade stripped; see
-	// declineResponsesWebSocket. Set from config.ListenerConfig's
-	// DeclinesResponsesWebSockets, which defaults on; false keeps the forwarding byte
-	// for byte.
-	DeclineResponsesWebSockets bool
+	// ResponsesWebSockets is what a WebSocket upgrade on a Responses API path gets:
+	// config.ResponsesWebSocketsParse carries and parses it (serveResponsesWebSocket),
+	// Decline answers 426 (declineResponsesWebSocket), and Forward forwards it and
+	// splices the 101 like every other WebSocket (#1488), its frames opaque — which
+	// is also what "" means here, so a Server built without it forwards as one
+	// always has. cmd/cortex sets it from
+	// config.ListenerConfig.ResponsesWebSocketsMode, which defaults to parse.
+	ResponsesWebSockets string
 
 	// EgressGuard, when non-nil, checks every destination this proxy dials —
 	// CONNECT tunnels, plain and bridged requests, transparent redirects, and
@@ -653,10 +656,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// (#1488): the CONNECT-host check above has already held a bridged request to
 	// its tunnel's destination, the pipeline has run, and what is left is to hand
 	// the header across and splice the 101. Every other protocol named in Upgrade
-	// keeps the strip, and so does the one WebSocket this proxy declines — the
-	// Responses-API case below, which answers 426 itself.
-	forwardUpgrade := upgradesToWebSocket(r.Header) &&
-		!(s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r))
+	// keeps the strip. A Responses API WebSocket is listener.responses_websockets'
+	// to decide: only forward splices it like any other, while parse and decline
+	// answer it below, with the socket carried or a 426.
+	answeredHere := wantsResponsesWebSocket(r) &&
+		(s.ResponsesWebSockets == config.ResponsesWebSocketsParse || s.ResponsesWebSockets == config.ResponsesWebSocketsDecline)
+	forwardUpgrade := upgradesToWebSocket(r.Header) && !answeredHere
 
 	// Before the request row is recorded, 20-odd lines below, and NOT down beside
 	// stripForUpstream where the strip itself happens — the row is appended first,
@@ -669,11 +674,25 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		pctx.RecordStrippedUpgrade(r.Header)
 	}
 
-	// After the pipeline, so a plugin's reject still wins; before any row, since this
-	// records its own pair. See declineResponsesWebSocket.
-	if !skipped && s.DeclineResponsesWebSockets && wantsResponsesWebSocket(r) {
-		s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
-		return
+	// After the pipeline, so a plugin's reject still wins; before any row, since both
+	// arms record their own. A socket that cannot be carried is declined rather than
+	// forwarded: forwarded, it would be a session no plugin sees, under a mode that
+	// asked for every turn to be parsed.
+	if !skipped && answeredHere {
+		switch s.ResponsesWebSockets {
+		case config.ResponsesWebSocketsParse:
+			sid := s.recordingSessionID(sessionID, r.Header, chain)
+			if why := s.cannotCarryWebSocket(tl, s.OutboundPipeline.ForPctx(pctx)); why != "" {
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
+				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
+				return
+			}
+			s.serveResponsesWebSocket(w, r, pctx, tl, sid, chain)
+			return
+		case config.ResponsesWebSocketsDecline:
+			s.declineResponsesWebSocket(w, r, pctx, tl, s.recordingSessionID(sessionID, r.Header, chain), chain)
+			return
+		}
 	}
 
 	if !skipped && s.Sessions != nil {
@@ -1446,13 +1465,16 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 const declinedUpgradeBody = `{"detail":"WebSocket transport is not available through Cortex; use HTTPS"}` + "\n"
 
 // wantsResponsesWebSocket reports whether r asks to open a WebSocket on an OpenAI
-// Responses API path — the one shape declineResponsesWebSocket answers.
+// Responses API path — the one shape listener.responses_websockets governs: carried
+// and parsed (serveResponsesWebSocket), declined 426 (declineResponsesWebSocket), or
+// forwarded and spliced like any other.
 //
 // Scoped twice: to OpenAI's own hosts (isOpenAIResponsesHost), and to the Responses
 // suffix inference-parser reads (/v1/responses, and Codex's
-// /backend-api/codex/responses). A 426 is an answer only Codex is known to read as
-// "use HTTPS", and only against OpenAI is that known: every other WebSocket is
-// forwarded (#1488), whatever its origin makes of the upgrade.
+// /backend-api/codex/responses). That is the protocol websocket.go can parse, and a
+// 426 is an answer only Codex is known to read as "use HTTPS", and only against
+// OpenAI is that known: every other WebSocket is forwarded (#1488), whatever its
+// origin makes of the upgrade.
 func wantsResponsesWebSocket(r *http.Request) bool {
 	return r.Method == http.MethodGet &&
 		upgradesToWebSocket(r.Header) &&
