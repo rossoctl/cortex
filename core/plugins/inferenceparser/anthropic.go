@@ -48,14 +48,17 @@ type anthropicTool struct {
 //
 // ToolResults keeps the one dropped block type worth reading back: tool_result, the output
 // of an earlier tool call. It goes to InferenceExtension.ToolResults, never into Content.
-// ToolCallNames keeps the names of the tool_use blocks, so a turn that only called tools
-// does not read as empty.
+// ToolCalls keeps the tool_use blocks, for InferenceExtension.HistoryToolCalls, and
+// ToolCallNames their names, so a turn that only called tools does not read as empty.
+// ToolUseIDs keys the message to both.
 type anthropicReqMessage struct {
 	Role          string
 	Content       string
 	ContentBytes  int
 	ToolResults   []pipeline.InferenceToolResult
+	ToolCalls     []pipeline.InferenceToolCall
 	ToolCallNames string
+	ToolUseIDs    string
 }
 
 func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
@@ -67,7 +70,16 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	m.Role = raw.Role
-	m.Content, m.ToolResults, m.ToolCallNames = flattenAnthropicContent(raw.Content)
+	m.Content, m.ToolResults, m.ToolCalls = flattenAnthropicContent(raw.Content)
+	names := make([]string, 0, len(m.ToolCalls))
+	ids := make([]string, 0, len(m.ToolCalls)+len(m.ToolResults))
+	for _, c := range m.ToolCalls {
+		names, ids = append(names, c.Name), append(ids, c.ID)
+	}
+	for _, r := range m.ToolResults {
+		ids = append(ids, r.ToolUseID)
+	}
+	m.ToolCallNames, m.ToolUseIDs = strings.Join(names, ", "), strings.Join(ids, ", ")
 	m.ContentBytes = contentBytes(raw.Content)
 	return nil
 }
@@ -77,23 +89,25 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 // so a request full of tool output is not parsed twice. A result's own content is a string
 // or text blocks, which flattenContent already reads; its non-text blocks (an image a Read
 // returned) are dropped, as flattenContent drops them everywhere. The tool_use blocks give
-// their names only, joined as InferenceMessage.ToolCallNames.
-func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, string) {
+// the calls, arguments as sent.
+func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, []pipeline.InferenceToolCall) {
 	var blocks []struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
+		ID        json.RawMessage `json:"id"`
 		Name      string          `json:"name"`
+		Input     json.RawMessage `json:"input"`
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
 		IsError   bool            `json:"is_error"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		// A plain string, null, or a shape we do not model: none of them holds a tool result.
-		return flattenContent(raw), nil, ""
+		// A plain string, null, or a shape we do not model: none of them holds a tool block.
+		return flattenContent(raw), nil, nil
 	}
 	var text strings.Builder
 	var results []pipeline.InferenceToolResult
-	var names []string
+	var calls []pipeline.InferenceToolCall
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
@@ -108,10 +122,10 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 				ToolUseID: b.ToolUseID, Content: flattenContent(b.Content), IsError: b.IsError,
 			})
 		case "tool_use":
-			names = append(names, b.Name)
+			calls = append(calls, pipeline.InferenceToolCall{ID: rawText(b.ID), Name: b.Name, Arguments: string(b.Input)})
 		}
 	}
-	return text.String(), results, strings.Join(names, ", ")
+	return text.String(), results, calls
 }
 
 // parseAnthropicRequest builds an InferenceExtension from an Anthropic Messages
@@ -156,9 +170,10 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 	for _, msg := range req.Messages {
 		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
 			Role: msg.Role, Content: msg.Content, ContentBytes: msg.ContentBytes,
-			ToolCallNames: msg.ToolCallNames,
+			ToolCallNames: msg.ToolCallNames, ToolUseIDs: msg.ToolUseIDs,
 		})
 		ext.ToolResults = append(ext.ToolResults, msg.ToolResults...)
+		ext.HistoryToolCalls = append(ext.HistoryToolCalls, msg.ToolCalls...)
 	}
 	for _, tool := range req.Tools {
 		if tool.Name == "" {

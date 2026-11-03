@@ -23,7 +23,8 @@ import (
 // the same bytes it always did.
 //
 // SCOPE: string fields only — inference messages and completions, tool results (content
-// by the threshold, ToolUseID below it via internID), A2A part content, and the tool
+// by the threshold, ToolUseID below it via internID), the history tool calls' arguments
+// (ids and names via internID), A2A part content, and the tool
 // manifest's descriptions AND schemas. Tool results repeat exactly as
 // the conversation does: a client re-sends every earlier one on every request. The manifest
 // earns its place: a client re-sends it on every request, so it duplicates harder than
@@ -52,7 +53,7 @@ const (
 	// constantly and all cost less to duplicate than to hash. The savings live in
 	// message bodies, which are orders of magnitude past this.
 	//
-	// Exported for the session archive, which deduplicates the same six fields on disk
+	// Exported for the session archive, which deduplicates the same seven fields on disk
 	// and must agree with the store on what is worth sharing — one threshold, not two
 	// numbers kept equal by hand.
 	InternMinLen = 64
@@ -126,6 +127,7 @@ type convState struct {
 	msgs    []pipeline.InferenceMessage
 	tools   []pipeline.InferenceTool
 	results []pipeline.InferenceToolResult
+	calls   []pipeline.InferenceToolCall
 }
 
 // conversationKeys separates the conversations sharing one session bucket:
@@ -255,7 +257,8 @@ func (st *convState) intern(s string, next map[string]string) string {
 
 // internID is intern without the length floor, for identifiers that repeat
 // exactly as message content does while being far shorter than InternMinLen.
-// ToolUseID, the message Role and its ToolCallNames are the three today: a
+// ToolUseID, the message Role, its ToolCallNames and ToolUseIDs, and a history tool call's
+// ID and Name are the ones today: a
 // "toolu_…" id is ~20 bytes and a role ~5, but a client re-sends every earlier
 // tool result and message on every request, so they duplicate as hard as the
 // conversation does — the Role duplication alone was ~15 million strings on one measured
@@ -341,6 +344,8 @@ func (in *Interner) InternEvent(e *pipeline.SessionEvent) {
 		// Tool results repeat like the conversation — every request re-sends all
 		// of them — and alias across both phases of a request the same way.
 		cp.ToolResults = shareToolResults(st, e.Inference.ToolResults, next)
+		// The calls those results answer are re-sent the same way.
+		cp.HistoryToolCalls = shareToolCalls(st, e.Inference.HistoryToolCalls, next)
 		e.Inference = &cp
 	}
 	if e.A2A != nil {
@@ -396,6 +401,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		st.intern(st.msgs[k].Content, next)
 		st.internID(st.msgs[k].Role, next)
 		st.internID(st.msgs[k].ToolCallNames, next)
+		st.internID(st.msgs[k].ToolUseIDs, next)
 		k++
 	}
 	if k == len(msgs) {
@@ -410,6 +416,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 			tail[i] = msgs[k+i]
 			tail[i].Role = st.internID(tail[i].Role, next)
 			tail[i].ToolCallNames = st.internID(tail[i].ToolCallNames, next)
+			tail[i].ToolUseIDs = st.internID(tail[i].ToolUseIDs, next)
 			tail[i].Content = st.intern(tail[i].Content, next)
 		}
 		st.msgs = append(st.msgs, tail...)
@@ -424,6 +431,7 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		out[i] = msgs[i]
 		out[i].Role = st.internID(out[i].Role, next)
 		out[i].ToolCallNames = st.internID(out[i].ToolCallNames, next)
+		out[i].ToolUseIDs = st.internID(out[i].ToolUseIDs, next)
 		out[i].Content = st.intern(out[i].Content, next)
 	}
 	st.msgs = out
@@ -493,5 +501,40 @@ func shareToolResults(st *convState, results []pipeline.InferenceToolResult, nex
 		out[i].Content = st.intern(out[i].Content, next)
 	}
 	st.results = out
+	return out
+}
+
+// shareToolCalls is shareMessages for the history tool calls.
+func shareToolCalls(st *convState, calls []pipeline.InferenceToolCall, next map[string]string) []pipeline.InferenceToolCall {
+	k := 0
+	for k < len(calls) && k < len(st.calls) && calls[k] == st.calls[k] {
+		st.intern(st.calls[k].Arguments, next)
+		st.internID(st.calls[k].ID, next)
+		st.internID(st.calls[k].Name, next)
+		k++
+	}
+	if k == len(calls) {
+		return st.calls[:k]
+	}
+	canon := func(c pipeline.InferenceToolCall) pipeline.InferenceToolCall {
+		c.ID = st.internID(c.ID, next)
+		c.Name = st.internID(c.Name, next)
+		c.Arguments = st.intern(c.Arguments, next)
+		return c
+	}
+	if k == len(st.calls) {
+		tail := make([]pipeline.InferenceToolCall, len(calls)-k)
+		for i := range tail {
+			tail[i] = canon(calls[k+i])
+		}
+		st.calls = append(st.calls, tail...)
+		return st.calls
+	}
+	out := make([]pipeline.InferenceToolCall, len(calls))
+	copy(out, st.calls[:k])
+	for i := k; i < len(calls); i++ {
+		out[i] = canon(calls[i])
+	}
+	st.calls = out
 	return out
 }

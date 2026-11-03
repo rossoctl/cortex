@@ -1,6 +1,10 @@
 package inferenceparser
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+)
 
 // A chat-completions tool result is a "role":"tool" message naming the call it answers by
 // tool_call_id. Those ids are the pairing key the timeline's tool spans close on, so they
@@ -27,6 +31,13 @@ func TestChatCompletionsToolResultsCarryTheCallID(t *testing.T) {
 	if got := ext.Messages[1].ToolCallNames; got != "read_dir" {
 		t.Fatalf("assistant ToolCallNames = %q, want read_dir", got)
 	}
+	if got := ext.Messages[1].ToolUseIDs; got != "call_1" {
+		t.Fatalf("assistant ToolUseIDs = %q, want call_1", got)
+	}
+	want := pipeline.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
+	if len(ext.HistoryToolCalls) != 1 || ext.HistoryToolCalls[0] != want {
+		t.Fatalf("HistoryToolCalls = %+v, want [%+v]", ext.HistoryToolCalls, want)
+	}
 	var toolMsg bool
 	for _, m := range ext.Messages {
 		if m.Role == "tool" && m.Content == "file_a\nfile_b" {
@@ -38,5 +49,36 @@ func TestChatCompletionsToolResultsCarryTheCallID(t *testing.T) {
 	}
 	if !toolMsg {
 		t.Fatal("role:tool message content missing from Messages")
+	}
+}
+
+// The history tool calls are read for display only, so a value of an unexpected JSON type
+// must not fail the decode of the whole request: before they were read, these bodies parsed.
+// Such a value is kept as its raw JSON text.
+func TestHistoryToolCallsOfAnUnexpectedTypeKeepTheRequestParsed(t *testing.T) {
+	chat := parseOpenAIRequest([]byte(`{"model":"m","messages":[
+		{"role":"user","content":"list the files"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":7,"type":"function",
+			"function":{"name":"read_dir","arguments":{"path":"/tmp"}}}]},
+		{"role":"tool","tool_call_id":"7","content":"file_a"}]}`))
+	if chat == nil {
+		t.Fatal("chat-completions request not parsed")
+	}
+	want := pipeline.InferenceToolCall{ID: "7", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
+	if len(chat.HistoryToolCalls) != 1 || chat.HistoryToolCalls[0] != want {
+		t.Errorf("chat HistoryToolCalls = %+v, want [%+v]", chat.HistoryToolCalls, want)
+	}
+
+	anth := parseAnthropicRequest([]byte(`{"model":"m","max_tokens":8,"messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":7,"name":"Read","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"7","content":"ok"}]}]}`))
+	if anth == nil {
+		t.Fatal("Anthropic request not parsed")
+	}
+	if len(anth.ToolResults) != 1 || anth.ToolResults[0].Content != "ok" {
+		t.Errorf("Anthropic ToolResults = %+v, want the one result", anth.ToolResults)
+	}
+	if len(anth.HistoryToolCalls) != 1 || anth.HistoryToolCalls[0].ID != "7" {
+		t.Errorf("Anthropic HistoryToolCalls = %+v, want id 7", anth.HistoryToolCalls)
 	}
 }

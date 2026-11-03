@@ -76,7 +76,8 @@ func summarizeEvent(e *pipeline.SessionEvent) *pipeline.SessionEvent {
 		inf.Messages = nil
 		inf.Tools = nil
 		inf.ToolCalls = nil
-		inf.ToolResults = nil // re-sent whole on every request, like Messages
+		inf.ToolResults = nil      // re-sent whole on every request, like Messages
+		inf.HistoryToolCalls = nil // the same
 		// Completion is NOT dropped: the free-text filter searches it.
 		s.Inference = &inf
 	}

@@ -84,6 +84,7 @@ func TestReplayCopy_DoesNotGrowWithTheConversation(t *testing.T) {
 			e.Inference.Tools = append(e.Inference.Tools, pipeline.InferenceTool{Name: "Read", Description: text})
 			e.Inference.ToolCalls = append(e.Inference.ToolCalls, pipeline.InferenceToolCall{ID: "toolu_1", Name: "Read", Arguments: text})
 			e.Inference.ToolResults = append(e.Inference.ToolResults, pipeline.InferenceToolResult{ToolUseID: "toolu_1", Content: text})
+			e.Inference.HistoryToolCalls = append(e.Inference.HistoryToolCalls, pipeline.InferenceToolCall{ID: "toolu_1", Name: "Read", Arguments: text})
 		}
 		e.Inference.ToolChoice = map[string]any{"type": "tool", "name": text}
 		e.Inference.Completion = text

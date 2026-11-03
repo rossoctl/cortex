@@ -114,7 +114,8 @@ func (a *Aggregator) Replay(sessionID string, e *pipeline.SessionEvent) bool {
 // A COPY WITH THE HEAVY FIELDS CLEARED, NOT A COPY OF THE FIELDS RECORD READS, so a field Record
 // starts reading later is kept without anyone remembering to add it here. What is cleared is what
 // Record has no use for: the protocol payloads, the conversation, the tool manifest, the completion
-// and its tool calls, and every plugin entry but the cost record. TestReplayCopy_RecordsWhatTheEventDoes
+// and its tool calls, the tool calls and results the request re-sends, and every plugin entry but
+// the cost record. TestReplayCopy_RecordsWhatTheEventDoes
 // holds that.
 func ReplayCopy(e *pipeline.SessionEvent) pipeline.SessionEvent {
 	c := *e
@@ -122,7 +123,7 @@ func ReplayCopy(e *pipeline.SessionEvent) pipeline.SessionEvent {
 	if e.Inference != nil {
 		inf := *e.Inference
 		inf.Messages, inf.Tools, inf.ToolChoice, inf.ToolCalls, inf.Completion = nil, nil, nil, nil, ""
-		inf.ToolResults = nil
+		inf.ToolResults, inf.HistoryToolCalls = nil, nil
 		c.Inference = &inf
 	}
 	c.Plugins = nil

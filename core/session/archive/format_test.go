@@ -128,6 +128,25 @@ func TestSplit_ToolResultIsAReference(t *testing.T) {
 	}
 }
 
+// History tool-call arguments dedup on disk under the same threshold, and come back intact.
+func TestSplit_HistoryToolCallArgumentsAreAReference(t *testing.T) {
+	e := pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{HistoryToolCalls: []pipeline.InferenceToolCall{
+		{ID: "toolu_1", Name: "Bash", Arguments: `{"command":"` + strings.Repeat("a", session.InternMinLen) + `"}`},
+		{ID: "toolu_2", Name: "Read", Arguments: `{}`},
+	}}}
+	stripped, r, _ := split(e, map[string]struct{}{})
+	if r == nil || len(r.TA) != 2 || r.TA[0] == nil || stripped.Inference.HistoryToolCalls[0].Arguments != "" {
+		t.Fatalf("long arguments must be a reference: refs %+v", r)
+	}
+	if r.TA[1] != nil || stripped.Inference.HistoryToolCalls[1].Arguments != `{}` {
+		t.Fatalf("short arguments must stay inline: refs %+v", r)
+	}
+	got := throughLines(t, []pipeline.SessionEvent{e})
+	if w, g := onceThroughJSON(t, e), mustJSON(t, got[0]); w != g {
+		t.Fatalf("history tool calls differ after the round trip:\nwant %s\ngot  %s", w, g)
+	}
+}
+
 // split runs on events the store also holds and serves; it must clone what it blanks.
 func TestSplit_NeverMutatesItsInput(t *testing.T) {
 	for _, e := range append(synthSession(2, 3, 2048), edgeEvents()...) {

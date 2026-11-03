@@ -39,19 +39,21 @@ type record struct {
 // POSITIONAL RATHER THAN A SENTINEL STRING in the blanked field, because any sentinel is a
 // string some prompt can contain. A position cannot collide with content.
 //
-// The fields are exactly the six core/session.Interner shares in memory — message content,
-// the completion, tool descriptions, tool schemas, tool results, A2A part content — and nothing
-// else, so the two dedups are of the same thing. MCP params and results stay inline for the
+// The fields are exactly the seven core/session.Interner shares in memory — message content,
+// the completion, tool descriptions, tool schemas, tool results, history tool-call arguments,
+// A2A part content — and nothing else, so the two dedups are of the same thing. MCP params and results stay inline for the
 // interner's reason: they are maps, unmeasured on this workload.
 //
-// TR is the newest. A reader that predates it ignores the key, so a tool result long enough
-// to have been written as a reference reads back empty there; every other field is intact.
+// TA is the newest, and TR the one before it. A reader that predates a key ignores it, so a
+// value long enough to have been written as a reference reads back empty there; every other
+// field is intact.
 type refs struct {
 	M  []*string `json:"m,omitempty"`  // Inference.Messages[i].Content
 	C  *string   `json:"c,omitempty"`  // Inference.Completion
 	TD []*string `json:"td,omitempty"` // Inference.Tools[i].Description
 	TP []*string `json:"tp,omitempty"` // Inference.Tools[i].Parameters
 	TR []*string `json:"tr,omitempty"` // Inference.ToolResults[i].Content
+	TA []*string `json:"ta,omitempty"` // Inference.HistoryToolCalls[i].Arguments
 	AP []*string `json:"ap,omitempty"` // A2A.Parts[i].Content
 }
 
@@ -124,6 +126,11 @@ func split(e pipeline.SessionEvent, seen map[string]struct{}) (pipeline.SessionE
 		for i := range cp.ToolResults {
 			r.TR[i] = ref(&cp.ToolResults[i].Content)
 		}
+		cp.HistoryToolCalls = slices.Clone(cp.HistoryToolCalls)
+		r.TA = make([]*string, len(cp.HistoryToolCalls))
+		for i := range cp.HistoryToolCalls {
+			r.TA[i] = ref(&cp.HistoryToolCalls[i].Arguments)
+		}
 		e.Inference = &cp
 	}
 	if e.A2A != nil {
@@ -138,7 +145,8 @@ func split(e pipeline.SessionEvent, seen map[string]struct{}) (pipeline.SessionE
 	if !hit {
 		return e, nil, fresh
 	}
-	r.M, r.TD, r.TP, r.TR, r.AP = nilIfAllNil(r.M), nilIfAllNil(r.TD), nilIfAllNil(r.TP), nilIfAllNil(r.TR), nilIfAllNil(r.AP)
+	r.M, r.TD, r.TP, r.TR, r.TA, r.AP = nilIfAllNil(r.M), nilIfAllNil(r.TD), nilIfAllNil(r.TP), nilIfAllNil(r.TR),
+		nilIfAllNil(r.TA), nilIfAllNil(r.AP)
 	return e, &r, fresh
 }
 
@@ -170,13 +178,13 @@ func join(e *pipeline.SessionEvent, r *refs, table map[string]string) bool {
 		return ok
 	}
 	if e.Inference == nil {
-		if r.M != nil || r.C != nil || r.TD != nil || r.TP != nil || r.TR != nil {
+		if r.M != nil || r.C != nil || r.TD != nil || r.TP != nil || r.TR != nil || r.TA != nil {
 			return false
 		}
 	} else {
 		inf := e.Inference
 		if len(r.M) > len(inf.Messages) || len(r.TD) > len(inf.Tools) || len(r.TP) > len(inf.Tools) ||
-			len(r.TR) > len(inf.ToolResults) {
+			len(r.TR) > len(inf.ToolResults) || len(r.TA) > len(inf.HistoryToolCalls) {
 			return false
 		}
 		for i, h := range r.M {
@@ -201,6 +209,11 @@ func join(e *pipeline.SessionEvent, r *refs, table map[string]string) bool {
 		}
 		for i, h := range r.TR {
 			if !set(&inf.ToolResults[i].Content, h) {
+				return false
+			}
+		}
+		for i, h := range r.TA {
+			if !set(&inf.HistoryToolCalls[i].Arguments, h) {
 				return false
 			}
 		}

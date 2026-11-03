@@ -2,6 +2,7 @@ package inferenceparser
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -530,6 +531,23 @@ func TestInferenceParser_AnthropicMessages_ToolResults(t *testing.T) {
 	}
 	if got := ext.Messages[2].ToolCallNames; got != "" {
 		t.Errorf("Messages[2].ToolCallNames = %q, want empty on a message with no tool_use", got)
+	}
+	// Ids key each message to its calls and results, so a reader can show them in place.
+	for i, want := range []string{"", "toolu_1, toolu_2", "toolu_1, toolu_2"} {
+		if got := ext.Messages[i].ToolUseIDs; got != want {
+			t.Errorf("Messages[%d].ToolUseIDs = %q, want %q", i, got, want)
+		}
+	}
+	wantCalls := []pipeline.InferenceToolCall{
+		{ID: "toolu_1", Name: "Read", Arguments: `{"file_path": "/etc/hosts"}`},
+		{ID: "toolu_2", Name: "Bash", Arguments: `{"command": "cat /etc/shellz"}`},
+	}
+	if !slices.Equal(ext.HistoryToolCalls, wantCalls) {
+		t.Errorf("HistoryToolCalls = %+v, want %+v", ext.HistoryToolCalls, wantCalls)
+	}
+	// History is not a call the model makes now: ToolCalls is the response side's.
+	if ext.ToolCalls != nil {
+		t.Errorf("ToolCalls = %+v, want nil on a request", ext.ToolCalls)
 	}
 	// The message that carried them keeps only its own text: tool output must not reach
 	// Content, which IBAC reads as the user's intent.
