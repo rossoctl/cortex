@@ -20,4 +20,6 @@ jobs:
 
     # Pinned to @main intentionally: org-internal workflows propagate updates automatically.
     uses: rossoctl/.github/.github/workflows/add-to-project.yml@main
-    secrets: inherit
+    # Only the token the called workflow reads, not every secret of this repo.
+    secrets:
+      ADD_TO_PROJECT_PAT: ${{ secrets.ADD_TO_PROJECT_PAT }}
