@@ -190,22 +190,35 @@ func TestNoUnconditionalPluginImports(t *testing.T) {
 		t.Errorf("%d plugin import(s) in a binary; register the plugin in %s instead:\n  %s",
 			len(hits), regDir, strings.Join(hits, "\n  "))
 	}
-	// regDir is where a blank plugin import legitimately lives, so it is the
-	// pattern's positive control: zero hits above is the pass, and a
+	// plugins_*.go files are where a blank plugin import legitimately lives, so
+	// they are the pattern's positive control: zero hits is the pass, and a
 	// blankPluginImport whose hardcoded module path has gone stale also produces
 	// zero. Counting the sanctioned sites separates "the tree is clean" from "the
-	// regexp is blind".
-	files, err := pluginFiles(regDir)
+	// regexp is blind". That they carry a directive is TestEveryPluginFileIsTagged's job.
+	regFiles, err := filepath.Glob(filepath.Join(regDir, "*.go"))
 	if err != nil {
-		t.Fatalf("pluginFiles: %v", err)
+		t.Fatalf("glob: %v", err)
 	}
+	var strays []string
 	sanctioned := 0
-	for _, f := range files {
+	for _, f := range regFiles {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
-		sanctioned += len(blankPluginImport.FindAllStringSubmatch(string(data), -1))
+		n := len(blankPluginImport.FindAllStringSubmatch(string(data), -1))
+		if strings.HasPrefix(filepath.Base(f), "plugins_") {
+			sanctioned += n
+		} else if n > 0 {
+			strays = append(strays, f)
+		}
+	}
+	if len(strays) > 0 {
+		t.Errorf("plugin import(s) in %s outside a tagged plugins_<name>.go file:\n  %s",
+			regDir, strings.Join(strays, "\n  "))
 	}
 	if sanctioned == 0 {
 		t.Fatal("blankPluginImport matched no import in any plugins_*.go, so it can no longer " +
