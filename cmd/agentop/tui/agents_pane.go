@@ -402,7 +402,7 @@ func (m *model) rebuildAgentsTable() {
 // can be priced at a rate of zero. Reading the money field instead would collapse "priced, and
 // it cost nothing" into "not priced".
 func agentCostCell(c usage.Counts) string {
-	if c.PricedRequests == 0 {
+	if c.PricedRequests == 0 || negativeCost(c.CostMicros) {
 		return emptyCell
 	}
 	// formatUSDTotalMicros, not %.2f over micros/1e6: it does the rounding on the integer, so
@@ -414,13 +414,18 @@ func agentCostCell(c usage.Counts) string {
 // agentsCostWidth is the COST column's declared width, the budget a relabelled figure fits.
 const agentsCostWidth = 12
 
-// agentCostCellIn is agentCostCell in the agent's own units: dollars (nil, or USD) exactly as
-// before, one foreign unit relabelled to fit the column, and more than one withheld as
-// money.Mixed — an agent's figure summed across units is not an amount.
+// agentCostCellIn is agentCostCell in the agent's own units: dollars (nil, or USD), one foreign
+// unit relabelled to fit the column, and more than one withheld as money.Mixed — an agent's
+// figure summed across units is not an amount.
 func agentCostCellIn(c usage.Counts, units []string, budget int) string {
 	cell := agentCostCell(c)
 	if cell == emptyCell {
 		return cell
+	}
+	// sessionMoneyCellIn fits a large figure and its clamp marker into budget. Zero stays here,
+	// because that function shows a zero as unpriced.
+	if c.CostMicros > 0 {
+		return sessionMoneyCellIn(c.CostMicros, c.Saturated, budget, units)
 	}
 	unit, ok := money.WindowUnit(units)
 	if !ok {

@@ -2823,18 +2823,14 @@ func (m *model) sessionHeader(id, suffix string) string {
 // detail pane's inner width. A rune count is a different number the moment the input is not
 // ASCII — measured, an 11-column budget returned 21 columns of CJK and 14 of emoji.
 //
-// Three production callers: the sessions table's id cell (twice, both hex-ish ids) and the events
-// pane's identity block, whose `line` helper wraps the JWT `subject`, `client` and `scopes` claims
-// at events_pane.go:1058. Those claims are remote-controlled, so "ASCII in practice" is an
-// observation about today's tokens rather than a guarantee.
+// Its callers include the events pane's identity block and its METHOD, PLUGIN and HOST cells.
+// The JWT claims, the model name and the host are remote-controlled, so "ASCII in practice" is
+// an observation about today's traffic rather than a guarantee.
 //
 // Latent rather than observed, which is why the fix is a redirect and not a rewrite: on ASCII
 // this is byte-for-byte what the old rune-counting version returned, so no current caller
 // changes behaviour (there is a probe for that equivalence in the sessions title tests). The
 // column-aware implementation lives in sessions_pane.go beside its left-truncating mirror.
-//
-// truncStr in events_pane.go is the byte-indexed variant for fixed-width ASCII table cells — if
-// that ever needs to handle multi-byte input, point it here too.
 func trunc(s string, n int) string {
 	return truncRight(s, n)
 }

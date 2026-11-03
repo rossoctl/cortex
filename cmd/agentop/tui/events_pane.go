@@ -1036,7 +1036,7 @@ func eventMethodValue(e pipeline.SessionEvent) string {
 // already 22 and 14 after the column shrank, which bubbles hid by re-truncating
 // each cell at the column width anyway.
 func eventMethod(e pipeline.SessionEvent) string {
-	return truncStr(eventMethodValue(e), methodColWidth)
+	return trunc(eventMethodValue(e), methodColWidth)
 }
 
 func statusCell(e pipeline.SessionEvent) string {
@@ -1150,16 +1150,6 @@ func formatDuration(d time.Duration) string {
 	}
 	mins := (ms + 30_000) / 60_000
 	return fmt.Sprintf("%dh%02dm", mins/60, mins%60)
-}
-
-func truncStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n < 2 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
 }
 
 // padLeft right-aligns s in a field of the given display width. Uses

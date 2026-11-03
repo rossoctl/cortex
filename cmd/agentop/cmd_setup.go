@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -90,16 +89,7 @@ var setupSignals = func() (<-chan os.Signal, func()) {
 // setupConfirmFrom reads the answer. Enter means yes: the user typed the install
 // command and the list of changes is right above the prompt. EOF is not consent.
 func setupConfirmFrom(r io.Reader, w io.Writer) bool {
-	_, _ = fmt.Fprint(w, "  Continue? [Y/n] ")
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "", "y", "yes":
-		return true
-	}
-	return false
+	return askYesNo(r, w, "  Continue? [Y/n] ", true)
 }
 
 // parseSetupFlags parses setup's flags. A request for help, -h or --help as a

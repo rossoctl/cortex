@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -121,52 +120,15 @@ Flags:
 `
 
 func runOpenCode(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, openCodeUsage)
-		return 2
+	var cortexCfgPath, bin *string
+	a, code, done := parseAgentArgs("opencode", openCodeUsage, args, stdout, stderr, func(fs *flag.FlagSet) {
+		cortexCfgPath = fs.String("config", "", "Cortex config file")
+		bin = fs.String("opencode", "", "the opencode CLI")
+	})
+	if done {
+		return code
 	}
-	action := args[0]
-	// Help before the verb check, and the verb before anything touches the machine:
-	// the same order as runBob, for its reasons.
-	switch action {
-	case "-h", "--help", "help":
-		fmt.Fprint(stdout, openCodeUsage)
-		return 0
-	case "enable", "disable", "status":
-	default:
-		fmt.Fprintf(stderr, "agentop: unknown opencode action %q (enable, disable, status)\n", action)
-		return 2
-	}
-
-	fs := flag.NewFlagSet("configure opencode "+action, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	cortexCfgPath := fs.String("config", "", "Cortex config file")
-	bin := fs.String("opencode", "", "the opencode CLI")
-	// Not for status, which changes nothing: accepting --yes there would be a flag
-	// that parses and does nothing.
-	var yesFlag *bool
-	if action != "status" {
-		yesFlag = fs.Bool("yes", false, "do not prompt for confirmation")
-	}
-	fs.Usage = func() {}
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, openCodeUsage)
-			return 0
-		}
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "agentop: opencode %s takes no arguments (got %q)\n", action, fs.Arg(0))
-		return 2
-	}
-	yes := yesFlag != nil && *yesFlag
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
-		return 1
-	}
+	action, yes, home := a.action, a.yes, a.home
 	if *cortexCfgPath == "" {
 		*cortexCfgPath = filepath.Join(home, cortexCfgRel)
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"flag"
@@ -148,16 +147,7 @@ var uninstallConfirm = func(w io.Writer) bool {
 // uninstallConfirmFrom reads the answer. Only y or yes goes ahead: unlike setup's
 // question, this one deletes, so Enter and EOF are no.
 func uninstallConfirmFrom(r io.Reader, w io.Writer) bool {
-	_, _ = fmt.Fprint(w, "  Continue? [y/N] ")
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	}
-	return false
+	return askYesNo(r, w, "  Continue? [y/N] ", false)
 }
 
 // parseUninstallFlags parses uninstall's flags. -h or --help is flag.ErrHelp; any

@@ -127,8 +127,7 @@ func TestNoExcludePluginTagsRemain(t *testing.T) {
 
 // TestEveryPluginFileIsTagged closes the gap that would reintroduce the very bug
 // this convention removes. A file named plugins_foo.go with a blank import and NO
-// build directive is skipped by the unconditional-import guard (it matches the
-// plugins_ prefix) and invisible to discoverPlugins (no directive to find), so it
+// build directive is invisible to discoverPlugins (no directive to find), so it
 // links its plugin into every artifact unconditionally and nothing reports it.
 func TestEveryPluginFileIsTagged(t *testing.T) {
 	files, err := pluginFiles(regDir)
@@ -147,6 +146,34 @@ func TestEveryPluginFileIsTagged(t *testing.T) {
 		if name == "" {
 			t.Errorf("%s has no `//go:build include_plugin_<name>` directive, so its "+
 				"plugin links unconditionally into every profile", path)
+		}
+	}
+}
+
+// TestRegDirImportsPluginsOnlyFromTaggedFiles covers the files in regDir that
+// TestEveryPluginFileIsTagged does not read. A plugin import in any other file there,
+// such as doc.go or a new extra.go, compiles into every binary that imports regDir,
+// whatever tags the build names.
+func TestRegDirImportsPluginsOnlyFromTaggedFiles(t *testing.T) {
+	goFiles, err := filepath.Glob(filepath.Join(regDir, "*.go"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(goFiles) == 0 {
+		t.Fatalf("no .go files in %s — the registration package moved and this guard went blind", regDir)
+	}
+	for _, f := range goFiles {
+		base := filepath.Base(f)
+		if strings.HasSuffix(base, "_test.go") || strings.HasPrefix(base, "plugins_") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for _, m := range blankPluginImport.FindAllStringSubmatch(string(data), -1) {
+			t.Errorf("%s imports plugin %q outside a tagged plugins_<name>.go file, so every "+
+				"binary links it unconditionally", f, m[1])
 		}
 	}
 }

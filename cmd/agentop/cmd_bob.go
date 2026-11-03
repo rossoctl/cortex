@@ -151,72 +151,21 @@ var bobConfirm = confirm
 // per-half: one consent covers every write the preview lists, and a refusal
 // declines both halves together.
 func runBob(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprint(stderr, bobUsage)
-		return 2
+	// parseAgentArgs checks the verb before any environment or filesystem work, which
+	// matters most here: a step below can answer successfully on its own (bobSettingsPath's
+	// off-macOS arm prints advice), so a late check would report success for a verb that
+	// does not exist.
+	var settingsPath, cortexCfgPath *string
+	a, code, done := parseAgentArgs("bob", bobUsage, args, stdout, stderr, func(fs *flag.FlagSet) {
+		settingsPath = fs.String("settings", "", "IBM Bob settings file")
+		// For all three verbs: status reports whether the value still matches the proxy
+		// the config names now, which needs the config.
+		cortexCfgPath = fs.String("config", "", "Cortex config file")
+	})
+	if done {
+		return code
 	}
-	action := args[0]
-	// Before anything else: --help asks for this command's usage, and reading it
-	// as an action name would send someone looking for the command list to the one
-	// branch that refuses to print it. Same split as claude-code's.
-	switch action {
-	case "-h", "--help", "help":
-		fmt.Fprint(stdout, bobUsage)
-		return 0
-	}
-
-	// The verb is validated HERE, before any environment or filesystem work, for
-	// the reason the halves' plans document at length: a step below can answer
-	// successfully on its own — bobSettingsPath's off-macOS arm prints advice —
-	// so validating the action last would report success for a verb that does not
-	// exist. Nothing downstream can reach this check, so it comes first.
-	switch action {
-	case "enable", "disable", "status":
-	default:
-		fmt.Fprintf(stderr, "agentop: unknown bob action %q (enable, disable, status)\n", action)
-		return 2
-	}
-
-	fs := flag.NewFlagSet("configure bob "+action, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	settingsPath := fs.String("settings", "", "IBM Bob settings file")
-	// Registered for all three verbs, status included: status reports whether the
-	// value still matches the proxy the config names now, which needs the config.
-	cortexCfgPath := fs.String("config", "", "Cortex config file")
-	// --yes for enable and disable ONLY. status writes nothing, so it has nothing
-	// to confirm; registering it unconditionally would make `status --yes` parse
-	// and be silently ignored, which is the same "accepted and did nothing" that
-	// `status extra` is already a usage error for. Read back into a plain bool
-	// below so the call sites cannot nil-deref.
-	var yesFlag *bool
-	if action == "enable" || action == "disable" {
-		yesFlag = fs.Bool("yes", false, "do not prompt for confirmation")
-	}
-	// The FlagSet's own usage would print a bare header and a short flag list;
-	// this command's usage is the useful answer, and suppressing it here keeps
-	// -h's single copy on stdout below.
-	fs.Usage = func() {}
-	if err := fs.Parse(args[1:]); err != nil {
-		// -h and --help arrive as flag.ErrHelp, and asking for help is not a usage
-		// error: stdout and 0. Any other parse failure is real, and Parse has
-		// already named it on stderr.
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, bobUsage)
-			return 0
-		}
-		return 2
-	}
-	yes := yesFlag != nil && *yesFlag
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "agentop: bob %s takes no arguments (got %q)\n", action, fs.Arg(0))
-		return 2
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
-		return 1
-	}
+	action, yes, home := a.action, a.yes, a.home
 	if *cortexCfgPath == "" {
 		*cortexCfgPath = filepath.Join(home, cortexCfgRel)
 	}
