@@ -399,7 +399,7 @@ func TestRecord_ControlCharactersNeverReachADayFile(t *testing.T) {
 		"Endpoint": rows[0].Endpoint, "Model": rows[0].Model, "Agent": rows[0].Agent,
 		"Provenance": rows[0].Provenance,
 	} {
-		if hasControlRunes(got) {
+		if pipeline.HasControlRunes(got) {
 			t.Errorf("%s = %q on disk: a control character reached a durable row", name, got)
 		}
 		// The C1 half asserted on its own, because a byte-scanning predicate reports the row
@@ -410,7 +410,7 @@ func TestRecord_ControlCharactersNeverReachADayFile(t *testing.T) {
 				"protect the operator who cats this file", name, got)
 		}
 		// REPLACED, not dropped: "gw[31m" would read as a plausible hostname and hide the
-		// tampering, which is the whole reason sanitizeLabel substitutes rather than deletes.
+		// tampering, which is the whole reason the sanitizer substitutes rather than deletes.
 		if !strings.Contains(got, "�") {
 			t.Errorf("%s = %q: the removed bytes left no trace, so tampering is invisible",
 				name, got)

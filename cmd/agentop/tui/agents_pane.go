@@ -369,8 +369,7 @@ func (m *model) rebuildAgentsTable() {
 		labels = append(labels, a.label)
 		row := table.Row{
 			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
-			// request-controlled; tui.sanitizeLabel is the package's render-time copy of the
-			// rule, named as such in ledger's own comment.
+			// request-controlled; sanitizeLabel applies the proxy's own rule.
 			sanitizeLabel(a.label),
 			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
 		}

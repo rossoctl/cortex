@@ -49,6 +49,7 @@ import (
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/plugins/internal/hostmatch"
 )
 
 // enforcement modes.
@@ -273,7 +274,7 @@ func (p *SPARC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.
 		pctx.Skip("path_bypass")
 		return cont()
 	}
-	if matchesAnyHost(p.bypassHosts, pctx.Host) {
+	if hostmatch.MatchesAny(p.bypassHosts, pctx.Host) {
 		pctx.Skip("host_bypass")
 		return cont()
 	}

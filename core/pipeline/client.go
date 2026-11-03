@@ -80,21 +80,8 @@ type EventClient struct {
 // bounded separately, by usage.maxLabelsPerBucket, which applies to byAgent
 // exactly as it does to every other label map.
 //
-// A BYTE cap cut on a RUNE boundary — see capUA. The bound has to be in bytes,
-// because what it bounds is retained memory and the length of a persisted line; the
-// cut has to be on a rune boundary, because the sanitiser below can put multi-byte
-// U+FFFD runes in this string and half of one is invalid UTF-8 in a file other tools
-// parse. The ledger's truncateLabel will apply the same rule to the same class of
-// string for the same reason.
-//
-// usage.truncateLabel is a plain byte cut TODAY, and 128 here against its 96 is what would
-// make that reachable: a User-Agent between 97 and 128 bytes survives capUA whole and is
-// then byte-cut when it becomes a byAgent key, which can split one of this file's own
-// 3-byte U+FFFD runes and leave an invalid fragment as the in-memory key while
-// encoding/json substitutes on the way out — a label that is broken in the ring and clean
-// on the wire. Neither half is reachable before the aggregate work later in this series,
-// which is what wires byAgent AND makes usage.truncateLabel cut on a rune boundary. Should
-// that order ever change, cap here at 96 rather than leaving the window open.
+// A BYTE cap cut on a RUNE boundary — see capUA. The ledger and the usage ring cut
+// their labels with the same TruncateLabel, at usage.MaxLabelLen.
 const maxClientLen = 128
 
 // SanitizeControlRunes replaces every control character in s with U+FFFD. It
@@ -136,14 +123,12 @@ const maxClientLen = 128
 // REPLACED, NOT DROPPED, so tampering stays visible: "claude-cli/1\x1b[31m" reads as
 // "claude-cli/1�[31m" rather than as "claude-cli/1[31m", which nobody would question.
 //
-// THE RULE WILL BE SHARED WITH THE LEDGER'S sanitizeLabel, AND THE TWO MUST STAY
-// IDENTICAL. That copy is not redundant: it is the primary guard for Endpoint, Model
-// and Provenance, which never pass through here, and it is defence in depth for this
-// one on a file that cannot be edited after the fact. Two copies of a five-line rule
-// is the right trade for a durable file; two DIFFERENT rules is not, so a change to
-// either belongs in both.
+// SHARED WITH cost/ledger AND cost/usage, which call it for Endpoint, Model and
+// Provenance — labels that never pass through here — and as defence in depth for this
+// one, and with agentop, which calls it at render time. One rule, so a label is spelled
+// the same in memory, on disk and on screen.
 func SanitizeControlRunes(s string) string {
-	if !hasControlRunes(s) {
+	if !HasControlRunes(s) {
 		// The overwhelmingly common case, and it must not allocate: this runs on the
 		// request path, twice per turn.
 		return s
@@ -174,7 +159,7 @@ func SanitizeLogValue(s string) string {
 	return strings.ReplaceAll(s, "\r", "")
 }
 
-// hasControlRunes reports whether s carries anything SanitizeControlRunes would replace.
+// HasControlRunes reports whether s carries anything SanitizeControlRunes would replace.
 //
 // A RUNE scan rather than a byte scan, because the C1 block cannot be seen from the
 // bytes alone: 0xC2 0x9B is U+009B, and 0x9B on its own is a continuation byte of
@@ -182,7 +167,7 @@ func SanitizeLogValue(s string) string {
 //
 // An INVALID byte reports true (RuneError at size 1 is the decoder saying "this is not
 // UTF-8"); a legitimately encoded U+FFFD does not, because it decodes at size 3.
-func hasControlRunes(s string) bool {
+func HasControlRunes(s string) bool {
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if IsControlRune(r) || (r == utf8.RuneError && size == 1) {
@@ -197,8 +182,7 @@ func hasControlRunes(s string) bool {
 // rewrites or hides the text around it without being a control character at all.
 //
 // The one predicate both the scan and the rewrite read, so they cannot disagree about
-// what a control character is. The ledger's copy will carry the same clauses in the same
-// order.
+// what a control character is.
 //
 // THE FOURTH CLAUSE IS THE SAME ARGUMENT AS THE THIRD, applied to runes that need no escape
 // sequence at all. C1 is here because U+009B opens one in a terminal, so a User-Agent could
@@ -242,20 +226,27 @@ func IsControlRune(r rune) bool {
 
 // capUA cuts s to at most maxClientLen BYTES, on a rune boundary.
 //
-// The cap stays in bytes because that is what it bounds — retained memory here, and
-// through cost/ledger the length of an appended line. Cutting on a rune boundary only
-// changes WHERE the byte cap lands (by up to three bytes), never that there is one.
-//
 // It matters because of the order in ParseUserAgent: SanitizeControlRunes runs first and can put
 // 3-byte U+FFFD runes in this string, so a byte cut has a one-in-three chance of
 // leaving a fragment of one — invalid UTF-8 in a label that goes to a durable file and
 // to a chart, which is the failure the substitution was meant to avoid rather than
 // cause.
 func capUA(s string) string {
-	if len(s) <= maxClientLen {
+	return TruncateLabel(s, maxClientLen)
+}
+
+// TruncateLabel cuts s to at most n BYTES, on a rune boundary.
+//
+// The cap stays in bytes because that is what it bounds — retained memory, and through
+// cost/ledger the length of an appended line. Cutting on a rune boundary only changes
+// WHERE the byte cap lands (by up to three bytes), never that there is one. A plain
+// s[:n] can split a multi-byte sequence, and encoding/json then expands each invalid
+// byte into a 3-byte U+FFFD, so the serialized label would exceed the cap it was cut to.
+func TruncateLabel(s string, n int) string {
+	if len(s) <= n {
 		return s
 	}
-	cut := maxClientLen
+	cut := n
 	// Walk back off a continuation byte. At most three steps: no UTF-8 sequence is
 	// longer than four bytes.
 	for cut > 0 && !utf8.RuneStart(s[cut]) {

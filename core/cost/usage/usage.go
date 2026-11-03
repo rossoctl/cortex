@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -1608,27 +1607,8 @@ func hostLabel(authority string) string {
 }
 
 // truncateLabel caps a label at maxLabelLen BYTES, cutting on a rune boundary.
-//
-// BYTES, because that is what bounds the memory a label occupies and the line it becomes in
-// the ledger; RUNE BOUNDARY, because a byte cut breaks the very byte cap it enforces. A plain
-// s[:maxLabelLen] can split a multi-byte sequence and leave an invalid trailing fragment, and
-// encoding/json then expands each invalid byte into a 3-byte U+FFFD — so a 121-byte label cut
-// at 96 SERIALISES AT 100 BYTES (measured in cost/ledger, where the same defect was fixed
-// first). The invalid fragment is the smaller problem; the cap silently not holding is the
-// reason this is a fix rather than tidying.
-//
-// Walking back off continuation bytes shortens the label by at most three bytes, which no
-// real model id notices.
 func truncateLabel(s string) string {
-	if len(s) <= maxLabelLen {
-		return s
-	}
-	cut := maxLabelLen
-	// At most three steps: no UTF-8 sequence is longer than four bytes.
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
+	return pipeline.TruncateLabel(s, maxLabelLen)
 }
 
 // AgentLabel is the label byAgent keys traffic from c by, before addLabel's overflow; agent=
@@ -1639,88 +1619,17 @@ func AgentLabel(c *pipeline.EventClient) string {
 
 // ringLabel prepares one string for a bucket's label map: sanitised, then capped.
 //
-// THE ORDER MATTERS, for the reason ledger.rowLabel gives: sanitising can triple a
-// string's length — every replaced byte becomes a 3-byte U+FFFD — so capping first would let
-// 96 control bytes become 288 and break the bound. Capping last is exact now that
-// truncateLabel cuts on a rune boundary.
-func ringLabel(s string) string {
-	return truncateLabel(sanitizeLabel(s))
-}
-
-// sanitizeLabel replaces C0 controls, DEL, C1 controls and invalid UTF-8 with U+FFFD.
-//
 // THE RING IS A SERVING SURFACE OF ITS OWN. The model comes off the parsed request body and
 // the endpoint is the host the workload asked for, so without this GET /v1/usage serves a
-// model name containing an ANSI escape straight out of memory — while the ledger's copy of the
-// very same label is clean, because cost/ledger sanitises on write. Two surfaces, one request,
-// different bytes: group=model shows the label as two series, and the unsanitised one can
-// reposition an operator's cursor. CWE-150.
+// model name containing an ANSI escape straight out of memory, while the ledger's copy of the
+// same label is clean. Both sanitize with pipeline.SanitizeControlRunes, so one hostile label
+// is one series in both halves. CWE-150.
 //
-// REPLACED, NOT DROPPED, so tampering stays visible rather than collapsing into a
-// plausible-looking label: "m\x1b[31mx" reads as "m�[31mx" rather than as "m[31mx",
-// which nobody would question.
-//
-// C1 IS INCLUDED — U+0080–U+009F — and so are the bidi and zero-width runes; isControlRune
-// names the set and pipeline.sanitizeUA carries the argument for it. The short version: U+009B
-// is a single-character CSI, so a byte scan for anything below 0x20 steps straight past a
-// working escape sequence, which is why the scan below decodes runes.
-//
-// FOUR SANITISING SURFACES, ONE RULE, AND THE RULE IS NOW SHARED:
-//
-//   - pipeline.sanitizeUA is PRIMARY for the Agent label, at the point a User-Agent header
-//     becomes a value, so it already covers this package's byAgent.
-//   - ledger.sanitizeLabel is PRIMARY for the durable row — the copy in front of a file
-//     retained for retentionDays that cannot be edited afterwards.
-//   - THIS one is primary for the RING's byMethod and byEndpoint, which reach /v1/usage
-//     without passing through either of the other two.
-//   - agentop's tui.sanitizeLabel is a render-time copy in a main module this library must not
-//     import, and still filters C0 and DEL only.
-//
-// The first three no longer each carry their own copy of WHICH RUNES COUNT: that predicate is
-// pipeline.IsControlRune, and both this package and cost/ledger import pipeline, so there is one
-// definition repo-wide. This comment used to argue the opposite — that referencing pipeline's
-// would "invert the layering into a cycle" and so the rule had to be copied — which was wrong
-// in the direction that matters: nothing in pipeline imports this package. Three byte-identical
-// copies existed on the strength of that paragraph, only one of them tested for the bidi marks.
-//
-// What is still per-surface is the SHAPE of the sanitiser around it (what it replaces with, and
-// whether it caps), and agentop's is deliberately narrower and out of this module's reach.
-func sanitizeLabel(s string) string {
-	if !hasControlRunes(s) {
-		// The overwhelmingly common case, and no allocation for it: this runs on the fold path,
-		// once per label per event, under the aggregator's write lock.
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if pipeline.IsControlRune(r) || (r == utf8.RuneError && size == 1) {
-			b.WriteRune('�')
-			i += size
-			continue
-		}
-		b.WriteString(s[i : i+size])
-		i += size
-	}
-	return b.String()
-}
-
-// hasControlRunes reports whether s carries anything sanitizeLabel would replace.
-//
-// A RUNE scan for the reason in sanitizeLabel: a byte scan is exact for C0 and DEL and blind
-// to C1. An INVALID byte reports true (RuneError at size 1 is the decoder saying "this is not
-// UTF-8"); a legitimately encoded U+FFFD does not, because it decodes at size 3, so an
-// already-sanitised label does not read as still hostile.
-func hasControlRunes(s string) bool {
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if pipeline.IsControlRune(r) || (r == utf8.RuneError && size == 1) {
-			return true
-		}
-		i += size
-	}
-	return false
+// THE ORDER MATTERS, for the reason ledger.rowLabel gives: sanitising can triple a
+// string's length — every replaced byte becomes a 3-byte U+FFFD — so capping first would let
+// 96 control bytes become 288 and break the bound.
+func ringLabel(s string) string {
+	return truncateLabel(pipeline.SanitizeControlRunes(s))
 }
 
 // CapSeries folds everything past the n costliest entries into the (other) band.

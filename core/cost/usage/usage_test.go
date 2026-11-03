@@ -1032,71 +1032,6 @@ func TestRecord_LabelLengthIsCapped(t *testing.T) {
 	}
 }
 
-// TestTruncateLabel_CutsOnARuneBoundaryAndKeepsTheByteCap is the cap the byte cut was
-// breaking.
-//
-// s[:maxLabelLen] can split a multi-byte sequence, and encoding/json then expands each
-// invalid byte into a 3-byte U+FFFD — so the serialised label came out LONGER than the cap
-// (measured in cost/ledger: 121 bytes cut at 96 serialised at 100). The invalid fragment is
-// the smaller problem; the byte cap silently not holding is the defect.
-//
-// EVERY CASE HAS A ONE-BYTE PREFIX, and that is load-bearing rather than incidental.
-// maxLabelLen is 96, which is divisible by 2, 3 and 4 — so a label of uniform multi-byte
-// runes has a rune boundary exactly AT the cap and the byte cut is accidentally correct. The
-// first version of this test in cost/ledger passed against the unfixed code for precisely that
-// reason. One ASCII byte in front moves the cut to offset 95, which is a boundary for none of
-// the three widths.
-func TestTruncateLabel_CutsOnARuneBoundaryAndKeepsTheByteCap(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		rune string
-	}{
-		{"two-byte runes", "é"},
-		{"three-byte runes", "€"},
-		{"four-byte runes", "𝄞"},
-		{"the replacement character sanitising produces", "�"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// The prefix is what stops 96 from landing on a boundary; see the doc above.
-			in := "a" + strings.Repeat(tc.rune, maxLabelLen)
-			got := truncateLabel(in)
-
-			if len(got) > maxLabelLen {
-				t.Errorf("truncateLabel returned %d bytes, cap is %d", len(got), maxLabelLen)
-			}
-			if !utf8.ValidString(got) {
-				t.Errorf("truncateLabel returned invalid UTF-8 (%q): the cut landed inside a rune",
-					got)
-			}
-			// The reason the boundary matters, asserted as the property rather than as UTF-8
-			// validity: a round trip through the encoder must not change the bytes, or the byte
-			// cap this function enforces does not hold on the wire.
-			enc, err := json.Marshal(got)
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			var back string
-			if uerr := json.Unmarshal(enc, &back); uerr != nil {
-				t.Fatalf("unmarshal: %v", uerr)
-			}
-			if back != got {
-				t.Errorf("the label changed through encoding/json: %q became %q — an invalid "+
-					"trailing byte was expanded into U+FFFD", got, back)
-			}
-			if len(enc)-2 > maxLabelLen {
-				t.Errorf("the label serialises to %d bytes, past the %d-byte cap it was cut to; "+
-					"the cap does not hold where it is spent", len(enc)-2, maxLabelLen)
-			}
-			// And the cut must not be so eager that it drops a whole rune it could have kept: at
-			// most three bytes of slack, which is the walk-back limit.
-			if maxLabelLen-len(got) > 3 {
-				t.Errorf("truncateLabel returned %d bytes for a %d-byte cap: it walked back further "+
-					"than the longest UTF-8 sequence", len(got), maxLabelLen)
-			}
-		})
-	}
-}
-
 // TestRingLabel_SanitisesBeforeCapping pins the ORDER, which is the half that is easy to get
 // backwards and impossible to notice.
 //
@@ -1151,7 +1086,7 @@ func TestSnapshot_TheRingDoesNotServeControlBytesInALabel(t *testing.T) {
 
 			for _, g := range []Group{GroupMethod, GroupEndpoint} {
 				for k := range mergeSeries(a.Snapshot(time.Minute, BucketWidth, "", g).Buckets) {
-					if hasControlRunes(k) {
+					if pipeline.HasControlRunes(k) {
 						t.Errorf("group=%s served the label %q, which still carries a control rune: "+
 							"/v1/usage hands it to whatever renders it, and the ledger's copy of the "+
 							"same label is clean", g, k)

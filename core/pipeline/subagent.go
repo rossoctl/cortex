@@ -122,12 +122,12 @@ func subagentHeader(v string) string {
 // makes the same call for the same reason.
 //
 // The rules are the session id's, plus the empty check: no longer than maxClientLen
-// bytes, and nothing hasControlRunes objects to, which covers C0, DEL, C1, the
+// bytes, and nothing HasControlRunes objects to, which covers C0, DEL, C1, the
 // glyph-reordering runes and invalid UTF-8. That last group matters here and not
 // only on the forward proxy: ext_proc hands header bytes over from Envoy unparsed, so
 // on that path this function is the only bound on what reaches a terminal and the
 // archive. Claude Code itself percent-encodes the value to printable ASCII before
 // sending it, so none of this costs a real id anything.
 func validSubagentID(id string) bool {
-	return id != "" && len(id) <= maxClientLen && !hasControlRunes(id)
+	return id != "" && len(id) <= maxClientLen && !HasControlRunes(id)
 }

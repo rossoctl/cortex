@@ -680,55 +680,10 @@ func provenanceNote(by map[string]int64) string {
 // caller-supplied event content and arrives over an unauthenticated API. Nothing here assumes
 // either producer sanitised anything.
 //
-// THE FULL CONTROL SET, not a subset of it: C0/C1/DEL, the BIDI overrides and isolates, AND the
-// BIDI marks and zero-widths that pipeline.IsControlRune names. The last group was missing while
-// this function only saw model labels, and the gap became visible the moment a served title could
-// reach a cell — see the switch arms for what each class does on a terminal.
+// The rule is pipeline.SanitizeControlRunes, the one the proxy applies before it stores a
+// label, so a label renders as the bytes the ledger and /v1/usage hold.
 func sanitizeLabel(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == 0x7f, r < 0x20:
-			b.WriteRune('\uFFFD')
-		// C1 controls (U+0080-U+009F). Mostly inert in a UTF-8 terminal, since they arrive as
-		// two bytes rather than as the single bytes an escape parser acts on — but they are
-		// controls, they are not printable, and there is no reason for one to survive into a
-		// label. Replaced for the same reason as C0.
-		case r >= 0x80 && r <= 0x9f:
-			b.WriteRune('\uFFFD')
-		// BIDI OVERRIDES AND ISOLATES: U+202A-U+202E and U+2066-U+2069. These are the ones that
-		// actually render: each is zero-width, so the width math stays self-consistent and the
-		// frame never breaks, but the terminal REORDERS the text around it. A title can then
-		// display in an order that is not the order of its bytes — "report\u202Egnp.exe" reads as
-		// something else entirely — and these titles are LLM-generated transcript text from an
-		// unauthenticated-by-nature file, so their content is not ours to trust.
-		// BIDI MARKS AND ZERO-WIDTHS: U+200E/200F/061C, and U+200B/200C/200D/2060/FEFF. Delegated to
-		// pipeline.IsControlRune rather than re-listed, because that predicate is the repo's single
-		// copy of this rule \u2014 its own doc records that three byte-identical duplicates once drifted
-		// under a comment asserting they moved together, and only one had coverage for the marks.
-		//
-		// THE MARKS ARE THE SAME CLASS AS THE OVERRIDES ABOVE, and strictly easier to abuse: an
-		// override needs a matching pop, while one LRM reorders the neutral characters after it on
-		// its own. Leaving them out while replacing U+202A-E was an inconsistency, not a judgement.
-		//
-		// THE ZERO-WIDTHS ARE A DIFFERENT ATTACK, and the reason to take them in the same pass: they
-		// make two distinct labels render identically, so a session can wear another's name on
-		// screen while nothing addresses it by that name. They also disable zeroWidthFree, which is
-		// the truncation fast path \u2014 replacing them with a visible glyph both shows the tampering
-		// and keeps the cheap path available.
-		//
-		// WHY THE C0/C1/DEL CASES STAY OPEN-CODED above rather than folding into the same call: they
-		// must remain readable as the CWE-150 answer this function was introduced for, and the
-		// switch documents each class where it applies. IsControlRune covers those ranges too, so
-		// this arm is reached only for what the earlier arms did not claim.
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, pipeline.IsControlRune(r):
-			b.WriteRune('\uFFFD')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return pipeline.SanitizeControlRunes(s)
 }
 
 // snapshotDamaged reports that the read behind a snapshot's totals was INCOMPLETE — rows

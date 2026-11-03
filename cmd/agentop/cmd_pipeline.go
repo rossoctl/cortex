@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // pipelineFetchTimeout bounds the one request this command makes. /v1/pipeline
@@ -277,15 +278,8 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 // cursor or recolours the pane from a string the proxy never vouched for.
 //
 // U+FFFD rather than dropping the rune, so a mangled value reads as mangled instead of as a
-// shorter string that means something else. Same rule and reasoning as tui.sanitizeLabel,
-// which is unexported there; duplicated rather than exported, because widening another
-// package's API is not this change's business.
-//
-// C0 AND DEL ONLY — the C1 range U+0080–U+009F passes through, and U+009B is an 8-bit CSI,
-// which is this doc's own threat one encoding up. Left as it is deliberately: the rule
-// matches tui.sanitizeLabel's exactly, and a UTF-8 terminal receives that codepoint as the
-// two bytes 0xC2 0x9B rather than as a CSI introducer. Widening it is a change to both
-// copies at once, not to this one.
+// shorter string that means something else. The rule is pipeline.SanitizeControlRunes, the
+// same one tui.sanitizeLabel applies.
 //
 // LATENT against an honest proxy, which sends neither: plugin names come from a registry
 // and plugins/deps.go rejects an unknown one at startup. It is reachable from a hostile or
@@ -293,16 +287,7 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 // trust model admits — no authentication, and a wildcard bind unless bind_loopback_only is
 // set. This is about what the wire permits, not what the plugins currently send.
 func sanitizeCell(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == 0x7f || r < 0x20 {
-			b.WriteRune('\uFFFD')
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
+	return pipeline.SanitizeControlRunes(s)
 }
 
 // padCells right-pads s to w DISPLAY COLUMNS.
