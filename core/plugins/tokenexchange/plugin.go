@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -667,7 +668,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	host := pctx.Host
 
 	if p.cfg.ResolvePlaceholders && placeholder.IsPlaceholder(auth.ExtractBearer(authHeader)) {
-		real, ok := resolvePlaceholder(pctx, auth.ExtractBearer(authHeader))
+		real, ok := placeholder.Resolve(pctx.Shared, auth.ExtractBearer(authHeader))
 		if !ok {
 			return pctx.DenyAndRecord("placeholder_unresolved", "auth.unauthorized", "unresolvable credential placeholder")
 		}
@@ -688,7 +689,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			Action: pipeline.ActionDeny,
 			Reason: result.DenyReasonCode.String(),
 			Details: map[string]string{
-				"route_matched":    boolStr(result.RouteMatched),
+				"route_matched":    strconv.FormatBool(result.RouteMatched),
 				"route_host":       host,
 				"target_audience":  result.TargetAudience,
 				"requested_scopes": result.RequestedScopes,
@@ -718,7 +719,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 				"route_host":       host,
 				"target_audience":  result.TargetAudience,
 				"requested_scopes": result.RequestedScopes,
-				"cache_hit":        boolStr(result.CacheHit),
+				"cache_hit":        strconv.FormatBool(result.CacheHit),
 			},
 		})
 	default:
@@ -734,37 +735,12 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 			Action: pipeline.ActionSkip,
 			Reason: reason,
 			Details: map[string]string{
-				"route_matched": boolStr(result.RouteMatched),
+				"route_matched": strconv.FormatBool(result.RouteMatched),
 				"route_host":    host,
 			},
 		})
 	}
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// resolvePlaceholder looks a handle up in the shared store. Returns ok=false
-// (fail closed) when no store is wired or the handle is unknown/expired.
-func resolvePlaceholder(pctx *pipeline.Context, handle string) (string, bool) {
-	if pctx.Shared == nil {
-		return "", false
-	}
-	v, ok := pctx.Shared.Get(placeholder.Key(handle))
-	if !ok {
-		return "", false
-	}
-	s, ok := v.(string)
-	return s, ok
-}
-
-// boolStr renders a boolean as "true" / "false" for Invocation.Details.
-// Kept as a small helper rather than inlining so both the deny and
-// modify branches use the same string form and agentop's filter
-// matching is predictable.
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
 
 // recordDelegationHop appends a delegation hop to pctx.Extensions.Delegation
