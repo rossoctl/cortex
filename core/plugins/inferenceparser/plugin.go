@@ -648,6 +648,7 @@ func foldOpenAIFrame(frame []byte, state *inferenceStreamState, ext *pipeline.In
 		slog.Debug("inference-parser: malformed streaming chunk, skipping", "error", err)
 		return
 	}
+	noteBodyModel(ext, chunk.Model)
 	for _, c := range chunk.Choices {
 		if c.Delta.Content != "" {
 			state.completion.WriteString(c.Delta.Content)
@@ -719,6 +720,7 @@ func parseInferenceJSON(body []byte, ext *pipeline.InferenceExtension) {
 		slog.Debug("inference-parser: invalid response JSON", "error", err)
 		return
 	}
+	noteBodyModel(ext, resp.Model)
 	if len(resp.Choices) > 0 {
 		c := resp.Choices[0]
 		ext.Completion = c.Message.Content
@@ -765,6 +767,7 @@ func parseInferenceSSE(body []byte, ext *pipeline.InferenceExtension) {
 			slog.Debug("inference-parser: skipping malformed SSE data frame", "error", err, "data", parsercommon.Truncate(string(data), 128))
 			continue
 		}
+		noteBodyModel(ext, chunk.Model)
 		for _, c := range chunk.Choices {
 			if c.Delta.Content != "" {
 				state.completion.WriteString(c.Delta.Content)
@@ -785,6 +788,7 @@ func parseInferenceSSE(body []byte, ext *pipeline.InferenceExtension) {
 }
 
 type inferenceResponse struct {
+	Model   string            `json:"model"`
 	Choices []inferenceChoice `json:"choices"`
 	Usage   inferenceUsage    `json:"usage"`
 }
@@ -817,6 +821,7 @@ type inferenceRespToolCall struct {
 }
 
 type inferenceStreamChunk struct {
+	Model   string                  `json:"model"`
 	Choices []inferenceStreamChoice `json:"choices"`
 	Usage   inferenceUsage          `json:"usage"`
 }

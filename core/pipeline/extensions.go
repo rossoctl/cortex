@@ -165,6 +165,14 @@ type InferenceExtension struct {
 	// Set only by SetRequestModel, never by a parser.
 	RequestedModel string `json:"requestedModel,omitempty"`
 
+	// ServedModel is the model the upstream says answered, when that is not Model:
+	// a gateway's x-litellm-model-name header first, else the response body's own
+	// "model" field. Empty when the upstream named no model or named Model itself,
+	// which is every response from a server that answers under the requested name.
+	// Display only: settlement prices Model, and a gateway that resolved an alias
+	// already reports its cost from the model it ran. Set by inference-parser.
+	ServedModel string `json:"servedModel,omitempty"`
+
 	// ToolResults are the tool_result blocks of an Anthropic request and the
 	// function_call_output items of a Responses API request — what each earlier tool
 	// call returned, as the client sent it back. Message Content keeps only text blocks,

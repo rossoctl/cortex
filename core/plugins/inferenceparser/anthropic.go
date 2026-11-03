@@ -232,6 +232,7 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 // --- non-streaming response ---
 
 type anthropicResponse struct {
+	Model      string                  `json:"model"`
 	Content    []anthropicContentBlock `json:"content"`
 	StopReason string                  `json:"stop_reason"`
 	Usage      anthropicUsage          `json:"usage"`
@@ -252,6 +253,7 @@ func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return
 	}
+	noteBodyModel(ext, resp.Model)
 	var b strings.Builder
 	for _, blk := range resp.Content {
 		switch blk.Type {
@@ -288,6 +290,7 @@ func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
 type anthropicStreamEvent struct {
 	Type    string `json:"type"`
 	Message *struct {
+		Model string         `json:"model"`
 		Usage anthropicUsage `json:"usage"`
 	} `json:"message"`
 	Delta *struct {
@@ -408,6 +411,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 	switch ev.Type {
 	case "message_start":
 		if ev.Message != nil {
+			noteBodyModel(ext, ev.Message.Model)
 			mergeAnthropicUsageMaxSeen(state, ev.Message.Usage.toNeutral())
 			state.hasUsage = true
 		}

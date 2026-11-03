@@ -68,6 +68,8 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	if st := pipeline.GetState[settledOnce](pctx, costSettledKey); st != nil {
 		return
 	}
+	// Every response path ends here exactly once, so the served model is decided here too.
+	settleServedModel(pctx)
 
 	settled := settle.Settle(pctx, p.rates)
 	// Stored even when nothing priced, so a consumer can tell "no figure" from "this pass
