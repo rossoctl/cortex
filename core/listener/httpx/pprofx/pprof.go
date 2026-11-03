@@ -34,22 +34,10 @@ import (
 // and the agentop viewer each carried their own copy of the guard and the five
 // registrations.
 func RegisterPprof(mux *http.ServeMux) {
-	guard := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if !httpx.LoopbackHost(r.Host) {
-				http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
-				return
-			}
-			if r.Header.Get("Origin") != "" {
-				http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
-				return
-			}
-			h(w, r)
-		}
-	}
-	mux.HandleFunc("/debug/pprof/", guard(pprof.Index))
-	mux.HandleFunc("/debug/pprof/cmdline", guard(pprof.Cmdline))
-	mux.HandleFunc("/debug/pprof/profile", guard(pprof.Profile))
-	mux.HandleFunc("/debug/pprof/symbol", guard(pprof.Symbol))
-	mux.HandleFunc("/debug/pprof/trace", guard(pprof.Trace))
+	guard := func(h http.HandlerFunc) http.Handler { return httpx.LoopbackOnly(h) }
+	mux.Handle("/debug/pprof/", guard(pprof.Index))
+	mux.Handle("/debug/pprof/cmdline", guard(pprof.Cmdline))
+	mux.Handle("/debug/pprof/profile", guard(pprof.Profile))
+	mux.Handle("/debug/pprof/symbol", guard(pprof.Symbol))
+	mux.Handle("/debug/pprof/trace", guard(pprof.Trace))
 }

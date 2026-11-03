@@ -9,6 +9,10 @@ laptop — and for the `agentop` TUI.
 **Trust model:** no authentication. Bind only on in-cluster addresses, never
 behind ingress. Payloads may contain raw user messages, LLM completions, and
 tool results.
+Where `listener.bind_loopback_only` is set (a local install), every route
+answers 403 to a request whose `Host` is not `localhost`, `127.0.0.1` or
+`::1`, or that carries an `Origin` header, so a web page cannot read it
+through DNS rebinding. The stats server applies the same check.
 
 ## Endpoints
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/httpx/pprofx"
 	"github.com/rossoctl/cortex/core/redact"
 )
@@ -42,6 +43,7 @@ type statServerOpts struct {
 	pricingTable    http.Handler
 	tlsBridgeUnread http.Handler
 	pprof           bool
+	loopbackOnly    bool
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
@@ -83,6 +85,14 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 // expose these ungated, so none may be.
 func WithPprof(enabled bool) Option {
 	return func(o *statServerOpts) { o.pprof = enabled }
+}
+
+// WithLoopbackOnly answers 403 on every route to a non-loopback Host or a request
+// carrying Origin (httpx.LoopbackOnly). /config can hold a secret under a key name
+// redact does not know, so a page doing DNS rebinding must not read it. The host
+// enables it where the stats port is loopback-only (listener.bind_loopback_only).
+func WithLoopbackOnly(enabled bool) Option {
+	return func(o *statServerOpts) { o.loopbackOnly = enabled }
 }
 
 // NewStatServer builds the stat HTTP server. configProvider is
@@ -131,10 +141,14 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 		fmt.Fprint(w, indexPage)
 	})
 
+	var handler http.Handler = mux
+	if o.loopbackOnly {
+		handler = httpx.LoopbackOnly(mux)
+	}
 	return &StatServer{
 		server: &http.Server{
 			Addr:              addr,
-			Handler:           mux,
+			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}

@@ -316,3 +316,38 @@ func TestStatServerPprofRefusesBrowserOrigin(t *testing.T) {
 		t.Errorf("GET /debug/pprof/heap with Origin = %d, want 403", w.Result().StatusCode)
 	}
 }
+
+// /config can hold a secret under a key name redact does not know, so with
+// WithLoopbackOnly every route refuses a rebound Host and a browser Origin.
+func TestStatServerLoopbackOnlyGuardsEveryRoute(t *testing.T) {
+	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithLoopbackOnly(true))
+	for _, path := range []string{"/", "/config", "/stats"} {
+		for _, tc := range []struct {
+			host, origin string
+			want         int
+		}{
+			{"evil.example:47602", "", http.StatusForbidden},
+			{"127.0.0.1:47602", "https://evil.example", http.StatusForbidden},
+			{"localhost:47602", "", http.StatusOK},
+		} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Errorf("GET %s Host %q Origin %q = %d, want %d", path, tc.host, tc.origin, w.Code, tc.want)
+			}
+		}
+	}
+	// Off (a cluster deployment): a pod's own name is a fine Host.
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	req.Host = "weather-agent.team1.svc:9093"
+	w := httptest.NewRecorder()
+	serveMuxOpts(newTestConfig(), auth.NewStats()).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("GET /config with a pod Host and no WithLoopbackOnly = %d, want 200", w.Code)
+	}
+}
