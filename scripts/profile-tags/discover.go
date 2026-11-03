@@ -13,12 +13,12 @@ import (
 // Unanchored at the end so a compound directive still yields the name.
 var discoverTagPattern = regexp.MustCompile(`^//go:build\s+include_plugin_(\w+)`)
 
-// discoverPlugins returns every plugin name registered anywhere under cmdDir,
-// derived from the plugins_*.go build directives themselves. Deriving from source
-// rather than a hand-kept list is what makes the accounting guard meaningful: a
-// plugin cannot be added without this seeing it.
-func discoverPlugins(cmdDir string) ([]PluginName, error) {
-	files, err := pluginFiles(cmdDir)
+// discoverPlugins returns every plugin name registered in regDir, derived from
+// the plugins_*.go build directives themselves. Deriving from source rather than
+// a hand-kept list is what makes the accounting guard meaningful: a plugin cannot
+// be added without this seeing it.
+func discoverPlugins(regDir string) ([]PluginName, error) {
+	files, err := pluginFiles(regDir)
 	if err != nil {
 		return nil, err
 	}
@@ -40,26 +40,19 @@ func discoverPlugins(cmdDir string) ([]PluginName, error) {
 	return out, nil
 }
 
-// pluginFiles lists every plugins_*.go registration file under cmdDir, excluding
-// test files, which match the same glob but are not directives.
-func pluginFiles(cmdDir string) ([]string, error) {
-	entries, err := os.ReadDir(cmdDir)
+// pluginFiles lists every plugins_*.go registration file in dir, excluding test
+// files, which match the same glob but are not directives.
+func pluginFiles(dir string) ([]string, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("read %s: %w", dir, err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "plugins_*.go"))
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", cmdDir, err)
+		return nil, fmt.Errorf("glob %s: %w", dir, err)
 	}
 	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		matches, err := filepath.Glob(filepath.Join(cmdDir, e.Name(), "plugins_*.go"))
-		if err != nil {
-			return nil, fmt.Errorf("glob %s: %w", e.Name(), err)
-		}
-		for _, path := range matches {
-			if strings.HasSuffix(path, "_test.go") {
-				continue
-			}
+	for _, path := range matches {
+		if !strings.HasSuffix(path, "_test.go") {
 			out = append(out, path)
 		}
 	}

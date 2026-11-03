@@ -38,9 +38,12 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 			"litellm_budgettrack", "mcpparser", "opa", "script", "sparc", "staticinject",
 			"tokenbroker", "tokenexchange", "tokenexchangeaiac", "toolprune",
 		}},
+		// envoy gained litellm_budgettrack and staticinject in #1577: nothing
+		// recorded a reason to leave them out, and only one binary had their files.
 		{"envoy", []string{
-			"a2aparser", "ibac", "inferenceparser", "jwtvalidation", "lineage",
-			"mcpparser", "opa", "sparc", "tokenbroker", "tokenexchange", "tokenexchangeaiac", "toolprune",
+			"a2aparser", "ibac", "inferenceparser", "jwtvalidation", "lineage", "litellm_budgettrack",
+			"mcpparser", "opa", "sparc", "staticinject", "tokenbroker", "tokenexchange",
+			"tokenexchangeaiac", "toolprune",
 		}},
 		{"cpex", []string{
 			"a2aparser", "cpex", "ibac", "inferenceparser", "jwtvalidation",

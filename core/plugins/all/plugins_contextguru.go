@@ -5,6 +5,6 @@
 // for it. Its embedded engine pulls a large transitive set (bifrost/core,
 // tiktoken-go, tree-sitter grammars, starlark) — roughly 16 MiB on top of a
 // proxy binary — which is why it is opt-in rather than profiled.
-package main
+package all
 
 import _ "github.com/rossoctl/cortex/core/plugins/contextguru"

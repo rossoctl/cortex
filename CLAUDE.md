@@ -345,9 +345,12 @@ runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 operator-facing TUI over the session API, and the component the root README leads
 with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybindings.
 
-**Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
-gated by `//go:build include_plugin_<name>` (19 such files in
-`cmd/cortex/`; `plugins_cpex.go` also needs the `cpex` tag); `main.go` imports no plugin package directly, so a build
+**Plugins are all opt-in.** Each one lives in a `core/plugins/all/plugins_<name>.go`
+file gated by `//go:build include_plugin_<name>` (`plugins_cpex.go` also needs the
+`cpex` tag). Every binary that registers plugins blank-imports `core/plugins/all`,
+so one file serves every binary. The one exception is the session-budget Redis
+driver: its module requires core, so each binary links it in its own
+`storage_redis.go`. `main.go` imports no plugin package directly, so a build
 with no `-tags` registers no plugins at all and rejects every config it is handed.
 Tag sets come from [`scripts/profile-tags`](scripts/profile-tags/), one profile per
 shipped artifact.
@@ -1016,7 +1019,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
 | `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build of `cmd/cortex` with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it selects the FFI-backed cpex manager and gates `cmd/cortex/plugins_cpex.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build of `cmd/cortex` with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it selects the FFI-backed cpex manager and gates `core/plugins/all/plugins_cpex.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 

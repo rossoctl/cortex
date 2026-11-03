@@ -89,7 +89,7 @@ The cost is settled **once**, on the terminal frame, from one of two sources:
 | File | Purpose |
 |------|---------|
 | `core/plugins/litellm_budgettrack/plugin.go` | Plugin implementation |
-| `cmd/cortex/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
+| `core/plugins/all/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
 
 ## Plugin Configuration
 
@@ -252,7 +252,7 @@ see [`superpowers/specs/2026-09-09-pricing-consolidation-design.md`](./superpowe
 
 ## Build
 
-Every plugin is opt-in. This one is carried by the `full` and `lite` profiles;
+Every plugin is opt-in. This one is carried by the `full`, `lite` and `envoy` profiles;
 to link it explicitly:
 
 ```bash
@@ -264,7 +264,7 @@ The registration file uses the standard build-tag pattern:
 ```go
 //go:build include_plugin_litellm_budgettrack
 
-package main
+package all
 
 import _ "github.com/rossoctl/cortex/core/plugins/litellm_budgettrack"
 ```

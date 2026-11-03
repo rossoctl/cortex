@@ -468,18 +468,20 @@ a typo silently drops a plugin — prefer a profile name over a hand-written lis
 
 To make a plugin excludable:
 
-1. Create a `plugins_<name>.go` file in each `cmd/` binary that imports the plugin:
+1. Create one `core/plugins/all/plugins_<name>.go` file that imports the plugin.
+   Every binary imports `core/plugins/all`, so do not copy the file into `cmd/`:
 
 ```go
 //go:build include_plugin_<name>
 
-package main
+package all
 
 import _ "github.com/rossoctl/cortex/core/plugins/<name>"
 ```
 
-2. Never import a plugin package from `main.go`. An unconditional import cannot be
-   excluded by any tag, and nothing reports that.
+2. Never import a plugin package from a `cmd/` binary. An unconditional import
+   cannot be excluded by any tag, and nothing reports that. A guard test enforces
+   this.
 
 3. Name the plugin in every profile that should carry it, in
    `scripts/profile-tags/profiles.go` — or add it to `optional` if it deliberately

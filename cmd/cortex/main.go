@@ -1,7 +1,7 @@
 // Package main is the proxy-sidecar authbridge binary: HTTP forward
 // proxy + reverse proxy, no Envoy / gRPC dependencies. It links only the
 // plugins its build tags name — nothing is compiled in by default. Every
-// plugin has its own plugins_<name>.go file gated by
+// plugin has its own core/plugins/all/plugins_<name>.go file gated by
 // `//go:build include_plugin_<name>`, so a binary contains exactly the
 // set it was built with. main.go imports no plugin package directly.
 //
@@ -61,10 +61,12 @@ import (
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
 	"github.com/rossoctl/cortex/core/listener/transparentproxy"
-	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
-	// by `//go:build include_plugin_<name>`. main.go imports no plugin
-	// package directly, so a binary links exactly the set its profile names
-	// (see scripts/profile-tags).
+
+	// Plugins are wired via core/plugins/all: one plugins_<name>.go file per
+	// plugin, each gated by `//go:build include_plugin_<name>`. main.go imports
+	// no plugin package directly, so a binary links exactly the set its profile
+	// names (see scripts/profile-tags).
+	_ "github.com/rossoctl/cortex/core/plugins/all"
 )
 
 // version is the cortex build version, overridden at release time
@@ -127,7 +129,7 @@ func spiffeProviderNeeded(c *config.Config) bool {
 // SPIFFE identity scheme. It is a shared config convention (token-exchange is
 // the only consumer today); kept as a local constant so main.go stays
 // decoupled from any specific plugin package — every plugin is build-tag
-// excludable via plugins_<name>.go.
+// excludable via core/plugins/all/plugins_<name>.go.
 const spiffeIdentityType = "spiffe"
 
 // pluginUsesSPIFFEIdentity reports whether a plugin's config consumes the

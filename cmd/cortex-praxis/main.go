@@ -18,10 +18,8 @@ import (
 	"github.com/rossoctl/cortex/core/spiffe"
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
-	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
-	// by `//go:build include_plugin_<name>`. main.go imports no plugin
-	// package directly. This binary defines no plugins_*.go files of its own,
-	// so it registers no plugins (see scripts/profile-tags).
+	// Plugins are wired via core/plugins/all, which this binary does not
+	// import, so it registers no plugins (see scripts/profile-tags).
 )
 
 // version is the cortex build version, overridden at release time
@@ -55,7 +53,7 @@ func spiffeProviderNeeded(c *config.Config) bool {
 // SPIFFE identity scheme. It is a shared config convention (token-exchange is
 // the only consumer today); kept as a local constant so main.go stays
 // decoupled from any specific plugin package — every plugin is build-tag
-// excludable via plugins_<name>.go.
+// excludable via core/plugins/all/plugins_<name>.go.
 const spiffeIdentityType = "spiffe"
 
 // pluginUsesSPIFFEIdentity reports whether a plugin's config selects the spiffe
