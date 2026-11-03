@@ -12,15 +12,18 @@ import (
 //
 // Matching is path.Match against the host with its port stripped, so
 // "keycloak.*" matches "keycloak.foo:8081" and a bare "otel-collector"
-// matches only that name. The port is split with net.SplitHostPort so an IPv6
-// literal ([::1]:4317) survives, and matching is case-folded because an
-// authority is case-insensitive (RFC 3986).
+// matches only that name. The port is split with net.SplitHostPort and the
+// brackets dropped, so an IPv6 literal ([::1]:4317 or [::1]) matches "::1",
+// and matching is case-folded because an authority is case-insensitive
+// (RFC 3986).
 func MatchesAny(patterns []string, host string) bool {
 	if host == "" {
 		return false
 	}
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
+	} else if len(host) > 1 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
 	}
 	host = strings.ToLower(host)
 	for _, p := range patterns {

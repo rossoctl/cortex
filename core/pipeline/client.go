@@ -182,8 +182,7 @@ func HasControlRunes(s string) bool {
 // rewrites or hides the text around it without being a control character at all.
 //
 // The one predicate both the scan and the rewrite read, so they cannot disagree about
-// what a control character is. The ledger's copy will carry the same clauses in the same
-// order.
+// what a control character is.
 //
 // THE FOURTH CLAUSE IS THE SAME ARGUMENT AS THE THIRD, applied to runes that need no escape
 // sequence at all. C1 is here because U+009B opens one in a terminal, so a User-Agent could

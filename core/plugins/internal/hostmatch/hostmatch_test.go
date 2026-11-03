@@ -15,6 +15,7 @@ func TestMatchesAny(t *testing.T) {
 		{"otel-collector:4317", true},
 		{"otel-collector.ns.svc", false},
 		{"[::1]:4317", true},
+		{"[::1]", true},
 		{"[::2]:4317", false},
 		{"", false},
 	} {
