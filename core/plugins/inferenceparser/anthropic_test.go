@@ -524,6 +524,13 @@ func TestInferenceParser_AnthropicMessages_ToolResults(t *testing.T) {
 			t.Errorf("ToolResults[%d] = %+v, want %+v", i, ext.ToolResults[i], want[i])
 		}
 	}
+	// The assistant turn had no text, only calls: its names keep it from reading as empty.
+	if got := ext.Messages[1].ToolCallNames; got != "Read, Bash" {
+		t.Errorf("Messages[1].ToolCallNames = %q, want %q", got, "Read, Bash")
+	}
+	if got := ext.Messages[2].ToolCallNames; got != "" {
+		t.Errorf("Messages[2].ToolCallNames = %q, want empty on a message with no tool_use", got)
+	}
 	// The message that carried them keeps only its own text: tool output must not reach
 	// Content, which IBAC reads as the user's intent.
 	if got := ext.Messages[2].Content; got != "<system-reminder>keep going</system-reminder>" {

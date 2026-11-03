@@ -48,11 +48,14 @@ type anthropicTool struct {
 //
 // ToolResults keeps the one dropped block type worth reading back: tool_result, the output
 // of an earlier tool call. It goes to InferenceExtension.ToolResults, never into Content.
+// ToolCallNames keeps the names of the tool_use blocks, so a turn that only called tools
+// does not read as empty.
 type anthropicReqMessage struct {
-	Role         string
-	Content      string
-	ContentBytes int
-	ToolResults  []pipeline.InferenceToolResult
+	Role          string
+	Content       string
+	ContentBytes  int
+	ToolResults   []pipeline.InferenceToolResult
+	ToolCallNames string
 }
 
 func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
@@ -64,7 +67,7 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	m.Role = raw.Role
-	m.Content, m.ToolResults = flattenAnthropicContent(raw.Content)
+	m.Content, m.ToolResults, m.ToolCallNames = flattenAnthropicContent(raw.Content)
 	m.ContentBytes = contentBytes(raw.Content)
 	return nil
 }
@@ -73,21 +76,24 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 // tool_result blocks. One decode of the block array yields both the text and the results,
 // so a request full of tool output is not parsed twice. A result's own content is a string
 // or text blocks, which flattenContent already reads; its non-text blocks (an image a Read
-// returned) are dropped, as flattenContent drops them everywhere.
-func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult) {
+// returned) are dropped, as flattenContent drops them everywhere. The tool_use blocks give
+// their names only, joined as InferenceMessage.ToolCallNames.
+func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, string) {
 	var blocks []struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
+		Name      string          `json:"name"`
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
 		IsError   bool            `json:"is_error"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		// A plain string, null, or a shape we do not model: none of them holds a tool result.
-		return flattenContent(raw), nil
+		return flattenContent(raw), nil, ""
 	}
 	var text strings.Builder
 	var results []pipeline.InferenceToolResult
+	var names []string
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
@@ -101,9 +107,11 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 			results = append(results, pipeline.InferenceToolResult{
 				ToolUseID: b.ToolUseID, Content: flattenContent(b.Content), IsError: b.IsError,
 			})
+		case "tool_use":
+			names = append(names, b.Name)
 		}
 	}
-	return text.String(), results
+	return text.String(), results, strings.Join(names, ", ")
 }
 
 // parseAnthropicRequest builds an InferenceExtension from an Anthropic Messages
@@ -148,6 +156,7 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 	for _, msg := range req.Messages {
 		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
 			Role: msg.Role, Content: msg.Content, ContentBytes: msg.ContentBytes,
+			ToolCallNames: msg.ToolCallNames,
 		})
 		ext.ToolResults = append(ext.ToolResults, msg.ToolResults...)
 	}
