@@ -3,8 +3,8 @@
 // shared service hooked into Envoy's external_processor filter).
 //
 // It links only the plugins its build tags name — nothing is compiled in
-// by default. Every plugin has its own plugins_<name>.go file gated by
-// `//go:build include_plugin_<name>`, and this binary's set is the
+// by default. Every plugin has its own core/plugins/all/plugins_<name>.go
+// file gated by `//go:build include_plugin_<name>`, and this binary's set is the
 // `envoy` profile in scripts/profile-tags. main.go imports no
 // plugin package directly.
 //
@@ -48,8 +48,9 @@ import (
 	// Only the ext_proc listener is compiled in (no HTTP proxies).
 	"github.com/rossoctl/cortex/core/listener/extproc"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
-	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for agentop.
+
+	// Plugins: one tag-gated file per plugin, shared with cmd/cortex.
+	_ "github.com/rossoctl/cortex/core/plugins/all"
 )
 
 // warnCostLedgerInert says out loud that a cost_ledger block in this binary's config

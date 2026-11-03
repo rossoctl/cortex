@@ -216,9 +216,7 @@ func (p *StaticInject) OnRequest(ctx context.Context, pctx *pipeline.Context) pi
 	// in cleartext (#1481, MOCA MI1 §8.5: 403 plaintext_credential). pctx.Scheme
 	// is "http" exactly for a request the listener knows is plaintext — an
 	// absolute-form http:// URL through the forward proxy, or Envoy's :scheme
-	// on the ext_proc path (would be, if the envoy profile shipped this plugin
-	// — it does not, so no released envoy-sidecar image runs this gate;
-	// extproc/plaintextgate_test.go pins the wiring against that changing);
+	// on the ext_proc path (extproc/plaintextgate_test.go pins that wiring);
 	// a TLS-bridged request carries "https". Checked
 	// here, after resolution and before any header write, so the refusal
 	// names the credential rather than the scheme: plain HTTP to a host

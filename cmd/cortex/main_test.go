@@ -25,7 +25,7 @@ func identityConfig(idType string) json.RawMessage {
 // main.go's local spiffeIdentityType constant and the token-exchange plugin's
 // canonical SpiffeIdentity value. main.go intentionally does NOT import the
 // plugin package (so token-exchange stays build-tag excludable via
-// plugins_tokenexchange.go); this test re-couples the two at test time — a
+// core/plugins/all/plugins_tokenexchange.go); this test re-couples the two at test time — a
 // test file may import the package unconditionally without pulling it into the
 // tag-gated production binary.
 func TestSpiffeIdentityTypeMatchesTokenExchange(t *testing.T) {

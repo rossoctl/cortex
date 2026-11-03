@@ -345,9 +345,12 @@ runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 operator-facing TUI over the session API, and the component the root README leads
 with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybindings.
 
-**Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
-gated by `//go:build include_plugin_<name>` (19 such files in
-`cmd/cortex/`; `plugins_cpex.go` also needs the `cpex` tag); `main.go` imports no plugin package directly, so a build
+**Plugins are all opt-in.** Each one lives in a `core/plugins/all/plugins_<name>.go`
+file gated by `//go:build include_plugin_<name>` (`plugins_cpex.go` also needs the
+`cpex` tag). Every binary that registers plugins blank-imports `core/plugins/all`,
+so one file serves every binary. The one exception is the session-budget Redis
+driver: its module requires core, so each binary links it in its own
+`storage_redis.go`. `main.go` imports no plugin package directly, so a build
 with no `-tags` registers no plugins at all and rejects every config it is handed.
 Tag sets come from [`scripts/profile-tags`](scripts/profile-tags/), one profile per
 shipped artifact.

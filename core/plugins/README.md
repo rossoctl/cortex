@@ -56,7 +56,7 @@ for the walkthrough.
 ### Build-tag plugin exclusion
 
 Every plugin is selected at build time using Go build tags. Its side-effect
-import lives in a dedicated `plugins_<name>.go` file (in each `cmd/` binary)
+import lives in a dedicated `all/plugins_<name>.go` file (shared by every `cmd/` binary)
 gated by `//go:build include_plugin_<name>`. A build with no tags registers
 no plugins and rejects any config that names one, so artifacts are built from
 named profiles in `scripts/profile-tags`:

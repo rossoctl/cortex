@@ -54,7 +54,8 @@ var membership = map[PluginName][]ProfileName{
 
 	// Laptop only by behaviour, not by profile: it runs nothing unless cmd/cortex
 	// says the process is a local install. The full profiles carry it because the
-	// laptop's release tarballs are built from them; only cmd/cortex registers it.
+	// laptop's release tarballs are built from them. envoy does not: cortex-envoy
+	// is never a local install.
 	"script": {ProfileLocal, ProfileFull, ProfileFullCpex},
 
 	"ibac":        {ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
@@ -64,7 +65,7 @@ var membership = map[PluginName][]ProfileName{
 	"opa":         {ProfileFull, ProfileFullCpex, ProfileEnvoy},
 
 	// Full (and fullcpex) only. Its redirect needs the forward proxy, so cortex-envoy would refuse
-	// it at build time, and only cmd/cortex registers it. Full is what the release
+	// it at build time. Full is what the release
 	// tarballs and make dev-install build, so it reaches laptops; it changes no
 	// traffic until an agent is routed.
 	"inferencerouter": {ProfileFull, ProfileFullCpex},
@@ -75,8 +76,8 @@ var membership = map[PluginName][]ProfileName{
 	// The route-free alternative to tokenexchange, so it ships wherever that does.
 	// Linked is not active: it changes no traffic until a pipeline names it.
 	"tokenexchangeaiac":   {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
-	"litellm_budgettrack": {ProfileFull, ProfileFullCpex, ProfileLite},
-	"staticinject":        {ProfileFull, ProfileFullCpex, ProfileLite},
+	"litellm_budgettrack": {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy},
+	"staticinject":        {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy},
 
 	// Needs cgo and the `cpex` build tag, so only the cpex builds carry it.
 	"cpex": {ProfileCpex, ProfileFullCpex},
