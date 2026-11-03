@@ -160,3 +160,27 @@ func TestSearchDoc_GutterOnANarrowTerminal(t *testing.T) {
 		t.Errorf("the line was lost at width 2: %q", out)
 	}
 }
+
+// Every wrapped row of a colored line opens its own color. A row that leans on the row
+// above loses it after the cursor gutter's reset, and at the top of a scrolled viewport.
+func TestSearchDoc_EveryWrappedRowKeepsItsColor(t *testing.T) {
+	forceColour(t)
+	line := styleJSONString.Render(`"` + strings.Repeat("word ", 12) + `"`)
+	open, _, _ := strings.Cut(styleJSONString.Render("x"), "x")
+	for _, cursor := range []int{0, -1} {
+		d := searchDoc{gutter: true, cursor: cursor}
+		d.setLines([]string{line}, 20)
+		rows := strings.Split(d.render(""), "\n")
+		if len(rows) < 3 {
+			t.Fatalf("cursor %d: want the line wrapped to 3+ rows, got %q", cursor, rows)
+		}
+		for k, r := range rows {
+			if !strings.Contains(r, open) {
+				t.Errorf("cursor %d: row %d does not open the string's color: %q", cursor, k, r)
+			}
+			if !strings.HasSuffix(r, "\x1b[0m") && !strings.HasSuffix(r, ansi.ResetStyle) {
+				t.Errorf("cursor %d: row %d leaves its color open: %q", cursor, k, r)
+			}
+		}
+	}
+}

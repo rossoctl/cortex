@@ -92,7 +92,7 @@ func (d *searchDoc) render(q string) string {
 		}
 		out := find.Highlight(line, spans)
 		if wrap > 0 {
-			out = ansi.Wrap(out, wrap, " -")
+			out = closeRows(ansi.Wrap(out, wrap, " -"))
 		}
 		if d.gutter {
 			mark := "  "
@@ -106,6 +106,52 @@ func (d *searchDoc) render(q string) string {
 	}
 	d.lastRows = row
 	return b.String()
+}
+
+// closeRows makes each row of wrapped draw in its own colors. ansi.Wrap breaks a colored line
+// but does not close its color at the break, so the next row drew in whatever color the
+// terminal had: none after the cursor gutter's reset, and the previous pane line's at the top
+// of a scrolled viewport. Each row now ends with a reset and starts with the SGR sequences
+// that were in force where the row before it broke.
+func closeRows(wrapped string) string {
+	rows := strings.Split(wrapped, "\n")
+	if len(rows) == 1 {
+		return wrapped
+	}
+	active := ""
+	for i, r := range rows {
+		open := active
+		active = activeSGR(active, r)
+		if i < len(rows)-1 && active != "" {
+			r += ansi.ResetStyle
+		}
+		rows[i] = open + r
+	}
+	return strings.Join(rows, "\n")
+}
+
+// activeSGR is the SGR sequences in force after row, given those in force before it: each
+// reset clears them, and every other SGR sequence adds to them.
+func activeSGR(active, row string) string {
+	for {
+		i := strings.Index(row, "\x1b[")
+		if i < 0 {
+			return active
+		}
+		row = row[i+2:]
+		j := strings.IndexFunc(row, func(r rune) bool { return r >= 0x40 && r <= 0x7e })
+		if j < 0 {
+			return active
+		}
+		if row[j] == 'm' {
+			if params := row[:j]; params == "" || params == "0" {
+				active = ""
+			} else {
+				active += "\x1b[" + params + "m"
+			}
+		}
+		row = row[j+1:]
+	}
 }
 
 // rowsOf is the first and last drawn row of line i, from the last render.
