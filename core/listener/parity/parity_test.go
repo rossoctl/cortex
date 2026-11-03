@@ -1088,6 +1088,12 @@ func observationDiff(a, b *observation) string {
 	if !reflect.DeepEqual(a.Inference, b.Inference) {
 		return "Inference: " + jsonPretty(a.Inference) + " vs " + jsonPretty(b.Inference)
 	}
+	if a.A2AMethod != b.A2AMethod {
+		return fmt.Sprintf("A2AMethod: %q vs %q", a.A2AMethod, b.A2AMethod)
+	}
+	if a.MCPMethod != b.MCPMethod {
+		return fmt.Sprintf("MCPMethod: %q vs %q", a.MCPMethod, b.MCPMethod)
+	}
 	// Compare per-plugin JSON payloads structurally to tolerate
 	// whitespace and map-order differences between listeners.
 	keys := make([]string, 0, len(a.PluginEventJSON))

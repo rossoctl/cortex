@@ -308,17 +308,6 @@ func (s *Server) WrapListener(inner net.Listener) net.Listener {
 // clear message about the listener mode.
 func (s *Server) MTLSEnabled() bool { return s.mtlsCfg != nil }
 
-// eventTLS builds a *pipeline.EventTLS from the pctx's connection
-// state. Returns nil for plaintext or absent TLS state — sites that pass
-// the result through to a SessionEvent get the right thing for any caller.
-//
-// Kept as a local alias because the accept paths below read better for it;
-// the derivation itself is shared with the other listeners, which record
-// the same field on a denial.
-func eventTLS(pctx *pipeline.Context) *pipeline.EventTLS {
-	return sessionevent.TLS(pctx)
-}
-
 // Handler returns the HTTP handler for the reverse proxy.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(s.handleRequest)
@@ -420,41 +409,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// by the body-rewrite block above and the transport, so leave them untouched.
 	httpx.SyncRequestHeaders(r, pctx.Headers)
 
-	// Record the inbound request event whenever there is something
-	// observable: an A2A conversation, plugin invocations, or plugin-public
-	// Custom entries. Mirrors extproc.recordInboundSession's widened gate so
-	// observability does not depend on the a2a-parser being in the pipeline
-	// (e.g. a jwt-validation allow on an auth-only agent must still show, just
-	// as denials already do via recordInboundReject). The A2A-specific session
-	// rekey in modifyResponse stays A2A-gated.
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	// Record every inbound request the pipeline saw, even with no plugin
 	// activity (skip_hosts is N/A inbound).
 	if s.Sessions != nil {
-		sid := inboundSessionID(pctx)
-		// Snapshot-copy the protocol extension and use the shared helpers
-		// for plugin invocations / observability / identity. Mirrors what
-		// extproc does so request events don't pick up response-phase
-		// mutations on the same pctx.Extensions.A2A struct.
-		s.Sessions.Append(sid, pipeline.SessionEvent{
-			At:             time.Now(),
-			Direction:      pipeline.Inbound,
-			Phase:          pipeline.SessionRequest,
-			RequestID:      pctx.RequestID(),
-			BytesUp:        int64(len(pctx.Body)),
-			A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
-			Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-			Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-			Plugins:        plugins,
-			Identity:       pipeline.SnapshotIdentity(pctx),
-			Client:         pctx.ClientInfo(),
-			Subagent:       pctx.Subagent(),
-			ParentSubagent: pctx.ParentSubagent(),
-			Host:           pctx.Host,
-			HTTPMethod:     pctx.Method,
-			HTTPPath:       pctx.Path,
-			TLS:            eventTLS(pctx),
-		})
+		s.Sessions.Append(inboundSessionID(pctx), sessionevent.Request(pctx, pipeline.Inbound))
 	}
 
 	r = r.WithContext(context.WithValue(r.Context(), pctxKey{}, pctx))
@@ -633,36 +591,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		if s.Sessions == nil {
 			return
 		}
-		plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 		// Always pair every inbound request with a response row (carries StatusCode).
-		sid := inboundSessionID(pctx)
-		// Inference is the token report, and it is what a cost consumer reads: without it
-		// this listener served a whole `configured` cost for zero tokens, because the cost
-		// record reaches the event through Plugins and only the counts were dropped. See
-		// SnapshotInference.
-		s.Sessions.Append(sid, pipeline.SessionEvent{
-			At:             time.Now(),
-			Direction:      pipeline.Inbound,
-			Phase:          pipeline.SessionResponse,
-			RequestID:      pctx.RequestID(),
-			BytesDown:      pctx.ResponseBytes,
-			A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
-			Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-			Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-			Plugins:        plugins,
-			Identity:       pipeline.SnapshotIdentity(pctx),
-			Client:         pctx.ClientInfo(),
-			Subagent:       pctx.Subagent(),
-			ParentSubagent: pctx.ParentSubagent(),
-			Host:           pctx.Host,
-			HTTPMethod:     pctx.Method,
-			HTTPPath:       pctx.Path,
-			StatusCode:     resp.StatusCode,
-			Error:          pipeline.DeriveError(pctx),
-			Duration:       pipeline.DurationSince(pctx.StartedAt),
-			Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
-			TLS:            eventTLS(pctx),
-		})
+		s.Sessions.Append(inboundSessionID(pctx), sessionevent.Response(pctx, pipeline.Inbound, resp.StatusCode, nil))
 	}
 	// A 101 is recorded here, not deferred: ReverseProxy never copies its body —
 	// it hands the connection to the upgraded protocol — so on a failed upgrade
@@ -832,7 +762,6 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 	if s.Sessions == nil {
 		return
 	}
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	// Always record the streaming response (carries StatusCode), even with
 	// no plugin activity.
 	sid := inboundSessionID(pctx)
@@ -842,32 +771,9 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
 		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
 	}
-	// Inference as in the buffered path, and this is the one most inference traffic
-	// takes: the counts arrive on the closing frames, so onClose runs after the fold
-	// has finished and the snapshot is the whole turn.
-	s.Sessions.Append(sid, pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Inbound,
-		Phase:          pipeline.SessionResponse,
-		RequestID:      pctx.RequestID(),
-		BytesDown:      pctx.ResponseBytes,
-		A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		StatusCode:     statusCode,
-		Error:          pipeline.EventErrorOr(pctx, fail),
-		Duration:       pipeline.DurationSince(pctx.StartedAt),
-		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
-		TLS:            eventTLS(pctx),
-	})
+	// The counts arrive on the closing frames, so onClose runs after the fold has
+	// finished and the Inference snapshot is the whole turn.
+	s.Sessions.Append(sid, sessionevent.Response(pctx, pipeline.Inbound, statusCode, fail))
 }
 
 // recordOnEOFBody defers the response row of the fully-unbuffered relay to
