@@ -309,7 +309,7 @@ jobs:
       # pre-enable check in CONTRIBUTING for that reason. Nothing in this job
       # compiles: it receives finished tarballs from jobs that cannot write.
       contents: write
-      # Build provenance for the cortex-cpex tarballs (actions/attest-build-provenance).
+      # Build provenance for every tarball (actions/attest-build-provenance).
       id-token: write
       attestations: write
     env:
@@ -357,12 +357,12 @@ jobs:
           ls -l dist
           cat dist/checksums.txt
 
-      - name: Attest build provenance for cortex-cpex
+      - name: Attest build provenance
         # Same condition as the publish step: a dry run attests nothing.
         if: github.event_name == 'push'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
-          subject-path: dist/cortex-cpex_*.tar.gz
+          subject-path: dist/*.tar.gz
 
       - name: Publish to GitHub Release
         # A main push publishes too, which is the whole point of the channel; the
@@ -411,8 +411,9 @@ jobs:
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
           add '`cortex-cpex_*` is `cortex` built with the cpex policy plugin, for macOS arm64 and'
-          add 'linux amd64/arm64 (static). Install it with `install.sh --cpex`; its provenance'
-          add 'verifies with `gh attestation verify <tarball> --repo rossoctl/cortex`.'
+          add 'linux amd64/arm64 (static). Install it with `install.sh --cpex`.'
+          add 'Every tarball carries build provenance:'
+          add '`gh attestation verify <tarball> --repo rossoctl/cortex`.'
           add ''
           # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
           # user will look. Drop this once no supported release predates it.

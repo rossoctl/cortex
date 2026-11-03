@@ -136,8 +136,8 @@ cortex --version                                         # cortex (cpex) v0.9.3
 curl -s http://127.0.0.1:47601/v1/plugins | grep -c '"name":"cpex"'   # 1
 ```
 
-The tarballs carry build provenance as well as their `checksums.txt` entry:
-`gh attestation verify cortex-cpex_<version>_<os>_<arch>.tar.gz --repo rossoctl/cortex`.
+Every release tarball, cpex or not, carries build provenance as well as its `checksums.txt`
+entry: `gh attestation verify <tarball> --repo rossoctl/cortex`.
 
 The choice is not remembered. Re-running the installer without `--cpex` installs the
 default build again, and says so first; keep passing `--cpex` to stay on it. Against a
