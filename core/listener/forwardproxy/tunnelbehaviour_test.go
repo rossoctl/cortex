@@ -19,7 +19,7 @@ import (
 
 const (
 	tunnelBanner = "SSH-2.0-banner\r\n"
-	bigTransfer  = 4 << 20 // larger than the socket buffers, so a one-way-at-a-time copy stalls
+	bigTransfer  = 32 << 20 // larger than the socket buffers on both legs (macOS lets each grow to 4 MiB)
 )
 
 var bigPayload = bytes.Repeat([]byte("0123456789abcdef"), bigTransfer/16)
@@ -82,13 +82,12 @@ var tunnelCases = []tunnelCase{
 	{
 		name: "large transfer both ways at once",
 		serve: func(c net.Conn) string {
-			wrote := make(chan error, 1)
-			go func() { _, err := c.Write(bigPayload); wrote <- err }()
-			n := readCount(c)
-			if err := <-wrote; err != nil {
+			// Write all of it before reading: a tunnel that copies one way at a time
+			// is still waiting for the client's EOF, so the two sides deadlock.
+			if _, err := c.Write(bigPayload); err != nil {
 				return err.Error()
 			}
-			return n
+			return readCount(c)
 		},
 		drive: func(conn net.Conn, r io.Reader) string {
 			wrote := make(chan error, 1)
