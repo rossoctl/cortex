@@ -37,3 +37,24 @@ func TestKey_NamespacesHandle(t *testing.T) {
 		t.Fatalf("Key = %q", got)
 	}
 }
+
+type mapStore map[string]any
+
+func (m mapStore) Get(k string) (any, bool) { v, ok := m[k]; return v, ok }
+
+func TestResolve_FailsClosed(t *testing.T) {
+	store := mapStore{Key("abph_ok"): "real", Key("abph_int"): 42}
+	if got, ok := Resolve(store, "abph_ok"); !ok || got != "real" {
+		t.Fatalf("Resolve(known) = %q, %v", got, ok)
+	}
+	for _, h := range []string{"abph_missing", "abph_int"} {
+		if got, ok := Resolve(store, h); ok || got != "" {
+			t.Errorf("Resolve(%q) = %q, %v; want fail closed", h, got, ok)
+		}
+	}
+	// A nil interface from pipeline.Context.Shared must fail closed, not panic.
+	var none interface{ Get(string) (any, bool) }
+	if _, ok := Resolve(none, "abph_ok"); ok {
+		t.Error("Resolve with no store succeeded")
+	}
+}

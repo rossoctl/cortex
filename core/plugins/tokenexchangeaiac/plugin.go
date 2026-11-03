@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -317,7 +318,7 @@ func (p *TokenExchangeAIAC) OnRequest(ctx context.Context, pctx *pipeline.Contex
 	// placeholder.
 	subject := auth.ExtractBearer(pctx.Headers.Get("Authorization"))
 	if p.cfg.ResolvePlaceholders && placeholder.IsPlaceholder(subject) {
-		real, ok := resolvePlaceholder(pctx, subject)
+		real, ok := placeholder.Resolve(pctx.Shared, subject)
 		if !ok {
 			p.denied.Add(1)
 			return pctx.DenyAndRecord(reasonPlaceholderUnresolved, "auth.unauthorized", "unresolvable credential placeholder")
@@ -508,20 +509,6 @@ func (p *TokenExchangeAIAC) exchangeSelfOnce(ctx context.Context, creds credenti
 	return tok, hit, err
 }
 
-// resolvePlaceholder looks a handle up in the shared store. Returns ok=false
-// (fail closed) when no store is wired or the handle is unknown or expired.
-func resolvePlaceholder(pctx *pipeline.Context, handle string) (string, bool) {
-	if pctx.Shared == nil {
-		return "", false
-	}
-	v, ok := pctx.Shared.Get(placeholder.Key(handle))
-	if !ok {
-		return "", false
-	}
-	s, ok := v.(string)
-	return s, ok
-}
-
 // selfToken returns this workload's own client-credentials token, cached, and
 // whether it came from the cache.
 func (p *TokenExchangeAIAC) selfToken(ctx context.Context, creds credentials) (string, bool, error) {
@@ -542,7 +529,7 @@ func (p *TokenExchangeAIAC) replace(pctx *pipeline.Context, details map[string]s
 	if cacheHit {
 		reason = reasonCacheHit
 	}
-	details["cache_hit"] = boolString(cacheHit)
+	details["cache_hit"] = strconv.FormatBool(cacheHit)
 	recordDelegationHop(pctx, token, details["target_audience"], cacheHit)
 	pctx.Record(pipeline.Invocation{Action: pipeline.ActionModify, Reason: reason, Details: details})
 	return pipeline.Action{Type: pipeline.Continue}
@@ -576,7 +563,7 @@ func recordDelegationHop(pctx *pipeline.Context, token, audience string, cacheHi
 // unchanged — including whatever Authorization header the workload sent.
 func (p *TokenExchangeAIAC) passUnknown(pctx *pipeline.Context, details map[string]string, cached bool) pipeline.Action {
 	p.unknownPassed.Add(1)
-	details["cached"] = boolString(cached)
+	details["cached"] = strconv.FormatBool(cached)
 	pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: reasonAudienceUnknown, Details: details})
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -600,13 +587,6 @@ func (p *TokenExchangeAIAC) Metrics() []pipeline.Metric {
 		{Name: PluginName + ".not_eligible", Value: float64(p.notEligible.Load()), Unit: "count", Note: "requests to hosts not offered to the IdP"},
 		{Name: PluginName + ".denied", Value: float64(p.denied.Load()), Unit: "count"},
 	}
-}
-
-func boolString(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
 
 var (

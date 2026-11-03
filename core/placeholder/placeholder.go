@@ -37,3 +37,17 @@ func IsPlaceholder(token string) bool {
 func Key(handle string) string {
 	return keyNamespace + handle
 }
+
+// Resolve looks a handle up in store. It returns ok=false (fail closed) when
+// store is nil or the handle is unknown or expired.
+func Resolve(store interface{ Get(string) (any, bool) }, handle string) (string, bool) {
+	if store == nil {
+		return "", false
+	}
+	v, ok := store.Get(Key(handle))
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
