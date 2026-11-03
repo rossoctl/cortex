@@ -409,14 +409,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// by the body-rewrite block above and the transport, so leave them untouched.
 	httpx.SyncRequestHeaders(r, pctx.Headers)
 
-	// Record the inbound request event whenever there is something
-	// observable: an A2A conversation, plugin invocations, or plugin-public
-	// Custom entries. Mirrors extproc.recordInboundSession's widened gate so
-	// observability does not depend on the a2a-parser being in the pipeline
-	// (e.g. a jwt-validation allow on an auth-only agent must still show, just
-	// as denials already do via recordInboundReject). The A2A-specific session
-	// rekey in modifyResponse stays A2A-gated.
-	//
 	// Record every inbound request the pipeline saw, even with no plugin
 	// activity (skip_hosts is N/A inbound).
 	if s.Sessions != nil {
