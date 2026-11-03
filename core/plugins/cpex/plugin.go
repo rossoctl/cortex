@@ -51,13 +51,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path"
 	"strings"
 	"sync/atomic"
 
 	"github.com/rossoctl/cortex/core/bypass"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/plugins/internal/hostmatch"
 	"github.com/rossoctl/cortex/core/spiffe"
 )
 
@@ -78,7 +78,7 @@ type CPEX struct {
 
 	// bypassHosts is the resolved host glob list. Lower-cost than a
 	// matcher because we only compare against a single host per
-	// request; the goroutine-safe scan happens via matchesAnyHost.
+	// request; the goroutine-safe scan happens via hostmatch.MatchesAny.
 	bypassHosts []string
 
 	// strictHosts is the compiled strict_hosts list: outbound
@@ -429,7 +429,7 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	// pre-validated (it is resolved inside this very chain), so a spoofed Host
 	// must not skip CPEX. Path bypass (above) still applies inbound for
 	// health/discovery. See security review Finding 1.
-	if pctx.Direction == pipeline.Outbound && matchesAnyHost(p.bypassHosts, pctx.Host) {
+	if pctx.Direction == pipeline.Outbound && hostmatch.MatchesAny(p.bypassHosts, pctx.Host) {
 		pctx.Skip("host_bypass")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -479,26 +479,6 @@ func (p *CPEX) handleInvokeError(pctx *pipeline.Context, hook string, err error)
 		"cpex invocation failed",
 		nil,
 	)
-}
-
-// matchesAnyHost reports whether host matches any glob in patterns
-// using path.Match. The host is stripped of its port first so
-// "keycloak.local:8081" matches "keycloak.*" naturally. Duplicated
-// from ibac (small enough that the cross-plugin dependency isn't
-// worth it; the bypass vocabulary may diverge over time).
-func matchesAnyHost(patterns []string, host string) bool {
-	if host == "" {
-		return false
-	}
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	for _, p := range patterns {
-		if ok, _ := path.Match(p, host); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // sanitizeReason flattens an arbitrary string (a sub-plugin name, a

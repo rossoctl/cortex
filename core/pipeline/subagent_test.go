@@ -62,7 +62,7 @@ func TestSubagent_TrimsSurroundingSpace(t *testing.T) {
 
 // A value that cannot be recorded is REFUSED, not cleaned up: the id is a join key
 // against agent-<id>.meta.json, and a sanitised one would match nothing while looking
-// like an answer. Each case is one of hasControlRunes' clauses or the length bound.
+// like an answer. Each case is one of HasControlRunes' clauses or the length bound.
 func TestSubagent_RefusesUnusableValues(t *testing.T) {
 	for name, v := range map[string]string{
 		"C0 escape":       "a1a2\x1b[2Je36cb",

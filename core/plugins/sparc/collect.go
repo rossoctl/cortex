@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -142,17 +141,6 @@ func anyGlobMatch(patterns []string, name string) bool {
 		}
 	}
 	return false
-}
-
-// matchesAnyHost reports whether host matches any glob (path.Match), port stripped.
-func matchesAnyHost(patterns []string, host string) bool {
-	if host == "" {
-		return false
-	}
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	return anyGlobMatch(patterns, host)
 }
 
 // preview truncates s to n runes, appending an ellipsis when truncated.

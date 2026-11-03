@@ -579,7 +579,7 @@ func TestParseUserAgent_SanitisesControlCharactersBeforeLabel(t *testing.T) {
 			// And every field, since Raw is persisted and Version is joined into the label
 			// for a recognised agent.
 			for name, got := range map[string]string{"Raw": c.Raw, "Version": c.Version, "Label": c.Label()} {
-				if hasControlRunes(got) {
+				if HasControlRunes(got) {
 					t.Errorf("%s = %q still carries a control character", name, got)
 				}
 			}
@@ -619,7 +619,7 @@ func TestParseUserAgent_SanitisesBeforeCappingAndStillHonoursTheByteCap(t *testi
 		t.Errorf("Raw is %d bytes, want <= %d; the cap bounds retained memory and the "+
 			"length of a persisted line, so it has to be a BYTE cap", len(c.Raw), maxClientLen)
 	}
-	if hasControlRunes(c.Raw) {
+	if HasControlRunes(c.Raw) {
 		t.Errorf("Raw = %q: capping must not be able to reintroduce a control character", c.Raw)
 	}
 	// A cut mid-U+FFFD is invalid UTF-8 in a string that goes to a durable file and to a
@@ -682,10 +682,33 @@ func TestParseUserAgent_CapCutsOnARuneBoundary(t *testing.T) {
 	}
 }
 
+// The one-byte prefix puts a rune across the cap for every width, so each case names
+// the boundary the walk-back must stop on.
+func TestTruncateLabel_CutsOnTheLastRuneBoundaryAtOrBelowTheCap(t *testing.T) {
+	for _, tc := range []struct {
+		rune    string
+		wantLen int
+	}{
+		{"é", 95},
+		{"€", 94},
+		{"𝄞", 93},
+		{"�", 94},
+	} {
+		got := TruncateLabel("a"+strings.Repeat(tc.rune, 96), 96)
+		if len(got) != tc.wantLen || !utf8.ValidString(got) {
+			t.Errorf("%q runes: got %d bytes (valid UTF-8: %v), want %d",
+				tc.rune, len(got), utf8.ValidString(got), tc.wantLen)
+		}
+	}
+	if got := TruncateLabel("short", 96); got != "short" {
+		t.Errorf("a label under the cap changed: %q", got)
+	}
+}
+
 // EVERY MEMBER OF isControlRune's SWITCH, with a literal expectation for each.
 //
-// The predicate cannot be its own oracle: hasControlRunes calls isControlRune, so a loop
-// asserting !hasControlRunes(got) stays green when a rune is deleted from the switch —
+// The predicate cannot be its own oracle: HasControlRunes calls isControlRune, so a loop
+// asserting !HasControlRunes(got) stays green when a rune is deleted from the switch —
 // verified by deleting U+200C, which no test in this package noticed. A member missing from
 // the switch is a rune that reaches a durable row and a chart intact, so each one is pinned
 // against the exact string it must become.

@@ -436,7 +436,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 		// written to an append-only file an operator reads. One over-long line permanently
 		// ends every future read of that day at its offset (see maxLabelLen for the
 		// arithmetic); one escape sequence rewrites the terminal of whoever cats the file
-		// (see sanitizeLabel). rowLabel applies both, in the order that keeps the length
+		// (see rowLabel). rowLabel applies both, in the order that keeps the length
 		// bound true.
 		//
 		// Host is the event's field name; endpoint is what it means here. See Row.Endpoint.

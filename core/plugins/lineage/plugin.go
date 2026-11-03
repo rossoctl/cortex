@@ -59,7 +59,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"path"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -81,6 +80,7 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/plugins/internal/hostmatch"
 )
 
 const pluginName = "lineage-telemetry"
@@ -591,7 +591,7 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 	// by sending "Host: otel-collector". cpex reached the same conclusion for
 	// the same reason (its bypass_hosts is outbound-only for an attacker-
 	// controlled inbound Host).
-	if pctx.Direction == pipeline.Outbound && matchesAnyHost(p.cfg.BypassHosts, pctx.Host) {
+	if pctx.Direction == pipeline.Outbound && hostmatch.MatchesAny(p.cfg.BypassHosts, pctx.Host) {
 		pctx.Skip("bypass_host")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -768,38 +768,6 @@ func (p *LineageTelemetry) restampTracestate(pctx *pipeline.Context, remoteCtx c
 	}
 	pctx.Headers.Set("tracestate", ts.String())
 	return true
-}
-
-// matchesAnyHost reports whether host matches any configured bypass_hosts
-// glob. Semantics follow the convention ibac, sparc and cpex already share
-// for this key: path.Match against the host with its port stripped, so
-// "otel-collector.*" matches otel-collector.rossoctl-system.svc:4317.
-//
-// The anchoring is the point. The earlier strings.Contains match was
-// unanchored against bare-word defaults, so a legitimate workload at
-// prometheus-metrics-agent.team1.svc silently left the lineage graph, and a
-// tenant could opt out of being graphed at all by naming a service to contain
-// one of the default words. A glob has to match from the first character.
-//
-// Two deliberate differences from the siblings, both strict improvements:
-// the port is split with net.SplitHostPort so an IPv6 literal ([::1]:4317)
-// survives, and matching is case-folded because an authority is
-// case-insensitive (RFC 3986) — a target spelled OTel-Collector would
-// otherwise be recorded while otel-collector was skipped.
-func matchesAnyHost(patterns []string, host string) bool {
-	if host == "" {
-		return false
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.ToLower(host)
-	for _, pattern := range patterns {
-		if matched, _ := path.Match(strings.ToLower(pattern), host); matched {
-			return true
-		}
-	}
-	return false
 }
 
 // stampedParent resolves the tracestate stamp on an outbound wire context:

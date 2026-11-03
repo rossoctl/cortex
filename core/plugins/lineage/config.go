@@ -143,7 +143,7 @@ type Config struct {
 	// BypassHosts lists host globs whose exchanges should not generate lineage
 	// hops. Useful for suppressing infrastructure outbound calls such as OTel
 	// trace exports. Matched with path.Match against the request Host with the
-	// port stripped and case folded — see matchesAnyHost — so "otel-collector"
+	// port stripped and case folded — see hostmatch.MatchesAny — so "otel-collector"
 	// matches only that exact name and "otel-collector.*" matches
 	// otel-collector.rossoctl-system.svc. This is the glob convention ibac,
 	// sparc and cpex already use for the key of the same name; the defaults
