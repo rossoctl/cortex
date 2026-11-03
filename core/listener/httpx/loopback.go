@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -25,4 +26,22 @@ func LoopbackHost(hostport string) bool {
 		return true
 	}
 	return false
+}
+
+// LoopbackOnly answers 403 to a request whose Host is not a loopback name (this
+// defeats DNS rebinding) or that carries an Origin header (a browser always sends
+// one, and a no-cors GET needs no preflight), and passes every other request to h.
+// It is the browser defense for a server that only this machine may read.
+func LoopbackOnly(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !LoopbackHost(r.Host) {
+			http.Error(w, "served only for a loopback Host (localhost, 127.0.0.1 or [::1])", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "refused from a browser: the request carries an Origin header", http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }

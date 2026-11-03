@@ -1177,7 +1177,8 @@ func main() {
 	// pprof exposes the process's internals (allocation stack traces, argv,
 	// caller-started CPU/trace profiling), so it rides the same loopback-only
 	// gate as the session API's clear.
-	statOpts = append(statOpts, observe.WithPprof(cfg.Listener.BindLoopbackOnly))
+	statOpts = append(statOpts, observe.WithPprof(cfg.Listener.BindLoopbackOnly),
+		observe.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly))
 	statSrv := bootstrap.ServeStatServer(rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(),
 		listeners.take("stats"), statOpts...)
 
@@ -1203,6 +1204,8 @@ func main() {
 			// machine's alone: a laptop install binds loopback-only, and its one user owns the
 			// history. See sessionapi.clearRefusal.
 			sessionapi.WithClearAllowed(cfg.Listener.BindLoopbackOnly),
+			// Reads hold raw prompts: the same browser defenses as the erase, on every route.
+			sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
 		)
 		sessionLn := listeners.take("session-api")
 		go func() {

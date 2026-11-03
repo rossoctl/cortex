@@ -332,6 +332,10 @@ that is a promise a test asserts against the serialized bytes, not a convention.
 **Who can read them.** Anything that can read your home directory, and anything that can
 reach the session API, which is **unauthenticated** (the proxy logs `UNAUTHENTICATED; contains
 raw user content; never expose via ingress` when it starts). On a laptop it binds to localhost.
+It also refuses, with a 403, every request whose `Host` is not `localhost`, `127.0.0.1` or
+`[::1]`, and every request that carries an `Origin` header. That stops a web page from reading
+your sessions through DNS rebinding. The stats server (`:47602`, which serves `/config`) refuses
+them the same way.
 
 `agentop` is one of those readers now, and the distinction is worth being exact about:
 `GET /v1/usage` reaches these files only for the symbolic windows `today`, `7d` and `month`,

@@ -21,6 +21,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/ledger"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/redact"
 	"github.com/rossoctl/cortex/core/session"
@@ -67,6 +68,8 @@ type Server struct {
 	allowClear     bool
 	clearRefusals  atomic.Uint64
 	lastRefusalLog atomic.Int64
+	// loopbackOnly wraps every route in httpx.LoopbackOnly. See WithLoopbackOnly.
+	loopbackOnly bool
 	// loggedDropped is the highest writer-drop total this server has already logged, so the write-side
 	// warning fires on a CHANGE rather than on every request. See the usage handler: the drop count is
 	// process-cumulative, so logging it per read turned one lost row into a warning on every poll for
@@ -191,6 +194,14 @@ func WithCatalog(c CatalogProvider) Option {
 	return func(s *Server) { s.catalog = c }
 }
 
+// WithLoopbackOnly answers 403 on every route to a non-loopback Host or a request
+// carrying Origin (httpx.LoopbackOnly), so a page doing DNS rebinding cannot read
+// sessions, which hold raw prompts and completions. The binary passes
+// listener.bind_loopback_only, as for WithClearAllowed.
+func WithLoopbackOnly(enabled bool) Option {
+	return func(s *Server) { s.loopbackOnly = enabled }
+}
+
 // New constructs an HTTP server serving the session API at addr. store must
 // be non-nil; callers should only instantiate when session tracking is on.
 func New(addr string, store *session.Store, opts ...Option) *Server {
@@ -216,9 +227,13 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 
+	var handler http.Handler = mux
+	if s.loopbackOnly {
+		handler = httpx.LoopbackOnly(mux)
+	}
 	s.server = &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
