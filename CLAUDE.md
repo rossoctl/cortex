@@ -373,7 +373,7 @@ darwin/amd64 FFI. The executable inside is still `cortex`, and `cortex
 --version` prints `cortex (cpex) <ver>`. The workflow's jobs are `version`,
 `build`, `build-cpex` (both `contents: read`) and `publish`, which alone
 writes, refuses to publish unless every expected tarball arrived, writes one
-`checksums.txt` over all of them, and attests the cpex tarballs' build
+`checksums.txt` over all of them, and attests every tarball's build
 provenance. `install.sh --cpex` installs it; `make cortex-cpex` builds the same
 thing locally to `bin/cortex-cpex/cortex`.
 
