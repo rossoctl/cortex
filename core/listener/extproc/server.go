@@ -359,30 +359,11 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 	// Widened gate (was: A2A == nil). Any of A2A / Auth / plugin-public
 	// Custom entries qualify. Keeps traffic with no protocol parser but
 	// meaningful auth state visible in the session stream.
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && plugins == nil {
+	ev := sessionevent.Request(pctx, pipeline.Inbound)
+	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && ev.Plugins == nil {
 		return
 	}
-	sid := inboundSessionID(pctx)
-	ev := pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Inbound,
-		Phase:          pipeline.SessionRequest,
-		RequestID:      pctx.RequestID(),
-		BytesUp:        int64(len(pctx.Body)),
-		A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-	}
-	s.Sessions.Append(sid, ev)
+	s.Sessions.Append(inboundSessionID(pctx), ev)
 }
 
 // recordInboundReject emits a SessionDenied event for requests a pipeline
@@ -442,38 +423,11 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 	if s.Sessions == nil {
 		return
 	}
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && plugins == nil {
+	ev := sessionevent.Response(pctx, pipeline.Inbound, pctx.StatusCode, nil)
+	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && ev.Plugins == nil {
 		return
 	}
-	sid := inboundSessionID(pctx)
-	// Inference carries the token counts, and inbound inference is a real shape — an
-	// ext_proc sidecar in front of a model endpoint, the same case a reverse proxy
-	// serves. Omitting it published a priced cost with no counts behind it; see
-	// SnapshotInference for why that reads as free traffic rather than as a gap.
-	ev := pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Inbound,
-		Phase:          pipeline.SessionResponse,
-		RequestID:      pctx.RequestID(),
-		BytesDown:      pctx.ResponseBytes,
-		A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		StatusCode:     pctx.StatusCode,
-		Error:          pipeline.DeriveError(pctx),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		Duration:       pipeline.DurationSince(pctx.StartedAt),
-		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-	}
-	s.Sessions.Append(sid, ev)
+	s.Sessions.Append(inboundSessionID(pctx), ev)
 }
 
 // recordOutboundResponseSession appends a Phase:SessionResponse event for the
@@ -487,34 +441,12 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	ev := pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Outbound,
-		Phase:          pipeline.SessionResponse,
-		RequestID:      pctx.RequestID(),
-		BytesDown:      pctx.ResponseBytes,
-		MCP:            pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		StatusCode:     pctx.StatusCode,
-		Error:          pipeline.DeriveError(pctx),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		Duration:       pipeline.DurationSince(pctx.StartedAt),
-		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-	}
+	ev := sessionevent.Response(pctx, pipeline.Outbound, pctx.StatusCode, nil)
 	// Auth / Plugins alone qualify for recording; matches the widened
 	// gate in recordInboundSession so outbound denials and plugin-public
 	// observability aren't dropped just because the response carried no
 	// MCP/Inference payload.
-	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
+	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || ev.Plugins != nil {
 		s.Sessions.Append(sid, ev)
 	}
 }
@@ -542,26 +474,8 @@ func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	ev := pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Outbound,
-		Phase:          pipeline.SessionRequest,
-		RequestID:      pctx.RequestID(),
-		BytesUp:        int64(len(pctx.Body)),
-		MCP:            pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-	}
-	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || plugins != nil {
+	ev := sessionevent.Request(pctx, pipeline.Outbound)
+	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || ev.Plugins != nil {
 		s.Sessions.Append(sid, ev)
 	}
 }

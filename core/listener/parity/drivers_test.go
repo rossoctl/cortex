@@ -337,6 +337,14 @@ type observation struct {
 	// saw money for zero tokens. Comparing the money without the counts is what let
 	// that through.
 	Inference *inferenceSummary
+	// A2AMethod and MCPMethod are the protocol parse the event carried, "" when it
+	// carried none. Each listener used to copy only the extension it expected in its
+	// direction — outbound rows dropped A2A, inbound rows dropped MCP — while the
+	// parsers run on either chain, so a match recorded its invocation and lost its
+	// parse (#1575). The method stands for the whole extension: every listener now
+	// snapshots both through one builder, so a listener that kept the method kept it.
+	A2AMethod string
+	MCPMethod string
 }
 
 // inferenceSummary is the token report, flattened to the fields a cost or usage
@@ -503,6 +511,12 @@ func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wan
 			ReasoningTokens:  ev.Inference.ReasoningTokens,
 			PresentKinds:     ev.Inference.PresentKinds,
 		}
+	}
+	if ev.A2A != nil {
+		obs.A2AMethod = ev.A2A.Method
+	}
+	if ev.MCP != nil {
+		obs.MCPMethod = ev.MCP.Method
 	}
 	for k, raw := range ev.Plugins {
 		obs.PluginKeys = append(obs.PluginKeys, k)

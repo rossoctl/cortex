@@ -235,3 +235,124 @@ func keysOf[V any](m map[string]V) []string {
 	}
 	return out
 }
+
+// withProtocolParses adds the two extensions each listener used to keep for one
+// direction only, plus a response the pipeline saw.
+func withProtocolParses(pctx *pipeline.Context) *pipeline.Context {
+	pctx.Body = []byte(`{"jsonrpc":"2.0"}`)
+	pctx.ResponseBytes = 42
+	pctx.ResponseHeadersAt = time.Now()
+	pctx.Extensions.A2A = &pipeline.A2AExtension{Method: "message/send"}
+	pctx.Extensions.MCP = &pipeline.MCPExtension{Method: "tools/call"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+	return pctx
+}
+
+// Request and Response carry every extension in BOTH directions (#1575). Each listener
+// used to build its own literal, and the copies kept A2A inbound only and MCP outbound
+// only, while the parsers run on either chain.
+func TestRequestResponse_CarryEveryProtocolInEitherDirection(t *testing.T) {
+	for _, dir := range []pipeline.Direction{pipeline.Inbound, pipeline.Outbound} {
+		pctx := withProtocolParses(richContext())
+		for _, ev := range []pipeline.SessionEvent{
+			Request(pctx, dir),
+			Response(pctx, dir, 200, nil),
+		} {
+			name := dir.String() + "/" + ev.Phase.String()
+			if ev.Direction != dir {
+				t.Errorf("%s: Direction = %v", name, ev.Direction)
+			}
+			if ev.A2A == nil || ev.A2A.Method != "message/send" {
+				t.Errorf("%s: A2A = %+v, want the parse", name, ev.A2A)
+			}
+			if ev.MCP == nil || ev.MCP.Method != "tools/call" {
+				t.Errorf("%s: MCP = %+v, want the parse", name, ev.MCP)
+			}
+			if ev.Inference == nil || ev.Inference.Model != "m" {
+				t.Errorf("%s: Inference = %+v, want the parse", name, ev.Inference)
+			}
+			if ev.Identity == nil || ev.Identity.Subject != "alice" {
+				t.Errorf("%s: Identity = %+v", name, ev.Identity)
+			}
+			if _, ok := ev.Plugins["parity-spy-a"]; !ok {
+				t.Errorf("%s: Plugins missing the spy's event", name)
+			}
+			if ev.TLS == nil || ev.Client == nil || ev.Subagent == "" || ev.ParentSubagent == "" {
+				t.Errorf("%s: TLS=%v Client=%v Subagent=%q ParentSubagent=%q, want all set",
+					name, ev.TLS, ev.Client, ev.Subagent, ev.ParentSubagent)
+			}
+		}
+	}
+}
+
+// The extensions are snapshots: a response-phase change to the live struct, such as
+// token counts set in OnResponse, must not reach a row that was already built.
+func TestRequest_SnapshotsTheExtensions(t *testing.T) {
+	pctx := withProtocolParses(richContext())
+	ev := Request(pctx, pipeline.Outbound)
+	pctx.Extensions.A2A.Method = "changed"
+	pctx.Extensions.MCP.Method = "changed"
+	pctx.Extensions.Inference.Model = "changed"
+	if ev.A2A.Method != "message/send" || ev.MCP.Method != "tools/call" || ev.Inference.Model != "m" {
+		t.Errorf("row followed the live extensions: A2A=%q MCP=%q Inference=%q",
+			ev.A2A.Method, ev.MCP.Method, ev.Inference.Model)
+	}
+}
+
+// Each phase carries its own half: the request row the body sent and the request's own
+// attribution, the response row the outcome. The other half stays zero.
+func TestRequestResponse_EachPhaseCarriesItsOwnHalf(t *testing.T) {
+	pctx := withProtocolParses(richContext())
+	pctx.SetAttribution("100.200", "101.201", "X-Session")
+	pctx.UpgradeStripped = "h2c"
+
+	req := Request(pctx, pipeline.Outbound)
+	if req.Phase != pipeline.SessionRequest || req.BytesUp != int64(len(pctx.Body)) {
+		t.Errorf("request: Phase=%v BytesUp=%d", req.Phase, req.BytesUp)
+	}
+	if req.Proc != "100.200" || req.ClientProc != "101.201" || req.SessionHeader != "X-Session" || req.UpgradeStripped != "h2c" {
+		t.Errorf("request: Proc=%q ClientProc=%q SessionHeader=%q UpgradeStripped=%q",
+			req.Proc, req.ClientProc, req.SessionHeader, req.UpgradeStripped)
+	}
+	if req.BytesDown != 0 || req.StatusCode != 0 || req.Error != nil || req.Duration != 0 || req.Ttfb != 0 {
+		t.Errorf("request carries response fields: %+v", req)
+	}
+
+	fail := &pipeline.EventError{Kind: "upstream_timeout"}
+	resp := Response(pctx, pipeline.Outbound, 502, fail)
+	if resp.Phase != pipeline.SessionResponse || resp.StatusCode != 502 || resp.Error != fail {
+		t.Errorf("response: Phase=%v StatusCode=%d Error=%+v", resp.Phase, resp.StatusCode, resp.Error)
+	}
+	if resp.BytesDown != 42 || resp.Duration <= 0 || resp.Ttfb <= 0 || resp.Proc != "100.200" {
+		t.Errorf("response: BytesDown=%d Duration=%v Ttfb=%v Proc=%q", resp.BytesDown, resp.Duration, resp.Ttfb, resp.Proc)
+	}
+	if resp.BytesUp != 0 || resp.ClientProc != "" || resp.SessionHeader != "" || resp.UpgradeStripped != "" {
+		t.Errorf("response carries request-only fields: BytesUp=%d ClientProc=%q SessionHeader=%q UpgradeStripped=%q",
+			resp.BytesUp, resp.ClientProc, resp.SessionHeader, resp.UpgradeStripped)
+	}
+}
+
+// With no explicit failure, Response falls back to what the response implies, as the
+// buffered recorders' DeriveError did before they shared this builder.
+func TestResponse_DerivesTheErrorWhenNoneIsGiven(t *testing.T) {
+	pctx := &pipeline.Context{StatusCode: 503}
+	ev := Response(pctx, pipeline.Inbound, 503, nil)
+	if ev.Error == nil || ev.Error.Kind != "backend_error" || ev.Error.Code != "503" {
+		t.Errorf("Error = %+v, want backend_error 503", ev.Error)
+	}
+	if ev := Response(&pipeline.Context{StatusCode: 200}, pipeline.Inbound, 200, nil); ev.Error != nil {
+		t.Errorf("Error = %+v, want nil for a 200", ev.Error)
+	}
+}
+
+// A listener that cannot know a field records nothing for it — the contract that lets
+// one builder serve all three.
+func TestRequestResponse_OmitWhatTheContextDoesNotCarry(t *testing.T) {
+	pctx := &pipeline.Context{}
+	for _, ev := range []pipeline.SessionEvent{Request(pctx, pipeline.Inbound), Response(pctx, pipeline.Inbound, 200, nil)} {
+		if ev.A2A != nil || ev.MCP != nil || ev.Inference != nil || ev.Identity != nil || ev.TLS != nil ||
+			ev.Plugins != nil || ev.Invocations != nil || ev.RequestedHost != "" || ev.Proc != "" {
+			t.Errorf("%v: populated fields pctx did not carry: %+v", ev.Phase, ev)
+		}
+	}
+}

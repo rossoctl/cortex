@@ -1,5 +1,7 @@
-// Package sessionevent builds the parts of a session event that every
-// listener should record identically.
+// Package sessionevent builds the session rows every listener records for a
+// request: Request and Response for one the pipeline let through, Deny and
+// DenyResponse for one it rejected. The tunnel rows stay with the forward
+// proxy, the only listener that has tunnels.
 //
 // It exists because the four recorders that emit a phase:"denied" event — one
 // per direction per listener — grew apart from the same copy-pasted body.
@@ -69,6 +71,87 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 			Message: message,
 		},
 		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Client:         pctx.ClientInfo(),
+		Subagent:       pctx.Subagent(),
+		ParentSubagent: pctx.ParentSubagent(),
+		Proc:           pctx.AttributedProc(),
+		TLS:            TLS(pctx),
+	}
+}
+
+// Request builds the SessionRequest row for a request the pipeline let
+// through, on any listener and in either direction.
+//
+// Every listener records through this one builder (#1575). When each built its
+// own literal, the copies drifted by direction: outbound rows never copied
+// A2A and inbound rows never copied MCP, but the parsers do not check the
+// direction. So an outbound a2a-parser match, which the session-budget demo
+// configures, recorded its invocation and lost its method, contextId and parts.
+// Every field here is empty when pctx does not carry it, so one builder serves
+// the listeners that cannot know a field as well as the ones that can.
+//
+// The extensions are snapshots, so a response-phase mutation of the same
+// struct (token counts set in OnResponse) does not reach this row.
+//
+// dir is a parameter for the reason Deny gives. The caller still decides
+// whether to record and in which session bucket.
+func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEvent {
+	return pipeline.SessionEvent{
+		At:              time.Now(),
+		Direction:       dir,
+		Phase:           pipeline.SessionRequest,
+		RequestID:       pctx.RequestID(),
+		BytesUp:         int64(len(pctx.Body)),
+		A2A:             pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		MCP:             pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:       pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations:     pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:         pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:        pipeline.SnapshotIdentity(pctx),
+		Host:            pctx.Host,
+		RequestedHost:   pctx.RequestedHost(),
+		HTTPMethod:      pctx.Method,
+		HTTPPath:        pctx.Path,
+		UpgradeStripped: pctx.UpgradeStripped,
+		Client:          pctx.ClientInfo(),
+		Subagent:        pctx.Subagent(),
+		ParentSubagent:  pctx.ParentSubagent(),
+		Proc:            pctx.AttributedProc(),
+		ClientProc:      pctx.AttributedClientProc(),
+		SessionHeader:   pctx.NamingHeader(),
+		TLS:             TLS(pctx),
+	}
+}
+
+// Response builds the SessionResponse row that pairs with Request.
+//
+// status is what the client got, and fail is an explicit failure the caller
+// has to report (nil when it has none). pipeline.EventErrorOr says why fail
+// wins over what the response implies.
+//
+// ClientProc, SessionHeader and UpgradeStripped are on the request row only.
+// They describe the request, and the response row pairs with it by RequestID.
+func Response(pctx *pipeline.Context, dir pipeline.Direction, status int, fail *pipeline.EventError) pipeline.SessionEvent {
+	return pipeline.SessionEvent{
+		At:             time.Now(),
+		Direction:      dir,
+		Phase:          pipeline.SessionResponse,
+		RequestID:      pctx.RequestID(),
+		BytesDown:      pctx.ResponseBytes,
+		A2A:            pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		MCP:            pipeline.SnapshotMCP(pctx.Extensions.MCP),
+		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
+		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
+		Plugins:        pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:       pipeline.SnapshotIdentity(pctx),
+		Host:           pctx.Host,
+		RequestedHost:  pctx.RequestedHost(),
+		HTTPMethod:     pctx.Method,
+		HTTPPath:       pctx.Path,
+		StatusCode:     status,
+		Error:          pipeline.EventErrorOr(pctx, fail),
+		Duration:       pipeline.DurationSince(pctx.StartedAt),
+		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
 		Client:         pctx.ClientInfo(),
 		Subagent:       pctx.Subagent(),
 		ParentSubagent: pctx.ParentSubagent(),

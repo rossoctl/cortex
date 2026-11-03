@@ -2161,34 +2161,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 }
 
 func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Context, sid string) {
-	// Snapshot-copy the protocol extension so the request event
-	// doesn't see response-phase mutations on the same MCP/Inference
-	// struct (e.g. token counts assigned in OnResponse).
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	ev := pipeline.SessionEvent{
-		At:              time.Now(),
-		Direction:       pipeline.Outbound,
-		Phase:           pipeline.SessionRequest,
-		RequestID:       pctx.RequestID(),
-		BytesUp:         int64(len(pctx.Body)),
-		MCP:             pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:       pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:     pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:         plugins,
-		Identity:        pipeline.SnapshotIdentity(pctx),
-		Host:            pctx.Host,
-		RequestedHost:   pctx.RequestedHost(),
-		HTTPMethod:      pctx.Method,
-		HTTPPath:        pctx.Path,
-		UpgradeStripped: pctx.UpgradeStripped,
-		Client:          pctx.ClientInfo(),
-		Subagent:        pctx.Subagent(),
-		ParentSubagent:  pctx.ParentSubagent(),
-		Proc:            pctx.AttributedProc(),
-		ClientProc:      pctx.AttributedClientProc(),
-		SessionHeader:   pctx.NamingHeader(),
-	}
-	s.appendOutbound(tl, sid, ev)
+	s.appendOutbound(tl, sid, sessionevent.Request(pctx, pipeline.Outbound))
 }
 
 // recordUnbufferedRequest records the request row and its failure row for a
@@ -2495,31 +2468,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 // (relayUpgradedWebSocket) can adjust its byte fields without forking the
 // snapshotting logic.
 func outboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) pipeline.SessionEvent {
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	return pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Outbound,
-		Phase:          pipeline.SessionResponse,
-		RequestID:      pctx.RequestID(),
-		BytesDown:      pctx.ResponseBytes,
-		MCP:            pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:      pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:    pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
-		Plugins:        plugins,
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		Host:           pctx.Host,
-		RequestedHost:  pctx.RequestedHost(),
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		StatusCode:     statusCode,
-		Error:          pipeline.EventErrorOr(pctx, fail),
-		Duration:       pipeline.DurationSince(pctx.StartedAt),
-		Ttfb:           pipeline.DurationBetween(pctx.StartedAt, pctx.ResponseHeadersAt),
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-		Proc:           pctx.AttributedProc(),
-	}
+	return sessionevent.Response(pctx, pipeline.Outbound, statusCode, fail)
 }
 
 // bufferResponseBody reads resp's body whole for the response phase. When it

@@ -19,6 +19,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/listener/internal/wsframe"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -800,25 +801,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 // turnRequestEvent is a turn's request row: the one an HTTPS POST of the same body
 // would have recorded.
 func (ws *wsSocket) turnRequestEvent(pctx *pipeline.Context) pipeline.SessionEvent {
-	return pipeline.SessionEvent{
-		At:            time.Now(),
-		Direction:     pipeline.Outbound,
-		Phase:         pipeline.SessionRequest,
-		RequestID:     pctx.RequestID(),
-		BytesUp:       int64(len(pctx.Body)),
-		MCP:           pipeline.SnapshotMCP(pctx.Extensions.MCP),
-		Inference:     pipeline.SnapshotInference(pctx.Extensions.Inference),
-		Invocations:   pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:       pipeline.SnapshotPlugins(pctx.Extensions.Custom),
-		Identity:      pipeline.SnapshotIdentity(pctx),
-		Host:          pctx.Host,
-		HTTPMethod:    pctx.Method,
-		HTTPPath:      pctx.Path,
-		Client:        pctx.ClientInfo(),
-		Proc:          pctx.AttributedProc(),
-		ClientProc:    pctx.AttributedClientProc(),
-		SessionHeader: pctx.NamingHeader(),
-	}
+	return sessionevent.Request(pctx, pipeline.Outbound)
 }
 
 // refuseTurn answers a rejected turn to the client in the shape Codex reads as a server
