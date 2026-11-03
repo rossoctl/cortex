@@ -28,7 +28,7 @@ import (
 //	model         model          absent                the breakdown accounts for everything
 //	model         model          present               the breakdown falls short by that much
 //
-// The third is pinned by TestLedgerSnapshot_UngroupedCostReachesTheWire; this test
+// The third is pinned by TestHandleUsage_LedgerBackedModelSeriesDisclosesWhatItLeavesOut; this test
 // covers the first two, because they were the pair that had become the same response.
 func TestHandleUsage_ALedgerWindowSaysWhichGroupingItCouldApply(t *testing.T) {
 	at := insideToday(t, 3*time.Hour)

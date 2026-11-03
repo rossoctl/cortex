@@ -1,11 +1,9 @@
 package sessionapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -776,7 +774,7 @@ func TestHandleUsage_LedgerBackedWindowGroupsByModel(t *testing.T) {
 // The ledger keeps a gateway-priced response the inference parser could not read
 // (/v1/embeddings, /v1/rerank) as a row with no model, so it counts toward Totals and
 // cannot be a group=model key. ledger.Fold computes that residual; this pins that
-// ledgerSnapshot carries it out to the JSON.
+// it reaches the JSON.
 func TestHandleUsage_LedgerBackedModelSeriesDisclosesWhatItLeavesOut(t *testing.T) {
 	at := insideToday(t, 2*time.Minute)
 	led := ledgerWithOneCostedMinute(t, at, "gw", "opus", 0.10)
@@ -1065,44 +1063,6 @@ func TestInsideTodayAt_ClampsAtThirtySecondsPastMidnight(t *testing.T) {
 	}
 }
 
-// TestDegradedFrom_CarriesEveryCaveatField keeps the ledger's caveat counters and the wire's in step.
-//
-// The conversion was a struct literal copying two of the three counters, and Caveats.Clean() tests all
-// three — so a read whose only fault was an unopenable day file set the caveat and serialised
-// `"degraded":{}`: the disclosure raised with nothing in it, which is worse than silence because it
-// looks like the client's fault. Reflection rather than three assertions, so the NEXT counter added to
-// Caveats fails here instead of shipping.
-func TestDegradedFrom_CarriesEveryCaveatField(t *testing.T) {
-	var c ledger.Caveats
-	cv := reflect.ValueOf(&c).Elem()
-	ct := cv.Type()
-	// A distinct non-zero value per field, so a copy that reads the wrong source field is caught too.
-	for i := 0; i < ct.NumField(); i++ {
-		if cv.Field(i).Kind() != reflect.Int64 {
-			t.Fatalf("Caveats.%s is %s, not int64: this test assumes counters and must be updated with the type",
-				ct.Field(i).Name, cv.Field(i).Kind())
-		}
-		cv.Field(i).SetInt(int64(i + 1))
-	}
-	if ct.NumField() < 3 {
-		t.Fatalf("Caveats has %d fields; the reflection is not seeing the type, so this proves nothing", ct.NumField())
-	}
-
-	got := reflect.ValueOf(degradedFrom(c)).Elem()
-
-	for i := 0; i < ct.NumField(); i++ {
-		name := ct.Field(i).Name
-		f := got.FieldByName(name)
-		if !f.IsValid() {
-			t.Errorf("usage.Degraded has no %s field: a caveat the ledger counts cannot reach a client, so the disclosure is emptier than the fault", name)
-			continue
-		}
-		if f.Int() != cv.Field(i).Int() {
-			t.Errorf("Degraded.%s = %d, want %d from Caveats.%s", name, f.Int(), cv.Field(i).Int(), name)
-		}
-	}
-}
-
 // TestHandleUsage_ASymbolicWindowExplainsAResolutionRefusal covers a message that named the wrong
 // window.
 //
@@ -1245,32 +1205,6 @@ func TestHandleUsage_OnlyTheWindowBoundRejectionIsRestated(t *testing.T) {
 	}
 }
 
-// TestBucketSecondsFor_IsNeverZero is the first second of the local day, once a day, for every
-// polling client.
-//
-// A ledger window returns one bucket whose length is the window's own, and int truncation makes that
-// zero at the start of the day. The field carries no omitempty — the comment that said otherwise was
-// wrong — so the zero is serialised as `"bucketSeconds":0` and a client deriving a burn rate divides by
-// it. This floor is the only thing stopping that.
-func TestBucketSecondsFor_IsNeverZero(t *testing.T) {
-	start := time.Date(2026, 9, 17, 0, 0, 0, 0, time.Local)
-	for _, tc := range []struct {
-		name string
-		to   time.Time
-		want int
-	}{
-		{"the very first instant of the day", start, 1},
-		{"half a second in", start.Add(500 * time.Millisecond), 1},
-		{"three hours in", start.Add(3 * time.Hour), 10800},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := bucketSecondsFor(start, tc.to); got != tc.want {
-				t.Errorf("bucketSecondsFor = %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 // breakAndRestore makes the writer really lose a row, then leaves the ledger READABLE again.
 //
 // The drop is induced by replacing the ledger's directory with a regular FILE: every append then fails
@@ -1321,51 +1255,6 @@ func breakAndRestore(t *testing.T, dir string, led *ledger.Writer, at time.Time)
 		if werr := os.WriteFile(filepath.Join(dir, name), b, 0o600); werr != nil {
 			t.Fatalf("restore %s: %v", name, werr)
 		}
-	}
-}
-
-// TestHandleUsage_TheWriterDropWarningFiresOnChangeNotPerRead is the log volume the disclosure bought.
-//
-// Dropped() is process-cumulative, so folding it into the per-read warning made one lost row at 03:00
-// print "cost ledger read was incomplete" on EVERY request for the life of the process — roughly 86,000
-// lines a day at a chart's poll rate, on an endpoint anyone who can reach the port can drive, and
-// asserting something false about reads that were clean. The field stays on every response; the log
-// fires when the number moves.
-func TestHandleUsage_TheWriterDropWarningFiresOnChangeNotPerRead(t *testing.T) {
-	at := insideToday(t, 3*time.Hour)
-	dir := t.TempDir()
-	led, err := ledger.New(dir, ledger.WithClock(func() time.Time { return at }))
-	if err != nil {
-		t.Fatalf("ledger.New: %v", err)
-	}
-	t.Cleanup(func() { _ = led.Close() })
-	recordCostedMinute(t, led, at, "gw.example", "m", 1.0)
-	if ferr := led.Flush(); ferr != nil {
-		t.Fatalf("Flush: %v", ferr)
-	}
-
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	ts, _ := newTestServer(t, WithUsage(usage.New()), WithCostLedger(led))
-
-	// A drop, then three clean reads.
-	breakAndRestore(t, dir, led, at)
-	for i := 0; i < 3; i++ {
-		if status, body := fetchUsage(t, ts.URL, "?window=today"); status != http.StatusOK {
-			t.Fatalf("read %d: status %d: %s", i, status, body)
-		}
-	}
-
-	n := strings.Count(logs.String(), "the cost ledger writer has lost rows")
-	if n != 1 {
-		t.Errorf("the write-side warning fired %d times across three reads, want 1: it is a cumulative counter, so per-read logging never stops",
-			n)
-	}
-	if strings.Contains(logs.String(), "cost ledger read was incomplete") {
-		t.Errorf("a clean read logged \"read was incomplete\": %s", logs.String())
 	}
 }
 
@@ -1552,7 +1441,7 @@ func TestResolutionSpan_TheDefaultResolutionIsAlwaysAccepted(t *testing.T) {
 
 // A ledger-served window reports the units its total spans.
 //
-// ledgerSnapshot computes Currencies from the rows it folds, and it is what lets a client refuse
+// The ledger computes Currencies from the rows it folds, and it is what lets a client refuse
 // to present a total that adds credits to dollars — so it has to reach the wire.
 func TestHandleUsage_ALedgerWindowReportsTheUnitsItsTotalSpans(t *testing.T) {
 	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{

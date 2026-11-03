@@ -646,7 +646,7 @@ type dayIssues struct {
 // retention_days=10 has twenty-two absent days before this cutoff and lost nothing.
 //
 // What it CAN answer is "how far back can a request expect coverage", which is a coverage
-// question and is all its one caller asks. See sessionapi's daysOutsideRetention.
+// question and is all its one caller asks. See daysOutsideRetention.
 func (s *store) retentionCutoff(now time.Time) time.Time {
 	return s.dayOf(now).AddDate(0, 0, -(s.retainDays - 1))
 }

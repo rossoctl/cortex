@@ -178,7 +178,7 @@ func TestSetUngroupedCost_ANegativeResidualIsDisclosedNotDropped(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var snap Snapshot
-			snap.SetUngroupedCost(CostSum{Micros: tc.micros})
+			snap.SetUngroupedCost(event.CostSum{Micros: tc.micros})
 			for _, f := range []struct {
 				name      string
 				got, want *int64
@@ -245,7 +245,7 @@ func TestSeriesCost_ClampsInsteadOfWrappingAndSaysSo(t *testing.T) {
 	// The consequence, stated as the thing a client sees. Old arithmetic on one bucket
 	// holding a saturated total and this series: MaxInt64 - MinInt64 wraps to -1, and -1
 	// becomes SeriesOvershootMicros: 1.
-	var ungrouped CostSum
+	var ungrouped event.CostSum
 	ungrouped.Add(math.MaxInt64)
 	ungrouped.Sub(got.Micros)
 	if got.Saturated {
@@ -264,30 +264,12 @@ func TestSeriesCost_ClampsInsteadOfWrappingAndSaysSo(t *testing.T) {
 	}
 }
 
-// Sub's one special input, which is the input SetUngroupedCost already needed a guard for:
-// math.MinInt64 has no positive counterpart, so a naive Add(-micros) would ADD it and the
-// residual would come out with the wrong sign — the exact confusion the overshoot field
-// exists to make impossible.
-func TestCostSum_SubtractingTheInt64FloorClampsRatherThanChangingSign(t *testing.T) {
-	var s CostSum
-	s.Add(1_000)
-	s.Sub(math.MinInt64)
-
-	if s.Micros != math.MaxInt64 {
-		t.Errorf("Micros = %d, want math.MaxInt64: subtracting the floor adds 2^63, which is out "+
-			"of range whatever the accumulator held", s.Micros)
-	}
-	if !s.Saturated {
-		t.Error("clamped without disclosing it")
-	}
-}
-
 // The overshoot is absent from a clean response and present when it is not, on the same wire
 // rule as every other disclosure here: a client must be able to tell "checked and fine" from
 // "not checked", and a zero cannot say both.
 func TestSnapshot_SeriesOvershootIsOmittedUnlessItHappened(t *testing.T) {
 	var clean Snapshot
-	clean.SetUngroupedCost(CostSum{})
+	clean.SetUngroupedCost(event.CostSum{})
 	body, err := json.Marshal(clean)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -297,7 +279,7 @@ func TestSnapshot_SeriesOvershootIsOmittedUnlessItHappened(t *testing.T) {
 	}
 
 	var broken Snapshot
-	broken.SetUngroupedCost(CostSum{Micros: -1})
+	broken.SetUngroupedCost(event.CostSum{Micros: -1})
 	body, err = json.Marshal(broken)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1027,7 +1009,7 @@ func TestSetUngroupedAvoided_PublishesItsOwnFieldsAndLeavesCostAlone(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var snap Snapshot
-			snap.SetUngroupedAvoided(CostSum{Micros: tc.micros})
+			snap.SetUngroupedAvoided(event.CostSum{Micros: tc.micros})
 
 			for _, f := range []struct {
 				name      string
@@ -1070,7 +1052,7 @@ func TestSetUngroupedAvoided_PublishesItsOwnFieldsAndLeavesCostAlone(t *testing.
 func TestSetUngroupedCost_LeavesTheAvoidedFieldsAlone(t *testing.T) {
 	for _, micros := range []int64{250_000, -250_000} {
 		var snap Snapshot
-		snap.SetUngroupedCost(CostSum{Micros: micros})
+		snap.SetUngroupedCost(event.CostSum{Micros: micros})
 		if snap.UngroupedAvoidedMicros != nil || snap.SeriesAvoidedOvershootMicros != nil {
 			t.Errorf("SetUngroupedCost(%d) wrote an avoided field: ungrouped=%v overshoot=%v",
 				micros, snap.UngroupedAvoidedMicros, snap.SeriesAvoidedOvershootMicros)

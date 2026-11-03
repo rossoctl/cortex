@@ -14,7 +14,6 @@
 package usage
 
 import (
-	"math"
 	"net"
 	"net/http"
 	"sort"
@@ -395,7 +394,7 @@ func (c *Counts) Add(o Counts) {
 // separately because the point is to write two places — the field and the disclosure — from
 // one call, so a saturating add cannot record the clamp and lose the fact that it clamped.
 func (c *Counts) addInto(dst *int64, v int64) {
-	sum, saturated := addSat(*dst, v)
+	sum, saturated := event.AddSat(*dst, v)
 	*dst = sum
 	if saturated {
 		c.Saturated = true
@@ -444,94 +443,6 @@ func plausibleTokenReport(inf *pipeline.InferenceExtension) bool {
 		}
 	}
 	return true
-}
-
-// addSat is a + b, clamped to the int64 range instead of wrapping, and whether it clamped.
-//
-// The test is written as `a > math.MaxInt64-b` rather than by inspecting the sign of the
-// result, because computing the wrapped sum first and then reasoning about it is signed
-// overflow — undefined in most languages and merely unhelpful in Go, where it silently
-// produces the very number this function exists to avoid returning.
-//
-// BOTH DIRECTIONS. No producer in this package can settle a negative cost — cost/event refuses
-// one and MicrosFromUSD rejects it — so the lower clamp is unreachable through the aggregator
-// today. It is here because Add is exported, because "unreachable today" is how the wrap
-// arrived in the first place, and because a half-guarded accumulator invites a reader to
-// conclude the other half was considered and ruled out.
-func addSat(a, b int64) (int64, bool) {
-	if b > 0 && a > math.MaxInt64-b {
-		return math.MaxInt64, true
-	}
-	if b < 0 && a < math.MinInt64-b {
-		return math.MinInt64, true
-	}
-	return a + b, false
-}
-
-// CostSum is a running total of money in micros that clamps instead of wrapping, and
-// remembers that it clamped.
-//
-// IT EXISTS BECAUSE Counts.Add IS NOT THE ONLY PLACE MONEY IS SUMMED. Counts.addInto routes
-// every field of an aggregate through addSat — the reasoning is on Counts.Saturated and
-// pricing.MaxCostMicros — but three money accumulates sit outside it, all of them totals
-// DERIVED from Counts rather than fields of one:
-//
-//	seriesCost              sums CostMicros across a label breakdown
-//	Snapshot's ungrouped    the residual, per raw bucket
-//	ledger.Fold's       the same residual, per ledger row
-//
-// Each was a bare `+=` on an int64 that a saturating add had already been chosen for one call
-// frame away. Two saturated buckets or two saturated rows wrap them — reachable at the ~1,024
-// requests pricing.MaxCostMicros documents, and immediately from a hand-edited day file.
-//
-// AND THE RESIDUAL IS THE WORST PLACE FOR IT TO HAPPEN, which is why this is a type rather
-// than an exported function. A wrapped residual goes NEGATIVE, and Snapshot.SetUngroupedCost
-// reads a negative residual as the series having overshot its own total — a condition whose
-// field doc tells the reader this process is wrong about its own arithmetic and to file a bug.
-// So the wrap does not merely produce a wrong number: it fabricates a defect report about
-// correct data and suppresses the real residual while doing it. Clamping alone would still be
-// a lie; the flag is what makes it honest, exactly as Counts.Saturated is for the fields.
-//
-// A TYPE, NOT `func AddCostMicros(a, b int64) (int64, bool)`, for the reason given on
-// Counts.addInto: the point is that one call writes both the figure and the disclosure, so
-// there is no shape in which a caller takes the clamped sum and drops the fact that it
-// clamped. An exported saturating add would have been one `_` away from restoring this bug.
-type CostSum struct {
-	// Micros is the total so far, clamped to the int64 range.
-	Micros int64
-	// Saturated says Micros is a bound rather than a sum. Callers surface it by setting
-	// Counts.Saturated on the totals the residual belongs to: that field already means
-	// "read every money figure here as a bound", and a second flag for the same fact
-	// would let a client trust one while the other contradicted it.
-	Saturated bool
-}
-
-// Add accumulates micros into s.
-func (s *CostSum) Add(micros int64) {
-	sum, saturated := addSat(s.Micros, micros)
-	s.Micros = sum
-	if saturated {
-		s.Saturated = true
-	}
-}
-
-// Sub subtracts micros from s, which is how a residual is computed: a bucket's total
-// minus what its breakdown accounted for.
-//
-// Separate from Add(-micros) for one input only, and it is the input that made
-// SetUngroupedCost need its own guard: math.MinInt64 has no positive counterpart, so
-// negating it yields math.MinInt64 again and SUBTRACTING it would add. Reachable only
-// from an already-clamped figure, and clamped to the ceiling with the flag set rather
-// than being special-cased into exactness — the true answer is out of range in that
-// direction whatever s holds, and pretending otherwise for the sub-case where it
-// happens to fit would put a branch nothing can test in the middle of the one
-// arithmetic in this file that must be obviously right.
-func (s *CostSum) Sub(micros int64) {
-	if micros == math.MinInt64 {
-		s.Micros, s.Saturated = math.MaxInt64, true
-		return
-	}
-	s.Add(-micros)
 }
 
 // Bucket is one BucketWidth slice of time, as served to clients.
@@ -593,7 +504,7 @@ type bucket struct {
 	// redundant. That is deliberate: a uniform call site in foldInto cannot fall out
 	// of step with itself, and one key costs nothing.
 	bySession map[string]Counts
-	// byAgent tallies by the coding agent that made the request, as AgentLabel
+	// byAgent tallies by the coding agent that made the request, as event.AgentLabel
 	// names it ("claude-code", every version together).
 	//
 	// NO INFERENCE GUARD, unlike byMethod. It is folded for every event, so MCP, A2A
@@ -911,7 +822,7 @@ type Aggregator struct {
 	mu       sync.RWMutex
 	all      []bucket
 	sessions map[string]*sessionRing
-	// agents holds a whole ring per RECOGNISED coding agent, keyed by AgentLabel, so agent= can
+	// agents holds a whole ring per RECOGNISED coding agent, keyed by event.AgentLabel, so agent= can
 	// be answered with any grouping. The agent axis alone cannot do that: a bucket tallies each
 	// axis separately, so once a snapshot reads byAgent to find one agent there is nothing left
 	// to break that agent's traffic down by.
@@ -1166,7 +1077,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 
 	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
 	// agents field for why only a recognised agent gets a ring.
-	if agent := AgentLabel(e.Client); pipeline.IsKnownAgent(agent) {
+	if agent := event.AgentLabel(e.Client); pipeline.IsKnownAgent(agent) {
 		ring, ok := a.agents[agent]
 		if !ok {
 			ring = make([]bucket, NumBuckets)
@@ -1482,7 +1393,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	// so there is no empty key to guard against — and folding unconditionally is what
 	// makes this axis's series sum to the bucket total. That is also what gives it a
 	// different denominator from group=model's; see byAgent.
-	b.noteUnit(GroupAgent, addLabel(&b.byAgent, AgentLabel(e.Client), one), unit)
+	b.noteUnit(GroupAgent, addLabel(&b.byAgent, event.AgentLabel(e.Client), one), unit)
 	if e.StatusCode > 0 {
 		addLabel(&b.byStatus, strconv.Itoa(e.StatusCode), one)
 	} else if e.Phase == pipeline.SessionDenied {
@@ -1562,19 +1473,8 @@ const overflowLabel = "(other)"
 // question "where did the money go" is the one the top of the list has to answer.
 const MaxSeriesInResponse = 16
 
-// MaxLabelLen bounds one retained label. The model name is request-controlled, so
-// without this a caller could park a megabyte of string in a bucket that lives
-// for a full ring lap. Long enough for any real model id, including provider
-// prefixes and dated suffixes.
-//
-// EXPORTED SO THE DURABLE COPY CAN BE PINNED TO IT. cost/ledger caps its own labels at the same
-// number and said so in a comment — "matched deliberately rather than chosen again" — while both
-// copies were unexported, so no test could compare them and raising one to 4096 left both suites
-// green. Same defect and same fix as MaxRetentionDays.
-const MaxLabelLen = 96
-
-// maxLabelLen is the internal spelling, so this package's call sites read unchanged.
-const maxLabelLen = MaxLabelLen
+// maxLabelLen bounds one retained label; see event.MaxLabelLen.
+const maxLabelLen = event.MaxLabelLen
 
 // hostLabel reduces an :authority to the host alone, so "api.anthropic.com:443"
 // and "api.anthropic.com" are one series rather than two.
@@ -1609,12 +1509,6 @@ func hostLabel(authority string) string {
 // truncateLabel caps a label at maxLabelLen BYTES, cutting on a rune boundary.
 func truncateLabel(s string) string {
 	return pipeline.TruncateLabel(s, maxLabelLen)
-}
-
-// AgentLabel is the label byAgent keys traffic from c by, before addLabel's overflow; agent=
-// matches it. Versionless — see pipeline.AgentName.
-func AgentLabel(c *pipeline.EventClient) string {
-	return ringLabel(pipeline.AgentName(c.Label()))
 }
 
 // ringLabel prepares one string for a bucket's label map: sanitised, then capped.

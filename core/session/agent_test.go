@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -93,7 +94,7 @@ func TestListSessions_NamesTheIBMBobIDE(t *testing.T) {
 func TestListSessions_AgentIsTheGroupAgentLabel(t *testing.T) {
 	clients := []*pipeline.EventClient{
 		{Name: "claude-code", Version: "2.1.284"},
-		{Name: "bob-shell", Version: strings.Repeat("9", 2*usage.MaxLabelLen)},
+		{Name: "bob-shell", Version: strings.Repeat("9", 2*event.MaxLabelLen)},
 		{Raw: "Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)"},
 	}
 	s := New(0, 0, 0)
@@ -131,7 +132,7 @@ func TestListSessions_NamesAnUnrecognisedAgent(t *testing.T) {
 	// The IBM Bob IDE's real User-Agents, from #1214's evidence. Parsed here rather than
 	// hand-built so each case exercises the sanitise-and-cap path a request takes, and so it keeps
 	// telling the truth when one of these tokens later joins knownClients: the wants are
-	// usage.AgentLabel's answer for the same client, not literals.
+	// event.AgentLabel's answer for the same client, not literals.
 	bobIDE := pipeline.ParseUserAgent("IBM Bob/2.2.1")
 	bobSDK := pipeline.ParseUserAgent(
 		"ai-sdk/openai-compatible/3.0.36 ai-sdk/provider-utils/5.0.29 runtime/node.js/v24.15.0 IBM Bob/2.2.1")
@@ -160,7 +161,7 @@ func TestListSessions_NamesAnUnrecognisedAgent(t *testing.T) {
 		name:    "unrecognised agent now labelled",
 		id:      "bob-1",
 		clients: []*pipeline.EventClient{bobUpdate},
-		want:    usage.AgentLabel(bobUpdate),
+		want:    event.AgentLabel(bobUpdate),
 		// #1214 itself: the session that used to come back bare.
 		why: "an unrecognised client names the session by its raw User-Agent label",
 	}, {
@@ -176,7 +177,7 @@ func TestListSessions_NamesAnUnrecognisedAgent(t *testing.T) {
 		name:    "first unrecognised client wins among several",
 		id:      "bob-2",
 		clients: []*pipeline.EventClient{bobUpdate, curl},
-		want:    usage.AgentLabel(bobUpdate),
+		want:    event.AgentLabel(bobUpdate),
 		// One program sends several User-Agents (three, for this IDE). First-wins keeps the
 		// session named by the client that named it rather than re-labelling it per turn.
 		why: "first-wins applies to unrecognised clients too, not just recognised ones",
@@ -205,7 +206,7 @@ func TestListSessions_NamesAnUnrecognisedAgent(t *testing.T) {
 		// The "unknown" bucket must not block the real label behind it: nothing is recorded for
 		// the nil client, so the curl event is still the session's first entry.
 		clients: []*pipeline.EventClient{nil, curl},
-		want:    usage.AgentLabel(curl),
+		want:    event.AgentLabel(curl),
 		why:     "an absent User-Agent records nothing and does not shadow a later labelled client",
 	}, {
 		name: "default bucket stays bare",
@@ -248,9 +249,9 @@ func TestListSessions_UnrecognisedAgentMatchesTheGroupAgentLabel(t *testing.T) {
 	uas := []string{
 		"Code/1.126.0+bob2.2.1 Darwin/24.6.0",
 		"appconfiguration-node-sdk",
-		// Longer than usage.MaxLabelLen, so the cap is exercised on both sides. #1214's evidence
+		// Longer than event.MaxLabelLen, so the cap is exercised on both sides. #1214's evidence
 		// has exactly this case: a label the ring had already cut at 96 bytes.
-		"unrecognised-sdk/3.0.36 runtime/node.js/v24.15.0 very-long-agent/" + strings.Repeat("9", 2*usage.MaxLabelLen),
+		"unrecognised-sdk/3.0.36 runtime/node.js/v24.15.0 very-long-agent/" + strings.Repeat("9", 2*event.MaxLabelLen),
 	}
 	s := New(0, 0, 0)
 	defer s.Close()
@@ -273,15 +274,15 @@ func TestListSessions_UnrecognisedAgentMatchesTheGroupAgentLabel(t *testing.T) {
 		if series[got].Requests != 1 {
 			t.Errorf("session %s agent = %q, absent from group=agent %v", id, got, slices.Sorted(maps.Keys(series)))
 		}
-		if len(got) > usage.MaxLabelLen {
-			t.Errorf("session %s agent is %d bytes, over usage.MaxLabelLen (%d): %q",
-				id, len(got), usage.MaxLabelLen, got)
+		if len(got) > event.MaxLabelLen {
+			t.Errorf("session %s agent is %d bytes, over event.MaxLabelLen (%d): %q",
+				id, len(got), event.MaxLabelLen, got)
 		}
 	}
 }
 
 // The label is CLIENT-ASSERTED and spoofable, so it must reach the field already sanitised and
-// capped — by usage.AgentLabel, the same choke point the usage ring's byAgent keys and the
+// capped — by event.AgentLabel, the same choke point the usage ring's byAgent keys and the
 // ledger's rows pass through, rather than by a rule invented in this package. /v1/sessions is
 // unauthenticated and its rows reach a terminal, where U+009B alone opens a CSI sequence
 // (CWE-150) and a bidi override makes one agent's label read as another's.
@@ -297,7 +298,7 @@ func TestListSessions_SanitisesAnUnrecognisedAgentsLabel(t *testing.T) {
 	}
 	for _, r := range got {
 		if pipeline.IsControlRune(r) {
-			t.Errorf("agent %q carries display-rewriting rune %U; usage.AgentLabel should have replaced it", got, r)
+			t.Errorf("agent %q carries display-rewriting rune %U; event.AgentLabel should have replaced it", got, r)
 		}
 	}
 }
@@ -309,7 +310,7 @@ func TestListSessions_SanitisesAnUnrecognisedAgentsLabel(t *testing.T) {
 func TestSummaryFold_UnrecognisedAgentSurvivesJSON(t *testing.T) {
 	curl := pipeline.ParseUserAgent("curl/8.4.0")
 	claude := &pipeline.EventClient{Name: "claude-code", Version: "2.1.284"}
-	want := usage.AgentLabel(curl)
+	want := event.AgentLabel(curl)
 
 	f := NewSummaryFold()
 	f.Add("s1", &pipeline.SessionEvent{Client: curl})

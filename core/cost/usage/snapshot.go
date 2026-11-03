@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/rossoctl/cortex/core/cost/event"
 )
 
 // Group selects which label breakdown a Snapshot carries.
@@ -222,7 +224,7 @@ type Snapshot struct {
 	// reference day at the NEWEST day file, so a ledger nothing has written to keeps its last
 	// retainDays files however long ago they were written — while this figure is measured from
 	// the clock. A query then sums day files this field has already called outside. Reproduced
-	// in sessionapi's TestLedgerSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal:
+	// in cost/ledger's TestSnapshot_ADayReportedOutsideRetentionCanStillBeInTheTotal:
 	// retention_days 10, files for 21 consecutive days, read ten days after the last write —
 	// 21 days reported outside, and ten days of spend in the total.
 	//
@@ -551,13 +553,13 @@ func (g Group) Reconcilable() bool {
 // error return: an error would need every caller to hold a logger (this package has none) and
 // would let a caller drop the signal again.
 //
-// IT TAKES A CostSum RATHER THAN AN int64 so a clamped residual cannot arrive looking like an
+// IT TAKES An event.CostSum RATHER THAN AN int64 so a clamped residual cannot arrive looking like an
 // exact one. Accumulated with a bare `+=`, a wrap produces a NEGATIVE figure, which the
 // second case below then publishes as SeriesOvershootMicros — so correct-but-saturated data
 // fabricates a defect report while the real residual is lost. A parameter that carries its
 // own saturation flag is what stops the two conditions being confused; an int64 plus a bool a
 // caller could forget is the shape that produced it.
-func (s *Snapshot) SetUngroupedCost(sum CostSum) {
+func (s *Snapshot) SetUngroupedCost(sum event.CostSum) {
 	// SATURATION FIRST, and unconditionally: it is a statement about the money in this
 	// snapshot, not about which of the two residual fields gets set, and it holds even when
 	// the residual itself lands on zero. Totals.Saturated already means "read every money
@@ -583,7 +585,7 @@ func (s *Snapshot) SetUngroupedCost(sum CostSum) {
 // NOT SPEND, and this method changes nothing about that: it publishes a residual for a
 // counterfactual so a breakdown of it reconciles, on the same rule that forbids adding it to
 // any dollar total. See Counts.AvoidedMicros.
-func (s *Snapshot) SetUngroupedAvoided(sum CostSum) {
+func (s *Snapshot) SetUngroupedAvoided(sum event.CostSum) {
 	if sum.Saturated {
 		s.Totals.Saturated = true
 	}
@@ -603,7 +605,7 @@ func (s *Snapshot) SetUngroupedAvoided(sum CostSum) {
 //
 // Extracted rather than duplicated because the MinInt64 sign trap below is the one piece of
 // arithmetic here that must be obviously right, and a copy is a second place to get it wrong.
-func residualOf(sum CostSum) (shortfall, overshoot *int64) {
+func residualOf(sum event.CostSum) (shortfall, overshoot *int64) {
 	micros := sum.Micros
 	switch {
 	case micros > 0:
@@ -625,8 +627,8 @@ func residualOf(sum CostSum) (shortfall, overshoot *int64) {
 //
 // Reads Counts.AvoidedMicros per entry for the reason seriesCost reads CostMicros: the series
 // is what a client sums, and this has to be exactly that arithmetic.
-func seriesAvoided(series map[string]Counts) CostSum {
-	var total CostSum
+func seriesAvoided(series map[string]Counts) event.CostSum {
+	var total event.CostSum
 	for _, v := range series {
 		total.Add(v.AvoidedMicros)
 	}
@@ -638,11 +640,11 @@ func seriesAvoided(series map[string]Counts) CostSum {
 // Reads Counts.CostMicros per entry rather than any running total, because the series
 // is what a client sums and this has to be exactly that arithmetic.
 //
-// Returns a CostSum rather than an int64 because two saturated entries wrapped it, and a
+// Returns an event.CostSum rather than an int64 because two saturated entries wrapped it, and a
 // wrap here does not stay here: the caller subtracts this from a bucket total, so a
-// negative sum inflates the residual past the total it is a residual of. See CostSum.
-func seriesCost(series map[string]Counts) CostSum {
-	var total CostSum
+// negative sum inflates the residual past the total it is a residual of. See event.CostSum.
+func seriesCost(series map[string]Counts) event.CostSum {
+	var total event.CostSum
 	for _, v := range series {
 		total.Add(v.CostMicros)
 	}
@@ -1236,7 +1238,7 @@ func fold(src []Bucket, width time.Duration) []Bucket {
 // Needs a saturated bucket to reach, which Record cannot produce — so this is the cheap half of the
 // same argument, not a live defect.
 func addCoverageInto(m map[string]int64, k string, v int64, saturated *bool) {
-	sum, over := addSat(m[k], v)
+	sum, over := event.AddSat(m[k], v)
 	m[k] = sum
 	if over {
 		*saturated = true
@@ -1318,12 +1320,12 @@ func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID, agent
 	// below, for the reason Totals is: the figure must not change with the resolution the
 	// caller asked for. See Snapshot.UngroupedCostMicros.
 	//
-	// A CostSum, not an int64: this is money, and a wrapped residual is read downstream as
-	// the series overshooting its own total. See CostSum.
-	var ungrouped CostSum
+	// An event.CostSum, not an int64: this is money, and a wrapped residual is read downstream as
+	// the series overshooting its own total. See event.CostSum.
+	var ungrouped event.CostSum
 	// Its own accumulator, never folded into the line above: the two are different
 	// quantities and only one of them is money. See Snapshot.UngroupedAvoidedMicros.
-	var ungroupedAvoided CostSum
+	var ungroupedAvoided event.CostSum
 	// Raised by addCoverageInto, and read after the totals are assigned below — Totals is derived
 	// post-loop, so setting the flag inside the loop would be overwritten.
 	var coverageSaturated bool

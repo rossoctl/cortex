@@ -11,7 +11,6 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/session"
 )
 
 // opsBuffer is how many batches the writer goroutine can be behind by.
@@ -108,6 +107,9 @@ type Writer struct {
 	// loggedDrops is the cumulative drop count already reported. Atomic only because
 	// submit's post-Close inline path can reach write from a caller's goroutine.
 	loggedDrops atomic.Int64
+	// loggedReadDrops is the drop count Snapshot has already warned about, so its warning
+	// fires once per increase rather than once per read.
+	loggedReadDrops atomic.Int64
 
 	// betweenWindowReads is a TEST SEAM and nothing else: Window calls it, when
 	// non-nil, between reading the accumulator and reading the day files.
@@ -326,13 +328,6 @@ func tokenCount(n int) int64 {
 	}
 	return int64(n)
 }
-
-// A BUILD ERROR RATHER THAN A COMMENT. Record's doc and row.go's design both rest on this Writer
-// being a second session.Recorder beside the aggregator, and nothing checked it: this package had no
-// importer outside itself, so neither side's signature drifting would have broken any build. Review
-// found the claim holding today and unenforced — which is the same shape as the pins this review has
-// already turned into tests, one level down in the type system.
-var _ session.Recorder = (*Writer)(nil)
 
 // Record implements session.Recorder.
 //
@@ -933,10 +928,8 @@ func (w *Writer) logDrops() {
 // writer, not about anybody's read: it happened once, no later read can rediscover it, and
 // every reader of this ledger is equally short because of it.
 //
-// Called by sessionapi's /v1/usage handler, which surfaces it beside the
-// read-side Caveats. It stays exported for out-of-tree readers of the ledger
-// too, who need the same completeness signal.
-// to withdraw the number.
+// Snapshot surfaces it beside the read-side Caveats. Exported for out-of-tree readers of
+// the ledger, who need the same completeness signal.
 func (w *Writer) Dropped() int64 { return w.dropped.Load() }
 
 // run is the ONLY goroutine that touches the filesystem after construction.

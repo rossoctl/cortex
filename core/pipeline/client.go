@@ -61,7 +61,7 @@ type EventClient struct {
 
 // maxClientLen bounds the retained User-Agent.
 //
-// Same reasoning as usage.maxLabelLen, and it is the load-bearing bound here
+// Same reasoning as event.MaxLabelLen, and it is the load-bearing bound here
 // because this value comes off a request header: its length and its cardinality
 // are both chosen off-host. Label() feeds bucket label maps that free a slot only
 // a full ring lap later (6h at one minute), so without a cap a caller parks
@@ -81,7 +81,7 @@ type EventClient struct {
 // exactly as it does to every other label map.
 //
 // A BYTE cap cut on a RUNE boundary — see capUA. The ledger and the usage ring cut
-// their labels with the same TruncateLabel, at usage.MaxLabelLen.
+// their labels with the same TruncateLabel, at event.MaxLabelLen.
 const maxClientLen = 128
 
 // SanitizeControlRunes replaces every control character in s with U+FFFD. It

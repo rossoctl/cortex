@@ -18,7 +18,7 @@ import (
 //
 // So the ledger now answers only "how far back does my configuration reach", and the coverage
 // question is asked one layer up, where the requested window is known. See
-// sessionapi.daysOutsideRetention.
+// daysOutsideRetention.
 func TestRetentionCutoff_IsTheConfiguredHorizonFromTheClock(t *testing.T) {
 	now := time.Date(2026, time.March, 31, 15, 0, 0, 0, time.Local)
 	for _, tc := range []struct {
@@ -43,7 +43,7 @@ func TestRetentionCutoff_IsTheConfiguredHorizonFromTheClock(t *testing.T) {
 // AND IT IS A DAY IDENTIFIER, NOT THE DAY'S FIRST INSTANT — which its one consumer depends on.
 //
 // dayOf carries every ledger day at dayHour, so this value sits twelve hours LATER than the
-// midnight that opens the same date. sessionapi.daysOutsideRetention differences it against
+// midnight that opens the same date. daysOutsideRetention differences it against
 // usage.StartOfLocalDay and StartOfLocalMonth, which ARE midnights, and reading this as a bound
 // made a month-to-date request report one day short of itself: the spend band stamped its partial
 // marker on a complete and correct total every 31-day month.

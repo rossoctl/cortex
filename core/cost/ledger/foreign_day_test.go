@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
 // THE DURABLE SURFACE MUST NOT BE MORE PERMISSIVE THAN THE VOLATILE ONE, and it was.
@@ -228,25 +227,5 @@ func TestQuery_AnAbsurdSpanIsBoundedWithoutLosingRows(t *testing.T) {
 					len(rows), tc.wantRows)
 			}
 		})
-	}
-}
-
-// TestMaxLabelLen_MatchesTheRingItMirrors makes row.go's "matched deliberately rather than chosen
-// again" a checkable claim.
-//
-// Both copies were unexported, so nothing could compare them: every cap assertion in this package is
-// written in terms of maxLabelLen itself, which means raising it to 4096 kept the whole suite green
-// while the ring kept truncating at 96 — one series key spelled two ways depending on which half of
-// the system answered. This is the defect MaxRetentionDays was exported to fix, in the other
-// constant.
-func TestMaxLabelLen_MatchesTheRingItMirrors(t *testing.T) {
-	if maxLabelLen != usage.MaxLabelLen {
-		t.Errorf("cost/ledger maxLabelLen = %d, usage.MaxLabelLen = %d: a label capped differently on the two halves is one series key spelled two ways",
-			maxLabelLen, usage.MaxLabelLen)
-	}
-	// The literal too, so a change that moved BOTH constants together still has to be deliberate:
-	// the number is a judgement about real model ids, not an implementation detail.
-	if maxLabelLen != 96 {
-		t.Errorf("maxLabelLen = %d, want 96: see the derivation on usage.MaxLabelLen", maxLabelLen)
 	}
 }

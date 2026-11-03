@@ -48,6 +48,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 
@@ -164,11 +165,9 @@ func (r Row) key() key {
 	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, strings.ToLower(r.currencyOrUSD())}
 }
 
-// maxLabelLen bounds one label ON DISK, and it is the same 96 bytes
-// usage.maxLabelLen applies to the same two request-controlled fields — the value
-// is matched deliberately rather than chosen again, so a model name is spelled
-// identically in the ring and in the ledger and group=model answers the same from
-// either source.
+// maxLabelLen bounds one label ON DISK. It is event.MaxLabelLen, so a model name is
+// spelled identically in the ring and in the ledger and group=model answers the same
+// from either source.
 //
 // Load-bearing here for a reason the ring does not have: these strings are WRITTEN
 // TO AN APPEND-ONLY FILE that is retained for retentionDays. Model comes straight
@@ -185,9 +184,7 @@ func (r Row) key() key {
 // which is what turns readDay's over-long-line guard from a live failure mode into
 // the last-resort guard for a file some other process corrupted.
 // TestRecord_LabelsAreCappedSoALineCanNeverExceedTheReadLimit pins the arithmetic.
-// Pinned to usage.MaxLabelLen by TestMaxLabelLen_MatchesTheRingItMirrors — which is a real
-// comparison now that the other side is exported, rather than a third copy of the literal.
-const maxLabelLen = 96
+const maxLabelLen = event.MaxLabelLen
 
 // rowLabel prepares one string for a durable row: sanitized, then capped at maxLabelLen
 // bytes on a rune boundary.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -169,7 +170,7 @@ func (w *Writer) RetentionCutoffAt(now time.Time) time.Time {
 // Caveats for the two readers that swapped them.
 //
 // EXPORTED WITH NO NON-TEST CALLER, and it stays that way: it is the named disk half of this
-// package's contract, cited by name from sessionapi's ledgerSnapshot, from config's
+// package's contract, cited by name from Writer.Snapshot, from config's
 // cost-ledger tests and from usage's snapshot tests as the thing that walks day files.
 //
 // CONTEXT IS HONOURED BETWEEN DAY FILES, not inside one. A 7d window is up to eight
@@ -350,7 +351,7 @@ func dayNoon(y int, m time.Month, d int, loc *time.Location) time.Time {
 // usage.Snapshot.UngroupedCostMicros. A row with no value for the requested axis counts
 // toward the total and cannot be a series key — a gateway-priced /v1/embeddings
 // response is stored with Model "" — so summing the series gives a smaller number than
-// the total beside it, and this is the size of that difference. It is a usage.CostSum
+// the total beside it, and this is the size of that difference. It is an event.CostSum
 // rather than a bare int64 so that a residual which reached the int64 ceiling arrives at
 // SetUngroupedCost saying so, instead of arriving negative and being published as this
 // process having lost track of its own arithmetic.
@@ -364,19 +365,19 @@ func dayNoon(y int, m time.Month, d int, loc *time.Location) time.Time {
 // attributable to an endpoint, a model and an agent. Both conditions are now required:
 // Groupable, because a residual against an absent breakdown is meaningless, and
 // Reconcilable, because GroupPlugin's series is not a partition. See Groupable, and see
-// sessionapi's ledgerSnapshot for how a client tells "cannot group by that" from "the
+// Writer.Snapshot for how a client tells "cannot group by that" from "the
 // breakdown is complete".
 //
 // Counted HERE rather than left to the caller as totals-minus-series, because this is
 // the loop that decides what to skip. A caller deriving it would be re-deriving a
 // number this function already knows exactly, and would get it wrong for any axis whose
 // series is not a partition.
-func Fold(rows []Row, group usage.Group) (totals usage.Counts, series map[string]usage.Counts, ungroupedCost, ungroupedAvoided usage.CostSum) {
-	// A usage.CostSum, not an int64, and returned as one: rows come off DISK, so nothing
+func Fold(rows []Row, group usage.Group) (totals usage.Counts, series map[string]usage.Counts, ungroupedCost, ungroupedAvoided event.CostSum) {
+	// An event.CostSum, not an int64, and returned as one: rows come off DISK, so nothing
 	// between a hand-edited day file and this loop bounds r.CostMicros, and two rows near the
-	// ceiling turn a bare int64 residual negative — which sessionapi hands to
-	// Snapshot.SetUngroupedCost, which reads a negative residual as this process being wrong
-	// about its own arithmetic. See usage.CostSum.
+	// ceiling turn a bare int64 residual negative — which Writer.Snapshot hands to
+	// usage.Snapshot.SetUngroupedCost, which reads a negative residual as this process being wrong
+	// about its own arithmetic. See event.CostSum.
 	// Named results, and two of them are CostSums of the same type — so the names are what
 	// keep a caller from swapping them. ungroupedAvoided is the residual for the OTHER money
 	// field, added when Counts.AvoidedMicros made a per-label "saved" breakdown possible:

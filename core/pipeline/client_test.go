@@ -493,7 +493,7 @@ func TestParseUserAgent_CapsTheRetainedValue(t *testing.T) {
 	// The header is caller-controlled and the value is retained in bucket label
 	// maps for a full ring lap. Without a cap a caller parks arbitrary bytes in
 	// memory from off-host, on the synchronous session-append path — the same
-	// reasoning as usage.maxLabelLen.
+	// reasoning as event.MaxLabelLen.
 	long := strings.Repeat("A", 10_000)
 	got := ParseUserAgent(long)
 	if got == nil {

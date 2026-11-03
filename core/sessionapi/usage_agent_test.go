@@ -116,11 +116,11 @@ func TestHandleUsage_AgentMatchesTheUnknownBucket(t *testing.T) {
 // nothing and is refused.
 func TestHandleUsage_AgentLabelBound(t *testing.T) {
 	ts, _ := newTestServer(t, WithUsage(usage.New()))
-	if code, body := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", usage.MaxLabelLen)); code != 200 {
-		t.Errorf("a %d-byte agent: %d %s, want 200", usage.MaxLabelLen, code, body)
+	if code, body := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", event.MaxLabelLen)); code != 200 {
+		t.Errorf("a %d-byte agent: %d %s, want 200", event.MaxLabelLen, code, body)
 	}
-	if code, _ := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", usage.MaxLabelLen+1)); code != 400 {
-		t.Errorf("a %d-byte agent: %d, want 400", usage.MaxLabelLen+1, code)
+	if code, _ := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", event.MaxLabelLen+1)); code != 400 {
+		t.Errorf("a %d-byte agent: %d, want 400", event.MaxLabelLen+1, code)
 	}
 }
 
