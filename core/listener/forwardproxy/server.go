@@ -211,6 +211,9 @@ type Server struct {
 	// reported naming a session other than the process chain's.
 	chainOverrideLogged sync.Map
 
+	// upstreamUnverifiedWarned holds the hosts logUpstreamUnverified has warned about.
+	upstreamUnverifiedWarned sync.Map
+
 	// attr is the Server's attribution, built once by attributor.
 	attributorOnce sync.Once
 	attr           *attribution.Attributor
@@ -1120,6 +1123,19 @@ func (s *Server) bridgeMemory(tl *tunnelLog, host string) (*tlsbridge.SkipSet, s
 	return s.TLSBridge.Programs, tl.program.Key()
 }
 
+// logUpstreamUnverified reports that the bridge could not verify host's certificate, so the
+// host's traffic passes through unread: no plugin sees it and nothing is parsed. That is a
+// loss of visibility, so the first failure for a host is a WARN. Repeats stay at INFO, so a
+// host that always fails cannot fill the log.
+func (s *Server) logUpstreamUnverified(host string, err error) {
+	level := slog.LevelInfo
+	if _, seen := s.upstreamUnverifiedWarned.LoadOrStore(host, struct{}{}); !seen {
+		level = slog.LevelWarn
+	}
+	slog.Log(context.Background(), level, "tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host),
+		"reason", "upstream-verify", "error", err)
+}
+
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
 // connection through the pipeline. Returns true when it handled the connection
 // (bridged, or the client's connection died post-forge and there is nothing left
@@ -1158,13 +1174,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
+			s.logUpstreamUnverified(host, err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false
 		}
 		resp, err := s.TLSBridge.Upstream.Do(req)
 		if err != nil {
-			slog.Info("tls-bridge passthrough", "host", pipeline.SanitizeLogValue(host), "reason", "upstream-verify", "error", err)
+			s.logUpstreamUnverified(host, err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 		}
