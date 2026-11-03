@@ -576,7 +576,7 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		// it. A reader that sanitises is the only place that can be sure.
 		//
 		// Idempotent by construction, so a row this writer produced is unchanged: rowLabel
-		// sanitises then truncates, and both steps are fixed points on their own output.
+		// sanitizes then truncates, and both steps are fixed points on their own output.
 		// That is what makes doing it twice free rather than lossy.
 		//
 		// ALL FOUR, INCLUDING Provenance, which was the one left out. The write path caps every one

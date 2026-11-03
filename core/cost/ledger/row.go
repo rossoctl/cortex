@@ -189,21 +189,21 @@ func (r Row) key() key {
 // comparison now that the other side is exported, rather than a third copy of the literal.
 const maxLabelLen = 96
 
-// rowLabel prepares one string for a durable row: sanitised, then capped at maxLabelLen
+// rowLabel prepares one string for a durable row: sanitized, then capped at maxLabelLen
 // bytes on a rune boundary.
 //
 // These strings are request- or upstream-controlled — Endpoint is the host the workload
 // asked for and Model comes straight off the parsed request body — and they are written to
 // a DURABLE file that an operator cats and that other tools parse. An escape sequence in a
-// model name repositions the cursor, recolours the pane or erases the line that reports it,
+// model name repositions the cursor, recolors the pane or erases the line that reports it,
 // for every future read of a file that is retained for retentionDays and cannot be edited.
 // CWE-150. This is the primary guard for Endpoint, Model and Provenance, and defence in
-// depth for Agent, which pipeline.ParseUserAgent already sanitised.
+// depth for Agent, which pipeline.ParseUserAgent already sanitized.
 //
 // THE ORDER MATTERS. Sanitising can triple a string's length — every replaced byte becomes
 // three — so capping first would let a label of 96 control bytes reach 288 on disk and break
 // the line-length arithmetic maxLabelLen exists to guarantee. The cap cuts on a rune
-// boundary, so it cannot split one of the sanitiser's own U+FFFD runes and put an invalid
+// boundary, so it cannot split one of the sanitizer's own U+FFFD runes and put an invalid
 // UTF-8 fragment in a durable row.
 func rowLabel(s string) string {
 	return pipeline.TruncateLabel(pipeline.SanitizeControlRunes(s), maxLabelLen)

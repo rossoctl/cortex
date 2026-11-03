@@ -241,7 +241,7 @@ func capUA(s string) string {
 // cost/ledger the length of an appended line. Cutting on a rune boundary only changes
 // WHERE the byte cap lands (by up to three bytes), never that there is one. A plain
 // s[:n] can split a multi-byte sequence, and encoding/json then expands each invalid
-// byte into a 3-byte U+FFFD, so the serialised label would exceed the cap it was cut to.
+// byte into a 3-byte U+FFFD, so the serialized label would exceed the cap it was cut to.
 func TruncateLabel(s string, n int) string {
 	if len(s) <= n {
 		return s

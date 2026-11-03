@@ -1621,7 +1621,7 @@ func AgentLabel(c *pipeline.EventClient) string {
 // THE RING IS A SERVING SURFACE OF ITS OWN. The model comes off the parsed request body and
 // the endpoint is the host the workload asked for, so without this GET /v1/usage serves a
 // model name containing an ANSI escape straight out of memory, while the ledger's copy of the
-// same label is clean. Both sanitise with pipeline.SanitizeControlRunes, so one hostile label
+// same label is clean. Both sanitize with pipeline.SanitizeControlRunes, so one hostile label
 // is one series in both halves. CWE-150.
 //
 // THE ORDER MATTERS, for the reason ledger.rowLabel gives: sanitising can triple a
