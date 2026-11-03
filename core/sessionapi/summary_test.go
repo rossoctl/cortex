@@ -59,6 +59,7 @@ func fullEvent() pipeline.SessionEvent {
 			FinishReason:     "stop",
 			// Set only when a plugin changed the model; differs from Model on purpose.
 			RequestedModel: "claude-opus-5-5",
+			ServedModel:    "bedrock/us.anthropic.claude-opus-5-5",
 		},
 		A2A: &pipeline.A2AExtension{
 			Method:       "message/send",
@@ -132,6 +133,10 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.Inference.RequestedModel != full.Inference.RequestedModel {
 		t.Errorf("requestedModel = %q, want %q — the detail pane's model: line reads it",
 			got.Inference.RequestedModel, full.Inference.RequestedModel)
+	}
+	if got.Inference.ServedModel != full.Inference.ServedModel {
+		t.Errorf("servedModel = %q, want %q — the detail pane's model: line reads it",
+			got.Inference.ServedModel, full.Inference.ServedModel)
 	}
 	if got.A2A.Artifact != "" {
 		t.Error("A2A.Artifact survived")
@@ -393,7 +398,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 26 since RequestedModel, which is kept as RequestedHost is: agentop's detail pane
 		// draws its model: line from the projected event. A scalar; asserted above.
 		// 27 since ToolResults, which is DETAIL data: dropped, asserted above.
-		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 27},
+		// 28 since ServedModel, kept as RequestedModel is: agentop's detail pane draws its
+		// model: line from the projected event. A capped scalar; asserted above.
+		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 28},
 		{"A2AExtension", reflect.TypeOf(pipeline.A2AExtension{}), 11},
 		{"MCPExtension", reflect.TypeOf(pipeline.MCPExtension{}), 6},
 	} {

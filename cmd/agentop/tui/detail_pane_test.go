@@ -206,6 +206,23 @@ func TestModelHeader_NamesBothModels(t *testing.T) {
 	}
 }
 
+func TestServedHeader(t *testing.T) {
+	for _, e := range []*pipeline.SessionEvent{
+		{Host: "litellm.example.com"},
+		{Inference: &pipeline.InferenceExtension{Model: "granite4.2:8b"}},
+	} {
+		if got := servedHeader(e); got != "" {
+			t.Errorf("servedHeader = %q for %+v, want empty", got, e)
+		}
+	}
+	got := servedHeader(&pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
+		Model: "claude-opus-4-6", ServedModel: "bedrock/us.anthropic.claude-opus-4-6-v1\x1b[2J",
+	}})
+	if want := "served:      bedrock/us.anthropic.claude-opus-4-6-v1\uFFFD[2J"; got != want {
+		t.Errorf("servedHeader = %q, want %q", got, want)
+	}
+}
+
 // Both headers print what the client sent — the model it asked for, the host it
 // named — and what the upstream echoed, so a control character in either must not
 // reach the terminal: an escape sequence there could recolour or rewrite the pane.

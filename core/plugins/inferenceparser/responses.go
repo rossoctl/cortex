@@ -315,6 +315,7 @@ func (u responsesUsage) toNeutral() parsercommon.TokenUsage {
 // streamed shape below, this one wasn't exercised by the live traffic this
 // file was built from (Codex always sends stream:true).
 type responsesNonStreaming struct {
+	Model  string                `json:"model"`
 	Status string                `json:"status"`
 	Usage  responsesUsage        `json:"usage"`
 	Output []responsesOutputItem `json:"output"`
@@ -333,6 +334,7 @@ func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 		slog.Debug("inference-parser: invalid Responses API JSON", "error", err)
 		return
 	}
+	noteBodyModel(ext, resp.Model)
 	var b strings.Builder
 	var calls []pipeline.InferenceToolCall
 	for _, item := range resp.Output {
@@ -384,6 +386,7 @@ type responsesStreamEvent struct {
 	Type     string  `json:"type"`
 	Delta    *string `json:"delta"` // response.output_text.delta's text fragment
 	Response *struct {
+		Model  string         `json:"model"`
 		Status string         `json:"status"`
 		Usage  responsesUsage `json:"usage"`
 	} `json:"response"` // the full snapshot on response.completed/incomplete/failed
@@ -502,6 +505,9 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		slog.Debug("inference-parser: malformed Responses API streaming frame, skipping",
 			"error", err, "frameLen", len(frame))
 		return
+	}
+	if ev.Response != nil {
+		noteBodyModel(ext, ev.Response.Model)
 	}
 	switch ev.Type {
 	case "response.output_text.delta":

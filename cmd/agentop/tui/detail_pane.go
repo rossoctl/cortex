@@ -52,7 +52,7 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 		if r.tunnel != nil {
 			tunnel = tunnelHeader(r.tunnel)
 		}
-		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), timingHeader(e), tunnel} {
+		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
 			if h != "" {
 				m.detailHead = append(m.detailHead, strings.Split(h, "\n")...)
 				m.detailHead = append(m.detailHead, "")
@@ -348,6 +348,21 @@ func modelHeader(e *pipeline.SessionEvent) string {
 	// RequestedModel is the client's model name, and the session API is
 	// unauthenticated: both names pass sanitizeLabel before they reach the terminal.
 	return fmt.Sprintf("model:       %s → %s", sanitizeLabel(e.Inference.RequestedModel), sanitizeLabel(e.Inference.Model))
+}
+
+// servedHeader names the model the upstream says answered, when that is not the model
+// the request was sent for: a gateway that resolved an alias, or a provider that answered
+// with a dated version. The events table's model column keeps the requested name. Empty
+// when the upstream named no other model.
+//
+//	served:      bedrock/us.anthropic.claude-opus-4-6-v1
+func servedHeader(e *pipeline.SessionEvent) string {
+	if e.Inference == nil || e.Inference.ServedModel == "" {
+		return ""
+	}
+	// Upstream-supplied, and the session API is unauthenticated: sanitizeLabel, as for every
+	// label agentop prints.
+	return "served:      " + sanitizeLabel(e.Inference.ServedModel)
 }
 
 // rewriteHeader is how the request that went upstream differs from the one the

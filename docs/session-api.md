@@ -338,6 +338,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `inference.requestedModel` — present only when a plugin changed the model:
   the model the client asked for. `inference.model` is the model the request
   was sent for, which settlement prices.
+- `inference.servedModel` — on a response row, present only when the upstream
+  named a model other than `inference.model`: the `x-litellm-model-name`
+  response header (a LiteLLM gateway's deployment, for example
+  `bedrock/us.anthropic.claude-opus-4-6-v1` for `claude-opus-4-6`), else the
+  response body's own `model` field (a provider's dated version). Absent when
+  the upstream answered under the requested name, as Ollama does. For display
+  only: pricing still follows `inference.model`. agentop's detail pane shows it
+  on a `served:` line.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the
