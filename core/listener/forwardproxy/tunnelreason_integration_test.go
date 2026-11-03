@@ -606,3 +606,38 @@ func TestClientHungUp_GetsNoCAIdentity(t *testing.T) {
 // discardTunnel is a tunnelLog that records nothing, for a test driving bridgeServe that
 // asserts on something other than the timeline.
 func discardTunnel() *tunnelLog { return &tunnelLog{skipped: true} }
+
+// An unverifiable origin means the host's traffic passes through unread, so the
+// first failure for a host must reach a WARN-level log (#1640). Repeats stay below
+// WARN, so a host that always fails does not fill the log.
+func TestUpstreamUnverified_WarnsOncePerHost(t *testing.T) {
+	s, _, authority := bridgeForRejectTest(t)
+	up, err := tlsbridge.NewUpstreamClient(nil, false) // trusts system roots only, not the test origin
+	if err != nil {
+		t.Fatalf("NewUpstreamClient: %v", err)
+	}
+	s.TLSBridge.Upstream = up
+
+	var logbuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	for i := 0; i < 3; i++ {
+		client, peer := net.Pipe()
+		pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
+		if s.bridgeServe(client, authority, hostOnly(authority), s.newTunnelLog(pctx, false), false) {
+			t.Fatal("bridgeServe returned true for an unverifiable origin; it must decline so the caller tunnels")
+		}
+		_ = client.Close()
+		_ = peer.Close()
+	}
+
+	got := logbuf.String()
+	if n := strings.Count(got, "reason=upstream-verify"); n != 1 {
+		t.Errorf("WARN lines for upstream-verify = %d, want 1 (first failure only):\n%s", n, got)
+	}
+	if !strings.Contains(got, "level=WARN") {
+		t.Errorf("upstream-verify failure did not log at WARN:\n%s", got)
+	}
+}
