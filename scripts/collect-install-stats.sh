@@ -42,9 +42,10 @@
 # Linux tarballs agreed independently (112 / 2 = 56 = 51 + 5). That is the
 # measurement the matrix multiplies, not replaces.
 #
-# A TAG-push run is the exception: its upgrade leg lands on a real release, so the
-# people figure can run 1-2 low per job on a day that cut a tag. Stated in the page
-# footnote rather than modelled.
+# A TAG-push run is the exception: every leg after its fresh install lands on a
+# real release, the tag under test, and none is subtracted, so the people figure
+# runs HIGH on a day that cut a tag -- by up to 5 per job since the cpex legs were
+# added. Stated in the page footnote rather than modelled.
 #
 # Nothing here separates maintainers from strangers -- at a base of ~16, a few
 # contributors on a few machines each could account for all of it. Label any
