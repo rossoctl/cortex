@@ -12,8 +12,9 @@
 // changes to unreloadable fields like mode / listener addresses),
 // builds fresh pipelines via the caller-supplied PipelineBuilder,
 // runs their Start hooks under a bounded context, and Stores them
-// into the Holders. The old pipelines keep running until a drain
-// window expires, then Stop is invoked in a background goroutine.
+// into the Holders. The old pipelines keep running until no request
+// holds them, or the drain window expires, then Stop is invoked in a
+// background goroutine.
 //
 // Validation failure at any stage leaves the current pipelines
 // untouched and records the error in Status so operators can see
@@ -53,8 +54,10 @@ type PipelineBuilder func() (inbound, outbound *pipeline.Pipeline, cfg *config.C
 // Option configures a Reloader at construction time.
 type Option func(*Reloader)
 
-// WithDrainWindow overrides the delay before old pipelines are Stopped
-// after a successful swap. Default 30s. Tests pass 0 to avoid sleeping.
+// WithDrainWindow overrides the longest an old pipeline waits for the
+// requests still pinned to it before it is Stopped anyway. Default 10m,
+// so a tunnel left open for hours cannot keep its plugins alive. Tests
+// pass 0 to stop at once.
 func WithDrainWindow(d time.Duration) Option { return func(r *Reloader) { r.drainWindow = d } }
 
 // WithDebounce overrides the debounce interval used to coalesce rapid
@@ -142,7 +145,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		inbound:      inbound,
 		outbound:     outbound,
 		build:        build,
-		drainWindow:  30 * time.Second,
+		drainWindow:  10 * time.Minute,
 		debounce:     250 * time.Millisecond,
 		startTimeout: 60 * time.Second,
 	}
@@ -432,9 +435,7 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// deliberately: parent may cancel during shutdown, and we still
 	// want a bounded Stop on the old plugins so they flush cleanly.
 	go func() {
-		if r.drainWindow > 0 {
-			time.Sleep(r.drainWindow)
-		}
+		remaining := waitUnheld(r.drainWindow, oldIn, oldOut)
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stopCancel()
 		if oldIn != nil {
@@ -443,6 +444,11 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 		if oldOut != nil {
 			oldOut.Stop(stopCtx)
 		}
+		if remaining > 0 {
+			slog.Warn("reloader: stopped old pipelines with requests still on them",
+				"sha256", hash[:12], "requests", remaining, "drainWindow", r.drainWindow)
+			return
+		}
 		slog.Info("reloader: drained old pipelines", "sha256", hash[:12])
 	}()
 
@@ -450,6 +456,30 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 		r.watchExtra(watcher, r.extraDirs(newCfg))
 	}
 	r.recordSuccess(attempt, hash)
+}
+
+// waitUnheld waits until no request holds any of ps, or until limit has passed, and
+// returns how many requests still held them.
+func waitUnheld(limit time.Duration, ps ...*pipeline.Pipeline) int64 {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	var n int64
+	for _, p := range ps {
+		if p == nil {
+			continue
+		}
+		select {
+		case <-p.Drained():
+		case <-timer.C:
+			for _, p := range ps {
+				if p != nil {
+					n += p.Held()
+				}
+			}
+			return n
+		}
+	}
+	return 0
 }
 
 // hash is what decides whether a reload has anything to do: the config's bytes,

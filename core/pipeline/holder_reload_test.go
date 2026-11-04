@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -92,4 +93,75 @@ func TestHolder_CapabilityProbesFollowThePin(t *testing.T) {
 	if h.HasStreamingResponders() {
 		t.Error("HasStreamingResponders() = true, want false: the Holder itself serves new requests")
 	}
+}
+
+// A request holds the pipeline it was pinned to from Run until RunFinish, however
+// many times either is called, and Drained closes on its release.
+func TestPipeline_HeldFromRunUntilRunFinish(t *testing.T) {
+	old := mustPipeline(t, &holderTestPlugin{name: "a"})
+	h := NewHolder(old)
+
+	pctx := &Context{Direction: Outbound}
+	h.Run(context.Background(), pctx)
+	h.Pin(pctx)
+	h.Store(mustPipeline(t, &holderTestPlugin{name: "b"}))
+	drained := old.Drained()
+	if got := old.Held(); got != 1 {
+		t.Fatalf("Held = %d during the request, want 1", got)
+	}
+	select {
+	case <-drained:
+		t.Fatal("Drained closed while a request held the pipeline")
+	default:
+	}
+
+	h.RunFinish(context.Background(), pctx, Outcome{})
+	h.RunFinish(context.Background(), pctx, Outcome{})
+	if got := old.Held(); got != 0 {
+		t.Errorf("Held = %d after RunFinish, want 0", got)
+	}
+	select {
+	case <-drained:
+	default:
+		t.Error("Drained still open after the last request finished")
+	}
+	if got := h.Load().Held(); got != 0 {
+		t.Errorf("the new pipeline is held %d times by a request it never ran", got)
+	}
+}
+
+// A request the reloader's wait-for-zero misses must not run on a stopped pipeline:
+// Holder.Pin either holds the pipeline before the reloader counts it, or moves to
+// the one Stored in its place.
+func TestHolder_PinNeverLandsOnADrainedPipeline(t *testing.T) {
+	h := NewHolder(mustPipeline(t, &holderTestPlugin{name: "a"}))
+	var stopped sync.Map
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				pctx := &Context{Direction: Outbound}
+				if p := h.Pin(pctx); func() bool { _, ok := stopped.Load(p); return ok }() {
+					t.Error("a request pinned a pipeline the reloader had already drained")
+				}
+				h.RunFinish(context.Background(), pctx, Outcome{})
+			}
+		}()
+	}
+	for range 500 {
+		old := h.Load()
+		h.Store(mustPipeline(t, &holderTestPlugin{name: "a"}))
+		<-old.Drained()
+		stopped.Store(old, true)
+	}
+	close(done)
+	wg.Wait()
 }

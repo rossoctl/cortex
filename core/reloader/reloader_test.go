@@ -968,3 +968,56 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 		t.Errorf("unchanged memory block was refused: %v", err)
 	}
 }
+
+// shutdownPlugin records whether its pipeline has been stopped.
+type shutdownPlugin struct{ stopped atomic.Bool }
+
+func (*shutdownPlugin) Name() string { return "shutdown" }
+func (*shutdownPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (*shutdownPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (*shutdownPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (s *shutdownPlugin) Shutdown(context.Context) error { s.stopped.Store(true); return nil }
+
+// An old pipeline is stopped when its last request finishes, not at the end of the
+// drain window, and the window stops it anyway when a request outlasts it.
+func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		window time.Duration
+		finish bool
+	}{
+		{name: "the request's finish releases it", window: time.Minute, finish: true},
+		{name: "the window stops it under an open request", window: 100 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, b, cfgPath, _, outH := setupWith(t, WithDrainWindow(tc.window))
+			sp := &shutdownPlugin{}
+			old, err := pipeline.New([]pipeline.Plugin{sp})
+			if err != nil {
+				t.Fatalf("pipeline.New: %v", err)
+			}
+			outH.Store(old)
+
+			pctx := &pipeline.Context{Direction: pipeline.Outbound}
+			outH.Run(context.Background(), pctx)
+
+			b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
+			writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
+			waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK >= 1 }, "reload to succeed")
+
+			if tc.finish {
+				if sp.stopped.Load() {
+					t.Fatal("the old pipeline was stopped while a request was still pinned to it")
+				}
+				outH.RunFinish(context.Background(), pctx, pipeline.Outcome{})
+			}
+			waitFor(t, 2*time.Second, sp.stopped.Load, "the old pipeline to stop")
+		})
+	}
+}
