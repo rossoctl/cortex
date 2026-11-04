@@ -1022,7 +1022,11 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	old := h.holder.Load()
 	h.holder.Store(fresh)
+	if old.Held() == 0 {
+		t.Error("the open turn does not hold the pipeline it began on, so a reload could stop it")
+	}
 	close(resume)
 	c.readUntil("response.completed")
 	c.close()
@@ -1031,6 +1035,9 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 		t.Error("the turn's own Finisher never ran: the turn ended on a pipeline other than the one it began on")
 	}
 	h.events(t, codexSID, true) // the socket has ended, and with it every Finisher
+	if n := old.Held(); n != 0 {
+		t.Errorf("the turn's pipeline is still held %d times after the socket ended", n)
+	}
 	other.mu.Lock()
 	got := other.got
 	other.mu.Unlock()

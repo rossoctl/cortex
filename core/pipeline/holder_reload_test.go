@@ -96,7 +96,8 @@ func TestHolder_CapabilityProbesFollowThePin(t *testing.T) {
 }
 
 // A request holds the pipeline it was pinned to from Run until RunFinish, however
-// many times either is called, and Drained closes on its release.
+// many times either is called, Drained closes on its release, and a finished
+// request pinned again holds nothing.
 func TestPipeline_HeldFromRunUntilRunFinish(t *testing.T) {
 	old := mustPipeline(t, &holderTestPlugin{name: "a"})
 	h := NewHolder(old)
@@ -125,8 +126,9 @@ func TestPipeline_HeldFromRunUntilRunFinish(t *testing.T) {
 	default:
 		t.Error("Drained still open after the last request finished")
 	}
+	h.Pin(pctx)
 	if got := h.Load().Held(); got != 0 {
-		t.Errorf("the new pipeline is held %d times by a request it never ran", got)
+		t.Errorf("the new pipeline is held %d times by a request that had already finished", got)
 	}
 }
 
