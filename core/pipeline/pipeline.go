@@ -658,7 +658,8 @@ func (p *Pipeline) RunFinish(ctx context.Context, pctx *Context, outcome Outcome
 	}
 	pctx.finished = true
 	if pctx.pinned == p {
-		p.release()
+		// After the Finishers, which still run on p.
+		defer p.release()
 	}
 	if len(pctx.dispatched) == 0 {
 		return

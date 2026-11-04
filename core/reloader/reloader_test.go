@@ -969,8 +969,12 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
-// shutdownPlugin closes stopped when its pipeline is stopped.
-type shutdownPlugin struct{ stopped chan struct{} }
+// shutdownPlugin records how many requests held its pipeline when it was stopped.
+type shutdownPlugin struct {
+	p       *pipeline.Pipeline
+	held    int64
+	stopped chan struct{}
+}
 
 func (*shutdownPlugin) Name() string { return "shutdown" }
 func (*shutdownPlugin) Capabilities() pipeline.PluginCapabilities {
@@ -982,18 +986,23 @@ func (*shutdownPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Ac
 func (*shutdownPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
-func (s *shutdownPlugin) Shutdown(context.Context) error { close(s.stopped); return nil }
+func (s *shutdownPlugin) Shutdown(context.Context) error {
+	s.held = s.p.Held()
+	close(s.stopped)
+	return nil
+}
 
-// An old pipeline is stopped when its last request finishes, and the drain window
-// stops it anyway when a request outlasts it.
+// An old pipeline is stopped once its last request finishes, and the drain window
+// stops it anyway under a request that outlasts it.
 func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		window time.Duration
-		finish bool
+		name     string
+		window   time.Duration
+		finish   bool
+		wantHeld int64
 	}{
-		{name: "the request's finish releases it", window: time.Hour, finish: true},
-		{name: "the window stops it under an open request", window: 0},
+		{name: "the request's finish releases it", window: time.Hour, finish: true, wantHeld: 0},
+		{name: "the window stops it under an open request", window: 0, wantHeld: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			committed := make(chan struct{}, 1)
@@ -1004,6 +1013,7 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("pipeline.New: %v", err)
 			}
+			sp.p = old
 			outH.Store(old)
 
 			pctx := &pipeline.Context{Direction: pipeline.Outbound}
@@ -1012,16 +1022,13 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 			b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
 			writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
 			<-committed
-
 			if tc.finish {
-				select {
-				case <-sp.stopped:
-					t.Fatal("the old pipeline was stopped while a request was still pinned to it")
-				default:
-				}
 				outH.RunFinish(context.Background(), pctx, pipeline.Outcome{})
 			}
 			<-sp.stopped
+			if sp.held != tc.wantHeld {
+				t.Errorf("stopped with %d requests holding it, want %d", sp.held, tc.wantHeld)
+			}
 		})
 	}
 }

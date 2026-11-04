@@ -1012,6 +1012,7 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 		_, _ = fr.ReadFrame()
 	})
 	c := h.dial(t, nil)
+	handshake := h.holder.Load().Held()
 	c.send(responseCreate("hello"))
 	<-midTurn
 
@@ -1024,8 +1025,8 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 	}
 	old := h.holder.Load()
 	h.holder.Store(fresh)
-	if old.Held() == 0 {
-		t.Error("the open turn does not hold the pipeline it began on, so a reload could stop it")
+	if n := old.Held(); n != handshake+1 {
+		t.Errorf("Held = %d mid-turn, want %d: the open turn must hold the pipeline it began on", n, handshake+1)
 	}
 	close(resume)
 	c.readUntil("response.completed")
@@ -1035,9 +1036,6 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 		t.Error("the turn's own Finisher never ran: the turn ended on a pipeline other than the one it began on")
 	}
 	h.events(t, codexSID, true) // the socket has ended, and with it every Finisher
-	if n := old.Held(); n != 0 {
-		t.Errorf("the turn's pipeline is still held %d times after the socket ended", n)
-	}
 	other.mu.Lock()
 	got := other.got
 	other.mu.Unlock()

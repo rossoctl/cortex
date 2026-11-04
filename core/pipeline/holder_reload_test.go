@@ -132,6 +132,29 @@ func TestPipeline_HeldFromRunUntilRunFinish(t *testing.T) {
 	}
 }
 
+// heldDuringFinish records how many requests held its pipeline while it finished.
+type heldDuringFinish struct {
+	holderTestPlugin
+	p    *Pipeline
+	held int64
+}
+
+func (f *heldDuringFinish) OnFinish(context.Context, *Context) { f.held = f.p.Held() }
+
+// A request holds its pipeline until its Finishers return, so a reload cannot Stop
+// a plugin that is still finishing.
+func TestPipeline_FinishersRunWhileTheRequestHoldsThePipeline(t *testing.T) {
+	f := &heldDuringFinish{holderTestPlugin: holderTestPlugin{name: "f"}}
+	f.p = mustPipeline(t, f)
+	h := NewHolder(f.p)
+	pctx := &Context{Direction: Outbound}
+	h.Run(context.Background(), pctx)
+	h.RunFinish(context.Background(), pctx, Outcome{})
+	if f.held != 1 {
+		t.Errorf("Held = %d inside OnFinish, want 1", f.held)
+	}
+}
+
 // A request the reloader's wait-for-zero misses must not run on a stopped pipeline:
 // Holder.Pin either holds the pipeline before the reloader counts it, or moves to
 // the one Stored in its place.
