@@ -42,10 +42,10 @@ func (h *Holder) Load() *Pipeline { return h.p.Load() }
 // call its Stop(ctx) once Drained is closed.
 func (h *Holder) Store(p *Pipeline) { h.p.Store(p) }
 
-// Run is equivalent to h.Load().Run(ctx, pctx). Offered as a
+// Run is equivalent to h.Pin(pctx).Run(ctx, pctx). Offered as a
 // one-liner so listeners can keep their Pipeline-era call sites
 // unchanged when they migrate their field type from *Pipeline to
-// *Holder. One atomic Load per call.
+// *Holder.
 //
 // Run also pins the loaded pipeline on pctx: every later phase on the
 // same request (RunResponse, RunResponseFrame, RunFinish, Resend)

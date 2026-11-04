@@ -446,6 +446,8 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 		}
 		wg.Wait()
 		if n := remaining.Load(); n > 0 {
+			// Routine while a client keeps a CONNECT tunnel or WebSocket open: the
+			// connection holds its pipeline until it closes.
 			slog.Warn("reloader: stopped old pipelines with requests still on them",
 				"sha256", hash[:12], "requests", n, "drainWindow", r.drainWindow)
 			return
