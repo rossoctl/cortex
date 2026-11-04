@@ -11,9 +11,8 @@ import (
 // reloader Store()s a newly-built pipeline under the hood, and the
 // next Load returns it. atomic.Pointer guarantees a Load-then-use
 // sequence sees a fully-initialized pipeline — a request that started
-// before a swap finishes against the original *Pipeline, and the
-// reloader is responsible for not Stop()ing the old pipeline until a
-// drain window expires.
+// before a swap finishes against the original *Pipeline, which the
+// reloader Stops once no request holds it (Pipeline.Drained).
 //
 // A Holder has exactly one long-lived value; its identity is the slot
 // listeners reference, not the pipeline at any given moment.
@@ -40,13 +39,13 @@ func (h *Holder) Load() *Pipeline { return h.p.Load() }
 // new pipeline; in-flight requests that already Loaded the old one
 // continue to run against it. The caller owns the lifecycle of the
 // replaced pipeline — read the return value of the previous Load and
-// call its Stop(ctx) after the intended drain window.
+// call its Stop(ctx) once Drained is closed.
 func (h *Holder) Store(p *Pipeline) { h.p.Store(p) }
 
-// Run is equivalent to h.Load().Run(ctx, pctx). Offered as a
+// Run is equivalent to h.Pin(pctx).Run(ctx, pctx). Offered as a
 // one-liner so listeners can keep their Pipeline-era call sites
 // unchanged when they migrate their field type from *Pipeline to
-// *Holder. One atomic Load per call.
+// *Holder.
 //
 // Run also pins the loaded pipeline on pctx: every later phase on the
 // same request (RunResponse, RunResponseFrame, RunFinish, Resend)
@@ -56,9 +55,20 @@ func (h *Holder) Store(p *Pipeline) { h.p.Store(p) }
 // the pin, a shorter new chain panics in RunFinish and an equal-length
 // one runs hooks on plugins that never saw the request.
 func (h *Holder) Run(ctx context.Context, pctx *Context) Action {
-	p := h.p.Load()
-	pctx.pinned = p
-	return p.Run(ctx, pctx)
+	return h.Pin(pctx).Run(ctx, pctx)
+}
+
+// Pin pins pctx to the current pipeline and returns it. It re-checks the
+// pipeline after holding it, so a reload that Stores in between is either
+// seen here or sees the hold: the reloader counts holds only after its Store.
+func (h *Holder) Pin(pctx *Context) *Pipeline {
+	for {
+		p := h.p.Load()
+		p.pin(pctx)
+		if h.p.Load() == p {
+			return p
+		}
+	}
 }
 
 // ForPctx returns the pipeline a pctx-carrying phase should run on: the

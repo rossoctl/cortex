@@ -155,6 +155,9 @@ func TestResponsesWebSocket_ReloadAddingAnUncarriablePluginEndsTheSocket(t *test
 	if n != 0 {
 		t.Errorf("origin received %d response.create; the turn must not be sent without its plugin", n)
 	}
+	if n := fresh.Held(); n != 0 {
+		t.Errorf("the refused turn still holds the pipeline %d times", n)
+	}
 }
 
 // A turn over the 32 MiB a request body may be ends the socket with 1009, as HTTPS

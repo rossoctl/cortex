@@ -174,13 +174,9 @@ type PolledMsg struct {
 }
 
 // ClusterPollDeadline bounds a ConfigMap edit's wait: the worst-case kubelet
-// sync (~60s) plus the framework's drain window (30s) plus jitter.
-//
-// The drain does NOT actually delay the verdict — the reloader records success
-// synchronously right after the Holder swap and drains the old pipelines in a
-// goroutine — so this is generous rather than tight. Kept at 120s regardless,
-// because for a cluster the kubelet sync is the real variable and it is not
-// worth shaving.
+// sync (~60s) plus jitter, doubled. The verdict does not wait on the drain —
+// the reloader records success right after the Holder swap and drains the old
+// pipelines in a goroutine.
 const ClusterPollDeadline = 120 * time.Second
 
 // LocalPollDeadline bounds a local file edit's wait. The proxy is already

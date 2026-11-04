@@ -1012,6 +1012,7 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 		_, _ = fr.ReadFrame()
 	})
 	c := h.dial(t, nil)
+	handshake := h.holder.Load().Held()
 	c.send(responseCreate("hello"))
 	<-midTurn
 
@@ -1022,7 +1023,11 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	old := h.holder.Load()
 	h.holder.Store(fresh)
+	if n := old.Held(); n != handshake+1 {
+		t.Errorf("Held = %d mid-turn, want %d: the open turn must hold the pipeline it began on", n, handshake+1)
+	}
 	close(resume)
 	c.readUntil("response.completed")
 	c.close()

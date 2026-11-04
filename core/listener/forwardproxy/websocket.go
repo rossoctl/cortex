@@ -329,11 +329,9 @@ func (ws *wsSocket) wsEnd(side string) {
 type wsTurn struct {
 	pctx *pipeline.Context
 	// p is the pipeline the turn began on, and every later step of the turn runs on
-	// it. A hot reload swaps OutboundPipeline for new requests and keeps the old one
-	// running for its drain window so requests already in flight finish where they
-	// started; an HTTPS turn does that by lasting seconds. A socket outlives the
-	// window, so a turn looking the pipeline up again at each step would end on one
-	// whose parser never saw it begin — no tokens, no cost.
+	// it, and the turn holds it until its Finishers run. A hot reload swaps
+	// OutboundPipeline for new requests, so a turn looking the pipeline up again at
+	// each step would end on one whose parser never saw it begin — no tokens, no cost.
 	p *pipeline.Pipeline
 	// prewarm is a generate:false response.create: run through the request phase, not
 	// recorded, and its answer not parsed.
@@ -611,17 +609,18 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 	}
 	body, generate := responseCreateBody(payload)
 
-	p := ws.s.OutboundPipeline.Load()
+	pctx := ws.newTurnContext(body)
+	p := ws.s.OutboundPipeline.Pin(pctx)
 	if why := pipelineCannotCarry(p); why != "" {
 		// A reload since the handshake made this socket one the proxy would have
 		// declined. End it with "try again later": Codex reconnects, and the new
 		// handshake is answered 426 and falls back to HTTPS, where the plugin applies.
 		slog.Info("forward-proxy: ending a carried WebSocket after a reload", "host", ws.r.Host, "reason", why)
+		p.RunFinish(ws.ctx(), pctx, pipeline.Outcome{})
 		ws.closeBoth(wsframe.CloseTryAgainLater, "the proxy's pipeline changed; reconnect")
 		return nil, true
 	}
 
-	pctx := ws.newTurnContext(body)
 	t := &wsTurn{pctx: pctx, p: p, prewarm: !generate}
 	action := p.Run(ws.ctx(), pctx)
 	if action.Type == pipeline.Reject {

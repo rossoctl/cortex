@@ -60,9 +60,9 @@ One HTTP exchange through the sidecar produces two OTLP spans.
   emitting the response span was recovered by the pipeline (a WARN is logged); the response span
   was emitted but lost — the two halves enter a batching exporter an exchange apart, so a response
   can be lost after its request has flushed; or the exchange outlived a config hot-reload — old
-  pipelines stop a drain window (default 30 s) after the swap, and a response span emitted into
-  the old, already-shut-down provider is dropped, which is routine for SSE or LLM exchanges
-  longer than the window. The consumer renders it as in-flight, never as a wrong
+  pipelines stop once no request holds them or the drain window (default 10 min) expires, and a
+  response span emitted into the old, already-shut-down provider is dropped, which happens only
+  for exchanges longer than the window. The consumer renders it as in-flight, never as a wrong
   pairing. A response span whose `lineage.outcome` is absent derives with `error` NULL (honest
   unknown), never `false`.
 - **Scope of `denied`.** The lineage plugin runs after the gate plugins and the pipeline

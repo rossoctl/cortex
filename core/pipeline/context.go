@@ -420,8 +420,9 @@ type Context struct {
 	// stay open for minutes), and pctx.dispatched holds indexes into the
 	// OLD pipeline's plugin slice — indexing the new one with them panics
 	// when the new chain is shorter and otherwise runs hooks on plugins
-	// that never saw OnRequest. Direct *Pipeline calls (not via a Holder)
-	// never reload under a live request and leave this nil.
+	// that never saw OnRequest. Set by Holder.Run and Holder.Pin, which also
+	// hold the pipeline until RunFinish so a reload does not Stop it under
+	// the request.
 	pinned *Pipeline
 
 	// outcome is populated exactly once by Pipeline.RunFinish immediately
