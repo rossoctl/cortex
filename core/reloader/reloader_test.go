@@ -1067,6 +1067,13 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 			<-idle.stopped
 			if tc.finish {
 				outH.RunFinish(context.Background(), pctx, pipeline.Outcome{})
+				// Checked before the wait below, so a hold RunFinish keeps fails here
+				// rather than leaving the reloader nothing to stop on.
+				select {
+				case <-busy.p.Drained():
+				default:
+					t.Fatalf("the old pipeline is still held %d times after the request finished", busy.p.Held())
+				}
 			}
 			<-busy.stopped
 			if busy.held != tc.wantHeld {
