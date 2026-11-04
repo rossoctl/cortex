@@ -12,8 +12,8 @@
 // changes to unreloadable fields like mode / listener addresses),
 // builds fresh pipelines via the caller-supplied PipelineBuilder,
 // runs their Start hooks under a bounded context, and Stores them
-// into the Holders. The old pipelines keep running until no request
-// holds them, or the drain window expires, then Stop is invoked in a
+// into the Holders. Each old pipeline keeps running until no request
+// holds it, or the drain window expires, then Stop is invoked in a
 // background goroutine.
 //
 // Validation failure at any stage leaves the current pipelines
@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -435,18 +436,18 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// deliberately: parent may cancel during shutdown, and we still
 	// want a bounded Stop on the old plugins so they flush cleanly.
 	go func() {
-		remaining := waitUnheld(r.drainWindow, oldIn, oldOut)
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer stopCancel()
-		if oldIn != nil {
-			oldIn.Stop(stopCtx)
+		deadline := time.Now().Add(r.drainWindow)
+		var remaining atomic.Int64
+		var wg sync.WaitGroup
+		for _, p := range []*pipeline.Pipeline{oldIn, oldOut} {
+			if p != nil {
+				wg.Go(func() { remaining.Add(stopWhenUnheld(p, deadline)) })
+			}
 		}
-		if oldOut != nil {
-			oldOut.Stop(stopCtx)
-		}
-		if remaining > 0 {
+		wg.Wait()
+		if n := remaining.Load(); n > 0 {
 			slog.Warn("reloader: stopped old pipelines with requests still on them",
-				"sha256", hash[:12], "requests", remaining, "drainWindow", r.drainWindow)
+				"sha256", hash[:12], "requests", n, "drainWindow", r.drainWindow)
 			return
 		}
 		slog.Info("reloader: drained old pipelines", "sha256", hash[:12])
@@ -458,28 +459,21 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	r.recordSuccess(attempt, hash)
 }
 
-// waitUnheld waits until no request holds any of ps, or until limit has passed, and
-// returns how many requests still held them.
-func waitUnheld(limit time.Duration, ps ...*pipeline.Pipeline) int64 {
-	timer := time.NewTimer(limit)
+// stopWhenUnheld Stops p once no request holds it, or at deadline, and returns how
+// many requests still held it then.
+func stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	var n int64
-	for _, p := range ps {
-		if p == nil {
-			continue
-		}
-		select {
-		case <-p.Drained():
-		case <-timer.C:
-			for _, p := range ps {
-				if p != nil {
-					n += p.Held()
-				}
-			}
-			return n
-		}
+	select {
+	case <-p.Drained():
+	case <-timer.C:
+		n = p.Held()
 	}
-	return 0
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	p.Stop(ctx)
+	return n
 }
 
 // hash is what decides whether a reload has anything to do: the config's bytes,

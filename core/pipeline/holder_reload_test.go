@@ -126,7 +126,9 @@ func TestPipeline_HeldFromRunUntilRunFinish(t *testing.T) {
 	default:
 		t.Error("Drained still open after the last request finished")
 	}
-	h.Pin(pctx)
+	if p := h.Pin(pctx); p != h.Load() {
+		t.Error("a finished request pinned again stayed on the pipeline it finished on")
+	}
 	if got := h.Load().Held(); got != 0 {
 		t.Errorf("the new pipeline is held %d times by a request that had already finished", got)
 	}

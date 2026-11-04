@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -992,43 +994,105 @@ func (s *shutdownPlugin) Shutdown(context.Context) error {
 	return nil
 }
 
-// An old pipeline is stopped once its last request finishes, and the drain window
-// stops it anyway under a request that outlasts it.
+// storeShutdownPipeline Stores a pipeline of one shutdownPlugin in h.
+func storeShutdownPipeline(t *testing.T, h *pipeline.Holder) *shutdownPlugin {
+	t.Helper()
+	sp := &shutdownPlugin{stopped: make(chan struct{})}
+	p, err := pipeline.New([]pipeline.Plugin{sp})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	sp.p = p
+	h.Store(p)
+	return sp
+}
+
+// drainLog passes on the reloader's closing record for the old pipelines of the
+// reload whose config hashes to sha, ignoring other reloads still draining.
+type drainLog struct {
+	sha     string
+	records chan slog.Record
+}
+
+func (drainLog) Enabled(context.Context, slog.Level) bool { return true }
+func (d drainLog) Handle(_ context.Context, r slog.Record) error {
+	ours := false
+	r.Attrs(func(a slog.Attr) bool {
+		ours = ours || (a.Key == "sha256" && a.Value.String() == d.sha)
+		return true
+	})
+	if ours && strings.Contains(r.Message, "old pipelines") {
+		d.records <- r.Clone()
+	}
+	return nil
+}
+func (d drainLog) WithAttrs([]slog.Attr) slog.Handler { return d }
+func (d drainLog) WithGroup(string) slog.Handler      { return d }
+
+// Each old pipeline is stopped once its own last request finishes, and the drain
+// window stops it anyway under a request that outlasts it, warning how many it cut off.
 func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		window   time.Duration
 		finish   bool
 		wantHeld int64
+		wantLog  string
 	}{
-		{name: "the request's finish releases it", window: time.Hour, finish: true, wantHeld: 0},
-		{name: "the window stops it under an open request", window: 0, wantHeld: 1},
+		{name: "the request's finish releases it", window: time.Hour, finish: true, wantHeld: 0,
+			wantLog: "reloader: drained old pipelines"},
+		{name: "the window stops it under an open request", window: 0, wantHeld: 1,
+			wantLog: "reloader: stopped old pipelines with requests still on them"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			content := "mode: envoy-sidecar\n# " + tc.name + "\n"
+			sum := sha256.Sum256([]byte(content))
+			logs := drainLog{sha: hex.EncodeToString(sum[:])[:12], records: make(chan slog.Record, 1)}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(logs))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
 			committed := make(chan struct{}, 1)
-			_, b, cfgPath, _, outH := setupWith(t, WithDrainWindow(tc.window),
+			_, b, cfgPath, inH, outH := setupWith(t, WithDrainWindow(tc.window),
 				WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
-			sp := &shutdownPlugin{stopped: make(chan struct{})}
-			old, err := pipeline.New([]pipeline.Plugin{sp})
-			if err != nil {
-				t.Fatalf("pipeline.New: %v", err)
-			}
-			sp.p = old
-			outH.Store(old)
+			idle, busy := storeShutdownPipeline(t, inH), storeShutdownPipeline(t, outH)
 
 			pctx := &pipeline.Context{Direction: pipeline.Outbound}
 			outH.Run(context.Background(), pctx)
 
 			b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
-			writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
+			writeConfig(t, cfgPath, content)
 			<-committed
+			// The idle inbound pipeline stops while the outbound one is still held.
+			<-idle.stopped
 			if tc.finish {
 				outH.RunFinish(context.Background(), pctx, pipeline.Outcome{})
 			}
-			<-sp.stopped
-			if sp.held != tc.wantHeld {
-				t.Errorf("stopped with %d requests holding it, want %d", sp.held, tc.wantHeld)
+			<-busy.stopped
+			if busy.held != tc.wantHeld {
+				t.Errorf("stopped with %d requests holding it, want %d", busy.held, tc.wantHeld)
+			}
+			rec := <-logs.records
+			requests := int64(0)
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "requests" {
+					requests = a.Value.Int64()
+				}
+				return true
+			})
+			if rec.Message != tc.wantLog || requests != tc.wantHeld {
+				t.Errorf("logged %q with requests=%d, want %q with requests=%d",
+					rec.Message, requests, tc.wantLog, tc.wantHeld)
 			}
 		})
+	}
+}
+
+// Without WithDrainWindow, an old pipeline waits up to 10 minutes for its requests.
+func TestNew_DrainWindowDefaultsToTenMinutes(t *testing.T) {
+	r := New("config.yaml", pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t)),
+		(&fakeBuilder{}).build, &config.Config{Mode: "envoy-sidecar"})
+	if r.drainWindow != 10*time.Minute {
+		t.Errorf("drainWindow = %v, want 10m", r.drainWindow)
 	}
 }
