@@ -25,7 +25,33 @@ type anthropicRequest struct {
 	Stream      bool                  `json:"stream"`
 	Tools       []anthropicTool       `json:"tools"`
 	ToolChoice  any                   `json:"tool_choice"`
+	// Raw, so a value of another type leaves the request parsed; see stringField.
+	Thinking     json.RawMessage `json:"thinking"`
+	OutputConfig json.RawMessage `json:"output_config"`
 }
+
+// stringField returns the string value of key in the JSON object raw, or "" when raw is not an
+// object or the value is not a string. For fields read for display only: a client that sends
+// another type must not cost the request its parse.
+func stringField(raw json.RawMessage, key string) string {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return ""
+	}
+	return jsonString(obj[key])
+}
+
+// jsonString is the value of the JSON string raw, or "" when raw is not a string.
+func jsonString(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// rawStringLen is the length of the JSON string raw, or 0 when it is not a string.
+func rawStringLen(raw json.RawMessage) int { return len(jsonString(raw)) }
 
 // anthropicTool is an Anthropic tool definition. The schema lives under
 // input_schema (vs OpenAI's nested function.parameters).
@@ -59,6 +85,7 @@ type anthropicReqMessage struct {
 	ToolCalls     []pipeline.InferenceToolCall
 	ToolCallNames string
 	ToolUseIDs    string
+	Thinking      pipeline.InferenceThinking
 }
 
 func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
@@ -70,7 +97,7 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	m.Role = raw.Role
-	m.Content, m.ToolResults, m.ToolCalls = flattenAnthropicContent(raw.Content)
+	m.Content, m.ToolResults, m.ToolCalls, m.Thinking = flattenAnthropicContent(raw.Content)
 	names := make([]string, 0, len(m.ToolCalls))
 	ids := make([]string, 0, len(m.ToolCalls)+len(m.ToolResults))
 	for _, c := range m.ToolCalls {
@@ -89,8 +116,8 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 // so a request full of tool output is not parsed twice. A result's own content is a string
 // or text blocks, which flattenContent already reads; its non-text blocks (an image a Read
 // returned) are dropped, as flattenContent drops them everywhere. The tool_use blocks give
-// the calls, arguments as sent.
-func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, []pipeline.InferenceToolCall) {
+// the calls, arguments as sent. The thinking blocks are counted, not kept.
+func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, []pipeline.InferenceToolCall, pipeline.InferenceThinking) {
 	var blocks []struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
@@ -100,15 +127,20 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 		ToolUseID string          `json:"tool_use_id"`
 		Content   json.RawMessage `json:"content"`
 		IsError   bool            `json:"is_error"`
+		Thinking  json.RawMessage `json:"thinking"`
+		Signature json.RawMessage `json:"signature"`
+		Data      json.RawMessage `json:"data"`
 	}
+	var thinking pipeline.InferenceThinking
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		// A plain string, null, or a shape we do not model: none of them holds a tool block.
-		return flattenContent(raw), nil, nil
+		return flattenContent(raw), nil, nil, thinking
 	}
 	var text strings.Builder
 	var results []pipeline.InferenceToolResult
 	var calls []pipeline.InferenceToolCall
 	for _, b := range blocks {
+		thinking.Add(b.Type, rawStringLen(b.Thinking), rawStringLen(b.Signature), rawStringLen(b.Data))
 		switch b.Type {
 		case "text":
 			if b.Text != "" {
@@ -125,7 +157,7 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 			calls = append(calls, pipeline.InferenceToolCall{ID: rawText(b.ID), Name: b.Name, Arguments: string(b.Input)})
 		}
 	}
-	return text.String(), results, calls
+	return text.String(), results, calls, thinking
 }
 
 // parseAnthropicRequest builds an InferenceExtension from an Anthropic Messages
@@ -157,6 +189,10 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 		// Every populated InferenceExtension is an outbound LLM call — an
 		// agent action. Same classification as the OpenAI path.
 		IsAction: true,
+
+		ThinkingType:    stringField(req.Thinking, "type"),
+		ThinkingDisplay: stringField(req.Thinking, "display"),
+		Effort:          stringField(req.OutputConfig, "effort"),
 	}
 
 	// Anthropic carries the system prompt top-level, not as a message role.
@@ -167,6 +203,7 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 			Role: "system", Content: sys, ContentBytes: contentBytes(req.System),
 		})
 	}
+	var history pipeline.InferenceThinking
 	for _, msg := range req.Messages {
 		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
 			Role: msg.Role, Content: msg.Content, ContentBytes: msg.ContentBytes,
@@ -174,7 +211,9 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 		})
 		ext.ToolResults = append(ext.ToolResults, msg.ToolResults...)
 		ext.HistoryToolCalls = append(ext.HistoryToolCalls, msg.ToolCalls...)
+		history.Merge(msg.Thinking)
 	}
+	ext.HistoryThinking = history.OrNil()
 	for _, tool := range req.Tools {
 		if tool.Name == "" {
 			continue
@@ -259,6 +298,10 @@ type anthropicContentBlock struct {
 	ID    string          `json:"id"`
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
+	// Raw for the reason anthropicRequest.Thinking is.
+	Thinking  json.RawMessage `json:"thinking"`
+	Signature json.RawMessage `json:"signature"`
+	Data      json.RawMessage `json:"data"`
 }
 
 // parseAnthropicJSON parses a non-streaming Messages response: text blocks ->
@@ -270,7 +313,9 @@ func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
 	}
 	noteBodyModel(ext, resp.Model)
 	var b strings.Builder
+	var thinking pipeline.InferenceThinking
 	for _, blk := range resp.Content {
+		thinking.Add(blk.Type, rawStringLen(blk.Thinking), rawStringLen(blk.Signature), rawStringLen(blk.Data))
 		switch blk.Type {
 		case "text":
 			if blk.Text != "" {
@@ -288,6 +333,7 @@ func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
 		}
 	}
 	ext.Completion = b.String()
+	ext.ResponseThinking = thinking.OrNil()
 	if resp.StopReason != "" {
 		ext.FinishReason = resp.StopReason
 	}
@@ -316,6 +362,10 @@ type anthropicStreamEvent struct {
 		// input_json_delta. The model streams tool arguments as text that
 		// is only valid JSON once every fragment is concatenated.
 		PartialJSON string `json:"partial_json"`
+		// A thinking_delta's text and a signature_delta's signature. Raw, so a frame
+		// carrying another type still yields its usage.
+		Thinking  json.RawMessage `json:"thinking"`
+		Signature json.RawMessage `json:"signature"`
 	} `json:"delta"`
 	Usage *anthropicUsage `json:"usage"`
 
@@ -340,6 +390,8 @@ type anthropicStreamEvent struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		// A redacted_thinking block arrives whole here, with no deltas after it.
+		Data json.RawMessage `json:"data"`
 	} `json:"content_block"`
 }
 
@@ -436,6 +488,10 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
 			state.openAnthropicTool(ev.Index, ev.ContentBlock.ID, ev.ContentBlock.Name)
 		}
+		// A thinking block's text and signature follow as deltas, which add only bytes.
+		if ev.ContentBlock != nil {
+			state.thinking.Add(ev.ContentBlock.Type, 0, 0, rawStringLen(ev.ContentBlock.Data))
+		}
 	case "content_block_delta":
 		if ev.Delta == nil {
 			return
@@ -447,6 +503,10 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 			if tc := state.anthropicTool(ev.Index); tc != nil {
 				tc.args.WriteString(ev.Delta.PartialJSON)
 			}
+		case "thinking_delta":
+			state.thinking.TextBytes += rawStringLen(ev.Delta.Thinking)
+		case "signature_delta":
+			state.thinking.SignatureBytes += rawStringLen(ev.Delta.Signature)
 		}
 	case "content_block_stop":
 		state.closeAnthropicTool()

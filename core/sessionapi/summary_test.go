@@ -59,8 +59,14 @@ func fullEvent() pipeline.SessionEvent {
 			PresentKinds:     9,
 			FinishReason:     "stop",
 			// Set only when a plugin changed the model; differs from Model on purpose.
-			RequestedModel: "claude-opus-5-5",
-			ServedModel:    "bedrock/us.anthropic.claude-opus-5-5",
+			RequestedModel:   "claude-opus-5-5",
+			ServedModel:      "bedrock/us.anthropic.claude-opus-5-5",
+			ThinkingType:     "adaptive",
+			ThinkingDisplay:  "summarized",
+			Effort:           "high",
+			AnthropicBeta:    "interleaved-thinking-2025-05-14",
+			HistoryThinking:  &pipeline.InferenceThinking{Blocks: 3, SignatureBytes: 2944},
+			ResponseThinking: &pipeline.InferenceThinking{Blocks: 1, TextBytes: 7, SignatureBytes: 1300},
 		},
 		A2A: &pipeline.A2AExtension{
 			Method:       "message/send",
@@ -142,6 +148,20 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.Inference.ServedModel != full.Inference.ServedModel {
 		t.Errorf("servedModel = %q, want %q — the detail pane's model: line reads it",
 			got.Inference.ServedModel, full.Inference.ServedModel)
+	}
+	// The thinking and effort fields are kept: a few short scalars, and the counts do not grow
+	// with the conversation the way the blocks would.
+	gi, fi := got.Inference, full.Inference
+	if gi.ThinkingType != fi.ThinkingType || gi.ThinkingDisplay != fi.ThinkingDisplay ||
+		gi.Effort != fi.Effort || gi.AnthropicBeta != fi.AnthropicBeta {
+		t.Errorf("thinking/effort/beta = %q/%q/%q/%q, want %q/%q/%q/%q",
+			gi.ThinkingType, gi.ThinkingDisplay, gi.Effort, gi.AnthropicBeta,
+			fi.ThinkingType, fi.ThinkingDisplay, fi.Effort, fi.AnthropicBeta)
+	}
+	if gi.HistoryThinking == nil || *gi.HistoryThinking != *fi.HistoryThinking ||
+		gi.ResponseThinking == nil || *gi.ResponseThinking != *fi.ResponseThinking {
+		t.Errorf("history/response thinking = %+v/%+v, want %+v/%+v",
+			gi.HistoryThinking, gi.ResponseThinking, fi.HistoryThinking, fi.ResponseThinking)
 	}
 	if got.A2A.Artifact != "" {
 		t.Error("A2A.Artifact survived")
@@ -406,7 +426,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 28 since ServedModel, kept as RequestedModel is: agentop's detail pane draws its
 		// model: line from the projected event. A capped scalar; asserted above.
 		// 29 since HistoryToolCalls, DETAIL data like ToolResults: dropped, asserted above.
-		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 29},
+		// 35 since ThinkingType, ThinkingDisplay, Effort, AnthropicBeta, HistoryThinking and
+		// ResponseThinking: small scalars and counts, kept, asserted above.
+		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 35},
 		{"A2AExtension", reflect.TypeOf(pipeline.A2AExtension{}), 11},
 		{"MCPExtension", reflect.TypeOf(pipeline.MCPExtension{}), 6},
 	} {

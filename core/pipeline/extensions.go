@@ -197,6 +197,25 @@ type InferenceExtension struct {
 	// view=summary strips, so a request's detail could name a call but not show it.
 	HistoryToolCalls []InferenceToolCall `json:"historyToolCalls,omitempty"`
 
+	// ThinkingType and ThinkingDisplay are the request's thinking.type and thinking.display:
+	// "adaptive" and "summarized", for example. Effort is the effort level the request asked
+	// for, from whichever field its dialect uses: output_config.effort (Anthropic),
+	// reasoning_effort (chat completions), reasoning.effort (Responses). AnthropicBeta is the
+	// request's anthropic-beta header, every value joined with a comma. Each is empty when
+	// the request did not state it, and when it stated it with a value of another JSON type.
+	// Record only: no plugin reads them.
+	ThinkingType    string `json:"thinkingType,omitempty"`
+	ThinkingDisplay string `json:"thinkingDisplay,omitempty"`
+	Effort          string `json:"effort,omitempty"`
+	AnthropicBeta   string `json:"anthropicBeta,omitempty"`
+
+	// HistoryThinking counts the thinking blocks the client sent back in this request, and
+	// ResponseThinking the ones the model returned. Nil when there were none. Counts, not the
+	// blocks: what a reader needs is whether they were there, and a block sent back with a
+	// signature and no text is one a gateway may drop before the model sees it.
+	HistoryThinking  *InferenceThinking `json:"historyThinking,omitempty"`
+	ResponseThinking *InferenceThinking `json:"responseThinking,omitempty"`
+
 	// MessageCount and ToolCount are how many Messages and Tools this event HAD, for readers of
 	// a copy that no longer carries them. Set only by sessionapi.summarizeEvent, immediately
 	// before it nils both slices; zero everywhere else, including on every event the store keeps.
@@ -450,6 +469,50 @@ type InferenceToolCall struct {
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments,omitempty"`
+}
+
+// InferenceThinking counts the thinking blocks of one request or response. Blocks counts both
+// kinds and Redacted the redacted_thinking ones among them. TextBytes and SignatureBytes are
+// the bytes of the thinking blocks' text and signatures, RedactedBytes of the redacted blocks'
+// data. A field of another JSON type counts as zero bytes.
+type InferenceThinking struct {
+	Blocks         int `json:"blocks"`
+	Redacted       int `json:"redacted,omitempty"`
+	TextBytes      int `json:"textBytes,omitempty"`
+	SignatureBytes int `json:"signatureBytes,omitempty"`
+	RedactedBytes  int `json:"redactedBytes,omitempty"`
+}
+
+// Add counts one block of type typ, either kind; a type that is neither counts nothing.
+func (t *InferenceThinking) Add(typ string, text, signature, data int) {
+	switch typ {
+	case "thinking":
+		t.Blocks++
+		t.TextBytes += text
+		t.SignatureBytes += signature
+	case "redacted_thinking":
+		t.Blocks++
+		t.Redacted++
+		t.RedactedBytes += data
+	}
+}
+
+// Merge adds the counts of o to t.
+func (t *InferenceThinking) Merge(o InferenceThinking) {
+	t.Blocks += o.Blocks
+	t.Redacted += o.Redacted
+	t.TextBytes += o.TextBytes
+	t.SignatureBytes += o.SignatureBytes
+	t.RedactedBytes += o.RedactedBytes
+}
+
+// OrNil returns t, or nil when it counted no block, so an extension states nothing rather
+// than a zero count.
+func (t *InferenceThinking) OrNil() *InferenceThinking {
+	if t == nil || t.Blocks == 0 {
+		return nil
+	}
+	return t
 }
 
 // InferenceToolResult is one tool_result block from an Anthropic request. ToolUseID is the

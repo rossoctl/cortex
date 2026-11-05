@@ -1,6 +1,7 @@
 package inferenceparser
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -43,6 +44,12 @@ func settleServedModel(pctx *pipeline.Context) {
 	if ext.ServedModel == ext.Model {
 		ext.ServedModel = ""
 	}
+}
+
+// anthropicBeta is the request's anthropic-beta header, every value joined with a comma and
+// cleaned as a served model name is: it is also a short wire string kept on every event.
+func anthropicBeta(h http.Header) string {
+	return cleanServedModel(strings.Join(h.Values("Anthropic-Beta"), ","))
 }
 
 // cleanServedModel makes an upstream-supplied name safe to store and print: control
