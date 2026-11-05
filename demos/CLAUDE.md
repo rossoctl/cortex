@@ -66,7 +66,7 @@ them into agent namespaces that don't already have them:
 
 | Resource | Kind | Used by | Keys |
 |----------|------|---------|------|
-| `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
+| `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt` by default (the other audience sources are in [`core/plugins/CLAUDE.md`](../core/plugins/CLAUDE.md)). Target audience and scopes are configured per-route in `authproxy-routes`. |
 | `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `memory` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
 | `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (format below) |
@@ -129,8 +129,8 @@ the repo root:
 ROSSOCTL_DIR=../rossoctl ./scripts/dev/local-build-and-test.sh
 ```
 
-To build a single image directly. The Go images build from the repo root;
-proxy-init and sparc-service build from their own `deploy/` directory:
+To build a single image directly. The Go images build from the repo root, and
+proxy-init builds from `deploy/proxy-init/`:
 
 ```bash
 # proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
@@ -140,8 +140,8 @@ make load-image                     # Uses KIND_CLUSTER_NAME env var (default: r
 cd ../..
 
 # Sidecar images. Pick whichever you need; the operator selects the image per
-# workload from the resolved AuthBridge mode. Plugins are all opt-in, so each sidecar
-# Dockerfile refuses to build without GO_BUILD_TAGS naming a profile.
+# workload from the resolved AuthBridge mode. Plugins are all opt-in, so these two
+# Dockerfiles refuse to build without GO_BUILD_TAGS naming a profile.
 podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
   -t authbridge:latest .                                              # proxy-sidecar (default)

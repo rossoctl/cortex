@@ -25,7 +25,7 @@ mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
-The runtime library at [`core/`](../core/) holds the plugin framework, every listener (the Envoy ext_proc server and the HTTP proxies), the cost pipeline, the session store, and the auth primitives — auth being 1.6% of its non-test lines. It is not protocol-free: `listener/extproc` depends on gRPC and `envoyproxy/go-control-plane`. See [`core/README.md`](../core/README.md) for the package reference and the measured breakdown.
+The runtime library at [`core/`](../core/) holds the plugin framework, every listener (the Envoy ext_proc server and the HTTP proxies), the cost pipeline, the session store, and the auth primitives — auth being about 1% of its non-test lines. It is not protocol-free: `listener/extproc` depends on gRPC and `envoyproxy/go-control-plane`. See [`core/README.md`](../core/README.md) for the package reference and the measured breakdown.
 
 ## Plugin Catalog
 

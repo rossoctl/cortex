@@ -31,7 +31,8 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
   Stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
-  down all three things you created:
+  down all three things you created. Run these in the top-level checkout: the path is
+  relative to it.
 
   ```sh
   git worktree remove ../cortex-worktrees/<topic>   # --force if untracked files remain

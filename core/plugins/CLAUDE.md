@@ -11,7 +11,7 @@ including the plugin capability and classification rules, are in the root
 **Inbound path** (`x-authbridge-direction: inbound`):
 - Validates JWT signature via JWKS (auto-refreshing cache; `jwks_url` derivation is below)
 - Validates issuer claim against `ISSUER` env var
-- Validates audience: the token's `aud` must match one of `allowed_audiences`, `audience`, or the value in `audience_file`. With none of them set, `audience_file` defaults to `/shared/client-id.txt`
+- Validates audience: the token's `aud` must match one configured audience. The set is `allowed_audiences` plus `audience`, or plus the value in `audience_file` when `audience` is unset. With none of them set, `audience_file` defaults to `/shared/client-id.txt`
 - Returns 401 with JSON error body for invalid/missing tokens
 - Removes `x-authbridge-direction` header before forwarding to app
 
@@ -56,4 +56,4 @@ including the plugin capability and classification rules, are in the root
 
 ## Gotcha
 
-- **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. Exception: when `allowed_audiences` already gives jwt-validation an audience, it does not poll and does not return 503, and it never loads the file's audience, even when the file appears later. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
+- **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. Exception: when `allowed_audiences` already gives jwt-validation an audience, it does not poll and does not return 503. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.

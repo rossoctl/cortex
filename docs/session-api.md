@@ -293,8 +293,7 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `proxy_error` for the proxy's own cuts) and the sent status as `error.code`.
   Such rows count as errors in `/v1/usage` although their status is 200, and
   the Finisher sees `OutcomeError` (`classifyBrokenStream` resets
-  `pctx.StatusCode` to zero while the row keeps the sent status). The reverse
-  proxy's streamed row carries no `error`. A `skip_hosts` stream aborts the same way and
+  `pctx.StatusCode` to zero while the row keeps the sent status). A `skip_hosts` stream aborts the same way and
   records nothing. Where the upstream did answer, `error.code` keeps the status
   it sent, while `statusCode` stays what the client got. A 499 with `error.kind: "client_canceled"`
   is the client hanging up first — since neither proxy times out a slow

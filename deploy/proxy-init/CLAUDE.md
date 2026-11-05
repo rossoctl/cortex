@@ -21,9 +21,9 @@ Extensively documented shell script that sets up iptables for transparent traffi
 | `INBOUND_PROXY_PORT` | 15124 | Envoy inbound listener (`redirect` mode) |
 | `TRANSPARENT_PORT` | 8082 | Transparent listener (`enforce-redirect` mode). Must match `listener.transparent_proxy_addr` |
 | `PROXY_UID` | 1337 | Envoy process UID (excluded from redirect) |
-| `OUTBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
+| `OUTBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude (`redirect` mode) |
 | `INBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
-| `POD_IP` | (required) | Pod IP via Downward API; used as DNAT target for ambient mesh inbound interception |
+| `POD_IP` | (required in `redirect` mode) | Pod IP via Downward API; used as DNAT target for ambient mesh inbound interception |
 
 ## Adding New iptables Rules
 - Edit `deploy/proxy-init/init-iptables.sh`

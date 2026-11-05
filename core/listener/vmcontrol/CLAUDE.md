@@ -44,7 +44,7 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   its guest merely names. The wrapper also strips `X-Moca-*`,
   `Proxy-Authorization` and the session-id headers (`guestStrippedHeaders`) from
   guest requests. Other guest headers, `Authorization` and `User-Agent` among
-  them, reach the pipeline and the upstream as the guest sent them.
+  them, are not stripped.
   **The rule covers refusals, not only requests that reach the pipeline**: a
   request turned away *before* hydration — an off-list egress destination on
   either the plain or CONNECT path, a body too large to buffer, a bridged

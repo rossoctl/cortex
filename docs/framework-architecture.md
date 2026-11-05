@@ -790,8 +790,7 @@ ConfigMap with TLS blocks:
 | `strict` | `tls_inspector` + single TLS filter chain; plaintext drops at filter chain match | `UpstreamTlsContext` on the `original_destination` cluster: TLS-or-fail, blanket |
 
 X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
-`/opt/svid_key.pem`, `/opt/svid_bundle.pem`. These files are for envoy-sidecar only:
-proxy-sidecar's listeners use the in-memory `X509Source`, so a change to the files
+`/opt/svid_key.pem`, `/opt/svid_bundle.pem`. proxy-sidecar's listeners use the in-memory `X509Source`, so a change to the files
 does not change the certificate proxy-sidecar presents. The spiffe Provider's file-mirror in the `cortex-envoy` binary
 keeps them fresh on rotation. Inbound parity with proxy-sidecar is
 byte-identical observable semantics — the same outcome as proxy-sidecar's
