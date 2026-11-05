@@ -57,7 +57,7 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 
 | Package | Purpose |
 |---------|---------|
-| `session/` | In-memory session store correlating requests, with message interning — see the chatty-traffic gotcha in [CLAUDE.md](../CLAUDE.md) |
+| `session/` | In-memory session store correlating requests, with message interning — see the session store memory gotcha in [CLAUDE.md](../CLAUDE.md) |
 | `sessionapi/` | The `:9094` HTTP API — `/v1/sessions`, `/v1/events` SSE, `/v1/pipeline` |
 | `observe/` | The `:9093` server — `/stats`, `/config`, `/reload/status` |
 | `redact/` | Best-effort stripping of sensitive values before anything is stored or served |
