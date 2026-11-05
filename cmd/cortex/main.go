@@ -1285,8 +1285,7 @@ func main() {
 			_ = sessionAPISrv.Server().Close()
 		}
 	}
-	outboundPipeline.Stop(shutdownCtx)
-	inboundPipeline.Stop(shutdownCtx)
+	rld.Close(shutdownCtx)
 
 	// Flushed AFTER both pipelines have stopped and before the store closes, so the
 	// final minute includes every event a draining request still produced. Any earlier

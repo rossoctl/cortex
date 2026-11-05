@@ -13,8 +13,8 @@
 // builds fresh pipelines via the caller-supplied PipelineBuilder,
 // runs their Start hooks under a bounded context, and Stores them
 // into the Holders. Each old pipeline keeps running until no request
-// holds it, or the drain window expires, then Stop is invoked in a
-// background goroutine.
+// holds it, the drain window expires, or Close is called, then Stop is
+// invoked in a background goroutine. Close also Stops the live pipelines.
 //
 // Validation failure at any stage leaves the current pipelines
 // untouched and records the error in Status so operators can see
@@ -135,6 +135,15 @@ type Reloader struct {
 	lastHash string
 	// startData is the config file as New read it.
 	startData []byte
+
+	// cancelLoop and loopDone stop and await the watch goroutine; set by Start.
+	cancelLoop context.CancelFunc
+	loopDone   chan struct{}
+	// Close sets closeCtx, then closes closing to stop every old pipeline still
+	// draining; drains counts their goroutines.
+	closing  chan struct{}
+	closeCtx context.Context
+	drains   sync.WaitGroup
 }
 
 // New constructs a Reloader. initialCfg must be the config the caller
@@ -149,6 +158,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		drainWindow:  10 * time.Minute,
 		debounce:     250 * time.Millisecond,
 		startTimeout: 60 * time.Second,
+		closing:      make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -170,7 +180,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 
 // Start arms the watcher. Blocks until the watcher is ready or fails
 // to arm (invalid directory, fsnotify init error). Returns nil on
-// success; the watch goroutine then runs until ctx is cancelled.
+// success; the watch goroutine then runs until ctx is cancelled or Close.
 //
 // Safe to call at most once. A Reloader whose Start returned an error
 // is not usable — construct a new one.
@@ -240,7 +250,12 @@ func (r *Reloader) Start(ctx context.Context) error {
 		r.seedHash()
 	}
 
-	go r.watchLoop(ctx, watcher)
+	ctx, r.cancelLoop = context.WithCancel(ctx)
+	r.loopDone = make(chan struct{})
+	go func() {
+		defer close(r.loopDone)
+		r.watchLoop(ctx, watcher)
+	}()
 	slog.Info("reloader: watching for config changes",
 		"path", r.configPath, "dir", dir, "drainWindow", r.drainWindow)
 	return nil
@@ -435,13 +450,15 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// Drain old pipelines in the background. Using context.Background
 	// deliberately: parent may cancel during shutdown, and we still
 	// want a bounded Stop on the old plugins so they flush cleanly.
+	r.drains.Add(1)
 	go func() {
+		defer r.drains.Done()
 		deadline := time.Now().Add(r.drainWindow)
 		var remaining atomic.Int64
 		var wg sync.WaitGroup
 		for _, p := range []*pipeline.Pipeline{oldIn, oldOut} {
 			if p != nil {
-				wg.Go(func() { remaining.Add(stopWhenUnheld(p, deadline)) })
+				wg.Go(func() { remaining.Add(r.stopWhenUnheld(p, deadline)) })
 			}
 		}
 		wg.Wait()
@@ -461,9 +478,9 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	r.recordSuccess(attempt, hash)
 }
 
-// stopWhenUnheld Stops p once no request holds it, or at deadline, and returns how
-// many requests still held it then.
-func stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
+// stopWhenUnheld Stops p once no request holds it, at deadline, or on Close, and
+// returns how many requests still held it then.
+func (r *Reloader) stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	var n int64
@@ -471,11 +488,28 @@ func stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
 	case <-p.Drained():
 	case <-timer.C:
 		n = p.Held()
+	case <-r.closing:
+		p.Stop(r.closeCtx)
+		return p.Held()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	p.Stop(ctx)
 	return n
+}
+
+// Close stops reloading, then Stops the live pipelines and every old one still
+// draining, bounded by ctx. Call it once, after the listeners have stopped.
+func (r *Reloader) Close(ctx context.Context) {
+	if r.cancelLoop != nil {
+		r.cancelLoop()
+		<-r.loopDone
+	}
+	r.closeCtx = ctx
+	close(r.closing)
+	r.outbound.Load().Stop(ctx)
+	r.inbound.Load().Stop(ctx)
+	r.drains.Wait()
 }
 
 // hash is what decides whether a reload has anything to do: the config's bytes,

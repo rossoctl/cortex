@@ -1095,6 +1095,35 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 	}
 }
 
+// Close stops the live pipelines and an old one still draining under an open
+// request, each once, before it returns.
+func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	r, b, cfgPath, _, outH := setupWith(t, WithDrainWindow(time.Hour),
+		WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
+	draining := storeShutdownPipeline(t, outH)
+	outH.Run(context.Background(), &pipeline.Context{Direction: pipeline.Outbound})
+
+	liveIn, liveOut := pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t))
+	in, out := storeShutdownPipeline(t, liveIn), storeShutdownPipeline(t, liveOut)
+	b.set(builderResult{inbound: liveIn.Load(), outbound: liveOut.Load(), cfg: &config.Config{Mode: "envoy-sidecar"}})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
+	<-committed
+
+	// A second Stop of any of them would panic closing its stopped channel.
+	r.Close(context.Background())
+	for name, sp := range map[string]*shutdownPlugin{"inbound": in, "outbound": out, "draining": draining} {
+		select {
+		case <-sp.stopped:
+		default:
+			t.Errorf("the %s pipeline was not stopped by Close", name)
+		}
+	}
+	if draining.held != 1 {
+		t.Errorf("the draining pipeline stopped with %d requests holding it, want 1", draining.held)
+	}
+}
+
 // Without WithDrainWindow, an old pipeline waits up to 10 minutes for its requests.
 func TestNew_DrainWindowDefaultsToTenMinutes(t *testing.T) {
 	r := New("config.yaml", pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t)),
