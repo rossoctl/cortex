@@ -43,8 +43,7 @@ This file provides context for Claude (AI assistant) when working with the `cort
     per-worktree, but this bootstrap has to run in the shared top-level checkout, so
     every session fetching there writes that one file — and a fetch landing between your
     reading it and your using it hands you a different commit than the one you checked.
-    That is how `CLAUDE.md` got reverted mid-session to a pre-rename state. Nothing but
-    you writes `refs/base/<topic>`, so there is no window to lose and no verification
+    Nothing but you writes `refs/base/<topic>`, so there is no window to lose and no verification
     step to remember. Do not use `refs/worktree/` for this — git reserves that namespace
     for per-worktree refs.
   - **A refused `worktree add` does not always mean another session holds the branch.**
@@ -268,7 +267,7 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` and `authbridge-cpex` **images** are build variants of the proxy binary (not separate binaries) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). See [AuthBridge Binaries](#authbridge-binaries) below for the list.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
 **Language:** Go 1.26.10 (`go.work` and the eight workspace modules; the
@@ -276,25 +275,19 @@ three self-contained `demos/*` modules are still on 1.24)
 **Deployment shapes:** [`cmd/README.md`](cmd/README.md) — which binary pins which shape
 **Framework internals:** [`docs/framework-architecture.md`](docs/framework-architecture.md), [`docs/plugin-reference.md`](docs/plugin-reference.md), [`docs/architecture.md`](docs/architecture.md)
 
-See the binary-by-binary table below (image, mode, listeners, plugins) for
-the full enumeration — kept as the single list rather than repeated here.
-
 **Common:**
 - `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~84k non-test lines, of which auth is ~1%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
 - `deploy/proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
 - `deploy/proxy-init/Dockerfile.init` — proxy-init container image.
 
-**Ports (envoy-sidecar):** 15123 (outbound), 15124 (inbound), 9090 (ext-proc), 9901 (admin)
-**Ports (proxy-sidecar / lite):** 8080 (reverse proxy), 8081 (forward proxy), 9091 (health), 9093 (stats), 9094 (session API)
+Ports: see [Important Port Mapping](#important-port-mapping).
 
 ### 2. Client Registration
 
 Keycloak client registration for workloads is handled by the
 **operator** (separate repo) — see `operator/docs/operator-managed-client-registration.md`.
 The operator creates a Secret with `client-id.txt` + `client-secret.txt`
-and the webhook mounts it at `/shared/` in the workload pod. The
-in-pod `client-registration` sidecar that previously lived in this
-repo has been removed.
+and the webhook mounts it at `/shared/` in the workload pod.
 
 ## How the Components Work Together
 
@@ -341,8 +334,7 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` and `authbridge-cpe
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
 
 Every sidecar binary but praxis pins one deployment shape and refuses a
-mismatching `mode:` at boot; praxis pins none. Mode is no longer selected at
-runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
+mismatching `mode:` at boot; praxis pins none. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 
 `cmd/agentop/` is also a Go module here but is not a sidecar — it is the
 operator-facing TUI over the session API, and the component the root README leads
@@ -419,7 +411,7 @@ each binary's `main.go` imports the listeners it needs and blank-imports
 - The plugin's `default_policy` controls the fallback (default: `passthrough`)
 
 **Route resolver (outbound):**
-- Reads `/etc/authproxy/routes.yaml` by default; the plugin's `routes.file` sets the path
+- Reads `/etc/authproxy/routes.yaml` by default; the plugin's `routes.file` sets the path, and `routes.rules` adds inline rules
 - Each route entry has: `host` (glob pattern), `target_audience`, `token_scopes`
 - Host matching uses `gobwas/glob` with `.` as the separator (`core/internal/hostglob`): `*` matches one DNS label, `**` crosses labels
 - Most commonly, `host` is a plain Kubernetes service name (e.g., `github-tool-mcp`) because the HTTP client sets the Host header from the URL hostname
@@ -430,9 +422,8 @@ each binary's `main.go` imports the listeners it needs and blank-imports
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` when omitted: from `keycloak_url` + `keycloak_realm` if both are set, else from `issuer` (appends `/protocol/openid-connect/certs`).
 - `token-exchange` derives `token_url` when omitted from `provider` + `provider_url` + `provider_realm`. `keycloak_url` / `keycloak_realm` are deprecated aliases and log a warning.
-- Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime-config`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any image, and the `SPIRE_ENABLED` env var no longer gates anything. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
-- Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
-- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-runtime-config`).
+- Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime-config`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors the SVIDs under `/opt/` (see the [Shared Volume Contract](#shared-volume-contract)). `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` (polling: gotcha 2). The `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
+- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (there is no top-level field; `authbridge-runtime-config` expands the `DEFAULT_OUTBOUND_POLICY` env var into the plugin config).
 
 **Key library packages (core/):**
 - `core/plugins/jwtvalidation/validation/` -- JWKS-backed JWT verifier (used internally by `jwt-validation` plugin)
@@ -511,16 +502,15 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   its guest merely names. The wrapper also strips `X-Moca-*`,
   `Proxy-Authorization` and every session-id header from guest requests, so
   nothing client-asserted reaches the pipeline or the upstream.
-  **The rule covers refusals, not only requests that reach the pipeline**, and
-  that took a second pass to get right: a request turned away *before*
-  hydration — an off-list egress destination on either the plain or CONNECT
-  path, a body too large to buffer, a bridged request whose `Host` is not its
-  tunnel's — records a row too, and those paths originally resolved by
-  header/process/`ActiveSession()`, filing a VM's denied-egress row in another
-  VM's session or in `default`. The connection's answer is now resolved once
-  per request (`trustedSessionOf`) and threaded into every pre-pipeline
-  recording site, with attribution pinned empty there as hydration does it, so
-  no VM's row is stamped with the host process that owns the control socket.
+  **The rule covers refusals, not only requests that reach the pipeline**: a
+  request turned away *before* hydration — an off-list egress destination on
+  either the plain or CONNECT path, a body too large to buffer, a bridged
+  request whose `Host` is not its tunnel's — records a row too. The
+  connection's answer is resolved once per request (`trustedSessionOf`) and
+  threaded into every pre-pipeline recording site, with attribution pinned
+  empty there as hydration does it, so no VM's row is filed by
+  header/process/`ActiveSession()` or stamped with the host process that owns
+  the control socket.
   **It also survives `session.enabled: false`**: the trusted id needs no store
   (`sessionViewFor` falls back to an ID-only view), so turning the store off
   stops recording without un-identifying the VMs.
@@ -583,14 +573,7 @@ Extensively documented shell script that sets up iptables for transparent traffi
 
 Declarative Keycloak synchronization tool that maintains client scope mappings based on `routes.yaml`. Idempotent, used in multi-target demos for dynamic scope assignments.
 
-**Dependencies:** `requirements.txt` — `python-keycloak>=7.1.1,<8`.
-Note `ci.yaml` pip-installs `python-keycloak==5.3.1` for the Python test job,
-two majors behind what the project declares.
-
-There is no longer a `client_registration.py` in this repo. Workload
-registration with Keycloak is the operator's job
-(`ClientRegistrationReconciler`), which creates the Secret carrying
-`client-id.txt` + `client-secret.txt` that the webhook mounts at `/shared/`.
+Dependencies: see [Python Code](#python-code-keycloak_syncpy-demo-setup-scripts).
 
 ### Envoy Configuration
 
@@ -730,14 +713,6 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
-None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
-longer gates anything. SPIRE credentials are fetched in-process by
-`core/spiffe`'s Provider.
-
-The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
-`spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
-been removed from CI. Their source is gone too.
-
 ## Pre-commit Hooks
 
 Install: `pre-commit install`
@@ -745,10 +720,8 @@ Install: `pre-commit install`
 Hooks:
 - `trailing-whitespace`, `end-of-file-fixer`, `check-added-large-files` (max 1024KB), `check-yaml`, `check-json`, `check-merge-conflict`, `mixed-line-ending`
 - `ai-assisted-by-trailer` — Rewrites `Co-Authored-By` to `Assisted-By` (commit-msg stage)
-- `ruff`, `ruff-format` — Python linting/formatting, `exclude: ^tests/`. The
-  filter was `files: ^authbridge/` until that tree became the repo root; it was
-  inverted rather than dropped because `tests/` was never in scope and does not
-  lint clean, so widening to cover it is a separate change.
+- `ruff`, `ruff-format` — Python linting/formatting, `exclude: ^tests/`: `tests/`
+  does not lint clean, so widening the filter is a separate change.
 
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
@@ -797,7 +770,6 @@ them into agent namespaces that don't already have them:
 | `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `memory` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
 | `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (format below) |
-| `spiffe-helper-config` | ConfigMap (legacy, unused) | (none) | Previously held `helper.conf` for the bundled `spiffe-helper` binary. Retained only for compatibility with older deployments; authbridge drives SPIRE configuration via the top-level `spiffe:` block in `authbridge-runtime-config` and does not read this ConfigMap. |
 | `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
 
 **`authproxy-routes` format** (`routes.yaml`):
@@ -924,12 +896,6 @@ For an interactive walkthrough see
 - Rebuild from `deploy/proxy-init/`: `make docker-build-init && make load-image`
   (the target is `load-image`, singular — `load-images` does not exist)
 
-### Modifying Client Registration
-Registration no longer lives here — it is the operator's
-`ClientRegistrationReconciler` (see the [operator
-repo](https://github.com/rossoctl/operator)). This repo only *consumes* the
-resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
-
 ### Adding New Keycloak Resources to Setup
 - Edit the appropriate `setup_keycloak*.py` script
 - Use the `get_or_create_*` helper pattern for idempotency
@@ -970,8 +936,6 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   majors behind, so CI is not testing the version the project declares.
 - `python-keycloak` for all Keycloak admin API calls
 - Idempotent: every `get_or_create_*` helper checks existence before creating
-- `ruff` / `ruff-format` cover the whole tree except `tests/`, which has
-  pre-existing findings — see the Pre-commit Hooks section.
 
 ### Kubernetes Manifests
 - Example deployment YAMLs in `demos/*/k8s/`
@@ -990,12 +954,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge-envoy` image runs as UID 1337. The `authbridge` (proxy-sidecar) image runs as UID 1001.
 
-2. **Shared Volume Contract:** the sidecar and the operator communicate through
-   files under `/opt/` and `/shared/` — see the
-   [Shared Volume Contract](#shared-volume-contract) section above for the full
-   writer/reader table.
-
-3. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
+2. **Port Coordination:** the `proxy-init` iptables rules redirect to Envoy's 15123 (outbound) and 15124 (inbound); see [Important Port Mapping](#important-port-mapping).
 
 ## Gotchas and Known Issues
 
@@ -1111,11 +1070,7 @@ Never add `Co-authored-by`, `Made-with`, or similar trailers that GitHub parses 
 
 ### PR Bodies
 
-PR descriptions should end with the same `Assisted-By` trailer:
-
-    Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
-
-Do not use `🤖 Generated with [Claude Code](https://claude.com/claude-code)` or similar.
+PR descriptions end with the same `Assisted-By` trailer. Do not use `🤖 Generated with [Claude Code](https://claude.com/claude-code)` or similar.
 
 A `commit-msg` hook in `scripts/hooks/commit-msg` rewrites a `Co-authored-by:` trailer that names Claude, Cursor or Anthropic into `Assisted-By`, and removes `Made-with:` lines. It never fails a commit, and it does nothing for PR bodies.
 Install it via pre-commit:
