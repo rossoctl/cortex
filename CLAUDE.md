@@ -593,7 +593,11 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 |------|-----------|----------|---------|
 | 15123 | Envoy | TCP | Outbound listener (iptables redirects app traffic here) |
 | 15124 | Envoy | TCP | Inbound listener (iptables redirects incoming traffic here) |
+| 8080 | authbridge | HTTP | Reverse proxy (proxy-sidecar inbound) |
+| 8081 | authbridge | HTTP | Forward proxy (proxy-sidecar outbound; `HTTP_PROXY` target) |
+| 8082 / 8083 | authbridge | TCP | Transparent egress / inbound listeners (iptables REDIRECT targets) — see [`cmd/README.md`](cmd/README.md#ports) |
 | 9090 | authbridge | gRPC | Ext-proc server (called by Envoy) |
+| 9091 | authbridge | HTTP | Health |
 | 9093 | authbridge | HTTP | Stats + config inspection (`/stats`, `/config`, `/reload/status`, `/tls-bridge/unread`, and `/debug/pprof/*` where `listener.bind_loopback_only` is set) |
 | 9094 | authbridge | HTTP | Session events API (JSON snapshots + SSE stream) |
 | 9901 | Envoy | HTTP | Admin interface (bound to 127.0.0.1) |
@@ -672,11 +676,11 @@ re-verify them by hand after a change.
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`/build/test for all 11 modules (core, redis, both `scripts/*`, the `cmd/*` matrix, the three demos); a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 11 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet` and build for all 11 modules, and tests for all but the three demos; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 11 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
-| `release-binaries.yaml` | Tag push (`v*`) | Release tarballs — see [Release binaries](#release-binaries) |
+| `release-binaries.yaml` | Tag push (`v*`), manual; push to main publishes the main-latest channel when `MAIN_CHANNEL_ENABLED` is set | Release tarballs — see [Release binaries](#release-binaries) |
 | `pr-verifier.yml` | PR | PR title check (below) |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
 
@@ -960,7 +964,7 @@ For an interactive walkthrough see
 
 ## Important Cross-Component Relationships
 
-1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge-envoy` image runs as UID 1337. The `authbridge` (proxy-sidecar) image runs as UID 1001.
+1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The operator runs the injected proxy container as the same UID (`Proxy.UID`, default 1337), whichever image it is. The `authbridge` image's own default is `USER 1001`, so a pod built without the operator runs it as 1001, which proxy-init does not exempt.
 
 2. **Port Coordination:** the `proxy-init` iptables rules redirect to Envoy's 15123 (outbound) and 15124 (inbound); see [Important Port Mapping](#important-port-mapping).
 
@@ -1010,11 +1014,11 @@ For an interactive walkthrough see
     - **RSS is not heap.** `/debug/pprof/*` is served only where `listener.bind_loopback_only` is set.
     - `memory.limit_mb` (default 2048 on a local install) is a soft `debug.SetMemoryLimit`, set at boot and refused on reload. Too low means slow, never a crash. It does not count CPEX's cgo memory.
 
-    **The session archive is disk, not memory** (`core/session/archive`, on for a local install bound to loopback, off elsewhere: `config.ArchiveRunsOnLocalInstall`). Every memory bound above still applies, but eviction no longer loses history. On disk it interns the same seven fields the store does, and it is bounded by `retention_days` (30) and `max_bytes` (2 GiB). `DELETE /v1/sessions` erases it with the store. A burst it cannot keep up with is dropped from the archive and counted, never from memory. At startup `cmd/cortex` replays the last six hours into the usage ring (`usage.Aggregator.Replay`, not through the store) **beside live traffic, not before it**, so `/healthz` answers at once. The replay fills a private ring from `BeginReplay`, and `FinishReplay` first applies any clear, delete or rename the live ring took meanwhile. The replay has `usageReplayBudget` (60s) or does not run. User-facing details: [`docs/laptop-service.md`](docs/laptop-service.md).
+    **The session archive is disk, not memory** (`core/session/archive`, on for a local install bound to loopback, off elsewhere: `config.ArchiveRunsOnLocalInstall`). Every memory bound above still applies, but eviction no longer loses history. On disk it interns the same seven fields the store does, and it is bounded by `retention_days` (30) and `max_bytes` (2 GiB). `DELETE /v1/sessions` erases it with the store. A burst it cannot keep up with is dropped from the archive and counted, never from memory. At startup `cmd/cortex` replays the last six hours into the usage ring (`usage.Aggregator.Replay`, not through the store) **beside live traffic, not before it**, so `/healthz` answers at once. The segment list is taken before any listener starts: a process never appends to a segment it did not open, so nothing live is read back. The replay fills a private ring from `BeginReplay`, and `FinishReplay` first applies any clear, delete or rename the live ring took meanwhile. The replay has `usageReplayBudget` (60s) or does not run. User-facing details: [`docs/laptop-service.md`](docs/laptop-service.md).
 
     Two layered defenses keep the inbound A2A user intent visible to IBAC when an agent sends dozens of outbound events per turn:
 
-    - **Primary fix — `listener.skip_hosts`** ([`docs/framework-architecture.md`](docs/framework-architecture.md) has the example): infrastructure destinations (OTel collectors, metrics, log shippers) whose traffic bypasses the pipeline AND session recording. Do NOT add hosts that need IBAC or token-exchange policy — bypass means bypass. A change needs a pod restart.
+    - **Primary fix — `listener.skip_hosts`** ([`docs/framework-architecture.md`](docs/framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) has the example): infrastructure destinations (OTel collectors, metrics, log shippers) whose traffic bypasses the pipeline AND session recording. Do NOT add hosts that need IBAC or token-exchange policy — bypass means bypass. A change needs a pod restart.
 
     - **Egress boundary — `listener.egress_allow_hosts`**, or `MOCA_EGRESS_ALLOW` when the field is empty: the forward proxy's deny-by-default allow list. An off-list destination is refused 403 `destination_denied` by name, before the pipeline, DNS and any dial (shape: [`docs/session-api.md`](docs/session-api.md#event-schema)). Rules:
       - Entries are exact `host:port`. Portless and wildcard entries are startup errors, and so is an unbracketed IPv6 literal: write `[2001:db8::1]:443`. A destination with no port is judged at 80 for http and 443 otherwise. A malformed authority is denied by name, never a panic.

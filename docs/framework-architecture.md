@@ -740,9 +740,9 @@ mtls:
   mode: strict          # permissive | strict (omit block entirely for off)
 ```
 
-`mode` is the only field the block carries; cert paths default to
-`/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` (the SPIFFE
-Provider's file mirror). Legacy `cert_file` / `key_file` / `bundle_file` keys
+`mode` is the only field the block carries. The listeners read the SVID in
+memory from the SPIFFE Provider's `X509Source`; the files the Provider mirrors
+under `/opt/` are for external readers. Legacy `cert_file` / `key_file` / `bundle_file` keys
 are dropped at load.
 
 | Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
@@ -873,6 +873,7 @@ curl http://localhost:9093/config               # now-active config
 | `mtls.*` (the block's presence and `mode`, the only field it carries) | ❌ | The inbound TLS listener and, under `strict`, the forward proxy's mTLS dialer are built once at startup, and the outbound chain is built for `forwardproxy.Support` of that state; refuse reload. Legacy `cert_file` / `key_file` / `bundle_file` keys are dropped at load, so an edit to them is neither applied nor refused |
 | `tls_bridge.*` (mode, ca_dir, passthrough_hosts, ports, …) | ❌ | The bridge engine is built once at boot in each `cmd` main and nothing re-reads the block; refuse reload. An accepted-but-ineffective edit here is the dangerous shape: an operator adding a host to `passthrough_hosts` reads the successful reload as confirmation it stopped being intercepted |
 | `spiffe.*` (socket, mirror settings, …) | ❌ | The in-process Provider is constructed once at boot and handed to plugins through `Deps` at build time; refuse reload |
+| `memory.*` (`limit_mb`) | ❌ | `debug.SetMemoryLimit` is applied once at boot; refuse reload |
 
 **Why `session.*` and `cost_ledger.*` are refused rather than "reloaded but ineffective".**
 Both used to be accepted: the reload succeeded, `ReloadsOK` incremented,
@@ -909,7 +910,8 @@ hosts; ports are stripped before matching. Any change requires a pod restart,
 like every other `listener.*` field. Do **not** add hosts here that need IBAC
 or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
-guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
+guardrail needs (see the intent pin in the session store gotcha in
+[`CLAUDE.md`](../CLAUDE.md#gotchas-and-known-issues)).
 
 #### Forwarding WebSocket upgrades
 

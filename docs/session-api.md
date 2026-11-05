@@ -261,7 +261,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   eviction deletes the counter with the entry, so a session re-created under
   the same id restarts at 1. A paging client must order pages by `at`, not by
   `seq`. A session archive moves that boundary out to disk: numbering continues
-  across restarts for as long as the archive holds the session.
+  across restarts for as long as the archive holds the session, and a rekey
+  into an id the archive already holds is refused (the session keeps its old
+  id), because the two numberings would collide. A proxy that predates paging
+  sends no `seq`, which is how a client tells it cannot page there.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
 - `invocations` — per-plugin invocation records for every plugin that ran on
   the pipeline pass, structured `{inbound: [...], outbound: [...]}`. Each entry
@@ -308,11 +311,12 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   every one under `listener.responses_websockets: decline`, and under the default,
   `parse`, one it cannot (not decrypted, or a plugin that rewrites response bodies or
   redirects requests). Nothing is forwarded, and a client such as Codex reads it as
-  "use HTTPS" and retries at once over HTTPS. An HTTP/2 client is refused 400
-  by Go's HTTP/2 server before the handler runs. v0.9.4's
-  `decline_responses_websockets` is still read when the new key is unset
-  (`true` = `decline`, `false` = `forward`), with a startup warning; both set
-  is refused. It is not counted as an error in `/v1/usage`. A carried socket's turn the client ends early (Codex's Esc) is a 200
+  "use HTTPS" and retries at once over HTTPS. (Under `parse`, an HTTP/2 client
+  is refused 400 by Go's HTTP/2 server before the handler runs.) The 426 is not
+  counted as an error in `/v1/usage`, and the Finisher sees an **allow** with
+  status 426. v0.9.4's `decline_responses_websockets` is still read when the
+  new key is unset (`true` = `decline`, `false` = `forward`), with a startup
+  warning; both set is refused. A carried socket's turn the client ends early (Codex's Esc) is a 200
   with `error.kind: "turn_interrupted"`, as an HTTPS stream the client leaves part way
   keeps its 200, and is not counted as an error either. Every other WebSocket
   upgrade — and a Responses one under `forward` — is forwarded (#1488): the 101
@@ -347,7 +351,8 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   (`listener.egress_guard`): the destination resolved into loopback,
   link-local, private or this host's own address space and no permit covered
   it. Also the proxy's own answer rather than the upstream's, and also not
-  counted as an error — the guard did what it was configured to. **A 403
+  counted as an error — the guard did what it was configured to. The Finisher
+  sees an **allow** with status 403, as for the 426. **A 403
   `destination_denied` is the egress allow list's refusal**
   (`listener.egress_allow_hosts`, or `MOCA_EGRESS_ALLOW`): the destination was
   not on the deny-by-default list, and the proxy refused it by name — header
@@ -355,7 +360,8 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   before the pipeline, before DNS and before any dial. Off-list CONNECT
   targets, absolute-form hosts and the target a plugin's redirect moved a
   request to all land this way, as a `phase: "denied"` row carrying an
-  `egress-allowlist` invocation whose `details.host` names the host. The two
+  `egress-allowlist` invocation whose `details.host` names the host; the row's
+  own `host` is the full authority, as every outbound row's is. The two
   403s compose: the allow list judges the **name** before DNS, the guard the
   **address** at the dial, so an allow-list entry is not a permit for the
   guard. **A request whose body could not be buffered** never reached the
@@ -370,7 +376,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
   separates a slow-to-answer origin from one that answered and then trickled,
-  which `durationMs` alone cannot (#1251). The row is recorded when the listener
+  which `durationMs` alone cannot (#1251). All three listeners set
+  `pctx.ResponseHeadersAt` at their own headers-arrival moment, and every
+  response-event builder derives the figure with `pipeline.DurationBetween`;
+  a new listener or builder must do the same. The row is recorded when the listener
   is finished with the body — after the read on a buffered path, after the relay
   on a streamed or unbuffered one — so the difference really is the body's time.
   The one exception is the envoy-sidecar listener with a pipeline no plugin of
@@ -456,8 +465,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.*`. Absent on the
   main conversation's rows and on every other client's, and absent too when
   the value was not usable (a control character, over 128 bytes), which is
-  refused rather than cleaned up. The row is still filed in its parent
-  conversation's session. **This key names an agent; it does not say the row
+  refused rather than cleaned up. `Context.Subagent` resolves it and
+  `ResolveClient` pins it, so no plugin can re-file a row. The row is still
+  filed in its parent conversation's session, so **the header must not be added
+  to `session.id_headers`**. **This key names an agent; it does not say the row
   is a subagent's.** `inference.agentRole` says that, and on a teammate's row
   it is `main` while `subagent` is set.
 - `parentSubagent` — the agent that started the one `subagent` names, from
