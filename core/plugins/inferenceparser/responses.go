@@ -34,6 +34,8 @@ type responsesRequest struct {
 	Temperature     *float64        `json:"temperature"`
 	MaxOutputTokens *int            `json:"max_output_tokens"`
 	TopP            *float64        `json:"top_p"`
+	// Raw for the reason anthropicRequest.Thinking is.
+	Reasoning json.RawMessage `json:"reasoning"`
 }
 
 // responsesInputItem is one entry of a Responses API request's `input`
@@ -213,6 +215,7 @@ func parseResponsesRequest(headers http.Header, body []byte) *pipeline.Inference
 		Stream:      req.Stream,
 		ToolChoice:  req.ToolChoice,
 		IsAction:    true,
+		Effort:      stringField(req.Reasoning, "effort"),
 	}
 	for _, item := range input {
 		if item.Type == "message" {
