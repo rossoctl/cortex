@@ -22,11 +22,8 @@ git fetch upstream main
 ```
 
 ```bash
-git worktree add ../cortex-worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
+git worktree add .claude/worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
 ```
-
-Then stop, and ask the user to start a new Claude Code session in the worktree from a
-separate terminal. A `cd` outside the session's start directory is reset.
 
 ## Table of Contents
 

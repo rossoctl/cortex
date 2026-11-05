@@ -14,30 +14,25 @@ This file provides context for Claude (AI assistant) when working with the `cort
   ```sh
   # Fetch into a ref only you write, so nothing can move it underneath you.
   git fetch https://github.com/rossoctl/cortex.git main:refs/base/<topic>
-  git worktree add ../cortex-worktrees/<topic> -b <branch> refs/base/<topic>
+  git worktree add .claude/worktrees/<topic> -b <branch> refs/base/<topic>
   ```
 
-  **Put the worktree beside the checkout, not inside it.** A session that starts in the
-  top-level checkout and reads a file under an in-repo `.worktrees/<topic>/` also loads
-  that worktree's copy of this file, so the request carries it twice. A sibling
-  directory is not below the session's start directory, so its copy is not loaded. Do
-  not use `claudeMdExcludes` for this: a pattern that matches the nested copy also
-  matches the worktree's own copy, and a session started there then loads none. Older
-  worktrees under `.worktrees/` still work; create new ones beside the checkout.
+  **Put the worktree under `.claude/worktrees/`.** Claude Code does not load the root
+  `CLAUDE.md` of a worktree there when you read its files, so the request carries one
+  copy of this file, not two. The worktree's nested `CLAUDE.md` files still load, and
+  its skills are added to the skill list under a `.claude/worktrees/<topic>:` prefix. A worktree anywhere else in the checkout, such as an older
+  `.worktrees/<topic>/`, loads its copy beside this one. A worktree outside the checkout
+  does not, but a session cannot `cd` there: Claude Code resets the shell to the
+  session's start directory. The cost of `.claude/worktrees/` is that the session reads
+  the top-level checkout's copy of this file. When a branch changes `CLAUDE.md`, read the
+  worktree's copy.
 
-  **Then stop, and ask the user to start a new Claude Code session in the worktree**
-  from a separate terminal (`cd ../cortex-worktrees/<topic> && claude`). Do not run
-  `claude` from this session. This session cannot move there: when a `cd` goes outside
-  the session's start directory, Claude Code resets the shell to the start directory,
-  so the next command, a `git commit` too, runs in the shared checkout.
-
-  Stay in the worktree. Leave the top-level checkout alone — treat it as a
+  Then stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
-  down all three things you created. Run these in the top-level checkout: the path is
-  relative to it.
+  down all three things you created, from the top-level checkout:
 
   ```sh
-  git worktree remove ../cortex-worktrees/<topic>   # --force if untracked files remain
+  git worktree remove .claude/worktrees/<topic>   # --force if untracked files remain
   git branch -d <branch>
   git update-ref -d refs/base/<topic>
   ```
@@ -86,8 +81,8 @@ This file provides context for Claude (AI assistant) when working with the `cort
 ## Nested CLAUDE.md files
 
 Claude Code loads these when you `Read`, `Edit`, `cat`, `sed -n` or `head` a file in
-that directory, and only when the session started in the same checkout. It does not
-load them for `grep` or `sed -i`. **Before you change code in one of these
+that directory, and only when the directory is below the session's start directory.
+It does not load them for `grep` or `sed -i`. **Before you change code in one of these
 directories, read its `CLAUDE.md`** if it has not loaded:
 
 | File | Covers |

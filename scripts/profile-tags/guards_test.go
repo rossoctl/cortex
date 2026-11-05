@@ -44,15 +44,16 @@ var profileInvocations = []*regexp.Regexp{
 	regexp.MustCompile(`profiles="([a-z0-9_ ]+)"`),
 }
 
-// skipDir reports directories no guard should descend into. .worktrees matters
-// most: sibling worktrees hold other branches, and scanning them would fail this
-// module's tests based on code that is not in this tree.
-func skipDir(name string) bool {
+// skipDir reports directories no guard should descend into. The in-repo worktree
+// directories matter most: worktrees hold other branches, and scanning them would
+// fail this module's tests based on code that is not in this tree.
+func skipDir(path string) bool {
+	name := filepath.Base(path)
 	switch name {
 	case ".git", "vendor", "node_modules", ".worktrees", ".venv":
 		return true
 	}
-	return false
+	return name == "worktrees" && filepath.Base(filepath.Dir(path)) == ".claude"
 }
 
 // buildFile reports whether a file can plausibly carry a build tag or name a
@@ -90,7 +91,7 @@ func TestNoExcludePluginTagsRemain(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDir(d.Name()) {
+			if skipDir(path) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -443,7 +444,7 @@ func TestCallSitesUseKnownProfiles(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDir(d.Name()) {
+			if skipDir(path) {
 				return filepath.SkipDir
 			}
 			return nil
