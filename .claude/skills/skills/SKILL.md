@@ -35,7 +35,7 @@ git fetch upstream main
 ```
 
 ```bash
-git worktree add .worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
+git worktree add .claude/worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
 ```
 
 Then work in the worktree, validate, and create a PR.

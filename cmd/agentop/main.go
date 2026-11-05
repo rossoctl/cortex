@@ -39,7 +39,7 @@ var version = "dev"
 // in the tree being built; empty for any other build.
 //
 // Not read from runtime/debug's VCS settings: Go recognises only a .git directory, so a build
-// in a .worktrees/ checkout, whose .git is a file, is stamped with the enclosing checkout's
+// in an in-repo worktree, whose .git is a file, is stamped with the enclosing checkout's
 // HEAD and dirty state.
 var revision string
 

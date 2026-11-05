@@ -57,7 +57,8 @@ endif
 # list stays in sync without hand-maintenance. agentop links no plugins.
 
 # The commit agentop's title bar names, from git run in this tree. Go's own VCS stamp is wrong
-# in a .worktrees/ checkout: it takes the enclosing checkout's HEAD and dirty state.
+# in an in-repo worktree (.claude/worktrees/, .worktrees/): it takes the enclosing
+# checkout's HEAD and dirty state.
 AGENTOP_REV = $(shell git rev-parse --short=8 HEAD 2>/dev/null)
 AGENTOP_REVISION = $(if $(AGENTOP_REV),$(AGENTOP_REV)$(shell git status --porcelain 2>/dev/null | grep -q . && echo +dirty))
 

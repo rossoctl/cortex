@@ -99,7 +99,7 @@ type SessionEvent struct {
 	// The numbering is unique within one INCARNATION of a session, not forever:
 	// the counter lives on the store's entry, so whole-session eviction followed
 	// by traffic under the same id starts again at 1. A client holding a cursor
-	// across that boundary cannot detect it from Seq and must order pages by At —
+	// across that boundary cannot detect it from Seq and must order pages by At, then Seq —
 	// see session.entry.nextSeq and agentop's applyOlderPage.
 	//
 	// Serialized via sessionEventWire like every other field here, not by a tag on

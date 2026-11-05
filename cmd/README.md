@@ -38,9 +38,11 @@ at the YAML config file the operator mounts at
 `/etc/authbridge/config.yaml`. The config schema and per-plugin
 options are documented in
 [`../docs/plugin-reference.md`](../docs/plugin-reference.md).
-Hot-reload, the session-events API at `:9094`, and the supporting
-ConfigMap contracts are documented in
-[`../CLAUDE.md`](../CLAUDE.md).
+The session-events API at `:9094` is documented in
+[`../docs/session-api.md`](../docs/session-api.md), hot-reload in
+[`../CLAUDE.md`](../CLAUDE.md#config-hot-reload-9093reloadstatus), and the supporting
+ConfigMap contracts in
+[`../demos/CLAUDE.md`](../demos/CLAUDE.md#configmaps-and-secrets-expected-at-runtime).
 
 ## Ports
 

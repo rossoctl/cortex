@@ -739,9 +739,9 @@ mtls:
   mode: strict          # permissive | strict (omit block entirely for off)
 ```
 
-`mode` is the only field the block carries; cert paths default to
-`/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` (the SPIFFE
-Provider's file mirror). Legacy `cert_file` / `key_file` / `bundle_file` keys
+`mode` is the only field the block carries. The listeners read the SVID in
+memory from the SPIFFE Provider's `X509Source`; the files the Provider mirrors
+under `/opt/` are for external readers. Legacy `cert_file` / `key_file` / `bundle_file` keys
 are dropped at load.
 
 | Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
@@ -756,7 +756,7 @@ is always a hard error.
 **Trust model:** any peer with a valid cert from the SPIRE trust bundle can
 talk to this sidecar. Per-caller policy / SPIFFE allowlists are out of scope;
 the trust bundle IS the policy. Plugins that want per-caller decisions read
-`pctx.PeerCert` and check the URI SAN.
+`pctx.PeerCertificate()` and check the URI SAN.
 
 **Reload boundary:** a reload that adds the `mtls` block, removes it, or
 changes `mtls.mode` is refused rather than half-applied — the active pipeline
@@ -767,7 +767,8 @@ reload can reach them. The outbound chain's redirect check
 (`forwardproxy.Support`) refuses a `WritesDestination` plugin whenever an
 `mtls:` block is configured — under `strict` the dialer would nest TLS inside
 TLS; under `permissive` there is no dialer, so the refusal is broader than
-strictly needed and fails closed.
+strictly needed and fails closed. Plugin-pipeline config keeps its own
+hot-reload behavior.
 
 **Mixed-mode note:** a *permissive* caller cannot reach a *strict* peer
 regardless of mode (its outbound is plaintext; the peer's strict inbound
@@ -788,15 +789,18 @@ ConfigMap with TLS blocks:
 | `strict` | `tls_inspector` + single TLS filter chain; plaintext drops at filter chain match | `UpstreamTlsContext` on the `original_destination` cluster: TLS-or-fail, blanket |
 
 X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
-`/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths proxy-sidecar's
-mTLS uses; the spiffe Provider's file-mirror in the `cortex-envoy` binary
+`/opt/svid_key.pem`, `/opt/svid_bundle.pem`. proxy-sidecar's listeners use the in-memory `X509Source`, so a change to the files
+does not change the certificate proxy-sidecar presents. The spiffe Provider's file-mirror in the `cortex-envoy` binary
 keeps them fresh on rotation. Inbound parity with proxy-sidecar is
 byte-identical observable semantics — the same outcome as proxy-sidecar's
 `tlssniff.Listener`, expressed as Envoy filter chains, matching Istio's
 PERMISSIVE/STRICT. Outbound is Istio-shaped: Envoy has no native primitive
 for "try TLS, fall back to plaintext on handshake failure" within an
 `ORIGINAL_DST` cluster, so permissive keeps outbound plaintext and strict
-does blanket TLS-or-fail. The operator's AgentRuntime CR `Spec.MTLSMode`
+does blanket TLS-or-fail. That works because the outbound calls that need
+plaintext — Keycloak, JWKS, external HTTPS — never reach the listener: plugin
+outbound uses Go `net/http` directly, and `proxy-init`'s iptables does not
+redirect arbitrary HTTPS egress. The operator's AgentRuntime CR `Spec.MTLSMode`
 flows through to a per-agent rendered envoy-config with the matching TLS
 blocks.
 
@@ -868,6 +872,7 @@ curl http://localhost:9093/config               # now-active config
 | `mtls.*` (the block's presence and `mode`, the only field it carries) | ❌ | The inbound TLS listener and, under `strict`, the forward proxy's mTLS dialer are built once at startup, and the outbound chain is built for `forwardproxy.Support` of that state; refuse reload. Legacy `cert_file` / `key_file` / `bundle_file` keys are dropped at load, so an edit to them is neither applied nor refused |
 | `tls_bridge.*` (mode, ca_dir, passthrough_hosts, ports, …) | ❌ | The bridge engine is built once at boot in each `cmd` main and nothing re-reads the block; refuse reload. An accepted-but-ineffective edit here is the dangerous shape: an operator adding a host to `passthrough_hosts` reads the successful reload as confirmation it stopped being intercepted |
 | `spiffe.*` (socket, mirror settings, …) | ❌ | The in-process Provider is constructed once at boot and handed to plugins through `Deps` at build time; refuse reload |
+| `memory.*` (`limit_mb`) | ❌ | `debug.SetMemoryLimit` is applied once at boot; refuse reload |
 
 **Why `session.*` and `cost_ledger.*` are refused rather than "reloaded but ineffective".**
 Both used to be accepted: the reload succeeded, `ReloadsOK` incremented,
@@ -904,7 +909,8 @@ hosts; ports are stripped before matching. Any change requires a pod restart,
 like every other `listener.*` field. Do **not** add hosts here that need IBAC
 or token-exchange policy applied — bypass means bypass. It exists for traffic
 whose recording floods the session store and crowds out the user intent a
-guardrail needs (see the intent-pin note in [`laptop-service.md`](laptop-service.md)).
+guardrail needs (see the intent pin in the session store gotcha in
+[`CLAUDE.md`](../CLAUDE.md#gotchas-and-known-issues)).
 
 #### Forwarding WebSocket upgrades
 

@@ -2,17 +2,17 @@
 
 The Go module every sidecar binary and both external consumers import. It holds the
 plugin framework, the listeners, the cost pipeline, the session store, and the auth
-primitives — roughly 53,000 non-test lines.
+primitives — roughly 84,000 non-test lines.
 
 It was called `authlib` and described as *"the shared auth library"*. Measured by
-non-test lines, auth is **1.6%** of it:
+non-test lines, auth is **1.1%** of it (counted 2026-11-05):
 
 | Theme | Packages | Lines | Share |
 |---|---|---|---|
-| Framework | `pipeline`, `plugins`, `listener`, `config`, `spiffe` | 30,485 | 57.1% |
-| Cost | `cost/*` | 11,288 | 21.1% |
-| Observability | `session`, `sessionapi`, `observe`, `redact` | 5,368 | 10.0% |
-| **Auth** | `auth`, `bypass`, `capabilities` | **882** | **1.6%** |
+| Framework | `pipeline`, `plugins`, `listener`, `config`, `spiffe` | 48,904 | 58.3% |
+| Cost | `cost/*` | 13,850 | 16.5% |
+| Observability | `session`, `sessionapi`, `observe`, `redact` | 11,985 | 14.3% |
+| **Auth** | `auth`, `bypass`, `capabilities` | **920** | **1.1%** |
 
 The remainder is transport, storage and integration glue — the table covers themes,
 not every package.
@@ -43,7 +43,7 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 | `reloader/` | fsnotify-based config hot-reload — atomic pipeline swap on ConfigMap change |
 | `capabilities/` | Capability interfaces protocol extensions implement, plus the vocabulary plugins share without importing each other — role constants, the `ContentSource` / `Fragment` shape, and `PluginCapabilities.Claims` constants |
 
-**Cost** — 21% of the module, and the part the old description omitted entirely:
+**Cost** — 17% of the module, and the part the old description omitted entirely:
 
 | Package | Purpose |
 |---------|---------|
@@ -57,12 +57,12 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 
 | Package | Purpose |
 |---------|---------|
-| `session/` | In-memory session store correlating requests, with message interning — see the chatty-traffic gotcha in [CLAUDE.md](../CLAUDE.md) |
+| `session/` | In-memory session store correlating requests, with message interning — see the session store memory gotcha in [CLAUDE.md](../CLAUDE.md) |
 | `sessionapi/` | The `:9094` HTTP API — `/v1/sessions`, `/v1/events` SSE, `/v1/pipeline` |
 | `observe/` | The `:9093` server — `/stats`, `/config`, `/reload/status` |
 | `redact/` | Best-effort stripping of sensitive values before anything is stored or served |
 
-**Auth and identity.** The theme table's 882-line Auth figure is `auth` + `bypass` +
+**Auth and identity.** The theme table's 920-line Auth figure is `auth` + `bypass` +
 `capabilities` — `capabilities` is grouped here by subject even though it is listed
 under Framework above, which is where it is used from. `spiffe` is counted under
 Framework, not here:

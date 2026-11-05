@@ -383,7 +383,7 @@ func TestTransparentInboundMTLS_StrictRejectsPeerWithoutCert(t *testing.T) {
 //
 // authtls.verifyPeerChain checks the chain against the trust bundle and nothing
 // else: no SPIFFE-ID or trust-domain comparison, because the bundle *is* the
-// policy (CLAUDE.md, "Trust model"). That single check is therefore
+// policy (docs/framework-architecture.md §8a, "Trust model"). That single check is therefore
 // the whole boundary, and until now nothing drove it through the assembled
 // listener. newTestSVIDSource mints a fresh CA per call, so a second source is
 // an independent trust domain by construction.

@@ -2478,8 +2478,8 @@ func TestSessionsPane_HarvestBeatsServedTitle(t *testing.T) {
 // route by which the cap could blank a non-blank harvested title ALSO silently inverted the
 // documented precedence: with the cap trimming after its cut, sessionTitleFor(85 spaces + "real",
 // "served-name") returned "served-name". That is worse than the blank cell it replaced. An operator
-// picks a row by its name before acting on it, and CLAUDE.md, cmd/agentop/README.md and
-// core/session/store.go all tell them the harvest is what they are looking at.
+// picks a row by its name before acting on it, and cmd/agentop/README.md and
+// core/session/store.go both tell them the harvest is what they are looking at.
 //
 // NOT A MUTATION GATE, and saying so is the honest version of this test. Reverting the guard to
 // !titleIsBlank(m.sessionTitle(id)) leaves the whole suite green — verified by running it. It has to:

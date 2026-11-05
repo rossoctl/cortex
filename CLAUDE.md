@@ -8,20 +8,34 @@ This file provides context for Claude (AI assistant) when working with the `cort
   Several Claude Code sessions run against this repo at once. They share one object
   store, which is fine, but a shared *working tree* is not: `git checkout` in one
   session rewrites files under another, and two sessions' uncommitted edits land in one
-  index. Before starting work:
+  index. If this session did not start in its own worktree, then before you start work,
+  run these from the top-level checkout:
 
   ```sh
   # Fetch into a ref only you write, so nothing can move it underneath you.
   git fetch https://github.com/rossoctl/cortex.git main:refs/base/<topic>
-  git worktree add .worktrees/<topic> -b <branch> refs/base/<topic>
+  git worktree add .claude/worktrees/<topic> -b <branch> refs/base/<topic>
   ```
 
-  Then stay in that directory. Leave the top-level checkout alone — treat it as a
+  **Put the worktree under `.claude/worktrees/`.** Claude Code does not load the root
+  `CLAUDE.md` of a worktree there when you read its files, so the request carries one
+  copy of this file, not two. The worktree's nested `CLAUDE.md` files still load, and
+  its skills are added to the skill list under a `.claude/worktrees/<topic>:` prefix. A worktree anywhere else in the checkout, such as an older
+  `.worktrees/<topic>/`, loads its copy beside this one. A worktree outside the checkout
+  does not, but a session cannot `cd` there: Claude Code resets the shell to the
+  session's start directory. The cost of `.claude/worktrees/` is that the session loads
+  the top-level checkout's copy of this file, which can be behind the worktree's. **After
+  you create the worktree, run**
+  `git diff --no-index CLAUDE.md .claude/worktrees/<topic>/CLAUDE.md` and follow the
+  worktree's lines where the two differ. It prints nothing when they are
+  the same, so it does not add a second copy of this file to the context.
+
+  Then stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
-  down all three things you created:
+  down all three things you created, from the top-level checkout:
 
   ```sh
-  git worktree remove .worktrees/<topic>   # --force if untracked files remain
+  git worktree remove .claude/worktrees/<topic>   # --force if untracked files remain
   git branch -d <branch>
   git update-ref -d refs/base/<topic>
   ```
@@ -43,8 +57,7 @@ This file provides context for Claude (AI assistant) when working with the `cort
     per-worktree, but this bootstrap has to run in the shared top-level checkout, so
     every session fetching there writes that one file — and a fetch landing between your
     reading it and your using it hands you a different commit than the one you checked.
-    That is how `CLAUDE.md` got reverted mid-session to a pre-rename state. Nothing but
-    you writes `refs/base/<topic>`, so there is no window to lose and no verification
+    Nothing but you writes `refs/base/<topic>`, so there is no window to lose and no verification
     step to remember. Do not use `refs/worktree/` for this — git reserves that namespace
     for per-worktree refs.
   - **A refused `worktree add` does not always mean another session holds the branch.**
@@ -68,6 +81,20 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
 - **Use `Assisted-By` for attribution** — never add `Co-Authored-By`, `Generated with Claude Code`, or similar trailers. See [Commit Attribution Policy](#commit-attribution-policy) below.
 
+## Nested CLAUDE.md files
+
+Claude Code loads these when you `Read`, `Edit`, `cat`, `sed -n` or `head` a file in
+that directory, and only when the directory is below the session's start directory.
+It does not load them for `grep` or `sed -i`. **Before you change code in one of these
+directories, read its `CLAUDE.md`** if it has not loaded:
+
+| File | Covers |
+|---|---|
+| [`core/plugins/CLAUDE.md`](core/plugins/CLAUDE.md) | Inbound JWT validation and outbound token exchange: route resolver, config loading, credential files |
+| [`core/listener/vmcontrol/CLAUDE.md`](core/listener/vmcontrol/CLAUDE.md) | The MOCA SBX VM control channel |
+| [`deploy/proxy-init/CLAUDE.md`](deploy/proxy-init/CLAUDE.md) | `init-iptables.sh` and its gotchas |
+| [`demos/CLAUDE.md`](demos/CLAUDE.md) | Kubernetes deployment: pod shape, shared volumes, ConfigMaps, Envoy, Keycloak, Kind builds, cluster gotchas |
+
 ## Repository Overview
 
 **cortex** contains Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
@@ -82,7 +109,8 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 
 Three renames have happened and two of them finished. **Kagenti → Rossoctl is
 complete** — apart from this rule, every remaining `kagenti` string is inside
-`docs/superpowers/`, a frozen archive. Treat a new one as a mistake.
+`docs/superpowers/`, a frozen archive, or names v0.4's
+`kagenti-extensions_<ver>_checksums.txt` (install-stats). Treat a new one as a mistake.
 
 **abctl → agentop is complete too**, and was a clean break: no alias, no reading of
 the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
@@ -119,9 +147,9 @@ Because image and container names share the binaries' old spelling, `authbridge-
 or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
 **container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
 where the pre-rename binary is stopped or deleted (setup's cleanup and service steps,
-`install.sh --stop`), in the tests asserting it is no longer recognised as ours, and in
-the release notes; the
-other three old names only in this rule and the spec.
+`install.sh --stop`), where a v0.7.0 install is adopted or its port holder recognised
+(`setup_probe.go`, `cmd/cortex/portconflict.go`, agentop's container picker), and in
+the release notes; the other three old names only in this rule and the spec.
 
 **The rule for prose and comments:** say **Cortex** when the sentence is about the
 product — what it is, what it does, what a demo demonstrates — or names one of its
@@ -149,7 +177,7 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 
 ```
 cortex/
-├── core/                             # The runtime library (Go module). Auth is 1.6% of it;
+├── core/                             # The runtime library (Go module). Auth is ~1% of it;
 │   │                                 # see core/README.md for the measured breakdown.
 │   ├── pipeline/                     #   Plugin interface + lifecycle
 │   ├── plugins/                      #   Every plugin; each owns its own config
@@ -159,8 +187,7 @@ cortex/
 │   │   └── tokenexchange/            #     RFC 8693 exchange client + token cache
 │   ├── listener/                     #   All listener implementations (extproc, proxies)
 │   ├── config/                       #   Mode presets, YAML config, validation
-│   ├── cost/                         #   21% of the module: pricing, settle, ledger,
-│   │                                 #   event, usage
+│   ├── cost/                         #   pricing, settle, ledger, event, usage
 │   ├── session/  sessionapi/         #   Session store + the :9094 API
 │   ├── observe/  redact/             #   The :9093 server; sensitive-value stripping
 │   ├── auth/  bypass/                #   HandleInbound/Outbound; path matcher
@@ -182,7 +209,8 @@ cortex/
 │   ├── Dockerfile                    #   proxy-sidecar image (the `authbridge` image)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-envoy/                 # envoy-sidecar mode. Full plugin set.
+├── cmd/cortex-envoy/                 # envoy-sidecar mode. `envoy` profile: full minus
+│   │                                 #   inference-router and script
 │   ├── main.go
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
@@ -201,7 +229,8 @@ cortex/
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
 │
 ├── cmd/agentop/                      # Terminal UI over the session API (:9094).
-│   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
+│   ├── tui/                          #   Panes: sessions, agents, events, timeline,
+│   │                                 #   pipeline, catalog, usage
 │   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
 │   │   cluster/, toolscan/           #   port-forward, tool manifest scanning
 │   └── README.md                     #   Full flags + keybindings
@@ -241,7 +270,7 @@ cortex/
 │   ├── sparc-service/                #   Python SPARC reflection service (own image)
 │   └── lineage-attach/               #   OTel shim + scripts for lineage propagation
 │
-├── demos/                            # 10 scenarios — see demos/README.md for the order
+├── demos/                            # see demos/README.md for the order
 │   ├── weather-agent/                #   Getting started (+ advanced, + agentop walkthrough)
 │   ├── github-issue/                 #   Token exchange + scope-based access (largest)
 │   ├── token-exchange-routes/        #   Routes config reference
@@ -249,23 +278,24 @@ cortex/
 │   │   finance-sparc/                #   (echo, ibac and finance-sparc are
 │   ├── echo/, lineage/               #    self-contained Go modules)
 │   ├── session-budget/               #   Redis-backed budget tracking
-│   └── context-guru/                 #   Opt-in context-guru plugin
+│   ├── context-guru/                 #   Opt-in context-guru plugin
+│   └── coding-agent-cpex/            #   CPEX policy on a coding agent
 │
 ├── tests/                            # Python tests
 ├── go.work                           # Workspace linking 8 of the 11 Go modules
 ├── .github/
 │   ├── workflows/                    # CI/CD (ci.yaml, build.yaml, release-binaries.yaml,
 │   │                                 # security-scans, scorecard, spellcheck)
-│   └── ISSUE_TEMPLATE/               # Bug report, feature request, epic templates
+│   └── ISSUE_TEMPLATE/               # laptop-feedback form + config
 ├── .pre-commit-config.yaml           # Pre-commit hooks (whitespace, yaml/json, ruff; no Go hooks)
-└── CLAUDE.md                         # This file — the only one in the repo
+└── CLAUDE.md                         # This file; nested ones are listed at the top
 ```
 
 ## Major Components
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` and `authbridge-cpex` **images** are build variants of the proxy binary (not separate binaries) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). See [AuthBridge Binaries](#authbridge-binaries) below for the list.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
 **Language:** Go 1.26.10 (`go.work` and the eight workspace modules; the
@@ -273,57 +303,19 @@ three self-contained `demos/*` modules are still on 1.24)
 **Deployment shapes:** [`cmd/README.md`](cmd/README.md) — which binary pins which shape
 **Framework internals:** [`docs/framework-architecture.md`](docs/framework-architecture.md), [`docs/plugin-reference.md`](docs/plugin-reference.md), [`docs/architecture.md`](docs/architecture.md)
 
-See the binary-by-binary table below (image, mode, listeners, plugins) for
-the full enumeration — kept as the single list rather than repeated here.
-
 **Common:**
-- `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~53k non-test lines, of which auth is 1.6%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
+- `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~84k non-test lines, of which auth is ~1%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
 - `deploy/proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
 - `deploy/proxy-init/Dockerfile.init` — proxy-init container image.
 
-**Ports (envoy-sidecar):** 15123 (outbound), 15124 (inbound), 9090 (ext-proc), 9901 (admin)
-**Ports (proxy-sidecar / lite):** 8080 (reverse proxy), 8081 (forward proxy), 9091 (health), 9093 (stats), 9094 (session API)
+Ports: see [Important Port Mapping](#important-port-mapping).
 
 ### 2. Client Registration
 
 Keycloak client registration for workloads is handled by the
 **operator** (separate repo) — see `operator/docs/operator-managed-client-registration.md`.
 The operator creates a Secret with `client-id.txt` + `client-secret.txt`
-and the webhook mounts it at `/shared/` in the workload pod. The
-in-pod `client-registration` sidecar that previously lived in this
-repo has been removed.
-
-## How the Components Work Together
-
-The operator (in a separate repo) injects AuthBridge sidecars
-into workload pods. Default deployment shape (proxy-sidecar mode):
-
-```
-         ┌────────────────────────────────────┐
-         │            WORKLOAD POD            │
-         │                                    │
-         │  cortex ──► SPIRE Agent            │  (in-process
-         │    - spiffe.Provider reads SVIDs   │   Workload API
-         │      over the Workload API and     │   client; shaped
-         │      mirrors them under /opt/      │   by the `spiffe:`
-         │    - Reverse proxy: inbound JWT    │   config block)
-         │    - Forward proxy: outbound       │
-         │      token exchange                │
-         │       │                            │
-         │  Your Application                  │
-         │    (HTTP_PROXY → forward proxy)    │
-         └────────────────────────────────────┘
-
-         The operator also creates a Secret with client-id +
-         client-secret and mounts it at /shared/.
-
-         For envoy-sidecar mode, replace cortex with
-         the authbridge-envoy image (Envoy + ext_proc) and add a
-         proxy-init container for iptables.
-```
-
-There is no `spiffe-helper` sidecar and no `SPIRE_ENABLED` gate. SPIRE
-credentials are fetched in-process by `core/spiffe`'s Provider.
+and the webhook mounts it at `/shared/` in the workload pod.
 
 ## AuthBridge Binaries
 
@@ -332,14 +324,13 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` and `authbridge-cpe
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
 | `cmd/cortex/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
-| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | `envoy` profile: full minus inference-router and script |
 | `authbridge-cpex` _(image: proxy + cgo + `cpex` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar plugins + `cpex` (cgo) |
 | `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
 
 Every sidecar binary but praxis pins one deployment shape and refuses a
-mismatching `mode:` at boot; praxis pins none. Mode is no longer selected at
-runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
+mismatching `mode:` at boot; praxis pins none. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 
 `cmd/agentop/` is also a Go module here but is not a sidecar — it is the
 operator-facing TUI over the session API, and the component the root README leads
@@ -383,7 +374,7 @@ thing locally to `bin/cortex-cpex/cortex`.
 **Go modules** (11 in total; `go.work` links 8 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 11: it discovers them with `find`, not from `go.work`):
-- `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
+- `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, ~58% of it); `cost/{pricing,settle,ledger,event,usage}` (~17%); `session`, `sessionapi`, `observe`, `redact` (~14%); `auth`, `bypass`, `capabilities` (~1%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `cmd/cortex{,-envoy,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` and `authbridge-cpex` images are `cortex` built with the `lite` and `cpex` profiles; `cmd/cortex-cpex/` holds only the latter's Dockerfile and FFI pins.)
 - `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
@@ -397,39 +388,12 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 
 The mode-specific authbridge binaries handle both traffic directions. Auth logic
 and all listener implementations live in `core/` (under `core/listener/`);
-each binary's `main.go` just imports the listeners it needs and the plugins it
-wants to register.
+each binary's `main.go` imports the listeners it needs and blank-imports
+`core/plugins/all`; build tags pick the plugins.
 
-**Inbound path** (`x-authbridge-direction: inbound`):
-- Validates JWT signature via JWKS (auto-refreshing cache from `TOKEN_URL`-derived JWKS endpoint)
-- Validates issuer claim against `ISSUER` env var
-- Validates audience against `CLIENT_ID` (from `/shared/client-id.txt` or env var)
-- Returns 401 with JSON error body for invalid/missing tokens
-- Removes `x-authbridge-direction` header before forwarding to app
-
-**Outbound path** (no direction header):
-- Default policy is **passthrough** -- outbound requests pass through unchanged unless a route matches
-- Uses a **route resolver** to match the request's `Host` header against patterns in `authproxy-routes` ConfigMap
-- If a route matches: reads `target_audience` and `token_scopes` from the route, obtains a token via `client_credentials` grant, and injects it as `Authorization: Bearer <token>`
-- If no route matches: applies the default outbound policy (`passthrough` or `exchange`)
-- Returns 503 if exchange fails for a routed host (prevents unauthenticated calls)
-- The `DEFAULT_OUTBOUND_POLICY` env var controls the fallback behavior (default: `passthrough`)
-
-**Route resolver (outbound):**
-- Reads `/etc/authproxy/routes.yaml` (default path; override with `ROUTES_CONFIG_PATH` env var in standalone deployments)
-- Each route entry has: `host` (glob pattern), `target_audience`, `token_scopes`
-- Host matching uses `filepath.Match` semantics (supports `*`, `?`, `[...]` patterns)
-- Most commonly, `host` is a plain Kubernetes service name (e.g., `github-tool-mcp`) because the HTTP client sets the Host header from the URL hostname
-- Routes file is loaded once at startup; restart the pod to pick up changes
-
-**Configuration loading:** (config format is covered above, in the binaries section.)
-- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
-- The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
-- `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
-- `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
-- Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime-config`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any image, and the `SPIRE_ENABLED` env var no longer gates anything. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
-- Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
-- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-runtime-config`).
+The inbound and outbound auth paths — JWT validation, the route resolver, token
+exchange, config loading and the credential files — are in
+[`core/plugins/CLAUDE.md`](core/plugins/CLAUDE.md).
 
 **Key library packages (core/):**
 - `core/plugins/jwtvalidation/validation/` -- JWKS-backed JWT verifier (used internally by `jwt-validation` plugin)
@@ -466,132 +430,11 @@ every plugin that has config. Counters are per-process and reset on restart
 
 **Plugin classification.** Protocol parsers (`mcp-parser`, `a2a-parser`, `inference-parser`) populate an `IsAction bool` field on their respective extensions to classify each request as either a user-meaningful action or protocol mechanics. Default-false means "not classified as action" — guardrails treat it as bypass. Parsers explicitly set `IsAction = true` for the small set of action methods (`tools/call` / `prompts/get` / `resources/read` for MCP; `message/send` / `message/stream` for A2A; every populated case for inference). Guardrails (`ibac` today; future rate limiters, audit loggers, etc.) read the aggregated verdict via `pctx.Classification()` which returns `(anyAction, anyBypass)`. A defense-in-depth guardrail skips on `anyBypass`, passes through on `!anyAction` (no parser claimed this traffic), and judges only when `anyAction && !anyBypass`. This puts the protocol-specific bypass-vs-action vocabulary in each parser — adding a new guardrail or new protocol does not multiply work at the guardrail layer. See [`docs/plugin-reference.md` "Classifying requests"](docs/plugin-reference.md#classifying-requests-as-actions-vs-protocol-mechanics) for the contract.
 
-### MOCA SBX VM control channel (`core/listener/vmcontrol`)
-
-For MOCA SBX deployments (#1477): SBX microVMs have **no network**. Each VM's
-egress lands on its **own host Unix socket**, bound by MOCA's `vmpool` (the only
-process that knows the jail layout) and handed to the Cortex forward proxy at
-run time over a control socket as SCM_RIGHTS. **The descriptor is the
-identity**: which listener accepted a connection says which VM is calling, and
-VMs come and go every few seconds, so listeners appear and disappear without a
-restart.
-
-**Environment (env-only for now — the conformance harness's channel; operator
-YAML follows when there is an operator to configure it):**
-
-| Variable | Meaning |
-|---|---|
-| `MOCA_EGRESS_CONTROL_SOCK` | The control socket path. Unset/empty = the channel is **off**, and today's behavior is unchanged byte for byte. |
-| `MOCA_EGRESS_CONTROL_UIDS` | Comma-separated uids allowed to connect to the control socket (peer-credential gate). Required when the socket is set — a control socket that admits nobody is a misconfiguration, and one that admits everybody would be worse. |
-| `MOCA_TENANCY` | `unset`/`single` = this slice; `multi` = **boot failure** naming the variable (single-tenant only, MI1 S2). Checked only when the socket is set. |
-
-**The control protocol** (`vmcontrol`): 4-byte big-endian length + protobuf,
-≤64 KiB frames; `ControlRequest{Register{vm_id, sid, grant} | Unregister{vm_id}}`
-(oneof; field 3 reserved for S2's Rebind — the decoder skips unknown fields),
-`ControlReply{ok, code, message}`; refusal codes `bad_request`,
-`duplicate_vm`, `handler_error`. A Register's fd rides as SCM_RIGHTS on the
-sendmsg carrying the frame's first byte. The protobuf codec is hand-rolled
-(moca's `gen/go` module is unpublished, so it cannot be imported) and pinned by
-golden tests against bytes generated by moca's own `proto.Marshal`. The whole
-package is ported from moca's `remote-worker/internal/egress/control` (also
-internal, also unimportable) — Unix-only (`SCM_RIGHTS`, `SO_PEERCRED` on
-Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
-
-**Semantics worth knowing:**
-
-- One `forwardproxy.Server` — one pipeline, one session store — serves every
-  VM listener. Identity flows through `Server.TrustedSessionID`: a hook the
-  vmcontrol handler installs that answers "which session is this request on"
-  from the request context (which socket accepted the connection). A non-empty
-  answer **wins over every header- and process-derived id** and is recorded as
-  `SessionSourceConnection` — a VM's traffic cannot be filed under a session
-  its guest merely names. The wrapper also strips `X-Moca-*`,
-  `Proxy-Authorization` and every session-id header from guest requests, so
-  nothing client-asserted reaches the pipeline or the upstream.
-  **The rule covers refusals, not only requests that reach the pipeline**, and
-  that took a second pass to get right: a request turned away *before*
-  hydration — an off-list egress destination on either the plain or CONNECT
-  path, a body too large to buffer, a bridged request whose `Host` is not its
-  tunnel's — records a row too, and those paths originally resolved by
-  header/process/`ActiveSession()`, filing a VM's denied-egress row in another
-  VM's session or in `default`. The connection's answer is now resolved once
-  per request (`trustedSessionOf`) and threaded into every pre-pipeline
-  recording site, with attribution pinned empty there as hydration does it, so
-  no VM's row is stamped with the host process that owns the control socket.
-  **It also survives `session.enabled: false`**: the trusted id needs no store
-  (`sessionViewFor` falls back to an ID-only view), so turning the store off
-  stops recording without un-identifying the VMs.
-- A Register carrying a non-empty **grant** is refused with `bad_request`
-  (single-tenant slice); tenancy is decided once at boot by `MOCA_TENANCY`.
-- **Unregister closes the listener and every live connection — hijacked
-  CONNECT tunnels included**, which `http.Server.Close()` alone would leave
-  open (hence `trackedListener`/`trackedConn`), and returns only after each
-  in-flight request's wrapper has emitted its terminal audit line. Bindings are
-  owned by the control connection that registered them: a vmpool crash or
-  restart unbinds its VMs automatically (`dropConn`), and a redialled
-  vmpool's Register supersedes the stale binding instead of failing as a
-  duplicate.
-- **Audit seed** (#1477 scope; #1482 completes it): one terminal JSON line per
-  request on stdout, in moca's `Event` shape (`vm_id`, `sid`, `host`,
-  `method`, `path`, `status`, `decision` of `tunnel`/`forward`/`aborted`,
-  `via: "moca-egress"`). `sub`, `dial_addr`, `credential`, byte counts and the
-  journald/async seam are #1482's. A request that arrives inside the
-  **aborted window** — after Unregister set the flag, before it closed the
-  conns — is answered `503` with `Connection: close` and emits its own
-  `aborted` line, rather than returning silently and letting `net/http` send
-  an empty `200` the guest would read as success.
-- **A temporary accept error on the control socket is retried**, 5ms doubling
-  to 1s, as `net/http`'s own accept loop does. Only a permanent error comes
-  back from `Serve` — and it must, because `startVMControl` hands that to
-  `fatalf`: an `EMFILE` on a proxy holding a listener per VM plus their
-  tunnels would otherwise exit the process and take every VM's egress with it.
-  Each per-VM `http.Server` also carries bootstrap's `ReadHeaderTimeout`
-  (10s), so a guest cannot hold a goroutine and an fd open by dripping
-  headers; per-VM caps are #1485's.
-- Local test runs: the macOS seatbelt sandbox refuses `AF_UNIX` binds, so
-  `server_test.go` skips there (CI's Linux runners run it); the registry and
-  wire tests run everywhere, with the registry tests driving the real
-  forwardproxy handler over TCP listeners standing in for the handed-over
-  Unix ones.
-
-### init-iptables.sh
-
-Extensively documented shell script that sets up iptables for transparent traffic interception. Key features:
-
-- **Outbound**: `PROXY_OUTPUT` chain in `nat OUTPUT`, redirects to Envoy port 15123
-- **Inbound**: `PROXY_INBOUND` chain in `nat PREROUTING`, redirects to Envoy port 15124
-- **Istio ambient mesh coexistence**: Handles ztunnel fwmark (0x539), HBONE port (15008), DNAT to POD_IP for inbound interception
-- **Exclusions**: SSH (22), loopback, configurable `OUTBOUND_PORTS_EXCLUDE` and `INBOUND_PORTS_EXCLUDE`
-- **Envoy UID 1337**: Excluded from outbound redirect to prevent loops
-- **Mangle rule**: Sets fwmark on Envoy's local delivery to prevent ISTIO_OUTPUT redirect loop
-- Uses `-I 1` (insert first) for chain ordering stability with Istio CNI
-
-**Environment variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROXY_PORT` | 15123 | Envoy outbound listener |
-| `INBOUND_PROXY_PORT` | 15124 | Envoy inbound listener |
-| `PROXY_UID` | 1337 | Envoy process UID (excluded from redirect) |
-| `OUTBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
-| `INBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
-| `POD_IP` | (required) | Pod IP via Downward API; used as DNAT target for ambient mesh inbound interception |
-
 ### keycloak_sync.py
 
 Declarative Keycloak synchronization tool that maintains client scope mappings based on `routes.yaml`. Idempotent, used in multi-target demos for dynamic scope assignments.
 
-**Dependencies:** `requirements.txt` — `python-keycloak>=7.1.1,<8`.
-Note `ci.yaml` pip-installs `python-keycloak==5.3.1` for the Python test job,
-two majors behind what the project declares.
-
-There is no longer a `client_registration.py` in this repo. Workload
-registration with Keycloak is the operator's job
-(`ClientRegistrationReconciler`), which creates the Secret carrying
-`client-id.txt` + `client-secret.txt` that the webhook mounts at `/shared/`.
-
-### Envoy Configuration
-
-Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Helm chart](https://github.com/rossoctl/rossoctl) at install time (template: `charts/rossoctl/templates/agent-namespaces.yaml` / `authbridge-template-configmaps.yaml`). Key listeners: `outbound_listener` (15123), `inbound_listener` (15124). Inbound listener injects `x-authbridge-direction: inbound` header. Both use ext_proc cluster pointing to the authbridge binary on localhost:9090.
+Dependencies: see [Python Code](#python-code-keycloak_syncpy-demo-setup-scripts).
 
 ## Important Port Mapping
 
@@ -599,243 +442,30 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 |------|-----------|----------|---------|
 | 15123 | Envoy | TCP | Outbound listener (iptables redirects app traffic here) |
 | 15124 | Envoy | TCP | Inbound listener (iptables redirects incoming traffic here) |
+| 8080 | authbridge | HTTP | Reverse proxy (proxy-sidecar inbound) |
+| 8081 | authbridge | HTTP | Forward proxy (proxy-sidecar outbound; `HTTP_PROXY` target) |
+| 8082 / 8083 | authbridge | TCP | Transparent egress / inbound listeners (iptables REDIRECT targets) — see [`cmd/README.md`](cmd/README.md#ports) |
 | 9090 | authbridge | gRPC | Ext-proc server (called by Envoy) |
+| 9091 | authbridge | HTTP | Health |
 | 9093 | authbridge | HTTP | Stats + config inspection (`/stats`, `/config`, `/reload/status`, `/tls-bridge/unread`, and `/debug/pprof/*` where `listener.bind_loopback_only` is set) |
 | 9094 | authbridge | HTTP | Session events API (JSON snapshots + SSE stream) |
 | 9901 | Envoy | HTTP | Admin interface (bound to 127.0.0.1) |
 
 ## Session Events API (`:9094`)
 
-When `session.enabled` is true (default) and `listener.session_api_addr` is non-empty (default `:9094`), the authbridge binary exposes the captured session store over HTTP. Intended for operators debugging the plugin pipeline via `kubectl port-forward` and for the `agentop` TUI.
+When `session.enabled` is true (default) and `listener.session_api_addr` is set
+(default `:9094`; `:47601` on a local install), the binary serves its session store
+over HTTP. agentop is its main client.
 
-**Trust model:** no authentication. Bind only on in-cluster addresses, never behind ingress. Payloads may contain raw user messages, LLM completions, and tool results.
+**Trust model:** no authentication. Bind only on in-cluster addresses, never behind
+ingress. Payloads may contain raw user messages, LLM completions and tool results.
 
-### Endpoints
-
-| Method & Path | Format | Purpose |
-|---|---|---|
-| `GET /` | text | One-line-per-endpoint index. Answers "is this the session API, and on the right port?" — the reason a 404 here was worth replacing. |
-| `GET /v1/sessions` | `application/json` | List active sessions: `{sessions: [{id, createdAt, updatedAt, eventCount, title, agent, totalTokens, costMicros, avoidedMicros, saturated, active, promptContext, inferenceHost, inferenceHostFromHistory, procs, lastRequestAt, linkedTo, linkedAll}]}`. `id`, `createdAt`, `updatedAt`, `eventCount` and `active` are always present; every other field is `omitempty` — absent rather than zero, on the standing rule that an unknown value must not render as a real one. (Do not read that off the position of `active`: it sits among the `omitempty` fields.) **`procs`** are the processes (`<pid>.<start>`) whose own session header named the session, and **`linkedTo`/`linkedAll`** — on a `pending:<agent>@<pid>.<start>` bucket only, computed when the list is read (`session.Link`) — say which sessions that process named its calls belong to (`{session, first, last}`) and whether every request in the bucket came before one of them. A pending bucket is never renamed into a session: agentop hides a `linkedAll` bucket that links to one session and merges its calls into that session's timeline. **`inferenceHost`** is the host of the session's most recent request that carried an inference parse — after a redirect, the server it was sent to rather than the host the client named — folded at append time, latest wins, and left alone by tunnel rows, MCP calls, responses and denials; agentop's sessions-table `SERVER` column names a session's inference server from it, and both `S`'s result line and `agentop server remove`'s warning count running sessions by it. **`inferenceHostFromHistory`** is `true` when that host came only from the archive's fold, because no request the proxy's entry for the session holds has set it — a session resumed after a restart that has sent no inference since. On a local install the inference-router keeps its pins in the plugin store (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's counts include such a session. **`title` is a suggestion, not an identifier:** the proxy derives it from the session's own events (a `/rename`, else a `<user_query>`, else ordinary user prose, with `<system-reminder>` blocks excised), so it is a display convenience and nothing addresses a session by it. Absent when nothing in the events named it. **Folded at append time and FIRST-WINS, except that a `/rename` always overrides** — so ordinary conversation does not re-title a session on every turn, and a `/rename` survives eviction of the event that carried it. agentop reads this field as a FALLBACK: its TITLE column prefers a harvested Claude Code transcript title and uses the served title only for a session the harvest cannot name. That precedence is fixed rather than a judgement about which string is better — both sides rank candidates their own way and do not agree on every session. That is the case worth having: an agent with no transcript tree on the operator's disk still routes through the proxy, so a row that used to render blank now has a name. agentop deliberately still treats such a row as unnamed for its own re-harvest backoff, so a served title does not stop it looking for a harvested one. **`?archived=true` adds history** where the proxy runs a session archive (`session.archive`, laptop only — see the chatty-traffic gotcha): every session the archive holds and memory does not, marked `resident: false`, plus a top-level `archive` object — `{bytes, maxBytes, retentionDays}` and, only when nonzero, `droppedEvents`, `writeErrors`, `droppedRenames`, `paused`, any of which means the history has gaps. A session in both is listed once, as its resident row. **That row covers the session's whole history**: `eventCount`, `totalTokens`, `costMicros`, `avoidedMicros`, `currencies`, `saturated`, `title`, `agent`, `createdAt`, `promptContext` and `inferenceHost` continue from the archive's fold of what came before this process's entry, each by its own rule, in the default list too — so with an archive and `session.max_events` unset (the default) a restart changes no figure, and without an archive they start over. Without an archive the parameter is ignored and no `archive` object is sent, which is how a client tells "no history here" from "no history yet". |
-| `GET /v1/sessions/{id}` | `application/json` | The session's most recent events. `?limit=N` (default 500, max 2000) sets the window; `?before=<seq>` returns the page ending just before that event, so the whole session is reachable by paging backward from the tail. `totalEvents` is the session's true length and `oldestSeq` the oldest event the store still holds — both present only when this response is not the whole session, so a client can tell "this is the beginning" from "there is more behind me" without a second request. 404 if unknown/expired. **One response is still not a full snapshot:** with `session.max_events` unset a session can hold thousands of events, and one real session's whole history encoded to 1.1GB — 17s to write, against clients that time out in 10. That cap is why `before` exists — until it did, a session past 2000 events had a beginning no request could reach at any limit, while still costing memory. The response is written one event at a time rather than encoded whole, so serving it costs the proxy heap proportional to one event; see the chatty-traffic gotcha below. **With a session archive, a page continues from disk** below the oldest event memory holds: a session resumed after a restart pages back through its whole history, one evicted from memory is served instead of 404'd, and `totalEvents`/`oldestSeq` describe the merged history. `GET /v1/sessions/{id}/events/{seq}` falls back to the archive the same way, and answers 404 rather than a neighbour when neither holds that seq. |
-| `GET /v1/sessions/{id}/timeline` | `application/json` | The session as spans for agentop's Timeline pane: agents (any known client on a single `main` row; Claude Code additionally its subagent tree, linked by the `Agent` call that spawned them), model turns (labeled by model), tool calls (request to result, matched by tool-use id — Anthropic `tool_result`, Responses API `function_call_output`, or chat-completions `tool_call_id`), subagent returns, and every host request or tunnel. Computed from memory plus the archive, cached per session until its newest event changes; `?from=`/`?to=` clip. Fields and rules in [`docs/session-api.md`](docs/session-api.md#get-v1sessionsidtimeline--agents-tools-and-hosts-on-one-time-axis). |
-| `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. **The cost ledger is kept** — spend totals, no content. Answers `{sessions, archivedSessions, bytes}`; a failed disk half is a 500 adding `archiveError`, with memory cleared regardless (the store clears under its lock before the archive is waited on, up to 10s). **State-changing on an unauthenticated API, so it is guarded against a browser**, each guard pinned by its own test in `core/sessionapi/clear_test.go`: DELETE only (a cross-site DELETE needs a preflight this server never approves; a simple cross-site POST needs none); a loopback `Host` — exactly `localhost`, `127.0.0.1` or `::1`, which defeats DNS rebinding; no `Origin` header; and `WithClearAllowed`, which `cmd/cortex` sets from `listener.bind_loopback_only`. A refusal is a 403 `{"error": ...}`. agentop's `X` drives it. |
-| `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files — a session only the archive holds too. **The same four guards as `DELETE /v1/sessions`** (pinned again in `core/sessionapi/delete_test.go`) and the same answer, each count 0 or 1; **404** when neither half held the id, **500** with `archiveError` when the disk half failed (memory is erased regardless). The cost ledger, usage totals and inference-router pins are kept. An agent still using the session brings it back with its next request. agentop's `x` drives it, one request per session for an agent-wide erase. |
-| `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
-| `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. `onError` is the plugin's `on_error`, sent only when it is not the default — in practice only `observe`, since an `on_error: off` plugin is not built and so is not listed. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped — header writes still apply — so in those respects its `config` says what it would do, not what it does. agentop renders this as the Pipeline pane. |
-| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
-| `GET /v1/usage` | `application/json` | Windowed usage aggregation, the aggregate behind `agentop cost` — parameters and semantics in [`docs/pricing.md`](docs/pricing.md#reading-usage-over-http). |
-| `GET /healthz` | text | Liveness probe. |
-
-### Quick examples
-
-The `agentop` TUI handles port-forward + connection automatically — pick a
-pod from the Namespaces → Pods picker. For raw HTTP exploration, set up
-your own port-forward first:
-
-```sh
-POD=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-agent \
-  -o jsonpath='{.items[0].metadata.name}')
-kubectl port-forward -n team1 $POD 9094:9094 &
-
-# List sessions
-curl -s http://localhost:9094/v1/sessions | jq
-
-# Snapshot the most recently updated session
-SID=$(curl -s http://localhost:9094/v1/sessions | jq -r '.sessions[0].id')
-curl -s "http://localhost:9094/v1/sessions/$SID" | jq
-
-# Page backward: the oldest event this response carries is the next cursor.
-# Repeat until the first event's seq equals oldestSeq — that is the beginning.
-curl -s "http://localhost:9094/v1/sessions/$SID?limit=500" \
-  | jq '{cursor: .events[0].seq, oldestSeq, totalEvents}'
-curl -s "http://localhost:9094/v1/sessions/$SID?limit=500&before=<cursor>" | jq '.events|length'
-
-# Live tail every event
-curl -N http://localhost:9094/v1/events
-
-# Live tail a single session
-curl -N "http://localhost:9094/v1/events?session=$SID"
-```
-
-### Event schema
-
-Every event on `/v1/sessions/{id}` and `/v1/events` carries:
-
-- `at`, `direction`, `phase` — when, which side, what stage. `phase` is one of `"request"`, `"response"`, or `"denied"` (terminal denial from a pipeline plugin — typically a jwt-validation failure).
-- `seq` — the event's position in its session, counting from 1, and the cursor `?before=` takes. Gaps are normal: FIFO eviction drops a prefix, and the pinned intent can sit far ahead of the retained tail. Absent (zero) from a proxy that predates paging, which is how a client tells it cannot page there. **Unique within one incarnation of a session, not forever:** trimming events never reuses their numbers, but the counter lives on the store entry, and whole-session eviction (`session.ttl`, `max_sessions`) deletes that entry — so a session re-created under the same id restarts at 1. A cursor from before that point is above everything held, and the endpoint answers with the tail, since every event it holds does precede the cursor. A paging client must therefore order pages by `at`, not by `seq` (agentop does); the store cannot tell a re-created session from a trimmed one. **A session archive moves that boundary out to disk:** the store seeds a new entry's counter past the archive's last seq for that id, so numbering continues across restarts and eviction for as long as the archive holds the session — and a rekey into an id the archive already holds is refused (the session keeps its old id), because the two numberings would collide.
-- `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
-- `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). agentop renders one row per invocation, so operators see an explicit per-plugin timeline.
-- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in agentop. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
-- `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context. **A
-  502 here is not always the upstream's answer.** When the exchange with the upstream
-  fails — the call times out, is refused, cannot resolve, fails TLS, or its response
-  body breaks off mid-read — the proxy synthesizes the 502 itself and records the
-  response row that carries it, with `error.kind` saying which (`upstream_timeout`,
-  `upstream_refused`, `upstream_dns`, `upstream_tls`, else `upstream_error`) and
-  `error.message` the cause, naming the address but never the request URL, whose query
-  string can carry an API key. Before that was recorded the row did not exist at all,
-  so a failed request was indistinguishable from one still in flight and raised no
-  error rate (#1045). **A streamed response whose body breaks off mid-read has no 502
-  to synthesize — the status is already on the wire** — so the row keeps the sent
-  status with the upstream error on it, and the client's connection is aborted
-  (h1 reset / h2 RST_STREAM) rather than cleanly ended: returning normally wrote the
-  terminating chunk and handed the agent a COMPLETE 200 off a cut-off stream (#1543).
-  The reverse proxy always aborted; the forward proxy's three relay arms (SSE relay,
-  SSE passthrough, unbuffered copy) now do too, and the row carries the failure with
-  the sent status as `error.code` — `upstream_error` for the upstream's break,
-  `proxy_error` for the proxy's own cuts: the 5-minute idle read cutoff (which on
-  the issue's own log killed 68 of 103 truncated streams, mostly MCP standing GETs)
-  and an SSE frame over the frame cap, neither of which is the upstream's fault.
-  Such rows count as errors in `/v1/usage` even though their status is a delivered
-  200 — the row's explicit error is what the Errors count reads, not the status —
-  and the Finisher sees `OutcomeError` like every other failed exchange:
-  `classifyBrokenStream` resets `pctx.StatusCode` to zero while the row keeps
-  the sent status. A
-  skipped (`skip_hosts`) stream aborts the same way and still records nothing. **`error.kind: "proxy_error"` is the one that is ours:** a
-  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on
-  the streamed arms the idle read cutoff and the per-frame cap. **A 421
-  with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
-  another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
-  before the pipeline runs and forwards nothing, and both rows name the CONNECT target
-  as `host`, because policy keyed on the client's `Host` would judge a destination the
-  bytes never reach. Where the
-  upstream did answer, `error.code` keeps the status it sent, while `statusCode` stays
-  what the client got, because every consumer keys on it. **A 499 with `error.kind:
-  "client_canceled"` is the client hanging up first** — and since neither proxy times
-  out a slow upstream, that is how a hung one usually ends. It counts as an error in
-  `/v1/usage` but stays out of the 5xx series, and logs no WARN. On all of these the
-  Finisher sees `OutcomeError` with `Outcome.StatusCode` **0**, because that zero is
-  what marks the request as an error rather than an allow — the event and the outcome
-  disagree about the status on purpose. **A 426 with `error.kind:
-  "upgrade_declined"` is not one of these:** it is the forward proxy refusing a
-  WebSocket on OpenAI's Responses API (a path ending `/responses` on `chatgpt.com` or
-  `api.openai.com`) that it will not carry. Nothing is forwarded, the Finisher sees an
-  allow with status 426, and `/v1/usage` does not count it as an error. It is what
-  `listener.responses_websockets: decline` does to every such socket, and what the
-  default, `parse`, does to one it cannot carry (not bridged, or a `WritesResponseBody`
-  or `WritesDestination` plugin in the chain; an HTTP/2 client is refused 400 by Go's
-  HTTP/2 server before the handler runs); a carried socket records instead a `GET`
-  open and close with `tunnelReason: "websocket"` and one ordinary `POST`
-  request/response pair per turn on it (`core/listener/forwardproxy/websocket.go`).
-  v0.9.4's `decline_responses_websockets` is still read when the new key is unset
-  (`true` = `decline`, `false` = `forward`), with a startup warning; both set is
-  refused. **Every other WebSocket is forwarded** (#1488), and so is a Responses one under
-  `forward`: the upgrade crosses the
-  proxy (normalized to `Connection: Upgrade` / `Upgrade: websocket`, which net/http
-  pins to HTTP/1.1 even on the bridge's h2-negotiating client), the origin's 101 is
-  hijacked and spliced, and the session records the request row plus a paired 101
-  response row carrying both directions' byte counts — the frames themselves are
-  never inspected or buffered. **An upgrade is both headers, on both sides**, and
-  since the proxy WRITES the normalized pair a loose predicate forges one rather
-  than missing one: a request needs `Connection: upgrade` as well as `Upgrade:
-  websocket` (RFC 9110 §7.8, and `Request.requiresHTTP1`'s own test) or it is
-  stripped and takes the ordinary path, and a 101 that switches to some other
-  protocol than the one requested is refused 502 before the hijack instead of
-  spliced. Either check missing turns a plain request into an opaque pipe no
-  plugin inspects. **The forward proxy's 101 row is kept out of `/v1/usage` for the
-  same reasons a tunnel row is** — it is recorded after both splice directions end,
-  so its
-  `durationMs` is the WebSocket SESSION's lifetime, and folding it as a request
-  latency moved one host's mean from 500ms to 6.4s in testing; its bytes are opaque
-  frames with no model, token or cost to attribute; and counting it would add one
-  Request whose latency is its whole lifetime. The `durationMs` stays on the
-  session timeline, where the lifetime is the feature — only the aggregation
-  misread it. **The exclusion is scoped to outbound, and a 101 is not excluded
-  everywhere.** The reverse proxy records one too, but *at handshake time* —
-  `ReverseProxy` never copies an upgraded body, so a deferred record would never
-  fire — which makes that row's `durationMs` the handshake latency rather than a
-  session lifetime. An inbound 101 is therefore an ordinary request and still
-  counts as one; excluding it on the status alone would change what `Requests`
-  means on every inbound listener. **A relay that broke mid-session carries `error.kind:
-  "proxy_error"`** on that row, so a WebSocket that died is distinguishable from
-  one that closed cleanly; an ordinary close (`net.ErrClosed`, from the direction
-  that lost the close race) is deliberately not marked, or every healthy session
-  would read as broken.
-  **A 403 with `error.kind: "destination_private"` is the egress guard's
-  answer, not the upstream's** (`listener.egress_guard`, off by default): the
-  destination resolved into loopback, link-local, private or this host's own
-  address space and no permit covered it. The Finisher sees an allow with
-  status 403, like the 426, and `/v1/usage` does not count it as an error.
-  **A 403 `destination_denied` refusal is the egress allow list's answer, not
-  the upstream's** (`listener.egress_allow_hosts`, or `MOCA_EGRESS_ALLOW`;
-  #1483): the destination was not on the deny-by-default list, and the proxy
-  refused it by name — header `X-Moca-Egress-Error`, text/plain body
-  `destination_denied: <host>\n`, the moca egress conformance contract's
-  shape — before the pipeline, before DNS and before any dial. Off-list
-  CONNECT targets, absolute-form hosts, and the target a plugin's redirect
-  moved a request to all land this way, as a `phase: "denied"` row carrying
-  an `egress-allowlist` invocation whose `details.host` names the host; the
-  row's own `host` is the full authority, as every outbound row's is.
-  **A skip_hosts pattern cannot exempt an off-list host:** the allowlist is
-  checked first — it is the outer boundary, and a bypass must not become an
-  egress bypass.
-  **The two 403s are different boundaries and compose** — the allow list
-  judges the NAME the client asked for, before DNS; the egress guard judges
-  the ADDRESS that name resolved to, at the dial. A host can be on the
-  allow list and still be refused `destination_private`, which is why an
-  allow-list entry is not a permit for the guard.
-  **A request whose body could not be buffered is the other exception:** it never
-  reached the pipeline, so its request row carries no
-  parse and no Finisher runs. Over the forward proxy's `maxRequestBodySize` (32 MiB)
-  it is a 413 `proxy_error` with an empty `error.code`; a client that hung up
-  mid-upload gets a 499 `client_canceled`, which here does log a WARN (`request body
-  unreadable`); anything else unreadable is a 400 `request_unreadable`. Before these
-  were recorded such a request left no row, and on a bridged tunnel only the tunnel's
-  open and a close saying 200. An opaque CONNECT that could not be dialed
-  reports the same situation one layer down as `tunnelReason: "dial-failed"` with
-  `error.kind: "dial_failed"`.
-- `ttfbMs` — on a delivered response row, the wall time from request entry into the
-  listener to the upstream's response **headers** arriving, so `durationMs` − `ttfbMs`
-  is how long the body took — for a streamed completion, the stream time. The pair
-  separates a slow-to-answer origin from one that answered and then trickled, which
-  `durationMs` alone cannot (#1251). Absent when the exchange failed before headers, on
-  request rows, and on tunnel rows (an opaque tunnel has no headers to time). All three
-  listeners set `pctx.ResponseHeadersAt` at their own headers-arrival moment — `client.Do`
-  returning (forward and reverse proxy), Envoy's response-headers callback (extproc) —
-  and every response-event builder derives the figure the same way
-  (`pipeline.DurationBetween`). The row itself is recorded when the listener is
-  finished with the body — after the read on a buffered path, after the relay on a
-  streamed or unbuffered one — so the difference really is the body's time and not a
-  remainder cut short at the headers. The one arm that breaks the pattern is extproc
-  with a body-free pipeline: the row is recorded at the headers while Envoy relays the
-  body unseen, so ttfb is left absent there rather than reported as a figure equal to
-  the whole duration. agentop's detail pane renders the split as a
-  `timing:` line.
-- `requestedHost` — present only when a plugin redirected the request (`pctx.Redirect`): the host the client asked for. `host` is where the request actually went, and usage, the cost ledger and pricing all follow `host`. agentop's detail pane shows both on a `redirected:` line.
-- `inference.requestedModel` — present only when a plugin changed the model (`pctx.SetRequestModel`): the model the client asked for. `inference.model` is the model the request was sent for, which settlement prices; agentop's detail pane shows both on a `model:` line.
-- `inference.servedModel` — on a response row, present only when the upstream named a model other than `inference.model`: the `x-litellm-model-name` response header first (LiteLLM names its deployment there and repeats the requested name in the body), else the body's own `model` field. Display only: pricing follows `inference.model`. agentop's detail pane shows it on a `served:` line.
-- `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row carries `bytesUp`, the body **as forwarded** (so a `tool-prune`-style rewrite is reflected, since the count is taken after the pipeline ran), and a response row carries `bytesDown`, the body **as it came back from the destination** — not as delivered, because extproc records the row before it emits a response mutator's replacement. Headers are not counted. A tunnel close and a forwarded WebSocket's 101 response row are the rows carrying both. **Zero means the listener counted nothing, not that the body was empty**, and there is no third value for "unknown": every listener buffers bodies only when a plugin asks, so an unbuffered request reports zero. A response relayed straight through is counted, not zero — both proxies record the row after the copy (#1251's fix), so the bytes they relayed through their own process are on it. The one arm that still reports ↓0 is extproc with a body-free pipeline: it asked Envoy for body mode NONE, so the bytes it never saw are bytes it asked not to see — `core/listener/parity`'s `TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt` pins that disagreement with its reason. agentop renders a zero side blank rather than as `0B`, and that is why its BYTES column can be trusted as a size when it shows one. Everywhere else the three listeners count the same thing for the same response, which took some doing: extproc sums the chunks Envoy hands it, while the proxies count off the upstream body at one choke point each, so every arm — buffered, block-by-block SSE, or chunk copy — reports the same figure. `core/listener/internal/bodycount` and `core/listener/parity`'s bytes fixtures hold that line.
-- `tunnel`, `tunnelReason` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached and no TLS bridge could take the connection (`tunnelReason: "dial-failed"`; where the bridge is enabled for the port the CONNECT is answered 200 first, because a redirect can still apply, and a bridge that then declines closes with that 200 and the dial error) — plus `durationMs` for how long the tunnel stayed open and, in `bytesUp`/`bytesDown`, the bytes it carried each way (up = client to destination; opaque bytes have no body/header split, so these are everything that crossed). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel's open is recorded with its first decrypted request — in that request's session, directly before it, stamped with its time — and records no close, because the request carries its own response; a bridged tunnel that recorded no request gets its open and a close when it ends. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency. **`tunnelReason: "websocket"` is the one that is not opaque:** a Responses API WebSocket the forward proxy carries (`listener.responses_websockets`, `core/listener/forwardproxy/websocket.go`). Its open is the handshake `GET`, its close is status 101 with the whole socket's duration and bytes, and each turn on it records its own ordinary `POST` request/response pair between them, parsed and priced like an HTTPS turn. A turn runs on the pipeline it began on, so a hot reload never splits one. `tunnelReason: "dest-private"` with a 403 close and `error.kind: "destination_private"` is the egress guard refusing the destination before any dial — never confused with `dial-failed`, which attempted.
-- `dialAddr` — the address the egress guard checked and the proxy dialed, `"ip:port"`, on a tunnel's open row when `listener.egress_guard` is on. With `host` it is the audit trail against DNS rebinding: under the guard the proxy resolves once, checks that answer, and dials exactly it, so the two fields together say "asked for the name, reached this address". Absent when the guard is off and on rows that dialed nothing.
-- `httpMethod`, `httpPath` — the HTTP verb and path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line. The path is query-stripped and percent-decoded, so query-borne credentials never reach the timeline, but a secret in a path *segment* (a bot token, a webhook path) does survive on this unauthenticated surface — worth knowing before exporting events off-box.
-- `subagent` — present on rows from a Claude Code subagent or agent-team teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent that is also the `<id>` in `~/.claude/projects/<dir>/<session>/subagents/agent-<id>.meta.json`; for a teammate the join is unverified. Resolved by `Context.Subagent`, pinned with the User-Agent by `ResolveClient` so no plugin can re-file a row, and **refused rather than sanitised** when unusable (control runes, over 128 bytes), because it is a join key and a cleaned-up id joins nothing. It does not move the row: a subagent's requests stay in their parent's session, so the header must not be added to `session.id_headers`. **It names an agent, it does not classify the row:** `inference.agentRole` stays the field that says whether a row is a subagent's, and a teammate's row is `agentRole: main` with `subagent` set — Claude Code writes `cc_is_subagent=true` only for `agentType: subagent`.
-- `parentSubagent` — the agent that started `subagent`, from `X-Claude-Code-Parent-Agent-Id`, resolved with it in one memo (`Context.ParentSubagent`) and under the same rules. Claude Code sends it only when the spawner was itself an agent, so **absent on a row that names a `subagent` means the conversation started it**, not "unknown". The two keys are the tree's node and its edge. agentop's events pane groups each subagent's rows under a collapsible header anchored at its first row (#1047): the label is the subagent's description from the harvested `agent-<id>.meta.json` (`SessionMetadata.Subagents`), falling back to the raw id; blocks are collapsed by default, `Enter` toggles, an expanded block's rows render together under its header (pulled out of the chronological interleaving — the DIR gutter's `│` marks them), member exchanges are numbered from 1 within the block while main rows keep session-wide numbers, a sort disables grouping, and a live search opens every block.
-
-### Invocation action vocabulary
-
-Every plugin emits one of these 5 action values per invocation, so operators can scan a timeline without memorizing plugin-specific verbs:
-
-| `action` | Meaning | Example |
-|---|---|---|
-| `allow` | Gate plugin permitted the request | jwt-validation on valid token |
-| `deny` | Gate plugin rejected the request; pipeline stops | jwt-validation on bad token, token-exchange on IdP failure |
-| `skip` | Plugin ran but didn't act on this message | jwt-validation on a bypass path; parser whose body didn't match |
-| `modify` | Plugin mutated the message | token-exchange replaced the Authorization header |
-| `observe` | Plugin attached diagnostic data without changing flow | a2a-parser, mcp-parser, inference-parser when they match |
-
-Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
-
-**agentop's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
-
-> **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
-
-### Gotcha: denied requests
-
-Rejected requests (401 / 503) land as `phase: "denied"` events in `/v1/sessions` when at least one pipeline plugin appended an Invocation before rejecting. If you're debugging an unauthorized-access pattern, the default-session bucket (`GET /v1/sessions/default`) is where denial events aggregate.
-
-### Disabling
-
-Set `session.enabled: false` in the runtime config to turn off the store (and implicitly the API). The session archive is separate — on by default for a local install bound to loopback only, off everywhere else: `session.archive.enabled: false` stops it without touching the in-memory store, and turning the store off with the archive explicitly on is refused at load. Setting `listener.session_api_addr: ""` alone is not currently supported as a selective disable — the preset refills it; if you need store-on-API-off, raise an issue.
+**Before you change `core/sessionapi/`, `core/session/` or what a listener records,
+read [`docs/session-api.md`](docs/session-api.md).** It is the reference for every
+endpoint, the event schema (each `error.kind`, `ttfbMs`, `bytesUp`/`bytesDown`,
+tunnel rows, `subagent`), the 5-value invocation `action` vocabulary, paging, and the
+guards on the two `DELETE` routes. The producer-side contract is in
+[`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events).
 
 ## Config Hot-Reload (`:9093/reload/status`)
 
@@ -843,7 +473,7 @@ The authbridge binary watches its config file (`/etc/authbridge/config.yaml`) vi
 
 **What reloads:** any plugin list change (add/remove/reorder) and any plugin `config:` subtree edit.
 
-**What doesn't reload (pod restart required):** `mode`, any `listener.*` address, the top-level `mtls` block, and the session store parameters (`session.ttl`, `session.max_events`, `session.max_sessions`, and the `session.archive` block).
+**What doesn't reload (pod restart required):** `mode` and every field of `listener`, `session`, `cost_ledger`, `mtls`, `tls_bridge`, `spiffe` and `memory` (`validateReloadable` in `core/reloader/reloader.go`).
 
 **Bad YAML stays safe:** if Load/Validate/Build/Start fails, the active pipeline keeps serving and the error is exposed on `/reload/status` with `reloads_failed` incremented. The pod never goes unhealthy from a bad edit.
 
@@ -858,132 +488,29 @@ curl http://localhost:9093/config         # now-active config (ConfigProvider cl
 
 See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-hot-reload) §9 for the reload lifecycle, debounce / symlink-swap handling, and the drain-window behavior.
 
-## Shared Volume Contract
-
-The sidecar and the operator communicate through files on shared volumes:
-
-| Path | Writer | Reader | Content |
-|------|--------|--------|---------|
-| `/opt/jwt_svid.token` | spiffe.Provider mirror | authbridge (token-exchange) + external readers | JWT SVID, audience from `spiffe.jwt_audience`. Written **only** when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`) — an X.509-only workload never produces it |
-| `/opt/svid.pem` | spiffe.Provider mirror | external readers (debugging, future Envoy SDS) | X.509 SVID leaf cert (PEM) |
-| `/opt/svid_key.pem` | spiffe.Provider mirror | external readers | X.509 SVID private key (PEM) |
-| `/opt/svid_bundle.pem` | spiffe.Provider mirror | external readers | SPIRE trust bundle (PEM, may concatenate multiple CAs) |
-| `/shared/client-id.txt` | operator (Secret mount) | authbridge (`jwt-validation`'s `audience_file`) | SPIFFE ID or workload name |
-| `/shared/client-secret.txt` | operator (Secret mount) | authbridge (`token-exchange`) | Keycloak client secret |
-
-The X.509 SVID files are mirrored to disk by the in-process
-`spiffe.Provider` when `spiffe.mirror_files` is on (the default); the files
-exist for external readers (e2e probes,
-debugging, future Envoy filesystem SDS) and are kept fresh on every
-rotation. The listener itself reads SVIDs in-memory via
-`spiffe.X509Source` and never re-reads the files. authbridge enables
-mTLS only when `mtls:` is configured at the top level of the
-runtime config; absent that block, today's plaintext behavior is
-preserved.
-
 ## Top-level `mtls:` configuration
 
-When the runtime config carries an `mtls:` block, authbridge enables
-transport-level mTLS on the proxy-sidecar listeners (forward + reverse
-proxy). envoy-sidecar mode handles mTLS at the Envoy data-plane level
-instead — see the **envoy-sidecar mTLS** subsection below.
-
-```yaml
-# authbridge-runtime-config ConfigMap (top-level)
-mtls:
-  mode: strict          # permissive | strict (omit block entirely for off)
-  # cert_file / key_file / bundle_file optional —
-  # default to /opt/svid.pem, /opt/svid_key.pem, /opt/svid_bundle.pem
-```
-
-| Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
-|---|---|---|
-| (no `mtls` block) | Plaintext only. | Plaintext only. |
-| `permissive` (default when block present) | Byte-peek listener: TLS handshakes verified against the SPIRE trust bundle; plaintext callers served on the same port. ⚠️ Plaintext requests carry their full headers and bodies in the clear — including any `Authorization: Bearer ...` token already injected by `token-exchange`. Use only during rollout with cluster-network trust. | Plaintext — no TLS-wrap attempt. Matches envoy-sidecar's permissive and Istio's PeerAuthentication semantics (permissive is inbound-only). A permissive caller cannot reach a strict peer; mixed-mode deployments need both ends compatible. |
-| `strict` | TLS only — non-TLS callers get the connection closed. | TLS or fail: handshake failure is a hard error, no fallback. |
-
-In both modes, a successful TLS handshake that fails certificate
-verification is always a hard error.
-
-**Trust model:** any peer with a valid cert from the SPIRE trust bundle
-can talk to this authbridge. Per-caller policy / SPIFFE allowlists are
-out of scope; the trust bundle IS the policy. Plugins that want
-per-caller decisions read `pctx.PeerCert` and check the URI SAN.
-
-**Hot-reload boundary:** mTLS config requires a pod restart to apply,
-matching the existing rule for `listener.*` addresses. A reload that adds the
-`mtls` block, removes it, or changes `mtls.mode` — the only field the block
-carries — is refused rather than half-applied: the active pipeline keeps
-serving, `reloads_failed` increments, and `/reload/status` names `mtls.*`
-among the fields that need a restart. Legacy `cert_file` / `key_file` /
-`bundle_file` keys are dropped at load, so editing them is neither applied nor
-refused. The inbound TLS listener and, under `strict`, the forward proxy's
-mTLS dialer are built once at boot, so no reload can reach them. The outbound
-chain's redirect check (`forwardproxy.Support`) refuses a `WritesDestination`
-plugin whenever an `mtls:` block is configured: under `strict` the dialer
-would nest TLS inside TLS; under `permissive` there is no dialer, so the
-refusal is broader than strictly needed and fails closed. Refusing the reload
-keeps that check matched to the mtls config the listeners were built from.
-Plugin-pipeline config keeps its own hot-reload behavior.
-
-### envoy-sidecar mTLS
-
-In envoy-sidecar mode the listeners live in Envoy, not authbridge,
-so the top-level `mtls:` block is a no-op there. Equivalent semantics
-are configured at the Envoy data-plane level by extending the
-`envoy-config` ConfigMap with TLS blocks:
-
-| Mode | Inbound (`:15124`) | Outbound (`:15123`) |
-|---|---|---|
-| `disabled` | plaintext (today's behavior) | plaintext (today's behavior) |
-| `permissive` | `tls_inspector` listener filter + two filter chains: `transport_protocol: tls` chain terminates mTLS, `transport_protocol: raw_buffer` chain accepts plaintext | **plaintext** — no TLS-wrap attempt |
-| `strict` | `tls_inspector` + single TLS filter chain; plaintext drops at filter chain match | `UpstreamTlsContext` on the `original_destination` cluster: TLS-or-fail, blanket |
-
-X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
-`/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths
-proxy-sidecar's mTLS uses. The spiffe Provider's file-mirror in
-the `cortex-envoy` binary keeps these fresh on rotation.
-
-**Inbound parity with proxy-sidecar:** byte-identical observable
-semantics — TLS handshakes terminate against the SPIRE trust bundle,
-plaintext is served (permissive) or rejected (strict). Same outcome
-as proxy-sidecar's `tlssniff.Listener`, just expressed as Envoy
-filter chains. This matches Istio's PERMISSIVE/STRICT inbound exactly.
-
-**Outbound is Istio-shaped:** Envoy has no native primitive for
-"try TLS, fall back to plaintext on handshake failure" within an
-`ORIGINAL_DST` cluster (and Istio itself doesn't do it — Pilot
-pre-decides mesh membership). Permissive keeps outbound plaintext;
-strict does blanket TLS-or-fail to everything the listener sees.
-This works in practice because outbound calls that need plaintext —
-Keycloak, JWKS, external HTTPS — never reach the listener: plugin
-outbound uses Go `net/http` directly, and `proxy-init`'s iptables
-doesn't redirect arbitrary HTTPS egress. **Proxy-sidecar matches
-this**: its forward proxy now also dials plaintext in permissive
-mode, so the two deployment shapes share one outbound semantics.
-
-**Behavioral note:** a *permissive* caller cannot reach a *strict*
-peer regardless of mode (its outbound is plaintext; the peer's
-strict inbound rejects it). Mixed-mode deployments need both ends
-compatible — both strict, both permissive, or one strict + the
-other permissive on inbound only.
-
-The operator's AgentRuntime CR's `Spec.MTLSMode` flows
-through to a per-agent rendered envoy-config with the matching TLS
-blocks (operator companion PR). **This design has no end-to-end
-verification in-tree.** The `demos/mtls/` demo used to exercise it — six
-make targets including negative checks on both deployment shapes — and was
-retired as superseded. Nothing in-tree exercises the Envoy filter chains. Re-verify by hand after changing them.
+An `mtls:` block (`mode: permissive | strict`, its only field) turns on transport mTLS
+on the proxy-sidecar listeners, with the SVID from the spiffe Provider. In
+envoy-sidecar mode the block is a no-op: Envoy does mTLS from the `envoy-config`
+ConfigMap. Changing the block needs a restart, and a reload that tries is refused.
+**Read [`docs/framework-architecture.md` §8a](docs/framework-architecture.md#8a-mtls-layer)
+before you change either shape.** Nothing in-tree exercises the Envoy filter chains:
+re-verify them by hand after a change.
 
 ## CI/CD Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core (plus `core/peerproc`'s tests on a macOS runner), both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 11 modules; the cgo `cpex` builds of `cmd/cortex` (`go-ci-cpex`); Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
-| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet` and build for all 11 modules, and tests for all but the three demos; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 11 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
-| `spellcheck_action.yml` | PR | Spellcheck on markdown files |
+| `release-binaries.yaml` | Tag push (`v*`), manual; push to main publishes the main-latest channel when `MAIN_CHANNEL_ENABLED` is set | Release tarballs — see [Release binaries](#release-binaries) |
+| `pr-verifier.yml` | PR | PR title check (below) |
+| `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
+
+Also: `release-smoke-linux.yaml`, `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
 
 ### PR Title Convention
 
@@ -1006,7 +533,8 @@ prefixes (`feat:`, `fix:`) pass.
 The prefix also files the PR in the release notes, which
 `scripts/release_notes.sh` builds from the PRs merged since the previous
 release: `Feat`/`Feature` under New features, `Fix`/`Bug fix`/`Perf` under Bug
-fixes, `Breaking change` (or `!` before the colon) under Breaking changes, and
+fixes, `Breaking change` (or `!` before the colon) under Breaking changes,
+`(deps)` titles and dependabot PRs under a folded Dependency updates, and
 everything else under a collapsed Other changes.
 
 ## Container Images
@@ -1017,21 +545,14 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | Image | Source | Description |
 |-------|--------|-------------|
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
-| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
+| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, `envoy` profile) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
 | `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build of `cmd/cortex` with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it selects the FFI-backed cpex manager and gates `core/plugins/all/plugins_cpex.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
-None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
-longer gates anything. SPIRE credentials are fetched in-process by
-`core/spiffe`'s Provider.
-
-The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
-`spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
-been removed from CI (the auth-proxy / demo-app source is still in-tree
-for the standalone quickstart). Older release tags continue to publish
-the old images.
+CI no longer builds the legacy `authbridge-unified`, `authbridge-light`,
+`client-registration` and `spiffe-helper` images. Older release tags still publish them.
 
 ## Pre-commit Hooks
 
@@ -1040,27 +561,18 @@ Install: `pre-commit install`
 Hooks:
 - `trailing-whitespace`, `end-of-file-fixer`, `check-added-large-files` (max 1024KB), `check-yaml`, `check-json`, `check-merge-conflict`, `mixed-line-ending`
 - `ai-assisted-by-trailer` — Rewrites `Co-Authored-By` to `Assisted-By` (commit-msg stage)
-- `ruff`, `ruff-format` — Python linting/formatting, `exclude: ^tests/`. The
-  filter was `files: ^authbridge/` until that tree became the repo root; it was
-  inverted rather than dropped because `tests/` was never in scope and does not
-  lint clean, so widening to cover it is a separate change.
+- `ruff`, `ruff-format` — Python linting/formatting, `exclude: ^tests/`: `tests/`
+  does not lint clean, so widening the filter is a separate change.
 
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
 
-- `go vet ./...` **is** a gate, on 7 of the 11 modules: `core`, both
-  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
-  matrix (`cmd/cortex`'s cpex builds and `core/plugins/cpex` are vetted with
-  `-tags cpex` separately, in `go-ci-cpex`, which links the pinned
-  `libcpex_ffi.a`). Not vetted anywhere:
-  `core/storage/redis` and the three `demos/*` modules.
+- `go vet ./...` **is** a gate, on all 11 modules (`cmd/cortex`'s cpex builds
+  and `core/plugins/cpex` are vetted with `-tags cpex` separately, in
+  `go-ci-cpex`, which links the pinned `libcpex_ffi.a`).
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
-  checkout and exits 0, so formatting drift cannot fail a build.
-
-Formatting drift therefore reaches main — a few files are gofmt-dirty there
-today, including three under `core`, where `go fmt` demonstrably runs on
-every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
-touched one of the four unvetted modules.
+  checkout and exits 0, so formatting drift cannot fail a build. Run
+  `gofmt -l .` yourself before pushing.
 
 ## Languages and Tech Stack
 
@@ -1086,159 +598,17 @@ touched one of the four unvetted modules.
 | Keycloak | Yes | OAuth2/OIDC provider, token exchange |
 | SPIRE | Optional | SPIFFE identity (JWT-SVIDs) for workloads |
 
-## ConfigMaps and Secrets Expected at Runtime
-
-When the operator injects sidecars, the target namespace needs these resources.
-The rossoctl Helm chart's `agent-namespaces.yaml` and
-`authbridge-template-configmaps.yaml` templates render them; the operator copies
-them into agent namespaces that don't already have them:
-
-| Resource | Kind | Used by | Keys |
-|----------|------|---------|------|
-| `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
-| `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
-| `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
-| `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (format below) |
-| `spiffe-helper-config` | ConfigMap (legacy, unused) | (none) | Previously held `helper.conf` for the bundled `spiffe-helper` binary. Retained only for compatibility with older deployments; authbridge drives SPIRE configuration via the top-level `spiffe:` block in `authbridge-runtime-config` and does not read this ConfigMap. |
-| `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
-
-**`authproxy-routes` format** (`routes.yaml`):
-```yaml
-routes:
-  - host: "github-tool-mcp"
-    target_audience: "github-tool"
-    token_scopes: "openid github-tool-aud github-full-access"
-  - host: "auth-target-*"
-    target_audience: "auth-target"
-    token_scopes: "openid auth-target-aud"
-```
-
-**Note:** `authproxy-routes` is optional. Without it, all outbound traffic passes through unchanged (the default policy is `passthrough`). Only create it when the agent needs to call services that require token exchange. Set `DEFAULT_OUTBOUND_POLICY: "exchange"` in `authbridge-config` to restore the legacy behavior.
-
-## Keycloak Setup Scripts
-
-There are **two** setup scripts for different demo scenarios:
-
-| Script | Location | Use Case |
-|--------|----------|----------|
-| `setup_keycloak_weather_advanced.py` | `demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Drives the CI verify script `deploy_and_verify_advanced.sh`. |
-| `setup_keycloak.py` | `demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
-
-**Common Keycloak defaults across all scripts:**
-- URL: `http://keycloak.localtest.me:8080`
-- Realm: `rossoctl`
-- Admin: `admin` / `admin`
-
-**Note:** All scripts share the same helper function patterns (`get_or_create_realm`, `get_or_create_client`, `get_or_create_client_scope`, etc.) and are idempotent.
-
 ## Common Development Tasks
 
-### Building Everything Locally
-
-`scripts/dev/local-build-and-test.sh` orchestrates every image
-the platform needs (`spiffe-idp-setup` from rossoctl, plus
-`authbridge`, `authbridge-envoy`, `authbridge-lite`, `proxy-init`
-from this repo) and loads them into a Kind cluster. Run it from
-the repo root:
-
-```bash
-ROSSOCTL_DIR=../rossoctl ./scripts/dev/local-build-and-test.sh
-```
-
-To build a single image directly. All Docker build contexts are the repo root now,
-so run these from the top of the checkout:
-
-```bash
-# proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
-cd deploy/proxy-init
-make docker-build-init
-make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
-cd ../..
-
-# Sidecar images. Pick whichever you need; the operator selects the image per
-# workload from the resolved AuthBridge mode.
-podman build -f cmd/cortex/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
-podman build -f cmd/cortex-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
-# authbridge-lite: same proxy Dockerfile, built with the `lite` profile
-# from scripts/profile-tags. Plugins are all opt-in, so
-# GO_BUILD_TAGS is required — omitting it registers no plugins.
-podman build -f cmd/cortex/Dockerfile \
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
-  -t authbridge-lite:latest .
-
-kind load docker-image authbridge:latest       --name rossoctl
-kind load docker-image authbridge-envoy:latest --name rossoctl
-kind load docker-image authbridge-lite:latest  --name rossoctl
-```
-
-### Running the Full Demo
-
-1. Set up a Kind cluster with SPIRE + Keycloak (use [Rossoctl installer](https://www.rossoctl.dev/docs/get-started/kubernetes))
-2. Deploy the webhook via [operator](https://github.com/rossoctl/operator)
-3. See the [Cortex demos index](demos/README.md) for a recommended learning path:
-   - **Getting started**: `demos/weather-agent/demo-ui.md` (inbound validation, UI deployment)
-   - **Full flow**: `demos/github-issue/demo-ui.md` (token exchange + scope-based access)
-   - **Routes config reference**: `demos/token-exchange-routes/README.md` (single + multi-target route patterns)
-
-The recommended end-to-end flow is the weather-agent advanced demo, which
-exercises the combined sidecar shape with token exchange to a tool's audience:
-
-```bash
-# Apply manifests, run Keycloak setup, verify end-to-end
-demos/weather-agent/deploy_and_verify_advanced.sh
-```
-
-For an interactive walkthrough see
-[`demos/weather-agent/demo-ui-advanced.md`](demos/weather-agent/demo-ui-advanced.md).
+Image builds, Kind loads and the end-to-end demo are in
+[`demos/CLAUDE.md`](demos/CLAUDE.md#building-everything-locally).
 
 ### Adding a New Component Image to CI
 
 1. Add entry to `.github/workflows/build.yaml` matrix (`image_config` array)
 2. Provide `name`, `context`, and `dockerfile` fields
-3. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
-
-## Common Tasks for Code Changes
-
-### Modifying Token Exchange Logic
-- Edit `core/plugins/tokenexchange/exchange/` -- the RFC 8693 token exchange client
-- The token exchange POST parameters follow RFC 8693 exactly
-- Test by rebuilding the affected image. `GO_BUILD_TAGS` is required — every
-  plugin is opt-in, so a build without it registers none and rejects every
-  config it is handed:
-  `podman build -f cmd/cortex-envoy/Dockerfile
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
-  -t authbridge-envoy:latest .` then `kind load docker-image
-  authbridge-envoy:latest --name rossoctl`.
-
-### Modifying Inbound JWT Validation
-- Edit `core/plugins/jwtvalidation/validation/` -- the JWKS-backed JWT verifier
-- JWKS cache auto-refreshes
-- Direction detection: `x-authbridge-direction: inbound` header (injected by Envoy inbound listener config)
-
-### Adding New iptables Rules
-- Edit `deploy/proxy-init/init-iptables.sh`
-- Follow the existing pattern: document the rule's purpose, Istio interaction, and chain ordering
-- Test with and without Istio ambient mesh if possible
-- Rebuild from `deploy/proxy-init/`: `make docker-build-init && make load-image`
-  (the target is `load-image`, singular — `load-images` does not exist)
-
-### Modifying Client Registration
-Registration no longer lives here — it is the operator's
-`ClientRegistrationReconciler` (see the [operator
-repo](https://github.com/rossoctl/operator)). This repo only *consumes* the
-resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
-
-### Adding New Keycloak Resources to Setup
-- Edit the appropriate `setup_keycloak*.py` script
-- Use the `get_or_create_*` helper pattern for idempotency
-- All scripts use `python-keycloak` library (KeycloakAdmin class)
-
-### Changing Envoy Configuration
-- Edit the `envoy.yaml` template in the [rossoctl Helm chart](https://github.com/rossoctl/rossoctl)
-  (`charts/rossoctl/templates/agent-namespaces.yaml` or
-  `authbridge-template-configmaps.yaml`) and `helm upgrade`
-- Key listener/cluster names: `outbound_listener`, `inbound_listener`, `original_destination`, `ext_proc_cluster`
-- After changes, restart the affected pods so they pick up the new ConfigMap content
+3. For a Go image, add a case to the "Resolve build args" step that sets `GO_BUILD_TAGS` from a profile; without it the Dockerfile fails
+4. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
 
 ## Code Style and Conventions
 
@@ -1246,9 +616,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 - Run `go vet ./...` and `gofmt -l .` yourself before pushing, from each module you
   touched. **Always give `gofmt` a path** — a bare `gofmt -l` reads stdin, scans
   nothing and exits 0.
-- **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
-  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
-  the 11 modules — see the Pre-commit Hooks section for which four are uncovered.
+- **Only `go vet` is enforced**, by `ci.yaml`, on all 11 modules. pre-commit has no Go
+  hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and exits 0.
   See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `core` one
   does, so each module resolves its own `replace` directives instead of pulling in
@@ -1269,11 +638,6 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   majors behind, so CI is not testing the version the project declares.
 - `python-keycloak` for all Keycloak admin API calls
 - Idempotent: every `get_or_create_*` helper checks existence before creating
-- `ruff` / `ruff-format` cover the whole tree except `tests/`, which has
-  pre-existing findings — see the Pre-commit Hooks section.
-
-### Kubernetes Manifests
-- Example deployment YAMLs in `demos/*/k8s/`
 
 ### Shell Scripts
 - Strict mode where it is safe to add: `scripts/dev/local-build-and-test.sh` uses
@@ -1285,86 +649,40 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 - Idempotent: `init-iptables.sh` uses `iptables -N ... 2>/dev/null || true` and
   `iptables -F` before adding rules
 
-## Important Cross-Component Relationships
-
-1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge` container also runs as UID 1337.
-
-2. **Shared Volume Contract:** the sidecar and the operator communicate through
-   files under `/opt/` and `/shared/` — see the
-   [Shared Volume Contract](#shared-volume-contract) section above for the full
-   writer/reader table.
-
-3. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
-
 ## Gotchas and Known Issues
 
 1. **Multiple Go modules:** The repo has 11 Go modules — `core/` and each `cmd/*/` but `cmd/cortex-cpex/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first eight; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
-2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file` / `jwt_svid_path`) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
+2. **Avoid committing venvs:** Virtual environment directories should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
 
-3. **ISSUER vs TOKEN_URL**: `ISSUER` must be the Keycloak **frontend URL** (what appears in the `iss` claim of tokens), while `TOKEN_URL` is the **internal service URL**. These are often different in Kubernetes (e.g., `http://keycloak.localtest.me:8080` vs `http://keycloak-service.keycloak.svc:8080`).
+3. **Session store memory, and IBAC user intent under chatty traffic.** The store keeps **every** event a session produces: `session.max_events` is unset and `session.ttl` defaults to never, by design (see `SessionConfig.Limits`). `session.max_sessions` (100, oldest-used first) is the default bound, and it limits how MANY sessions are kept, not how big one gets. Set `max_events` for a FIFO per-session cap and `ttl` to bound how long raw prompts stay in memory. Clients read deep sessions by paging with `?before=<seq>`, not by raising `limit`.
 
-4. **Keycloak port exclusion**: When using iptables interception, Keycloak's port (8080) must be excluded from redirect via `OUTBOUND_PORTS_EXCLUDE=8080`. Otherwise, token exchange requests from authbridge get redirected back to Envoy, creating a loop.
+    **Interning** (`core/session/intern.go`) keeps one copy of each distinct string per session, with one table per **conversation** (model + first message, split from a sibling by the second), so that subagents taking turns do not evict each other's table. Rules for changing it:
+    - **An event with nothing to intern must not clear the table.** A CONNECT tunnel-open lands between an inference request and its response on every bridged request, and a reset there makes the next turn copy the whole conversation again.
+    - **Measure with a fixture that interleaves contentless events.** A clean run of turns is not what live traffic looks like.
+    - Message-header arrays share one growing backing array per conversation. Roles and per-result `ToolUseID`s intern below the length threshold (`internID`). The tool manifest (descriptions and schemas) and tool results intern too.
+    - `InferenceTool.Parameters` is `pipeline.RawJSON` so that it interns as a string. **It must stay a NAMED string type with a `MarshalJSON` method:** OPA's `ast.InterfaceToValue` reads a plain or aliased string as a JSON string, and every policy that indexes `input.inference.tools[_].parameters` then goes silently undefined (`core/plugins/opa/tool_parameters_rego_test.go` guards it).
+    - MCP `Params`/`Result` do not intern (they are `map[string]any`, unmeasured).
 
-5. **TLS passthrough is one-way**: Outbound HTTPS traffic passes through Envoy without token exchange via the TLS passthrough filter chain. Only plaintext HTTP outbound traffic reaches authbridge. With the default outbound policy of `"passthrough"`, even plaintext HTTP traffic is forwarded unchanged unless it matches an explicit route in `authproxy-routes`.
+    **Reading the store costs memory too.** An encoder expands every shared string back out. So `GET /v1/sessions/{id}` writes one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`), and agentop decodes one event at a time through the same `session.Interner` (`cmd/agentop/apiclient/snapshot.go`, `BenchmarkDecodeSessionViewHeap`). agentop keeps streamed `/v1/events` arrivals only for the session it is watching (`watchingSession`: `selectedSess`, pane-agnostic, or the timeline's session). The others update their summary and are dropped. `model.pluginRuns` still counts every session. When you judge a memory change:
+    - **Measure both processes.** agentop has been the larger one.
+    - **RSS is not heap.** `/debug/pprof/*` is served only where `listener.bind_loopback_only` is set.
+    - `memory.limit_mb` (default 2048 on a local install) is a soft `debug.SetMemoryLimit`, set at boot and refused on reload. Too low means slow, never a crash. It does not count CPEX's cgo memory.
 
-6. **Outbound passthrough is the safe default**: `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, so token exchange only happens for hosts explicitly listed in `authproxy-routes`, where target audience and scopes are configured per-route. That is what lets outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) work untouched. If this were set to `exchange`, every outbound HTTP call would attempt token exchange and fail for non-Keycloak destinations.
+    **The session archive is disk, not memory** (`core/session/archive`, on for a local install bound to loopback, off elsewhere: `config.ArchiveRunsOnLocalInstall`). Every memory bound above still applies, but eviction no longer loses history. On disk it interns the same seven fields the store does, and it is bounded by `retention_days` (30) and `max_bytes` (2 GiB). `DELETE /v1/sessions` erases it with the store. A burst it cannot keep up with is dropped from the archive and counted, never from memory. At startup `cmd/cortex` replays the last six hours into the usage ring (`usage.Aggregator.Replay`, not through the store) **beside live traffic, not before it**, so `/healthz` answers at once. The segment list is taken before any listener starts: a process never appends to a segment it did not open, so nothing live is read back. The replay fills a private ring from `BeginReplay`, and `FinishReplay` first applies any clear, delete or rename the live ring took meanwhile. The replay has `usageReplayBudget` (60s) or does not run. User-facing details: [`docs/laptop-service.md`](docs/laptop-service.md).
 
-7. **Route host patterns must match the HTTP Host header**: The `host` field in `authproxy-routes` is matched against the HTTP `Host` header, which the client sets from the URL hostname. For in-cluster calls that is the **short Kubernetes service name** from `MCP_URL` (e.g., `github-tool-mcp`), not the FQDN. Glob patterns (`*`, `?`, `[...]`) work, but a plain service name is the common case; the wrong pattern (e.g., `*.github-issue-tool*.svc.cluster.local`) silently falls through to the default passthrough policy.
+    Two layered defenses keep the inbound A2A user intent visible to IBAC when an agent sends dozens of outbound events per turn:
 
-8. **Envoy config not embedded:** The envoy-proxy sidecar mounts `envoy-config` ConfigMap at `/etc/envoy`. This ConfigMap must exist in the target namespace before workloads are created.
+    - **Primary fix — `listener.skip_hosts`** ([`docs/framework-architecture.md`](docs/framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) has the example): infrastructure destinations (OTel collectors, metrics, log shippers) whose traffic bypasses the pipeline AND session recording. Do NOT add hosts that need IBAC or token-exchange policy — bypass means bypass. A change needs a pod restart.
 
-9. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
+    - **Egress boundary — `listener.egress_allow_hosts`**, or `MOCA_EGRESS_ALLOW` when the field is empty: the forward proxy's deny-by-default allow list. An off-list destination is refused 403 `destination_denied` by name, before the pipeline, DNS and any dial (shape: [`docs/session-api.md`](docs/session-api.md#event-schema)). Rules:
+      - Entries are exact `host:port`. Portless and wildcard entries are startup errors, and so is an unbracketed IPv6 literal: write `[2001:db8::1]:443`. A destination with no port is judged at 80 for http and 443 otherwise. A malformed authority is denied by name, never a panic.
+      - **It is checked BEFORE `skip_hosts`**, so a skip pattern cannot exempt an off-list host.
+      - **Scope: the forward proxy only.** The transparent listener (enforce-redirect) and extproc (envoy-sidecar) do not consult it. A deployment that uses either must hold its egress elsewhere: deny-by-default here is not deny-by-default for the pod.
+      - It judges the **name**. `listener.egress_guard` judges the resolved **address**, so an allow-list entry is not a permit for the guard.
+      - Example: `listener: {egress_allow_hosts: ["github-tool-mcp:8080", "api.anthropic.com:443"]}`, or `MOCA_EGRESS_ALLOW=github-tool-mcp:8080,api.anthropic.com:443`. A change needs a pod restart, and each refusal leaves a `phase: "denied"` row with an `egress-allowlist` invocation.
 
-10. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
-
-11. **Admin credentials in ConfigMap**: the rossoctl Helm chart's
-    `agent-namespaces.yaml` template stores Keycloak admin credentials
-    in `authbridge-config` (a ConfigMap, not a Secret). This is for
-    demo / dev clusters only — production should use a Kubernetes
-    Secret and mount via SecretKeyRef.
-
-12. **Keycloak scope assignment for dynamically registered clients**: When the operator's `ClientRegistrationReconciler` auto-registers an agent as a Keycloak client, the client may not inherit all necessary scopes. The agent's own audience scope (e.g., `agent-team1-git-issue-agent-aud`) must be a **default** client scope for inbound JWT audience validation to work. Token exchange scopes (e.g., `github-tool-aud`, `github-full-access`) must be **optional** client scopes for `client_credentials` grants with explicit `scope=` to succeed. Re-run the demo's `setup_keycloak.py` after the agent is deployed to assign these scopes to the registered client.
-
-13. **Avoid committing venvs:** Virtual environment directories should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
-
-14. **Chatty observability traffic and IBAC user intent**: The session store keeps **every** event a session produces — `session.max_events` is unset by default, and so is time-based expiry (`session.ttl` defaults to never). What bounds memory by default is `session.max_sessions` (100, oldest-used evicted first), which limits how MANY sessions are kept and not how big any one of them gets: a single long-lived chatty session grows without limit. Set `session.max_events` to put a FIFO per-session cap back where that matters, and `session.ttl` to bound how long raw prompts sit in memory.
-
-    Leaving `max_events` unset is deliberate rather than an oversight — see `SessionConfig.Limits`, which reasons that a trimmed store is lossy on exactly the sessions worth reading, and that FIFO eviction takes the *beginning* of a session. What that used to cost was readability: a response caps at 2000 events, so anything a long session held before that window was unreachable through any request, retained for no reader. `?before=<seq>` closes that gap by paging backward instead of by capping retention, so depth now costs memory and *is* readable.
-
-    Retention is much cheaper than the event count suggests, and it is worth knowing why before reading a memory figure. An LLM request carries the whole conversation, so every turn re-sends every earlier message; the store keeps one event per request. Stored naively that is quadratic in turns, and it showed: a laptop proxy reached 3.37GB resident in 18 hours, against ~833MB for every Claude Code transcript on the same disk — the same conversations, appended once each. The store now keeps **one copy of each distinct message per session** and has every event reference it (`core/session/intern.go`), measured at 10.4x less heap on a 300-turn session.
-
-    That sharing works by rolling one table per **conversation** forward (model + first message, split from a sibling by the second — #1541: a session running subagents carries several conversations taking turns, and a single table threw the previous one away on every switch, 60.5x the distinct content on a two-conversation fixture), which means **an event with nothing to intern must not clear it** — and until it was fixed, one did. A session's events are not all turns: every bridged HTTPS request records a CONNECT tunnel-open, and it lands *between* an inference request and its response (165 of 500 events on a live session). Each one used to roll an empty table forward, so the next turn matched nothing and kept its own copy of the whole conversation. On the benchmark fixture that is 31.33MB/session against 2.79MB — **11.2x, and it applied to every interned field**, so the tool-schema work below would largely not have shown up in production without it. When measuring anything about interning, use a fixture that interleaves contentless events; a clean run of turns is not what live traffic looks like. Strings are immutable, so nothing observable changes. The message-*header* arrays are shared too since #1541: each conversation state holds one growing backing array (appended the way a transcript is), and every event's slice points into it, so the 15.4M per-event headers a 30-day archive accumulated (738MB) cost one array per conversation instead of one per event — a request's response-phase event, which repeats the request's conversation verbatim, carries the very same backing array. What remains per-event is the event struct itself, so a very long single session still grows, but now only linearly in its own distinct content. Roles intern below the length threshold (`internID`): 15M "user"/"assistant" strings were ~an archive's worth of pure duplication. The tool manifest interns too — descriptions *and* schemas — and duplicates harder than the conversation does (154x on a live session against 6.5x, because a client re-sends its whole manifest on every request). Tool results intern the same way — the result *content* by the length threshold, and the per-result `ToolUseID` **below** it (`internID`), because an id is ~20 bytes yet repeats exactly as hard as the content does; what stays per-event is the slice of result structs itself, which no string sharing can remove.
-
-    The schemas were the last big duplicate and needed a type change to reach. `InferenceTool.Parameters` was `map[string]any`, which cost **4.1x its JSON text** to hold and could not be interned without a recursive walk that rewrites map values — a walk cannot lean on string immutability the way sharing a string can. Measured on a live session: 84KB per event, ~172MB across one 2050-event session. So the field became `pipeline.RawJSON`, a named string type that keeps the schema exactly as the client sent it, and it interns like any other string. Two consequences worth knowing: the API now shows schemas in the client's own key order (a map round-trip silently sorted them), and the type must stay a NAMED string with a `MarshalJSON` method — OPA's `ast.InterfaceToValue` treats a plain or aliased string as a JSON string, which would leave every policy indexing `input.inference.tools[_].parameters` undefined with no error (`core/plugins/opa/tool_parameters_rego_test.go` guards it). MCP `Params`/`Result` still do not intern, being `map[string]any`; they are unmeasured on this workload and the same field-type change is available if that changes.
-
-    **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. agentop requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap**: the stats server serves `/debug/pprof/*` only where `listener.bind_loopback_only` is set (the profiles expose stack traces and argv and let a caller start CPU/trace profiling), so on a cluster deployment an RSS-per-event figure mixes retention with read-path churn and nothing on the box can settle either one. **`memory.limit_mb` (default 2048 on a local install, #1541) is the soft cap on exactly that gap**: `debug.SetMemoryLimit`, applied once at boot and refused on reload. Soft by the runtime's contract — near it the GC trades CPU for memory, and a live heap that genuinely exceeds it still grows rather than failing anything; the failure mode of too low a limit is slowness, never a crash. It counts Go-managed memory only, so the CPEX build's cgo allocations sit outside it.
-
-    **And the client is the other end of the same problem.** Measured on a laptop, `agentop` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/agentop/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while. **The stream was the client's remaining leak (#1542):** `handleStreamEvent` appended every `/v1/events` arrival to `m.events[sessionID]` for EVERY session — never interned, never released — so an idle agentop grew at the wire rate (~18 MB/min; 1.5GB after 13h). Streamed events are now retained only for the session being watched (`watchingSession`: `selectedSess` — pane-agnostic, so pane walks don't punch a gap in the live tail — or the timeline's session); everything else updates its summary and is dropped, and opening a session fetches a fresh interned snapshot. The pipeline pane's per-plugin counts are folded into `model.pluginRuns` at stream arrival for every session — watched or not — so they still describe all traffic since attach (a snapshot's history contributes nothing, and a pod switch resets them).
-
-    **The session archive is disk, not memory** (`core/session/archive`, `session.archive`, on by default for a local install bound to loopback only and off everywhere else — `config.ArchiveRunsOnLocalInstall` says why; `DELETE /v1/sessions` erases it with the store). It relieves the store of nothing: every bound above applies unchanged with it on. What it changes is what eviction *costs* — an evicted session is still listed under `?archived=true` and paged from disk, a resumed one lists its whole history, and a `max_events` trim drops nothing a reader can no longer reach — so with it on, a cap or a `ttl` stops being a trade against history. It records through the same `Recorder` hook as the cost pipeline, off the request path: a burst the writer cannot keep up with is dropped from the archive and counted, never from memory. On disk it interns the same seven fields the store does, one zstd segment at a time, and it is bounded by `retention_days` (30) and `max_bytes` (2 GiB), not by anything here. `docs/laptop-service.md` has the user-facing version, including what the files contain. At startup `cmd/cortex` replays the archive's last six hours into the usage ring — `usage.Aggregator.Replay`, never through the store, so the ledger is not written twice — **beside live traffic, not before it**, because a replay that ran first held `/healthz` for up to its 5s budget and pushed a loaded laptop past `agentop setup`'s 15s health wait. The segment list is taken before any listener starts (a process never appends to a segment it did not open, so nothing live is read back), the replay fills a private ring from `BeginReplay`, and `FinishReplay` merges it — first applying any clear, delete or rename the live ring took meanwhile, so an erased session stays erased. Within `usageReplayBudget` (60s), or not at all.
-
-    Two layered defenses keep the inbound A2A user intent visible to IBAC even when an agent generates dozens of outbound events per turn:
-
-    - **Primary fix — `listener.skip_hosts`**: list infrastructure destinations (OTel collectors, metrics endpoints, log shippers) whose traffic should bypass the pipeline AND session recording entirely. Matched requests are forwarded as a transparent proxy: no plugin runs, no event is appended. Patterns use the same `.`-delimited glob semantics as `authproxy-routes`; ports are stripped before matching. Example:
-      ```yaml
-      listener:
-        skip_hosts:
-          - "otel-collector.*.svc.cluster.local"
-          - "*.metrics.local"
-      ```
-      Any change to `listener.skip_hosts` requires a pod restart (same rule as other `listener.*` fields). Do NOT add hosts here that need IBAC / token-exchange policy applied — bypass means bypass.
-
-    - **Egress boundary — `listener.egress_allow_hosts`** (#1483, MOCA MI1 §8.5): the forward proxy's deny-by-default destination allow list. When non-empty, an outbound destination not on the list — a CONNECT target, an absolute-form `http://` host, or the host a plugin's redirect moved a request to — is refused with 403 `destination_denied` naming the host, in the moca egress conformance contract's refusal shape (header `X-Moca-Egress-Error`, text/plain body `destination_denied: <host>\n`), before the pipeline, before DNS resolution and before any dial, so an off-list host is answered by name rather than left to time out. Entries are exact-match `host:port` — no globs, and the shapes that would widen the boundary (portless, wildcard) are startup errors, as is an unbracketed IPv6 literal, which would *empty* it (`2001:db8::1` reads its last colon as the port separator and can never match — write `[2001:db8::1]:443`); a destination naming no port is judged at its scheme's (80 http, 443 otherwise). A destination off the wire is never trusted to parse: a malformed authority is denied by name, never a panic. When the config field is empty, the binary falls back to the `MOCA_EGRESS_ALLOW` env var (comma-separated `host:port`) — the channel the MOCA conformance harness drives the target with. Both empty keeps egress exactly as it was. **The allowlist is checked BEFORE `skip_hosts`** — when on, it is the outer boundary, and a skip pattern cannot exempt an off-list host. Example:
-      ```yaml
-      listener:
-        egress_allow_hosts:
-          - "github-tool-mcp:8080"
-          - "api.anthropic.com:443"
-      ```
-      Env delivery instead: `MOCA_EGRESS_ALLOW=github-tool-mcp:8080,api.anthropic.com:443`. Any change requires a pod restart (same rule as other `listener.*` fields). Each refusal leaves a `phase: "denied"` session row carrying an `egress-allowlist` invocation naming the host. **Scope: the forward proxy only** — "outer boundary" is outer with respect to `skip_hosts`, not with respect to every exit from the pod. **Egress that iptables REDIRECTs to `listener.transparent_proxy_addr` (proxy-sidecar enforce-redirect mode) is not filtered by it** — that listener runs the shared pipeline but dials its recovered destination without consulting the list — and the extproc listener (envoy-sidecar) has no wiring at all: only `cmd/cortex` builds a matcher, onto the forward proxy server. Note the contrast with `skip_hosts`, which the transparent listener also does not consult: there the omission hardens the boundary (a skip cannot self-exempt), here it leaves a way around this one. That matches the issue's scope (MOCA shape A is the proxy-sidecar forward proxy, CONNECT plus absolute-form), but a deployment that also captures traffic by iptables REDIRECT, or runs envoy-sidecar, must hold its egress somewhere else too: deny-by-default here is not deny-by-default for the pod. The sibling `listener.egress_guard` (#1539) is a different boundary and composes — this list judges the **name** before DNS, the guard judges the **address** it resolved to at the dial, so an allow-list entry is not a permit for the guard.
-
-    - **Backstop — intent pin in the eviction policy**: this one only applies when `session.max_events` is set, because with no cap there is no FIFO eviction to survive. Where it is set, and even with `skip_hosts` empty, the session store pins the most-recent inbound A2A request event against that eviction. If the buffer overflows, every other event evicts in normal chronological order; the protected intent stays at its original timestamp, leaving a visible time gap in the timeline. Older intents from earlier turns are NOT pinned — only the latest one — so a multi-turn conversation with huge fan-out can't pile up stale intents and starve the buffer. The pin protects against FIFO eviction only: IBAC's `LastIntent()` survives buffer overflow as long as the session is still alive and an inbound A2A request has landed in it, but can still return nil after explicit deletion, eviction once `max_sessions` is exceeded, a configured `session.ttl` elapsing, or before the first inbound request arrives. The pin is defense-in-depth; reach for `skip_hosts` first when the offending traffic is identifiable infrastructure.
+    - **Backstop — intent pin**, only when `session.max_events` is set: the store pins the most recent inbound A2A request against FIFO eviction. Only the latest intent is pinned, so stale intents cannot starve the buffer. IBAC's `LastIntent()` can still return nil after deletion, `max_sessions` eviction, a `ttl` expiry, or before the first inbound request. Reach for `skip_hosts` first when the noisy traffic is identifiable infrastructure.
 
 ## DCO Sign-Off (Mandatory)
 
@@ -1419,13 +737,9 @@ Never add `Co-authored-by`, `Made-with`, or similar trailers that GitHub parses 
 
 ### PR Bodies
 
-PR descriptions should end with the same `Assisted-By` trailer:
+PR descriptions end with the same `Assisted-By` trailer. Do not use `🤖 Generated with [Claude Code](https://claude.com/claude-code)` or similar.
 
-    Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
-
-Do not use `🤖 Generated with [Claude Code](https://claude.com/claude-code)` or similar.
-
-A `commit-msg` hook in `scripts/hooks/commit-msg` enforces this automatically for commits.
+A `commit-msg` hook in `scripts/hooks/commit-msg` rewrites a `Co-authored-by:` trailer that names Claude, Cursor or Anthropic into `Assisted-By`, and removes `Made-with:` lines. It never fails a commit, and it does nothing for PR bodies.
 Install it via pre-commit:
 
 ```sh

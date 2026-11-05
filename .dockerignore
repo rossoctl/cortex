@@ -10,6 +10,7 @@
 # slash to stay anchored.
 .git
 .worktrees
+.claude/worktrees
 .superpowers
 bin
 dist

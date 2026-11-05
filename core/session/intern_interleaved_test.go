@@ -77,7 +77,7 @@ func TestIntern_InterleavedConversationsShare(t *testing.T) {
 	}
 }
 
-// TestIntern_TunnelOpensDoNotBreakSharing: gotcha 14's rule for any interning
+// TestIntern_TunnelOpensDoNotBreakSharing: the session store gotcha's rule (CLAUDE.md) for any interning
 // fixture — contentless events interleave with turns on live traffic (a CONNECT
 // tunnel-open lands between every inference request and its response), so the
 // interleaved case above is only honest with them present. Each turn here is
@@ -247,7 +247,7 @@ func TestIntern_TruncatedHistorySharesThePrefix(t *testing.T) {
 
 // BenchmarkRetainedHeapInterleaved is the #1551 companion benchmark: the same
 // shape as BenchmarkRetainedHeap, with two conversations taking turns and a
-// tunnel-open between every pair — gotcha 14's rule that a clean run of turns is
+// tunnel-open between every pair — the session store gotcha's rule that a clean run of turns is
 // not what live traffic looks like. Before #1541 this retained ~60x the distinct
 // content against the single-conversation case's ~2x.
 func BenchmarkRetainedHeapInterleaved(b *testing.B) {
