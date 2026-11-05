@@ -82,7 +82,8 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 
 Three renames have happened and two of them finished. **Kagenti → Rossoctl is
 complete** — apart from this rule, every remaining `kagenti` string is inside
-`docs/superpowers/`, a frozen archive. Treat a new one as a mistake.
+`docs/superpowers/`, a frozen archive, or names v0.4's
+`kagenti-extensions_<ver>_checksums.txt` (install-stats). Treat a new one as a mistake.
 
 **abctl → agentop is complete too**, and was a clean break: no alias, no reading of
 the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
@@ -119,9 +120,9 @@ Because image and container names share the binaries' old spelling, `authbridge-
 or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
 **container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
 where the pre-rename binary is stopped or deleted (setup's cleanup and service steps,
-`install.sh --stop`), in the tests asserting it is no longer recognised as ours, and in
-the release notes; the
-other three old names only in this rule and the spec.
+`install.sh --stop`), where a v0.7.0 install is adopted or its port holder recognised
+(`setup_probe.go`, `cmd/cortex/portconflict.go`, agentop's container picker), and in
+the release notes; the other three old names only in this rule and the spec.
 
 **The rule for prose and comments:** say **Cortex** when the sentence is about the
 product — what it is, what it does, what a demo demonstrates — or names one of its
@@ -149,7 +150,7 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 
 ```
 cortex/
-├── core/                             # The runtime library (Go module). Auth is 1.6% of it;
+├── core/                             # The runtime library (Go module). Auth is ~1% of it;
 │   │                                 # see core/README.md for the measured breakdown.
 │   ├── pipeline/                     #   Plugin interface + lifecycle
 │   ├── plugins/                      #   Every plugin; each owns its own config
@@ -159,8 +160,7 @@ cortex/
 │   │   └── tokenexchange/            #     RFC 8693 exchange client + token cache
 │   ├── listener/                     #   All listener implementations (extproc, proxies)
 │   ├── config/                       #   Mode presets, YAML config, validation
-│   ├── cost/                         #   21% of the module: pricing, settle, ledger,
-│   │                                 #   event, usage
+│   ├── cost/                         #   pricing, settle, ledger, event, usage
 │   ├── session/  sessionapi/         #   Session store + the :9094 API
 │   ├── observe/  redact/             #   The :9093 server; sensitive-value stripping
 │   ├── auth/  bypass/                #   HandleInbound/Outbound; path matcher
@@ -182,7 +182,8 @@ cortex/
 │   ├── Dockerfile                    #   proxy-sidecar image (the `authbridge` image)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-envoy/                 # envoy-sidecar mode. Full plugin set.
+├── cmd/cortex-envoy/                 # envoy-sidecar mode. `envoy` profile: full minus
+│   │                                 #   inference-router and script
 │   ├── main.go
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
@@ -201,7 +202,8 @@ cortex/
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
 │
 ├── cmd/agentop/                      # Terminal UI over the session API (:9094).
-│   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
+│   ├── tui/                          #   Panes: sessions, agents, events, timeline,
+│   │                                 #   pipeline, catalog, usage
 │   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
 │   │   cluster/, toolscan/           #   port-forward, tool manifest scanning
 │   └── README.md                     #   Full flags + keybindings
@@ -241,7 +243,7 @@ cortex/
 │   ├── sparc-service/                #   Python SPARC reflection service (own image)
 │   └── lineage-attach/               #   OTel shim + scripts for lineage propagation
 │
-├── demos/                            # 10 scenarios — see demos/README.md for the order
+├── demos/                            # see demos/README.md for the order
 │   ├── weather-agent/                #   Getting started (+ advanced, + agentop walkthrough)
 │   ├── github-issue/                 #   Token exchange + scope-based access (largest)
 │   ├── token-exchange-routes/        #   Routes config reference
@@ -249,14 +251,15 @@ cortex/
 │   │   finance-sparc/                #   (echo, ibac and finance-sparc are
 │   ├── echo/, lineage/               #    self-contained Go modules)
 │   ├── session-budget/               #   Redis-backed budget tracking
-│   └── context-guru/                 #   Opt-in context-guru plugin
+│   ├── context-guru/                 #   Opt-in context-guru plugin
+│   └── coding-agent-cpex/            #   CPEX policy on a coding agent
 │
 ├── tests/                            # Python tests
 ├── go.work                           # Workspace linking 8 of the 11 Go modules
 ├── .github/
 │   ├── workflows/                    # CI/CD (ci.yaml, build.yaml, release-binaries.yaml,
 │   │                                 # security-scans, scorecard, spellcheck)
-│   └── ISSUE_TEMPLATE/               # Bug report, feature request, epic templates
+│   └── ISSUE_TEMPLATE/               # laptop-feedback form + config
 ├── .pre-commit-config.yaml           # Pre-commit hooks (whitespace, yaml/json, ruff; no Go hooks)
 └── CLAUDE.md                         # This file — the only one in the repo
 ```
@@ -277,7 +280,7 @@ See the binary-by-binary table below (image, mode, listeners, plugins) for
 the full enumeration — kept as the single list rather than repeated here.
 
 **Common:**
-- `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~53k non-test lines, of which auth is 1.6%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
+- `core/` — the runtime library: the plugin framework and registry, every listener (Envoy ext_proc plus the HTTP proxies), the cost pipeline, the session store, and the auth primitives. ~84k non-test lines, of which auth is ~1%. **Not protocol-free** — it depends on `google.golang.org/grpc` and `envoyproxy/go-control-plane`. See [`core/README.md`](core/README.md).
 - `deploy/proxy-init/init-iptables.sh` — traffic interception setup (Istio ambient mesh compatible). Used by envoy-sidecar mode (`redirect`) and by proxy-sidecar mode's `enforce-redirect` egress guard.
 - `deploy/proxy-init/Dockerfile.init` — proxy-init container image.
 
@@ -332,7 +335,7 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` and `authbridge-cpe
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
 | `cmd/cortex/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
-| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | `envoy` profile: full minus inference-router and script |
 | `authbridge-cpex` _(image: proxy + cgo + `cpex` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar plugins + `cpex` (cgo) |
 | `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
@@ -383,7 +386,7 @@ thing locally to `bin/cortex-cpex/cortex`.
 **Go modules** (11 in total; `go.work` links 8 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 11: it discovers them with `find`, not from `go.work`):
-- `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
+- `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, ~58% of it); `cost/{pricing,settle,ledger,event,usage}` (~17%); `session`, `sessionapi`, `observe`, `redact` (~14%); `auth`, `bypass`, `capabilities` (~1%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `cmd/cortex{,-envoy,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` and `authbridge-cpex` images are `cortex` built with the `lite` and `cpex` profiles; `cmd/cortex-cpex/` holds only the latter's Dockerfile and FFI pins.)
 - `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
@@ -397,11 +400,11 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 
 The mode-specific authbridge binaries handle both traffic directions. Auth logic
 and all listener implementations live in `core/` (under `core/listener/`);
-each binary's `main.go` just imports the listeners it needs and the plugins it
-wants to register.
+each binary's `main.go` imports the listeners it needs and blank-imports
+`core/plugins/all`; build tags pick the plugins.
 
 **Inbound path** (`x-authbridge-direction: inbound`):
-- Validates JWT signature via JWKS (auto-refreshing cache from `TOKEN_URL`-derived JWKS endpoint)
+- Validates JWT signature via JWKS (auto-refreshing cache; `jwks_url` derivation is below)
 - Validates issuer claim against `ISSUER` env var
 - Validates audience against `CLIENT_ID` (from `/shared/client-id.txt` or env var)
 - Returns 401 with JSON error body for invalid/missing tokens
@@ -410,23 +413,23 @@ wants to register.
 **Outbound path** (no direction header):
 - Default policy is **passthrough** -- outbound requests pass through unchanged unless a route matches
 - Uses a **route resolver** to match the request's `Host` header against patterns in `authproxy-routes` ConfigMap
-- If a route matches: reads `target_audience` and `token_scopes` from the route, obtains a token via `client_credentials` grant, and injects it as `Authorization: Bearer <token>`
+- If a route matches: reads `target_audience` and `token_scopes` from the route, exchanges the incoming token for one with that audience (RFC 8693), and injects it as `Authorization: Bearer <token>`. A request with no token gets a `client_credentials` token only when the plugin's no-token policy says so
 - If no route matches: applies the default outbound policy (`passthrough` or `exchange`)
 - Returns 503 if exchange fails for a routed host (prevents unauthenticated calls)
-- The `DEFAULT_OUTBOUND_POLICY` env var controls the fallback behavior (default: `passthrough`)
+- The plugin's `default_policy` controls the fallback (default: `passthrough`)
 
 **Route resolver (outbound):**
-- Reads `/etc/authproxy/routes.yaml` (default path; override with `ROUTES_CONFIG_PATH` env var in standalone deployments)
+- Reads `/etc/authproxy/routes.yaml` by default; the plugin's `routes.file` sets the path
 - Each route entry has: `host` (glob pattern), `target_audience`, `token_scopes`
-- Host matching uses `filepath.Match` semantics (supports `*`, `?`, `[...]` patterns)
+- Host matching uses `gobwas/glob` with `.` as the separator (`core/internal/hostglob`): `*` matches one DNS label, `**` crosses labels
 - Most commonly, `host` is a plain Kubernetes service name (e.g., `github-tool-mcp`) because the HTTP client sets the Host header from the URL hostname
-- Routes file is loaded once at startup; restart the pod to pick up changes
+- The routes file is read when `token-exchange` is configured — at startup and on a config hot-reload; nothing watches the routes file itself
 
 **Configuration loading:** (config format is covered above, in the binaries section.)
-- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
+- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML's other top-level blocks are `mode`, `listener`, `session`, `stats`, `mtls`, `spiffe`, `tls_bridge`, `memory`, `pricing` and `cost_ledger`. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
-- `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
-- `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
+- `jwt-validation` derives `jwks_url` when omitted: from `keycloak_url` + `keycloak_realm` if both are set, else from `issuer` (appends `/protocol/openid-connect/certs`).
+- `token-exchange` derives `token_url` when omitted from `provider` + `provider_url` + `provider_realm`. `keycloak_url` / `keycloak_realm` are deprecated aliases and log a warning.
 - Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime-config`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any image, and the `SPIRE_ENABLED` env var no longer gates anything. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
 - Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
 - Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-runtime-config`).
@@ -622,7 +625,7 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files — a session only the archive holds too. **The same four guards as `DELETE /v1/sessions`** (pinned again in `core/sessionapi/delete_test.go`) and the same answer, each count 0 or 1; **404** when neither half held the id, **500** with `archiveError` when the disk half failed (memory is erased regardless). The cost ledger, usage totals and inference-router pins are kept. An agent still using the session brings it back with its next request. agentop's `x` drives it, one request per session for an agent-wide erase. |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. `onError` is the plugin's `on_error`, sent only when it is not the default — in practice only `observe`, since an `on_error: off` plugin is not built and so is not listed. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped — header writes still apply — so in those respects its `config` says what it would do, not what it does. agentop renders this as the Pipeline pane. |
-| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
+| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`C` key). 404s when the binary's session API was constructed without `WithCatalog`. |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation, the aggregate behind `agentop cost` — parameters and semantics in [`docs/pricing.md`](docs/pricing.md#reading-usage-over-http). |
 | `GET /healthz` | text | Liveness probe. |
 
@@ -843,7 +846,7 @@ The authbridge binary watches its config file (`/etc/authbridge/config.yaml`) vi
 
 **What reloads:** any plugin list change (add/remove/reorder) and any plugin `config:` subtree edit.
 
-**What doesn't reload (pod restart required):** `mode`, any `listener.*` address, the top-level `mtls` block, and the session store parameters (`session.ttl`, `session.max_events`, `session.max_sessions`, and the `session.archive` block).
+**What doesn't reload (pod restart required):** `mode` and every field of `listener`, `session`, `cost_ledger`, `mtls`, `tls_bridge`, `spiffe` and `memory` (`validateReloadable` in `core/reloader/reloader.go`).
 
 **Bad YAML stays safe:** if Load/Validate/Build/Start fails, the active pipeline keeps serving and the error is exposed on `/reload/status` with `reloads_failed` incremented. The pod never goes unhealthy from a bad edit.
 
@@ -864,7 +867,7 @@ The sidecar and the operator communicate through files on shared volumes:
 
 | Path | Writer | Reader | Content |
 |------|--------|--------|---------|
-| `/opt/jwt_svid.token` | spiffe.Provider mirror | authbridge (token-exchange) + external readers | JWT SVID, audience from `spiffe.jwt_audience`. Written **only** when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`) — an X.509-only workload never produces it |
+| `/opt/jwt_svid.token` | spiffe.Provider mirror | authbridge (token-exchange) + external readers | JWT SVID, audience from the plugin's `identity.jwt_audience`. Written **only** when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`) — an X.509-only workload never produces it |
 | `/opt/svid.pem` | spiffe.Provider mirror | external readers (debugging, future Envoy SDS) | X.509 SVID leaf cert (PEM) |
 | `/opt/svid_key.pem` | spiffe.Provider mirror | external readers | X.509 SVID private key (PEM) |
 | `/opt/svid_bundle.pem` | spiffe.Provider mirror | external readers | SPIRE trust bundle (PEM, may concatenate multiple CAs) |
@@ -892,8 +895,7 @@ instead — see the **envoy-sidecar mTLS** subsection below.
 # authbridge-runtime-config ConfigMap (top-level)
 mtls:
   mode: strict          # permissive | strict (omit block entirely for off)
-  # cert_file / key_file / bundle_file optional —
-  # default to /opt/svid.pem, /opt/svid_key.pem, /opt/svid_bundle.pem
+  # mode is the only field. The SVID comes from the spiffe Provider.
 ```
 
 | Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
@@ -908,7 +910,7 @@ verification is always a hard error.
 **Trust model:** any peer with a valid cert from the SPIRE trust bundle
 can talk to this authbridge. Per-caller policy / SPIFFE allowlists are
 out of scope; the trust bundle IS the policy. Plugins that want
-per-caller decisions read `pctx.PeerCert` and check the URI SAN.
+per-caller decisions read `pctx.PeerCertificate()` and check the URI SAN.
 
 **Hot-reload boundary:** mTLS config requires a pod restart to apply,
 matching the existing rule for `listener.*` addresses. A reload that adds the
@@ -979,11 +981,15 @@ retired as superseded. Nothing in-tree exercises the Envoy filter chains. Re-ver
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core (plus `core/peerproc`'s tests on a macOS runner), both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 11 modules; the cgo `cpex` builds of `cmd/cortex` (`go-ci-cpex`); Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
-| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`/build/test for all 11 modules (core, redis, both `scripts/*`, the `cmd/*` matrix, the three demos); a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 11 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
-| `spellcheck_action.yml` | PR | Spellcheck on markdown files |
+| `release-binaries.yaml` | Tag push (`v*`) | Release tarballs — see [Release binaries](#release-binaries) |
+| `pr-verifier.yml` | PR | PR title check (below) |
+| `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
+
+Also: `release-smoke-linux.yaml`, `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
 
 ### PR Title Convention
 
@@ -1006,7 +1012,8 @@ prefixes (`feat:`, `fix:`) pass.
 The prefix also files the PR in the release notes, which
 `scripts/release_notes.sh` builds from the PRs merged since the previous
 release: `Feat`/`Feature` under New features, `Fix`/`Bug fix`/`Perf` under Bug
-fixes, `Breaking change` (or `!` before the colon) under Breaking changes, and
+fixes, `Breaking change` (or `!` before the colon) under Breaking changes,
+`(deps)` titles and dependabot PRs under a folded Dependency updates, and
 everything else under a collapsed Other changes.
 
 ## Container Images
@@ -1017,7 +1024,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | Image | Source | Description |
 |-------|--------|-------------|
 | **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
-| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
+| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, `envoy` profile) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
 | `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build of `cmd/cortex` with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it selects the FFI-backed cpex manager and gates `core/plugins/all/plugins_cpex.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1), fetched and verified by `scripts/fetch-cpex-ffi.sh`. Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The pins are in `cmd/cortex-cpex/`: `CPEX_FFI_VERSION` is the release tag, `CPEX_FFI_ABI` the FFI ABI integer, `CPEX_FFI_SHA256` the per-target tarball digests |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
@@ -1029,9 +1036,7 @@ longer gates anything. SPIRE credentials are fetched in-process by
 
 The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
 `spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
-been removed from CI (the auth-proxy / demo-app source is still in-tree
-for the standalone quickstart). Older release tags continue to publish
-the old images.
+been removed from CI. Their source is gone too.
 
 ## Pre-commit Hooks
 
@@ -1048,19 +1053,12 @@ Hooks:
 **There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
 `ci.yaml` both run, but only one of them can fail:
 
-- `go vet ./...` **is** a gate, on 7 of the 11 modules: `core`, both
-  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
-  matrix (`cmd/cortex`'s cpex builds and `core/plugins/cpex` are vetted with
-  `-tags cpex` separately, in `go-ci-cpex`, which links the pinned
-  `libcpex_ffi.a`). Not vetted anywhere:
-  `core/storage/redis` and the three `demos/*` modules.
+- `go vet ./...` **is** a gate, on all 11 modules (`cmd/cortex`'s cpex builds
+  and `core/plugins/cpex` are vetted with `-tags cpex` separately, in
+  `go-ci-cpex`, which links the pinned `libcpex_ffi.a`).
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
-  checkout and exits 0, so formatting drift cannot fail a build.
-
-Formatting drift therefore reaches main — a few files are gofmt-dirty there
-today, including three under `core`, where `go fmt` demonstrably runs on
-every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
-touched one of the four unvetted modules.
+  checkout and exits 0, so formatting drift cannot fail a build. Run
+  `gofmt -l .` yourself before pushing.
 
 ## Languages and Tech Stack
 
@@ -1096,7 +1094,7 @@ them into agent namespaces that don't already have them:
 | Resource | Kind | Used by | Keys |
 |----------|------|---------|------|
 | `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
-| `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
+| `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `memory` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
 | `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (format below) |
 | `spiffe-helper-config` | ConfigMap (legacy, unused) | (none) | Previously held `helper.conf` for the bundled `spiffe-helper` binary. Retained only for compatibility with older deployments; authbridge drives SPIRE configuration via the top-level `spiffe:` block in `authbridge-runtime-config` and does not read this ConfigMap. |
@@ -1117,11 +1115,11 @@ routes:
 
 ## Keycloak Setup Scripts
 
-There are **two** setup scripts for different demo scenarios:
+The two main demo setup scripts (`demos/echo/` and `demos/finance-sparc/` have their own):
 
 | Script | Location | Use Case |
 |--------|----------|----------|
-| `setup_keycloak_weather_advanced.py` | `demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Drives the CI verify script `deploy_and_verify_advanced.sh`. |
+| `setup_keycloak_weather_advanced.py` | `demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Used by `deploy_and_verify_advanced.sh` (run by hand; no workflow runs it). |
 | `setup_keycloak.py` | `demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
 
 **Common Keycloak defaults across all scripts:**
@@ -1129,7 +1127,7 @@ There are **two** setup scripts for different demo scenarios:
 - Realm: `rossoctl`
 - Admin: `admin` / `admin`
 
-**Note:** All scripts share the same helper function patterns (`get_or_create_realm`, `get_or_create_client`, `get_or_create_client_scope`, etc.) and are idempotent.
+**Note:** the two scripts above share the same helper function patterns (`get_or_create_realm`, `get_or_create_client`, `get_or_create_client_scope`, etc.) and are idempotent.
 
 ## Common Development Tasks
 
@@ -1145,8 +1143,8 @@ the repo root:
 ROSSOCTL_DIR=../rossoctl ./scripts/dev/local-build-and-test.sh
 ```
 
-To build a single image directly. All Docker build contexts are the repo root now,
-so run these from the top of the checkout:
+To build a single image directly. The Go images build from the repo root;
+proxy-init and sparc-service build from their own `deploy/` directory:
 
 ```bash
 # proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
@@ -1156,12 +1154,15 @@ make load-image                     # Uses KIND_CLUSTER_NAME env var (default: r
 cd ../..
 
 # Sidecar images. Pick whichever you need; the operator selects the image per
-# workload from the resolved AuthBridge mode.
-podman build -f cmd/cortex/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
-podman build -f cmd/cortex-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
-# authbridge-lite: same proxy Dockerfile, built with the `lite` profile
-# from scripts/profile-tags. Plugins are all opt-in, so
-# GO_BUILD_TAGS is required — omitting it registers no plugins.
+# workload from the resolved AuthBridge mode. Plugins are all opt-in, so each sidecar
+# Dockerfile refuses to build without GO_BUILD_TAGS naming a profile.
+podman build -f cmd/cortex/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
+  -t authbridge:latest .                                              # proxy-sidecar (default)
+podman build -f cmd/cortex-envoy/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
+  -t authbridge-envoy:latest .                                        # envoy-sidecar
+# authbridge-lite: same proxy Dockerfile, built with the `lite` profile.
 podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t authbridge-lite:latest .
@@ -1195,7 +1196,8 @@ For an interactive walkthrough see
 
 1. Add entry to `.github/workflows/build.yaml` matrix (`image_config` array)
 2. Provide `name`, `context`, and `dockerfile` fields
-3. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
+3. For a Go image, add a case to the "Resolve build args" step that sets `GO_BUILD_TAGS` from a profile; without it the Dockerfile fails
+4. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
 
 ## Common Tasks for Code Changes
 
@@ -1246,9 +1248,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 - Run `go vet ./...` and `gofmt -l .` yourself before pushing, from each module you
   touched. **Always give `gofmt` a path** — a bare `gofmt -l` reads stdin, scans
   nothing and exits 0.
-- **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
-  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
-  the 11 modules — see the Pre-commit Hooks section for which four are uncovered.
+- **Only `go vet` is enforced**, by `ci.yaml`, on all 11 modules. pre-commit has no Go
+  hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and exits 0.
   See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `core` one
   does, so each module resolves its own `replace` directives instead of pulling in
@@ -1287,7 +1288,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 ## Important Cross-Component Relationships
 
-1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge` container also runs as UID 1337.
+1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge-envoy` image runs as UID 1337. The `authbridge` (proxy-sidecar) image runs as UID 1001.
 
 2. **Shared Volume Contract:** the sidecar and the operator communicate through
    files under `/opt/` and `/shared/` — see the
@@ -1300,7 +1301,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 1. **Multiple Go modules:** The repo has 11 Go modules — `core/` and each `cmd/*/` but `cmd/cortex-cpex/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first eight; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
-2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file` / `jwt_svid_path`) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
+2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
 
 3. **ISSUER vs TOKEN_URL**: `ISSUER` must be the Keycloak **frontend URL** (what appears in the `iss` claim of tokens), while `TOKEN_URL` is the **internal service URL**. These are often different in Kubernetes (e.g., `http://keycloak.localtest.me:8080` vs `http://keycloak-service.keycloak.svc:8080`).
 
@@ -1425,7 +1426,7 @@ PR descriptions should end with the same `Assisted-By` trailer:
 
 Do not use `🤖 Generated with [Claude Code](https://claude.com/claude-code)` or similar.
 
-A `commit-msg` hook in `scripts/hooks/commit-msg` enforces this automatically for commits.
+A `commit-msg` hook in `scripts/hooks/commit-msg` rewrites a `Co-authored-by:` trailer that names Claude, Cursor or Anthropic into `Assisted-By`, and removes `Made-with:` lines. It never fails a commit, and it does nothing for PR bodies.
 Install it via pre-commit:
 
 ```sh

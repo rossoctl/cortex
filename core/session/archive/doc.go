@@ -10,7 +10,7 @@
 //
 // ON DISK: one directory per session id, holding append-only segments. A segment is one zstd
 // stream of JSON lines; each line is either a string record or an event record, and an
-// event's large strings — exactly the five fields the interner shares — are written as
+// event's large strings — exactly the seven fields the interner shares — are written as
 // references to string records earlier in the same segment. See format.go for the records,
 // segment.go and reader.go for the stream, and retention.go for what gets deleted.
 //
