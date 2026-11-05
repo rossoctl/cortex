@@ -139,8 +139,8 @@ type Reloader struct {
 	// cancelLoop and loopDone stop and await the watch goroutine; set by Start.
 	cancelLoop context.CancelFunc
 	loopDone   chan struct{}
-	// Close sets closeCtx, then closes closing to stop every old pipeline still
-	// draining; drains counts their goroutines.
+	// Close sets closeCtx, then closes closing, to stop every old pipeline still
+	// draining on closeCtx; drains counts their goroutines.
 	closing  chan struct{}
 	closeCtx context.Context
 	drains   sync.WaitGroup
@@ -420,7 +420,7 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	}
 	if err := newOut.Start(startCtx); err != nil {
 		// Inbound started cleanly; unwind it before bailing.
-		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		unwindCtx, unwindCancel := r.stopCtx()
 		defer unwindCancel()
 		newIn.Stop(unwindCtx)
 		r.recordFailure(attempt, fmt.Errorf("outbound Start: %w", err))
@@ -488,34 +488,46 @@ func (r *Reloader) stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int6
 	case <-timer.C:
 		n = p.Held()
 	case <-r.closing:
-		p.Stop(r.closeCtx)
-		return p.Held()
+		n = p.Held()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := r.stopCtx()
 	defer cancel()
 	p.Stop(ctx)
 	return n
 }
 
-// Close stops reloading, then Stops the live pipelines and every old one still
-// draining, bounded by ctx. Call it once, after the listeners have stopped.
-func (r *Reloader) Close(ctx context.Context) {
-	if r.cancelLoop != nil {
-		r.cancelLoop()
-		<-r.loopDone
+// stopCtx is the budget for a Stop: Close's ctx once Close has begun, else 15s.
+func (r *Reloader) stopCtx() (context.Context, context.CancelFunc) {
+	select {
+	case <-r.closing:
+		return r.closeCtx, func() {}
+	default:
+		return context.WithTimeout(context.Background(), 15*time.Second)
 	}
+}
+
+// Close stops reloading, then Stops the live pipelines and every old one still
+// draining. It returns when they are stopped or ctx is done, whichever is first;
+// a plugin still shutting down then finishes in the background. Call it once,
+// after the listeners have stopped.
+func (r *Reloader) Close(ctx context.Context) {
 	r.closeCtx = ctx
 	close(r.closing)
-	r.outbound.Load().Stop(ctx)
-	r.inbound.Load().Stop(ctx)
-	// Not past ctx: an old pipeline the window already stopped is on its own budget.
-	drained := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
+		// The watch loop first, so a reload in flight has committed or given up
+		// before the live pipelines are read.
+		if r.cancelLoop != nil {
+			r.cancelLoop()
+			<-r.loopDone
+		}
+		r.outbound.Load().Stop(ctx)
+		r.inbound.Load().Stop(ctx)
 		r.drains.Wait()
-		close(drained)
 	}()
 	select {
-	case <-drained:
+	case <-done:
 	case <-ctx.Done():
 	}
 }

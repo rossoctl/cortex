@@ -971,11 +971,13 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
-// shutdownPlugin records how many requests held its pipeline when it was stopped,
-// and with block set, stays in Shutdown until block is closed.
+// shutdownPlugin records how many requests held its pipeline when it was stopped
+// and whether its ctx was already done, and with block set, stays in Shutdown
+// until block is closed.
 type shutdownPlugin struct {
 	p       *pipeline.Pipeline
 	held    int64
+	ctxErr  error
 	stopped chan struct{}
 	block   chan struct{}
 }
@@ -990,8 +992,8 @@ func (*shutdownPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Ac
 func (*shutdownPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
-func (s *shutdownPlugin) Shutdown(context.Context) error {
-	s.held = s.p.Held()
+func (s *shutdownPlugin) Shutdown(ctx context.Context) error {
+	s.held, s.ctxErr = s.p.Held(), ctx.Err()
 	close(s.stopped)
 	if s.block != nil {
 		<-s.block
@@ -1129,23 +1131,33 @@ func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
 	}
 }
 
-// Close returns by its ctx even while an old pipeline the window stopped is still
-// shutting down on its own budget.
+// Close returns by its ctx even while a plugin it is stopping is still shutting down.
 func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
-	committed := make(chan struct{}, 1)
-	r, b, cfgPath, _, outH := setupWith(t, WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
+	r, _, _, _, outH := setup(t)
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	slow := storeShutdownPipeline(t, outH, block)
-
-	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
-	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# slow\n")
-	<-committed
-	<-slow.stopped
+	storeShutdownPipeline(t, outH, block)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r.Close(ctx)
+}
+
+// Once Close has begun, an old pipeline is stopped on Close's ctx, even when its
+// drain is what woke it.
+func TestReloader_StopsOnTheCloseContextOnceClosing(t *testing.T) {
+	r, _, _, _, _ := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
+	// Repeated because select picks among the ready drain and close cases at random.
+	for range 20 {
+		sp := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+		r.stopWhenUnheld(sp.p, time.Now().Add(time.Hour))
+		if sp.ctxErr == nil {
+			t.Fatal("stopped on a fresh budget after Close began")
+		}
+	}
 }
 
 // Without WithDrainWindow, an old pipeline waits up to 10 minutes for its requests.
