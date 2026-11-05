@@ -339,7 +339,8 @@ The prefix also decides where the PR appears in the release notes, which
 `scripts/release_notes.sh` builds from the PRs merged since the previous
 release: `Feat`/`Feature` under New features, `Fix`/`Bug fix`/`Perf` under Bug
 fixes, `Breaking change` (or a `!` before the colon) under Breaking changes,
-and everything else under a collapsed Other changes.
+`(deps)` titles and dependabot PRs under a folded Dependency updates, and
+everything else under a collapsed Other changes.
 
 ## Pull Requests
 
