@@ -468,28 +468,6 @@ every plugin that has config. Counters are per-process and reset on restart
 
 **Plugin classification.** Protocol parsers (`mcp-parser`, `a2a-parser`, `inference-parser`) populate an `IsAction bool` field on their respective extensions to classify each request as either a user-meaningful action or protocol mechanics. Default-false means "not classified as action" — guardrails treat it as bypass. Parsers explicitly set `IsAction = true` for the small set of action methods (`tools/call` / `prompts/get` / `resources/read` for MCP; `message/send` / `message/stream` for A2A; every populated case for inference). Guardrails (`ibac` today; future rate limiters, audit loggers, etc.) read the aggregated verdict via `pctx.Classification()` which returns `(anyAction, anyBypass)`. A defense-in-depth guardrail skips on `anyBypass`, passes through on `!anyAction` (no parser claimed this traffic), and judges only when `anyAction && !anyBypass`. This puts the protocol-specific bypass-vs-action vocabulary in each parser — adding a new guardrail or new protocol does not multiply work at the guardrail layer. See [`docs/plugin-reference.md` "Classifying requests"](docs/plugin-reference.md#classifying-requests-as-actions-vs-protocol-mechanics) for the contract.
 
-### init-iptables.sh
-
-Extensively documented shell script that sets up iptables for transparent traffic interception. Key features:
-
-- **Outbound**: `PROXY_OUTPUT` chain in `nat OUTPUT`, redirects to Envoy port 15123
-- **Inbound**: `PROXY_INBOUND` chain in `nat PREROUTING`, redirects to Envoy port 15124
-- **Istio ambient mesh coexistence**: Handles ztunnel fwmark (0x539), HBONE port (15008), DNAT to POD_IP for inbound interception
-- **Exclusions**: SSH (22), loopback, configurable `OUTBOUND_PORTS_EXCLUDE` and `INBOUND_PORTS_EXCLUDE`
-- **Envoy UID 1337**: Excluded from outbound redirect to prevent loops
-- **Mangle rule**: Sets fwmark on Envoy's local delivery to prevent ISTIO_OUTPUT redirect loop
-- Uses `-I 1` (insert first) for chain ordering stability with Istio CNI
-
-**Environment variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROXY_PORT` | 15123 | Envoy outbound listener |
-| `INBOUND_PROXY_PORT` | 15124 | Envoy inbound listener |
-| `PROXY_UID` | 1337 | Envoy process UID (excluded from redirect) |
-| `OUTBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
-| `INBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
-| `POD_IP` | (required) | Pod IP via Downward API; used as DNAT target for ambient mesh inbound interception |
-
 ### keycloak_sync.py
 
 Declarative Keycloak synchronization tool that maintains client scope mappings based on `routes.yaml`. Idempotent, used in multi-target demos for dynamic scope assignments.
@@ -814,13 +792,6 @@ For an interactive walkthrough see
 - JWKS cache auto-refreshes
 - Direction detection: `x-authbridge-direction: inbound` header (injected by Envoy inbound listener config)
 
-### Adding New iptables Rules
-- Edit `deploy/proxy-init/init-iptables.sh`
-- Follow the existing pattern: document the rule's purpose, Istio interaction, and chain ordering
-- Test with and without Istio ambient mesh if possible
-- Rebuild from `deploy/proxy-init/`: `make docker-build-init && make load-image`
-  (the target is `load-image`, singular — `load-images` does not exist)
-
 ### Adding New Keycloak Resources to Setup
 - Edit the appropriate `setup_keycloak*.py` script
 - Use the `get_or_create_*` helper pattern for idempotency
@@ -889,8 +860,6 @@ For an interactive walkthrough see
 
 3. **ISSUER vs TOKEN_URL**: `ISSUER` must be the Keycloak **frontend URL** (what appears in the `iss` claim of tokens), while `TOKEN_URL` is the **internal service URL**. These are often different in Kubernetes (e.g., `http://keycloak.localtest.me:8080` vs `http://keycloak-service.keycloak.svc:8080`).
 
-4. **Keycloak port exclusion**: When using iptables interception, Keycloak's port (8080) must be excluded from redirect via `OUTBOUND_PORTS_EXCLUDE=8080`. Otherwise, token exchange requests from authbridge get redirected back to Envoy, creating a loop.
-
 5. **TLS passthrough is one-way**: Outbound HTTPS traffic passes through Envoy without token exchange via the TLS passthrough filter chain. Only plaintext HTTP outbound traffic reaches authbridge. With the default outbound policy of `"passthrough"`, even plaintext HTTP traffic is forwarded unchanged unless it matches an explicit route in `authproxy-routes`.
 
 6. **Outbound passthrough is the safe default**: `DEFAULT_OUTBOUND_POLICY` defaults to `passthrough`, so token exchange only happens for hosts explicitly listed in `authproxy-routes`, where target audience and scopes are configured per-route. That is what lets outbound traffic to LLM inference endpoints (e.g., Ollama via `host.docker.internal`) work untouched. If this were set to `exchange`, every outbound HTTP call would attempt token exchange and fail for non-Keycloak destinations.
@@ -900,8 +869,6 @@ For an interactive walkthrough see
 8. **Envoy config not embedded:** The envoy-proxy sidecar mounts `envoy-config` ConfigMap at `/etc/envoy`. This ConfigMap must exist in the target namespace before workloads are created.
 
 9. **Envoy Lua filter required for inbound**: The `x-authbridge-direction: inbound` header MUST be injected via a Lua filter before the ext_proc filter in the inbound listener. Route-level `request_headers_to_add` does NOT work because the router filter runs after ext_proc.
-
-10. **iptables backend auto-detection**: `init-iptables.sh` auto-detects `iptables-legacy` vs `iptables-nft`. Override with `IPTABLES_CMD` env var if needed. Always verify with proxy-init logs after deployment.
 
 11. **Admin credentials in ConfigMap**: the rossoctl Helm chart's
     `agent-namespaces.yaml` template stores Keycloak admin credentials
