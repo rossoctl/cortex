@@ -23,9 +23,12 @@ This file provides context for Claude (AI assistant) when working with the `cort
   its skills are added to the skill list under a `.claude/worktrees/<topic>:` prefix. A worktree anywhere else in the checkout, such as an older
   `.worktrees/<topic>/`, loads its copy beside this one. A worktree outside the checkout
   does not, but a session cannot `cd` there: Claude Code resets the shell to the
-  session's start directory. The cost of `.claude/worktrees/` is that the session reads
-  the top-level checkout's copy of this file. When a branch changes `CLAUDE.md`, read the
-  worktree's copy.
+  session's start directory. The cost of `.claude/worktrees/` is that the session loads
+  the top-level checkout's copy of this file, which can be behind the worktree's. **After
+  you create the worktree, run**
+  `git diff --no-index CLAUDE.md .claude/worktrees/<topic>/CLAUDE.md` and follow the
+  worktree's lines where the two differ. It prints nothing when they are
+  the same, so it does not add a second copy of this file to the context.
 
   Then stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear

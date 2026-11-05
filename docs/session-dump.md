@@ -116,9 +116,9 @@ jq -s 'sort_by(-(.durationMs // 0)) | .[:10] | .[] | {durationMs, httpPath}' \
   cortex-dump/sessions/<id>.jsonl
 ```
 
-Events are ordered by `at`, not `seq`. `seq` restarts at 1 if a session is
-evicted and later re-created under the same id, so it is not a stable sort key
-across a session's whole life.
+Events are ordered by `at`, then `seq`. `at` alone is not unique, and `seq`
+restarts at 1 if a session is evicted and later re-created under the same id,
+so it is not a stable sort key across a session's whole life.
 
 For the per-field meaning of `inference`, `mcp`, `a2a`, `invocations` and
 `plugins`, see the event schema in [`session-api.md`](session-api.md#event-schema) and

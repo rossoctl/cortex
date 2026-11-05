@@ -273,10 +273,14 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   intent can sit far ahead of the retained tail. Unique within one incarnation
   of a session, not forever: trimming never reuses numbers, but whole-session
   eviction deletes the counter with the entry, so a session re-created under
-  the same id restarts at 1. A cursor from before that point is above every
-  event held, so the endpoint answers with the tail: the store cannot tell a
-  re-created session from a trimmed one. A paging client must order pages by
-  `at`, not by `seq`. A session archive moves that boundary out to disk:
+  the same id restarts at 1. A cursor does not identify the incarnation, and
+  the store cannot tell a re-created session from a trimmed one. A cursor from
+  before that point that is above every event held gets the tail. One that is
+  not, such as `before=10` on a re-created session with 20 events, gets events
+  below it (up to 1 to 9 here), and the client misses events 10 to 20. Within one
+  incarnation, order by `seq`. Across pages that may span a re-creation, order
+  by `at`, then `seq`: `at` is not unique. For example, a bridged tunnel's open
+  row takes the time of its first request. A session archive moves that boundary out to disk:
   numbering continues
   across restarts for as long as the archive holds the session, and a rekey
   into an id the archive already holds is refused (the session keeps its old
