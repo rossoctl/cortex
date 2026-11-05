@@ -22,7 +22,7 @@ git fetch upstream main
 ```
 
 ```bash
-git worktree add .worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
+git worktree add ../cortex-worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
 ```
 
 ## Table of Contents

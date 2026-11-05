@@ -8,20 +8,28 @@ This file provides context for Claude (AI assistant) when working with the `cort
   Several Claude Code sessions run against this repo at once. They share one object
   store, which is fine, but a shared *working tree* is not: `git checkout` in one
   session rewrites files under another, and two sessions' uncommitted edits land in one
-  index. Before starting work:
+  index. Before starting work, from the top-level checkout:
 
   ```sh
   # Fetch into a ref only you write, so nothing can move it underneath you.
   git fetch https://github.com/rossoctl/cortex.git main:refs/base/<topic>
-  git worktree add .worktrees/<topic> -b <branch> refs/base/<topic>
+  git worktree add ../cortex-worktrees/<topic> -b <branch> refs/base/<topic>
   ```
+
+  **Put the worktree beside the checkout, not inside it.** A session that starts in the
+  top-level checkout and reads a file under an in-repo `.worktrees/<topic>/` also loads
+  that worktree's copy of this file, so the request carries it twice. A sibling
+  directory is not below the session's start directory, so its copy is not loaded. Do
+  not use `claudeMdExcludes` for this: a pattern that matches the nested copy also
+  matches the worktree's own copy, and a session started there then loads none. Older
+  worktrees under `.worktrees/` still work; create new ones beside the checkout.
 
   Then stay in that directory. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
   down all three things you created:
 
   ```sh
-  git worktree remove .worktrees/<topic>   # --force if untracked files remain
+  git worktree remove ../cortex-worktrees/<topic>   # --force if untracked files remain
   git branch -d <branch>
   git update-ref -d refs/base/<topic>
   ```

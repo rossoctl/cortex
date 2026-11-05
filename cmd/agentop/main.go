@@ -38,9 +38,9 @@ var version = "dev"
 // uncommitted changes. Set by `make agentop` via -ldflags "-X main.revision=...", from git run
 // in the tree being built; empty for any other build.
 //
-// Not read from runtime/debug's VCS settings: Go recognises only a .git directory, so a build
-// in a .worktrees/ checkout, whose .git is a file, is stamped with the enclosing checkout's
-// HEAD and dirty state.
+// Not read from runtime/debug's VCS settings: Go recognises only a .git directory, and a
+// worktree's .git is a file. A build in a worktree inside the checkout is stamped with the
+// enclosing checkout's HEAD and dirty state; one beside it gets no stamp at all.
 var revision string
 
 // displayVersion is version as the TUI's title bar shows it: the release tag, or for a
