@@ -447,9 +447,8 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 		"sha256", hash[:12],
 		"drainWindow", r.drainWindow)
 
-	// Drain old pipelines in the background. Using context.Background
-	// deliberately: parent may cancel during shutdown, and we still
-	// want a bounded Stop on the old plugins so they flush cleanly.
+	// Drain old pipelines in the background, on their own Stop budget rather than
+	// parent's; Close cuts the drain short at shutdown.
 	r.drains.Add(1)
 	go func() {
 		defer r.drains.Done()
@@ -509,7 +508,16 @@ func (r *Reloader) Close(ctx context.Context) {
 	close(r.closing)
 	r.outbound.Load().Stop(ctx)
 	r.inbound.Load().Stop(ctx)
-	r.drains.Wait()
+	// Not past ctx: an old pipeline the window already stopped is on its own budget.
+	drained := make(chan struct{})
+	go func() {
+		r.drains.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-ctx.Done():
+	}
 }
 
 // hash is what decides whether a reload has anything to do: the config's bytes,

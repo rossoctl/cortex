@@ -971,11 +971,13 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
-// shutdownPlugin records how many requests held its pipeline when it was stopped.
+// shutdownPlugin records how many requests held its pipeline when it was stopped,
+// and with block set, stays in Shutdown until block is closed.
 type shutdownPlugin struct {
 	p       *pipeline.Pipeline
 	held    int64
 	stopped chan struct{}
+	block   chan struct{}
 }
 
 func (*shutdownPlugin) Name() string { return "shutdown" }
@@ -991,13 +993,16 @@ func (*shutdownPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.A
 func (s *shutdownPlugin) Shutdown(context.Context) error {
 	s.held = s.p.Held()
 	close(s.stopped)
+	if s.block != nil {
+		<-s.block
+	}
 	return nil
 }
 
 // storeShutdownPipeline Stores a pipeline of one shutdownPlugin in h.
-func storeShutdownPipeline(t *testing.T, h *pipeline.Holder) *shutdownPlugin {
+func storeShutdownPipeline(t *testing.T, h *pipeline.Holder, block chan struct{}) *shutdownPlugin {
 	t.Helper()
-	sp := &shutdownPlugin{stopped: make(chan struct{})}
+	sp := &shutdownPlugin{stopped: make(chan struct{}), block: block}
 	p, err := pipeline.New([]pipeline.Plugin{sp})
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
@@ -1055,7 +1060,7 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 			committed := make(chan struct{}, 1)
 			_, b, cfgPath, inH, outH := setupWith(t, WithDrainWindow(tc.window),
 				WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
-			idle, busy := storeShutdownPipeline(t, inH), storeShutdownPipeline(t, outH)
+			idle, busy := storeShutdownPipeline(t, inH, nil), storeShutdownPipeline(t, outH, nil)
 
 			pctx := &pipeline.Context{Direction: pipeline.Outbound}
 			outH.Run(context.Background(), pctx)
@@ -1101,11 +1106,11 @@ func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
 	committed := make(chan struct{}, 1)
 	r, b, cfgPath, _, outH := setupWith(t, WithDrainWindow(time.Hour),
 		WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
-	draining := storeShutdownPipeline(t, outH)
+	draining := storeShutdownPipeline(t, outH, nil)
 	outH.Run(context.Background(), &pipeline.Context{Direction: pipeline.Outbound})
 
 	liveIn, liveOut := pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t))
-	in, out := storeShutdownPipeline(t, liveIn), storeShutdownPipeline(t, liveOut)
+	in, out := storeShutdownPipeline(t, liveIn, nil), storeShutdownPipeline(t, liveOut, nil)
 	b.set(builderResult{inbound: liveIn.Load(), outbound: liveOut.Load(), cfg: &config.Config{Mode: "envoy-sidecar"}})
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
 	<-committed
@@ -1122,6 +1127,25 @@ func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
 	if draining.held != 1 {
 		t.Errorf("the draining pipeline stopped with %d requests holding it, want 1", draining.held)
 	}
+}
+
+// Close returns by its ctx even while an old pipeline the window stopped is still
+// shutting down on its own budget.
+func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	r, b, cfgPath, _, outH := setupWith(t, WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	slow := storeShutdownPipeline(t, outH, block)
+
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# slow\n")
+	<-committed
+	<-slow.stopped
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
 }
 
 // Without WithDrainWindow, an old pipeline waits up to 10 minutes for its requests.
