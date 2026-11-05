@@ -14,11 +14,12 @@ Extensively documented shell script that sets up iptables for transparent traffi
 - **Mangle rule**: Sets fwmark on Envoy's local delivery to prevent ISTIO_OUTPUT redirect loop
 - Uses `-I 1` (insert first) for chain ordering stability with Istio CNI
 
-**Environment variables:**
+**Environment variables** (the full list, with `MODE`, is in [`README.md`](README.md#environment-variables)):
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PROXY_PORT` | 15123 | Envoy outbound listener |
-| `INBOUND_PROXY_PORT` | 15124 | Envoy inbound listener |
+| `PROXY_PORT` | 15123 | Envoy outbound listener (`redirect` mode) |
+| `INBOUND_PROXY_PORT` | 15124 | Envoy inbound listener (`redirect` mode) |
+| `TRANSPARENT_PORT` | 8082 | Transparent listener (`enforce-redirect` mode). Must match `listener.transparent_proxy_addr` |
 | `PROXY_UID` | 1337 | Envoy process UID (excluded from redirect) |
 | `OUTBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
 | `INBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |

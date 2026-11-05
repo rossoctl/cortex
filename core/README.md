@@ -62,7 +62,7 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 | `observe/` | The `:9093` server — `/stats`, `/config`, `/reload/status` |
 | `redact/` | Best-effort stripping of sensitive values before anything is stored or served |
 
-**Auth and identity.** The theme table's 882-line Auth figure is `auth` + `bypass` +
+**Auth and identity.** The theme table's 920-line Auth figure is `auth` + `bypass` +
 `capabilities` — `capabilities` is grouped here by subject even though it is listed
 under Framework above, which is where it is used from. `spiffe` is counted under
 Framework, not here:

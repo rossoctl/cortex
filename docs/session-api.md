@@ -285,14 +285,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on the
   streamed arms the 5-minute idle read cutoff and the per-frame cap. **A
   streamed response that breaks off mid-body has no 502 to synthesize** — the
-  status is already on the wire — so the row keeps the sent status, with the
-  failure in `error` (`upstream_error` for the upstream's break, `proxy_error`
-  for the proxy's own cuts) and the sent status as `error.code`. The client's
-  connection is aborted (h1 reset, h2 `RST_STREAM`), never cleanly ended, so the
-  agent cannot read a cut stream as complete. Such rows count as errors in
-  `/v1/usage` although their status is 200, and the Finisher sees
-  `OutcomeError` (`classifyBrokenStream` resets `pctx.StatusCode` to zero while
-  the row keeps the sent status). A `skip_hosts` stream aborts the same way and
+  status is already on the wire. Both proxies abort the client's connection
+  (h1 reset, h2 `RST_STREAM`) rather than end it cleanly, so the agent cannot
+  read a cut stream as complete. On the forward proxy's three relay arms (SSE
+  relay, SSE passthrough, unbuffered copy) the row keeps the sent status, with
+  the failure in `error` (`upstream_error` for the upstream's break,
+  `proxy_error` for the proxy's own cuts) and the sent status as `error.code`.
+  Such rows count as errors in `/v1/usage` although their status is 200, and
+  the Finisher sees `OutcomeError` (`classifyBrokenStream` resets
+  `pctx.StatusCode` to zero while the row keeps the sent status). The reverse
+  proxy's streamed row carries no `error`. A `skip_hosts` stream aborts the same way and
   records nothing. Where the upstream did answer, `error.code` keeps the status
   it sent, while `statusCode` stays what the client got. A 499 with `error.kind: "client_canceled"`
   is the client hanging up first — since neither proxy times out a slow
