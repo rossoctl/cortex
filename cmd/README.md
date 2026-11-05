@@ -39,8 +39,10 @@ at the YAML config file the operator mounts at
 options are documented in
 [`../docs/plugin-reference.md`](../docs/plugin-reference.md).
 The session-events API at `:9094` is documented in
-[`../docs/session-api.md`](../docs/session-api.md). Hot-reload and the
-supporting ConfigMap contracts are in [`../CLAUDE.md`](../CLAUDE.md).
+[`../docs/session-api.md`](../docs/session-api.md), hot-reload in
+[`../CLAUDE.md`](../CLAUDE.md#config-hot-reload-9093reloadstatus), and the supporting
+ConfigMap contracts in
+[`../demos/CLAUDE.md`](../demos/CLAUDE.md#configmaps-and-secrets-expected-at-runtime).
 
 ## Ports
 

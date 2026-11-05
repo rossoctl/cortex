@@ -24,7 +24,12 @@ This file provides context for Claude (AI assistant) when working with the `cort
   matches the worktree's own copy, and a session started there then loads none. Older
   worktrees under `.worktrees/` still work; create new ones beside the checkout.
 
-  Then stay in that directory. Leave the top-level checkout alone — treat it as a
+  **Then start a new Claude Code session in the worktree** (`cd ../cortex-worktrees/<topic>
+  && claude`). A session cannot move there: when a `cd` goes outside the session's
+  start directory, Claude Code resets the shell to the start directory, so the next
+  command, a `git commit` too, runs in the shared checkout.
+
+  Stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
   down all three things you created:
 
@@ -591,37 +596,8 @@ Hooks:
 
 ## Common Development Tasks
 
-# proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
-cd deploy/proxy-init
-make docker-build-init
-make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
-cd ../..
-
-# Sidecar images. Pick whichever you need; the operator selects the image per
-# workload from the resolved AuthBridge mode. Plugins are all opt-in, so each sidecar
-# Dockerfile refuses to build without GO_BUILD_TAGS naming a profile.
-podman build -f cmd/cortex/Dockerfile \
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
-  -t authbridge:latest .                                              # proxy-sidecar (default)
-podman build -f cmd/cortex-envoy/Dockerfile \
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
-  -t authbridge-envoy:latest .                                        # envoy-sidecar
-# authbridge-lite: same proxy Dockerfile, built with the `lite` profile.
-podman build -f cmd/cortex/Dockerfile \
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
-  -t authbridge-lite:latest .
-
-kind load docker-image authbridge:latest       --name rossoctl
-kind load docker-image authbridge-envoy:latest --name rossoctl
-kind load docker-image authbridge-lite:latest  --name rossoctl
-```
-
-# Apply manifests, run Keycloak setup, verify end-to-end
-demos/weather-agent/deploy_and_verify_advanced.sh
-```
-
-For an interactive walkthrough see
-[`demos/weather-agent/demo-ui-advanced.md`](demos/weather-agent/demo-ui-advanced.md).
+Image builds, Kind loads and the end-to-end demo are in
+[`demos/CLAUDE.md`](demos/CLAUDE.md#building-everything-locally).
 
 ### Adding a New Component Image to CI
 

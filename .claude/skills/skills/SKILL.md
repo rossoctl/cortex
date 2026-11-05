@@ -38,7 +38,8 @@ git fetch upstream main
 git worktree add ../cortex-worktrees/skills-<topic> -b docs/skills-<topic> upstream/main
 ```
 
-Then work in the worktree, validate, and create a PR.
+Then start a new Claude Code session in the worktree (a `cd` outside the session's start
+directory is reset), validate, and create a PR.
 
 ## Available Skills
 

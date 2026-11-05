@@ -133,6 +133,30 @@ To build a single image directly. The Go images build from the repo root;
 proxy-init and sparc-service build from their own `deploy/` directory:
 
 ```bash
+# proxy-init (iptables init container, envoy-sidecar + proxy-sidecar enforce-redirect)
+cd deploy/proxy-init
+make docker-build-init
+make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
+cd ../..
+
+# Sidecar images. Pick whichever you need; the operator selects the image per
+# workload from the resolved AuthBridge mode. Plugins are all opt-in, so each sidecar
+# Dockerfile refuses to build without GO_BUILD_TAGS naming a profile.
+podman build -f cmd/cortex/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
+  -t authbridge:latest .                                              # proxy-sidecar (default)
+podman build -f cmd/cortex-envoy/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
+  -t authbridge-envoy:latest .                                        # envoy-sidecar
+# authbridge-lite: same proxy Dockerfile, built with the `lite` profile.
+podman build -f cmd/cortex/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
+  -t authbridge-lite:latest .
+
+kind load docker-image authbridge:latest       --name rossoctl
+kind load docker-image authbridge-envoy:latest --name rossoctl
+kind load docker-image authbridge-lite:latest  --name rossoctl
+```
 
 ## Running the Full Demo
 
@@ -147,6 +171,12 @@ The recommended end-to-end flow is the weather-agent advanced demo, which
 exercises the combined sidecar shape with token exchange to a tool's audience:
 
 ```bash
+# Apply manifests, run Keycloak setup, verify end-to-end
+demos/weather-agent/deploy_and_verify_advanced.sh
+```
+
+For an interactive walkthrough see
+[`demos/weather-agent/demo-ui-advanced.md`](weather-agent/demo-ui-advanced.md).
 
 ## Kubernetes Manifests
 - Example deployment YAMLs in `demos/*/k8s/`
