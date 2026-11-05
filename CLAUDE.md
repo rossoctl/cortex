@@ -75,6 +75,20 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
 - **Use `Assisted-By` for attribution** — never add `Co-Authored-By`, `Generated with Claude Code`, or similar trailers. See [Commit Attribution Policy](#commit-attribution-policy) below.
 
+## Nested CLAUDE.md files
+
+Claude Code loads these when you `Read`, `Edit`, `cat`, `sed -n` or `head` a file in
+that directory, and only when the session started in the same checkout. It does not
+load them for `grep` or `sed -i`. **Before you change code in one of these
+directories, read its `CLAUDE.md`** if it has not loaded:
+
+| File | Covers |
+|---|---|
+| [`core/plugins/CLAUDE.md`](core/plugins/CLAUDE.md) | Inbound JWT validation and outbound token exchange: route resolver, config loading, credential files |
+| [`core/listener/vmcontrol/CLAUDE.md`](core/listener/vmcontrol/CLAUDE.md) | The MOCA SBX VM control channel |
+| [`deploy/proxy-init/CLAUDE.md`](deploy/proxy-init/CLAUDE.md) | `init-iptables.sh` and its gotchas |
+| [`demos/CLAUDE.md`](demos/CLAUDE.md) | Kubernetes deployment: pod shape, shared volumes, ConfigMaps, Envoy, Keycloak, Kind builds, cluster gotchas |
+
 ## Repository Overview
 
 **cortex** contains Kubernetes security extensions for the [Rossoctl](https://github.com/rossoctl/rossoctl) ecosystem. It provides **zero-trust authentication** for Kubernetes workloads through transparent token exchange and dynamic Keycloak client registration using SPIFFE/SPIRE identities.
@@ -371,35 +385,9 @@ and all listener implementations live in `core/` (under `core/listener/`);
 each binary's `main.go` imports the listeners it needs and blank-imports
 `core/plugins/all`; build tags pick the plugins.
 
-**Inbound path** (`x-authbridge-direction: inbound`):
-- Validates JWT signature via JWKS (auto-refreshing cache; `jwks_url` derivation is below)
-- Validates issuer claim against `ISSUER` env var
-- Validates audience against `CLIENT_ID` (from `/shared/client-id.txt` or env var)
-- Returns 401 with JSON error body for invalid/missing tokens
-- Removes `x-authbridge-direction` header before forwarding to app
-
-**Outbound path** (no direction header):
-- Default policy is **passthrough** -- outbound requests pass through unchanged unless a route matches
-- Uses a **route resolver** to match the request's `Host` header against patterns in `authproxy-routes` ConfigMap
-- If a route matches: reads `target_audience` and `token_scopes` from the route, exchanges the incoming token for one with that audience (RFC 8693), and injects it as `Authorization: Bearer <token>`. A request with no token gets a `client_credentials` token only when the plugin's no-token policy says so
-- If no route matches: applies the default outbound policy (`passthrough` or `exchange`)
-- Returns 503 if exchange fails for a routed host (prevents unauthenticated calls)
-- The plugin's `default_policy` controls the fallback (default: `passthrough`)
-
-**Route resolver (outbound):**
-- Reads `/etc/authproxy/routes.yaml` by default; the plugin's `routes.file` sets the path, and `routes.rules` adds inline rules
-- Each route entry has: `host` (glob pattern), `target_audience`, `token_scopes`
-- Host matching uses `gobwas/glob` with `.` as the separator (`core/internal/hostglob`): `*` matches one DNS label, `**` crosses labels
-- Most commonly, `host` is a plain Kubernetes service name (e.g., `github-tool-mcp`) because the HTTP client sets the Host header from the URL hostname
-- The routes file is read when `token-exchange` is configured — at startup and on a config hot-reload; nothing watches the routes file itself
-
-**Configuration loading:** (config format is covered above, in the binaries section.)
-- Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML's other top-level blocks are `mode`, `listener`, `session`, `stats`, `mtls`, `spiffe`, `tls_bridge`, `memory`, `pricing` and `cost_ledger`. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
-- The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
-- `jwt-validation` derives `jwks_url` when omitted: from `keycloak_url` + `keycloak_realm` if both are set, else from `issuer` (appends `/protocol/openid-connect/certs`).
-- `token-exchange` derives `token_url` when omitted from `provider` + `provider_url` + `provider_realm`. `keycloak_url` / `keycloak_realm` are deprecated aliases and log a warning.
-- Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime-config`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors the SVIDs under `/opt/` (see the Shared Volume Contract in [`demos/CLAUDE.md`](demos/CLAUDE.md#shared-volume-contract)). `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file` (polling: gotcha 2). The `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
-- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (there is no top-level field; `authbridge-runtime-config` expands the `DEFAULT_OUTBOUND_POLICY` env var into the plugin config).
+The inbound and outbound auth paths — JWT validation, the route resolver, token
+exchange, config loading and the credential files — are in
+[`core/plugins/CLAUDE.md`](core/plugins/CLAUDE.md).
 
 **Key library packages (core/):**
 - `core/plugins/jwtvalidation/validation/` -- JWKS-backed JWT verifier (used internally by `jwt-validation` plugin)
@@ -642,24 +630,6 @@ For an interactive walkthrough see
 3. For a Go image, add a case to the "Resolve build args" step that sets `GO_BUILD_TAGS` from a profile; without it the Dockerfile fails
 4. Image will be pushed to `ghcr.io/rossoctl/cortex/<name>`
 
-## Common Tasks for Code Changes
-
-### Modifying Token Exchange Logic
-- Edit `core/plugins/tokenexchange/exchange/` -- the RFC 8693 token exchange client
-- The token exchange POST parameters follow RFC 8693 exactly
-- Test by rebuilding the affected image. `GO_BUILD_TAGS` is required — every
-  plugin is opt-in, so a build without it registers none and rejects every
-  config it is handed:
-  `podman build -f cmd/cortex-envoy/Dockerfile
-  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
-  -t authbridge-envoy:latest .` then `kind load docker-image
-  authbridge-envoy:latest --name rossoctl`.
-
-### Modifying Inbound JWT Validation
-- Edit `core/plugins/jwtvalidation/validation/` -- the JWKS-backed JWT verifier
-- JWKS cache auto-refreshes
-- Direction detection: `x-authbridge-direction: inbound` header (injected by Envoy inbound listener config)
-
 ## Code Style and Conventions
 
 ### Go Code
@@ -703,11 +673,9 @@ For an interactive walkthrough see
 
 1. **Multiple Go modules:** The repo has 11 Go modules — `core/` and each `cmd/*/` but `cmd/cortex-cpex/` at the root, `core/storage/redis/` nested under `core/` but still its own module, both `scripts/*/`, and the three self-contained `demos/*/` ones. `go.work` links the first eight; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `core`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
-2. **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. OnRequest returns 503 until the file arrives. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
+2. **Avoid committing venvs:** Virtual environment directories should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
 
-13. **Avoid committing venvs:** Virtual environment directories should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
-
-14. **Session store memory, and IBAC user intent under chatty traffic.** The store keeps **every** event a session produces: `session.max_events` is unset and `session.ttl` defaults to never, by design (see `SessionConfig.Limits`). `session.max_sessions` (100, oldest-used first) is the default bound, and it limits how MANY sessions are kept, not how big one gets. Set `max_events` for a FIFO per-session cap and `ttl` to bound how long raw prompts stay in memory. Clients read deep sessions by paging with `?before=<seq>`, not by raising `limit`.
+3. **Session store memory, and IBAC user intent under chatty traffic.** The store keeps **every** event a session produces: `session.max_events` is unset and `session.ttl` defaults to never, by design (see `SessionConfig.Limits`). `session.max_sessions` (100, oldest-used first) is the default bound, and it limits how MANY sessions are kept, not how big one gets. Set `max_events` for a FIFO per-session cap and `ttl` to bound how long raw prompts stay in memory. Clients read deep sessions by paging with `?before=<seq>`, not by raising `limit`.
 
     **Interning** (`core/session/intern.go`) keeps one copy of each distinct string per session, with one table per **conversation** (model + first message, split from a sibling by the second), so that subagents taking turns do not evict each other's table. Rules for changing it:
     - **An event with nothing to intern must not clear the table.** A CONNECT tunnel-open lands between an inference request and its response on every bridged request, and a reset there makes the next turn copy the whole conversation again.
