@@ -535,8 +535,10 @@ func (r *Reloader) Close(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		liveOut.Stop(ctx)
-		liveIn.Stop(ctx)
+		var live sync.WaitGroup
+		live.Go(func() { liveOut.Stop(ctx) })
+		live.Go(func() { liveIn.Stop(ctx) })
+		live.Wait()
 		r.drains.Wait()
 		if r.loopDone != nil {
 			<-r.loopDone

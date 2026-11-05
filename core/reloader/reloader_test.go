@@ -1139,16 +1139,19 @@ func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
 	}
 }
 
-// Close returns by its ctx even while a live pipeline's plugin is still shutting down.
+// Close returns by its ctx even while a live pipeline's plugin is still shutting
+// down, and that plugin does not keep the other live pipeline from stopping.
 func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
-	r, _, _, _, outH := setup(t)
+	r, _, _, inH, outH := setup(t)
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
 	storeShutdownPipeline(t, outH, block)
+	in := storeShutdownPipeline(t, inH, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r.Close(ctx)
+	<-in.stopped
 }
 
 // Close stops the live pipelines without waiting for a reload still building, and
