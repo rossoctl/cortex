@@ -31,7 +31,11 @@ type fakeBuilder struct {
 	// `next` at call time.
 	next atomic.Value // holds builderResult
 	cfg  atomic.Value // holds *config.Config
+	// gate, when set, makes build signal entered and wait for release.
+	gate atomic.Pointer[buildGate]
 }
+
+type buildGate struct{ entered, release chan struct{} }
 
 type builderResult struct {
 	inbound  *pipeline.Pipeline
@@ -48,6 +52,10 @@ func (b *fakeBuilder) set(r builderResult) {
 }
 
 func (b *fakeBuilder) build() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
+	if g := b.gate.Load(); g != nil {
+		close(g.entered)
+		<-g.release
+	}
 	r := b.next.Load().(builderResult)
 	return r.inbound, r.outbound, r.cfg, r.err
 }
@@ -1131,7 +1139,7 @@ func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
 	}
 }
 
-// Close returns by its ctx even while a plugin it is stopping is still shutting down.
+// Close returns by its ctx even while a live pipeline's plugin is still shutting down.
 func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
 	r, _, _, _, outH := setup(t)
 	block := make(chan struct{})
@@ -1141,6 +1149,32 @@ func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r.Close(ctx)
+}
+
+// Close stops the live pipelines without waiting for a reload still building, and
+// that reload stops its own pipelines instead of committing them.
+func TestReloader_CloseDuringABuildStopsLiveAndBuiltPipelines(t *testing.T) {
+	r, b, cfgPath, inH, outH := setup(t)
+	live := storeShutdownPipeline(t, outH, nil)
+	g := &buildGate{entered: make(chan struct{}), release: make(chan struct{})}
+	b.gate.Store(g)
+	builtIn := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+	builtOut := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+	b.set(builderResult{inbound: builtIn.p, outbound: builtOut.p, cfg: &config.Config{Mode: "envoy-sidecar"}})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# building\n")
+	<-g.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
+	<-live.stopped // while the build is still blocked
+
+	close(g.release)
+	<-builtIn.stopped
+	<-builtOut.stopped
+	if inH.Load() == builtIn.p || outH.Load() == builtOut.p {
+		t.Error("a reload committed its pipelines after Close began")
+	}
 }
 
 // Once Close has begun, an old pipeline is stopped on Close's ctx, even when its

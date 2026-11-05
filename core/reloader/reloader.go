@@ -140,10 +140,12 @@ type Reloader struct {
 	cancelLoop context.CancelFunc
 	loopDone   chan struct{}
 	// Close sets closeCtx, then closes closing, to stop every old pipeline still
-	// draining on closeCtx; drains counts their goroutines.
+	// draining on closeCtx; drains counts their goroutines. commitMu orders a
+	// reload's commit against Close.
 	closing  chan struct{}
 	closeCtx context.Context
 	drains   sync.WaitGroup
+	commitMu sync.Mutex
 }
 
 // New constructs a Reloader. initialCfg must be the config the caller
@@ -430,12 +432,23 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// Commit: swap Holders and update active-config snapshot. From
 	// here on, requests drain onto the new pipelines; old in-flight
 	// requests keep their existing *Pipeline reference.
+	r.commitMu.Lock()
+	select {
+	case <-r.closing:
+		r.commitMu.Unlock()
+		newOut.Stop(r.closeCtx)
+		newIn.Stop(r.closeCtx)
+		return
+	default:
+	}
 	oldIn := r.inbound.Load()
 	oldOut := r.outbound.Load()
 	r.inbound.Store(newIn)
 	r.outbound.Store(newOut)
 	r.activeCfg.Store(newCfg)
 	r.lastHash = hash
+	r.drains.Add(1)
+	r.commitMu.Unlock()
 
 	// After the swap, so a hook cannot observe a config that was refused, and before the log line, so
 	// "pipelines swapped" means everything this reload applies has been applied.
@@ -449,7 +462,6 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 
 	// Drain old pipelines in the background, on their own Stop budget rather than
 	// parent's; Close cuts the drain short at shutdown.
-	r.drains.Add(1)
 	go func() {
 		defer r.drains.Done()
 		deadline := time.Now().Add(r.drainWindow)
@@ -507,24 +519,28 @@ func (r *Reloader) stopCtx() (context.Context, context.CancelFunc) {
 }
 
 // Close stops reloading, then Stops the live pipelines and every old one still
-// draining. It returns when they are stopped or ctx is done, whichever is first;
-// a plugin still shutting down then finishes in the background. Call it once,
-// after the listeners have stopped.
+// draining; a reload still building Stops its pipelines instead. It returns when
+// they are stopped or ctx is done, whichever is first; a plugin still shutting
+// down then finishes in the background. Call it once, after the listeners have
+// stopped.
 func (r *Reloader) Close(ctx context.Context) {
 	r.closeCtx = ctx
+	r.commitMu.Lock()
 	close(r.closing)
+	liveIn, liveOut := r.inbound.Load(), r.outbound.Load()
+	r.commitMu.Unlock()
+	if r.cancelLoop != nil {
+		r.cancelLoop()
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// The watch loop first, so a reload in flight has committed or given up
-		// before the live pipelines are read.
-		if r.cancelLoop != nil {
-			r.cancelLoop()
+		liveOut.Stop(ctx)
+		liveIn.Stop(ctx)
+		r.drains.Wait()
+		if r.loopDone != nil {
 			<-r.loopDone
 		}
-		r.outbound.Load().Stop(ctx)
-		r.inbound.Load().Stop(ctx)
-		r.drains.Wait()
 	}()
 	select {
 	case <-done:

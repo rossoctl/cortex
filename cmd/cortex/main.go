@@ -1287,8 +1287,9 @@ func main() {
 	}
 	rld.Close(shutdownCtx)
 
-	// Flushed AFTER every pipeline has stopped and before the store closes, so the
-	// final minute includes every event a draining request still produced. Any earlier
+	// Flushed AFTER rld.Close (every pipeline stopped, or the shutdown budget spent)
+	// and before the store closes, so the final minute includes every event a
+	// draining request still produced. Any earlier
 	// and a request finishing during the pipeline drain would land in a minute already
 	// written; any later and the store is gone.
 	//
