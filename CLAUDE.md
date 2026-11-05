@@ -669,96 +669,13 @@ preserved.
 
 ## Top-level `mtls:` configuration
 
-When the runtime config carries an `mtls:` block, authbridge enables
-transport-level mTLS on the proxy-sidecar listeners (forward + reverse
-proxy). envoy-sidecar mode handles mTLS at the Envoy data-plane level
-instead — see the **envoy-sidecar mTLS** subsection below.
-
-```yaml
-# authbridge-runtime-config ConfigMap (top-level)
-mtls:
-  mode: strict          # permissive | strict (omit block entirely for off)
-  # mode is the only field. The SVID comes from the spiffe Provider.
-```
-
-| Mode | Inbound (reverse proxy `:8080`) | Outbound (forward proxy) |
-|---|---|---|
-| (no `mtls` block) | Plaintext only. | Plaintext only. |
-| `permissive` (default when block present) | Byte-peek listener: TLS handshakes verified against the SPIRE trust bundle; plaintext callers served on the same port. ⚠️ Plaintext requests carry their full headers and bodies in the clear — including any `Authorization: Bearer ...` token already injected by `token-exchange`. Use only during rollout with cluster-network trust. | Plaintext — no TLS-wrap attempt. Matches envoy-sidecar's permissive and Istio's PeerAuthentication semantics (permissive is inbound-only). A permissive caller cannot reach a strict peer; mixed-mode deployments need both ends compatible. |
-| `strict` | TLS only — non-TLS callers get the connection closed. | TLS or fail: handshake failure is a hard error, no fallback. |
-
-In both modes, a successful TLS handshake that fails certificate
-verification is always a hard error.
-
-**Trust model:** any peer with a valid cert from the SPIRE trust bundle
-can talk to this authbridge. Per-caller policy / SPIFFE allowlists are
-out of scope; the trust bundle IS the policy. Plugins that want
-per-caller decisions read `pctx.PeerCertificate()` and check the URI SAN.
-
-**Hot-reload boundary:** mTLS config requires a pod restart to apply,
-matching the existing rule for `listener.*` addresses. A reload that adds the
-`mtls` block, removes it, or changes `mtls.mode` — the only field the block
-carries — is refused rather than half-applied: the active pipeline keeps
-serving, `reloads_failed` increments, and `/reload/status` names `mtls.*`
-among the fields that need a restart. Legacy `cert_file` / `key_file` /
-`bundle_file` keys are dropped at load, so editing them is neither applied nor
-refused. The inbound TLS listener and, under `strict`, the forward proxy's
-mTLS dialer are built once at boot, so no reload can reach them. The outbound
-chain's redirect check (`forwardproxy.Support`) refuses a `WritesDestination`
-plugin whenever an `mtls:` block is configured: under `strict` the dialer
-would nest TLS inside TLS; under `permissive` there is no dialer, so the
-refusal is broader than strictly needed and fails closed. Refusing the reload
-keeps that check matched to the mtls config the listeners were built from.
-Plugin-pipeline config keeps its own hot-reload behavior.
-
-### envoy-sidecar mTLS
-
-In envoy-sidecar mode the listeners live in Envoy, not authbridge,
-so the top-level `mtls:` block is a no-op there. Equivalent semantics
-are configured at the Envoy data-plane level by extending the
-`envoy-config` ConfigMap with TLS blocks:
-
-| Mode | Inbound (`:15124`) | Outbound (`:15123`) |
-|---|---|---|
-| `disabled` | plaintext (today's behavior) | plaintext (today's behavior) |
-| `permissive` | `tls_inspector` listener filter + two filter chains: `transport_protocol: tls` chain terminates mTLS, `transport_protocol: raw_buffer` chain accepts plaintext | **plaintext** — no TLS-wrap attempt |
-| `strict` | `tls_inspector` + single TLS filter chain; plaintext drops at filter chain match | `UpstreamTlsContext` on the `original_destination` cluster: TLS-or-fail, blanket |
-
-X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
-`/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths
-proxy-sidecar's mTLS uses. The spiffe Provider's file-mirror in
-the `cortex-envoy` binary keeps these fresh on rotation.
-
-**Inbound parity with proxy-sidecar:** byte-identical observable
-semantics — TLS handshakes terminate against the SPIRE trust bundle,
-plaintext is served (permissive) or rejected (strict). Same outcome
-as proxy-sidecar's `tlssniff.Listener`, just expressed as Envoy
-filter chains. This matches Istio's PERMISSIVE/STRICT inbound exactly.
-
-**Outbound is Istio-shaped:** Envoy has no native primitive for
-"try TLS, fall back to plaintext on handshake failure" within an
-`ORIGINAL_DST` cluster (and Istio itself doesn't do it — Pilot
-pre-decides mesh membership). Permissive keeps outbound plaintext;
-strict does blanket TLS-or-fail to everything the listener sees.
-This works in practice because outbound calls that need plaintext —
-Keycloak, JWKS, external HTTPS — never reach the listener: plugin
-outbound uses Go `net/http` directly, and `proxy-init`'s iptables
-doesn't redirect arbitrary HTTPS egress. **Proxy-sidecar matches
-this**: its forward proxy now also dials plaintext in permissive
-mode, so the two deployment shapes share one outbound semantics.
-
-**Behavioral note:** a *permissive* caller cannot reach a *strict*
-peer regardless of mode (its outbound is plaintext; the peer's
-strict inbound rejects it). Mixed-mode deployments need both ends
-compatible — both strict, both permissive, or one strict + the
-other permissive on inbound only.
-
-The operator's AgentRuntime CR's `Spec.MTLSMode` flows
-through to a per-agent rendered envoy-config with the matching TLS
-blocks (operator companion PR). **This design has no end-to-end
-verification in-tree.** The `demos/mtls/` demo used to exercise it — six
-make targets including negative checks on both deployment shapes — and was
-retired as superseded. Nothing in-tree exercises the Envoy filter chains. Re-verify by hand after changing them.
+An `mtls:` block (`mode: permissive | strict`, its only field) turns on transport mTLS
+on the proxy-sidecar listeners, with the SVID from the spiffe Provider. In
+envoy-sidecar mode the block is a no-op: Envoy does mTLS from the `envoy-config`
+ConfigMap. Changing the block needs a restart, and a reload that tries is refused.
+**Read [`docs/framework-architecture.md` §8a](docs/framework-architecture.md#8a-mtls-layer)
+before you change either shape.** Nothing in-tree exercises the Envoy filter chains:
+re-verify them by hand after a change.
 
 ## CI/CD Workflows
 

@@ -757,7 +757,7 @@ is always a hard error.
 **Trust model:** any peer with a valid cert from the SPIRE trust bundle can
 talk to this sidecar. Per-caller policy / SPIFFE allowlists are out of scope;
 the trust bundle IS the policy. Plugins that want per-caller decisions read
-`pctx.PeerCert` and check the URI SAN.
+`pctx.PeerCertificate()` and check the URI SAN.
 
 **Reload boundary:** a reload that adds the `mtls` block, removes it, or
 changes `mtls.mode` is refused rather than half-applied — the active pipeline
@@ -768,7 +768,8 @@ reload can reach them. The outbound chain's redirect check
 (`forwardproxy.Support`) refuses a `WritesDestination` plugin whenever an
 `mtls:` block is configured — under `strict` the dialer would nest TLS inside
 TLS; under `permissive` there is no dialer, so the refusal is broader than
-strictly needed and fails closed.
+strictly needed and fails closed. Plugin-pipeline config keeps its own
+hot-reload behavior.
 
 **Mixed-mode note:** a *permissive* caller cannot reach a *strict* peer
 regardless of mode (its outbound is plaintext; the peer's strict inbound
@@ -797,7 +798,10 @@ byte-identical observable semantics — the same outcome as proxy-sidecar's
 PERMISSIVE/STRICT. Outbound is Istio-shaped: Envoy has no native primitive
 for "try TLS, fall back to plaintext on handshake failure" within an
 `ORIGINAL_DST` cluster, so permissive keeps outbound plaintext and strict
-does blanket TLS-or-fail. The operator's AgentRuntime CR `Spec.MTLSMode`
+does blanket TLS-or-fail. That works because the outbound calls that need
+plaintext — Keycloak, JWKS, external HTTPS — never reach the listener: plugin
+outbound uses Go `net/http` directly, and `proxy-init`'s iptables does not
+redirect arbitrary HTTPS egress. The operator's AgentRuntime CR `Spec.MTLSMode`
 flows through to a per-agent rendered envoy-config with the matching TLS
 blocks.
 

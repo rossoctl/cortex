@@ -838,8 +838,8 @@ func main() {
 		// back on handshake failure", and Istio's PeerAuthentication
 		// permissive is inbound-only). A permissive caller can no
 		// longer reach a strict peer regardless of mode; mixed-mode
-		// deployments need both ends compatible. See CLAUDE.md
-		// "Top-level mtls: configuration".
+		// deployments need both ends compatible. See
+		// docs/framework-architecture.md §8a.
 		if strict {
 			fpMTLS = &forwardproxy.MTLSOptions{Source: src, Metrics: mtlsMetrics}
 		}
