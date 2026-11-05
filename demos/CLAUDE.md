@@ -154,8 +154,8 @@ podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t authbridge-lite:latest .
 
-# `kind load docker-image` runs the docker CLI. With podman and no docker CLI, load
-# an archive instead: see load_image_to_kind in scripts/dev/local-build-and-test.sh.
+# `kind load docker-image` reads Docker's image store. For images built with podman,
+# load an archive instead: see load_image_to_kind in scripts/dev/local-build-and-test.sh.
 kind load docker-image authbridge:latest       --name rossoctl
 kind load docker-image authbridge-envoy:latest --name rossoctl
 kind load docker-image authbridge-lite:latest  --name rossoctl

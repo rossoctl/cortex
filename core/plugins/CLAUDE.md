@@ -46,8 +46,8 @@ including the plugin capability and classification rules, are in the root
   config it is handed:
   `podman build -f cmd/cortex-envoy/Dockerfile
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
-  -t authbridge-envoy:latest .` then `kind load docker-image
-  authbridge-envoy:latest --name rossoctl`.
+  -t authbridge-envoy:latest .`, then load it into Kind as
+  [`demos/CLAUDE.md`](../../demos/CLAUDE.md#building-everything-locally) shows.
 
 ## Modifying Inbound JWT Validation
 - Edit `core/plugins/jwtvalidation/validation/` -- the JWKS-backed JWT verifier
@@ -56,4 +56,4 @@ including the plugin capability and classification rules, are in the root
 
 ## Gotcha
 
-- **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. Until the file arrives, OnRequest returns 503. For jwt-validation, only an inbound request with a bearer token gets the 503: a request with no `Authorization` header gets 401 first. Exception: when `allowed_audiences` already gives jwt-validation an audience, it does not poll and does not return 503. So an `audience_file` that becomes readable only after Configure is never loaded, and tokens for that audience are rejected. If the file never shows up (wrong path, missing volume mount), the pod stays unready for outbound traffic; follow the WARN lines to the misconfigured path.
+- **Credential file race condition**: Each plugin that reads a credential file (jwt-validation's `audience_file`, token-exchange's `client_id_file` / `client_secret_file`; the JWT-SVID comes from the spiffe Provider, not a file) tries a synchronous read at Configure time and, on miss, spawns an Init goroutine that polls indefinitely — emitting a WARN every ~60s while the file is still missing. Until the file arrives, OnRequest returns 503. For jwt-validation, only an inbound request with a bearer token gets the 503: a request with no `Authorization` header gets 401 first. Exception: when `allowed_audiences` already gives jwt-validation an audience, it does not poll and does not return 503. So an `audience_file` that becomes readable only after Configure is not loaded until the next restart or config reload, and tokens for that audience are rejected until then. If the file never shows up (wrong path, missing volume mount), the plugin keeps refusing traffic; follow the WARN lines to the misconfigured path.
