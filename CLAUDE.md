@@ -282,7 +282,7 @@ cortex/
 │   │                                 # security-scans, scorecard, spellcheck)
 │   └── ISSUE_TEMPLATE/               # laptop-feedback form + config
 ├── .pre-commit-config.yaml           # Pre-commit hooks (whitespace, yaml/json, ruff; no Go hooks)
-└── CLAUDE.md                         # This file — the only one in the repo
+└── CLAUDE.md                         # This file; nested ones are listed at the top
 ```
 
 ## Major Components
