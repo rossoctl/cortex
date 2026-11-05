@@ -59,7 +59,7 @@ def dump_events(base, session_id, out_path, full):
 
     Ordering is by `at`, not by `seq`: seq is unique only within one incarnation
     of a session, and whole-session eviction restarts it at 1 (see the Session
-    Events API notes in CLAUDE.md). Sorting by seq would interleave two
+    API notes in docs/session-api.md). Sorting by seq would interleave two
     incarnations; `at` stays monotonic across both.
     """
     params = {"limit": PAGE_LIMIT}

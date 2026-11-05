@@ -26,8 +26,8 @@ through DNS rebinding. The stats server applies the same check.
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
-| `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config` |
-| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not |
+| `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
+| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
 | `GET /healthz` | text | Liveness probe |
 
@@ -279,21 +279,51 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `upstream_tls`, else `upstream_error`) and `error.message` naming the address
   but never the request URL, whose query string can carry an API key.
   `error.kind: "proxy_error"` is the one that is the proxy's own: a response
-  over the listener's body-size cap. A 499 with `error.kind: "client_canceled"`
+  over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on the
+  streamed arms the 5-minute idle read cutoff and the per-frame cap. **A
+  streamed response that breaks off mid-body has no 502 to synthesize** — the
+  status is already on the wire — so the row keeps the sent status, with the
+  failure in `error` (`upstream_error` for the upstream's break, `proxy_error`
+  for the proxy's own cuts) and the sent status as `error.code`. The client's
+  connection is aborted (h1 reset, h2 `RST_STREAM`), never cleanly ended, so the
+  agent cannot read a cut stream as complete. Such rows count as errors in
+  `/v1/usage` although their status is 200, and the Finisher sees
+  `OutcomeError` (`classifyBrokenStream` resets `pctx.StatusCode` to zero while
+  the row keeps the sent status). A `skip_hosts` stream aborts the same way and
+  records nothing. Where the upstream did answer, `error.code` keeps the status
+  it sent, while `statusCode` stays what the client got. A 499 with `error.kind: "client_canceled"`
   is the client hanging up first — since neither proxy times out a slow
-  upstream, that is how a hung one usually ends. A 426 with `error.kind:
+  upstream, that is how a hung one usually ends. It counts as an error in
+  `/v1/usage` but stays out of the 5xx series, and logs no WARN. On all of
+  these the Finisher sees `OutcomeError` with `Outcome.StatusCode` 0: that zero
+  marks the request as an error, so the event and the outcome disagree about
+  the status on purpose. **A 421 with `error.kind: "misdirected_request"`** is a
+  bridged request whose `Host` names another host or port than its tunnel's
+  CONNECT target: the forward proxy refuses it before the pipeline runs and
+  forwards nothing, and both rows name the CONNECT target as `host`, because
+  policy keyed on the client's `Host` would judge a destination the bytes
+  never reach. A 426 with `error.kind:
   "upgrade_declined"` is the forward proxy's own answer to a WebSocket upgrade on
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`) that it will not carry:
   every one under `listener.responses_websockets: decline`, and under the default,
   `parse`, one it cannot (not decrypted, or a plugin that rewrites response bodies or
   redirects requests). Nothing is forwarded, and a client such as Codex reads it as
-  "use HTTPS" and retries at once over HTTPS. It is not counted as an error in
-  `/v1/usage`. A carried socket's turn the client ends early (Codex's Esc) is a 200
+  "use HTTPS" and retries at once over HTTPS. An HTTP/2 client is refused 400
+  by Go's HTTP/2 server before the handler runs. v0.9.4's
+  `decline_responses_websockets` is still read when the new key is unset
+  (`true` = `decline`, `false` = `forward`), with a startup warning; both set
+  is refused. It is not counted as an error in `/v1/usage`. A carried socket's turn the client ends early (Codex's Esc) is a 200
   with `error.kind: "turn_interrupted"`, as an HTTPS stream the client leaves part way
   keeps its 200, and is not counted as an error either. Every other WebSocket
   upgrade — and a Responses one under `forward` — is forwarded (#1488): the 101
   the origin answers with is spliced onto
-  the client's connection, the frames after it are relayed uninspected, and the
+  the client's connection (the upgrade is normalized to `Connection: Upgrade` /
+  `Upgrade: websocket`, which net/http pins to HTTP/1.1). **An upgrade is both
+  headers, on both sides:** a request needs `Connection: upgrade` as well as
+  `Upgrade: websocket` or it is stripped and takes the ordinary path, and a 101
+  that switches to another protocol than the one requested is refused 502
+  before the hijack. Either check missing turns a plain request into an opaque
+  pipe no plugin inspects. Once spliced, the frames after it are relayed uninspected, and the
   session records the request row plus a **101 response row** paired to it by
   `requestId`, carrying `bytesUp` and `bytesDown` for the whole WebSocket
   session — the one response row besides a tunnel close that carries both —
@@ -317,7 +347,25 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   (`listener.egress_guard`): the destination resolved into loopback,
   link-local, private or this host's own address space and no permit covered
   it. Also the proxy's own answer rather than the upstream's, and also not
-  counted as an error — the guard did what it was configured to.
+  counted as an error — the guard did what it was configured to. **A 403
+  `destination_denied` is the egress allow list's refusal**
+  (`listener.egress_allow_hosts`, or `MOCA_EGRESS_ALLOW`): the destination was
+  not on the deny-by-default list, and the proxy refused it by name — header
+  `X-Moca-Egress-Error`, text/plain body `destination_denied: <host>\n` —
+  before the pipeline, before DNS and before any dial. Off-list CONNECT
+  targets, absolute-form hosts and the target a plugin's redirect moved a
+  request to all land this way, as a `phase: "denied"` row carrying an
+  `egress-allowlist` invocation whose `details.host` names the host. The two
+  403s compose: the allow list judges the **name** before DNS, the guard the
+  **address** at the dial, so an allow-list entry is not a permit for the
+  guard. **A request whose body could not be buffered** never reached the
+  pipeline, so its request row carries no parse and no Finisher runs: over the
+  forward proxy's `maxRequestBodySize` (32 MiB) it is a 413 `proxy_error` with
+  an empty `error.code`; a client that hung up mid-upload gets a 499
+  `client_canceled`, which here does log a WARN (`request body unreadable`);
+  anything else unreadable is a 400 `request_unreadable`. An opaque CONNECT
+  that could not be dialed reports the same one layer down, as
+  `tunnelReason: "dial-failed"` with `error.kind: "dial_failed"`.
 - `ttfbMs` — on a delivered response row, the wall time from request entry to
   the upstream's response **headers** arriving. `durationMs` − `ttfbMs` is then
   how long the body took — for a streamed completion, the stream time. The pair
@@ -358,19 +406,35 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   it (#1251), so the bytes that crossed their own process are on the row. The
   one arm that still reports zero is the envoy-sidecar listener with a
   body-free pipeline — it asked Envoy not to send it the bytes, so zero there
-  means "not asked to see", not "not counted".
+  means "not asked to see", not "not counted" (`core/listener/parity`'s
+  `TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt` pins it). A
+  response row's `bytesDown` is the body as it came back, not as delivered,
+  because extproc records the row before it emits a response mutator's
+  replacement. Everywhere else the three listeners count the same figure for
+  the same response; `core/listener/internal/bodycount` and the parity
+  fixtures hold that line.
 - `tunnel`, `tunnelReason` — an opaque CONNECT (or transparent-redirect) tunnel
   records two rows sharing a `requestId`: the open (`phase: "request"`,
   `tunnelReason` saying why the bytes stayed opaque) and the close (`phase:
   "response"`), carrying the CONNECT's own status, the duration, and the bytes
-  each way. It is not the destination's status: that travels inside the
-  client's end-to-end TLS. Tunnel rows are kept out of `/v1/usage`: a tunnel's
+  each way (up = client to destination; opaque bytes have no body/header
+  split). The close's status is 200, or 502 with the dial error when the
+  destination could not be reached and no TLS bridge took the connection
+  (`tunnelReason: "dial-failed"`). Where the bridge is enabled for the port the
+  CONNECT is answered 200 first, because a redirect can still apply, and a
+  bridge that then declines closes with that 200 and the dial error. It is not
+  the destination's status: that travels inside the client's end-to-end TLS. A
+  bridged tunnel's open is recorded with its first decrypted request — in that
+  request's session, directly before it, stamped with its time — and records
+  no close, because the request carries its own response; a bridged tunnel
+  that recorded no request gets its open and a close when it ends. Tunnel rows are kept out of `/v1/usage`: a tunnel's
   lifetime is not a request latency. **`tunnelReason: "websocket"` is the one
   that is not opaque:** a Responses API WebSocket the forward proxy carries
   (`listener.responses_websockets`). Its open is the handshake `GET`, its close
   is status 101 with the whole socket's duration and bytes, and every turn on it
   records its own ordinary `POST` request and response rows between the two,
-  parsed and priced like an HTTPS turn. `tunnelReason: "dest-private"` is the
+  parsed and priced like an HTTPS turn. A turn runs on the pipeline it began
+  on, so a hot reload never splits one. `tunnelReason: "dest-private"` is the
   egress guard's refusal: the close row carries 403 and
   `error.kind: "destination_private"`, and no tunnel was ever opened to the
   destination — the same refusal a plain request gets, one layer down.
@@ -440,7 +504,7 @@ emitted by a plugin, and neither is a verdict on the request.
   stops it without touching the in-memory store, and turning the store off
   with the archive explicitly on is refused at load. Setting
   `listener.session_api_addr: ""` alone is not supported as a selective
-  disable; if you need store-on-API-off, raise an issue.
+  disable — the preset refills it; if you need store-on-API-off, raise an issue.
 - **Memory:** the store keeps every event a session produces by default —
   `session.max_events` is unset and `session.ttl` defaults to never. What
   bounds memory by default is `session.max_sessions` (100, oldest-used evicted

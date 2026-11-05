@@ -2521,8 +2521,8 @@ func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp
 // upstream's status as error.code exactly as the buffered path records it.
 // Two of the errors that reach here are the proxy's own cuts, not the
 // upstream's — the idle read cutoff and the per-frame size cap — and both
-// record proxy_error, the kind CLAUDE.md reserves for "the one that is
-// ours", exactly as the buffered path records its own size limit. An
+// record proxy_error, the kind docs/session-api.md reserves for the proxy's
+// own errors, exactly as the buffered path records its own size limit. An
 // operator reading an upstream_error row should be looking at the network,
 // never at streamReadIdleTimeout.
 //

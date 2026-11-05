@@ -121,7 +121,7 @@ evicted and later re-created under the same id, so it is not a stable sort key
 across a session's whole life.
 
 For the per-field meaning of `inference`, `mcp`, `a2a`, `invocations` and
-`plugins`, see the event schema in `CLAUDE.md` and
+`plugins`, see the event schema in [`session-api.md`](session-api.md#event-schema) and
 [`plugin-reference.md`](plugin-reference.md#emitting-session-events).
 
 ## `--full` writes prompts and completions to disk
@@ -197,4 +197,4 @@ session's newest event with `?before=<seq>`:
 
 `GET /` on the same port returns a one-line-per-endpoint index, which is the
 quickest way to confirm you are talking to the session API at all. The endpoints
-are documented in full in `CLAUDE.md`.
+are documented in full in [`session-api.md`](session-api.md).
