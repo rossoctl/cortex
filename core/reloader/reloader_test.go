@@ -31,7 +31,11 @@ type fakeBuilder struct {
 	// `next` at call time.
 	next atomic.Value // holds builderResult
 	cfg  atomic.Value // holds *config.Config
+	// gate, when set, makes build signal entered and wait for release.
+	gate atomic.Pointer[buildGate]
 }
+
+type buildGate struct{ entered, release chan struct{} }
 
 type builderResult struct {
 	inbound  *pipeline.Pipeline
@@ -48,6 +52,10 @@ func (b *fakeBuilder) set(r builderResult) {
 }
 
 func (b *fakeBuilder) build() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
+	if g := b.gate.Load(); g != nil {
+		close(g.entered)
+		<-g.release
+	}
 	r := b.next.Load().(builderResult)
 	return r.inbound, r.outbound, r.cfg, r.err
 }
@@ -971,11 +979,15 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
-// shutdownPlugin records how many requests held its pipeline when it was stopped.
+// shutdownPlugin records how many requests held its pipeline when it was stopped
+// and whether its ctx was already done, and with block set, stays in Shutdown
+// until block is closed.
 type shutdownPlugin struct {
 	p       *pipeline.Pipeline
 	held    int64
+	ctxErr  error
 	stopped chan struct{}
+	block   chan struct{}
 }
 
 func (*shutdownPlugin) Name() string { return "shutdown" }
@@ -988,16 +1000,19 @@ func (*shutdownPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Ac
 func (*shutdownPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
-func (s *shutdownPlugin) Shutdown(context.Context) error {
-	s.held = s.p.Held()
+func (s *shutdownPlugin) Shutdown(ctx context.Context) error {
+	s.held, s.ctxErr = s.p.Held(), ctx.Err()
 	close(s.stopped)
+	if s.block != nil {
+		<-s.block
+	}
 	return nil
 }
 
 // storeShutdownPipeline Stores a pipeline of one shutdownPlugin in h.
-func storeShutdownPipeline(t *testing.T, h *pipeline.Holder) *shutdownPlugin {
+func storeShutdownPipeline(t *testing.T, h *pipeline.Holder, block chan struct{}) *shutdownPlugin {
 	t.Helper()
-	sp := &shutdownPlugin{stopped: make(chan struct{})}
+	sp := &shutdownPlugin{stopped: make(chan struct{}), block: block}
 	p, err := pipeline.New([]pipeline.Plugin{sp})
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
@@ -1055,7 +1070,7 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 			committed := make(chan struct{}, 1)
 			_, b, cfgPath, inH, outH := setupWith(t, WithDrainWindow(tc.window),
 				WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
-			idle, busy := storeShutdownPipeline(t, inH), storeShutdownPipeline(t, outH)
+			idle, busy := storeShutdownPipeline(t, inH, nil), storeShutdownPipeline(t, outH, nil)
 
 			pctx := &pipeline.Context{Direction: pipeline.Outbound}
 			outH.Run(context.Background(), pctx)
@@ -1092,6 +1107,93 @@ func TestReloader_StopsAnOldPipelineWhenNoRequestHoldsIt(t *testing.T) {
 					rec.Message, requests, tc.wantLog, tc.wantHeld)
 			}
 		})
+	}
+}
+
+// Close stops the live pipelines and an old one still draining under an open
+// request, each once, before it returns.
+func TestReloader_CloseStopsLiveAndDrainingPipelines(t *testing.T) {
+	committed := make(chan struct{}, 1)
+	r, b, cfgPath, _, outH := setupWith(t, WithDrainWindow(time.Hour),
+		WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
+	draining := storeShutdownPipeline(t, outH, nil)
+	outH.Run(context.Background(), &pipeline.Context{Direction: pipeline.Outbound})
+
+	liveIn, liveOut := pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t))
+	in, out := storeShutdownPipeline(t, liveIn, nil), storeShutdownPipeline(t, liveOut, nil)
+	b.set(builderResult{inbound: liveIn.Load(), outbound: liveOut.Load(), cfg: &config.Config{Mode: "envoy-sidecar"}})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# reloaded\n")
+	<-committed
+
+	// A second Stop of any of them would panic closing its stopped channel.
+	r.Close(context.Background())
+	for name, sp := range map[string]*shutdownPlugin{"inbound": in, "outbound": out, "draining": draining} {
+		select {
+		case <-sp.stopped:
+		default:
+			t.Errorf("the %s pipeline was not stopped by Close", name)
+		}
+	}
+	if draining.held != 1 {
+		t.Errorf("the draining pipeline stopped with %d requests holding it, want 1", draining.held)
+	}
+}
+
+// Close returns by its ctx even while a live pipeline's plugin is still shutting
+// down, and that plugin does not keep the other live pipeline from stopping.
+func TestReloader_CloseDoesNotOutwaitItsContext(t *testing.T) {
+	r, _, _, inH, outH := setup(t)
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	storeShutdownPipeline(t, outH, block)
+	in := storeShutdownPipeline(t, inH, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
+	<-in.stopped
+}
+
+// Close stops the live pipelines without waiting for a reload still building, and
+// that reload stops its own pipelines instead of committing them.
+func TestReloader_CloseDuringABuildStopsLiveAndBuiltPipelines(t *testing.T) {
+	r, b, cfgPath, inH, outH := setup(t)
+	live := storeShutdownPipeline(t, outH, nil)
+	g := &buildGate{entered: make(chan struct{}), release: make(chan struct{})}
+	b.gate.Store(g)
+	builtIn := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+	builtOut := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+	b.set(builderResult{inbound: builtIn.p, outbound: builtOut.p, cfg: &config.Config{Mode: "envoy-sidecar"}})
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# building\n")
+	<-g.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
+	<-live.stopped // while the build is still blocked
+
+	close(g.release)
+	<-builtIn.stopped
+	<-builtOut.stopped
+	if inH.Load() == builtIn.p || outH.Load() == builtOut.p {
+		t.Error("a reload committed its pipelines after Close began")
+	}
+}
+
+// Once Close has begun, an old pipeline is stopped on Close's ctx, even when its
+// drain is what woke it.
+func TestReloader_StopsOnTheCloseContextOnceClosing(t *testing.T) {
+	r, _, _, _, _ := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.Close(ctx)
+	// Repeated because select picks among the ready drain and close cases at random.
+	for range 20 {
+		sp := storeShutdownPipeline(t, pipeline.NewHolder(emptyPipeline(t)), nil)
+		r.stopWhenUnheld(sp.p, time.Now().Add(time.Hour))
+		if sp.ctxErr == nil {
+			t.Fatal("stopped on a fresh budget after Close began")
+		}
 	}
 }
 

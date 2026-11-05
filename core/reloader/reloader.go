@@ -13,8 +13,8 @@
 // builds fresh pipelines via the caller-supplied PipelineBuilder,
 // runs their Start hooks under a bounded context, and Stores them
 // into the Holders. Each old pipeline keeps running until no request
-// holds it, or the drain window expires, then Stop is invoked in a
-// background goroutine.
+// holds it, the drain window expires, or Close is called, then Stop is
+// invoked in a background goroutine. Close also Stops the live pipelines.
 //
 // Validation failure at any stage leaves the current pipelines
 // untouched and records the error in Status so operators can see
@@ -135,6 +135,17 @@ type Reloader struct {
 	lastHash string
 	// startData is the config file as New read it.
 	startData []byte
+
+	// cancelLoop and loopDone stop and await the watch goroutine; set by Start.
+	cancelLoop context.CancelFunc
+	loopDone   chan struct{}
+	// Close sets closeCtx, then closes closing, to stop every old pipeline still
+	// draining on closeCtx; drains counts their goroutines. commitMu orders a
+	// reload's commit against Close.
+	closing  chan struct{}
+	closeCtx context.Context
+	drains   sync.WaitGroup
+	commitMu sync.Mutex
 }
 
 // New constructs a Reloader. initialCfg must be the config the caller
@@ -149,6 +160,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		drainWindow:  10 * time.Minute,
 		debounce:     250 * time.Millisecond,
 		startTimeout: 60 * time.Second,
+		closing:      make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -170,7 +182,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 
 // Start arms the watcher. Blocks until the watcher is ready or fails
 // to arm (invalid directory, fsnotify init error). Returns nil on
-// success; the watch goroutine then runs until ctx is cancelled.
+// success; the watch goroutine then runs until ctx is cancelled or Close.
 //
 // Safe to call at most once. A Reloader whose Start returned an error
 // is not usable — construct a new one.
@@ -240,7 +252,12 @@ func (r *Reloader) Start(ctx context.Context) error {
 		r.seedHash()
 	}
 
-	go r.watchLoop(ctx, watcher)
+	ctx, r.cancelLoop = context.WithCancel(ctx)
+	r.loopDone = make(chan struct{})
+	go func() {
+		defer close(r.loopDone)
+		r.watchLoop(ctx, watcher)
+	}()
 	slog.Info("reloader: watching for config changes",
 		"path", r.configPath, "dir", dir, "drainWindow", r.drainWindow)
 	return nil
@@ -405,7 +422,7 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	}
 	if err := newOut.Start(startCtx); err != nil {
 		// Inbound started cleanly; unwind it before bailing.
-		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		unwindCtx, unwindCancel := r.stopCtx()
 		defer unwindCancel()
 		newIn.Stop(unwindCtx)
 		r.recordFailure(attempt, fmt.Errorf("outbound Start: %w", err))
@@ -415,12 +432,23 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	// Commit: swap Holders and update active-config snapshot. From
 	// here on, requests drain onto the new pipelines; old in-flight
 	// requests keep their existing *Pipeline reference.
+	r.commitMu.Lock()
+	select {
+	case <-r.closing:
+		r.commitMu.Unlock()
+		newOut.Stop(r.closeCtx)
+		newIn.Stop(r.closeCtx)
+		return
+	default:
+	}
 	oldIn := r.inbound.Load()
 	oldOut := r.outbound.Load()
 	r.inbound.Store(newIn)
 	r.outbound.Store(newOut)
 	r.activeCfg.Store(newCfg)
 	r.lastHash = hash
+	r.drains.Add(1)
+	r.commitMu.Unlock()
 
 	// After the swap, so a hook cannot observe a config that was refused, and before the log line, so
 	// "pipelines swapped" means everything this reload applies has been applied.
@@ -432,16 +460,16 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 		"sha256", hash[:12],
 		"drainWindow", r.drainWindow)
 
-	// Drain old pipelines in the background. Using context.Background
-	// deliberately: parent may cancel during shutdown, and we still
-	// want a bounded Stop on the old plugins so they flush cleanly.
+	// Drain old pipelines in the background, on their own Stop budget rather than
+	// parent's; Close cuts the drain short at shutdown.
 	go func() {
+		defer r.drains.Done()
 		deadline := time.Now().Add(r.drainWindow)
 		var remaining atomic.Int64
 		var wg sync.WaitGroup
 		for _, p := range []*pipeline.Pipeline{oldIn, oldOut} {
 			if p != nil {
-				wg.Go(func() { remaining.Add(stopWhenUnheld(p, deadline)) })
+				wg.Go(func() { remaining.Add(r.stopWhenUnheld(p, deadline)) })
 			}
 		}
 		wg.Wait()
@@ -461,9 +489,9 @@ func (r *Reloader) reloadOnce(parent context.Context, watcher *fsnotify.Watcher)
 	r.recordSuccess(attempt, hash)
 }
 
-// stopWhenUnheld Stops p once no request holds it, or at deadline, and returns how
-// many requests still held it then.
-func stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
+// stopWhenUnheld Stops p once no request holds it, at deadline, or on Close, and
+// returns how many requests still held it then.
+func (r *Reloader) stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	var n int64
@@ -471,11 +499,55 @@ func stopWhenUnheld(p *pipeline.Pipeline, deadline time.Time) int64 {
 	case <-p.Drained():
 	case <-timer.C:
 		n = p.Held()
+	case <-r.closing:
+		n = p.Held()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := r.stopCtx()
 	defer cancel()
 	p.Stop(ctx)
 	return n
+}
+
+// stopCtx is the budget for a Stop: Close's ctx once Close has begun, else 15s.
+func (r *Reloader) stopCtx() (context.Context, context.CancelFunc) {
+	select {
+	case <-r.closing:
+		return r.closeCtx, func() {}
+	default:
+		return context.WithTimeout(context.Background(), 15*time.Second)
+	}
+}
+
+// Close stops reloading, then Stops the live pipelines and every old one still
+// draining; a reload still building Stops its pipelines instead. It returns when
+// they are stopped or ctx is done, whichever is first; a plugin still shutting
+// down then finishes in the background. Call it once, after the listeners have
+// stopped.
+func (r *Reloader) Close(ctx context.Context) {
+	r.closeCtx = ctx
+	r.commitMu.Lock()
+	close(r.closing)
+	liveIn, liveOut := r.inbound.Load(), r.outbound.Load()
+	r.commitMu.Unlock()
+	if r.cancelLoop != nil {
+		r.cancelLoop()
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var live sync.WaitGroup
+		live.Go(func() { liveOut.Stop(ctx) })
+		live.Go(func() { liveIn.Stop(ctx) })
+		live.Wait()
+		r.drains.Wait()
+		if r.loopDone != nil {
+			<-r.loopDone
+		}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // hash is what decides whether a reload has anything to do: the config's bytes,

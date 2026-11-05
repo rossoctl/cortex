@@ -355,8 +355,7 @@ func main() {
 		sessionAPISrv.Shutdown(shutdownCtx)
 	}
 
-	outboundPipeline.Stop(shutdownCtx)
-	inboundPipeline.Stop(shutdownCtx)
+	rld.Close(shutdownCtx)
 
 	if sessions != nil {
 		sessions.Close()

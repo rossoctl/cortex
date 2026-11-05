@@ -460,8 +460,7 @@ if err := outboundPipeline.Start(initCtx); err != nil {
 // ... serve traffic ...
 
 // After listeners have drained (a pod) or closed (a local install) on SIGTERM:
-outboundPipeline.Stop(shutdownCtx) // reverse order within each pipeline
-inboundPipeline.Stop(shutdownCtx)
+rld.Close(shutdownCtx) // the live pipelines, and any a reload is still draining
 ```
 
 Semantics:
@@ -853,7 +852,7 @@ curl http://localhost:9093/config               # now-active config
 5. Compare the new config to the active one on unreloadable fields (`Mode`, `Listener.*`, `Session.*`, `CostLedger.*`, `MTLS.*`); refuse if they differ (see below).
 6. `Start` the new pipelines with a 60 s budget. On Start failure, `Stop` any partially-started pipelines so their goroutines don't leak.
 7. `inboundH.Store(newIn)` + `outboundH.Store(newOut)` — new requests now route to the new pipelines.
-8. Background goroutine: each old pipeline waits until no request holds it (`Pipeline.Drained`; a request holds from `Run` to `RunFinish`) or the drain window (default 10 min) expires → `oldPipeline.Stop(ctx)` with a 15 s budget. In-flight requests pinned to an old pipeline finish against it; a WARN names how many were still open when the window stopped it. A CONNECT tunnel or WebSocket holds its pipeline until the connection closes, so with a client that keeps one open, the full window and the WARN are the usual outcome, and rapid reloads keep several old pipelines' plugins running until their windows end.
+8. Background goroutine: each old pipeline waits until no request holds it (`Pipeline.Drained`; a request holds from `Run` to `RunFinish`) or the drain window (default 10 min) expires → `oldPipeline.Stop(ctx)` with a 15 s budget. In-flight requests pinned to an old pipeline finish against it; a WARN names how many were still open when the window stopped it. A CONNECT tunnel or WebSocket holds its pipeline until the connection closes, so with a client that keeps one open, the full window and the WARN are the usual outcome, and rapid reloads keep several old pipelines' plugins running until their windows end. `Reloader.Close` at shutdown stops them at once.
 9. `Status.LastSuccess`, `ReloadsOK`, `ActiveConfigSHA256` update atomically.
 
 **What's reloadable, what isn't**
