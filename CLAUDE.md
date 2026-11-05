@@ -8,7 +8,8 @@ This file provides context for Claude (AI assistant) when working with the `cort
   Several Claude Code sessions run against this repo at once. They share one object
   store, which is fine, but a shared *working tree* is not: `git checkout` in one
   session rewrites files under another, and two sessions' uncommitted edits land in one
-  index. Before starting work, from the top-level checkout:
+  index. If this session did not start in its own worktree, then before you start work,
+  run these from the top-level checkout:
 
   ```sh
   # Fetch into a ref only you write, so nothing can move it underneath you.
@@ -24,10 +25,11 @@ This file provides context for Claude (AI assistant) when working with the `cort
   matches the worktree's own copy, and a session started there then loads none. Older
   worktrees under `.worktrees/` still work; create new ones beside the checkout.
 
-  **Then start a new Claude Code session in the worktree** (`cd ../cortex-worktrees/<topic>
-  && claude`). A session cannot move there: when a `cd` goes outside the session's
-  start directory, Claude Code resets the shell to the start directory, so the next
-  command, a `git commit` too, runs in the shared checkout.
+  **Then stop, and ask the user to start a new Claude Code session in the worktree**
+  from a separate terminal (`cd ../cortex-worktrees/<topic> && claude`). Do not run
+  `claude` from this session. This session cannot move there: when a `cd` goes outside
+  the session's start directory, Claude Code resets the shell to the start directory,
+  so the next command, a `git commit` too, runs in the shared checkout.
 
   Stay in the worktree. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear

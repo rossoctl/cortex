@@ -95,9 +95,8 @@ knowing by name:
   what came before this process's entry. **This applies to the default list
   too**, not only with `?archived=true`: with an archive and `session.max_events`
   unset, a restart changes no figure. Without an archive, the figures start over
-  at a restart and the parameter is
-  ignored and no `archive` object is sent — which is how a client tells "no
-  history here" from "no history yet".
+  at a restart, the parameter is ignored, and no `archive` object is sent. That
+  is how a client tells "no history here" from "no history yet".
 
 ## `GET /v1/sessions/{id}` — snapshots and paging
 
