@@ -551,6 +551,9 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
+CI no longer builds the legacy `authbridge-unified`, `authbridge-light`,
+`client-registration` and `spiffe-helper` images. Older release tags still publish them.
+
 ## Pre-commit Hooks
 
 Install: `pre-commit install`

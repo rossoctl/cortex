@@ -114,8 +114,8 @@ mlruns/
 # private key can never be committed from a demo run inside a checkout.
 cortex-ca/
 
-# Local git worktrees (git worktree add .worktrees/<name>). Committing these
-# gitlinks pins another branch's checkout into this tree, which is never wanted.
+# Local git worktrees from the older in-repo layout (.worktrees/<name>).
+# Committing these gitlinks pins another branch's checkout into this tree, which is never wanted.
 .worktrees/
 
 # `go build ./...` inside either scripts/ helper drops its multi-MB

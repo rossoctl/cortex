@@ -71,6 +71,7 @@ them into agent namespaces that don't already have them:
 | `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (format below) |
 | `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
+| `spiffe-helper-config` | ConfigMap (legacy, unused) | nothing | Held `helper.conf` for the `spiffe-helper` binary, which no image bundles now. The demos still list it as expected, but authbridge does not read it: the top-level `spiffe:` block in `authbridge-runtime-config` configures SPIRE. |
 
 **`authproxy-routes` format** (`routes.yaml`):
 ```yaml

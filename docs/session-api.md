@@ -54,12 +54,22 @@ knowing by name:
   own events (a `/rename`, else a `<user_query>`, else ordinary user prose,
   with `<system-reminder>` blocks excised). Folded at append time and
   first-wins, except that a `/rename` always overrides. Nothing addresses a
-  session by its title.
+  session by its title. agentop's `TITLE` column uses it only as a fallback,
+  after a harvested Claude Code transcript title. For its re-harvest backoff,
+  agentop still treats a row with only a served title as unnamed, so it keeps
+  looking for the harvested title.
 - **`inferenceHost`** — the host of the session's most recent request that
   carried an inference parse; after a redirect, the server it was sent to
-  rather than the host the client named. `inferenceHostFromHistory` is `true`
-  when that host came only from the archive's fold, because no request the
-  proxy's current entry for the session holds has set it.
+  rather than the host the client named. Folded at append time, latest wins.
+  Tunnel rows, MCP calls, responses and denials leave it as it was: an event
+  with no inference parse must not clear it. agentop's sessions-table `SERVER`
+  column reads it, and so do the count of running sessions on `S`'s result line
+  and the warning from `agentop server remove`. `inferenceHostFromHistory` is
+  `true` when that host came only from the archive's fold, because no request
+  the proxy's current entry for the session holds has set it. On a local install
+  the inference-router keeps its pins in the plugin store
+  (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
+  counts include such a resumed session.
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
@@ -82,7 +92,10 @@ knowing by name:
   gaps. A session in both is listed once, as its resident row, and that row
   covers the session's whole history: `eventCount`, `totalTokens`, `costMicros`,
   `title`, `agent`, `createdAt` and the rest continue from the archive's fold of
-  what came before this process's entry. Without an archive the parameter is
+  what came before this process's entry. **This applies to the default list
+  too**, not only with `?archived=true`: with an archive and `session.max_events`
+  unset, a restart changes no figure. Without an archive, the figures start over
+  at a restart and the parameter is
   ignored and no `archive` object is sent — which is how a client tells "no
   history here" from "no history yet".
 
@@ -194,7 +207,8 @@ minutes old.
 Clears every session: the in-memory store, and the session archive where one
 runs. **The cost ledger is kept** — spend totals, no content. Answers
 `{sessions, archivedSessions, bytes}`; a failed disk half is a 500 adding
-`archiveError`, with memory cleared regardless.
+`archiveError`, with memory cleared regardless. The store clears under its
+lock before the archive is waited on, for up to 10s.
 
 This is the one state-changing route pair on an unauthenticated API, so both
 are guarded against a browser: DELETE only (a cross-site DELETE needs a
@@ -202,7 +216,8 @@ preflight this server never approves), a loopback `Host` (`localhost`,
 `127.0.0.1` or `::1`, which defeats DNS rebinding), no `Origin` header, and
 the server must have been built with clearing allowed
 (`listener.bind_loopback_only` on a local install). A refusal is a 403
-`{"error": ...}`. agentop's `X` drives it.
+`{"error": ...}`. Each guard is pinned by its own test in
+`core/sessionapi/clear_test.go`. agentop's `X` drives it.
 
 ## `DELETE /v1/sessions/{id}` — erase one session
 
@@ -259,8 +274,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   intent can sit far ahead of the retained tail. Unique within one incarnation
   of a session, not forever: trimming never reuses numbers, but whole-session
   eviction deletes the counter with the entry, so a session re-created under
-  the same id restarts at 1. A paging client must order pages by `at`, not by
-  `seq`. A session archive moves that boundary out to disk: numbering continues
+  the same id restarts at 1. A cursor from before that point is above every
+  event held, so the endpoint answers with the tail: the store cannot tell a
+  re-created session from a trimmed one. A paging client must order pages by
+  `at`, not by `seq`. A session archive moves that boundary out to disk:
+  numbering continues
   across restarts for as long as the archive holds the session, and a rekey
   into an id the archive already holds is refused (the session keeps its old
   id), because the two numberings would collide. A proxy that predates paging
