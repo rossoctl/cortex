@@ -107,7 +107,7 @@ func newVMEgressStack(t *testing.T) (*Registry, *captureSink, *session.Store, *s
 		TrustedSessionID: SessionIDFromRequest,
 	}
 	sink := &captureSink{}
-	return NewRegistry(fp, sink), sink, store, probe
+	return NewRegistry(fp, sink, Limits{}), sink, store, probe
 }
 
 // registerTCPVM binds a listener and hands it to the registry as a VM's
@@ -558,7 +558,7 @@ func newVMEgressStackWithAllow(t *testing.T, entries ...string) (*Registry, *cap
 		EgressAllow:      allow,
 	}
 	sink := &captureSink{}
-	return NewRegistry(fp, sink), sink, store
+	return NewRegistry(fp, sink, Limits{}), sink, store
 }
 
 // rowsIn is how many session rows a bucket holds.
@@ -719,7 +719,7 @@ func TestRegistry_TrustedSessionSurvivesSessionsDisabled(t *testing.T) {
 		Client:           http.DefaultClient,
 		TrustedSessionID: SessionIDFromRequest,
 	}
-	reg := NewRegistry(fp, &captureSink{})
+	reg := NewRegistry(fp, &captureSink{}, Limits{})
 	addr := registerTCPVM(t, reg, "vm-c", "sid-c")
 
 	c := guest(t, addr)
@@ -765,7 +765,7 @@ func TestVMBinding_AbortedWindowAnswers503(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln)
+	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln, 1, &sessionBudget{max: 1})
 
 	// Enter the window: aborted set, connections not yet closed.
 	b.close()

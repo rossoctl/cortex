@@ -1,11 +1,58 @@
 package vmcontrol
 
 import (
+	"bytes"
+	"io"
 	"net"
+	"net/http"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
+
+// Limits bounds what one VM, and one session, may consume.
+type Limits struct {
+	// MaxConnsPerVM bounds one VM's concurrent connections. A connection past
+	// it is refused as it is accepted, before any of it is read: answered 429
+	// conn_cap, or closed unanswered while maxCapAnswersPerVM answers are in
+	// flight. A slot frees when its connection closes.
+	MaxConnsPerVM int
+	// MaxRequestsPerSession bounds how many requests one session sends,
+	// summed across all of its VMs. Each plain request, each CONNECT and each
+	// request decrypted inside a bridged tunnel counts one. A request past it
+	// is answered 429 request_cap, goes no further, and its connection is
+	// closed. The count lives while any VM of the session is registered and
+	// starts again at zero after the last one unregisters.
+	MaxRequestsPerSession int
+}
+
+// The default limits are moca-egress's, so a deployment moving from it keeps
+// its bounds.
+const (
+	DefaultMaxConnsPerVM         = 32
+	DefaultMaxRequestsPerSession = 10000
+)
+
+// Bounds on answering connections over the cap. They are safety bounds, not
+// policy, so they are not configurable.
+const (
+	// maxCapAnswersPerVM is how many conn_cap answers one VM may have in
+	// flight. Past it a refused connection is closed with no answer, so a
+	// guest in a tight loop cannot grow the shared process's fds.
+	maxCapAnswersPerVM = 8
+	// capDrainBytes bounds the read after an answer, which lets a guest that
+	// already sent its request read the 429 rather than a reset.
+	capDrainBytes = 64 << 10
+	// capAnswerTimeout bounds how long one answer may hold its connection.
+	capAnswerTimeout = time.Second
+)
+
+// capEventEvery is how many conn_cap refusals one audit event may stand for,
+// between admissions. moca-egress coalesces per second instead.
+const capEventEvery = 64
 
 // Registry is the control channel's Handler: it binds each handed-over
 // listener to the forward proxy, one binding per VM, and tears bindings down
@@ -13,18 +60,33 @@ import (
 // serves every VM; which listener accepted the connection is the identity
 // (#1477), carried into the pipeline through the request context.
 type Registry struct {
-	fp   *forwardproxy.Server
-	sink AuditSink
+	fp     *forwardproxy.Server
+	sink   AuditSink
+	limits Limits
 
-	mu  sync.Mutex
-	vms map[string]*vmBinding
+	mu       sync.Mutex
+	vms      map[string]*vmBinding
+	sessions map[string]*sessionBudget
 }
 
 // NewRegistry returns a Registry serving every registered VM's traffic
-// through fp, emitting audit events to sink.
-func NewRegistry(fp *forwardproxy.Server, sink AuditSink) *Registry {
-	return &Registry{fp: fp, sink: sink, vms: map[string]*vmBinding{}}
+// through fp, emitting audit events to sink. A field of limits that is not
+// positive takes its default.
+func NewRegistry(fp *forwardproxy.Server, sink AuditSink, limits Limits) *Registry {
+	if limits.MaxConnsPerVM <= 0 {
+		limits.MaxConnsPerVM = DefaultMaxConnsPerVM
+	}
+	if limits.MaxRequestsPerSession <= 0 {
+		limits.MaxRequestsPerSession = DefaultMaxRequestsPerSession
+	}
+	return &Registry{
+		fp: fp, sink: sink, limits: limits,
+		vms: map[string]*vmBinding{}, sessions: map[string]*sessionBudget{},
+	}
 }
+
+// Limits returns the limits in force, defaults applied.
+func (r *Registry) Limits() Limits { return r.limits }
 
 // Register binds vmID's listener. The Registry owns ln from here on.
 //
@@ -36,10 +98,13 @@ func (r *Registry) Register(vmID, sessionID string, grant []byte, ln net.Listene
 	if len(grant) != 0 {
 		return &RefusalError{Code: CodeBadRequest, Message: "grants are not supported in this slice (MI1 S2)"}
 	}
-	b := newVMBinding(r.fp, r.sink, vmID, sessionID, ln)
 	r.mu.Lock()
+	b := newVMBinding(r.fp, r.sink, vmID, sessionID, ln, r.limits.MaxConnsPerVM, r.acquire(sessionID))
 	old := r.vms[vmID]
 	r.vms[vmID] = b
+	if old != nil {
+		r.release(old.sid)
+	}
 	r.mu.Unlock()
 	// The control server already refuses a duplicate on the same connection
 	// and supersedes across connections; this covers a Register that reaches
@@ -54,13 +119,16 @@ func (r *Registry) Register(vmID, sessionID string, grant []byte, ln net.Listene
 // Unregister drops vmID's binding. An unknown vmID is not an error.
 //
 // By the time it returns, the listener refuses new dials, every live
-// connection — hijacked tunnels included, which http.Server.Close would leave
-// open — has been closed, and each in-flight request's wrapper has emitted its
-// aborted audit line.
+// connection — hijacked tunnels and conn_cap answers included, which
+// http.Server.Close would leave open — has been closed, and each in-flight
+// request's wrapper has emitted its aborted audit line.
 func (r *Registry) Unregister(vmID string) error {
 	r.mu.Lock()
 	b := r.vms[vmID]
 	delete(r.vms, vmID)
+	if b != nil {
+		r.release(b.sid)
+	}
 	r.mu.Unlock()
 	if b != nil {
 		b.close()
@@ -73,42 +141,145 @@ func (r *Registry) Close() {
 	r.mu.Lock()
 	vms := r.vms
 	r.vms = map[string]*vmBinding{}
+	r.sessions = map[string]*sessionBudget{}
 	r.mu.Unlock()
 	for _, b := range vms {
 		b.close()
 	}
 }
 
+// acquire returns sid's budget for one more registered VM. Caller holds r.mu.
+func (r *Registry) acquire(sid string) *sessionBudget {
+	s := r.sessions[sid]
+	if s == nil {
+		s = &sessionBudget{max: int64(r.limits.MaxRequestsPerSession)}
+		r.sessions[sid] = s
+	}
+	s.vms++
+	return s
+}
+
+// release drops one registered VM's hold on sid's budget, and the budget with
+// the last one. Caller holds r.mu.
+func (r *Registry) release(sid string) {
+	if s := r.sessions[sid]; s != nil {
+		if s.vms--; s.vms == 0 {
+			delete(r.sessions, sid)
+		}
+	}
+}
+
+// sessionBudget is one session's request count, shared by its VMs' bindings.
+type sessionBudget struct {
+	max  int64
+	used atomic.Int64
+	vms  int // guarded by Registry.mu
+}
+
+// charge counts one request and reports whether it is within the cap.
+func (s *sessionBudget) charge() bool { return s.used.Add(1) <= s.max }
+
 // trackedListener records every accepted connection so Unregister can close
-// them all. http.Server.Close closes only the conns it still owns; a hijacked
-// CONNECT tunnel is the handler's, and an aborted VM's tunnel must not outlive
-// its Unregister.
+// them all, and turns away a connection past maxConns as it is accepted.
+// http.Server.Close closes only the conns it still owns; a hijacked CONNECT
+// tunnel is the handler's, and an aborted VM's tunnel must not outlive its
+// Unregister.
 type trackedListener struct {
-	inner net.Listener
+	inner    net.Listener
+	maxConns int
+	// refused takes each connection over the cap, with what to do about it.
+	refused func(net.Conn, capRefusal)
 
 	mu    sync.Mutex
 	conns map[*trackedConn]struct{} // nil once closed
+	// answering holds the conn_cap answers in flight. reported is set once a
+	// refusal has been reported since the last admission, and suppressed
+	// counts the refusals since the last report.
+	answering  map[net.Conn]struct{}
+	reported   bool
+	suppressed uint64
+	answers    sync.WaitGroup
 }
 
-func newTrackedListener(inner net.Listener) *trackedListener {
-	return &trackedListener{inner: inner, conns: map[*trackedConn]struct{}{}}
+// capRefusal is how one connection over the cap is turned away.
+type capRefusal struct {
+	answer    bool   // write the 429; otherwise close at once
+	report    bool   // emit an audit event
+	coalesced uint64 // earlier refusals that event stands for
+}
+
+func newTrackedListener(inner net.Listener, maxConns int, refused func(net.Conn, capRefusal)) *trackedListener {
+	return &trackedListener{
+		inner: inner, maxConns: maxConns, refused: refused,
+		conns: map[*trackedConn]struct{}{}, answering: map[net.Conn]struct{}{},
+	}
 }
 
 func (l *trackedListener) Accept() (net.Conn, error) {
-	c, err := l.inner.Accept()
-	if err != nil {
-		return nil, err
-	}
-	l.mu.Lock()
-	if l.conns == nil {
+	for {
+		c, err := l.inner.Accept()
+		if err != nil {
+			return nil, err
+		}
+		l.mu.Lock()
+		if l.conns == nil {
+			l.mu.Unlock()
+			_ = c.Close()
+			return nil, net.ErrClosed
+		}
+		if len(l.conns) >= l.maxConns {
+			d := l.chargeCap(c)
+			l.mu.Unlock()
+			l.refused(c, d)
+			continue
+		}
+		l.reported = false
+		tc := &trackedConn{Conn: c, ln: l}
+		l.conns[tc] = struct{}{}
 		l.mu.Unlock()
-		_ = c.Close()
-		return nil, net.ErrClosed
+		return tc, nil
 	}
-	tc := &trackedConn{Conn: c, ln: l}
-	l.conns[tc] = struct{}{}
-	l.mu.Unlock()
-	return tc, nil
+}
+
+// chargeCap decides how c, over the cap, is turned away. The first refusal
+// since the last admission is reported, and so is every capEventEvery-th
+// after it. An answer is tracked until answerCap ends it. Caller holds l.mu.
+func (l *trackedListener) chargeCap(c net.Conn) capRefusal {
+	d := capRefusal{answer: len(l.answering) < maxCapAnswersPerVM}
+	if d.answer {
+		l.answering[c] = struct{}{}
+		l.answers.Add(1)
+	}
+	if l.reported && l.suppressed < capEventEvery-1 {
+		l.suppressed++
+		return d
+	}
+	d.report, d.coalesced = true, l.suppressed
+	l.reported, l.suppressed = true, 0
+	return d
+}
+
+// answerCap writes the conn_cap refusal naming vmID to c and closes it,
+// within capAnswerTimeout. It releases the answer slot chargeCap took.
+func (l *trackedListener) answerCap(c net.Conn, vmID string) {
+	defer l.answers.Done()
+	defer func() {
+		l.mu.Lock()
+		delete(l.answering, c)
+		l.mu.Unlock()
+	}()
+	status, h, body := pipeline.MocaRefusal(http.StatusTooManyRequests, DecisionConnCap, vmID).Violation.Render()
+	resp := &http.Response{
+		StatusCode: status, ProtoMajor: 1, ProtoMinor: 1, Header: h,
+		ContentLength: int64(len(body)), Body: io.NopCloser(bytes.NewReader(body)), Close: true,
+	}
+	_ = c.SetDeadline(time.Now().Add(capAnswerTimeout))
+	_ = resp.Write(c)
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(c, capDrainBytes))
+	_ = c.Close()
 }
 
 // Close is the net.Listener method: it stops accepting but leaves live
@@ -120,16 +291,25 @@ func (l *trackedListener) Close() error {
 
 func (l *trackedListener) Addr() net.Addr { return l.inner.Addr() }
 
-// closeAll closes the listener and every tracked connection.
+// closeAll closes the listener and every tracked connection, and waits for
+// the conn_cap answers in flight to end.
 func (l *trackedListener) closeAll() {
 	_ = l.inner.Close()
 	l.mu.Lock()
 	conns := l.conns
 	l.conns = nil
+	var answering []net.Conn
+	for c := range l.answering {
+		answering = append(answering, c)
+	}
 	l.mu.Unlock()
 	for c := range conns {
 		_ = c.Close()
 	}
+	for _, c := range answering {
+		_ = c.Close()
+	}
+	l.answers.Wait()
 }
 
 func (l *trackedListener) remove(c *trackedConn) {

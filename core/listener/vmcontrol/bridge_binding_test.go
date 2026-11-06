@@ -90,7 +90,7 @@ func newBridgedVMEgressStack(t *testing.T) (*Registry, *captureSink, *session.St
 		TLSBridge:           engine,
 	}
 	sink := &captureSink{}
-	return NewRegistry(fp, sink), sink, store, probe, authority, roots, &originSaw
+	return NewRegistry(fp, sink, Limits{}), sink, store, probe, authority, roots, &originSaw
 }
 
 // bridgedGuestGet opens a CONNECT through a VM socket, completes TLS against

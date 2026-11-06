@@ -200,8 +200,9 @@ type Server struct {
 	//
 	// connect is the CONNECT request as the listener's wrapper saw it, so a
 	// hook can read the identity it stamped there; r is the decrypted request
-	// to decorate. The returned request replaces r.
-	AdoptBridgedRequest func(connect, r *http.Request) *http.Request
+	// to decorate. The returned request replaces r. ok false refuses r: the
+	// hook has answered it on w, and nothing else runs for it.
+	AdoptBridgedRequest func(w http.ResponseWriter, connect, r *http.Request) (adopted *http.Request, ok bool)
 
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
@@ -1896,8 +1897,9 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 		// it stamped on or stripped from the CONNECT has to be redone here, or
 		// the guest's own headers decide the session (#1569 review).
 		if s.AdoptBridgedRequest != nil && tl.connect != nil {
-			if adopted := s.AdoptBridgedRequest(tl.connect, r); adopted != nil {
-				r = adopted
+			var ok bool
+			if r, ok = s.AdoptBridgedRequest(w, tl.connect, r); !ok {
+				return
 			}
 		}
 		r.URL.Scheme = "https"
