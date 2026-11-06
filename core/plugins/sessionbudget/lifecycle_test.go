@@ -57,6 +57,7 @@ func TestFullLifecycle_DurationEnforcement(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: "dur-sess"},
+		SessionID: "dur-sess",
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{TotalTokens: 10},
 		},
@@ -72,6 +73,7 @@ func TestFullLifecycle_DurationEnforcement(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: "dur-sess"},
+		SessionID: "dur-sess",
 	})
 	if action.Type != pipeline.Reject {
 		t.Fatalf("expected Reject after duration exceeded, got %v", action.Type)

@@ -26,6 +26,8 @@ type identityProbePlugin struct {
 	sawEvents []int
 	sawSource []pipeline.SessionSource
 	sawHeader []string
+	// sawSessionID is pctx.SessionID, recorded for every request beside sawID.
+	sawSessionID []string
 }
 
 func (p *identityProbePlugin) Name() string { return "identity-probe" }
@@ -33,6 +35,7 @@ func (p *identityProbePlugin) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{}
 }
 func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	p.sawSessionID = append(p.sawSessionID, pctx.SessionID)
 	if pctx.Session == nil {
 		p.sawNil = append(p.sawNil, true)
 		p.sawID = append(p.sawID, "")
@@ -228,6 +231,23 @@ func TestPluginIdentity_NoSessionAtAllStaysNil(t *testing.T) {
 	}
 }
 
+// pctx.SessionID is the view's id when the request has a view, and empty when it has none.
+func TestPluginIdentity_SessionIDIsTheViewID(t *testing.T) {
+	for _, sid := range []string{"511754a6-63e2-47df-bb22-706dc165c344", ""} {
+		store := session.New(5*time.Minute, 100, 0)
+		probe, client, backendURL := newProbedProxy(t, store)
+		get(t, client, backendURL, sid)
+		store.Close()
+		if len(probe.sawID) != 1 {
+			t.Fatalf("probe ran %d times, want 1", len(probe.sawID))
+		}
+		if probe.sawNil[0] != (sid == "") || probe.sawID[0] != sid || probe.sawSessionID[0] != sid {
+			t.Errorf("header %q: nil view %v, view id %q, SessionID %q; want SessionID and view id %q",
+				sid, probe.sawNil[0], probe.sawID[0], probe.sawSessionID[0], sid)
+		}
+	}
+}
+
 // flipAndRejectPlugin reproduces the interleaving that makes re-resolution
 // unsafe: it appends an event under an unrelated session (flipping the global
 // ActiveSession, exactly as a health probe under "default" does) and then
@@ -337,7 +357,7 @@ func (p *pinHijackPlugin) OnResponse(_ context.Context, _ *pipeline.Context) pip
 // TestPinIsNotPluginWritable guards the hazard created by resolving the identity
 // before the pipeline runs: OutboundSessionID is exported, so a plugin that
 // writes it could re-file both the request and its paired response event.
-// resolveOutboundSessionID's own contract forbids exactly that — a plugin must
+// recordingSessionID's own contract forbids exactly that — a plugin must
 // not silently re-file telemetry, and it would fail invisibly because "" means
 // "fall back", never an error. The listener's resolution must win.
 func TestPinIsNotPluginWritable(t *testing.T) {
@@ -376,7 +396,7 @@ func TestPinIsNotPluginWritable(t *testing.T) {
 }
 
 // TestSessionViewFor_NilStoreDoesNotPanic holds sessionViewFor to the convention
-// resolveOutboundSessionID states thirty lines above it — safe to call with a nil
+// recordingSessionID states in server.go — safe to call with a nil
 // store, so a future caller that forgets the guard gets a usable answer rather
 // than a panic. Both current callers guard, so this is latent by design.
 func TestSessionViewFor_NilStoreDoesNotPanic(t *testing.T) {

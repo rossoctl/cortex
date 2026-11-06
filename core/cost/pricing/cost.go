@@ -113,8 +113,9 @@ const MaxPlausibleTokens = maxPlausibleTokens
 // NOT A VENDOR CARVE-OUT. It reads the rate, never the provider, so the first Anthropic
 // model past the bound is dropped on the same terms as the OpenAI o-series and gpt-*-pro
 // tiers that prompted it. Written when bundling OpenAI brought in o1-pro at $600/Mtok,
-// whose 10x-resolved rate is 6x this ceiling; 10 of 257 rows fell to it, none of them a
-// model any supported agent selects.
+// whose 10x-resolved rate is 6x this ceiling; 10 of 257 rows fell to it then, and 13 at
+// the pinned commit, none of them a model any supported agent selects. The downloaded
+// price list goes through the same generator, so the rule drops the same rows there too.
 //
 // The alternative was raising maxPlausibleMicrosPerToken to fit, and the arithmetic argued
 // against it: the dearest REAL call is a 1M-token context at that rate, $600, or $6,000

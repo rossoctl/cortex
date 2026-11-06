@@ -172,6 +172,7 @@ func makePctx(sessionID string, totalTokens int) *pipeline.Context {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: sessionID},
+		SessionID: sessionID,
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{
 				TotalTokens: totalTokens,
@@ -239,6 +240,7 @@ func TestOnResponseFrame_NoInference(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: "sess-1"},
+		SessionID: "sess-1",
 	}
 
 	action := p.OnResponseFrame(context.Background(), pctx, nil, true)
@@ -1300,6 +1302,7 @@ func TestOnRequest_EmptySessionViewStillEnforces(t *testing.T) {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: "sess-fresh"},
+		SessionID: "sess-fresh",
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{},
 		},

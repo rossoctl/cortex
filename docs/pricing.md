@@ -119,7 +119,9 @@ rate. Ten rows exceed it on their list rate (`o1-pro` at $600/Mtok, and the
 above-272k output rate, at $112.50/Mtok (`daybreak-red-latest`, `gpt-5.6-cyber`,
 `gpt-daybreak-red-latest`), and those are dropped whole rather than shipped at a list
 rate that would under-price exactly the long requests the tier exists for. All thirteen
-report as *priceable but unpriced* and take a `pricing:` entry of your own. Nothing about
+report as *priceable but unpriced* and take a `pricing:` entry of your own. The
+downloaded price list applies the same rule, so the download does not price them either,
+and it drops a newer model past the bound the same way. Nothing about
 this is vendor-specific: it is written on the rate, so the first Anthropic model past the
 bound goes the same way.
 

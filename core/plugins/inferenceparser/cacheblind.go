@@ -102,7 +102,7 @@ func (p *InferenceParser) reportCacheBlind(pctx *pipeline.Context, settled settl
 	p.blind.mu.Unlock()
 
 	log.Warn("pricing: the gateway's cost header omits cache cost, so the rate table was charged",
-		"endpoint", pctx.Host,
+		"endpoint", pipeline.SanitizeLogValue(pctx.Host),
 		"model", inf.Model,
 		"header_usd", fmt.Sprintf("%.6f", settled.ReportedUSD),
 		"charged_usd", fmt.Sprintf("%.6f", settled.CostUSD),

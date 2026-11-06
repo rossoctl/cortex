@@ -124,6 +124,15 @@ type fixture struct {
 	// row instead.
 	refusedPreRunBy map[string]bool
 
+	// unrecordedBy names the listeners that serve the request and write NO row
+	// for the phase under test. A listener named here fails if it records one.
+	// The pipeline was not refused, so this is not refusedPreRunBy: the extproc
+	// driver sends the response phase and expects no ImmediateResponse.
+	//
+	// A divergence fixture does not set it. assertDivergence derives it from
+	// its rows' noRow, as it derives refusedPreRunBy.
+	unrecordedBy map[string]bool
+
 	// expectedWireStatus, when non-zero, is asserted against every
 	// listener's wire status. Meaningful whenever the listener produced a
 	// status of its own: a pre-pipeline refusal (pipelineRefusedPreRun) or
@@ -807,6 +816,15 @@ func extprocWireStatus(stream *mockStream) int {
 func finalizeObservation(t *testing.T, f fixture, listener string, obs *observation, wireStatus int) *observation {
 	t.Helper()
 	refused := f.refusedPreRun(listener)
+	if f.unrecordedBy[listener] {
+		if obs != nil {
+			t.Errorf("fixture %q expected %s to record no row for this phase, but it recorded one", f.name, listener)
+			return nil
+		}
+		// No event to read, so the fields stay zero. PipelineRan is true
+		// because the listener did not refuse. The wire status says so.
+		return &observation{PipelineRan: true, WireStatus: wireStatus}
+	}
 	if obs == nil {
 		if !refused {
 			// Two fixture shapes reach here and the remedy is NOT the same one.
@@ -817,7 +835,7 @@ func finalizeObservation(t *testing.T, f fixture, listener string, obs *observat
 			// its remedy is pipelineRan: false on this listener's row. Naming
 			// only the fixture fields sent half the callers to a knob
 			// assertDivergence ignores or refuses.
-			t.Errorf("no session event recorded for fixture %q on %s; if that is expected: an assertParity fixture sets pipelineRefusedPreRun or refusedPreRunBy[%q], an assertDivergence fixture sets pipelineRan: false on the %q row", f.name, listener, listener, listener)
+			t.Errorf("no session event recorded for fixture %q on %s; if that is expected: an assertParity fixture sets pipelineRefusedPreRun, refusedPreRunBy[%q] or unrecordedBy[%q], an assertDivergence fixture sets pipelineRan: false or noRow: true on the %q row", f.name, listener, listener, listener, listener)
 			return nil
 		}
 		return &observation{PipelineRan: false, WireStatus: wireStatus}

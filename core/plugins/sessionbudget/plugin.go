@@ -807,8 +807,8 @@ func (p *SessionBudget) refreshCache() {
 }
 
 func (p *SessionBudget) sessionID(pctx *pipeline.Context) string {
-	if pctx.Session != nil && pctx.Session.ID != "" {
-		return pctx.Session.ID
+	if pctx.SessionID != "" {
+		return pctx.SessionID
 	}
 	// Opt-in fallback for single-workload deployments where all sessionless
 	// egress should share one bucket. Off by default; callers with no
