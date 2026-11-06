@@ -13,10 +13,10 @@ Each case has these files:
 | `response.headers` | Optional. The response headers that the parser reads: `Content-Type` and `X-Litellm-Model-Name`. Without it, the test sets only the Content-Type from the body file's extension |
 | `expected.json` | The `pipeline.InferenceExtension` that the parser makes, as indented JSON |
 
-The test parses each case two times: with the whole response body (`OnResponse`), and
-frame by frame (`OnResponseFrame`, one call for each SSE event). The two results must be
-equal. `OnResponse` is a defence-in-depth path, not the live path: `RunResponse` skips a
-`StreamingResponder`, and the live JSON path is one `last=true` frame.
+The test parses each case two times: with the whole response body (one `OnResponseFrame`
+call with `last=true`, as a listener does), and frame by frame (`OnResponseFrame`, one call
+for each SSE event). The two results must be equal. `RunResponse` skips `OnResponse` for a
+`StreamingResponder`, so the test does not call it.
 
 ## Capture and scrub procedure
 

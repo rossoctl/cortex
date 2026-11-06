@@ -1,0 +1,241 @@
+package inferencerouter
+
+import "github.com/rossoctl/cortex/core/pipeline"
+
+// decideUnpinned is the server for a request in a session its agent holds no pin on,
+// and whether the request decides the session's pin. ext is the request's parse, nil
+// when no parser read it as inference. lastServer is the server the session's history
+// shows the agent already uses, and is called only when the agent is routed. In order:
+//
+//  1. An agent that is not routed is left alone, whatever its history.
+//  2. The server the session's history shows the agent already uses.
+//  3. A request no parser read as inference goes to the agent's current choice and
+//     decides nothing.
+//  4. A Claude Code request's own turn (see turnOf): a conversation's opening turn
+//     goes to the agent's current choice; a continuation, a conversation the router
+//     did not see begin, is not routed; a side request decides nothing, and goes to
+//     the agent's current choice when it is a one-shot or was captured, and is not
+//     routed when it is a subagent's to a server's host. turn names the last two,
+//     for the record.
+//  5. The agent's current choice.
+func decideUnpinned(choice string, ext *pipeline.InferenceExtension, captured bool, lastServer func() (string, bool)) (server, turn string, decides bool) {
+	if choice == "" {
+		return "", "", true
+	}
+	if server, ok := lastServer(); ok {
+		return server, "", true
+	}
+	if ext == nil {
+		return choice, "", false
+	}
+	switch turnOf(ext) {
+	case turnContinuation:
+		return "", turnContinuation, true
+	case turnAside:
+		// A one-shot is sent beside the main conversation and is no part of it, so the
+		// agent's server answering it moves nothing. A subagent's request is a
+		// conversation of its own, which may be running already, so it is left where
+		// Claude Code sent it unless captured: then leaving it would send the user's
+		// credential to the provider the agent was routed away from.
+		if captured || ext.AgentRole == pipeline.AgentRoleMain {
+			return choice, turnAside, false
+		}
+		return "", turnAside, false
+	}
+	return choice, "", true
+}
+
+// serverFacts are the facts decideServer reads about a request's session.
+type serverFacts struct {
+	agent, choice string
+	// session is whether the request has a session to pin: an id that is not
+	// synthetic, and a pin store.
+	session bool
+	// over is the session's sessions: entry when overridden.
+	over       string
+	overridden bool
+	// had is the pin the store holds for the session when pinned.
+	had    pin
+	pinned bool
+}
+
+// decideServer is the server for a request, "" for not routed, the session pin it
+// leaves, and whether the session's loaded pin, f.had, is kept (renewed). unpinned is
+// decideUnpinned for the request, and is called only when no override applies and the
+// agent holds no pin. The returned pinning has no store, key or agent: the caller sets
+// them.
+//
+// Without a session to pin, the agent's choice applies and nothing is pinned: a
+// synthetic session's history is many conversations', not this one's. Otherwise, in
+// order:
+//
+//  1. A sessions: override is the user's explicit move: it beats the pin and every
+//     unpinned rule, and the pin follows it, so removing the entry later does not
+//     move the session back. A session already pinned to the override keeps its pin
+//     (pinExisting). A session pinned elsewhere moves (pinMoved, from its old
+//     server). A session that held no pin of its agent's is pinNew.
+//  2. A session its agent already pinned uses its pin, "not routed" included, so
+//     routing an agent later does not move the sessions it already has running. Every
+//     request renews the pin. A pin to a server no longer configured is still the
+//     answer: OnRequest denies the request rather than move the conversation.
+//  3. A pin that is another agent's is neither followed nor overwritten: the request
+//     goes where unpinned says, and pins nothing.
+//  4. Otherwise unpinned decides, and the pin comes back pinNew for OnRequest to
+//     settle by where the request went (see the package doc), or pinNone when the
+//     request decides nothing.
+//
+// Two first requests of one session racing can both miss and both store. They store
+// the same outcome unless a reload lands between them, which is the case the pin
+// cannot rule out and does not need to.
+func decideServer(f serverFacts, unpinned func() (server, turn string, decides bool)) (server string, pn pinning, keep bool) {
+	if !f.session {
+		return f.choice, pinning{state: pinNone}, false
+	}
+	if f.overridden {
+		pn = pinning{state: pinNew, override: true}
+		if f.pinned && f.had.belongsTo(f.agent) {
+			if f.had.server == f.over {
+				pn.state, keep = pinExisting, true
+			} else {
+				pn.state, pn.from = pinMoved, f.had.server
+			}
+		}
+		return f.over, pn, keep
+	}
+	if f.pinned {
+		if !f.had.belongsTo(f.agent) {
+			server, _, _ := unpinned()
+			return server, pinning{state: pinNone}, false
+		}
+		return f.had.server, pinning{state: pinExisting}, true
+	}
+	server, turn, decides := unpinned()
+	if !decides {
+		return server, pinning{state: pinNone, turn: turn}, false
+	}
+	return server, pinning{state: pinNew, turn: turn}, false
+}
+
+// redirectOutcome is where a routed request's redirect left it.
+type redirectOutcome int
+
+const (
+	// redirectFailed: Redirect or SetRedirectPath failed, and the request went nowhere.
+	redirectFailed redirectOutcome = iota
+	// redirectStayed: Redirect moved nothing (on_error: observe), and the request goes
+	// where the client sent it.
+	redirectStayed
+	// redirectMoved: the request goes to its server.
+	redirectMoved
+)
+
+// decideSettle is whether a routed request's outcome settles its session's pin to
+// where the request went, or, when false, forgoes it. state is the pin's state from
+// decideServer, and settle and forgo change only a pinNew or pinMoved pin:
+//
+//  1. A request that went nowhere pins nothing: the next request decides again.
+//  2. A request that stayed where the client sent it settles there, so a session
+//     that started under observe stays put once enforce is on. A move an override
+//     would make is forgone: nothing moved, and the pin stands until the move,
+//     once enforce is on, replaces it.
+//  3. A request that moved settles on its server.
+func decideSettle(state string, outcome redirectOutcome) bool {
+	switch outcome {
+	case redirectFailed:
+		return false
+	case redirectStayed:
+		return state != pinMoved
+	}
+	return true
+}
+
+// chooseModelFor is the model a routed request with model requested is sent with,
+// and whether the session keeps it as its substitute for requested. kept is the
+// session's substitute for requested, "" for none. refused is whether the server
+// refused requested within refusedFor, and is called only when nothing is kept.
+// substitute is the server's substitute for the request, "" for none, and is called
+// only when the server refused requested. In order:
+//
+//  1. The session's substitute, so a conversation does not change model part-way.
+//  2. A substitute, kept for the session, when the server refused requested.
+//  3. requested.
+func chooseModelFor(requested, kept string, refused func() bool, substitute func() string) (model string, keep bool) {
+	if kept != "" {
+		return kept, false
+	}
+	if refused() {
+		if sub := substitute(); sub != "" {
+			return sub, true
+		}
+	}
+	return requested, false
+}
+
+// resendFacts are the facts decideResend reads about a refused attempt.
+type resendFacts struct {
+	status  int
+	refusal []byte // the server's answer
+	body    []byte // the request as it was sent
+	// model is the model the body names, "" when hasModel is false.
+	model    string
+	hasModel bool
+	// routed is whether the request's host is a server's.
+	routed bool
+	// parsed is whether the parser read the request as inference, and substituted
+	// whether it was sent with a model other than the agent's.
+	parsed, substituted  bool
+	redirected, switched bool
+	// limitResent is whether the request was resent for a limit already.
+	limitResent bool
+}
+
+// resendStep is what decideResend says to do with a refused attempt. reason is the
+// resend's reason: "" for no resend, "model" or "limit".
+type resendStep struct {
+	reason string
+	// sub is the model to resend with, for "model". "" means the server has no
+	// substitute: the refusal is learned, and the request is not resent.
+	sub string
+	// kind, n and stated are the limit to learn, for "limit".
+	kind   limitKind
+	n      int
+	stated bool
+}
+
+// decideResend is what a refused attempt f gets. substitute is the server's substitute
+// for the request, "" for none, and is called only for a model refusal that can be
+// resent. Each kind of resend is done once per request at most. In order:
+//
+//  1. A refusal of the model (refusesModel) is never read as a limit. It gets
+//     "model" when the request was redirected to a server, was parsed, names a model
+//     and was not sent with a substitute already. Otherwise it is not resent. A
+//     substitute that is the refused model is no substitute.
+//  2. A limit refusal (limitRefusal) gets "limit" when the request was switched, was
+//     not resent for a limit already, went to a server, names a model, and the limit
+//     is plausible. A refusal that states no number teaches a window 90% of the
+//     request's estimate, which is below what the server refused.
+//  3. Any other answer is not resent.
+func decideResend(f resendFacts, substitute func() string) resendStep {
+	if refusesModel(f.status, f.refusal, f.model) {
+		if !f.redirected || !f.routed || !f.parsed || f.substituted || !f.hasModel {
+			return resendStep{}
+		}
+		sub := substitute()
+		if sub == f.model {
+			sub = ""
+		}
+		return resendStep{reason: "model", sub: sub}
+	}
+	kind, n, ok := limitRefusal(f.status, f.refusal)
+	if !ok || !f.switched || f.limitResent || !f.routed || !f.hasModel {
+		return resendStep{}
+	}
+	stated := n > 0
+	if !stated {
+		n = estimate(f.body) * 9 / 10
+	}
+	if !plausible(kind, n, f.body) {
+		return resendStep{}
+	}
+	return resendStep{reason: "limit", kind: kind, n: n, stated: stated}
+}

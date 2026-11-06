@@ -700,6 +700,46 @@ func TestResend_AModelRefusalThenALimitRefusalAreBothAbsorbed(t *testing.T) {
 	}
 }
 
+// A request is resent for a limit once: a second limit refusal reaches the agent,
+// even one that states a lower limit the router could fit.
+func TestResend_ALimitIsResentOncePerRequest(t *testing.T) {
+	store := newStore(t)
+	_, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	pctx := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+	withOutput(t, pctx, 256000)
+	run(t, p, pctx)
+
+	if !resend(p, pctx, http.StatusBadRequest, bedrockCap) {
+		t.Fatal("the first limit refusal was not resent")
+	}
+	if resend(p, pctx, http.StatusBadRequest, strings.ReplaceAll(bedrockCap, "128000", "64000")) {
+		t.Error("a second limit refusal was resent; it must reach the agent")
+	}
+	if got := gjson.GetBytes(pctx.Body, "max_completion_tokens").Int(); got != 128000 {
+		t.Errorf("max_completion_tokens = %d, want 128000 from the first refusal", got)
+	}
+}
+
+// A limit refusal of a request the router did not switch teaches no limit: the agent
+// sized the request for the model it chose.
+func TestResend_ALimitRefusalOfARequestThatWasNotSwitchedTeachesNothing(t *testing.T) {
+	store := newStore(t)
+	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	pctx := chat(store, "glm.example.com:8443", "/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+	withOutput(t, pctx, 256000)
+	run(t, p, pctx)
+	if !pctx.Redirected() {
+		t.Fatal("the request was not routed; the test needs a routed request that was not switched")
+	}
+
+	if resend(p, pctx, http.StatusBadRequest, bedrockCap) {
+		t.Error("a limit refusal of a request that was not switched was resent")
+	}
+	if got := r.loadLimits(pctx, "glm", glmMain); got != (limits{}) {
+		t.Errorf("limits = %+v, want none learned", got)
+	}
+}
+
 func TestRouter_LeavesARequestItDidNotRouteAlone(t *testing.T) {
 	store := newStore(t)
 	r, p := buildRouter(t, wordConfig(`"opencode": "glm"`))

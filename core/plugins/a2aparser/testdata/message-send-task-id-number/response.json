@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "id": 123,
+    "contextId": "ctx-8",
+    "status": {
+      "state": "completed"
+    },
+    "artifacts": [
+      {
+        "artifactId": "artifact-8",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "agent text 8"
+          }
+        ]
+      }
+    ],
+    "kind": "task"
+  }
+}

@@ -19,8 +19,9 @@ Each case has the files of `../../inferenceparser/testdata/README.md`, with thes
   claim the request. The JSON omits `isAction` when it is false, so the byte
   comparison checks `isAction` in every case.
 
-The test parses each case with the whole response body (`OnResponse`) and frame by
-frame (`OnResponseFrame`). The two results must be equal.
+The test parses each case with the whole response body (one `OnResponseFrame` call with
+`last=true`, as a listener does) and frame by frame (`OnResponseFrame`). The two results
+must be equal.
 
 To write the goldens, then read each one:
 

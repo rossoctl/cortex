@@ -1,0 +1,18 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "message/send",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "user text 8"
+        }
+      ],
+      "messageId": "msg-8",
+      "kind": "message"
+    }
+  }
+}

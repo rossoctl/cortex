@@ -205,12 +205,14 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	ext := pctx.Extensions.A2A
 
 	// Per-frame fold. message/stream events arrive one per frame;
-	// message/send arrives as a single last=true frame.
+	// message/send arrives as a single last=true frame. A buffered
+	// message/stream (a body-writing plugin is in the chain) arrives as
+	// one last=true frame that holds the whole SSE body.
 	if len(frame) > 0 {
-		foldResponse(frame, ext)
+		extractResponseSummary(frame, ext)
 		// Capture session id from any frame if the request didn't carry one.
 		if ext.SessionID == "" {
-			if sid := sessionIDFromJSON(frame); sid != "" {
+			if sid := extractSessionID(frame); sid != "" {
 				ext.SessionID = sid
 			}
 		}
@@ -309,8 +311,9 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"artifacts"`
-			Kind   string `json:"kind"`
-			ID     string `json:"id"`
+			// any, not string: a non-string kind or id must not fail the whole decode.
+			Kind   any    `json:"kind"`
+			ID     any    `json:"id"`
 			TaskID string `json:"taskId"`
 		} `json:"result"`
 	}
@@ -372,7 +375,7 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	var event struct {
 		Result struct {
 			Kind     string `json:"kind"`
-			ID       string `json:"id"`
+			ID       any    `json:"id"` // any: a non-string id must not fail the whole decode
 			TaskID   string `json:"taskId"`
 			Artifact struct {
 				Parts []struct {
@@ -415,10 +418,12 @@ func taskIDParamIsID(method string) bool {
 
 // resultTaskID returns the task id of an A2A result (spec v0.3.0).
 // A Task (kind "task") carries its id in id. A Message and the two
-// task update events carry it in taskId.
-func resultTaskID(kind, id, taskID string) string {
+// task update events carry it in taskId. A kind or id that is not a
+// string gives no task id.
+func resultTaskID(kind, id any, taskID string) string {
 	if kind == "task" {
-		return id
+		s, _ := id.(string)
+		return s
 	}
 	return taskID
 }
