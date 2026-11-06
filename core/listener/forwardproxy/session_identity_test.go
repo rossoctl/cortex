@@ -337,7 +337,7 @@ func (p *pinHijackPlugin) OnResponse(_ context.Context, _ *pipeline.Context) pip
 // TestPinIsNotPluginWritable guards the hazard created by resolving the identity
 // before the pipeline runs: OutboundSessionID is exported, so a plugin that
 // writes it could re-file both the request and its paired response event.
-// resolveOutboundSessionID's own contract forbids exactly that — a plugin must
+// recordingSessionID's own contract forbids exactly that — a plugin must
 // not silently re-file telemetry, and it would fail invisibly because "" means
 // "fall back", never an error. The listener's resolution must win.
 func TestPinIsNotPluginWritable(t *testing.T) {
@@ -376,7 +376,7 @@ func TestPinIsNotPluginWritable(t *testing.T) {
 }
 
 // TestSessionViewFor_NilStoreDoesNotPanic holds sessionViewFor to the convention
-// resolveOutboundSessionID states thirty lines above it — safe to call with a nil
+// recordingSessionID states in server.go — safe to call with a nil
 // store, so a future caller that forgets the guard gets a usable answer rather
 // than a panic. Both current callers guard, so this is latent by design.
 func TestSessionViewFor_NilStoreDoesNotPanic(t *testing.T) {

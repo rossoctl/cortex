@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -118,7 +119,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// CLIENT-ASSERTED id — not an identity: ActiveSession() at the moment the
 	// connection is gated is the answer, and resolving it again at recording time
 	// would reopen the same flip window the other paths were fixed for, reduced to
-	// ActiveSession@T0 versus ActiveSession@T1. resolvePluginSessionID with nil
+	// ActiveSession@T0 versus ActiveSession@T1. hydrateSession with nil
 	// headers is that same resolver with nothing to read a header from.
 	sessionID := s.hydrateSession(pctx, "", nil, nil)
 
@@ -304,17 +305,11 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	// client process's answer, and so does the connection itself: a session resolved from
 	// how the connection arrived is not a knob like affinity, so its pin is honored even
 	// with affinity and process attribution both off (#1569 review).
-	var sid string
+	var pinned string
 	if s.ClientAffinity || s.processesOn() || pctx.SessionSource == pipeline.SessionSourceConnection {
-		sid = pctx.OutboundSessionID
+		pinned = pctx.OutboundSessionID
 	}
-	if sid == "" {
-		sid = s.Sessions.ActiveSession()
-	}
-	if sid == "" {
-		sid = session.DefaultSessionID
-	}
-	return s.Sessions.AppendBucket(sid, ev)
+	return s.Sessions.AppendBucket(attribution.FiledSession(pinned, s.Sessions.ActiveSession), ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
