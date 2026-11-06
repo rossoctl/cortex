@@ -3,4 +3,3 @@ data: {"type": "message_start", "message": {"model": "claude-opus-5-5", "id": "m
 
 event: content_block_start
 data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}
-
