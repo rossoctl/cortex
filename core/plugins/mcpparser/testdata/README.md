@@ -9,8 +9,9 @@ The parser has its default config, so `/mcp` is the MCP path.
 
 Each case has the files of `../../inferenceparser/testdata/README.md`, with these changes:
 
-- `request.json` is indented, not compact. An empty `request.json` or response file
-  is a body with no bytes.
+- `request.json` is indented, not compact. A body with no bytes has no file, because
+  `check-json` rejects an empty `.json` file. With no response file, the response
+  Content-Type is `application/json`.
 - There is no `response.html`.
 - `response.headers` holds `Content-Type` and `Mcp-Session-Id`. The parser does not
   read response headers.

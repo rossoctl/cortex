@@ -8,8 +8,9 @@ bodies. The shapes follow the A2A specification v0.3.0 (JSON-RPC transport).
 
 Each case has the files of `../../inferenceparser/testdata/README.md`, with these changes:
 
-- `request.json` is indented, not compact. An empty `request.json` or response file
-  is a body with no bytes.
+- `request.json` is indented, not compact. A body with no bytes has no file, because
+  `check-json` rejects an empty `.json` file. With no response file, the response
+  Content-Type is `application/json`.
 - There is no `response.html`.
 - There is no `response.headers`.
 - `expected.json` is the `pipeline.A2AExtension`. `null` means that the parser does not

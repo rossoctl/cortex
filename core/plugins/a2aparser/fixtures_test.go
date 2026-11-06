@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,14 +119,11 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(head)))
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(endHead(head))))
 	if err != nil {
 		t.Fatalf("request.headers: %v", err)
 	}
-	body, err := os.ReadFile(filepath.Join(dir, "request.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := readBody(t, filepath.Join(dir, "request.json"))
 	var respFile, contentType string
 	for name, ct := range responseTypes {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
@@ -136,12 +135,9 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 		}
 	}
 	if respFile == "" {
-		t.Fatal("no response.sse or response.json")
+		respFile, contentType = "response.json", "application/json"
 	}
-	resp, err := os.ReadFile(filepath.Join(dir, respFile))
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := readBody(t, filepath.Join(dir, respFile))
 
 	ctx := context.Background()
 	p := NewA2AParser()
@@ -167,6 +163,23 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 		t.Fatal(err)
 	}
 	return append(out, '\n')
+}
+
+// readBody returns the bytes of the body file at path, and no bytes when the file does not exist.
+// check-json rejects an empty .json file, so a case with an empty body has no body file.
+func readBody(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// endHead returns head with one blank line at the end, the line that ends an HTTP head.
+// end-of-file-fixer removes that line from a .headers file, so the file can have it or not.
+func endHead(head []byte) []byte {
+	return append(bytes.TrimRight(head, "\n"), "\n\n"...)
 }
 
 // sseFrames splits an LF-framed SSE body into the data payload of each event.
