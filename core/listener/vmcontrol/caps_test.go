@@ -91,7 +91,8 @@ func TestConnCapIsPerVM(t *testing.T) {
 		t.Fatalf("third conn on vm-a: %v", err)
 	}
 	wantRefusal(t, resp, DecisionConnCap, "vm-a")
-	if e := eventOf(t, sink, "vm-a", DecisionConnCap); e.SID != "sid-a" || e.Status != 429 {
+	// The event follows the answer, so it may land after the 429 is read.
+	if e := sink.awaitEvent("vm-a", DecisionConnCap); e.SID != "sid-a" || e.Status != 429 {
 		t.Errorf("audit = %+v, want sid-a 429", e)
 	}
 
@@ -191,7 +192,7 @@ func TestConnCapCoalescesEvents(t *testing.T) {
 	}
 }
 
-// answerCap writes the 429, runs report, closes the conn and frees its slot.
+// answerCap writes the 429, closes the conn, runs report and frees its slot.
 func TestConnCapAnswerReportsAndCloses(t *testing.T) {
 	l := newTrackedListener(newPipeListener(), 0, nil)
 	client, pipe := net.Pipe()
@@ -216,11 +217,12 @@ func TestConnCapAnswerReportsAndCloses(t *testing.T) {
 	}
 }
 
-// A sink that blocks holds answer slots, never the accept loop: refusals past
-// the slots close unanswered.
-func TestConnCapBlockedSinkLeavesAcceptRunning(t *testing.T) {
+// A sink that blocks holds answer slots, never the accept loop or closeAll:
+// refusals past the slots close unanswered, and the event lands once the sink
+// unblocks.
+func TestConnCapBlockedSink(t *testing.T) {
 	inner := newPipeListener()
-	sink := &gatedSink{gate: make(chan struct{})}
+	sink := &gatedSink{gate: make(chan struct{}), events: make(chan Event, 1)}
 	b := newVMBinding(&forwardproxy.Server{}, sink, "vm-a", "sid-a", inner, 0, &sessionRequests{max: 1})
 	inner.accepts = make(chan net.Conn, maxCapAnswersPerVM+2)
 	var clients []net.Conn
@@ -241,18 +243,18 @@ func TestConnCapBlockedSinkLeavesAcceptRunning(t *testing.T) {
 	if n, err := clients[maxCapAnswersPerVM].Read(make([]byte, 1)); n != 0 || err != io.EOF {
 		t.Errorf("refusal past the slots read %d, %v; want closed unanswered", n, err)
 	}
-	close(sink.gate)
 	for _, c := range clients {
 		_ = c.Close()
 	}
 	b.ln.closeAll()
-	if n := len(sink.events); n != 1 {
-		t.Errorf("conn_cap events = %d, want 1", n)
+	close(sink.gate)
+	if e := <-sink.events; e.Decision != DecisionConnCap || e.Status != 429 {
+		t.Errorf("event = %+v, want conn_cap 429", e)
 	}
 }
 
 // closeAll ends the conn_cap answers in flight, even to a guest that never
-// reads, and returns only once they have ended.
+// reads.
 func TestConnCapAnswersEndWithTheListener(t *testing.T) {
 	l := newTrackedListener(newPipeListener(), 0, nil)
 	client, pipe := net.Pipe()
@@ -261,8 +263,8 @@ func TestConnCapAnswersEndWithTheListener(t *testing.T) {
 	l.chargeCap(server)
 	go l.answerCap(server, "vm-a", nil) // blocks writing: client never reads
 	l.closeAll()
-	if n := len(l.answering); n != 0 {
-		t.Errorf("answers in flight after closeAll = %d, want 0", n)
+	if _, err := client.Read(make([]byte, 1)); err != io.EOF {
+		t.Errorf("guest read after closeAll: %v, want EOF", err)
 	}
 }
 
@@ -388,13 +390,13 @@ type closeRecorder struct {
 
 func (c *closeRecorder) Close() error { c.closed = true; return c.Conn.Close() }
 
-// gatedSink records events once gate is closed.
+// gatedSink delivers each event to events once gate is closed.
 type gatedSink struct {
 	gate   chan struct{}
-	events []Event
+	events chan Event
 }
 
-func (s *gatedSink) Emit(e Event) { <-s.gate; s.events = append(s.events, e) }
+func (s *gatedSink) Emit(e Event) { <-s.gate; s.events <- e }
 
 // noDeadlineConn ignores deadlines.
 type noDeadlineConn struct{ net.Conn }

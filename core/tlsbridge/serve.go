@@ -92,9 +92,16 @@ func (dummyAddr) String() string  { return "tls-bridge" }
 func ServeConn(tconn *tls.Conn, handler http.Handler) { ServeConnIdle(tconn, handler, 0) }
 
 // ServeConnIdle is ServeConn that closes the connection once it has been idle
-// between requests for idle. Zero keeps it open until either side closes.
+// between requests for idle. On HTTP/1.1, idle also bounds reading each
+// request's headers, the first included. Zero keeps it open until either side
+// closes.
 func ServeConnIdle(tconn *tls.Conn, handler http.Handler, idle time.Duration) {
-	srv := &http.Server{Handler: handler, IdleTimeout: idle}
+	serveConn(tconn, handler, idle, idle)
+}
+
+// serveConn is ServeConnIdle with the HTTP/1.1 header bound set apart.
+func serveConn(tconn *tls.Conn, handler http.Handler, idle, header time.Duration) {
+	srv := &http.Server{Handler: handler, IdleTimeout: idle, ReadHeaderTimeout: header}
 	if tconn.ConnectionState().NegotiatedProtocol == "h2" {
 		// http2.Server.ServeConn reads its own IdleTimeout, not BaseConfig's.
 		h2s := &http2.Server{IdleTimeout: idle}

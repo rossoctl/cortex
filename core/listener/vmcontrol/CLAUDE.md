@@ -86,19 +86,24 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   Each per-VM `http.Server` also carries bootstrap's `ReadHeaderTimeout`
   (10s) and a 60s `IdleTimeout`, so a guest cannot hold a conn slot by
   dripping headers or parking idle keep-alives. The forward proxy's
-  `BridgedIdleTimeout` gives bridged tunnels the same 60s, on h1 and h2.
+  `BridgedIdleTimeout` gives bridged tunnels the same 60s between requests,
+  on h1 and h2, and on h1 for reading each request's headers, the first
+  included. An opaque CONNECT tunnel holds its slot until either side closes
+  it or Unregister does.
 - **Caps** (`Limits`; names and defaults follow moca-egress, the mechanics are
   ours):
   - **Per-VM connections** are counted in `trackedListener`. One past the cap
     is answered `429 conn_cap: <vm>` at accept, before any byte is read, off
     the accept loop. At most 8 answers per VM are in flight; past that the
     conn is closed unanswered, and Unregister closes those in flight. The
-    audit event is written by an answer goroutine after its 429, so a slow
-    sink holds answer slots and never the accept loop. One event stands for
-    up to 64 refusals (`coalesced` counts the rest, unanswered ones too), and
-    an admission resets it. Refusals after a burst's last event are reported
-    with the next one. moca emits from its accept path into an async sink and
-    coalesces per second; the suite checks only that an event arrives.
+    audit event is written by an answer goroutine once its conn is closed, so
+    a slow sink holds answer slots and never the accept loop or Unregister; a
+    conn_cap line can follow Unregister. One event stands for up to 64
+    refusals (`coalesced`). While every answer slot is held, none reports,
+    so the next event carries more. An admission resets the count, and
+    refusals after a burst's last event are reported with the next one. moca
+    emits from its accept path into an async sink and coalesces per second;
+    the suite checks only that an event arrives.
   - **Per-session requests** are one shared counter per sid, separate from
     the session-budget plugin, which counts inference calls. Every plain
     request, CONNECT and bridged (decrypted) request counts, the last through

@@ -135,8 +135,9 @@ type Server struct {
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
 	// BridgedIdleTimeout closes a TLS-bridged tunnel once it has been idle
-	// between decrypted requests this long. Zero keeps it open until either
-	// side closes.
+	// between decrypted requests this long, and on HTTP/1.1 bounds reading
+	// each request's headers, the first included. Zero keeps it open until
+	// either side closes.
 	BridgedIdleTimeout time.Duration
 
 	// SessionIDHeaders are the request headers consulted, in order, for a
@@ -205,8 +206,8 @@ type Server struct {
 	//
 	// connect is the CONNECT request as the listener's wrapper saw it, so a
 	// hook can read the identity it stamped there; r is the decrypted request
-	// to decorate. The returned request replaces r. ok false refuses r: the
-	// hook has answered it on w, and nothing else runs for it.
+	// to decorate. With ok true, adopted is non-nil and replaces r. ok false
+	// refuses r: the hook has answered it on w, and nothing else runs for it.
 	AdoptBridgedRequest func(w http.ResponseWriter, connect, r *http.Request) (adopted *http.Request, ok bool)
 
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per

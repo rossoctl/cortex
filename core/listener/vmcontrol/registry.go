@@ -133,7 +133,8 @@ func (r *Registry) Register(vmID, sessionID string, grant []byte, ln net.Listene
 // By the time it returns, the listener refuses new dials, every live
 // connection — hijacked tunnels and conn_cap answers included, which
 // http.Server.Close would leave open — has been closed, and each in-flight
-// request's wrapper has emitted its aborted audit line.
+// request's wrapper has emitted its aborted audit line. A conn_cap event for
+// a refusal already answered may still follow.
 func (r *Registry) Unregister(vmID string) error {
 	r.mu.Lock()
 	b := r.vms[vmID]
@@ -223,13 +224,12 @@ type trackedListener struct {
 	answering  map[net.Conn]struct{}
 	reported   bool
 	suppressed uint64
-	answers    sync.WaitGroup
 }
 
 // capRefusal is how one connection over the cap is turned away.
 type capRefusal struct {
 	answer    bool   // write the 429; otherwise close at once
-	report    bool   // emit an audit event, after the 429
+	report    bool   // emit an audit event once the answer has closed
 	coalesced uint64 // earlier refusals that event stands for
 }
 
@@ -276,7 +276,6 @@ func (l *trackedListener) chargeCap(c net.Conn) capRefusal {
 		return capRefusal{}
 	}
 	l.answering[c] = struct{}{}
-	l.answers.Add(1)
 	d := capRefusal{answer: true}
 	if l.reported && l.suppressed < capEventEvery-1 {
 		l.suppressed++
@@ -287,11 +286,11 @@ func (l *trackedListener) chargeCap(c net.Conn) capRefusal {
 	return d
 }
 
-// answerCap writes the conn_cap refusal naming vmID to c, runs report if it is
-// set, and closes c. The write and drain take at most capAnswerTimeout. It
-// releases the answer slot chargeCap took.
+// answerCap writes the conn_cap refusal naming vmID to c, closes c, then runs
+// report if it is set. The write and drain take at most capAnswerTimeout, or
+// end when closeAll closes c. The answer slot chargeCap took is held until
+// report returns.
 func (l *trackedListener) answerCap(c net.Conn, vmID string, report func()) {
-	defer l.answers.Done()
 	defer func() {
 		l.mu.Lock()
 		delete(l.answering, c)
@@ -307,11 +306,11 @@ func (l *trackedListener) answerCap(c net.Conn, vmID string, report func()) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(c, capDrainBytes))
+	_ = c.Close()
 	if report != nil {
 		report()
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(c, capDrainBytes))
-	_ = c.Close()
 }
 
 // Close is the net.Listener method: it stops accepting but leaves live
@@ -323,8 +322,8 @@ func (l *trackedListener) Close() error {
 
 func (l *trackedListener) Addr() net.Addr { return l.inner.Addr() }
 
-// closeAll closes the listener and every tracked connection, and waits for
-// the conn_cap answers in flight to end.
+// closeAll closes the listener, every tracked connection and every conn_cap
+// answer in flight.
 func (l *trackedListener) closeAll() {
 	_ = l.inner.Close()
 	l.mu.Lock()
@@ -341,7 +340,6 @@ func (l *trackedListener) closeAll() {
 	for _, c := range answering {
 		_ = c.Close()
 	}
-	l.answers.Wait()
 }
 
 func (l *trackedListener) remove(c *trackedConn) {

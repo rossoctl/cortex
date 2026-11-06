@@ -64,14 +64,38 @@ func (p *sessionProbe) OnResponse(_ context.Context, _ *pipeline.Context) pipeli
 
 // captureSink collects audit events for assertions.
 type captureSink struct {
-	mu     sync.Mutex
-	events []Event
+	mu      sync.Mutex
+	events  []Event
+	emitted chan struct{} // closed and replaced on each Emit
 }
 
 func (s *captureSink) Emit(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, e)
+	if s.emitted != nil {
+		close(s.emitted)
+	}
+	s.emitted = make(chan struct{})
+}
+
+// awaitEvent blocks until vm has an event with decision, and returns it.
+func (s *captureSink) awaitEvent(vm, decision string) Event {
+	for {
+		s.mu.Lock()
+		for _, e := range s.events {
+			if e.VMID == vm && e.Decision == decision {
+				s.mu.Unlock()
+				return e
+			}
+		}
+		if s.emitted == nil {
+			s.emitted = make(chan struct{})
+		}
+		next := s.emitted
+		s.mu.Unlock()
+		<-next
+	}
 }
 
 func (s *captureSink) forVM(vm string) []Event {

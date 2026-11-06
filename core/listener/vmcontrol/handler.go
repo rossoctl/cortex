@@ -18,7 +18,8 @@ import (
 
 // IdleTimeout is how long a VM's connection may sit idle between requests
 // before it is closed and its conn slot freed. The forward proxy's
-// BridgedIdleTimeout takes it too, for the tunnels it decrypts.
+// BridgedIdleTimeout takes it too, for the tunnels it decrypts, where on
+// HTTP/1.1 it also bounds reading headers.
 const IdleTimeout = 60 * time.Second
 
 // vmBinding is one registered VM: its listener, the http.Server accepting on
@@ -54,8 +55,8 @@ func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln 
 
 // refuseConn turns away a connection over the VM's conn cap. The answer and
 // its audit event run off the accept loop, so neither a guest that never
-// reads nor a slow sink stalls admission. A stalled sink holds answer slots
-// instead, and refusals past them close unanswered.
+// reads nor a slow sink stalls admission or Unregister. A stalled sink holds
+// answer slots instead, and refusals past them close unanswered.
 func (b *vmBinding) refuseConn(c net.Conn, d capRefusal) {
 	if !d.answer {
 		_ = c.Close()
