@@ -35,6 +35,7 @@ import (
 	"github.com/rossoctl/cortex/core/listener/skiphost"
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/redact"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -575,6 +576,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}()
 	}
 
+	// capture is the request as the agent sent it, for the session archive's lossless capture
+	// (#1494). Only a buffered body is captured: buffering one for capture alone would delay
+	// every request no plugin reads.
+	var capture *pipeline.RequestCapture
 	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		body, err := io.ReadAll(r.Body)
@@ -588,6 +593,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		pctx.Body = body
 		slog.Debug("forward-proxy: buffered request body", "host", pipeline.SanitizeLogValue(r.Host), "bodyLen", len(body))
+		// Before any plugin runs, which is the only time the agent's own bytes and headers
+		// are still here: a rewrite replaces pctx.Body and keeps no copy.
+		capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
 	}
 
 	// Establish the session identity ONCE, here, and keep it in a local: the
@@ -713,7 +721,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// operator wants to see (it carries Host, and the paired response
 		// carries StatusCode). skip_hosts traffic never reaches here (the
 		// !skipped guard above), so it stays suppressed by design.
-		s.recordOutboundRequestEvent(tl, pctx, sid)
+		s.recordCapturedRequest(tl, pctx, sid, capture)
 	}
 
 	// Propagate every header mutation the outbound pipeline made to the
@@ -799,7 +807,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// itself, with whatever credential it has now. Left as a request-keyed rule
 	// rather than made cleverer (#1549 review).
 	if err == nil && !skipped && !forwardUpgrade {
-		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding)
+		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding, capture)
 	}
 	if err != nil {
 		// The egress guard's refusal, BEFORE the generic 502: a destination that
@@ -2114,7 +2122,7 @@ func stripForUpstream(r *http.Request, ownEncoding, keepUpgrade bool) {
 // id, so the timeline shows both attempts and each pairs with its own answer. A
 // refused answer that is not sent again goes to the client byte for byte, the bytes
 // read for the Resender included.
-func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool) (*http.Response, error) {
+func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool, capture *pipeline.RequestCapture) (*http.Response, error) {
 	// Both probes and Resend itself answer for the pipeline this request
 	// ran on (Holder.ForPctx): the reload-drain window must not flip the
 	// resend decision onto plugins that never saw the request.
@@ -2143,7 +2151,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
 			pctx.RenewRequestID()
-			s.recordOutboundRequestEvent(tl, pctx, pctx.OutboundSessionID)
+			s.recordCapturedRequest(tl, pctx, pctx.OutboundSessionID, capture)
 		}
 		again := r.Clone(r.Context())
 		httpx.SyncRequestHeaders(again, pctx.Headers)
@@ -2161,7 +2169,24 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 }
 
 func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Context, sid string) {
-	s.appendOutbound(tl, sid, sessionevent.Request(pctx, pipeline.Outbound))
+	s.recordCapturedRequest(tl, pctx, sid, nil)
+}
+
+// recordCapturedRequest is recordOutboundRequestEvent for a request captured as the agent sent
+// it, c, which may be nil. The row carries c with the body as it goes upstream: pctx.Body,
+// when a plugin rewrote it.
+func (s *Server) recordCapturedRequest(tl *tunnelLog, pctx *pipeline.Context, sid string, c *pipeline.RequestCapture) {
+	// Only inference is kept: the capture redacts headers and the query, not the body, and the
+	// body of any other request, such as an OAuth token refresh, can be a credential.
+	if pctx.Extensions.Inference == nil {
+		c = nil
+	}
+	if c != nil && pctx.BodyMutated() {
+		cp := *c
+		cp.Forwarded = pctx.Body
+		c = &cp
+	}
+	s.appendCaptured(tl, sid, sessionevent.Request(pctx, pipeline.Outbound), c)
 }
 
 // recordUnbufferedRequest records the request row and its failure row for a
@@ -2194,10 +2219,15 @@ func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, 
 // that tunnel, and the tunnel's first recorded row also records its open; see
 // tunnelLog.recordWith.
 func (s *Server) appendOutbound(tl *tunnelLog, sid string, ev pipeline.SessionEvent) {
-	if tl != nil && tl.recordWith(sid, ev) {
+	s.appendCaptured(tl, sid, ev, nil)
+}
+
+// appendCaptured is appendOutbound for a request row with its capture c, which may be nil.
+func (s *Server) appendCaptured(tl *tunnelLog, sid string, ev pipeline.SessionEvent, c *pipeline.RequestCapture) {
+	if tl != nil && tl.recordWith(sid, ev, c) {
 		return
 	}
-	s.Sessions.Append(sid, ev)
+	s.Sessions.AppendCapture(sid, ev, c)
 }
 
 // tunnelSessionID is recordingSessionID for a tunnel's own row. Under client affinity
@@ -3791,7 +3821,7 @@ func (t *tunnelLog) deferOpen() {
 //
 // t.mu is held across the append so that a second request multiplexed onto the same
 // tunnel cannot record between this check and the pair.
-func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent) bool {
+func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent, c *pipeline.RequestCapture) bool {
 	if t.skipped || t.s.Sessions == nil {
 		return false
 	}
@@ -3804,7 +3834,7 @@ func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent) bool {
 	t.deferred, t.opened = false, true
 	open := t.openEv
 	open.At = ev.At
-	t.bucket = t.s.Sessions.AppendPair(sid, open, ev)
+	t.bucket = t.s.Sessions.AppendPairCapture(sid, open, ev, c)
 	return true
 }
 

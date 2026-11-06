@@ -28,6 +28,11 @@ const (
 	defaultQueueDepth = 4096
 	reserve           = 64
 
+	// defaultCaptureBudget bounds the bytes of request captures waiting for the writer. The
+	// queue's depth alone does not: 4,096 queued requests of 2 MB would pin 8 GB. Past the
+	// budget a capture is dropped and counted, and its event still goes to disk.
+	defaultCaptureBudget = 256 << 20
+
 	// defaultIdleClose and defaultMaxOpen bound the heap open writers hold — about 3 MB each.
 	// The idle window is long because the cap already bounds the worst case, and every reopened
 	// session re-emits its current strings into a new segment (0.16–0.34 MB measured).
@@ -64,6 +69,9 @@ func WithMaxBytes(n int64) Option { return func(a *Archive) { a.maxBytes = n } }
 // WithQueueDepth sets the request path's queue depth, for tests.
 func WithQueueDepth(n int) Option { return func(a *Archive) { a.depth = n } }
 
+// WithCaptureBudget sets how many bytes of request captures may wait for the writer, for tests.
+func WithCaptureBudget(n int64) Option { return func(a *Archive) { a.captureBudget = n } }
+
 // WithIdleClose sets how long a session's segment stays open without a write.
 func WithIdleClose(d time.Duration) Option { return func(a *Archive) { a.idleClose = d } }
 
@@ -81,6 +89,9 @@ type Stats struct {
 	DroppedEvents  uint64
 	WriteErrors    uint64
 	DroppedRenames uint64
+	// DroppedCaptures counts request captures not archived because the bytes waiting for the
+	// writer were over budget. Their events were archived without them.
+	DroppedCaptures uint64
 	// Paused is true after ENOSPC, until the next retention pass.
 	Paused bool
 }
@@ -128,9 +139,12 @@ type Archive struct {
 	// its rename tells the writer which segments move.
 	started map[string]entryStart
 
-	dropped, writeErrors, droppedRenames atomic.Uint64
-	bytes                                atomic.Int64
-	paused                               atomic.Bool
+	dropped, writeErrors, droppedRenames, droppedCaptures atomic.Uint64
+	// captureBudget bounds captureBytes, the bytes of captures queued for the writer.
+	captureBudget int64
+	captureBytes  atomic.Int64
+	bytes         atomic.Int64
+	paused        atomic.Bool
 
 	// index is what readers see: each session's directory, segment ranges and summary,
 	// republished by the writer goroutine whenever they change. Readers decode segment files on
@@ -145,6 +159,9 @@ type Archive struct {
 	lastPrune     time.Time
 	reportedDrops uint64
 	lastDropLog   time.Time
+	// reportedCaptureDrops and lastCaptureDropLog are the same, for dropped captures.
+	reportedCaptureDrops uint64
+	lastCaptureDropLog   time.Time
 }
 
 // entryStart is where a store entry began numbering; see Archive.started.
@@ -183,7 +200,8 @@ type op struct {
 	kind   opKind
 	id, to string
 	ev     pipeline.SessionEvent
-	after  uint64 // where a store entry began: on its first queued event, and on its rename
+	cap    *pipeline.RequestCapture // ev's request capture, nil for most events
+	after  uint64                   // where a store entry began: on its first queued event, and on its rename
 	clear  *pendingClear
 	f      func()
 	done   chan struct{}
@@ -194,19 +212,20 @@ type op struct {
 // returning, so nothing is served against stale state — and starts the writer goroutine.
 func Open(root string, opts ...Option) (*Archive, error) {
 	a := &Archive{
-		root:       root,
-		data:       filepath.Join(root, dataDirName),
-		now:        time.Now,
-		retainDays: defaultRetentionDays,
-		maxBytes:   defaultMaxBytes,
-		depth:      defaultQueueDepth,
-		idleClose:  defaultIdleClose,
-		maxOpen:    defaultMaxOpen,
-		tickEvery:  defaultTickEvery,
-		lastSeq:    map[string]uint64{},
-		started:    map[string]entryStart{},
-		sessions:   map[string]*sessionState{},
-		index:      map[string]*indexEntry{},
+		root:          root,
+		data:          filepath.Join(root, dataDirName),
+		now:           time.Now,
+		retainDays:    defaultRetentionDays,
+		maxBytes:      defaultMaxBytes,
+		depth:         defaultQueueDepth,
+		captureBudget: defaultCaptureBudget,
+		idleClose:     defaultIdleClose,
+		maxOpen:       defaultMaxOpen,
+		tickEvery:     defaultTickEvery,
+		lastSeq:       map[string]uint64{},
+		started:       map[string]entryStart{},
+		sessions:      map[string]*sessionState{},
+		index:         map[string]*indexEntry{},
 	}
 	for _, o := range opts {
 		o(a)
@@ -290,6 +309,13 @@ func (a *Archive) adopt(l loaded) {
 
 // Record implements session.Recorder. It never blocks and never touches disk; see Archive.
 func (a *Archive) Record(sessionID string, e *pipeline.SessionEvent) {
+	a.RecordCapture(sessionID, e, nil)
+}
+
+// RecordCapture implements session.CaptureRecorder: Record, with the request's capture c when it
+// has one. The capture is queued only while the bytes waiting for the writer stay within budget;
+// otherwise it is dropped and counted, and the event is queued without it.
+func (a *Archive) RecordCapture(sessionID string, e *pipeline.SessionEvent, c *pipeline.RequestCapture) {
 	if a.closed.Load() {
 		return
 	}
@@ -305,6 +331,14 @@ func (a *Archive) Record(sessionID string, e *pipeline.SessionEvent) {
 		return
 	}
 	o := op{kind: opEvent, id: sessionID, ev: *e}
+	if c != nil {
+		if n := captureSize(c); a.captureBytes.Load()+n <= a.captureBudget {
+			a.captureBytes.Add(n)
+			o.cap = c
+		} else {
+			a.droppedCaptures.Add(1)
+		}
+	}
 	st, starting := a.started[sessionID]
 	if starting && !st.queued {
 		o.after = st.after
@@ -317,6 +351,21 @@ func (a *Archive) Record(sessionID string, e *pipeline.SessionEvent) {
 		}
 	default:
 		a.dropped.Add(1)
+		a.releaseCapture(o.cap)
+	}
+}
+
+// captureSize is what a queued capture holds in memory, near enough: its two bodies by length.
+// A body read with io.ReadAll can hold up to twice that, and headers are not counted, so the
+// budget bounds memory within a small factor, not exactly.
+func captureSize(c *pipeline.RequestCapture) int64 {
+	return int64(len(c.Original) + len(c.Forwarded))
+}
+
+// releaseCapture gives a queued capture's bytes back to the budget.
+func (a *Archive) releaseCapture(c *pipeline.RequestCapture) {
+	if c != nil {
+		a.captureBytes.Add(-captureSize(c))
 	}
 }
 
@@ -372,13 +421,14 @@ func (a *Archive) LastSeq(sessionID string) uint64 {
 // Stats reports the archive's size, bounds and losses.
 func (a *Archive) Stats() Stats {
 	return Stats{
-		Bytes:          a.bytes.Load(),
-		MaxBytes:       a.maxBytes,
-		RetentionDays:  a.retainDays,
-		DroppedEvents:  a.dropped.Load(),
-		WriteErrors:    a.writeErrors.Load(),
-		DroppedRenames: a.droppedRenames.Load(),
-		Paused:         a.paused.Load(),
+		Bytes:           a.bytes.Load(),
+		MaxBytes:        a.maxBytes,
+		RetentionDays:   a.retainDays,
+		DroppedEvents:   a.dropped.Load(),
+		WriteErrors:     a.writeErrors.Load(),
+		DroppedRenames:  a.droppedRenames.Load(),
+		DroppedCaptures: a.droppedCaptures.Load(),
+		Paused:          a.paused.Load(),
 	}
 }
 
@@ -441,7 +491,8 @@ func (a *Archive) take(o op) {
 		if o.after > 0 {
 			a.begin(o.id, o.after)
 		}
-		a.write(o.id, &o.ev, nil)
+		a.write(o.id, &o.ev, o.cap)
+		a.releaseCapture(o.cap)
 	case opRename:
 		a.rename(o.id, o.to, o.after)
 	case opClear:
@@ -777,6 +828,11 @@ func (a *Archive) tick() {
 	if d := a.dropped.Load(); d > a.reportedDrops && now.Sub(a.lastDropLog) >= time.Minute {
 		slog.Warn("session archive: events were not archived", "dropped", d-a.reportedDrops, "droppedTotal", d)
 		a.reportedDrops, a.lastDropLog = d, now
+	}
+	if d := a.droppedCaptures.Load(); d > a.reportedCaptureDrops && now.Sub(a.lastCaptureDropLog) >= time.Minute {
+		slog.Warn("session archive: request captures were not archived; their events were",
+			"dropped", d-a.reportedCaptureDrops, "droppedTotal", d, "reason", "too many bytes waiting for the writer")
+		a.reportedCaptureDrops, a.lastCaptureDropLog = d, now
 	}
 	a.refreshBytes()
 }

@@ -138,12 +138,13 @@ func (s *Server) withArchivedRows(resident []session.SessionSummary) ([]session.
 	})
 	st := s.archive.Stats()
 	return rows, &pipeline.ArchiveUsage{
-		Bytes:          st.Bytes,
-		MaxBytes:       st.MaxBytes,
-		RetentionDays:  st.RetentionDays,
-		DroppedEvents:  st.DroppedEvents,
-		WriteErrors:    st.WriteErrors,
-		DroppedRenames: st.DroppedRenames,
-		Paused:         st.Paused,
+		Bytes:           st.Bytes,
+		MaxBytes:        st.MaxBytes,
+		RetentionDays:   st.RetentionDays,
+		DroppedEvents:   st.DroppedEvents,
+		WriteErrors:     st.WriteErrors,
+		DroppedRenames:  st.DroppedRenames,
+		DroppedCaptures: st.DroppedCaptures,
+		Paused:          st.Paused,
 	}
 }

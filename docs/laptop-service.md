@@ -405,6 +405,19 @@ home directory. The directories are created `0700` and the files `0600`. The pro
 the archive holds in its startup log line, so `grep 'session archive' ~/.cortex/proxy.log`
 shows which state you are in.
 
+**It also keeps each inference request exactly as it was sent.** For a request that
+`inference-parser` reads as inference, and for each Responses WebSocket turn, the archive keeps
+the body the agent sent, the body Cortex forwarded when a plugin rewrote it, the request headers
+and the query. Other requests, such as an OAuth token refresh, keep their event only. Cortex
+removes a header or a query parameter when its name, split at `-` and `_`, has one of the
+words `key`, `apikey`, `token`, `auth`, `authorization`, `cookie`, `secret`, `signature`,
+`password`, `credential` or `credentials`, with case ignored. So `x-api-key`,
+`Idempotency-Key` and `Sec-WebSocket-Key` are removed, and a camelCase name such as
+`accessToken` is kept. Cortex does not redact the body. Images,
+files the agent read and thinking blocks are kept too. Each part of a body that repeats from
+one request to the next is stored once per segment, so this costs about 8–20 KB per request
+in the measured sessions.
+
 **It runs only on a local install** — a config inside `~/.cortex`, which is what `agentop
 service install` and `--local` produce. Anywhere else it is off, and `enabled: true` is refused
 with a WARN naming the reason. On a local install it is on by default only while
@@ -434,7 +447,9 @@ that a burst the writer cannot keep up with is dropped *from the archive*, never
 unclean kill loses at most the last second.
 `GET /v1/sessions?archived=true` reports both the archive's size and what it lost, under
 `archive` (`bytes`, `maxBytes`, `retentionDays`, and `droppedEvents`, `writeErrors`,
-`droppedRenames`, `paused` when any is nonzero); nonzero means what you are reading has gaps.
+`droppedRenames`, `droppedCaptures`, `paused` when any is nonzero); nonzero means what you are
+reading has gaps. `droppedCaptures` counts requests kept without their exact bytes, because
+more than 256 MB of them waited for the writer.
 
 ### Clearing it
 

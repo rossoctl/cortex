@@ -131,14 +131,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/redact"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/storage"
 )
@@ -737,25 +736,18 @@ func agentOf(pctx *pipeline.Context) string {
 	return agent
 }
 
-// credentialWords are the words of a header name that make the header a credential.
-var credentialWords = []string{"key", "apikey", "token", "auth", "authorization", "cookie",
-	"secret", "signature", "password", "credential", "credentials"}
-
-// dropProviderCredentials removes from h each header whose name, split at "-" and
-// "_" with case ignored, has one of credentialWords. Authorization and X-Api-Key stay
-// for setKey, which puts the server's key in whichever of them the agent used. The
-// router calls it on a request it sends to a server the request did not name.
+// dropProviderCredentials removes from h each header whose name has a credential word
+// (redact.CredentialName). Authorization and X-Api-Key stay for setKey, which puts the
+// server's key in whichever of them the agent used. The router calls it on a request it
+// sends to a server the request did not name.
 func dropProviderCredentials(h http.Header) {
 	for name := range h {
 		switch http.CanonicalHeaderKey(name) {
 		case "Authorization", "X-Api-Key":
 			continue
 		}
-		for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' }) {
-			if slices.Contains(credentialWords, w) {
-				h.Del(name)
-				break
-			}
+		if redact.CredentialName(name) {
+			h.Del(name)
 		}
 	}
 }

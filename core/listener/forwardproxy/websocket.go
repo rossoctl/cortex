@@ -22,6 +22,7 @@ import (
 	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/listener/internal/wsframe"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/redact"
 )
 
 // A Responses API WebSocket, carried and parsed.
@@ -636,18 +637,21 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 		// or rewrite it. But it is not inference: no row, and its answer is not a
 		// turn's response.
 		p.RunFinish(ws.ctx(), pctx, pipeline.OutcomeFromContext(pctx))
-	} else if ws.s.Sessions != nil {
+	}
+	if pctx.BodyMutated() {
+		replace = withType(pctx.Body, !generate)
+	}
+	if !t.prewarm && ws.s.Sessions != nil {
 		pctx.OutboundSessionID = ws.sid
-		ws.s.Sessions.Append(ws.sid, ws.turnRequestEvent(pctx))
+		// The turn as the client sent it and as the origin gets it: the WebSocket messages,
+		// not the request bodies the pipeline was shown.
+		c := &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
+		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
 	}
 	ws.turnMu.Lock()
 	ws.turns = append(ws.turns, t)
 	ws.turnMu.Unlock()
-
-	if pctx.BodyMutated() {
-		return withType(pctx.Body, !generate), false
-	}
-	return nil, false
+	return replace, false
 }
 
 // serverMessage feeds one complete text message from the origin to the open turn, and

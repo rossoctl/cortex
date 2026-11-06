@@ -928,6 +928,9 @@ type ArchiveUsage struct {
 	DroppedEvents  uint64 `json:"droppedEvents,omitempty"`
 	WriteErrors    uint64 `json:"writeErrors,omitempty"`
 	DroppedRenames uint64 `json:"droppedRenames,omitempty"`
+	// DroppedCaptures counts request captures not archived because too many bytes waited for
+	// the writer. Their events were archived without them.
+	DroppedCaptures uint64 `json:"droppedCaptures,omitempty"`
 	// Paused is true after the disk filled, until the archive's next retention pass.
 	Paused bool `json:"paused,omitempty"`
 }

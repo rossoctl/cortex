@@ -9,21 +9,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/redact"
 	"golang.org/x/net/http/httpguts"
 )
 
 // secretHeaders never reach a script. A script is the user's own code, but its
 // output lands in logs and on the timeline, and a credential has no business in
 // either.
-var secretHeaders = map[string]bool{
-	"authorization":       true,
-	"proxy-authorization": true,
-	"cookie":              true,
-	"set-cookie":          true,
-	"x-api-key":           true,
-	"api-key":             true,
-	"x-goog-api-key":      true,
-}
+var secretHeaders = redact.SecretHeaders
 
 // requestMessage is what a script's request hook receives. The parsed extensions
 // keep their own JSON tags — the shape GET /v1/sessions/{id} serves — so a script
