@@ -42,8 +42,5 @@ cd core && GOWORK=off go test ./plugins/mcpparser/ -run Fixtures -count=1 -updat
 | `tools-call-sse-result-then-error` | SSE response with a result event and then an error event for the same `id`. Divergent: `OnResponse` keeps the first event. `OnResponseFrame` keeps the result and sets the error | true |
 | `delete-terminate` | `DELETE /mcp` with `Mcp-Session-Id` and no body: `$transport/terminate` | false |
 | `get-stream` | `GET /mcp` with no body: `$transport/stream`. The SSE stream has only a server notification | false |
-| `get-unconfigured-path` | `GET /api/items` with no body. Not an MCP path, so not claimed | no extension |
 | `not-jsonrpc` | An inference body with no `method`. Not claimed | no extension |
-| `not-object` | A JSON array (a batch) on `/mcp`. Not claimed | no extension |
-| `invalid-json` | A truncated JSON object on `/mcp`. Not claimed | no extension |
-| `non-mcp-method` | The A2A method `message/send` on `/mcp`. Not claimed | no extension |
+| `non-mcp-method` | The A2A method `tasks/get` on `/mcp`. Not claimed | no extension |

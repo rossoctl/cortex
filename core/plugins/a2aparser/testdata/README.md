@@ -33,6 +33,7 @@ cd core && GOWORK=off go test ./plugins/a2aparser/ -run Fixtures -count=1 -updat
 | `message-stream` | `message/stream` with `contextId` in the message. SSE: a Task, an `artifact-update`, and a final `status-update` | true |
 | `tasks-get` | `tasks/get`. The JSON response is a completed Task | false |
 | `tasks-get-error` | `tasks/get` for an unknown task, JSON-RPC error response. The extension has no field for a JSON-RPC error | false |
-| `get-agent-card` | `GET /.well-known/agent-card.json` with no body. Not claimed | no extension |
 | `not-jsonrpc` | An inference body with no `method`. Not claimed | no extension |
-| `non-a2a-method` | The MCP method `tools/call`. Not claimed | no extension |
+| `non-a2a-method` | The MCP method `tools/list`. Not claimed | no extension |
+
+Gap: `A2AExtension` has no field for a JSON-RPC error. An error response keeps only the request fields (`tasks-get-error`).
