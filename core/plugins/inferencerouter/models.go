@@ -180,7 +180,7 @@ func (p *Router) chooseModel(pctx *pipeline.Context, server string) {
 }
 
 // Resend implements pipeline.Resender. A refusal of the model the agent asked for is
-// answered with the server's substitute, as resendForModel says; a refusal for a
+// answered with the server's substitute, as decideResend says; a refusal for a
 // limit teaches the router that limit for the model, and the request is fitted and
 // sent again. decideResend decides which, and each kind is answered at most once per
 // request.
