@@ -21,4 +21,3 @@ data: {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_seque
 
 event: message_stop
 data: {"type": "message_stop", "usage": {"input_tokens": 11093, "output_tokens": 14, "cache_read_input_tokens": 18525, "cache_creation_input_tokens": 259}}
-

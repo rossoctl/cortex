@@ -118,7 +118,7 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(head)))
+	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(endHead(head))))
 	if err != nil {
 		t.Fatalf("request.headers: %v", err)
 	}
@@ -159,7 +159,7 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	pctx.ResponseHeaders = http.Header{"Content-Type": []string{contentType}}
 	// An optional response.headers file holds the gateway headers that the parser reads.
 	if raw, err := os.ReadFile(filepath.Join(dir, "response.headers")); err == nil {
-		h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
+		h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(endHead(raw)))).ReadMIMEHeader()
 		if err != nil {
 			t.Fatalf("response.headers: %v", err)
 		}
@@ -185,6 +185,12 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	return append(out, '\n')
 }
 
+// endHead returns head with one blank line at the end, the line that ends an HTTP head.
+// end-of-file-fixer removes that line from a .headers file, so the file can have it or not.
+func endHead(head []byte) []byte {
+	return append(bytes.TrimRight(head, "\n"), "\n\n"...)
+}
+
 // sseFrames splits an LF-framed SSE body into the data payload of each event.
 // It skips an event with no data line, as the listeners do.
 func sseFrames(body []byte) [][]byte {
@@ -201,4 +207,18 @@ func sseFrames(body []byte) [][]byte {
 		}
 	}
 	return frames
+}
+
+// TestFixtureReadersWithoutBlankLine checks the readers on files that end-of-file-fixer has changed.
+func TestFixtureReadersWithoutBlankLine(t *testing.T) {
+	got := sseFrames([]byte("event: a\ndata: 1\n\nevent: b\ndata: 2\n"))
+	if len(got) != 2 || string(got[1]) != "2" {
+		t.Errorf("sseFrames = %q, want the last event too", got)
+	}
+	for _, head := range []string{"Content-Type: x\n", "Content-Type: x\n\n"} {
+		h, err := textproto.NewReader(bufio.NewReader(strings.NewReader(string(endHead([]byte(head)))))).ReadMIMEHeader()
+		if err != nil || h.Get("Content-Type") != "x" {
+			t.Errorf("head %q: %v, %v", head, h, err)
+		}
+	}
 }

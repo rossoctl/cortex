@@ -124,6 +124,10 @@ keeps raw bytes, so only events after #1494 have them.
 11. Search the case for leaks before you commit it: paths under `/Users`, host names,
     e-mail addresses, `sk-`, `Bearer`, and long natural-language strings.
 
+12. Run `pre-commit run --files <case>/*` until it passes. `end-of-file-fixer` removes
+    the blank line at the end of a file. The test adds the blank line that ends an
+    HTTP head, and it reads the last SSE event without one.
+
 ## Cases
 
 All cases are Claude Code 2.1.295 on the Anthropic Messages dialect, through a LiteLLM

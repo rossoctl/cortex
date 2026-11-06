@@ -24,4 +24,3 @@ data: {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_
 
 event: ping
 data: {"type": "ping"}
-
