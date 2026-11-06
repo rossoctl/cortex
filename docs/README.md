@@ -93,10 +93,19 @@ Two things no config file can answer, because the effective values come from the
 file *plus* compiled-in defaults: what rates are in effect (`agentop pricing --host
 <gateway>`) and what pipeline is running (`agentop pipeline get`, or `GET /v1/pipeline`).
 `GET /config` on the diagnostic listener reports the config in effect, not the file
-as written. That is the file after `${ENV_VAR}` expansion, with the proxy's defaults
-and the mode preset applied. On a local install it also shows the default script
-slot that `cortex` adds. It masks secret values. Plugin defaults do not show: each
-plugin sets them in its own `Configure`.
+as written. That is the file after `${ENV_VAR}` expansion, with the defaults that
+`config.Load` fills in and the mode preset applied. On a local install it also shows
+the default script slot that `cortex` adds. It masks secret values. Defaults that are
+worked out at runtime do not show:
+- plugin defaults, which each plugin sets in its own `Configure`
+- the soft memory limit of a local install (`MemoryLimitBytes`)
+- whether an unset `cost_ledger.enabled` turns the ledger on (`ledgerDefaultOn` in
+  `cmd/cortex/main.go`)
+- the session store limits and whether the session archive runs
+
+After a `stats.address` reload, `/config` shows the new address while the stats
+server stays on the old one until a restart
+([known gap](proxy-contract.md#hot-reload)).
 
 ## In this directory
 

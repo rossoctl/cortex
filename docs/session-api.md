@@ -115,8 +115,8 @@ than encoded whole, so serving it costs the proxy heap proportional to one
 event — but a client that reads it all still pays for all of it. Page with
 `before` rather than raising `limit`.
 
-**`?view=summary` omits the large payloads.** agentop sends it on every timeline
-fetch. The script SDK (`core/plugins/script/sdk/cortex.py`) sends it too. The
+**`?view=summary` omits the large payloads.** agentop sends it on each session page fetch (the
+events table). It does not send it on `GET /v1/sessions/{id}/timeline`. The script SDK (`core/plugins/script/sdk/cortex.py`) sends it too. The
 proxy then removes these fields from each event in the response:
 
 - `inference`: `messages`, `tools`, `toolCalls`, `toolResults` and `historyToolCalls`.

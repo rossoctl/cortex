@@ -11,8 +11,9 @@ on `:47601` has its own reference: [`session-api.md`](session-api.md).
 ## Ports
 
 The built-in config pins every listener to `127.0.0.1` (`builtinConfigYAML` in
-`cmd/cortex/local.go`). `install.sh` probes the same ports (`DEMO_*_PORT`), and so
-does agentop setup (`cortexPorts` in `cmd/agentop/setup_probe.go`).
+`cmd/cortex/local.go`). `install.sh` probes 47600, 47601, 47602 and 47604 (`DEMO_*_PORT`), and so
+does agentop setup (`cortexPorts` in `cmd/agentop/setup_probe.go`). Neither one
+probes 47603.
 
 | Port | Config key | Serves |
 |---|---|---|
@@ -59,7 +60,9 @@ agentop's types and refuses unknown keys. It then marshals each value again and
 requires the fixture back, so it also fails when agentop reads a key that the
 fixture does not hold. Thus a renamed JSON tag on either side fails a test.
 
-`/config` reports the config in effect, with secret values masked. `GET /stats` and
+`/config` reports the config in effect, with secret values masked. After a
+`stats.address` reload it shows the new address, but the stats server stays on the
+old one (see the known gap below). `GET /stats` and
 the `/` index also exist. agentop does not read them.
 
 ## Health endpoints (`:47604`)
@@ -78,7 +81,9 @@ API and the stats server answer 403 to:
 
 - a request whose `Host` is not `localhost`, `127.0.0.1` or `::1`. This stops DNS
   rebinding.
-- a request with an `Origin` header. A browser always sends one.
+- a request with an `Origin` header. A browser sends one on a cross-origin request.
+  A browser can leave it out on a GET navigation, and that request passes the guard
+  when its Host is loopback.
 
 `httpx.LoopbackOnly` in `core/listener/httpx/loopback.go` implements the guard.
 `sessionapi.WithLoopbackOnly` and `observe.WithLoopbackOnly` apply it, from `main` in
@@ -111,7 +116,7 @@ API. The contract has these parts:
    counter's value at its first poll as the baseline. It reports a failure when the
    counter is more than the baseline.
 6. **Timeout.** agentop waits up to 30 s for a local file (`LocalPollDeadline` in
-   `cmd/agentop/edit/edit.go`). Five transport errors in a row end the wait early as
+   `cmd/agentop/edit/edit.go`). Five failed polls in a row (a transport error or a non-200 answer) end the wait early as
    "unreachable".
 
 `validateReloadable` in `core/reloader/reloader.go` refuses a reload that changes any
@@ -155,7 +160,7 @@ forms:
 |---|---|---|
 | `cortex --version` | `agentop doctor`, `agentop update`, `install.sh` | Prints one line: `cortex <version>`, or `cortex (cpex) <version>` for a cpex build (`versionLine` in `cmd/cortex/main.go`). agentop reads the last word of the first line as the version (`installedVersion` in `cmd/agentop/setup_step_binaries.go`). `doctor` reports a problem when it is not agentop's version (`checkBinaries`). `update` downloads nothing when it is agentop's version and the release asked for (`currentRelease` in `cmd/agentop/cmd_update.go`). A cpex build has ` (cpex) ` in this line. agentop (`installedIsCpex`) and `install.sh` find a cpex build by that text |
 | `cortex --local --write-config` | agentop setup (`cmd/agentop/setup_step_config.go`) | Writes `~/.cortex/config.yaml` and its directory if the file is absent, then exits 0. It does not change a file that exists (`writeBuiltinConfig` in `cmd/cortex/local.go`) |
-| `cortex --local --supervise` | agentop setup without a service (`cmd/agentop/setup_unsupervised.go`) | Runs the built-in config under the supervisor. agentop writes the pid to `~/.cortex/proxy.pid` and the output to `~/.cortex/proxy.log` |
+| `cortex --local --supervise` | agentop setup without a service (`cmd/agentop/setup_unsupervised.go`) | Runs `~/.cortex/config.yaml` under the supervisor. It writes the built-in config there first only when the file is absent. agentop writes the pid to `~/.cortex/proxy.pid` and the output to `~/.cortex/proxy.log` |
 | `cortex --supervise --config <path>` | the launchd plist (`cmd/agentop/cmd_service_platform.go`) | The parent starts a child with the same arguments, without `--supervise`, and restarts it when it exits (`runSupervisor` in `cmd/cortex/supervise.go`) |
 | `cortex --config <path>` | the systemd unit (`cmd/agentop/cmd_service_platform.go`) | Runs the proxy with no supervisor. systemd restarts it (`Restart=on-failure`) |
 
@@ -188,7 +193,7 @@ flag it sends.
 | `--no-modify-path` | Edit no shell profile | `--no-modify-path` |
 | `--yes`, `-y` | Do not ask. Apply the changes setup lists | `--yes` |
 | `--cpex` | Download `cortex-cpex_<ver>_<os>_<arch>.tar.gz`. macOS arm64 and Linux only (`cpex_platform_check`, `require_cpex_build`) | no |
-| `--ref=REF` | Run the copy of this script at the git ref `REF`, such as `main` or a tag, and install that ref's binaries | no (removed before the re-run) |
+| `--ref=REF` | Install the binaries of `REF`: `main` (the developer channel) or a release tag. For any other ref, such as a branch or a SHA, the script warns and installs the newest release's binaries (`resolve_version`). A piped run also runs the copy of this script at `REF`. A run from a local file keeps that file | no (removed before the re-run) |
 | `--stop` | Stop the service and the pidfile proxy, check the ports, exit. Downloads nothing (`stop_cortex`) | no |
 | `-h`, `--help` | Print the usage text | no |
 
