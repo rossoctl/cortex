@@ -765,7 +765,7 @@ func TestVMBinding_AbortedWindowAnswers503(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln, 1, &sessionBudget{max: 1})
+	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln, 1, &sessionRequests{max: 1})
 
 	// Enter the window: aborted set, connections not yet closed.
 	b.close()

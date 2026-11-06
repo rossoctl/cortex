@@ -19,13 +19,13 @@ import (
 // vmBinding is one registered VM: its listener, the http.Server accepting on
 // it, and the state Unregister needs to abort it.
 type vmBinding struct {
-	vmID   string
-	sid    string
-	inner  http.Handler // the forward proxy's own handler
-	sink   AuditSink
-	ln     *trackedListener
-	srv    *http.Server
-	budget *sessionBudget // shared with the session's other VMs
+	vmID     string
+	sid      string
+	inner    http.Handler // the forward proxy's own handler
+	sink     AuditSink
+	ln       *trackedListener
+	srv      *http.Server
+	requests *sessionRequests // shared with the session's other VMs
 
 	// mu guards aborted and the live-set join below it.
 	mu      sync.Mutex
@@ -33,11 +33,11 @@ type vmBinding struct {
 	live    sync.WaitGroup // in-flight request wrappers
 }
 
-func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln net.Listener, maxConns int, budget *sessionBudget) *vmBinding {
+func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln net.Listener, maxConns int, requests *sessionRequests) *vmBinding {
 	b := &vmBinding{
 		vmID: vmID, sid: sid,
 		inner: fp.Handler(), sink: sink,
-		budget: budget,
+		requests: requests,
 	}
 	b.ln = newTrackedListener(ln, maxConns, b.refuseConn)
 	// ReadHeaderTimeout matches bootstrap's (also gosec G112); IdleTimeout
@@ -69,7 +69,7 @@ func (b *vmBinding) refuseConn(c net.Conn, d capRefusal) {
 // host with the connection closed after it, and reports false. The refusal
 // leaves no session-store row; the audit event is its record.
 func (b *vmBinding) chargeRequest(w http.ResponseWriter, r *http.Request, host string) bool {
-	if b.budget.charge() {
+	if b.requests.charge() {
 		return true
 	}
 	e := b.event(r, http.StatusTooManyRequests)

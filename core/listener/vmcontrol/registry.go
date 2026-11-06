@@ -66,7 +66,7 @@ type Registry struct {
 
 	mu       sync.Mutex
 	vms      map[string]*vmBinding
-	sessions map[string]*sessionBudget
+	sessions map[string]*sessionRequests
 }
 
 // NewRegistry returns a Registry serving every registered VM's traffic
@@ -81,7 +81,7 @@ func NewRegistry(fp *forwardproxy.Server, sink AuditSink, limits Limits) *Regist
 	}
 	return &Registry{
 		fp: fp, sink: sink, limits: limits,
-		vms: map[string]*vmBinding{}, sessions: map[string]*sessionBudget{},
+		vms: map[string]*vmBinding{}, sessions: map[string]*sessionRequests{},
 	}
 }
 
@@ -141,26 +141,26 @@ func (r *Registry) Close() {
 	r.mu.Lock()
 	vms := r.vms
 	r.vms = map[string]*vmBinding{}
-	r.sessions = map[string]*sessionBudget{}
+	r.sessions = map[string]*sessionRequests{}
 	r.mu.Unlock()
 	for _, b := range vms {
 		b.close()
 	}
 }
 
-// acquire returns sid's budget for one more registered VM. Caller holds r.mu.
-func (r *Registry) acquire(sid string) *sessionBudget {
+// acquire returns sid's request count for one more registered VM. Caller holds r.mu.
+func (r *Registry) acquire(sid string) *sessionRequests {
 	s := r.sessions[sid]
 	if s == nil {
-		s = &sessionBudget{max: int64(r.limits.MaxRequestsPerSession)}
+		s = &sessionRequests{max: int64(r.limits.MaxRequestsPerSession)}
 		r.sessions[sid] = s
 	}
 	s.vms++
 	return s
 }
 
-// release drops one registered VM's hold on sid's budget, and the budget with
-// the last one. Caller holds r.mu.
+// release drops one registered VM's hold on sid's request count, and the
+// count with the last one. Caller holds r.mu.
 func (r *Registry) release(sid string) {
 	if s := r.sessions[sid]; s != nil {
 		if s.vms--; s.vms == 0 {
@@ -169,15 +169,15 @@ func (r *Registry) release(sid string) {
 	}
 }
 
-// sessionBudget is one session's request count, shared by its VMs' bindings.
-type sessionBudget struct {
+// sessionRequests is one session's request count, shared by its VMs' bindings.
+type sessionRequests struct {
 	max  int64
 	used atomic.Int64
 	vms  int // guarded by Registry.mu
 }
 
 // charge counts one request and reports whether it is within the cap.
-func (s *sessionBudget) charge() bool { return s.used.Add(1) <= s.max }
+func (s *sessionRequests) charge() bool { return s.used.Add(1) <= s.max }
 
 // trackedListener records every accepted connection so Unregister can close
 // them all, and turns away a connection past maxConns as it is accepted.

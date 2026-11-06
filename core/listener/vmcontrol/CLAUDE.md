@@ -96,7 +96,8 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
     by an admission. Refusals after a burst's last event go unreported until
     the next refusal, and with Unregister, never. moca coalesces per second
     instead; the suite checks only that an event arrives.
-  - **Per-session requests** are one shared counter per sid. Every plain
+  - **Per-session requests** are one shared counter per sid, separate from
+    the session-budget plugin, which counts inference calls. Every plain
     request, CONNECT and bridged (decrypted) request counts, the last through
     `AdoptBridgedRequest`, which can refuse. Past the cap: `429 request_cap:
     <host>` (a bridged refusal names the tunnel's host), `Connection: close`,
