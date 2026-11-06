@@ -580,6 +580,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// (#1494). Only a buffered body is captured: buffering one for capture alone would delay
 	// every request no plugin reads.
 	var capture *pipeline.RequestCapture
+	captures := s.Sessions.TakesCaptures()
 	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		body, err := io.ReadAll(r.Body)
@@ -594,8 +595,11 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		pctx.Body = body
 		slog.Debug("forward-proxy: buffered request body", "host", pipeline.SanitizeLogValue(r.Host), "bodyLen", len(body))
 		// Before any plugin runs, which is the only time the agent's own bytes and headers
-		// are still here: a rewrite replaces pctx.Body and keeps no copy.
-		capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
+		// are still here: a rewrite replaces pctx.Body and keeps no copy. Only where something
+		// keeps captures: an in-cluster sidecar has no archive.
+		if captures {
+			capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
+		}
 	}
 
 	// Establish the session identity ONCE, here, and keep it in a local: the
@@ -903,7 +907,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// response's row: skip_hosts records nothing at all. reverseproxy's
 	// unbuffered relay defers its row to the end of its copy the same way
 	// (recordOnEOFBody).
-	resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
+	//
+	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
+	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
+	// relays it. Only when the request was captured, so a response never outlives its pair: the
+	// request row keeps its capture only for inference (recordCapturedRequest).
+	if capture != nil && pctx.Extensions.Inference != nil {
+		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header), Decoded: resp.Uncompressed}
+		pctx.ResponseCapture = rc
+		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, &rc.Ended, pipeline.MaxResponseCapture)
+	} else {
+		resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
+	}
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
 	// Stream the upstream body straight through to the caller. Falls
@@ -2130,7 +2145,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 		return resp, nil
 	}
 	for round := 0; round < pipeline.MaxResends && resp.StatusCode/100 != 2; round++ {
-		head, _ := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
+		head, peekErr := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
 		// The parse as the refused attempt was sent: a Resender may rewrite the model,
 		// and the refused attempt's row must name the one the upstream refused.
 		sent := pipeline.SnapshotInference(pctx.Extensions.Inference)
@@ -2148,6 +2163,11 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			// one OutcomeFromContext must read.
 			resent := pctx.Extensions.Inference
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
+			if capture != nil && pctx.Extensions.Inference != nil {
+				// The refusal as far as it was read: the resend peeks at most ResendPeekLimit bytes.
+				pctx.ResponseCapture = &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header),
+					Body: head, Decoded: resp.Uncompressed, Ended: peekErr == nil && len(head) < pipeline.ResendPeekLimit}
+			}
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
 			pctx.RenewRequestID()
@@ -2452,7 +2472,8 @@ func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, a
 	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
 		return
 	}
-	s.Sessions.Append(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound))
+	// With the capture: what a plugin refused is still the origin's answer.
+	s.Sessions.AppendCapture(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
 }
 
 // responseSessionID is the bucket a response row files under: the session
@@ -2490,7 +2511,21 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
-	s.Sessions.Append(sid, outboundResponseEvent(pctx, statusCode, fail))
+	s.Sessions.AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx))
+}
+
+// takeResponseCapture is the capture of the response pctx's row records, nil when there is
+// none, and clears it so a resent request's next row does not carry it again. A body the proxy
+// did not read to its end is incomplete — the origin broke it off, or the proxy, a plugin or the
+// client cut it short — whatever the row's error says.
+func takeResponseCapture(pctx *pipeline.Context) *pipeline.RequestCapture {
+	rc := pctx.ResponseCapture
+	if rc == nil {
+		return nil
+	}
+	pctx.ResponseCapture = nil
+	rc.Incomplete = !rc.Ended
+	return &pipeline.RequestCapture{Response: rc}
 }
 
 // outboundResponseEvent builds the SessionResponse row every outbound answer is

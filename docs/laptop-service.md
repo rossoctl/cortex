@@ -416,7 +416,11 @@ words `key`, `apikey`, `token`, `auth`, `authorization`, `cookie`, `secret`, `si
 `accessToken` is kept. Cortex does not redact the body. Images,
 files the agent read and thinking blocks are kept too. Each part of a body that repeats from
 one request to the next is stored once per segment, so this costs about 8–20 KB per request
-in the measured sessions.
+in the measured sessions. The response is kept as the proxy read it: its status, its headers
+without credential headers such as `set-cookie`, and up to 10 MiB of its body. The body is as it came off the wire,
+still compressed when the origin compressed it, unless the proxy decompressed it to read it
+for a plugin; the capture is then marked `decoded`. A longer body is marked truncated, and a stream that broke off is marked
+incomplete. A WebSocket turn's response is the origin's messages for the turn, one per line.
 
 **It runs only on a local install** — a config inside `~/.cortex`, which is what `agentop
 service install` and `--local` produce. Anywhere else it is off, and `enabled: true` is refused

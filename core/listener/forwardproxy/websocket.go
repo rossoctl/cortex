@@ -643,15 +643,34 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 	}
 	if !t.prewarm && ws.s.Sessions != nil {
 		pctx.OutboundSessionID = ws.sid
-		// The turn as the client sent it and as the origin gets it: the WebSocket messages,
-		// not the request bodies the pipeline was shown.
-		c := &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
+		var c *pipeline.RequestCapture
+		if ws.s.Sessions.TakesCaptures() {
+			// The turn as the client sent it and as the origin gets it: the WebSocket messages,
+			// not the request bodies the pipeline was shown.
+			c = &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
+			pctx.ResponseCapture = &pipeline.ResponseCapture{Status: http.StatusOK}
+		}
 		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
 	}
 	ws.turnMu.Lock()
 	ws.turns = append(ws.turns, t)
 	ws.turnMu.Unlock()
 	return replace, false
+}
+
+// captureMessage adds one of the origin's messages to the turn's response capture, one message
+// per line: a turn's answer is a sequence of messages, not one body. Past the cap the capture
+// is marked truncated and keeps what it has.
+func captureMessage(pctx *pipeline.Context, payload []byte) {
+	rc := pctx.ResponseCapture
+	if rc == nil || rc.Truncated {
+		return
+	}
+	if len(rc.Body)+len(payload)+1 > pipeline.MaxResponseCapture {
+		rc.Truncated = true
+		return
+	}
+	rc.Body = append(append(rc.Body, payload...), '\n')
 }
 
 // serverMessage feeds one complete text message from the origin to the open turn, and
@@ -686,6 +705,7 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 		return
 	}
 	if env.Type == "error" {
+		captureMessage(t.pctx, payload)
 		// The origin refused the turn (a usage limit, bad input). See errorEventStatus.
 		status := errorEventStatus(env.Status, env.Error.Code, env.Error.Type)
 		message := "the origin answered the turn with an error event"
@@ -706,6 +726,7 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 	t.pctx.MarkResponseDelivered()
 	t.p.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
 	t.pctx.ResponseBytes += int64(len(payload))
+	captureMessage(t.pctx, payload)
 	// The three events inference-parser reads usage and the finish reason from; each
 	// ends a response, as response.completed ends Codex's own read loop.
 	switch env.Type {
@@ -745,6 +766,11 @@ func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
 		t.pctx.StatusCode = status
 	}
 	t.p.RunResponseFrame(finalCtx, t.pctx, nil, true)
+	if rc := t.pctx.ResponseCapture; rc != nil {
+		// A turn is whole when the origin ended it, error event included; the row's status
+		// is the capture's.
+		rc.Status, rc.Ended = status, fail == nil || fail.Kind == "backend_error"
+	}
 	ws.s.recordOutboundResponseEvent(t.pctx, status, fail)
 	t.p.RunFinish(finalCtx, t.pctx, pipeline.OutcomeFromContext(t.pctx))
 }

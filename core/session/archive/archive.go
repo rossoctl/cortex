@@ -355,11 +355,15 @@ func (a *Archive) RecordCapture(sessionID string, e *pipeline.SessionEvent, c *p
 	}
 }
 
-// captureSize is what a queued capture holds in memory, near enough: its two bodies by length.
-// A body read with io.ReadAll can hold up to twice that, and headers are not counted, so the
+// captureSize is what a queued capture holds in memory, near enough: its bodies by length. A
+// body read with io.ReadAll can hold up to twice that, and headers are not counted, so the
 // budget bounds memory within a small factor, not exactly.
 func captureSize(c *pipeline.RequestCapture) int64 {
-	return int64(len(c.Original) + len(c.Forwarded))
+	n := len(c.Original) + len(c.Forwarded)
+	if c.Response != nil {
+		n += len(c.Response.Body)
+	}
+	return int64(n)
 }
 
 // releaseCapture gives a queued capture's bytes back to the budget.
