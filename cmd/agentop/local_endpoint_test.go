@@ -280,3 +280,42 @@ func TestWaitForLocalSessionAPI_SaysWhyItIsWaiting(t *testing.T) {
 		t.Errorf("a prompt answer still printed %q", out.String())
 	}
 }
+
+// runningConfig reads only the three fields exec uses. A newer proxy can change the
+// type of a different field, and the decode must not fail because of it.
+func TestRunningConfig_IgnoresFieldsItDoesNotRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"session": 5, "mode": ["not", "a", "string"],
+			"listener": {"forward_proxy_addr": "127.0.0.1:51999", "roles": "forward"},
+			"tls_bridge": {"mode": "enabled", "ca_dir": "/x/ca", "ports": "443"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg, err := runningConfig(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Listener.ForwardProxyAddr != "127.0.0.1:51999" {
+		t.Errorf("forward_proxy_addr = %q", cfg.Listener.ForwardProxyAddr)
+	}
+	if cfg.TLSBridge == nil || cfg.TLSBridge.Mode != "enabled" || cfg.TLSBridge.CADir != "/x/ca" {
+		t.Errorf("tls_bridge = %+v, want mode enabled and ca_dir /x/ca", cfg.TLSBridge)
+	}
+}
+
+// A /config without a tls_bridge block gives a nil TLSBridge, as the full decode did.
+// bridgeEnabled and wantedFromLoaded nil-check it.
+func TestRunningConfig_NoBridgeBlockIsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"listener": {"forward_proxy_addr": "127.0.0.1:51999"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg, err := runningConfig(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLSBridge != nil {
+		t.Errorf("TLSBridge = %+v, want nil", cfg.TLSBridge)
+	}
+}
