@@ -284,6 +284,8 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"artifacts"`
+			Kind   string `json:"kind"`
+			ID     string `json:"id"`
 			TaskID string `json:"taskId"`
 		} `json:"result"`
 	}
@@ -292,8 +294,8 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 	}
 
 	ext.FinalStatus = resp.Result.Status.State
-	if ext.TaskID == "" && resp.Result.TaskID != "" {
-		ext.TaskID = resp.Result.TaskID
+	if id := resultTaskID(resp.Result.Kind, resp.Result.ID, resp.Result.TaskID); ext.TaskID == "" && id != "" {
+		ext.TaskID = id
 	}
 
 	// Extract artifact text
@@ -348,6 +350,7 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 		Result struct {
 			Kind   string `json:"kind"`
 			Final  bool   `json:"final"`
+			ID     string `json:"id"`
 			TaskID string `json:"taskId"`
 			Status struct {
 				State   string `json:"state"`
@@ -370,8 +373,8 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 		return
 	}
 
-	if ext.TaskID == "" && event.Result.TaskID != "" {
-		ext.TaskID = event.Result.TaskID
+	if id := resultTaskID(event.Result.Kind, event.Result.ID, event.Result.TaskID); ext.TaskID == "" && id != "" {
+		ext.TaskID = id
 	}
 
 	switch event.Result.Kind {
@@ -394,6 +397,16 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 			}
 		}
 	}
+}
+
+// resultTaskID returns the task id of an A2A result (spec v0.3.0).
+// A Task (kind "task") carries its id in id. A Message and the two
+// task update events carry it in taskId.
+func resultTaskID(kind, id, taskID string) string {
+	if kind == "task" {
+		return id
+	}
+	return taskID
 }
 
 // extractSessionID finds a contextId (preferred) or sessionId in the response.
