@@ -314,7 +314,8 @@ The events in it do not carry one each. The value is now `1`
 
 The rule for the number:
 
-- It increases when an event field changes its meaning or is removed.
+- It increases when a field of the response or of an event changes its meaning or
+  is removed.
 - It does not increase when a field is added. A client ignores keys it does not
   know.
 - A response with no `schemaVersion` comes from a proxy older than the field.

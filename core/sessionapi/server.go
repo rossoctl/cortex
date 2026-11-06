@@ -34,9 +34,10 @@ import (
 const defaultHeartbeatInterval = 30 * time.Second
 
 // SchemaVersion is the "schemaVersion" of each JSON response that carries events:
-// GET /v1/sessions/{id} and GET /v1/sessions/{id}/events/{seq}. Increase it when an
-// event field changes its meaning or is removed. Do not increase it when a field is
-// added. The SSE stream has no envelope, so its frames do not carry it.
+// GET /v1/sessions/{id} and GET /v1/sessions/{id}/events/{seq}. Increase it when a
+// field of the response or of an event changes its meaning or is removed. Do not
+// increase it when a field is added. The SSE stream has no envelope, so its frames
+// do not carry it.
 const SchemaVersion = 1
 
 // Server wraps an http.Server bound to a session store.

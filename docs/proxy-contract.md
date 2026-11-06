@@ -153,7 +153,7 @@ forms:
 
 | Form | Used by | Contract |
 |---|---|---|
-| `cortex --version` | `agentop doctor`, `install.sh` | Prints one line: `cortex <version>`, or `cortex (cpex) <version>` for a cpex build (`versionLine` in `cmd/cortex/main.go`). agentop reads the last word of the first line as the version (`installedVersion` in `cmd/agentop/setup_step_binaries.go`). `doctor` reports a problem when it is not agentop's version (`checkBinaries`). A cpex build has ` (cpex) ` in this line. agentop (`installedIsCpex`) and `install.sh` find a cpex build by that text |
+| `cortex --version` | `agentop doctor`, `agentop update`, `install.sh` | Prints one line: `cortex <version>`, or `cortex (cpex) <version>` for a cpex build (`versionLine` in `cmd/cortex/main.go`). agentop reads the last word of the first line as the version (`installedVersion` in `cmd/agentop/setup_step_binaries.go`). `doctor` reports a problem when it is not agentop's version (`checkBinaries`). `update` downloads nothing when it is agentop's version and the release asked for (`currentRelease` in `cmd/agentop/cmd_update.go`). A cpex build has ` (cpex) ` in this line. agentop (`installedIsCpex`) and `install.sh` find a cpex build by that text |
 | `cortex --local --write-config` | agentop setup (`cmd/agentop/setup_step_config.go`) | Writes `~/.cortex/config.yaml` and its directory if the file is absent, then exits 0. It does not change a file that exists (`writeBuiltinConfig` in `cmd/cortex/local.go`) |
 | `cortex --local --supervise` | agentop setup without a service (`cmd/agentop/setup_unsupervised.go`) | Runs the built-in config under the supervisor. agentop writes the pid to `~/.cortex/proxy.pid` and the output to `~/.cortex/proxy.log` |
 | `cortex --supervise --config <path>` | the launchd plist (`cmd/agentop/cmd_service_platform.go`) | The parent starts a child with the same arguments, without `--supervise`, and restarts it when it exits (`runSupervisor` in `cmd/cortex/supervise.go`) |
@@ -173,7 +173,9 @@ Other rules:
 ## `install.sh` flags
 
 `scripts/install.sh` parses these (the `for arg` loop and `usage`). `agentop update`
-(PR #1676) will use them. Some flags go to `agentop setup` unchanged (`hand_off`).
+runs `install.sh` with some of them (`updateFlags` in
+[`cmd/agentop/cmd_update.go`](../cmd/agentop/cmd_update.go)). Some flags go to
+`agentop setup` unchanged (`hand_off`).
 The `hand_off` comment says that set is frozen: an older agentop must accept every
 flag it sends.
 

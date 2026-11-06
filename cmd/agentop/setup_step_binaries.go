@@ -156,8 +156,8 @@ func installBinary(env *setupEnv, src, dst string) (func() error, error) {
 	return restore, copyFile(src, dst, 0o755)
 }
 
-// installedVersion is the last word of `path --version`'s first line, as
-// install.sh's installed_version reads it; "" when there is no such binary.
+// installedVersion is the last word of `path --version`'s first line, or ""
+// when there is no such binary. install.sh reads only the "(cpex)" text of that line.
 func installedVersion(path string) string {
 	f := strings.Fields(versionLine(path))
 	if len(f) == 0 {
