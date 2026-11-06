@@ -17,6 +17,10 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 ## Prerequisites
 
 - **Go 1.26.10+** (matches `go.work`)
+- **Xcode Command Line Tools on macOS** (`xcode-select --install`). `/usr/bin/make` is a
+  shim for them, so without them `make` fails before it reads the Makefile. In a sandbox
+  that blocks `/var/select/`, the same `xcode-select: error` shows even when the tools are
+  installed. There, run the Makefile's `go build` commands directly.
 - **Python 3.12+** (for `keycloak_sync.py` and the demo setup scripts)
 - **Docker or Podman** (for building container images)
 - **pre-commit** (for local hooks)
