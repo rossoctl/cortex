@@ -1,0 +1,134 @@
+# Spike for #956: can a GitHub-hosted macOS runner run Cortex under launchd?
+#
+# Cortex runs on macOS as a per-user launchd agent in the gui/<uid> domain, which
+# exists only for a user logged in at the console. A runner is a remote machine
+# with no one at the screen, so whether that domain exists there decides how
+# #956's macOS smoke test can be built. This answers it three ways, each step
+# independent of the others so one failure does not hide the next result:
+#
+#   1. What the runner's session looks like: who owns the console, and whether
+#      gui/<uid> answers.
+#   2. TestWaitBootedOut_RealLaunchd with AGENTOP_LAUNCHD_TESTS=required, which
+#      turns each of its skips ("cannot bootstrap", "would not start") into a
+#      failure, so a green run means launchd really started and stopped an agent.
+#   3. A real install of this commit's own build, the way `make dev-install`
+#      does it, then `agentop service status`, a stop/start/restart and an
+#      uninstall. From source, not from a release: it installs nothing from
+#      GitHub Releases, so docs/install-stats/ is unaffected.
+#
+# Runs only on pushes to its own branch, and read-only. To be deleted once #956's real
+# smoke test exists; it is not a check anything depends on.
+name: Spike macOS launchd (#956)
+
+on:
+  # A workflow_dispatch workflow can be started only once its file is on the default
+  # branch, so a spike that lives on its own branch runs on pushes to it instead.
+  push:
+    branches: [macos-launchd-spike]
+    paths: [.github/workflows/spike-macos-launchd.yaml]
+
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    name: launchd on ${{ matrix.runner }}
+    strategy:
+      # Each runner image is its own answer; one failing should not cancel the others.
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-15, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: cmd/agentop/go.mod
+          cache-dependency-path: cmd/agentop/go.sum
+
+      - name: 1. What session does the runner have?
+        id: session
+        continue-on-error: true
+        run: |
+          sw_vers
+          echo "user: $(id -un) uid=$(id -u)"
+          echo "console owner: $(stat -f%Su /dev/console)"
+          echo "autoLoginUser: $(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser 2>/dev/null || echo none)"
+          if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+            echo "gui/$(id -u): exists"
+            launchctl print "gui/$(id -u)" | sed -n '1,12p'
+          else
+            echo "gui/$(id -u): does NOT exist"
+            exit 1
+          fi
+
+      - name: 2. TestWaitBootedOut_RealLaunchd, skips as failures
+        id: launchd_test
+        continue-on-error: true
+        working-directory: cmd/agentop
+        env:
+          GOWORK: "off"
+          AGENTOP_LAUNCHD_TESTS: required
+        run: go test -v -count=1 -run 'TestWaitBootedOut_RealLaunchd' .
+
+      - name: 3. Install this commit's build and drive the service
+        id: install
+        continue-on-error: true
+        env:
+          GOWORK: "off"
+        run: |
+          set -eu
+          make cortex agentop   # the full profile, as the release tarball is built
+          # As `make dev-install`, without --restart: there is nothing running to restart.
+          ./bin/agentop setup --from ./bin --yes --no-modify-path
+          agentop="${HOME}/.local/bin/agentop"
+          healthy() {
+            for i in $(seq 1 30); do
+              if "${agentop}" service status | tee /tmp/status.txt | grep -q 'Cortex is healthy according to'; then
+                return 0
+              fi
+              sleep 1
+            done
+            cat /tmp/status.txt
+            return 1
+          }
+          echo "== after setup";   healthy
+          echo "== stop";          "${agentop}" service stop
+          "${agentop}" service status || true
+          echo "== start";         "${agentop}" service start;   healthy
+          echo "== restart";       "${agentop}" service restart; healthy
+          echo "== launchd's view"
+          launchctl print "gui/$(id -u)/io.rossoctl.cortex" | grep -E 'state =|pid =|last exit' || true
+          echo "== uninstall";     "${agentop}" uninstall --yes
+          if launchctl print "gui/$(id -u)/io.rossoctl.cortex" >/dev/null 2>&1; then
+            echo "the agent is still loaded after uninstall"
+            exit 1
+          fi
+
+      - name: On failure, show the proxy log
+        if: steps.install.outcome == 'failure'
+        run: tail -n 60 "${HOME}/.cortex/proxy.log" 2>/dev/null || echo "(no proxy log)"
+
+      - name: Summary
+        if: always()
+        env:
+          SESSION: ${{ steps.session.outcome }}
+          LAUNCHD_TEST: ${{ steps.launchd_test.outcome }}
+          INSTALL: ${{ steps.install.outcome }}
+        run: |
+          {
+            echo "### launchd on ${{ matrix.runner }}"
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| gui/<uid> domain exists | ${SESSION} |"
+            echo "| TestWaitBootedOut_RealLaunchd (required) | ${LAUNCHD_TEST} |"
+            echo "| install, status, stop/start/restart, uninstall | ${INSTALL} |"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          cat "${GITHUB_STEP_SUMMARY}"
+          # The steps above continue on error so each one reports; the job's colour
+          # is still the answer.
+          [ "${SESSION}" = success ] && [ "${LAUNCHD_TEST}" = success ] && [ "${INSTALL}" = success ]
