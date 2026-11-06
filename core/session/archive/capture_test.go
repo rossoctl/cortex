@@ -602,7 +602,8 @@ func TestCapture_ByteHeadersKeepEmptyKeys(t *testing.T) {
 func TestCapture_ResponseRoundTrips(t *testing.T) {
 	body := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n" + strings.Repeat("data: x\n\n", 50) + "\xff")
 	c := &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{
-		Status: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "Content-Encoding": {"gzip"}},
+		Status: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "Content-Encoding": {"gzip"},
+			"X-Odd": {"caf\xe9"}, "X-Empty": {}, "X-Nil": nil},
 		Body: body, Truncated: true, Incomplete: true, Decoded: true,
 	}}
 	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())

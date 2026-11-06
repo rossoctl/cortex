@@ -49,13 +49,14 @@ type captureRec struct {
 // responseRec is a ResponseCapture on disk. B is the key of the block holding the body, empty for
 // an empty body; S is the hex SHA-256 of the body, checked on read.
 type responseRec struct {
-	C  int         `json:"c"`
-	H  http.Header `json:"h,omitempty"`
-	B  string      `json:"b,omitempty"`
-	S  string      `json:"s"`
-	T  bool        `json:"t,omitempty"`
-	IC bool        `json:"ic,omitempty"`
-	D  bool        `json:"d,omitempty"`
+	C  int                 `json:"c"`
+	H  http.Header         `json:"h,omitempty"`
+	HX map[string][][]byte `json:"hx,omitempty"`
+	B  string              `json:"b,omitempty"`
+	S  string              `json:"s"`
+	T  bool                `json:"t,omitempty"`
+	IC bool                `json:"ic,omitempty"`
+	D  bool                `json:"d,omitempty"`
 }
 
 // bodyRec is one body's skeleton. P alternates literal bytes and block references, starting and
@@ -179,8 +180,9 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 	}
 	if r := c.Response; r != nil {
 		sum := sha256.Sum256(r.Body)
-		rec := &captureRec{R: &responseRec{C: r.Status, H: r.Header, S: hex.EncodeToString(sum[:]),
+		rec := &captureRec{R: &responseRec{C: r.Status, S: hex.EncodeToString(sum[:]),
 			T: r.Truncated, IC: r.Incomplete, D: r.Decoded}}
+		rec.R.H, rec.R.HX = headerRec(r.Header)
 		var fresh []stringRec
 		if len(r.Body) > 0 {
 			v := string(r.Body)
@@ -193,25 +195,10 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 		return rec, fresh
 	}
 	o, fresh := splitBody(c.Original, seen)
-	f := &captureRec{O: o, H: c.Header, Q: c.Query}
+	f := &captureRec{O: o, Q: c.Query}
+	f.H, f.HX = headerRec(c.Header)
 	if !utf8.ValidString(c.Query) {
 		f.Q, f.QX = "", []byte(c.Query)
-	}
-	for _, vs := range c.Header {
-		if slices.ContainsFunc(vs, func(v string) bool { return !utf8.ValidString(v) }) {
-			f.H, f.HX = nil, make(map[string][][]byte, len(c.Header))
-			for k, vs := range c.Header {
-				var bs [][]byte
-				if vs != nil {
-					bs = make([][]byte, 0, len(vs))
-				}
-				for _, v := range vs {
-					bs = append(bs, []byte(v))
-				}
-				f.HX[k] = bs
-			}
-			break
-		}
 	}
 	if c.Forwarded != nil {
 		var more []stringRec
@@ -219,6 +206,47 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 		fresh = append(fresh, more...)
 	}
 	return f, fresh
+}
+
+// headerRec is h as a capture record holds it: as is, or as bytes in hx when a value is not valid
+// UTF-8, which a JSON string cannot hold.
+func headerRec(h http.Header) (http.Header, map[string][][]byte) {
+	for _, vs := range h {
+		if slices.ContainsFunc(vs, func(v string) bool { return !utf8.ValidString(v) }) {
+			hx := make(map[string][][]byte, len(h))
+			for k, vs := range h {
+				var bs [][]byte
+				if vs != nil {
+					bs = make([][]byte, 0, len(vs))
+				}
+				for _, v := range vs {
+					bs = append(bs, []byte(v))
+				}
+				hx[k] = bs
+			}
+			return nil, hx
+		}
+	}
+	return h, nil
+}
+
+// headerOf is the header headerRec wrote.
+func headerOf(h http.Header, hx map[string][][]byte) http.Header {
+	if hx == nil {
+		return h
+	}
+	out := make(http.Header, len(hx))
+	for k, vs := range hx {
+		var ss []string
+		if vs != nil {
+			ss = make([]string, 0, len(vs))
+		}
+		for _, v := range vs {
+			ss = append(ss, string(v))
+		}
+		out[k] = ss
+	}
+	return out
 }
 
 // blockLine is a block record. JSON strings cannot hold invalid UTF-8, so such a block is
@@ -282,25 +310,12 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 		if hex.EncodeToString(sum[:]) != r.S {
 			return nil, errors.New("archive: response body does not match the captured hash")
 		}
-		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: r.H,
+		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: headerOf(r.H, r.HX),
 			Body: body, Truncated: r.T, Incomplete: r.IC, Decoded: r.D}}, nil
 	}
-	c := &pipeline.RequestCapture{Header: f.H, Query: f.Q}
+	c := &pipeline.RequestCapture{Header: headerOf(f.H, f.HX), Query: f.Q}
 	if f.QX != nil {
 		c.Query = string(f.QX)
-	}
-	if f.HX != nil {
-		c.Header = make(http.Header, len(f.HX))
-		for k, vs := range f.HX {
-			var ss []string
-			if vs != nil {
-				ss = make([]string, 0, len(vs))
-			}
-			for _, v := range vs {
-				ss = append(ss, string(v))
-			}
-			c.Header[k] = ss
-		}
 	}
 	var err error
 	if c.Original, err = f.O.rebuild(blocks); err != nil {

@@ -2144,7 +2144,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 		return resp, nil
 	}
 	for round := 0; round < pipeline.MaxResends && resp.StatusCode/100 != 2; round++ {
-		head, _ := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
+		head, peekErr := io.ReadAll(io.LimitReader(resp.Body, pipeline.ResendPeekLimit))
 		// The parse as the refused attempt was sent: a Resender may rewrite the model,
 		// and the refused attempt's row must name the one the upstream refused.
 		sent := pipeline.SnapshotInference(pctx.Extensions.Inference)
@@ -2165,7 +2165,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			if capture != nil {
 				// The refusal as far as it was read: the resend peeks at most ResendPeekLimit bytes.
 				pctx.ResponseCapture = &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header),
-					Body: head, Decoded: resp.Uncompressed, Ended: len(head) < pipeline.ResendPeekLimit}
+					Body: head, Decoded: resp.Uncompressed, Ended: peekErr == nil && len(head) < pipeline.ResendPeekLimit}
 			}
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent

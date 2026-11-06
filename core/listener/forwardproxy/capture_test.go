@@ -533,3 +533,49 @@ func TestCapture_ResendCapturesBothAttempts(t *testing.T) {
 		t.Fatalf("response statuses %v, want a 403 then a 200", statuses)
 	}
 }
+
+// A refusal the origin broke off before its end is incomplete on the resend arm too: the resend
+// read only part of it, and a short read is not the end of the body.
+func TestCapture_ABrokenRefusalBeforeAResendIsIncomplete(t *testing.T) {
+	refusals := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, _ := io.ReadAll(r.Body); strings.Contains(string(body), `"glm-5-3"`) {
+			io.WriteString(w, `{"choices":[{"message":{"content":"PONG"}}]}`)
+			return
+		}
+		refusals++
+		w.Header().Set("Content-Length", "5000")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, `{"error":{"type":"team_model_access_denied"`)
+		w.(http.Flusher).Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true})
+	postThrough(t, proxy, "http://agent-provider.example/v1/chat/completions", `{"model":"exo-free","messages":[]}`, nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec.mu.Lock()
+		n := len(rec.res)
+		rec.mu.Unlock()
+		if n == 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var refused *pipeline.ResponseCapture
+	for _, r := range rec.res {
+		if r.Status == http.StatusForbidden {
+			refused = r
+		}
+	}
+	if refusals != 1 || refused == nil {
+		t.Fatalf("%d refusals, refused capture %v: want one cut-off 403 captured", refusals, refused)
+	}
+	if !refused.Incomplete {
+		t.Fatalf("a 403 cut off after %d of 5000 bytes is marked complete", len(refused.Body))
+	}
+}
