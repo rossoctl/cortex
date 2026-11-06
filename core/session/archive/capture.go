@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -27,11 +29,17 @@ import (
 
 // captureRec is a request capture on its event record: the skeletons of the original and the
 // forwarded body, and the request's headers and query. Old readers ignore the key.
+//
+// Headers and the query are not hashed, so they must be exact by construction. JSON strings
+// cannot hold invalid UTF-8, which Go's server accepts in a header value, so a header set or
+// query that holds any is written as bytes instead: HX and QX, base64 on disk.
 type captureRec struct {
-	O *bodyRec    `json:"o"`
-	W *bodyRec    `json:"w,omitempty"`
-	H http.Header `json:"h,omitempty"`
-	Q string      `json:"q,omitempty"`
+	O  *bodyRec            `json:"o"`
+	W  *bodyRec            `json:"w,omitempty"`
+	H  http.Header         `json:"h,omitempty"`
+	HX map[string][][]byte `json:"hx,omitempty"`
+	Q  string              `json:"q,omitempty"`
+	QX []byte              `json:"qx,omitempty"`
 }
 
 // bodyRec is one body's skeleton. P alternates literal bytes and block references, starting and
@@ -66,7 +74,7 @@ func splitBody(body []byte, seen map[string]struct{}) (*bodyRec, []stringRec) {
 		}
 		cuts = append(cuts, [2]int{start, end})
 	}
-	if root := gjson.ParseBytes(body); utf8.Valid(body) && root.IsObject() && gjson.ValidBytes(body) {
+	if root := gjson.ParseBytes(body); utf8.Valid(body) && root.IsObject() && json.Valid(body) {
 		root.ForEach(func(_, v gjson.Result) bool {
 			switch {
 			case v.IsArray():
@@ -127,7 +135,8 @@ func (b *bodyRec) rebuild(blocks map[string]string) ([]byte, error) {
 	if hex.EncodeToString(sum[:]) != b.S {
 		return nil, errors.New("archive: rebuilt body does not match the captured hash")
 	}
-	return out.Bytes(), nil
+	// Never nil: a forwarded body rewritten to nothing is not "no rewrite".
+	return append([]byte{}, out.Bytes()...), nil
 }
 
 // refs is every block b refers to.
@@ -146,6 +155,20 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 	}
 	o, fresh := splitBody(c.Original, seen)
 	f := &captureRec{O: o, H: c.Header, Q: c.Query}
+	if !utf8.ValidString(c.Query) {
+		f.Q, f.QX = "", []byte(c.Query)
+	}
+	for _, vs := range c.Header {
+		if slices.ContainsFunc(vs, func(v string) bool { return !utf8.ValidString(v) }) {
+			f.H, f.HX = nil, make(map[string][][]byte, len(c.Header))
+			for k, vs := range c.Header {
+				for _, v := range vs {
+					f.HX[k] = append(f.HX[k], []byte(v))
+				}
+			}
+			break
+		}
+	}
 	if c.Forwarded != nil {
 		var more []stringRec
 		f.W, more = splitBody(c.Forwarded, seen)
@@ -171,14 +194,21 @@ func blockLine(s stringRec) ([]byte, error) {
 // skeletons, the second keeps just the blocks they name. Blocks precede the event that first
 // uses them, so the second pass stops at the event.
 func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
-	var f *captureRec
-	if _, err := readRecords(path, nil, nil, func(e *pipeline.SessionEvent, c *captureRec) bool {
+	var raw json.RawMessage
+	if _, err := readRecords(path, nil, nil, func(e *pipeline.SessionEvent, c json.RawMessage) bool {
 		if e.Seq == seq {
-			f = c
+			raw = c
 		}
 		return e.Seq < seq
-	}); err != nil || f == nil || f.O == nil {
+	}); err != nil || raw == nil {
 		return nil, err
+	}
+	var f captureRec
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, fmt.Errorf("archive: capture record: %w", err)
+	}
+	if f.O == nil {
+		return nil, errors.New("archive: capture record has no original body")
 	}
 	want := map[string]struct{}{}
 	for _, h := range f.O.refs() {
@@ -190,12 +220,23 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 		}
 	}
 	blocks := map[string]string{}
-	if _, err := readRecords(path, want, blocks, func(e *pipeline.SessionEvent, _ *captureRec) bool {
+	if _, err := readRecords(path, want, blocks, func(e *pipeline.SessionEvent, _ json.RawMessage) bool {
 		return e.Seq < seq
 	}); err != nil {
 		return nil, err
 	}
 	c := &pipeline.RequestCapture{Header: f.H, Query: f.Q}
+	if f.QX != nil {
+		c.Query = string(f.QX)
+	}
+	if f.HX != nil {
+		c.Header = make(http.Header, len(f.HX))
+		for k, vs := range f.HX {
+			for _, v := range vs {
+				c.Header[k] = append(c.Header[k], string(v))
+			}
+		}
+	}
 	var err error
 	if c.Original, err = f.O.rebuild(blocks); err != nil {
 		return nil, err

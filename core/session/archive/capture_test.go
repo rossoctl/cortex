@@ -2,6 +2,8 @@ package archive
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -375,5 +377,117 @@ func TestCapture_InvalidUTF8BlockIsExact(t *testing.T) {
 	got, err := readCapture(path, 1)
 	if err != nil || got == nil || !bytes.Equal(got.Original, body) {
 		t.Fatalf("err %v, got %q", err, got)
+	}
+}
+
+// A body nested deeper than any validator's recursion can take must not crash the writer: it
+// is one block, still exact.
+func TestCapture_DeepNestingIsOneBlock(t *testing.T) {
+	body := []byte(`{"m":` + strings.Repeat("[", 8<<20) + strings.Repeat("]", 8<<20) + `}`)
+	sb, fresh := splitBody(body, map[string]struct{}{})
+	if len(fresh) != 1 || len(sb.P) != 3 {
+		t.Fatalf("%d blocks, %d pieces, want the whole body as one block", len(fresh), len(sb.P))
+	}
+}
+
+// Headers and the query are not hashed, so they must come back exact by construction, also
+// when they hold bytes that are not valid UTF-8 — which Go's server accepts in a header value.
+func TestCapture_HeadersAndQueryAreExact(t *testing.T) {
+	c := &pipeline.RequestCapture{Original: []byte("{}"),
+		Header: http.Header{"X-Name": {"caf\xe9", "ok"}}, Query: "q=\xff&r=1"}
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.appendCapture(pipeline.SessionEvent{Seq: 1}, c, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	got, err := readCapture(filepath.Join(filepath.Dir(w.f.Name()), w.info().File), 1)
+	if err != nil || got == nil {
+		t.Fatalf("got %v, err %v", got, err)
+	}
+	if !reflect.DeepEqual(got.Header, c.Header) || got.Query != c.Query {
+		t.Fatalf("header %q query %q, want %q %q", got.Header, got.Query, c.Header, c.Query)
+	}
+}
+
+// An empty forwarded body is a rewrite to nothing, not "no rewrite".
+func TestCapture_EmptyForwardedStaysEmpty(t *testing.T) {
+	c := &pipeline.RequestCapture{Original: []byte(`{"a":1}`), Forwarded: []byte{}}
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.appendCapture(pipeline.SessionEvent{Seq: 1}, c, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	got, err := readCapture(filepath.Join(filepath.Dir(w.f.Name()), w.info().File), 1)
+	if err != nil || got == nil || got.Forwarded == nil {
+		t.Fatalf("got %+v, err %v, want an empty, non-nil forwarded body", got, err)
+	}
+}
+
+// An event read does not decode block records: Page, Event and the startup usage replay read
+// segments that are mostly blocks, and decoding them cost 37% more time on a 40-request
+// segment. Pinned with a damaged block line, which an event read never looks inside, so it is
+// not a truncation there.
+func TestCapture_EventReadsSkipBlocks(t *testing.T) {
+	path := zstdFile(t, 1<<20,
+		`{"k":"b",this block line is damaged}`,
+		`{"k":"e","e":{"seq":1,"at":"2026-10-01T00:00:00Z","direction":"outbound","phase":"request"}}`)
+	got, truncated := readAll(t, path)
+	if len(got) != 1 || truncated {
+		t.Fatalf("read %d events (truncated=%v), want 1, not truncated", len(got), truncated)
+	}
+}
+
+// A block's undoing on a failed encode: if the event cannot be written, its blocks are not
+// recorded as written either, and the next event that uses them writes them.
+func TestCapture_FailedEventForgetsItsBlocks(t *testing.T) {
+	body := synthBodies(13, 1, 8<<10)[0]
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := pipeline.SessionEvent{Seq: 1, Plugins: map[string]json.RawMessage{"p": json.RawMessage("{not json")}}
+	if err := w.appendCapture(bad, &pipeline.RequestCapture{Original: body}, time.Now()); err == nil {
+		t.Fatal("an unencodable event was written")
+	}
+	if err := w.appendCapture(pipeline.SessionEvent{Seq: 2}, &pipeline.RequestCapture{Original: body}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	got, err := readCapture(filepath.Join(filepath.Dir(w.f.Name()), w.info().File), 2)
+	if err != nil || got == nil || !bytes.Equal(got.Original, body) {
+		t.Fatalf("got %v, err %v: the second event's blocks were never written", got != nil, err)
+	}
+}
+
+// A segment torn after a block and before its event holds no capture for that event: no
+// error, and nothing rebuilt from half a request.
+func TestCapture_TornBeforeTheEventIsNoCapture(t *testing.T) {
+	path := zstdFile(t, 1<<20,
+		`{"k":"e","e":{"seq":1,"at":"2026-10-01T00:00:00Z","direction":"outbound","phase":"request"}}`,
+		`{"k":"b","h":"AAAAAAAAAAAAAAAAAAAAAA","v":"a block whose event never made it to the disk"}`)
+	if got, err := readCapture(path, 2); got != nil || err != nil {
+		t.Fatalf("got %v, err %v, want no capture and no error", got, err)
+	}
+}
+
+// A block written after the event is not one the event can use: blocks precede their first
+// use, so a reader that took it would be reading a later request's data.
+func TestCapture_ABlockAfterItsEventIsNotUsed(t *testing.T) {
+	v := strings.Repeat("a block long enough to be cut out of the body ", 2)
+	h := hashOf(v)
+	body := `{"x":"` + v + `"}`
+	sum := sha256.Sum256([]byte(body))
+	f := fmt.Sprintf(`{"o":{"s":%q,"p":["{\"x\":",%q,"}"]}}`, hex.EncodeToString(sum[:]), h)
+	path := zstdFile(t, 1<<20,
+		`{"k":"e","e":{"seq":1,"at":"2026-10-01T00:00:00Z","direction":"outbound","phase":"request"},"f":`+f+`}`,
+		fmt.Sprintf(`{"k":"b","h":%q,"v":%q}`, h, `"`+v+`"`))
+	if _, err := readCapture(path, 1); err == nil {
+		t.Fatal("a block after its event was used to rebuild it")
 	}
 }

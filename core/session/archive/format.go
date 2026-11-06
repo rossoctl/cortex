@@ -34,7 +34,8 @@ type record struct {
 	X []byte                 `json:"x,omitempty"`
 	E *pipeline.SessionEvent `json:"e,omitempty"`
 	R *refs                  `json:"r,omitempty"`
-	F *captureRec            `json:"f,omitempty"`
+	// F stays undecoded until a capture is asked for: an event read has no use for it.
+	F json.RawMessage `json:"f,omitempty"`
 }
 
 // refs names, BY POSITION, which of an event's deduplicated strings were written as
@@ -244,7 +245,15 @@ func stringLine(s stringRec) ([]byte, error) {
 }
 
 func eventLine(e pipeline.SessionEvent, r *refs, f *captureRec) ([]byte, error) {
-	return appendLine(record{K: kindEvent, E: &e, R: r, F: f})
+	rec := record{K: kindEvent, E: &e, R: r}
+	if f != nil {
+		b, err := json.Marshal(f)
+		if err != nil {
+			return nil, err
+		}
+		rec.F = b
+	}
+	return appendLine(rec)
 }
 
 func appendLine(rec record) ([]byte, error) {
