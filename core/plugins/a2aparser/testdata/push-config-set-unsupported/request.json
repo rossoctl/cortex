@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tasks/pushNotificationConfig/set",
+  "params": {
+    "taskId": "task-1",
+    "pushNotificationConfig": {
+      "url": "https://client.example.com/notify"
+    }
+  }
+}

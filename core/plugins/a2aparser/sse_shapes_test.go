@@ -2,6 +2,7 @@ package a2aparser
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -67,5 +68,31 @@ func TestA2AParser_OnResponse_BufferedSSECROnlyLineEndings(t *testing.T) {
 	}
 	if ext.FinalStatus != "completed" {
 		t.Errorf("FinalStatus = %q, want %q", ext.FinalStatus, "completed")
+	}
+}
+
+// A listener's buffered path gives the whole SSE body to OnResponseFrame as one last frame.
+// The server-assigned contextId must survive that path in each wire-legal shape.
+func TestA2AParser_OnResponseFrame_WholeSSEBodyShapes(t *testing.T) {
+	lf := `data: {"result":{"kind":"task","id":"task-1","contextId":"srv-ctx","status":{"state":"submitted"}}}` + "\n\n" +
+		`data: {"result":{"kind":"status-update","taskId":"task-1","contextId":"srv-ctx","final":true,"status":{"state":"completed"}}}` + "\n\n"
+	for name, body := range map[string]string{
+		"LF":      lf,
+		"BOM":     "\xef\xbb\xbf" + lf,
+		"CR only": strings.ReplaceAll(lf, "\n", "\r"),
+		"CRLF":    strings.ReplaceAll(lf, "\n", "\r\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := NewA2AParser()
+			pctx := &pipeline.Context{
+				Extensions: pipeline.Extensions{A2A: &pipeline.A2AExtension{Method: "message/stream"}},
+			}
+			p.OnResponseFrame(context.Background(), pctx, []byte(body), true)
+			ext := pctx.Extensions.A2A
+			if ext.SessionID != "srv-ctx" || ext.FinalStatus != "completed" || ext.TaskID != "task-1" {
+				t.Errorf("SessionID, FinalStatus, TaskID = %q, %q, %q; want srv-ctx, completed, task-1",
+					ext.SessionID, ext.FinalStatus, ext.TaskID)
+			}
+		})
 	}
 }

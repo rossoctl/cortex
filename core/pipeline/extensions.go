@@ -129,7 +129,7 @@ type A2AExtension struct {
 	Parts     []A2APart `json:"parts,omitempty"`
 
 	// Response fields (populated by a2a-parser OnResponse)
-	FinalStatus  string `json:"finalStatus,omitempty"`  // "completed", "failed", "canceled"
+	FinalStatus  string `json:"finalStatus,omitempty"`  // last task state in the response, e.g. "completed"
 	Artifact     string `json:"artifact,omitempty"`     // final artifact text
 	ErrorMessage string `json:"errorMessage,omitempty"` // failure reason if status is "failed"
 

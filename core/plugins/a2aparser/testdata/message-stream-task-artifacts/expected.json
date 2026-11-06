@@ -1,0 +1,17 @@
+{
+  "method": "message/stream",
+  "rpcId": 8,
+  "sessionId": "ctx-5",
+  "messageId": "msg-5",
+  "taskId": "task-5",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 5"
+    }
+  ],
+  "finalStatus": "completed",
+  "artifact": "agent text 5",
+  "isAction": true
+}

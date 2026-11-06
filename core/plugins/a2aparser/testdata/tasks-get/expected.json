@@ -1,0 +1,7 @@
+{
+  "method": "tasks/get",
+  "rpcId": 3,
+  "sessionId": "ctx-1",
+  "taskId": "task-1",
+  "finalStatus": "completed"
+}

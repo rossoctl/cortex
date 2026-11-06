@@ -1,0 +1,5 @@
+data: {"jsonrpc":"2.0","id":2,"result":{"id":"task-2","contextId":"ctx-2","status":{"state":"submitted"},"kind":"task"}}
+
+data: {"jsonrpc":"2.0","id":2,"result":{"taskId":"task-2","contextId":"ctx-2","artifact":{"artifactId":"artifact-2","parts":[{"kind":"text","text":"agent text 2"}]},"kind":"artifact-update"}}
+
+data: {"jsonrpc":"2.0","id":2,"result":{"taskId":"task-2","contextId":"ctx-2","status":{"state":"completed"},"final":true,"kind":"status-update"}}

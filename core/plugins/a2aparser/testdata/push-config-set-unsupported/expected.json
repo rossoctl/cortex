@@ -1,0 +1,5 @@
+{
+  "method": "tasks/pushNotificationConfig/set",
+  "rpcId": 7,
+  "taskId": "task-1"
+}

@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "role": "agent",
+    "parts": [
+      {
+        "kind": "text",
+        "text": "agent text 6"
+      }
+    ],
+    "messageId": "msg-7",
+    "taskId": "task-6",
+    "contextId": "ctx-6",
+    "kind": "message"
+  }
+}

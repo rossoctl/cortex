@@ -525,16 +525,21 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `a2a.method`, `a2a.rpcId` — the JSON-RPC method and id of an A2A request.
 - `a2a.sessionId`, `a2a.taskId`, `a2a.messageId`, `a2a.role`, `a2a.parts` —
   from the request's params. `sessionId` is `contextId`, else the older
-  `sessionId`, else `params.message.contextId`. When the request has none, the
-  response sets `sessionId` and `taskId`. `messageId`, `role` and `parts` come
-  from `params.message`. Each part has a `kind` and a `content`: the text of a
-  `text` part, the `data` or `uri` of a `file` part, or the JSON text of a
-  `data` part.
+  `sessionId`, else `params.message.contextId`. `taskId` is
+  `params.message.taskId`, else `params.id` for a `tasks/*` method with a task
+  id param, else the older `params.taskId`. When the request has none, the
+  response sets `sessionId` and `taskId`. A Task result gives its `id`.
+  `messageId`, `role` and `parts` come from `params.message`. Each part has a
+  `kind` and a `content`: the text of a `text` part, the `data` or `uri` of a
+  `file` part, or the JSON text of a `data` part.
 - `a2a.finalStatus`, `a2a.artifact`, `a2a.errorMessage` — on a response row:
-  the final task state (for example `completed` or `failed`) and the artifact
-  text. When the state is `failed`, `errorMessage` is the first text part of
-  the status message. In a stream, the parser joins the text of each
-  artifact event. The joined text has a maximum of 64 KiB.
+  the last task state that the response carried (for example `completed` or
+  `failed`) and the artifact text. A stream that ends with no final status
+  event gives its last state, for example `working`. When the state is
+  `failed`, `errorMessage` is the first text part of the status message. In a
+  stream, the parser joins the text of each artifact event. The joined text has
+  a maximum of 64 KiB. A Task event in a stream replaces the joined
+  `artifact-update` text with the last text part of the Task's artifacts.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the

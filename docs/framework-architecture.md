@@ -308,7 +308,7 @@ type A2AExtension struct {
     TaskID       string
     Role         string  // "user" | "agent"
     Parts        []A2APart
-    FinalStatus  string  // response: "completed" | "failed" | "canceled"
+    FinalStatus  string  // response: last task state, e.g. "completed" | "failed"
     Artifact     string  // response: assembled artifact text
     ErrorMessage string  // response: failure reason
     IsAction     bool    // parser's classification verdict; true for message/send + message/stream
