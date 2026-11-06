@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +18,57 @@ func fakeInstaller(t *testing.T, fails bool) {
 		body = "#!/bin/sh\necho 'curl: (6) Could not resolve host' >&2\nexit 6\n"
 	}
 	installStub(t, "curl", body)
+}
+
+// latestIs serves latestReleaseURL as GitHub does: a redirect to the tag's page,
+// or a 404 when tag is "".
+func latestIs(t *testing.T, tag string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if tag == "" {
+			http.NotFound(w, nil)
+			return
+		}
+		w.Header().Set("Location", "https://github.com/rossoctl/cortex/releases/tag/"+tag)
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	saved := latestReleaseURL
+	latestReleaseURL = srv.URL
+	t.Cleanup(func() { latestReleaseURL = saved })
+}
+
+// The scene installs v9.9.9 of both binaries.
+func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
+	for _, c := range []struct {
+		name, latest, cortex string
+		args                 []string
+		want                 string // stdout
+		code                 int
+	}{
+		{name: "newest", latest: "v9.9.9", want: "Already at v9.9.9.\n"},
+		{name: "pinned", latest: "v9.9.8", args: []string{"--ref=v9.9.9"}, want: "Already at v9.9.9.\n"},
+		{name: "older", latest: "v9.9.10", want: "installer: \n", code: 7},
+		{name: "pinned to another", latest: "v9.9.9", args: []string{"--ref=v9.9.8"}, want: "installer: --ref=v9.9.8\n", code: 7},
+		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
+		{name: "newest unknown", want: "installer: \n", code: 7},
+		// setup repairs a pair that disagree.
+		{name: "cortex behind", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "installer: \n", code: 7},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			sc.installed(t)
+			if c.cortex != "" {
+				writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), c.cortex)
+			}
+			latestIs(t, c.latest)
+			fakeInstaller(t, false)
+			var out, errb bytes.Buffer
+			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
+				t.Errorf("exit %d stdout %q, want %d %q\n%s", code, out.String(), c.code, c.want, errb.String())
+			}
+		})
+	}
 }
 
 func TestUpdateRunsTheInstallerAndKeepsTheInstall(t *testing.T) {
@@ -67,6 +120,7 @@ func TestUpdateLeavesAProjectRoutingAlone(t *testing.T) {
 // A failed download must not run an empty script, which sh would answer with 0.
 func TestUpdateFailsWhenTheDownloadFails(t *testing.T) {
 	newDoctorScene(t).installed(t)
+	latestIs(t, "v9.9.10")
 	fakeInstaller(t, true)
 	var out, errb bytes.Buffer
 	if code := runUpdate(nil, &out, &errb); code != 1 {

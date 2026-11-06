@@ -5,11 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 )
 
 const updateUsage = `agentop update — install the newest Cortex release over this one
@@ -26,11 +29,19 @@ cpex build of cortex.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
   --yes, -y   do not ask; needed when there is no terminal
 
-Exit status: the installer's, which is setup's once it hands off.
+Downloads nothing when agentop and cortex in ~/.local/bin are already at the
+release asked for. Run agentop doctor to check the rest of the install.
+
+Exit status: 0 already current, else the installer's, which is setup's once it
+hands off.
 `
 
 // installerURL is where the documented one-liner fetches install.sh.
 const installerURL = "https://www.rossoctl.dev/cortex/install.sh"
+
+// latestReleaseURL redirects to the Latest release's tag page. install.sh reads
+// the same redirect first. A var so tests can serve it.
+var latestReleaseURL = "https://github.com/rossoctl/cortex/releases/latest"
 
 // updateScript fetches the installer and pipes it to sh, as the one-liner does, so
 // $0 is "sh" and install.sh re-runs the released copy of itself. Fetched first, not
@@ -60,6 +71,10 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
+	}
+	if v := currentRelease(env, *ref); v != "" {
+		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
+		return 0
 	}
 	cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, updateFlags(env, *ref, yes)...)...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -104,4 +119,43 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 		flags = append(flags, "--yes")
 	}
 	return flags
+}
+
+// currentRelease is the installed version when agentop and cortex both report it
+// and it is the release ref names, or the newest one when ref is "". It is ""
+// otherwise, and when the newest release cannot be read: the installer then
+// runs, and finds the answer or the error itself. --ref=main is never current,
+// as no release reports "main" as its version.
+func currentRelease(env *setupEnv, ref string) string {
+	env.readVersions()
+	v := env.installedVersion
+	if v == "" || v != installedVersion(filepath.Join(env.binDir, "cortex")) {
+		return ""
+	}
+	if ref == "" {
+		ref = latestRelease()
+	}
+	if ref != v {
+		return ""
+	}
+	return v
+}
+
+// latestRelease is the newest stable release's tag, read off where
+// latestReleaseURL redirects, or "" when it does not redirect to a tag page.
+func latestRelease() string {
+	c := &http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := c.Get(latestReleaseURL)
+	if err != nil {
+		return ""
+	}
+	_ = resp.Body.Close()
+	tag, ok := strings.CutPrefix(resp.Header.Get("Location"), "https://github.com/rossoctl/cortex/releases/tag/")
+	if !ok {
+		return ""
+	}
+	return tag
 }
