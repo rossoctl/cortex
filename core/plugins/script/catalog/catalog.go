@@ -33,6 +33,9 @@ type CatalogEntry struct {
 	FailClosed  bool
 	// Timeout is the slot's timeout, "" for the plugin's default.
 	Timeout string
+	// RewriteResponse: a script of the entry declares @on.response(rewrite=True).
+	// A slot that only reads responses must come before it in the chain.
+	RewriteResponse bool
 	// Files is every file of the entry but entry.yaml, by name.
 	Files map[string][]byte
 }
@@ -54,6 +57,7 @@ type entryMeta struct {
 	Description string `yaml:"description"`
 	FailClosed  bool   `yaml:"fail_closed"`
 	Timeout     string `yaml:"timeout"`
+	Rewrite     bool   `yaml:"rewrite_response"`
 }
 
 // generated reports whether name is something Python leaves beside a script it
@@ -138,6 +142,7 @@ func readEntry(name string) (CatalogEntry, error) {
 		}
 	}
 	e.Description, e.FailClosed, e.Timeout = meta.Description, meta.FailClosed, meta.Timeout
+	e.RewriteResponse = meta.Rewrite
 	if len(e.Scripts()) == 0 {
 		return e, fmt.Errorf("no script: every file is a helper")
 	}

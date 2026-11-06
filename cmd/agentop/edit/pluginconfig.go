@@ -29,6 +29,10 @@ type ConfigChange struct {
 	// CreatePlugin appends an entry for Plugin at the end of Chain when the chain
 	// has none. Without it a missing entry is an error. A removal never creates one.
 	CreatePlugin bool
+	// Before, with CreatePlugin, puts a created entry ahead of the entry named
+	// Plugin whose config: holds Before, as Match picks one, and ahead of the
+	// comments directly above it. No such entry: the end of Chain.
+	Before map[string]string
 	// Match, when set, picks the entry among those named Plugin whose config: holds
 	// every key in it with that string value, such as {"dir": "moca-sandbox"}: the
 	// way to address one of several entries sharing a name, as every script slot
@@ -128,7 +132,13 @@ func SetPluginConfig(src []byte, ch ConfigChange) ([]byte, error) {
 	case item == nil && !ch.CreatePlugin:
 		return nil, fmt.Errorf("pipeline.%s has no %s entry", ch.Chain, ch.Plugin)
 	case item == nil:
-		out, err = appendEntry(lines, plugins, ch)
+		var before *yaml.Node
+		if len(ch.Before) > 0 {
+			if before, err = findEntry(lines, plugins, ch.Plugin, ch.Before); err != nil {
+				return nil, err
+			}
+		}
+		out, err = insertEntry(lines, plugins, ch, before)
 	default:
 		out, err = editEntry(lines, item, ch)
 	}
@@ -233,14 +243,18 @@ func removeEntry(lines []string, plugins *yaml.Node, item *yaml.Node) []string {
 	return splice(lines, start, end+1, nil)
 }
 
-// appendEntry adds `- name: <Plugin>` and its config: after the chain's last entry,
-// at the indentation that entry uses. Match's keys come first in config:.
-func appendEntry(lines []string, plugins *yaml.Node, ch ConfigChange) ([]string, error) {
+// insertEntry adds `- name: <Plugin>` and its config: after the chain's last entry,
+// or ahead of before and its comments when before is set, at the indentation that
+// entry uses. Match's keys come first in config:.
+func insertEntry(lines []string, plugins *yaml.Node, ch ConfigChange, before *yaml.Node) ([]string, error) {
 	dash := plugins.Column - 1
-	last := plugins.Content[len(plugins.Content)-1]
+	ref := plugins.Content[len(plugins.Content)-1]
+	if before != nil {
+		ref = before
+	}
 	keys := dash + 2
-	if last.Kind == yaml.MappingNode {
-		keys = last.Column - 1
+	if ref.Kind == yaml.MappingNode {
+		keys = ref.Column - 1
 	}
 	name, err := scalarText(ch.Plugin)
 	if err != nil {
@@ -270,8 +284,14 @@ func appendEntry(lines []string, plugins *yaml.Node, ch ConfigChange) ([]string,
 		pad(dash) + "-" + pad(keys-dash-1) + "name: " + name,
 		pad(keys) + "config:",
 	}, body...)
-	end := blockEnd(lines, last.Line-1, dash, false)
-	return splice(lines, end+1, end+1, add), nil
+	at := blockEnd(lines, ref.Line-1, dash, false) + 1
+	if before != nil {
+		at = before.Line - 1
+		for at > 0 && indentOf(lines[at-1]) == dash && strings.HasPrefix(strings.TrimSpace(lines[at-1]), "#") {
+			at--
+		}
+	}
+	return splice(lines, at, at, add), nil
 }
 
 // editEntry applies ch inside an existing entry, adding config: when it has none.

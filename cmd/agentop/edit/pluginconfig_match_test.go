@@ -140,3 +140,23 @@ func TestSetPluginConfig_MatchSkipsABareName(t *testing.T) {
 		t.Errorf("got:\n%s", got)
 	}
 }
+
+// Before puts a created entry ahead of the entry it matches and the comment above
+// that entry. With no such entry it goes at the end, as without Before.
+func TestSetPluginConfig_CreateBeforeAMatchingEntry(t *testing.T) {
+	ch := slot("new-one")
+	ch.Path, ch.Value, ch.CreatePlugin = []string{"fail_closed"}, BoolValue(false), true
+	ch.Before = map[string]string{"dir": "moca-sandbox"}
+	got := apply(t, withSlots, ch)
+	want := strings.Replace(withSlots, "      # the moca slot\n",
+		"      - name: script\n        config:\n          dir: new-one\n          fail_closed: false\n      # the moca slot\n", 1)
+	assertYAML(t, got, want)
+	if _, err := load(t, got); err != nil {
+		t.Errorf("the result does not load: %v", err)
+	}
+
+	ch.Before = map[string]string{"dir": "not-there"}
+	want = strings.Replace(withSlots, "          dir: moca-sandbox\n          fail_closed: true\n",
+		"          dir: moca-sandbox\n          fail_closed: true\n      - name: script\n        config:\n          dir: new-one\n          fail_closed: false\n", 1)
+	assertYAML(t, apply(t, withSlots, ch), want)
+}
