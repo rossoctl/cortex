@@ -88,7 +88,7 @@ knowing by name:
   (`session.archive`, laptop only): every session the archive holds and memory
   does not, marked `resident: false`, plus a top-level `archive` object —
   `{bytes, maxBytes, retentionDays}` and, only when nonzero, `droppedEvents`,
-  `writeErrors`, `droppedRenames`, `paused`, any of which means the history has
+  `writeErrors`, `droppedRenames`, `droppedCaptures`, `paused`, any of which means the history has
   gaps. A session in both is listed once, as its resident row, and that row
   covers the session's whole history: `eventCount`, `totalTokens`, `costMicros`,
   `title`, `agent`, `createdAt` and the rest continue from the archive's fold of

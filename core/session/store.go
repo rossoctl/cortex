@@ -360,7 +360,21 @@ func (s *Store) backgroundCleanup() {
 // doesn't exist. Updates activeID to this session. Evicts the oldest event if the
 // session exceeds maxEvents — which by default it cannot, maxEvents being unset.
 func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
-	s.append(sessionID, nil, event)
+	s.append(sessionID, nil, event, nil)
+}
+
+// CaptureRecorder is optionally implemented by a Recorder that takes the request captures
+// AppendCapture hands over (#1494). RecordCapture is called in place of Record, under the
+// store's write lock, with c nil for an event that has none. The store never keeps c: raw
+// bodies are megabytes, and the store keeps every event in memory.
+type CaptureRecorder interface {
+	RecordCapture(sessionID string, e *pipeline.SessionEvent, c *pipeline.RequestCapture)
+}
+
+// AppendCapture is Append for a request event with its capture c, which only a
+// CaptureRecorder receives.
+func (s *Store) AppendCapture(sessionID string, event pipeline.SessionEvent, c *pipeline.RequestCapture) {
+	s.append(sessionID, nil, event, c)
 }
 
 // Bucket is the session an event was appended to. It follows that session through a
@@ -370,7 +384,7 @@ type Bucket struct{ e *entry }
 
 // AppendBucket is Append, returning the bucket the event went into.
 func (s *Store) AppendBucket(sessionID string, event pipeline.SessionEvent) *Bucket {
-	return &Bucket{e: s.append(sessionID, nil, event)}
+	return &Bucket{e: s.append(sessionID, nil, event, nil)}
 }
 
 // AppendTrailing appends an event that ends something b's session started earlier — a
@@ -382,7 +396,7 @@ func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
 	if b == nil {
 		return false
 	}
-	return s.append("", b, event) != nil
+	return s.append("", b, event, nil) != nil
 }
 
 // AppendPair appends first and then second to the named session under one lock
@@ -391,7 +405,13 @@ func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
 // after it in the session, and two separate appends could be split by any traffic in
 // between.
 func (s *Store) AppendPair(sessionID string, first, second pipeline.SessionEvent) *Bucket {
+	return s.AppendPairCapture(sessionID, first, second, nil)
+}
+
+// AppendPairCapture is AppendPair with second's capture c; see AppendCapture.
+func (s *Store) AppendPairCapture(sessionID string, first, second pipeline.SessionEvent, c *pipeline.RequestCapture) *Bucket {
 	p1, p2 := prepareAppend(&first), prepareAppend(&second)
+	p2.capture = c
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.appendLocked(sessionID, nil, first, p1)
@@ -408,12 +428,15 @@ type appendPrep struct {
 	titleRank int
 	titleText string
 	agentName string
+	// capture is the event's request capture, for CaptureRecorders only; see AppendCapture.
+	capture *pipeline.RequestCapture
 }
 
 // append is Append when b is nil, and AppendTrailing when it is not. It returns the
 // session the event went into, nil when AppendTrailing refused it.
-func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent) *entry {
+func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent, c *pipeline.RequestCapture) *entry {
 	prep := prepareAppend(&event)
+	prep.capture = c
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.appendLocked(sessionID, b, event, prep)
@@ -583,7 +606,11 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 	// subscribers this cannot drop: a dropped event silently skews a cumulative
 	// counter, where a dropped stream frame only costs one client one row.
 	for _, r := range s.recorders {
-		r.Record(sessionID, &event)
+		if cr, ok := r.(CaptureRecorder); ok {
+			cr.RecordCapture(sessionID, &event, prep.capture)
+		} else {
+			r.Record(sessionID, &event)
+		}
 	}
 
 	if p, ok := planTrim(sess.Events, s.maxEvents); ok {

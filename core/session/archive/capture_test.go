@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -489,5 +490,57 @@ func TestCapture_ABlockAfterItsEventIsNotUsed(t *testing.T) {
 		fmt.Sprintf(`{"k":"b","h":%q,"v":%q}`, h, `"`+v+`"`))
 	if _, err := readCapture(path, 1); err == nil {
 		t.Fatal("a block after its event was used to rebuild it")
+	}
+}
+
+// The archive takes captures from the store: a captured request read back through Capture is
+// the request that was appended.
+func TestArchive_RecordCaptureReachesDisk(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	want := captureOf(1, synthBodies(14, 2, 8<<10)[1])
+	a.RecordCapture("s", &pipeline.SessionEvent{Seq: 1, SessionID: "s", Phase: pipeline.SessionRequest}, want)
+	tick(a)
+	got, ok, err := a.Capture("s", 1)
+	if err != nil || !ok || !bytes.Equal(got.Original, want.Original) || !bytes.Equal(got.Forwarded, want.Forwarded) {
+		t.Fatalf("Capture: ok %v err %v", ok, err)
+	}
+}
+
+// Captures waiting for the writer are bounded in bytes, not only in count: 4,096 queued
+// requests of 2 MB would pin 8 GB. Past the budget the capture is dropped and counted — never
+// the event, which still reaches disk without it — and never blocks the request.
+func TestArchive_CaptureQueueHasAByteBudget(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock(), WithCaptureBudget(10<<10))
+	defer a.Close()
+	gate := make(chan struct{})
+	a.gate = gate
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	defer open() // before Close, which waits for the writer
+	body := bytes.Repeat([]byte("x"), 4<<10)
+	for i := 1; i <= 5; i++ {
+		a.RecordCapture("s", &pipeline.SessionEvent{Seq: uint64(i), SessionID: "s", Phase: pipeline.SessionRequest},
+			&pipeline.RequestCapture{Original: body, Forwarded: body[:1<<10]})
+	}
+	if got := a.Stats().DroppedCaptures; got != 3 {
+		t.Fatalf("DroppedCaptures = %d, want 3: two 5 KB captures fit a 10 KB budget", got)
+	}
+	open()
+	tick(a) // flushes, so the open segment reads back
+	for seq, want := range map[uint64]bool{1: true, 2: true, 3: false, 5: false} {
+		if _, ok, err := a.Capture("s", seq); ok != want || err != nil {
+			t.Errorf("Capture(s, %d): ok %v err %v, want ok %v", seq, ok, err, want)
+		}
+		if _, ok, _ := a.Event("s", seq); !ok {
+			t.Errorf("event %d was dropped with its capture", seq)
+		}
+	}
+	// The budget is given back as the writer takes captures: a later one fits again.
+	a.RecordCapture("s", &pipeline.SessionEvent{Seq: 6, SessionID: "s", Phase: pipeline.SessionRequest},
+		&pipeline.RequestCapture{Original: body})
+	tick(a)
+	if _, ok, _ := a.Capture("s", 6); !ok {
+		t.Error("a capture after the queue drained was dropped")
 	}
 }
