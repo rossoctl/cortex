@@ -48,7 +48,13 @@ service status` says whether the proxy is up.
 
 **The record.** The first `enable` records what each of the seven keys held before, in
 `~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
-puts back any value it recorded. `agentop uninstall` runs the same `disable`.
+puts back any value it recorded. It does not change a key whose value changed after
+`enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
+
+`disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
+2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as
+`\u0026`, `\u003c` and `\u003e`. `settings.json.bak` holds the file as it was before the
+first `enable`. It does not hold a change you made after that.
 
 ### Undoing it by hand
 
@@ -262,9 +268,6 @@ as Claude Code asked. A file was written and read back on each.
   delete that key from the `env` block after `enable`. `status` then reports 6 of 7 keys
   set, `disable` still works, and the next `enable` adds the key back
   ([#1205](https://github.com/rossoctl/cortex/issues/1205)).
-- **`disable` discards hand-edits.** If you change one of the seven keys by hand after
-  `enable`, `disable` still puts back the value from before `enable`, without a warning
-  ([#1289](https://github.com/rossoctl/cortex/issues/1289)).
 - **A conversation moved to a new session id leaves its server.** Cortex keeps a
   conversation on its server by its session id's pin, and Claude Code's
   continued-in hand-off and `claude daemon`'s forked background jobs carry a

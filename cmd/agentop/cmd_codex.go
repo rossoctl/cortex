@@ -570,9 +570,8 @@ func planCodexDisable(envPath string) (codexDisablePlan, error) {
 
 // applyCodexDisable puts back what enable recorded, removes what it added, and
 // deletes the record. It returns the keys restored to a value the user had
-// set. Matches applyClaudeCodeDisable's restore logic exactly, including its
-// known limitation: it restores Prior unconditionally, with no check on
-// whether the value changed since enable (tracked for a future fix by #1289).
+// set. It restores Prior unconditionally, with no check on whether the value
+// changed since enable.
 //
 // IN PRACTICE THE RESTORE BRANCH IS UNREACHABLE TODAY, and it is worth knowing
 // that before reading the warning below as a live case. planCodexEnable refuses
@@ -583,10 +582,8 @@ func planCodexDisable(envPath string) (codexDisablePlan, error) {
 // file (which is how TestCodexDisable_RestoresRecordedPriorValue reaches it).
 //
 // The machinery is kept rather than dropped so that all three dotenv-adjacent
-// integrations carry the same state shape: #1289 is one pass over claude-code,
-// opencode and this, and a Codex-only design would have to be reconciled back
-// into it. The docs say the record is always empty today rather than implying a
-// restore a user could observe.
+// integrations carry the same state shape. The docs say the record is always
+// empty today rather than implying a restore a user could observe.
 func applyCodexDisable(pl codexDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if len(pl.present) == 0 {
 		return nil, nil
