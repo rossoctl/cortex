@@ -199,13 +199,7 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	// Per-frame fold. message/stream events arrive one per frame;
 	// message/send arrives as a single last=true frame.
 	if len(frame) > 0 {
-		// Try the message/send envelope first — message/stream events
-		// don't have the {result: {status: {state: "..."}}} top-level
-		// shape so extractSendResponse will return false and we fall
-		// through to the per-event extractor.
-		if !extractSendResponse(frame, ext) {
-			extractStreamEvent(frame, ext)
-		}
+		foldResponse(frame, ext)
 		// Capture session id from any frame if the request didn't carry one.
 		if ext.SessionID == "" {
 			if sid := sessionIDFromJSON(frame); sid != "" {
@@ -268,12 +262,24 @@ func logA2AFinalized(ext *pipeline.A2AExtension) {
 // and error message. Supports both SSE streams (message/stream) and plain JSON-RPC
 // responses (message/send).
 func extractResponseSummary(body []byte, ext *pipeline.A2AExtension) {
-	// Try plain JSON-RPC first (message/send response)
-	if extractSendResponse(body, ext) {
+	// Plain JSON-RPC (message/send response)
+	if json.Valid(body) {
+		foldResponse(body, ext)
 		return
 	}
-	// SSE stream (message/stream): scan data: lines for status and artifact events
+	// SSE stream (message/stream): fold each data: line as one event
 	extractStreamResponse(body, ext)
+}
+
+// foldResponse folds one JSON-RPC response payload into ext: a whole
+// message/send body, or one message/stream event. Both response paths
+// call it, so they agree. A result with a task state (a Task or a
+// status-update) goes to extractSendResponse. The last state wins, final
+// or not. Other results go to extractStreamEvent.
+func foldResponse(data []byte, ext *pipeline.A2AExtension) {
+	if !extractSendResponse(data, ext) {
+		extractStreamEvent(data, ext)
+	}
 }
 
 // extractSendResponse handles message/send responses (single JSON-RPC result).
@@ -331,8 +337,8 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 }
 
 // extractStreamResponse handles message/stream SSE responses (the
-// buffered path). For each "data:" line it extracts a single event
-// and folds it into the extension via extractStreamEvent.
+// buffered path). For each "data:" line it folds a single event into
+// the extension via foldResponse, as OnResponseFrame does for a frame.
 //
 // parsercommon.NormalizeSSE first: a leading BOM or CR-only line endings are
 // wire-legal SSE, and a raw LF split reads such a body as one unparseable
@@ -347,30 +353,19 @@ func extractStreamResponse(body []byte, ext *pipeline.A2AExtension) {
 		if len(data) == 0 {
 			continue
 		}
-		extractStreamEvent(data, ext)
+		foldResponse(data, ext)
 	}
 }
 
-// extractStreamEvent folds one A2A message/stream event payload (the
-// JSON object after `data: `) into the extension's running response
-// state. Used by both the buffered path (extractStreamResponse loops
-// over data: lines) and the streaming path (OnResponseFrame already
-// has the parsed payload as a frame).
+// extractStreamEvent folds one A2A result that has no task state (an
+// artifact-update event or a Message) into the extension's running
+// response state. foldResponse calls it for both response paths.
 func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	var event struct {
 		Result struct {
-			Kind   string `json:"kind"`
-			ID     string `json:"id"`
-			TaskID string `json:"taskId"`
-			Status struct {
-				State   string `json:"state"`
-				Message struct {
-					Parts []struct {
-						Kind string `json:"kind"`
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"message"`
-			} `json:"status"`
+			Kind     string `json:"kind"`
+			ID       string `json:"id"`
+			TaskID   string `json:"taskId"`
 			Artifact struct {
 				Parts []struct {
 					Kind string `json:"kind"`
@@ -388,21 +383,6 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	}
 
 	switch event.Result.Kind {
-	case "task", "status-update":
-		// The last status that the stream carried wins, final or not.
-		// OnResponseFrame gives the same result through extractSendResponse.
-		// A stream that ends with no final event keeps its last state.
-		if event.Result.Status.State != "" {
-			ext.FinalStatus = event.Result.Status.State
-			if event.Result.Status.State == "failed" {
-				for _, part := range event.Result.Status.Message.Parts {
-					if part.Kind == "text" && part.Text != "" {
-						ext.ErrorMessage = part.Text
-						break
-					}
-				}
-			}
-		}
 	case "artifact-update", "artifact":
 		for _, part := range event.Result.Artifact.Parts {
 			if part.Kind == "text" && part.Text != "" {
