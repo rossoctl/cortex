@@ -72,7 +72,7 @@ func TestA2AParser_OnResponse_BufferedSSECROnlyLineEndings(t *testing.T) {
 }
 
 // A listener's buffered path gives the whole SSE body to OnResponseFrame as one last frame.
-// The server-assigned contextId must survive that path in each wire-legal line-ending shape.
+// The server-assigned contextId must survive that path in each wire-legal shape.
 func TestA2AParser_OnResponseFrame_WholeSSEBodyShapes(t *testing.T) {
 	lf := `data: {"result":{"kind":"task","id":"task-1","contextId":"srv-ctx","status":{"state":"submitted"}}}` + "\n\n" +
 		`data: {"result":{"kind":"status-update","taskId":"task-1","contextId":"srv-ctx","final":true,"status":{"state":"completed"}}}` + "\n\n"
