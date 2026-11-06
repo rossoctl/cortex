@@ -632,7 +632,7 @@ func TestSessionsTable_ADetailFetchRepaintsTheGauge(t *testing.T) {
 			"unreadable, which is the case this path exists for", got, emptyCell)
 	}
 
-	resp := full[1] // what GetEvent returns: the manifest is back
+	resp := full[1] // what GetEventRaw returns: the manifest is back
 	m.Update(detailEventLoadedMsg{sessionID: "s", seq: resp.Seq, event: &resp})
 
 	if got, want := m.sessionContextFor("s", nil), 500_000; got != want {

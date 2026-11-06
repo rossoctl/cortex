@@ -183,6 +183,10 @@ func foldDefaults(root *node) {
 			}
 		}
 	}
+	// The exact capture: large, and opened when it is the point.
+	if raw := root.child("raw"); raw != nil && raw.fold {
+		raw.defOpen = false
+	}
 	for _, p := range [][2]string{{"mcp", "params"}, {"mcp", "result"}, {"a2a", "parts"}} {
 		if c := root.child(p[0]).child(p[1]); c != nil && c.fold && c.size > clipBytes {
 			c.defOpen = false
@@ -296,7 +300,10 @@ func (r *renderer) isOpen(n *node) bool {
 	if c, ok := r.fs.open[n.path]; ok && (c.open || r.fs.query == "" || c.query == r.fs.query || !r.hasMatch(n)) {
 		return c.open
 	}
-	if r.fs.query != "" && r.hasMatch(n) {
+	// Not the raw capture: it holds a second copy of the conversation and up to 10 MiB of
+	// response, so nearly every query matches in it, and drawing it took over a second a
+	// keystroke. It opens when the reader opens it.
+	if r.fs.query != "" && n.path != "raw" && r.hasMatch(n) {
 		return true
 	}
 	return n.defOpen

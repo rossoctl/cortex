@@ -1779,8 +1779,26 @@ whole, and the `N older ([o] to load)` note appears only for genuinely long ones
 
 Against a proxy that predates `?view=summary` this still works — that server
 ignores the parameter and returns full events, so the timeline is correct and as
-slow as it used to be. agentop can tell the difference from the response and does not
-waste a per-row fetch on bytes it already holds.
+slow as it used to be.
+
+**The exact request and response.** On a laptop install the session archive keeps
+each request exactly as it crossed the proxy, and each response as the origin sent
+it. The detail pane fetches that capture too, and shows it under a closed `raw`
+section: `↵` on it opens it. In it:
+
+- `request` is the body the agent sent, with thinking blocks where the model wrote
+  them, and each image or document as `[image image/png 34.1kB]`.
+- `forwarded` says whether a plugin rewrote the body, and `forwardedBody` is what
+  went upstream when one did.
+- `headers` and `query` are the request's, without credentials.
+- On a response row, `response` has the status, the headers, the body (a compressed
+  one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+
+The capture comes with the detail fetch, once per row, and agentop keeps it. A row
+has no `raw` section when the archive has no capture for it: an older proxy, a row
+written before capture, or one recorded in the last second. A search does not open
+`raw`, because it repeats the whole conversation; open it with `↵` to search inside
+it. `y` writes the event without its capture.
 
 ## Editing the pipeline
 

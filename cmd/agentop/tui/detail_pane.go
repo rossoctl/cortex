@@ -58,7 +58,7 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 				m.detailHead = append(m.detailHead, "")
 			}
 		}
-		filtered := filterForDetail(data, e.Phase)
+		filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
 		if root, err := treeFromJSON(filtered); err == nil {
 			m.detailTree = root
 		} else {

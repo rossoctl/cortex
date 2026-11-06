@@ -3,6 +3,7 @@ package apiclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,7 +74,7 @@ func TestGetSessionPage_ReadsTheViewEcho(t *testing.T) {
 }
 
 // The detail pane's half of the bargain: one event, payloads included.
-func TestGetEvent(t *testing.T) {
+func TestGetEventRaw_Payloads(t *testing.T) {
 	want := pipeline.SessionEvent{
 		Seq:  7,
 		Host: "api.example.com",
@@ -89,9 +90,9 @@ func TestGetEvent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	got, err := New(ts.URL).GetEvent(context.Background(), "s1", 7)
+	got, _, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 7)
 	if err != nil {
-		t.Fatalf("GetEvent: %v", err)
+		t.Fatalf("GetEventRaw: %v", err)
 	}
 	if gotPath != "/v1/sessions/s1/events/7" {
 		t.Errorf("path = %q", gotPath)
@@ -107,7 +108,7 @@ func TestGetEvent(t *testing.T) {
 // A session id with a slash or a space must not build a broken path, and a 404
 // has to arrive as an error rather than a zero event the detail pane would render
 // as an empty row.
-func TestGetEvent_Errors(t *testing.T) {
+func TestGetEventRaw_Errors(t *testing.T) {
 	t.Run("escapes the id", func(t *testing.T) {
 		var gotPath string
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,8 +116,8 @@ func TestGetEvent_Errors(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(&pipeline.SessionEvent{Seq: 1})
 		}))
 		defer ts.Close()
-		if _, err := New(ts.URL).GetEvent(context.Background(), "a/b c", 1); err != nil {
-			t.Fatalf("GetEvent: %v", err)
+		if _, _, err := New(ts.URL).GetEventRaw(context.Background(), "a/b c", 1); err != nil {
+			t.Fatalf("GetEventRaw: %v", err)
 		}
 		if gotPath != "/v1/sessions/a/b c/events/1" {
 			t.Logf("path = %q", gotPath)
@@ -129,7 +130,7 @@ func TestGetEvent_Errors(t *testing.T) {
 	t.Run("404 is an error", func(t *testing.T) {
 		ts := httptest.NewServer(http.NotFoundHandler())
 		defer ts.Close()
-		if _, err := New(ts.URL).GetEvent(context.Background(), "s1", 99); err == nil {
+		if _, _, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 99); err == nil {
 			t.Error("want an error for a missing event")
 		}
 	})
@@ -148,3 +149,30 @@ func TestSnapshotEventLimit_ReachesTheServerCeiling(t *testing.T) {
 }
 
 func contains(hay, needle string) bool { return strings.Contains(hay, needle) }
+
+// The detail pane asks for the exact bytes too. A proxy that has them answers "raw" beside the
+// event; one that predates them ignores the parameter, and the event comes back without.
+func TestGetEventRaw(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"seq":7,"at":"2026-11-05T00:00:00Z","direction":"outbound","phase":"request",`+
+			`"raw":{"request":"{\"model\":\"m\"}","requestHeaders":{"Anthropic-Beta":["x"]}}}`)
+	}))
+	defer ts.Close()
+	ev, raw, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "raw=1" || ev.Seq != 7 || raw == nil || raw.Request != `{"model":"m"}` || raw.RequestHeaders.Get("Anthropic-Beta") != "x" {
+		t.Fatalf("query %q, event %+v, raw %+v", gotQuery, ev, raw)
+	}
+
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(&pipeline.SessionEvent{Seq: 7})
+	}))
+	defer old.Close()
+	if ev, raw, err := New(old.URL).GetEventRaw(context.Background(), "s1", 7); err != nil || ev.Seq != 7 || raw != nil {
+		t.Fatalf("against an older proxy: event %+v raw %+v err %v, want the event and no raw", ev, raw, err)
+	}
+}

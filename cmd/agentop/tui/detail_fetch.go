@@ -11,6 +11,7 @@ type detailEventLoadedMsg struct {
 	sessionID string
 	seq       uint64
 	event     *pipeline.SessionEvent
+	raw       *pipeline.RawCapture
 	err       error
 }
 
@@ -32,30 +33,47 @@ type detailEventLoadedMsg struct {
 // even after a successful fetch, and a presence check would refetch it on every
 // open and permanently tell the operator its bodies had not arrived.
 func (m *model) needsFullEvent(e *pipeline.SessionEvent) bool {
-	if !m.serverProjects || e == nil {
+	if !m.serverProjects || !hasBody(e) {
 		return false
 	}
-	if e.Inference == nil && e.A2A == nil && e.MCP == nil {
-		return false
-	}
-	return !m.fullFetched[eventSession(m.selectedSess, e)][e.Seq]
+	_, done := m.fullFetched[eventSession(m.selectedSess, e)][e.Seq]
+	return !done
 }
 
-// markFullFetched records that this event's bodies have been retrieved.
+// heldRaw is the capture a fetch already brought for e, and whether one was fetched at all.
+func (m *model) heldRaw(e *pipeline.SessionEvent) (*pipeline.RawCapture, bool) {
+	if e == nil {
+		return nil, false
+	}
+	raw, ok := m.fullFetched[eventSession(m.selectedSess, e)][e.Seq]
+	return raw, ok
+}
+
+// hasBody reports that e carried a message body: a protocol extension. A CONNECT tunnel or a
+// bare denial has none, so it has nothing to fetch, projected or exact.
+func hasBody(e *pipeline.SessionEvent) bool {
+	return e != nil && (e.Inference != nil || e.A2A != nil || e.MCP != nil)
+}
+
+// markFullFetched records that this event's bodies have been retrieved, with its capture.
 //
 // Keyed by session and Seq, and reset with m.events, so it cannot outlive the rows
 // it describes.
-func (m *model) markFullFetched(sessionID string, seq uint64) {
+func (m *model) markFullFetched(sessionID string, seq uint64, raw ...*pipeline.RawCapture) {
 	if seq == 0 {
 		return
 	}
 	if m.fullFetched == nil {
-		m.fullFetched = map[string]map[uint64]bool{}
+		m.fullFetched = map[string]map[uint64]*pipeline.RawCapture{}
 	}
 	if m.fullFetched[sessionID] == nil {
-		m.fullFetched[sessionID] = map[uint64]bool{}
+		m.fullFetched[sessionID] = map[uint64]*pipeline.RawCapture{}
 	}
-	m.fullFetched[sessionID][seq] = true
+	var r *pipeline.RawCapture
+	if len(raw) > 0 {
+		r = raw[0]
+	}
+	m.fullFetched[sessionID][seq] = r
 }
 
 // fetchDetailEventCmd fetches one event in full for the detail pane.
@@ -69,11 +87,15 @@ func (m *model) markFullFetched(sessionID string, seq uint64) {
 //
 // Carries the session id and seq so the handler can drop a reply for a row the
 // operator has already navigated away from.
+//
+// It asks for the exact capture too (?raw=1), which only the proxy's archive holds, so it runs
+// once per row, with the capture kept beside the fetched mark. Against a projecting proxy only:
+// one that does not project predates the per-event route, and would answer 404.
 func fetchDetailEventCmd(m *model, sessionID string, seq uint64) tea.Cmd {
 	ctx, client := m.ctx, m.client
 	return func() tea.Msg {
-		ev, err := client.GetEvent(ctx, sessionID, seq)
-		return detailEventLoadedMsg{sessionID: sessionID, seq: seq, event: ev, err: err}
+		ev, raw, err := client.GetEventRaw(ctx, sessionID, seq)
+		return detailEventLoadedMsg{sessionID: sessionID, seq: seq, event: ev, raw: raw, err: err}
 	}
 }
 
@@ -107,7 +129,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	// snapshots, so an index taken when the fetch was issued may not be the same row
 	// by the time it lands.
 	m.replaceHeldEvent(m.selectedSess, msg.event)
-	m.markFullFetched(msg.sessionID, msg.seq)
+	m.markFullFetched(msg.sessionID, msg.seq, msg.raw)
 
 	// AND THE SESSIONS ROW, because replaceHeldEvent rebased the CTX(1M) gauge and that
 	// table holds BAKED cells — see the snapshot arm in Update for the full reason, and for why
@@ -121,7 +143,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 
 	// Re-render through showDetail so the tunnel/TLS headers, wrapping and scroll
 	// position are all rebuilt exactly as the first render built them.
-	m.detailRow.event = msg.event
+	m.detailRow.event, m.detailRow.raw = msg.event, msg.raw
 	m.showDetail(m.detailRow, false)
 }
 
