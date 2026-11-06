@@ -45,13 +45,25 @@ func decideUnpinned(choice string, ext *pipeline.InferenceExtension, captured bo
 	return choice, "", true
 }
 
+// serverFacts are the facts decideServer reads about a request's session.
+type serverFacts struct {
+	agent, choice string
+	// session is whether the request has a session to pin: an id that is not
+	// synthetic, and a pin store.
+	session bool
+	// over is the session's sessions: entry when overridden.
+	over       string
+	overridden bool
+	// had is the pin the store holds for the session when pinned.
+	had    pin
+	pinned bool
+}
+
 // decideServer is the server for a request, "" for not routed, the session pin it
-// leaves, and whether the session's loaded pin, had, is kept (renewed). session is
-// whether the request has a session to pin: an id that is not synthetic, and a pin
-// store. over is the session's sessions: entry when overridden, and had the pin the
-// store holds for the session when pinned. unpinned is decideUnpinned for the
-// request, and is called only when no override applies and the agent holds no pin.
-// The returned pinning has no store, key or agent: the caller sets them.
+// leaves, and whether the session's loaded pin, f.had, is kept (renewed). unpinned is
+// decideUnpinned for the request, and is called only when no override applies and the
+// agent holds no pin. The returned pinning has no store, key or agent: the caller sets
+// them.
 //
 // Without a session to pin, the agent's choice applies and nothing is pinned: a
 // synthetic session's history is many conversations', not this one's. Otherwise, in
@@ -75,28 +87,27 @@ func decideUnpinned(choice string, ext *pipeline.InferenceExtension, captured bo
 // Two first requests of one session racing can both miss and both store. They store
 // the same outcome unless a reload lands between them, which is the case the pin
 // cannot rule out and does not need to.
-func decideServer(agent, choice string, session bool, over string, overridden bool, had pin, pinned bool,
-	unpinned func() (server, turn string, decides bool)) (server string, pn pinning, keep bool) {
-	if !session {
-		return choice, pinning{state: pinNone}, false
+func decideServer(f serverFacts, unpinned func() (server, turn string, decides bool)) (server string, pn pinning, keep bool) {
+	if !f.session {
+		return f.choice, pinning{state: pinNone}, false
 	}
-	if overridden {
+	if f.overridden {
 		pn = pinning{state: pinNew, override: true}
-		if pinned && had.belongsTo(agent) {
-			if had.server == over {
+		if f.pinned && f.had.belongsTo(f.agent) {
+			if f.had.server == f.over {
 				pn.state, keep = pinExisting, true
 			} else {
-				pn.state, pn.from = pinMoved, had.server
+				pn.state, pn.from = pinMoved, f.had.server
 			}
 		}
-		return over, pn, keep
+		return f.over, pn, keep
 	}
-	if pinned {
-		if !had.belongsTo(agent) {
+	if f.pinned {
+		if !f.had.belongsTo(f.agent) {
 			server, _, _ := unpinned()
 			return server, pinning{state: pinNone}, false
 		}
-		return had.server, pinning{state: pinExisting}, true
+		return f.had.server, pinning{state: pinExisting}, true
 	}
 	server, turn, decides := unpinned()
 	if !decides {
@@ -105,31 +116,37 @@ func decideServer(agent, choice string, session bool, over string, overridden bo
 	return server, pinning{state: pinNew, turn: turn}, false
 }
 
-// decideSettle is what a routed request's outcome does to its session's pin: settle
-// it to to, the server the request went to or "" for where the client sent it, or,
-// when settle is false, forgo it. state is the pin's state from decideServer, and
-// settle and forgo change only a pinNew or pinMoved pin. redirectFailed is whether
-// Redirect failed, redirected whether it moved the request (false under on_error:
-// observe), and pathFailed whether SetRedirectPath failed. In order:
+// redirectOutcome is where a routed request's redirect left it.
+type redirectOutcome int
+
+const (
+	// redirectFailed: Redirect or SetRedirectPath failed, and the request went nowhere.
+	redirectFailed redirectOutcome = iota
+	// redirectStayed: Redirect moved nothing (on_error: observe), and the request goes
+	// where the client sent it.
+	redirectStayed
+	// redirectMoved: the request goes to its server.
+	redirectMoved
+)
+
+// decideSettle is whether a routed request's outcome settles its session's pin to
+// where the request went, or, when false, forgoes it. state is the pin's state from
+// decideServer, and settle and forgo change only a pinNew or pinMoved pin:
 //
-//  1. A request whose Redirect failed went nowhere, so it pins nothing: the next
-//     request decides again.
+//  1. A request that went nowhere pins nothing: the next request decides again.
 //  2. A request that stayed where the client sent it settles there, so a session
 //     that started under observe stays put once enforce is on. A move an override
 //     would make is forgone: nothing moved, and the pin stands until the move,
 //     once enforce is on, replaces it.
-//  3. A request whose path SetRedirectPath refused went nowhere, as in rule 1.
-//  4. Otherwise the session settles on server.
-func decideSettle(state, server string, redirectFailed, redirected, pathFailed bool) (to string, settle bool) {
-	switch {
+//  3. A request that moved settles on its server.
+func decideSettle(state string, outcome redirectOutcome) bool {
+	switch outcome {
 	case redirectFailed:
-		return "", false
-	case !redirected:
-		return "", state != pinMoved
-	case pathFailed:
-		return "", false
+		return false
+	case redirectStayed:
+		return state != pinMoved
 	}
-	return server, true
+	return true
 }
 
 // chooseModelFor is the model a routed request with model requested is sent with,

@@ -371,19 +371,27 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		// drift between the table and SetRedirectPath's rule.
 		pathErr = pctx.SetRedirectPath(captured)
 	}
+	err := cmp.Or(redirectErr, pathErr)
+	outcome := redirectMoved
+	switch {
+	case err != nil:
+		outcome = redirectFailed
+	case !redirected:
+		outcome = redirectStayed
+	}
 	// decideSettle says what the outcome does to the pin. Forgo comes before each
 	// record, because forgo changes the pin state that details shows.
-	to, settle := decideSettle(pin.state, name, redirectErr != nil, redirected, pathErr != nil)
+	settle := decideSettle(pin.state, outcome)
 	if !settle {
 		pin.forgo()
 	}
-	if err := cmp.Or(redirectErr, pathErr); err != nil {
+	if err != nil {
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
 		return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
 	}
 	if !redirected {
 		if settle {
-			pin.settle(to)
+			pin.settle("")
 		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
@@ -395,7 +403,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	p.keepOwnReasoning(pctx, name, pin.moving(), pin.movedFrom(addressed))
 	p.applyLimits(pctx, name, true)
 	if settle {
-		pin.settle(to)
+		pin.settle(name)
 	}
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
@@ -495,13 +503,14 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		}
 	}
 	if store == nil {
-		server, pn, _ := decideServer(agent, choice, false, "", false, pin{}, false, unpinned)
+		server, pn, _ := decideServer(serverFacts{agent: agent, choice: choice}, unpinned)
 		return server, pn
 	}
 	key := pinPrefix + pctx.SessionID
 	over, overridden := p.overrideFor(pctx)
 	had, pinned := store.load(key)
-	server, pn, keep := decideServer(agent, choice, true, over, overridden, had, pinned, unpinned)
+	server, pn, keep := decideServer(serverFacts{agent: agent, choice: choice, session: true,
+		over: over, overridden: overridden, had: had, pinned: pinned}, unpinned)
 	if keep {
 		p.keepPin(pctx, store, key, had)
 	}
