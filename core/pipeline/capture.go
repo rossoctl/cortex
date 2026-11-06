@@ -14,6 +14,8 @@ type RequestCapture struct {
 	// Header is the request's headers. The producer removes credential headers before it
 	// hands the capture over: the archive stores what it is given.
 	Header http.Header
-	// Query is the request URL's raw query, without the '?'.
+	// Query is the request URL's raw query, without the '?'. The producer removes
+	// query-borne credentials too (Gemini's key=, any api_key=): the archive stores the
+	// query as given.
 	Query string
 }

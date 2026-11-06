@@ -56,11 +56,12 @@ type bodyRec struct {
 //
 // What is a block, for any JSON object body: each top-level string, each element of each
 // top-level array, and — for an element that is an object with a "content" array — each element
-// of that array instead. That is the system prompt and its blocks, each tool definition, and
-// each message or message content block, in Anthropic Messages, OpenAI Chat Completions and
-// Responses alike. Cutting a message into its content blocks keeps a moving cache_control
-// marker from making the whole message new on every request. A body that is not a JSON object,
-// or not valid UTF-8, is one block: still exact, only not deduplicated within itself.
+// of that array and each other field of the element instead. That is the system prompt and its
+// blocks, each tool definition, and each message or message content block, in Anthropic
+// Messages, OpenAI Chat Completions and Responses alike. Cutting a message into its content
+// blocks keeps a moving cache_control marker from making the whole message new on every
+// request. A body that is not a JSON object, or not valid UTF-8, is one block: still exact,
+// only not deduplicated within itself.
 func splitBody(body []byte, seen map[string]struct{}) (*bodyRec, []stringRec) {
 	var cuts [][2]int
 	cut := func(v gjson.Result) {
@@ -80,7 +81,14 @@ func splitBody(body []byte, seen map[string]struct{}) (*bodyRec, []stringRec) {
 			case v.IsArray():
 				v.ForEach(func(_, el gjson.Result) bool {
 					if c := el.Get("content"); el.IsObject() && c.IsArray() {
-						c.ForEach(func(_, b gjson.Result) bool { cut(b); return true })
+						el.ForEach(func(k, f gjson.Result) bool {
+							if k.Str == "content" && f.IsArray() {
+								f.ForEach(func(_, b gjson.Result) bool { cut(b); return true })
+							} else {
+								cut(f)
+							}
+							return true
+						})
 					} else {
 						cut(el)
 					}
@@ -162,9 +170,14 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 		if slices.ContainsFunc(vs, func(v string) bool { return !utf8.ValidString(v) }) {
 			f.H, f.HX = nil, make(map[string][][]byte, len(c.Header))
 			for k, vs := range c.Header {
-				for _, v := range vs {
-					f.HX[k] = append(f.HX[k], []byte(v))
+				var bs [][]byte
+				if vs != nil {
+					bs = make([][]byte, 0, len(vs))
 				}
+				for _, v := range vs {
+					bs = append(bs, []byte(v))
+				}
+				f.HX[k] = bs
 			}
 			break
 		}
@@ -220,10 +233,12 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 		}
 	}
 	blocks := map[string]string{}
-	if _, err := readRecords(path, want, blocks, func(e *pipeline.SessionEvent, _ json.RawMessage) bool {
-		return e.Seq < seq
-	}); err != nil {
-		return nil, err
+	if len(want) > 0 {
+		if _, err := readRecords(path, want, blocks, func(e *pipeline.SessionEvent, _ json.RawMessage) bool {
+			return e.Seq < seq
+		}); err != nil {
+			return nil, err
+		}
 	}
 	c := &pipeline.RequestCapture{Header: f.H, Query: f.Q}
 	if f.QX != nil {
@@ -232,9 +247,14 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 	if f.HX != nil {
 		c.Header = make(http.Header, len(f.HX))
 		for k, vs := range f.HX {
-			for _, v := range vs {
-				c.Header[k] = append(c.Header[k], string(v))
+			var ss []string
+			if vs != nil {
+				ss = make([]string, 0, len(vs))
 			}
+			for _, v := range vs {
+				ss = append(ss, string(v))
+			}
+			c.Header[k] = ss
 		}
 	}
 	var err error
