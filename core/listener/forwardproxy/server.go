@@ -3843,7 +3843,7 @@ func (t *tunnelLog) deferOpen() {
 	defer t.mu.Unlock()
 	if !t.opened {
 		t.deferred = true
-		t.openEv = t.s.tunnelOpenEvent(t.pctx, "")
+		t.openEv = sessionevent.TunnelOpen(t.pctx, "")
 	}
 }
 

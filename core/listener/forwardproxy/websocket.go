@@ -255,7 +255,7 @@ func (s *Server) recordWebSocketOpen(ws *wsSocket) {
 		return
 	}
 	ws.hs.OutboundSessionID = ws.sid
-	ev := s.tunnelOpenEvent(ws.hs, pipeline.TunnelWebSocket)
+	ev := sessionevent.TunnelOpen(ws.hs, pipeline.TunnelWebSocket)
 	ev.HTTPMethod, ev.HTTPPath = ws.hs.Method, ws.hs.Path
 	s.appendOutbound(ws.tl, ws.sid, ev)
 }
@@ -861,23 +861,9 @@ func (ws *wsSocket) recordClose() {
 	if ws.s.Sessions == nil {
 		return
 	}
-	ev := pipeline.SessionEvent{
-		At:           time.Now(),
-		Direction:    pipeline.Outbound,
-		Phase:        pipeline.SessionResponse,
-		RequestID:    ws.hs.RequestID(),
-		Identity:     pipeline.SnapshotIdentity(ws.hs),
-		Host:         ws.hs.Host,
-		HTTPMethod:   ws.hs.Method,
-		HTTPPath:     ws.hs.Path,
-		StatusCode:   http.StatusSwitchingProtocols,
-		Duration:     time.Since(ws.start),
-		BytesUp:      ws.bytesUp.Load(),
-		BytesDown:    ws.bytesDown.Load(),
-		Tunnel:       true,
-		TunnelReason: pipeline.TunnelWebSocket,
-		Client:       ws.hs.ClientInfo(),
-	}
+	ev := sessionevent.TunnelClose(ws.hs, pipeline.TunnelWebSocket, http.StatusSwitchingProtocols, nil, ws.bytesUp.Load(), ws.bytesDown.Load())
+	// The socket's duration starts at the 101, not at the handshake request.
+	ev.Duration = time.Since(ws.start)
 	ws.s.Sessions.Append(ws.sid, ev)
 	ws.s.touch(ws.sid, ws.chain)
 }

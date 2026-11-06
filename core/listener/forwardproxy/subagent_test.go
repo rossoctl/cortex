@@ -118,3 +118,45 @@ func TestRecordTunnel_CarriesTheSubagent(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordWebSocketClose_CarriesTheProcAndSubagent covers the WebSocket close row. It
+// must name the process and the subagent as the tunnel close row does. A hand-built row
+// once dropped all three fields.
+func TestRecordWebSocketClose_CarriesTheProcAndSubagent(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{Sessions: store}
+
+	h := http.Header{}
+	h.Set(pipeline.ClaudeCodeAgentIDHeader, "a1a2e36cb5946f31c")
+	h.Set(pipeline.ClaudeCodeParentAgentIDHeader, "a0974b0b8591dc76b")
+	hs := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Method:    http.MethodGet,
+		Host:      "chatgpt.com:443",
+		Path:      "/backend-api/codex/responses",
+		Headers:   h,
+	}
+	hs.SetAttribution("codex", "", "")
+	ws := &wsSocket{s: s, hs: hs, sid: "ws-sess", start: time.Now()}
+	ws.bytesUp.Store(10)
+	ws.bytesDown.Store(20)
+	ws.recordClose()
+
+	v := store.View("ws-sess")
+	if v == nil || len(v.Events) != 1 {
+		t.Fatalf("expected one close row, got %+v", v)
+	}
+	ev := v.Events[0]
+	if ev.Proc != "codex" {
+		t.Errorf("Proc = %q, want codex", ev.Proc)
+	}
+	if ev.Subagent != "a1a2e36cb5946f31c" || ev.ParentSubagent != "a0974b0b8591dc76b" {
+		t.Errorf("Subagent/ParentSubagent = %q/%q, want a1a2e36cb5946f31c/a0974b0b8591dc76b",
+			ev.Subagent, ev.ParentSubagent)
+	}
+	if ev.Phase != pipeline.SessionResponse || !ev.Tunnel || ev.TunnelReason != pipeline.TunnelWebSocket ||
+		ev.StatusCode != http.StatusSwitchingProtocols || ev.BytesUp != 10 || ev.BytesDown != 20 {
+		t.Errorf("close row shape changed: %+v", ev)
+	}
+}
