@@ -78,12 +78,6 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	}
 	pctx.Extensions.Inference = ext
 
-	slog.Info("inference-parser", "model", ext.Model)
-	slog.Debug("inference-parser: extracted", "model", ext.Model, "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
-	for i, m := range ext.Messages {
-		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax))
-	}
-
 	pctx.Observe("matched_" + ext.Model)
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -116,6 +110,13 @@ func parseInferenceRequest(path string, headers http.Header, body []byte) *pipel
 	// flattened the same way. See agentRole for the marker and what empty means.
 	ext.AgentRole = agentRole(ext.Messages)
 	ext.AnthropicBeta = anthropicBeta(headers)
+
+	slog.Info("inference-parser", "model", ext.Model)
+	slog.Debug("inference-parser: extracted", "model", ext.Model, "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
+	for i, m := range ext.Messages {
+		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax))
+	}
+
 	return ext
 }
 

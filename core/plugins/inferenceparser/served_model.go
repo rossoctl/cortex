@@ -32,7 +32,7 @@ func noteBodyModel(ext *pipeline.InferenceExtension, model string) {
 
 // settleServedModel decides ServedModel at the end of a response: the gateway
 // header when there is one, else what noteBodyModel kept, and nothing when the
-// result only repeats Model. respHeaders are the response headers.
+// result only repeats Model.
 func settleServedModel(ext *pipeline.InferenceExtension, respHeaders http.Header) {
 	if ext == nil {
 		return
