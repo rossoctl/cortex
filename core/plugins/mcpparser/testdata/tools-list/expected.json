@@ -1,0 +1,15 @@
+{
+  "method": "tools/list",
+  "rpcId": 2,
+  "result": {
+    "tools": [
+      {
+        "description": "Get the weather for a location.",
+        "inputSchema": {
+          "type": "object"
+        },
+        "name": "get_weather"
+      }
+    ]
+  }
+}

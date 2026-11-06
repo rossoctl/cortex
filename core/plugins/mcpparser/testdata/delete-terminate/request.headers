@@ -1,0 +1,4 @@
+DELETE /mcp HTTP/1.1
+Host: mcp.example.com
+Mcp-Session-Id: 00000000-0000-4000-8000-000000000001
+

@@ -1,0 +1,20 @@
+{
+  "method": "tools/call",
+  "rpcId": 3,
+  "params": {
+    "arguments": {
+      "location": "New York"
+    },
+    "name": "get_weather"
+  },
+  "result": {
+    "content": [
+      {
+        "text": "Sunny, 22 C.",
+        "type": "text"
+      }
+    ],
+    "isError": false
+  },
+  "isAction": true
+}

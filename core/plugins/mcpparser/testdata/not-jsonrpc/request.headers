@@ -1,0 +1,4 @@
+POST /v1/messages HTTP/1.1
+Host: mcp.example.com
+Content-Type: application/json
+

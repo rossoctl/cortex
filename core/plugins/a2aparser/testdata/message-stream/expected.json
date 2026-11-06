@@ -1,0 +1,17 @@
+{
+  "method": "message/stream",
+  "rpcId": 2,
+  "sessionId": "ctx-2",
+  "messageId": "msg-2",
+  "taskId": "task-2",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 2"
+    }
+  ],
+  "finalStatus": "completed",
+  "artifact": "agent text 2",
+  "isAction": true
+}
