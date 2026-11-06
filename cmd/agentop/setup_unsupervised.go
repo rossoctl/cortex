@@ -34,7 +34,7 @@ func startUnsupervised(bin, cortexDir, healthURL string) (pid int, healthy bool,
 		return 0, false, err
 	}
 	pid = cmd.Process.Pid
-	pidFile := filepath.Join(cortexDir, "proxy.pid")
+	pidFile := filepath.Join(cortexDir, proxyPIDFile)
 	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait() // reap it, so no zombie answers kill -0 as alive

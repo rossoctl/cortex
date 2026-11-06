@@ -16,7 +16,7 @@ const installerOneLiner = "curl -fsSL https://www.rossoctl.dev/cortex/install.sh
 
 // setupBinaryNames are what the binaries step installs; cortex-session-dump only
 // when the installer staged it (its fetch is never fatal).
-var setupBinaryNames = []string{"agentop", "cortex", "cortex-session-dump"}
+var setupBinaryNames = []string{"agentop", proxyBinary, "cortex-session-dump"}
 
 type binariesStep struct{}
 
@@ -29,7 +29,7 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 	env.readVersions()
 	pair := "agentop, cortex " + env.installedVersion + " · " + env.tilde(env.binDir)
 	if env.fromDir == "" {
-		for _, n := range []string{"agentop", "cortex"} {
+		for _, n := range []string{"agentop", proxyBinary} {
 			if !isExecutable(filepath.Join(env.binDir, n)) {
 				return p, &problem{reason: n + " is not installed in " + env.tilde(env.binDir),
 					fix: []string{installerOneLiner}}
@@ -38,7 +38,7 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 		p.done, p.doneMsg = true, pair
 		return p, nil
 	}
-	for _, n := range []string{"agentop", "cortex"} {
+	for _, n := range []string{"agentop", proxyBinary} {
 		if !isExecutable(filepath.Join(env.fromDir, n)) {
 			return p, &problem{reason: n + " is missing from " + env.tilde(env.fromDir)}
 		}

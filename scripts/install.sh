@@ -706,6 +706,8 @@ proxy_running() {
 	kill -0 "${_pid}" 2>/dev/null || return 1
 	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
 	[ -z "${_comm}" ] && return 0
+	# agentop's proxyBinary, preRenameBinary and proxyPIDFile (cmd/agentop/proxy_names.go)
+	# hold the names this script checks. Change both together.
 	case "${_comm##*/}" in
 		cortex) return 0 ;;
 		*) return 1 ;;

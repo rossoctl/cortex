@@ -336,7 +336,7 @@ func printSetupHeader(env *setupEnv, ui *checklist.UI) {
 
 // stopBackgroundByHand stops the background proxy proxy.pid records.
 func stopBackgroundByHand(env *setupEnv) string {
-	return "kill $(cat " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid")) + ")"
+	return "kill $(cat " + env.tilde(filepath.Join(env.cortexDir, proxyPIDFile)) + ")"
 }
 
 // undoHint names the command that undoes this run: agentop uninstall, which

@@ -206,7 +206,7 @@ func ourProxy(binDir, pidFile string, pid int, exe string) bool {
 	if pf := readPIDFile(pidFile); pf > 0 && pf == pid {
 		return true
 	}
-	return samePath(exe, filepath.Join(binDir, "cortex")) || samePath(exe, filepath.Join(binDir, "authbridge-proxy"))
+	return samePath(exe, filepath.Join(binDir, proxyBinary)) || samePath(exe, filepath.Join(binDir, preRenameBinary))
 }
 
 func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
@@ -226,7 +226,7 @@ func proxyRunning(pidFile string) (int, bool) {
 		return 0, false
 	}
 	comm, seen := psComm(pid)
-	if !seen || filepath.Base(comm) == "cortex" {
+	if !seen || filepath.Base(comm) == proxyBinary {
 		return pid, true
 	}
 	return 0, false
@@ -241,7 +241,7 @@ func preRenameProxyRunning(binDir, pidFile string) (int, bool) {
 		return 0, false
 	}
 	exe := setupPIDExePath(pid)
-	if exe == "" || !samePath(exe, filepath.Join(binDir, "authbridge-proxy")) {
+	if exe == "" || !samePath(exe, filepath.Join(binDir, preRenameBinary)) {
 		return 0, false
 	}
 	return pid, true

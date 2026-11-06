@@ -181,7 +181,7 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 	p.home = home
 	p.configFile = cortexCfg
 	p.logFile = filepath.Join(filepath.Dir(cortexCfg), "proxy.log")
-	p.pidFile = filepath.Join(filepath.Dir(cortexCfg), "proxy.pid")
+	p.pidFile = filepath.Join(filepath.Dir(cortexCfg), proxyPIDFile)
 	p.stampFile = filepath.Join(filepath.Dir(cortexCfg), "proxy.sha256")
 
 	// An absolute binary path: a supervisor has no shell PATH to search.
@@ -196,16 +196,16 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 	bin := proxyOverride
 	if bin == "" {
 		if self, serr := os.Executable(); serr == nil {
-			if sib := filepath.Join(filepath.Dir(self), "cortex"); fileExists(sib) {
+			if sib := filepath.Join(filepath.Dir(self), proxyBinary); fileExists(sib) {
 				bin = sib
 			}
 		}
 	}
 	if bin == "" {
-		if found, lerr := exec.LookPath("cortex"); lerr == nil {
+		if found, lerr := exec.LookPath(proxyBinary); lerr == nil {
 			bin = found
 		} else {
-			bin = filepath.Join(home, ".local", "bin", "cortex")
+			bin = filepath.Join(home, ".local", "bin", proxyBinary)
 		}
 	}
 	if abs, aerr := filepath.Abs(bin); aerr == nil {
@@ -858,7 +858,7 @@ func foreignHolderLines(p servicePaths) []string {
 	// A foreign Cortex also explains the OTHER symptom, which does not look related:
 	// requests do reach the port, and are bridged with that install's CA, so agents
 	// report a self-signed certificate rather than a connection failure.
-	if b := filepath.Base(exe); b == "cortex" || b == "authbridge-proxy" {
+	if b := filepath.Base(exe); b == proxyBinary || b == preRenameBinary {
 		lines = append(lines, "That is another Cortex, so requests reaching it are bridged with ITS CA — which is the self-signed-certificate error agents report.")
 	}
 	switch job := holderJob(runtime.GOOS, pid); {
