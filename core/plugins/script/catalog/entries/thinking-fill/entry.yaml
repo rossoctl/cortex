@@ -1,0 +1,1 @@
+description: Keep Claude's earlier reasoning through a LiteLLM gateway that drops it (litellm#41361)
