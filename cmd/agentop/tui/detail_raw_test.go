@@ -110,22 +110,30 @@ func TestDetailRaw_Response(t *testing.T) {
 	}
 }
 
-// Enter fetches the exact capture against any proxy, projecting or not: only the archive holds
-// it. A row with no body has nothing to fetch.
-func TestDetailRaw_EnterFetchesWithoutProjection(t *testing.T) {
+// Enter fetches against a proxy that projects, the only kind with the per-event route, once per
+// row: the capture comes with the fetch and is kept. A proxy that does not project has no such
+// route, so asking would only flash a 404. A row with no body has nothing to fetch.
+func TestDetailRaw_EnterFetches(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		ev   pipeline.SessionEvent
-		want bool
+		name     string
+		ev       pipeline.SessionEvent
+		projects bool
+		fetched  bool
+		want     bool
 	}{
-		{"inference row", turnEvent(), true},
-		{"tunnel row", pipeline.SessionEvent{Seq: 8, Phase: pipeline.SessionRequest, Host: "h:443", Tunnel: true}, false},
+		{"inference row", turnEvent(), true, false, true},
+		{"already fetched once", turnEvent(), true, true, false},
+		{"older proxy", turnEvent(), false, false, false},
+		{"tunnel row", pipeline.SessionEvent{Seq: 8, Phase: pipeline.SessionRequest, Host: "h:443", Tunnel: true}, true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newSearchEventsModel(t, "h")
 			m.client, m.ctx = apiclient.New("http://127.0.0.1:1"), context.Background()
-			m.serverProjects = false
+			m.serverProjects = tc.projects
 			m.events["s"] = []pipeline.SessionEvent{tc.ev}
+			if tc.fetched {
+				m.markFullFetched("s", tc.ev.Seq)
+			}
 			m.rebuildEventsTable()
 			setCursorVisible(&m.eventsTbl, 0)
 			m.selectedEventKey = keyOf(m.selectedEvent())
@@ -137,6 +145,20 @@ func TestDetailRaw_EnterFetchesWithoutProjection(t *testing.T) {
 				t.Fatalf("Enter fetched the event: %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A search does not open the raw section: it holds a second copy of the conversation and up to
+// 10 MiB of response, so nearly every query matches in it, and drawing it made each keystroke
+// take over a second. It opens when the reader opens it.
+func TestDetailRaw_SearchLeavesRawClosed(t *testing.T) {
+	m := openTurnDetail(t)
+	m.detailRow.raw = &pipeline.RawCapture{Request: `{"messages":[{"role":"user","content":"only-in-raw needle"}]}`}
+	m.showDetail(m.detailRow, false)
+	typeKeys(m, "/needle")
+	press(m, tea.KeyEnter)
+	if out := detailScreen(m); strings.Contains(out, "only-in-raw") {
+		t.Fatalf("the search opened raw:\n%s", out)
 	}
 }
 
@@ -156,4 +178,19 @@ func fetches(cmd tea.Cmd) bool {
 		}
 	}
 	return false
+}
+
+// A row opened again shows the capture its first open fetched, without asking again.
+func TestDetailRaw_ReopenShowsTheHeldCapture(t *testing.T) {
+	m := newSearchEventsModel(t, "h")
+	m.serverProjects = true
+	m.events["s"] = []pipeline.SessionEvent{turnEvent()}
+	m.markFullFetched("s", 7, &pipeline.RawCapture{Request: `{"model":"held"}`})
+	m.rebuildEventsTable()
+	setCursorVisible(&m.eventsTbl, 0)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+	press(m, tea.KeyEnter)
+	if m.detailRow.raw == nil || m.detailRow.raw.Request != `{"model":"held"}` {
+		t.Fatalf("the reopened row shows raw %+v, want the held capture", m.detailRow.raw)
+	}
 }

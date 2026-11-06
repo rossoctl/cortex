@@ -739,9 +739,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
 			// fetchDetailEventCmd for why this is not a blocking spinner.
+			er.raw, _ = m.heldRaw(er.event)
 			m.showDetail(er, true)
 			m.pane = paneDetail
-			if hasBody(er.event) && m.client != nil {
+			if m.needsFullEvent(er.event) && m.client != nil {
 				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
 			}
 			return nil

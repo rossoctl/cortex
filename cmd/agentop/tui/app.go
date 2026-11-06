@@ -913,7 +913,10 @@ type model struct {
 	//
 	// Tracked rather than inferred from the event: see needsFullEvent for why a
 	// presence check cannot answer this for response events.
-	fullFetched map[string]map[uint64]bool
+	//
+	// The value is the event's exact capture, nil when the proxy had none: a capture never
+	// changes, so a row opened again shows it without asking the archive again.
+	fullFetched map[string]map[uint64]*pipeline.RawCapture
 
 	// serverProjects records that this proxy honours view=summary, learned from its
 	// echo on any snapshot. It decides whether the detail pane has to fetch the row

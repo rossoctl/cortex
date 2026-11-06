@@ -44,7 +44,7 @@ func withRaw(data []byte, raw *pipeline.RawCapture) []byte {
 			}
 			resp["body"] = fmt.Sprintf("[%s body %s]", enc, formatBytes(int64(len(p.BodyBase64))))
 		case p.Body != "":
-			resp["body"] = p.Body
+			resp["body"] = bodyView(p.Body, nil)
 		}
 		r["response"] = resp
 	} else {
@@ -52,7 +52,7 @@ func withRaw(data []byte, raw *pipeline.RawCapture) []byte {
 		switch {
 		case raw.Forwarded != nil:
 			r["forwarded"] = fmt.Sprintf("rewritten by a plugin: %s → %s",
-				formatBytes(int64(len(raw.Request))), formatBytes(int64(len(*raw.Forwarded))))
+				formatBytes(int64(len(raw.Request)+len(raw.RequestBase64))), formatBytes(int64(len(*raw.Forwarded))))
 			r["forwardedBody"] = bodyView(*raw.Forwarded, nil)
 		case raw.ForwardedBase64 != nil:
 			r["forwarded"] = fmt.Sprintf("rewritten by a plugin: %s", formatBytes(int64(len(raw.ForwardedBase64))))
