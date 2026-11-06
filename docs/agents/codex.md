@@ -68,17 +68,15 @@ restore, and the reason is worth stating plainly rather than leaving as a surpri
 a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
 putting back a stale Cortex address). Those two rules are exact opposites, so every value
 that reaches the record is stored as "was not set". The file, and `disable`'s restore
-branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's —
-[#1289](https://github.com/rossoctl/cortex/issues/1289) is one pass over all three, and a
-Codex-only design would have to be unpicked to get there.
+branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
 
 **What `disable` does.** It removes the five variables, removes the
 `# Added by agentop configure codex enable` marker if it is still exactly as written, and
 deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
 as it found it. It would restore a recorded prior value if one existed, which per the
 paragraph above does not happen today; if you hand-edit one of the five variables after
-`enable`, `disable` simply removes it. The stricter "did this change since enable"
-comparison is tracked by #1289.
+`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
+whether a value changed since `enable`.
 
 **What `status` says.** It prints the five variables as the file currently holds them, a
 warning if any is defined more than once, then `enabled` if every one matches what `enable`

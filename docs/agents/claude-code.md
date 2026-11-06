@@ -51,8 +51,10 @@ service status` says whether the proxy is up.
 puts back any value it recorded. It does not change a key whose value changed after
 `enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
 
-`disable` restores every value, but not the file's layout. It writes the keys in
-alphabetical order with a 2-space indent. For the original bytes, use `settings.json.bak`.
+`disable` restores every value, but not the file's text. It sorts the keys, uses a
+2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as
+`\u0026`, `\u003c` and `\u003e`. `settings.json.bak` holds the file as it was before the
+first `enable`. It does not hold a change you made after that.
 
 ### Undoing it by hand
 
