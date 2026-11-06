@@ -98,8 +98,10 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	if ext.SessionID == "" {
 		ext.SessionID = rpc.StringParam("sessionId")
 	}
-	ext.TaskID = rpc.StringParam("taskId")
 	if msg := rpc.MapParam("message"); msg != nil {
+		if taskID, ok := msg["taskId"].(string); ok {
+			ext.TaskID = taskID
+		}
 		if ext.SessionID == "" {
 			if cid, ok := msg["contextId"].(string); ok {
 				ext.SessionID = cid
@@ -114,6 +116,15 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		if rawParts, ok := msg["parts"].([]any); ok {
 			ext.Parts = parseA2AParts(rawParts)
 		}
+	}
+	// Spec v0.3.0 puts the task id in params.message.taskId (above) or,
+	// for a method with TaskIdParams, in params.id. Older clients send
+	// params.taskId, so it stays the last fallback.
+	if ext.TaskID == "" && taskIDParamIsID(rpc.Method) {
+		ext.TaskID = rpc.StringParam("id")
+	}
+	if ext.TaskID == "" {
+		ext.TaskID = rpc.StringParam("taskId")
 	}
 
 	pctx.Extensions.A2A = ext
@@ -399,6 +410,19 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 			}
 		}
 	}
+}
+
+// taskIDParamIsID reports whether the params of an A2A method (spec v0.3.0)
+// are TaskIdParams or extend them, so params.id is the task id.
+// tasks/pushNotificationConfig/set is not in the list: its params carry taskId.
+func taskIDParamIsID(method string) bool {
+	switch method {
+	case "tasks/get", "tasks/cancel", "tasks/resubscribe",
+		"tasks/pushNotificationConfig/get", "tasks/pushNotificationConfig/list",
+		"tasks/pushNotificationConfig/delete":
+		return true
+	}
+	return false
 }
 
 // resultTaskID returns the task id of an A2A result (spec v0.3.0).

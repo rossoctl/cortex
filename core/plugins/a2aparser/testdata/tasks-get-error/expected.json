@@ -1,4 +1,5 @@
 {
   "method": "tasks/get",
-  "rpcId": 4
+  "rpcId": 4,
+  "taskId": "task-unknown"
 }

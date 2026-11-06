@@ -33,7 +33,9 @@ cd core && GOWORK=off go test ./plugins/a2aparser/ -run Fixtures -count=1 -updat
 | `message-stream` | `message/stream` with `contextId` in the message. SSE: a Task, an `artifact-update`, and a final `status-update` | true |
 | `message-stream-no-final` | `message/stream`. SSE: a Task and a status-update that is not final, then the stream ends. `finalStatus` is the last state, `working` | true |
 | `tasks-get` | `tasks/get`. The JSON response is a completed Task. The Task `id` gives `taskId` | false |
-| `tasks-get-error` | `tasks/get` for an unknown task, JSON-RPC error response. The extension has no field for a JSON-RPC error | false |
+| `tasks-get-error` | `tasks/get` for an unknown task, JSON-RPC error response. `params.id` gives `taskId`. The extension has no field for a JSON-RPC error | false |
+| `message-send-task-not-found` | `message/send` for a task that the server does not know, JSON-RPC error response. `params.message.taskId` gives `taskId` | true |
+| `push-config-set-unsupported` | `tasks/pushNotificationConfig/set`, error response. The older `params.taskId` location gives `taskId` | false |
 | `not-jsonrpc` | An inference body with no `method`. Not claimed | no extension |
 | `non-a2a-method` | The MCP method `tools/list`. Not claimed | no extension |
 

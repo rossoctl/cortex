@@ -525,8 +525,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `a2a.method`, `a2a.rpcId` — the JSON-RPC method and id of an A2A request.
 - `a2a.sessionId`, `a2a.taskId`, `a2a.messageId`, `a2a.role`, `a2a.parts` —
   from the request's params. `sessionId` is `contextId`, else the older
-  `sessionId`, else `params.message.contextId`. When the request has none, the
-  response sets `sessionId` and `taskId`. `messageId`, `role` and `parts` come
+  `sessionId`, else `params.message.contextId`. `taskId` is
+  `params.message.taskId`, else `params.id` for a `tasks/*` method with a task
+  id param, else the older `params.taskId`. When the request has none, the
+  response sets `sessionId` and `taskId`. A Task result gives its `id`. `messageId`, `role` and `parts` come
   from `params.message`. Each part has a `kind` and a `content`: the text of a
   `text` part, the `data` or `uri` of a `file` part, or the JSON text of a
   `data` part.
