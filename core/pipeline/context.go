@@ -334,6 +334,11 @@ type Context struct {
 	// before the response row is recorded. Plugins do not write to it.
 	ResponseBytes int64
 
+	// ResponseCapture is the response body as the listener read it off the wire, for the
+	// session archive's lossless capture (#1494): up to MaxResponseCapture bytes, set by the
+	// listener and read when the response row is recorded. Plugins do not use it.
+	ResponseCapture *ResponseCapture
+
 	Extensions Extensions
 
 	// responseDelivered says the response has already reached the client, so a refusal

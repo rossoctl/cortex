@@ -3,6 +3,7 @@ package forwardproxy
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,13 +13,15 @@ import (
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 	"github.com/rossoctl/cortex/core/session"
 )
 
 // captures is a session.CaptureRecorder that keeps what it is handed.
 type captures struct {
 	mu  sync.Mutex
-	got map[string]*pipeline.RequestCapture // by request id
+	got map[string]*pipeline.RequestCapture  // request captures, by request id
+	res map[string]*pipeline.ResponseCapture // response captures, by request id
 }
 
 func (c *captures) Record(string, *pipeline.SessionEvent) {}
@@ -30,7 +33,11 @@ func (c *captures) RecordCapture(_ string, e *pipeline.SessionEvent, rc *pipelin
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.got == nil {
-		c.got = map[string]*pipeline.RequestCapture{}
+		c.got, c.res = map[string]*pipeline.RequestCapture{}, map[string]*pipeline.ResponseCapture{}
+	}
+	if e.Phase == pipeline.SessionResponse {
+		c.res[e.RequestID] = rc.Response
+		return
 	}
 	c.got[e.RequestID] = rc
 }
@@ -74,6 +81,7 @@ func postThrough(t *testing.T, proxy *httptest.Server, url, body string, header 
 	if err != nil {
 		t.Fatal(err)
 	}
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 }
 
@@ -230,5 +238,138 @@ func TestCapture_AResentRequestCarriesItsOwnForwardedBody(t *testing.T) {
 	// would show the second attempt's body on both rows.
 	if resent != 1 {
 		t.Errorf("%d captures carry the resent body, want 1", resent)
+	}
+}
+
+// responses is the response captures, keyed by request id. It waits a little for the first: the
+// proxy records a response's row after its last byte reaches the client, so a client can read
+// the whole body before the row exists.
+func (c *captures) responses() map[string]*pipeline.ResponseCapture {
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		c.mu.Lock()
+		out := map[string]*pipeline.ResponseCapture{}
+		for id, r := range c.res {
+			out[id] = r
+		}
+		c.mu.Unlock()
+		if len(out) > 0 || time.Now().After(deadline) {
+			return out
+		}
+	}
+}
+
+// A response is captured as the origin sent it, on every arm the proxy relays it through:
+// streamed with a parser, streamed through, buffered, and copied straight through. It pairs with
+// its request by request id.
+func TestCapture_ResponseOnEveryArm(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ctype   string
+		plugins []pipeline.Plugin
+	}{
+		{"streamed with a parser", "text/event-stream", []pipeline.Plugin{inferenceparser.NewInferenceParser()}},
+		{"streamed through", "text/event-stream", []pipeline.Plugin{&bodyRecorderPlugin{}}},
+		{"buffered", "application/json", []pipeline.Plugin{inferenceparser.NewInferenceParser()}},
+		{"copied through", "application/json", []pipeline.Plugin{&bodyMutatorPlugin{newBody: []byte(`{}`)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := anthropicSSEBody
+			if tc.ctype == "application/json" {
+				body = `{"type":"message","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":3,"output_tokens":1}}`
+			}
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tc.ctype)
+				w.Header().Set("Set-Cookie", "s=secret")
+				w.Header().Set("X-Request-Id", "req_1")
+				w.WriteHeader(http.StatusCreated)
+				io.WriteString(w, body)
+			}))
+			defer backend.Close()
+			proxy, rec := proxyWithCaptures(t, tc.plugins...)
+			postThrough(t, proxy, backend.URL+"/v1/messages", `{"model":"m","stream":true,"messages":[]}`, nil)
+
+			got := rec.responses()
+			if len(got) != 1 {
+				t.Fatalf("%d response captures, want 1", len(got))
+			}
+			for id, r := range got {
+				rec.mu.Lock()
+				paired := rec.got[id] != nil
+				rec.mu.Unlock()
+				if !paired || r == nil {
+					t.Fatalf("response capture %s does not pair with a request capture", id)
+				}
+				if r.Status != http.StatusCreated || string(r.Body) != body || r.Truncated || r.Incomplete {
+					t.Fatalf("response %d %q truncated=%v incomplete=%v, want 201 and the body", r.Status, r.Body, r.Truncated, r.Incomplete)
+				}
+				if r.Header.Get("X-Request-Id") != "req_1" || r.Header.Get("Set-Cookie") != "" {
+					t.Fatalf("response headers %v, want the origin's without credentials", r.Header)
+				}
+			}
+		})
+	}
+}
+
+// A body past the cap is kept up to the cap and marked truncated; the client still gets it all.
+func TestCapture_ResponsePastTheCapIsTruncated(t *testing.T) {
+	big := strings.Repeat("x", pipeline.MaxResponseCapture+100)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, big)
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, &bodyMutatorPlugin{newBody: []byte(`{}`)})
+	postThrough(t, proxy, backend.URL+"/v1/messages", `{}`, nil)
+	for _, r := range rec.responses() {
+		if !r.Truncated || len(r.Body) != pipeline.MaxResponseCapture {
+			t.Fatalf("truncated=%v len=%d, want the first %d bytes, truncated", r.Truncated, len(r.Body), pipeline.MaxResponseCapture)
+		}
+		return
+	}
+	t.Fatal("no response capture")
+}
+
+// A stream the origin breaks off is captured as far as it got, and marked incomplete.
+func TestCapture_BrokenStreamIsIncomplete(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "event: message_start\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser())
+	postThrough(t, proxy, backend.URL+"/v1/messages", `{"model":"m","stream":true,"messages":[]}`, nil)
+	for _, r := range rec.responses() {
+		if !r.Incomplete || !strings.HasPrefix(string(r.Body), "event: message_start") {
+			t.Fatalf("incomplete=%v body=%q, want the part that arrived, marked incomplete", r.Incomplete, r.Body)
+		}
+		return
+	}
+	t.Fatal("no response capture")
+}
+
+// A WebSocket turn's response is the origin's messages for the turn, one per line, as they came.
+func TestCapture_WebSocketTurnResponse(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	rec := &captures{}
+	h.store.AddRecorder(rec)
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	c.readUntil("response.completed")
+	c.close()
+	h.events(t, codexSID, true)
+
+	got := rec.responses()
+	if len(got) != 1 {
+		t.Fatalf("%d response captures, want 1", len(got))
+	}
+	for _, r := range got {
+		lines := strings.Split(strings.TrimSuffix(string(r.Body), "\n"), "\n")
+		if r.Status != http.StatusOK || len(lines) < 2 || !strings.Contains(lines[len(lines)-1], `"response.completed"`) {
+			t.Fatalf("status %d, body %q: want the turn's messages ending in response.completed", r.Status, r.Body)
+		}
 	}
 }

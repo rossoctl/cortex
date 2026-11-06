@@ -34,12 +34,26 @@ import (
 // cannot hold invalid UTF-8, which Go's server accepts in a header value, so a header set or
 // query that holds any is written as bytes instead: HX and QX, base64 on disk.
 type captureRec struct {
-	O  *bodyRec            `json:"o"`
+	O  *bodyRec            `json:"o,omitempty"`
 	W  *bodyRec            `json:"w,omitempty"`
 	H  http.Header         `json:"h,omitempty"`
 	HX map[string][][]byte `json:"hx,omitempty"`
 	Q  string              `json:"q,omitempty"`
 	QX []byte              `json:"qx,omitempty"`
+	// R is the response, on a response event. Its body is one piece, not split into blocks: a
+	// response is not re-sent from one request to the next.
+	R *responseRec `json:"r,omitempty"`
+}
+
+// responseRec is a ResponseCapture on disk. B is base64, so any body is exact; S is the hex
+// SHA-256 of B, checked on read.
+type responseRec struct {
+	C  int         `json:"c"`
+	H  http.Header `json:"h,omitempty"`
+	B  []byte      `json:"b"`
+	S  string      `json:"s"`
+	T  bool        `json:"t,omitempty"`
+	IC bool        `json:"ic,omitempty"`
 }
 
 // bodyRec is one body's skeleton. P alternates literal bytes and block references, starting and
@@ -161,6 +175,11 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 	if c == nil {
 		return nil, nil
 	}
+	if r := c.Response; r != nil {
+		sum := sha256.Sum256(r.Body)
+		return &captureRec{R: &responseRec{C: r.Status, H: r.Header, B: r.Body, S: hex.EncodeToString(sum[:]),
+			T: r.Truncated, IC: r.Incomplete}}, nil
+	}
 	o, fresh := splitBody(c.Original, seen)
 	f := &captureRec{O: o, H: c.Header, Q: c.Query}
 	if !utf8.ValidString(c.Query) {
@@ -219,6 +238,14 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 	var f captureRec
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("archive: capture record: %w", err)
+	}
+	if r := f.R; r != nil {
+		sum := sha256.Sum256(r.B)
+		if hex.EncodeToString(sum[:]) != r.S {
+			return nil, errors.New("archive: response body does not match the captured hash")
+		}
+		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: r.H,
+			Body: r.B, Truncated: r.T, Incomplete: r.IC}}, nil
 	}
 	if f.O == nil {
 		return nil, errors.New("archive: capture record has no original body")

@@ -412,7 +412,10 @@ rewrote it, the request headers and the query. Credential headers (`authorizatio
 credential query parameters such as Gemini's `key`. Images,
 files the agent read and thinking blocks are kept too. Each part of a body that repeats from
 one request to the next is stored once per segment, so this costs about 8–20 KB per request
-in the measured sessions.
+in the measured sessions. The response is kept as it came off the wire, still compressed when
+the origin compressed it: its status, its headers without `set-cookie`, and up to 10 MiB of
+its body. A longer body is marked truncated, and a stream that broke off is marked
+incomplete. A WebSocket turn's response is the origin's messages for the turn, one per line.
 
 **It runs only on a local install** — a config inside `~/.cortex`, which is what `agentop
 service install` and `--local` produce. Anywhere else it is off, and `enabled: true` is refused

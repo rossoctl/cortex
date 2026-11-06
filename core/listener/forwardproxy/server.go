@@ -903,7 +903,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// response's row: skip_hosts records nothing at all. reverseproxy's
 	// unbuffered relay defers its row to the end of its copy the same way
 	// (recordOnEOFBody).
-	resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
+	//
+	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
+	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
+	// relays it. Only when the request was captured, so a response never outlives its pair.
+	if capture != nil && s.Sessions != nil {
+		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header)}
+		pctx.ResponseCapture = rc
+		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, pipeline.MaxResponseCapture)
+	} else {
+		resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
+	}
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
 	// Stream the upstream body straight through to the caller. Falls
@@ -2485,7 +2495,22 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
-	s.Sessions.Append(sid, outboundResponseEvent(pctx, statusCode, fail))
+	s.Sessions.AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx, fail))
+}
+
+// takeResponseCapture is the capture of the response pctx's row records, nil when there is
+// none, and clears it so a resent request's next row does not carry it again. fail marks it
+// incomplete: a body the origin broke off, or one cut short by the proxy or the client. A
+// WebSocket turn the origin answered with an error event is the exception: that event is the
+// whole answer, and it arrived.
+func takeResponseCapture(pctx *pipeline.Context, fail *pipeline.EventError) *pipeline.RequestCapture {
+	rc := pctx.ResponseCapture
+	if rc == nil {
+		return nil
+	}
+	pctx.ResponseCapture = nil
+	rc.Incomplete = fail != nil && fail.Kind != "backend_error"
+	return &pipeline.RequestCapture{Response: rc}
 }
 
 // outboundResponseEvent builds the SessionResponse row every outbound answer is
