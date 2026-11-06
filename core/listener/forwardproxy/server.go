@@ -135,6 +135,12 @@ type Server struct {
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
+	// BridgedIdleTimeout closes a TLS-bridged tunnel once it has been idle
+	// between decrypted requests this long, and on HTTP/1.1 bounds reading
+	// each request's headers, the first included. Zero keeps it open until
+	// either side closes.
+	BridgedIdleTimeout time.Duration
+
 	// SessionIDHeaders are the request headers consulted, in order, for a
 	// client-supplied session id to bucket events under. The first one
 	// present and usable wins; when none is, bucketing falls back to
@@ -201,8 +207,9 @@ type Server struct {
 	//
 	// connect is the CONNECT request as the listener's wrapper saw it, so a
 	// hook can read the identity it stamped there; r is the decrypted request
-	// to decorate. The returned request replaces r.
-	AdoptBridgedRequest func(connect, r *http.Request) *http.Request
+	// to decorate. With ok true, adopted is non-nil and replaces r. ok false
+	// refuses r: the hook has answered it on w, and nothing else runs for it.
+	AdoptBridgedRequest func(w http.ResponseWriter, connect, r *http.Request) (adopted *http.Request, ok bool)
 
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
@@ -1334,7 +1341,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	markBridged(tl)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
-	tlsbridge.ServeConn(tconn, s.bridgedHandler(authority, tl))
+	tlsbridge.ServeConnIdle(tconn, s.bridgedHandler(authority, tl), s.BridgedIdleTimeout)
 	// ServeConn returns once the connection has closed. A bridged tunnel's decrypted
 	// requests answer it and agentop folds the open into the first of them, so a close row
 	// there would render as an orphan response. With no recorded request at all there is
@@ -1919,8 +1926,9 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 		// it stamped on or stripped from the CONNECT has to be redone here, or
 		// the guest's own headers decide the session (#1569 review).
 		if s.AdoptBridgedRequest != nil && tl.connect != nil {
-			if adopted := s.AdoptBridgedRequest(tl.connect, r); adopted != nil {
-				r = adopted
+			var ok bool
+			if r, ok = s.AdoptBridgedRequest(w, tl.connect, r); !ok {
+				return
 			}
 		}
 		r.URL.Scheme = "https"

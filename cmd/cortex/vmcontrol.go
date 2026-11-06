@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/rossoctl/cortex/core/listener/vmcontrol"
 )
 
 // The MOCA SBX VM control channel (#1477), configured env-only: the conformance
@@ -16,12 +18,17 @@ const (
 	envTenancy     = "MOCA_TENANCY"
 	envControlSock = "MOCA_EGRESS_CONTROL_SOCK"
 	envControlUIDs = "MOCA_EGRESS_CONTROL_UIDS"
+	// The cap variables keep moca-egress's names, so one deployment
+	// configures either proxy.
+	envMaxConnsPerVM         = "MOCA_EGRESS_MAX_CONNS_PER_VM"
+	envMaxRequestsPerSession = "MOCA_EGRESS_MAX_REQUESTS_PER_SESSION"
 )
 
 // controlConfig is the resolved VM control channel; a zero Socket means off.
 type controlConfig struct {
 	Socket      string
 	AllowedUIDs []int
+	Limits      vmcontrol.Limits // a zero field takes vmcontrol's default
 }
 
 // vmControlServer is the subset of the control server main needs — closing on
@@ -62,5 +69,25 @@ func resolveControlConfig(getenv func(string) string) (controlConfig, error) {
 		}
 		cc.AllowedUIDs = append(cc.AllowedUIDs, uid)
 	}
+	var err error
+	if cc.Limits.MaxConnsPerVM, err = positiveInt(getenv, envMaxConnsPerVM); err != nil {
+		return cc, err
+	}
+	if cc.Limits.MaxRequestsPerSession, err = positiveInt(getenv, envMaxRequestsPerSession); err != nil {
+		return cc, err
+	}
 	return cc, nil
+}
+
+// positiveInt reads name as a positive integer; unset is 0.
+func positiveInt(getenv func(string) string, name string) (int, error) {
+	raw := strings.TrimSpace(getenv(name))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s=%q: want a positive integer", name, raw)
+	}
+	return n, nil
 }

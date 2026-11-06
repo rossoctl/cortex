@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 func TestTerminator_AgentTrustingCAHandshakes(t *testing.T) {
@@ -115,5 +117,69 @@ func TestServeConn_HTTP11KeepAlive(t *testing.T) {
 
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Fatalf("expected handler to be hit twice on one conn, got %d", got)
+	}
+}
+
+// ServeConnIdle closes a connection left idle before its first request or
+// between requests, on both the HTTP/1.1 and the h2 path, and returns. A case
+// that sends a request sets a long header bound, so only idle can close it.
+func TestServeConnIdle_ClosesIdleConn(t *testing.T) {
+	src, _ := NewEphemeralSource()
+	term := NewTerminator(NewMinter(src, MinterOpts{}))
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(src.CACertPEM())
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+
+	for _, tc := range []struct {
+		proto, sends string
+		header       time.Duration
+	}{
+		{"http/1.1", "nothing", 0}, // ServeConnIdle's own header bound
+		{"http/1.1", "a request", time.Hour},
+		{"h2", "the preface", time.Hour},
+	} {
+		proto := tc.proto
+		t.Run(proto+" after "+tc.sends, func(t *testing.T) {
+			c1, c2 := net.Pipe()
+			defer func() { _ = c1.Close() }()
+			served := make(chan struct{})
+			go func() {
+				defer close(served)
+				if tconn, err := term.Terminate(c2, "api.example.com"); err == nil {
+					if tc.header == 0 {
+						ServeConnIdle(tconn, ok, time.Millisecond)
+					} else {
+						serveConn(tconn, ok, time.Millisecond, tc.header)
+					}
+				}
+			}()
+			client := tls.Client(c1, &tls.Config{ServerName: "api.example.com", RootCAs: pool, NextProtos: []string{proto}})
+			if err := client.Handshake(); err != nil {
+				t.Fatal(err)
+			}
+			drained := make(chan struct{})
+			switch {
+			case tc.sends == "nothing":
+				go func() { _, _ = io.Copy(io.Discard, client); close(drained) }()
+			case proto == "h2":
+				// The h2 idle clock starts once the client preface is read.
+				go func() { _, _ = io.Copy(io.Discard, client); close(drained) }()
+				_, _ = io.WriteString(client, http2.ClientPreface)
+				_ = http2.NewFramer(client, nil).WriteSettings()
+			default:
+				// The HTTP/1.1 idle clock starts after a response.
+				req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/", nil)
+				_ = req.Write(client)
+				br := bufio.NewReader(client)
+				resp, err := http.ReadResponse(br, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				go func() { _, _ = io.Copy(io.Discard, br); close(drained) }()
+			}
+			<-drained
+			<-served
+		})
 	}
 }

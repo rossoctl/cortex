@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/core/listener/vmcontrol"
 )
 
 func TestResolveControlConfig(t *testing.T) {
@@ -88,5 +90,34 @@ func TestResolveControlConfig(t *testing.T) {
 	}
 	if len(cc.AllowedUIDs) != 3 || cc.AllowedUIDs[0] != 0 || cc.AllowedUIDs[1] != 501 || cc.AllowedUIDs[2] != 2 {
 		t.Errorf("uids = %v, want [0 501 2]", cc.AllowedUIDs)
+	}
+}
+
+func TestResolveControlConfigLimits(t *testing.T) {
+	base := map[string]string{envControlSock: "/run/c.sock", envControlUIDs: "0"}
+	resolve := func(kv ...string) (controlConfig, error) {
+		m := map[string]string{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return resolveControlConfig(func(k string) string { return m[k] })
+	}
+
+	cc, err := resolve(envMaxConnsPerVM, "2", envMaxRequestsPerSession, " 3 ")
+	if err != nil || cc.Limits.MaxConnsPerVM != 2 || cc.Limits.MaxRequestsPerSession != 3 {
+		t.Fatalf("limits = %+v, %v; want 2 and 3", cc.Limits, err)
+	}
+	if cc, err := resolve(); err != nil || cc.Limits != (vmcontrol.Limits{}) {
+		t.Errorf("unset limits = %+v, %v; want zero, for vmcontrol's defaults", cc.Limits, err)
+	}
+	for _, name := range []string{envMaxConnsPerVM, envMaxRequestsPerSession} {
+		for _, bad := range []string{"0", "-1", "ten"} {
+			if _, err := resolve(name, bad); err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s=%q: error %v, want one naming the variable", name, bad, err)
+			}
+		}
 	}
 }

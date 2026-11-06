@@ -11,18 +11,27 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
+
+// IdleTimeout is how long a VM's connection may sit idle between requests
+// before it is closed and its conn slot freed. The forward proxy's
+// BridgedIdleTimeout takes it too, for the tunnels it decrypts, where on
+// HTTP/1.1 it also bounds reading headers.
+const IdleTimeout = 60 * time.Second
 
 // vmBinding is one registered VM: its listener, the http.Server accepting on
 // it, and the state Unregister needs to abort it.
 type vmBinding struct {
-	vmID  string
-	sid   string
-	inner http.Handler // the forward proxy's own handler
-	sink  AuditSink
-	ln    *trackedListener
-	srv   *http.Server
+	vmID     string
+	sid      string
+	inner    http.Handler // the forward proxy's own handler
+	sink     AuditSink
+	ln       *trackedListener
+	srv      *http.Server
+	requests *sessionRequests // shared with the session's other VMs
 
 	// mu guards aborted and the live-set join below it.
 	mu      sync.Mutex
@@ -30,24 +39,71 @@ type vmBinding struct {
 	live    sync.WaitGroup // in-flight request wrappers
 }
 
-func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln net.Listener) *vmBinding {
+func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln net.Listener, maxConns int, requests *sessionRequests) *vmBinding {
 	b := &vmBinding{
 		vmID: vmID, sid: sid,
 		inner: fp.Handler(), sink: sink,
-		ln: newTrackedListener(ln),
+		requests: requests,
 	}
-	// ReadHeaderTimeout matches bootstrap's, which every other http.Server in
-	// the binary gets. Without it a guest can open connections and drip headers
-	// forever, each one holding a goroutine and an fd until Unregister — and the
-	// fds are the scarcer half, since one proxy holds a listener per VM plus
-	// their tunnels. Per-VM caps are #1485's; this is the one-line floor (also
-	// gosec G112) and it costs the conformance cases nothing (#1569 review).
-	b.srv = &http.Server{Handler: b, ReadHeaderTimeout: 10 * time.Second}
+	b.ln = newTrackedListener(ln, maxConns, b.refuseConn)
+	// ReadHeaderTimeout matches bootstrap's (also gosec G112). Together with
+	// IdleTimeout it frees the conn slot of a guest that drips headers or parks
+	// idle connections.
+	b.srv = &http.Server{Handler: b, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: IdleTimeout}
 	return b
 }
 
-// requestBinding is what a VM listener stamps into the request context.
-type requestBinding struct{ vmID, sid string }
+// refuseConn turns away a connection over the VM's conn cap. The answer and
+// its audit event run off the accept loop, so neither a guest that never
+// reads nor a slow sink stalls admission or Unregister. A stalled sink holds
+// answer slots instead, and refusals past them close unanswered.
+func (b *vmBinding) refuseConn(c net.Conn, d capRefusal) {
+	if !d.answer {
+		_ = c.Close()
+		return
+	}
+	var report func()
+	if d.report {
+		report = func() {
+			b.sink.Emit(Event{
+				VMID: b.vmID, SID: b.sid,
+				Status: http.StatusTooManyRequests, Decision: DecisionConnCap,
+				Coalesced: d.coalesced,
+			})
+		}
+	}
+	go b.ln.answerCap(c, b.vmID, report)
+}
+
+// chargeRequest counts r, addressed to host, against the session's request
+// cap. Over the cap it emits the audit event, answers 429 request_cap naming
+// host with the connection closed after it, and reports false. The refusal
+// leaves no session-store row; the audit event is its record.
+func (b *vmBinding) chargeRequest(w http.ResponseWriter, r *http.Request, host string) bool {
+	if b.requests.charge() {
+		return true
+	}
+	e := b.event(r, http.StatusTooManyRequests)
+	e.Host, e.Decision = host, DecisionRequestCap
+	if r.Method != http.MethodConnect {
+		e.Path = RedactPath(r.URL)
+	}
+	b.sink.Emit(e)
+	w.Header().Set("Connection", "close")
+	httpx.WriteRejection(w, pipeline.MocaRefusal(http.StatusTooManyRequests, DecisionRequestCap, host))
+	return false
+}
+
+// requestHost is the host r is addressed to, without its port.
+func requestHost(r *http.Request) string {
+	if h := r.URL.Hostname(); h != "" {
+		return h
+	}
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		return h
+	}
+	return r.Host
+}
 
 // bindingCtxKey is a NAMED type, like the forward proxy's connProcKey and the
 // transparent listener's origDstKey. An untyped `var bindingCtxKey struct{}`
@@ -63,7 +119,7 @@ type bindingCtxKey struct{}
 // not come through one. It is the forward proxy's TrustedSessionID hook: the
 // answer is the listener's own, so nothing the client sent participates.
 func SessionIDFromRequest(r *http.Request) string {
-	if b, ok := r.Context().Value(bindingCtxKey{}).(requestBinding); ok {
+	if b, ok := r.Context().Value(bindingCtxKey{}).(*vmBinding); ok {
 		return b.sid
 	}
 	return ""
@@ -71,7 +127,8 @@ func SessionIDFromRequest(r *http.Request) string {
 
 // AdoptBridgedRequest is the forward proxy's AdoptBridgedRequest hook: it
 // carries a VM's binding from the CONNECT onto each request that tunnel
-// decrypts, and strips the guest's identity headers from them.
+// decrypts, strips the guest's identity headers from them, and charges each
+// to the session's request cap. Over the cap it answers w and reports false.
 //
 // It is needed because a bridged request never passes through vmBinding.
 // ServeHTTP: tlsbridge.ServeConn parses the decrypted bytes into fresh
@@ -85,13 +142,18 @@ func SessionIDFromRequest(r *http.Request) string {
 //
 // Returns r unchanged when the CONNECT carried no binding, so a bridged
 // tunnel on a non-VM listener is untouched.
-func AdoptBridgedRequest(connect, r *http.Request) *http.Request {
-	b, ok := connect.Context().Value(bindingCtxKey{}).(requestBinding)
+func AdoptBridgedRequest(w http.ResponseWriter, connect, r *http.Request) (*http.Request, bool) {
+	b, ok := connect.Context().Value(bindingCtxKey{}).(*vmBinding)
 	if !ok {
-		return r
+		return r, true
 	}
 	stripGuestHeaders(r)
-	return r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, b))
+	// Named by the tunnel's host: r's own Host is the guest's and not yet
+	// checked against it.
+	if !b.chargeRequest(w, r, requestHost(connect)) {
+		return nil, false
+	}
+	return r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, b)), true
 }
 
 // guestStrippedHeaders are the client-asserted identity headers a VM guest
@@ -121,9 +183,9 @@ func stripGuestHeaders(r *http.Request) {
 }
 
 // ServeHTTP is the per-VM wrapper around the forward proxy's handler: it
-// strips guest-asserted identity headers, carries the binding in the request
-// context (the trusted-session seam), and emits exactly one terminal audit
-// line per request when the inner handler returns.
+// strips guest-asserted identity headers, charges the session's request cap,
+// carries the binding in the request context (the trusted-session seam), and
+// emits exactly one terminal audit line per request.
 func (b *vmBinding) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stripGuestHeaders(r)
 
@@ -151,7 +213,10 @@ func (b *vmBinding) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b.mu.Unlock()
 	defer b.live.Done()
 
-	r = r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, requestBinding{b.vmID, b.sid}))
+	if !b.chargeRequest(w, r, requestHost(r)) {
+		return
+	}
+	r = r.WithContext(context.WithValue(r.Context(), bindingCtxKey{}, b))
 	sw := newStatusWriter(w)
 	b.inner.ServeHTTP(sw, r)
 	b.emit(r, sw.status)
@@ -161,11 +226,7 @@ func (b *vmBinding) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // established reports 200: the proxy writes that status itself on the raw
 // connection after hijacking, where statusWriter cannot see it.
 func (b *vmBinding) emit(r *http.Request, status int) {
-	e := Event{
-		VMID: b.vmID, SID: b.sid,
-		Host: r.Host, Method: r.Method,
-		Status: status,
-	}
+	e := b.event(r, status)
 	b.mu.Lock()
 	aborted := b.aborted
 	b.mu.Unlock()
@@ -179,6 +240,11 @@ func (b *vmBinding) emit(r *http.Request, status int) {
 		e.Path = RedactPath(r.URL)
 	}
 	b.sink.Emit(e)
+}
+
+// event is r's audit event, without its decision.
+func (b *vmBinding) event(r *http.Request, status int) Event {
+	return Event{VMID: b.vmID, SID: b.sid, Host: r.Host, Method: r.Method, Status: status}
 }
 
 func (b *vmBinding) close() {

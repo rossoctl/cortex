@@ -64,14 +64,38 @@ func (p *sessionProbe) OnResponse(_ context.Context, _ *pipeline.Context) pipeli
 
 // captureSink collects audit events for assertions.
 type captureSink struct {
-	mu     sync.Mutex
-	events []Event
+	mu      sync.Mutex
+	events  []Event
+	emitted chan struct{} // closed and replaced on each Emit
 }
 
 func (s *captureSink) Emit(e Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, e)
+	if s.emitted != nil {
+		close(s.emitted)
+	}
+	s.emitted = make(chan struct{})
+}
+
+// awaitEvent blocks until vm has an event with decision, and returns it.
+func (s *captureSink) awaitEvent(vm, decision string) Event {
+	for {
+		s.mu.Lock()
+		for _, e := range s.events {
+			if e.VMID == vm && e.Decision == decision {
+				s.mu.Unlock()
+				return e
+			}
+		}
+		if s.emitted == nil {
+			s.emitted = make(chan struct{})
+		}
+		next := s.emitted
+		s.mu.Unlock()
+		<-next
+	}
 }
 
 func (s *captureSink) forVM(vm string) []Event {
@@ -107,7 +131,7 @@ func newVMEgressStack(t *testing.T) (*Registry, *captureSink, *session.Store, *s
 		TrustedSessionID: SessionIDFromRequest,
 	}
 	sink := &captureSink{}
-	return NewRegistry(fp, sink), sink, store, probe
+	return NewRegistry(fp, sink, Limits{}), sink, store, probe
 }
 
 // registerTCPVM binds a listener and hands it to the registry as a VM's
@@ -558,7 +582,7 @@ func newVMEgressStackWithAllow(t *testing.T, entries ...string) (*Registry, *cap
 		EgressAllow:      allow,
 	}
 	sink := &captureSink{}
-	return NewRegistry(fp, sink), sink, store
+	return NewRegistry(fp, sink, Limits{}), sink, store
 }
 
 // rowsIn is how many session rows a bucket holds.
@@ -719,7 +743,7 @@ func TestRegistry_TrustedSessionSurvivesSessionsDisabled(t *testing.T) {
 		Client:           http.DefaultClient,
 		TrustedSessionID: SessionIDFromRequest,
 	}
-	reg := NewRegistry(fp, &captureSink{})
+	reg := NewRegistry(fp, &captureSink{}, Limits{})
 	addr := registerTCPVM(t, reg, "vm-c", "sid-c")
 
 	c := guest(t, addr)
@@ -765,7 +789,7 @@ func TestVMBinding_AbortedWindowAnswers503(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln)
+	b := newVMBinding(fp, sink, "vm-d", "sid-d", ln, 1, &sessionRequests{max: 1})
 
 	// Enter the window: aborted set, connections not yet closed.
 	b.close()
