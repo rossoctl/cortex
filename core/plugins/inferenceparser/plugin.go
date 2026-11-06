@@ -87,7 +87,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		// says it cost something. Wording that describes the whole request as dropped would
 		// make an operator hunting for missing spend rule out the one path that still
 		// records some.
-		slog.Debug("inference-parser: no/invalid body; no request telemetry, response still priced from the gateway header", "path", pctx.Path)
+		slog.Debug("inference-parser: no/invalid body; no request telemetry, response still priced from the gateway header", "path", pipeline.SanitizeLogValue(pctx.Path))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

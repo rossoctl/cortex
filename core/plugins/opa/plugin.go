@@ -438,7 +438,7 @@ func (p *OPA) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.Ac
 			pctx.Skip("no_policy_rule")
 			return pipeline.Action{Type: pipeline.Continue}
 		}
-		slog.Warn("opa: decision error on request", "error", err, "decision_path", path, "request_path", pctx.Path)
+		slog.Warn("opa: decision error on request", "error", err, "decision_path", path, "request_path", pipeline.SanitizeLogValue(pctx.Path))
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Reason: "decision_error",
@@ -490,7 +490,7 @@ func (p *OPA) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.A
 			pctx.Skip("no_policy_rule")
 			return pipeline.Action{Type: pipeline.Continue}
 		}
-		slog.Warn("opa: decision error on response", "error", err, "decision_path", path, "request_path", pctx.Path)
+		slog.Warn("opa: decision error on response", "error", err, "decision_path", path, "request_path", pipeline.SanitizeLogValue(pctx.Path))
 		pctx.Record(pipeline.Invocation{
 			Action: pipeline.ActionDeny,
 			Reason: "response_decision_error",

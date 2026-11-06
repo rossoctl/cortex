@@ -222,11 +222,11 @@ var implausibleWarnOnce sync.Once
 // rejected" would leave the one question that matters unanswerable.
 func warnImplausibleCost(pctx *pipeline.Context, usd float64) {
 	slog.Debug("costing: refused an implausible cost header",
-		"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+		"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path), "reported_usd", usd,
 		"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
 	implausibleWarnOnce.Do(func() {
 		slog.Warn("costing: refused a cost header larger than any inference call could plausibly be; this endpoint was not parsed, so nothing corroborates the figure and it is recorded as an unpriced coverage gap rather than as spend. Further occurrences are logged at debug level only",
-			"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+			"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path), "reported_usd", usd,
 			"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
 	})
 }

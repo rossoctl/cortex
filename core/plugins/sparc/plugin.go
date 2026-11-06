@@ -425,11 +425,11 @@ func (p *SPARC) handleUnavailable(pctx *pipeline.Context, toolName string, err e
 	if p.cfg.FailPolicy == FailOpen {
 		details["mode"] = "fail_open"
 		pctx.Record(inv(pipeline.ActionObserve, mode, "reflector_unavailable", details))
-		slog.Warn("sparc: reflector unavailable, failing open", "host", pctx.Host, "error", errPreview)
+		slog.Warn("sparc: reflector unavailable, failing open", "host", pipeline.SanitizeLogValue(pctx.Host), "error", errPreview)
 		return cont()
 	}
 	pctx.Record(inv(pipeline.ActionDeny, mode, "reflector_unavailable", details))
-	slog.Warn("sparc: reflector unavailable, failing closed", "host", pctx.Host, "error", errPreview)
+	slog.Warn("sparc: reflector unavailable, failing closed", "host", pipeline.SanitizeLogValue(pctx.Host), "error", errPreview)
 	if mode == EnforcementInference {
 		rewriteInferenceResponse(pctx, "Tool call blocked: reflection service unavailable.")
 		return cont()
@@ -448,7 +448,7 @@ func (p *SPARC) handleNoContext(pctx *pipeline.Context, toolName, mode string) p
 		return cont()
 	}
 	pctx.Record(inv(pipeline.ActionDeny, mode, "no_inference_context", map[string]string{"tool": toolName}))
-	slog.Warn("sparc: no inference context to ground against, failing closed", "host", pctx.Host, "tool", toolName)
+	slog.Warn("sparc: no inference context to ground against, failing closed", "host", pipeline.SanitizeLogValue(pctx.Host), "tool", toolName)
 	if mode == EnforcementInference {
 		rewriteInferenceResponse(pctx, "Tool call blocked: no conversation context available to verify it.")
 		return cont()
